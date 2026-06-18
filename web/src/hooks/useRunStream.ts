@@ -101,6 +101,13 @@ export function useRunStream(): UseRunStream {
   // runId mirror so answerInterrupt resolves against the live run_id without a
   // stale-closure race (the click happens after the `agent` frame set it).
   const runIdRef = useRef("");
+  // echoedRef holds operator-turn texts this client already rendered
+  // optimistically (the opening prompt + each steer/continue). RFC AI made the
+  // re-attach stream self-sufficient — the server now replays operator turns as
+  // `steer` frames (source="replay") — so a same-session client must de-dupe
+  // those replays against its own echoes to avoid double-rendering. A COLD
+  // re-attach (another device) has an empty echoedRef, so every replay renders.
+  const echoedRef = useRef<string[]>([]);
 
   // Abort the in-flight stream on unmount so a navigated-away run doesn't
   // keep a dangling reader. (Does not cancel the run server-side — that's
@@ -130,6 +137,19 @@ export function useRunStream(): UseRunStream {
       return;
     }
     const ev = parsed as unknown as EventPayload;
+    // De-dupe a replayed operator turn against our own optimistic echo: a
+    // `steer` frame with source="replay" that matches a text we already
+    // rendered is dropped (and consumed from the queue, so a genuine repeat
+    // later still shows). A cold re-attach never echoed, so its queue is empty
+    // and replays render normally. (RFC AI self-sufficient re-attach.)
+    if (ev.type === "steer" && ev.user_input?.source === "replay") {
+      const text = ev.user_input.text ?? "";
+      const idx = echoedRef.current.indexOf(text);
+      if (idx !== -1) {
+        echoedRef.current.splice(idx, 1);
+        return;
+      }
+    }
     if (ev.type === "done") {
       setStatus("completed");
       setPendingInterrupt(null);
@@ -206,6 +226,7 @@ export function useRunStream(): UseRunStream {
       // user_input event is filtered from the live SSE tail, so this is the
       // only way they see what they typed live.
       const prompt = req.prompt.trim();
+      echoedRef.current = prompt ? [prompt] : [];
       setEvents(prompt ? [userEchoTranscript(seqRef.current++, prompt)] : []);
       setAgentId(req.agent_id ?? "");
       setSessionId("");
@@ -227,10 +248,11 @@ export function useRunStream(): UseRunStream {
       ctrlRef.current?.abort();
       const ctrl = new AbortController();
       ctrlRef.current = ctrl;
-      // Replay from seq 0: the re-attach stream carries the whole run, so the
-      // returning operator sees the full scrollback then live updates. (The
-      // run's own user_input/system_prompt rows aren't on the tail; for a
-      // detached interactive run the agent's turns are what matter live.)
+      // Replay from seq 0: the re-attach stream carries the whole run — both
+      // the agent's turns AND the operator's (RFC AI replays user_input rows as
+      // `steer` frames), so a returning operator (even on another device) sees
+      // the full conversation. No echoes to de-dupe against on a cold attach.
+      echoedRef.current = [];
       seqRef.current = 0;
       setEvents([]);
       setAgentId("");
@@ -257,8 +279,9 @@ export function useRunStream(): UseRunStream {
       setPendingInterrupt(null);
       setAwaitingInput(false);
       setStatus("running");
-      // Echo the operator's continuation message (it's persisted but not on
-      // the live tail). Appends — sendMessage doesn't reset the transcript.
+      // Echo the operator's continuation message. Appends — sendMessage doesn't
+      // reset the transcript. Queue it for replay-dedupe (RFC AI).
+      echoedRef.current.push(prompt);
       setEvents((prev) => [
         ...prev,
         userEchoTranscript(seqRef.current++, prompt),
@@ -282,11 +305,10 @@ export function useRunStream(): UseRunStream {
         const rid = runIdRef.current;
         if (!rid) return;
         setAwaitingInput(false); // optimistic; the resumed activity will stream
-        // Echo the steer text immediately. The server also emits a live
-        // `steer` frame (rendered `» text`); the two read as "I said X /
-        // accepted X" rather than a literal dup (distinct glyphs). On
-        // re-attach there's no double-render — attach() wipes state and the
-        // persisted user_input is off the live tail.
+        // Echo the steer text immediately, and queue it so the server's
+        // replayed `steer` frame (source="replay", RFC AI) de-dupes against it
+        // instead of double-rendering.
+        echoedRef.current.push(t);
         setEvents((prev) => [
           ...prev,
           userEchoTranscript(seqRef.current++, t),
@@ -324,6 +346,7 @@ export function useRunStream(): UseRunStream {
 
   const reset = useCallback(() => {
     ctrlRef.current?.abort();
+    echoedRef.current = [];
     seqRef.current = 0;
     setEvents([]);
     setAgentId("");

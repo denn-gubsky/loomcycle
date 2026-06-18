@@ -60,6 +60,23 @@ service Loomcycle {
   // Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
   rpc CompactRun(CompactRunRequest) returns (CompactRunResult);
 
+  // RunInput pushes an operator steering message into a LIVE interactive
+  // run (one parked at end_turn awaiting input, or mid-turn — the message
+  // is drained at the next iteration boundary). delivered=false +
+  // NotFound when no in-flight run holds run_id; ResourceExhausted when
+  // the run's steer queue is full. The injected `source` is server-stamped
+  // (never wire-trusted). Cross-replica routing is inherited from the
+  // steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
+  rpc RunInput(RunInputRequest) returns (RunInputResponse);
+
+  // StreamRun re-attaches to a run's event stream by run_id, replaying
+  // from from_seq and then live-tailing — the gRPC twin of
+  // GET /v1/runs/{run_id}/stream. For a PARKED interactive run (non-
+  // terminal) the stream stays open until the run ends or ctx fires; a
+  // disconnect does NOT stop the run. The first frame is a synthetic
+  // type="agent" Event carrying run metadata. (RFC AI)
+  rpc StreamRun(StreamRunRequest) returns (stream Event);
+
   // GetTranscript returns the full event history for a session,
   // ordered by seq. Used by adapters that re-attach to a previously
   // started session (e.g. cross-tab sync).
@@ -396,6 +413,12 @@ message RunRequest {
   // merged per-field over the agent's own block (unset fields inherit).
   // Absent = inherit entirely. Mirrors the HTTP /v1/runs `compaction` field.
   Compaction compaction = 14;
+
+  // interactive (RFC AI) starts a PERSISTENT run that parks at end_turn
+  // awaiting operator steering instead of terminating. Drive it with the
+  // RunInput RPC; re-attach with StreamRun; cancel to end it. Mirrors
+  // POST /v1/runs `interactive`.
+  bool interactive = 15;
 }
 
 message ContinueRequest {
@@ -420,6 +443,10 @@ message ContinueRequest {
   // v0.28.0 / v0.32.0 per-continuation overrides (mirror RunRequest).
   Sampling sampling = 10;
   Compaction compaction = 11;
+
+  // interactive (RFC AI) — a continuation can also park at end_turn for
+  // operator steering. Mirrors the HTTP continuation `interactive` field.
+  bool interactive = 12;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -501,6 +528,28 @@ message CompactRunResult {
   string applied = 5;  // live | marker | noop
 }
 
+// RunInputRequest is one operator steering message for a live run (RFC AI).
+message RunInputRequest {
+  string run_id = 1;
+  string text = 2;
+  // source is advisory/forward-compat — the server stamps the authoritative
+  // source from the auth boundary (gRPC has no cookie → "api"), never trusts
+  // this field.
+  string source = 3;
+}
+
+// RunInputResponse mirrors the HTTP POST /v1/runs/{run_id}/input reply.
+message RunInputResponse {
+  string run_id = 1;
+  bool delivered = 2;
+}
+
+// StreamRunRequest re-attaches to a run's event stream by run_id (RFC AI).
+message StreamRunRequest {
+  string run_id = 1;
+  int64 from_seq = 2;  // replay events with seq > from_seq, then live-tail
+}
+
 // HostAllowlist wraps a repeated string so the absence-of-list state
 // is distinguishable from the empty-list state on the wire.
 message HostAllowlist {
@@ -548,6 +597,31 @@ message Event {
   // frames (v0.8.17+). Emitted once per dispatched tool call whose
   // Pre-hook allow_hosts grant fired. Nil on every other event type.
   HostWidening host_widening = 9;
+
+  // awaiting_input carries the payload on type=awaiting_input frames
+  // (RFC AI) — a persistent interactive run parked at end_turn. Nil on
+  // every other event type.
+  AwaitingInput awaiting_input = 10;
+
+  // user_input carries the payload on type=steer frames (RFC AI) — an
+  // operator steering message drained into the conversation. Also emitted
+  // by StreamRun re-attach when replaying persisted operator turns
+  // (source="replay"). Nil on every other event type.
+  UserInput user_input = 11;
+}
+
+// AwaitingInput is the type=awaiting_input payload (RFC AI). Mirrors
+// providers.AwaitingInputEventInfo.
+message AwaitingInput {
+  int32 since_turn = 1;  // the iteration the run parked after
+}
+
+// UserInput is the type=steer payload (RFC AI). Mirrors
+// providers.UserInputEventInfo.
+message UserInput {
+  string text = 1;
+  string source = 2;   // api | webui | replay
+  string seen_at = 3;  // RFC3339Nano timestamp the message was drained
 }
 
 // HostWidening is the structured payload on EventHostWidened frames

@@ -35,6 +35,7 @@ import {
   raiseFromResponse,
 } from "./fetch-helpers.js";
 import { parseSSE } from "./stream.js";
+import { InteractiveSession } from "./interactive.js";
 import type {
   Agent,
   AgentEvent,
@@ -172,6 +173,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
   if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
   if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
+  if (opts.interactive !== undefined) body.interactive = opts.interactive;
   return body;
 }
 
@@ -248,12 +250,90 @@ export class LoomcycleClient {
     if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
     if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
     if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
+    if (opts.interactive !== undefined) body.interactive = opts.interactive;
     yield* this.streamSSE(
       `/v1/sessions/${encodeURIComponent(opts.sessionId)}/messages`,
       body,
       opts.signal,
       opts.debug,
     );
+  }
+
+  /** Push an operator steering message into a LIVE interactive run (RFC AI).
+   *  Mirrors `POST /v1/runs/{run_id}/input`. The run must be in-flight —
+   *  parked at end_turn awaiting input, or mid-turn (the message is drained
+   *  at the next iteration boundary). Does NOT open a stream; the operator's
+   *  turn + the model's response arrive on the run's OWN event stream
+   *  (the open `runStreaming` iterator, or a `streamRunByID` re-attach).
+   *  Returns `{ run_id, delivered }`.
+   *
+   *  Raises {@link UnavailableError} (503, steering off / no run),
+   *  {@link AuthError} (401). A full steer queue surfaces as a 429. */
+  async sendRunInput(
+    runId: string,
+    text: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ run_id: string; delivered: boolean }> {
+    return postJSON<{ run_id: string; delivered: boolean }>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/input`,
+      { text },
+      opts,
+    );
+  }
+
+  /** Re-attach to a run's event stream by `run_id` (RFC AI), replaying from
+   *  `fromSeq` (default 0) then live-tailing — the gRPC-free twin of the Web
+   *  UI's resume-in-terminal. Mirrors `GET /v1/runs/{run_id}/stream`. The
+   *  operator's own prior turns are replayed as `steer` events
+   *  (`user_input.source === "replay"`), so a cold client — e.g. resuming on
+   *  another device — reconstructs the whole conversation. A PARKED
+   *  interactive run keeps streaming until it ends or `signal` aborts; a
+   *  disconnect does NOT stop the run.
+   *
+   *  The first frame is an `agent` side-channel carrying the run's
+   *  agent_id / session_id (for `sendRunInput` / `cancelAgent`). */
+  async *streamRunByID(
+    runId: string,
+    opts?: { fromSeq?: number; signal?: AbortSignal },
+  ): AsyncIterable<AgentEvent> {
+    const q = opts?.fromSeq ? `?from_seq=${opts.fromSeq}` : "";
+    yield* this.streamSSEGet(
+      `/v1/runs/${encodeURIComponent(runId)}/stream${q}`,
+      opts?.signal,
+    );
+  }
+
+  /** Start a high-level INTERACTIVE session (RFC AI) — the ergonomic driver
+   *  for a persistent run you converse with turn by turn. Starts an
+   *  `interactive` run and returns an {@link InteractiveSession} whose
+   *  `events()` you iterate and whose `send()` / `cancel()` steer it. See
+   *  {@link InteractiveSession}. For the raw primitives, use
+   *  {@link LoomcycleClient.runStreaming} with `interactive: true` +
+   *  {@link LoomcycleClient.sendRunInput}. */
+  interactiveSession(opts: Omit<RunOptions, "interactive">): InteractiveSession {
+    const source = this.runStreaming({ ...opts, interactive: true });
+    return new InteractiveSession(source, {
+      sendRunInput: (rid, t) => this.sendRunInput(rid, t),
+      cancelAgent: (aid) => this.cancelAgent(aid),
+    });
+  }
+
+  /** Re-attach to a detached interactive run by `run_id` as a high-level
+   *  {@link InteractiveSession} — e.g. resuming on another device. The run_id
+   *  is known up front, so `send()` works immediately. Replays the
+   *  conversation (incl. the operator's prior turns, RFC AI) then live-tails. */
+  attachInteractiveSession(
+    runId: string,
+    opts?: { fromSeq?: number; signal?: AbortSignal },
+  ): InteractiveSession {
+    const source = this.streamRunByID(runId, opts);
+    const session = new InteractiveSession(source, {
+      sendRunInput: (rid, t) => this.sendRunInput(rid, t),
+      cancelAgent: (aid) => this.cancelAgent(aid),
+    });
+    session.runId = runId;
+    return session;
   }
 
   /**
@@ -1231,6 +1311,32 @@ export class LoomcycleClient {
    *  events AND a `{ type: "_meta", meta_subtype: "stream_close",
    *  meta_reason }` on EOF / abort / error. The default is silent
    *  (matches pre-v0.9.x behaviour). */
+  /** GET-based SSE stream (RFC AI re-attach). The interactive re-attach
+   *  endpoint is a GET with a query string, not a POST body, so it can't reuse
+   *  streamSSE; the parse + error handling are identical otherwise. No debug
+   *  shape — re-attach is a plain tail. */
+  private async *streamSSEGet(
+    path: string,
+    signal?: AbortSignal,
+  ): AsyncIterable<AgentEvent> {
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream, application/json",
+    };
+    if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
+    const resp = await this.ctx.fetchImpl(this.ctx.baseUrl + path, {
+      method: "GET",
+      headers,
+      signal,
+    });
+    if (!resp.ok) {
+      await raiseFromResponse(resp);
+    }
+    if (!resp.body) {
+      throw new Error("loomcycle: response has no body");
+    }
+    yield* parseSSE(resp.body.getReader());
+  }
+
   private async *streamSSE(
     path: string,
     body: Record<string, unknown>,

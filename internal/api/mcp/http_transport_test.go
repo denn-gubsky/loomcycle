@@ -140,6 +140,12 @@ func (m *httpMockConnector) ListChannels(context.Context) (connector.ListChannel
 func (m *httpMockConnector) StreamUserRunStates(context.Context, connector.StreamUserRunStatesRequest, connector.RunStateVisitor) error {
 	return errors.New("not implemented")
 }
+func (m *httpMockConnector) SteerRun(context.Context, string, string, string) (bool, error) {
+	return false, errors.New("not implemented")
+}
+func (m *httpMockConnector) StreamRunEvents(context.Context, string, int64, connector.RunEventVisitor) error {
+	return errors.New("not implemented")
+}
 
 // v0.9.x MCPServerDef stub.
 func (m *httpMockConnector) MCPServerDef(context.Context, json.RawMessage) (connector.ToolResult, error) {

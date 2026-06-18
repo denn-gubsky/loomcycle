@@ -8,6 +8,36 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in vNEXT
+
+**🗣️ Interactive agentic sessions over gRPC + TS (RFC AI).** The interactive session
+— a run that parks at `end_turn` awaiting operator **steering**, survives client
+disconnect, and is **re-attachable** by `run_id` — was wired only over HTTP+SSE and
+driven only by the Web UI. RFC AI surfaces it on the official adapters so 3rd-party
+apps get the same terminal.
+
+- **Self-sufficient re-attach (S1).** The re-attach tail now **replays the operator's
+  own turns** (persisted `user_input` rows → `steer` frames, `source="replay"`)
+  instead of skipping them, so a cold client — e.g. resuming on another device —
+  reconstructs the whole conversation from the stream alone. (The Web UI de-dupes
+  these replays against its optimistic echo.)
+- **Connector-lift (S2).** Steering + re-attach are lifted onto the `Connector`
+  (`SteerRun` + `StreamRunEvents`, mirroring the v0.33.0 `CompactRun` lift + the
+  `StreamUserRunStates` visitor), so a gRPC steer reaches the **same in-process**
+  steer registry an HTTP-started run uses; cross-replica routing is inherited free.
+- **gRPC + Python.** New `RunInput` + `StreamRun` RPCs + an `interactive` flag on
+  `Run`/`Continue`; `AwaitingInput`/`UserInput` typed `Event` payloads. The Python
+  client (gRPC-only) gains `run_input()` + `stream_run()` + the `interactive=True`
+  flag — **42-RPC parity, v1.1.1** (ships on the `python-v1.1.1` tag).
+- **TS adapter.** `interactive: true` on `runStreaming`/`continueSession` +
+  `sendRunInput()` + `streamRunByID()` (re-attach) + a high-level **`InteractiveSession`**
+  driver (`events()`/`send()`/`cancel()` — the port of the Web UI run terminal).
+  `@loomcycle/client` **1.1.1** (also publishes the previously-unpublished v0.35.0
+  volume surface — the adapter version realigns to the loomcycle line).
+- Scope gates mirror HTTP (`RunInput`→`runs:create`, `StreamRun`→`runs:read`); tenant
+  opaque-404 + server-stamped `source` are preserved. Additive wire surface; existing
+  Run/Continue streams + every current adapter method are byte-compatible.
+
 ## What's in v1.1.0
 
 The **Filesystem Volumes** feature line (RFC AH, Phases 1→5) plus two exp8 finding

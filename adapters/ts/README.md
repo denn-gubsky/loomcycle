@@ -12,6 +12,7 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 
 ### What's new since v0.8.18
 
+- **`interactiveSession` / `sendRunInput` / `streamRunByID` + the `interactive` flag** (v1.1.1, RFC AI) — the interactive agentic session, the adapter port of the Web UI's run terminal. Pass `interactive: true` to `runStreaming` / `continueSession` to start a **persistent** run that parks at end_turn (an `awaiting_input` frame) instead of ending; **`sendRunInput(runId, text)`** steers it (the response arrives on the same stream); **`streamRunByID(runId, {fromSeq})`** re-attaches by run_id (the operator's prior turns replay as `steer` events, `user_input.source === "replay"`, so a cold client — e.g. another device — reconstructs the whole conversation). The high-level **`client.interactiveSession({agent, segments})`** returns an `InteractiveSession` with `events()` / `send()` / `cancel()`; **`attachInteractiveSession(runId)`** resumes one. The `AgentEvent` union gains `awaiting_input` / `steer` / `context_compaction`.
 - **`volumeDef` / `listVolumes` / `listEphemeralVolumes`** (v0.35.0, RFC AH) — the dynamic filesystem-volume surface. `volumeDef` is the op-discriminated substrate tool (`create` / `get` / `list` / `delete` / `purge`); a Volume is **flat** (a pointer to mutable on-disk state, not a versioned def), so `delete` unmaps + leaves files while `purge` removes the row **and** the directory tree — there is no retire/promote/fork. Tenant-confined (`ScopeTenant`): the runtime derives the path inside an operator-blessed `dynamic_root`, so you pass `{name, mode}`, never a host path. `listVolumes()` / `listEphemeralVolumes()` return the tenant's persistent + live run-scoped volumes; host paths are redacted (`""`) for a non-operator caller.
 - **`ensureMcpServer` / `mcpServerDefVerify`** (v0.18.0) — typed ergonomics for the dynamic-MCP dedup flow. `ensureMcpServer({name, url, headers?, rediscover?})` registers a callback MCP server **idempotently**: it runs `create` (a no-op in loomcycle ≥ v0.18.0 when the active def already carries identical content) plus an optional `rediscover` (a no-op on unchanged tools), and returns `{defId, version, changed, discoveredToolCount?}` — so a consumer re-registering on every startup gets `changed: false` once its registration content is stable. Keep `${run.*}` / `${LOOMCYCLE_*}` header placeholders **literal** (don't bake a per-restart token) or the content varies each boot and dedup can't engage. `mcpServerDefVerify(name, sha)` is the typed `op: verify` wrapper (`matches: true` = no-op signal).
 - **`operatorTokenDef` / `whoami` + tenant-scoped reads** (v0.17.0, RFC L) — the OSS multi-tenant authorization surface. `operatorTokenDef` is the op-discriminated admin tool over the `OperatorTokenDef` substrate (create / rotate / retire per-principal bearer tokens); `whoami()` returns the authoritative `(tenant, subject, scopes, is_admin)` resolved from the calling bearer; `listUsers({ tenant })` / `listUserAgents(userId, { tenant })` accept a super-admin tenant-focus (ignored server-side for a tenant principal — its own tenant is forced).
@@ -105,8 +106,31 @@ All methods are async / return `Promise<T>` unless noted; streaming methods retu
 
 | Method | Returns | Notes |
 |---|---|---|
-| `runStreaming(opts: RunOptions)` | `AsyncIterable<AgentEvent>` | Server-streams provider events for a fresh run. |
+| `runStreaming(opts: RunOptions)` | `AsyncIterable<AgentEvent>` | Server-streams provider events for a fresh run. `interactive: true` parks at end_turn for steering (RFC AI). |
 | `continueSession(opts: ContinueOptions)` | `AsyncIterable<AgentEvent>` | Continues an existing session. |
+| `sendRunInput(runId, text)` | `{run_id, delivered}` | RFC AI — steer a live interactive run (`POST /v1/runs/{id}/input`). |
+| `streamRunByID(runId, {fromSeq})` | `AsyncIterable<AgentEvent>` | RFC AI — re-attach by run_id (`GET /v1/runs/{id}/stream`); replays operator turns as `steer` events. |
+| `interactiveSession(opts)` / `attachInteractiveSession(runId)` | `InteractiveSession` | RFC AI — high-level driver: `events()` / `send()` / `cancel()`. |
+
+### Interactive sessions (RFC AI)
+
+```ts
+const sess = client.interactiveSession({
+  agent: "assistant",
+  segments: [{ role: "user", content: [{ type: "trusted-text", text: "help me debug" }] }],
+});
+for await (const ev of sess.events()) {
+  if (ev.type === "text") process.stdout.write(ev.text ?? "");
+  if (ev.type === "awaiting_input") {
+    await sess.send(await prompt("you> ")); // steers; response arrives on this same loop
+  }
+  if (ev.type === "done") break;
+}
+// later, from anywhere (another process / device): resume the same run
+const resumed = client.attachInteractiveSession(sess.runId);
+```
+
+The low-level primitives (`runStreaming({interactive:true})` + `sendRunInput` + `streamRunByID`) are the escape hatch if you'd rather drive the stream yourself.
 
 ### Agent metadata
 

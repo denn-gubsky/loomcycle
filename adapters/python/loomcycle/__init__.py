@@ -35,12 +35,14 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
     resolve_probe()           — resolver provider/model availability matrix
     health()                  — liveness probe
 
-As of v0.9.0 the client covers all 40 gRPC RPCs: the substrate-def family
+As of v1.1.1 the client covers all 42 gRPC RPCs: the substrate-def family
 (agent_def / skill_def / mcp_server_def / schedule_def / a2a_server_card_def /
 a2a_agent_def / webhook_def / memory_backend_def / operator_token_def /
 volume_def), the channel ops (list_channels / publish_channel /
 subscribe_channel / peek_channel / ack_channel / await_channels /
-broadcast_channels), pause/resume/state, the snapshot lifecycle, and hook
+broadcast_channels), the RFC AI interactive session (run_input + stream_run +
+an ``interactive=True`` flag on run_streaming / continue_session),
+pause/resume/state, the snapshot lifecycle, and hook
 management. run_streaming / continue_session /
 spawn_run_batch accept per-run ``sampling`` + ``compaction`` overrides. The
 HTTP-only surface (memory-entry admin, interruptions, library enumeration, the
@@ -59,7 +61,15 @@ documented in the project README.
 """
 
 from .client import LoomcycleClient, RunHandle
-from .events import AgentEvent, ToolUse, Usage, Retry, HostWidening
+from .events import (
+    AgentEvent,
+    ToolUse,
+    Usage,
+    Retry,
+    HostWidening,
+    AwaitingInput,
+    UserInput,
+)
 from .errors import (
     LoomcycleError,
     AgentNotFoundError,
@@ -89,6 +99,8 @@ __all__ = [
     "Usage",
     "Retry",
     "HostWidening",
+    "AwaitingInput",
+    "UserInput",
     "LoomcycleError",
     "AgentNotFoundError",
     "SessionNotFoundError",
@@ -110,4 +122,4 @@ __all__ = [
     "SubstrateToolRefusedError",
 ]
 
-__version__ = "0.9.0"
+__version__ = "1.1.1"

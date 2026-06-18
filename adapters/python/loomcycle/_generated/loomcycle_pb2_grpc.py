@@ -58,6 +58,16 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.CompactRunRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.CompactRunResult.FromString,
                 _registered_method=True)
+        self.RunInput = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/RunInput',
+                request_serializer=loomcycle__pb2.RunInputRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RunInputResponse.FromString,
+                _registered_method=True)
+        self.StreamRun = channel.unary_stream(
+                '/loomcycle.v1.Loomcycle/StreamRun',
+                request_serializer=loomcycle__pb2.StreamRunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.Event.FromString,
+                _registered_method=True)
         self.GetTranscript = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/GetTranscript',
                 request_serializer=loomcycle__pb2.GetTranscriptRequest.SerializeToString,
@@ -289,6 +299,31 @@ class LoomcycleServicer(object):
         a mid-turn run returns FailedPrecondition. Keyed by run_id.
 
         Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RunInput(self, request, context):
+        """RunInput pushes an operator steering message into a LIVE interactive
+        run (one parked at end_turn awaiting input, or mid-turn — the message
+        is drained at the next iteration boundary). delivered=false +
+        NotFound when no in-flight run holds run_id; ResourceExhausted when
+        the run's steer queue is full. The injected `source` is server-stamped
+        (never wire-trusted). Cross-replica routing is inherited from the
+        steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StreamRun(self, request, context):
+        """StreamRun re-attaches to a run's event stream by run_id, replaying
+        from from_seq and then live-tailing — the gRPC twin of
+        GET /v1/runs/{run_id}/stream. For a PARKED interactive run (non-
+        terminal) the stream stays open until the run ends or ctx fires; a
+        disconnect does NOT stop the run. The first frame is a synthetic
+        type="agent" Event carrying run metadata. (RFC AI)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -724,6 +759,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.CompactRunRequest.FromString,
                     response_serializer=loomcycle__pb2.CompactRunResult.SerializeToString,
             ),
+            'RunInput': grpc.unary_unary_rpc_method_handler(
+                    servicer.RunInput,
+                    request_deserializer=loomcycle__pb2.RunInputRequest.FromString,
+                    response_serializer=loomcycle__pb2.RunInputResponse.SerializeToString,
+            ),
+            'StreamRun': grpc.unary_stream_rpc_method_handler(
+                    servicer.StreamRun,
+                    request_deserializer=loomcycle__pb2.StreamRunRequest.FromString,
+                    response_serializer=loomcycle__pb2.Event.SerializeToString,
+            ),
             'GetTranscript': grpc.unary_unary_rpc_method_handler(
                     servicer.GetTranscript,
                     request_deserializer=loomcycle__pb2.GetTranscriptRequest.FromString,
@@ -1017,6 +1062,60 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/CompactRun',
             loomcycle__pb2.CompactRunRequest.SerializeToString,
             loomcycle__pb2.CompactRunResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RunInput(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/RunInput',
+            loomcycle__pb2.RunInputRequest.SerializeToString,
+            loomcycle__pb2.RunInputResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/StreamRun',
+            loomcycle__pb2.StreamRunRequest.SerializeToString,
+            loomcycle__pb2.Event.FromString,
             options,
             channel_credentials,
             insecure,

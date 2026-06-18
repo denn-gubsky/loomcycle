@@ -29,6 +29,14 @@ export type EventType =
   // event-name so the consumer sees a well-formed AgentEvent).
   | "session"
   | "agent"
+  // RFC AI interactive session frames. `awaiting_input` = a persistent run
+  // parked at end_turn (idle, ready for steering). `steer` = an operator
+  // turn drained into the conversation, OR (on a streamRunByID re-attach) a
+  // replayed prior operator turn (user_input.source === "replay").
+  // `context_compaction` marks a context summarization.
+  | "awaiting_input"
+  | "steer"
+  | "context_compaction"
   // v0.9.x — client-synthesized lifecycle events emitted ONLY when the
   // streaming caller passes `debug: true`. Never originate from the
   // server. The leading underscore signals "synthetic, not on the wire."
@@ -101,6 +109,12 @@ export interface AgentEvent {
   /** Host-widening payload on `event: host_widened`. Nil on all other
    *  event types. */
   host_widening?: HostWidening;
+  /** Payload on `event: awaiting_input` (RFC AI) — a persistent interactive
+   *  run parked at end_turn. `since_turn` is the iteration it parked after. */
+  awaiting_input?: { since_turn?: number };
+  /** Payload on `event: steer` (RFC AI) — the operator's drained turn. On a
+   *  re-attach replay, `source` is `"replay"`. Nil on all other event types. */
+  user_input?: { text?: string; source?: string; seen_at?: string };
   // v0.4 `event: agent` side-channel announces the run's tracking IDs
   // immediately after the `event: session` frame. parent_agent_id is null
   // for top-level runs.
@@ -217,6 +231,13 @@ export interface RunOptions {
    *  Omitted = inherit entirely. Trigger compaction mid-run with
    *  {@link LoomcycleClient.compactRun}. */
   compaction?: CompactionOptions;
+  /** RFC AI — start a PERSISTENT interactive run that parks at end_turn
+   *  awaiting operator steering instead of terminating. The stream emits an
+   *  `awaiting_input` frame when it parks; drive it with
+   *  {@link LoomcycleClient.sendRunInput}, re-attach with
+   *  {@link LoomcycleClient.streamRunByID}, and `cancelAgent` to end it.
+   *  Higher-level: {@link LoomcycleClient.interactiveSession}. */
+  interactive?: boolean;
   /** Opt-in observability: when true, the iterator emits client-
    *  synthesized `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
    *  events around the real event stream. `meta_reason` carries the
@@ -323,6 +344,9 @@ export interface ContinueOptions {
   sampling?: SamplingOptions;
   /** Per-continuation context-compaction override — see {@link RunOptions.compaction}. */
   compaction?: CompactionOptions;
+  /** RFC AI — park this continuation at end_turn for operator steering. See
+   *  {@link RunOptions.interactive}. */
+  interactive?: boolean;
   /** Opt-in observability: see {@link RunOptions.debug}. Same shape. */
   debug?: boolean;
   signal?: AbortSignal;

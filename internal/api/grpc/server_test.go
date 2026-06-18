@@ -819,6 +819,12 @@ func (m *mockConnector) ListChannels(context.Context) (connector.ListChannelsRes
 func (m *mockConnector) StreamUserRunStates(context.Context, connector.StreamUserRunStatesRequest, connector.RunStateVisitor) error {
 	return nil
 }
+func (m *mockConnector) SteerRun(context.Context, string, string, string) (bool, error) {
+	return false, connector.ErrRunNotInFlight
+}
+func (m *mockConnector) StreamRunEvents(context.Context, string, int64, connector.RunEventVisitor) error {
+	return connector.ErrRunNotInFlight
+}
 
 // v0.9.x MCPServerDef stub.
 func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connector.ToolResult, error) {

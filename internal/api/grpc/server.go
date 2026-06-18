@@ -473,6 +473,8 @@ const grpcMethodPrefix = "/loomcycle.v1.Loomcycle/"
 var grpcConsumerScopes = map[string]string{
 	"Run":                 auth.ScopeRunsCreate,
 	"Continue":            auth.ScopeRunsCreate,
+	"RunInput":            auth.ScopeRunsCreate, // RFC AI — steering injects instructions (mutation)
+	"StreamRun":           auth.ScopeRunsRead,   // RFC AI — pure read tail (mirrors handleRunStream)
 	"SpawnRunBatch":       auth.ScopeRunsCreate,
 	"CompactRun":          auth.ScopeRunsCreate,
 	"CancelAgent":         auth.ScopeRunsCreate,
@@ -612,6 +614,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		UserCredentials: req.GetUserCredentials(), // v1.x RFC F
 		Sampling:        samplingFromProto(req.GetSampling()),
 		Compaction:      compactionFromProto(req.GetCompaction()),
+		Interactive:     req.GetInteractive(), // RFC AI
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -644,6 +647,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		UserCredentials: req.GetUserCredentials(), // v1.x RFC F
 		Sampling:        samplingFromProto(req.GetSampling()),
 		Compaction:      compactionFromProto(req.GetCompaction()),
+		Interactive:     req.GetInteractive(), // RFC AI
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -877,6 +881,7 @@ type runInputProtoArgs struct {
 	UserCredentials map[string]string  // v1.x RFC F per-tool named credentials
 	Sampling        *config.Sampling   // v0.28.0 per-run sampling override
 	Compaction      *config.Compaction // v0.32.0 per-run compaction override
+	Interactive     bool               // RFC AI — park at end_turn for steering
 }
 
 // runInputFromProto maps the proto request fields into the
@@ -896,6 +901,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		UserCredentials: a.UserCredentials, // v1.x RFC F per-tool named credentials
 		Sampling:        a.Sampling,        // v0.28.0 per-run sampling override
 		Compaction:      a.Compaction,      // v0.32.0 per-run compaction override
+		Interactive:     a.Interactive,     // RFC AI — park at end_turn for steering
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a
@@ -1039,6 +1045,19 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			HookOwner:  ev.HostWidening.HookOwner,
 			HookName:   ev.HostWidening.HookName,
 			HostsAdded: ev.HostWidening.HostsAdded,
+		}
+	}
+	// RFC AI interactive payloads — previously dropped on the gRPC wire.
+	if ev.AwaitingInput != nil {
+		out.AwaitingInput = &loomcyclepb.AwaitingInput{
+			SinceTurn: int32(ev.AwaitingInput.SinceTurn),
+		}
+	}
+	if ev.UserInput != nil {
+		out.UserInput = &loomcyclepb.UserInput{
+			Text:   ev.UserInput.Text,
+			Source: ev.UserInput.Source,
+			SeenAt: ev.UserInput.SeenAt,
 		}
 	}
 	return out

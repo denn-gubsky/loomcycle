@@ -3447,8 +3447,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, runID, loopRes, runErr, meta)
 		}()
 		// Tail the store to this client until they disconnect (r.Context()) or
-		// the run terminates. from_seq=0 → stream the whole run live.
-		s.streamRunEvents(r.Context(), stream, runID, 0)
+		// the run terminates. from_seq=0 → stream the whole run live. The SSE
+		// writer never errors, so the visitor always returns nil.
+		_ = s.streamRunEvents(r.Context(), runID, 0, func(pe providers.Event) error {
+			stream.send(pe)
+			return nil
+		})
 		return
 	}
 
@@ -5244,39 +5248,27 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tenant-ownership gate: resolve the live run's session and refuse a
-	// cross-tenant steer with an opaque 404 (run_ids are not secrets — they're
-	// returned to callers + shown in the UI). Mirrors sessionOwnershipOK used
-	// by continuation/transcript reads. Steering injects arbitrary
-	// instructions, so this gate matters more than for a fixed-options resolve.
-	entry, ok := s.steerReg.Get(runID)
-	if !ok {
-		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
-		return
-	}
-	if entry.SessionID != "" && s.store != nil {
-		if sess, err := s.store.GetSession(r.Context(), entry.SessionID); err == nil {
-			if !sessionOwnershipOK(r.Context(), sess) {
-				http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
-				return
-			}
-		}
-	}
-
+	// Resolve the authoritative source at the HTTP auth boundary (cookie →
+	// webui, else api), then dispatch through the shared connector method
+	// (tenant-ownership gate + steerReg.Push, incl. cross-replica routing).
+	// The tenant gate folds a cross-tenant steer into an opaque ErrRunNotInFlight
+	// 404 — run_ids are not secrets (returned to callers + shown in the UI), so
+	// the gate must not become an existence oracle.
 	source := store.InterruptResolvedByAPI
 	if hasSessionCookie(r) {
 		source = store.InterruptResolvedByWebUI
 	}
-	delivered, err := s.steerReg.Push(r.Context(), runID, steer.Message{
-		Text: text, Source: source, EnqueuedAt: time.Now(),
-	})
+	delivered, err := s.SteerRun(r.Context(), runID, text, source)
 	switch {
-	case errors.Is(err, steer.ErrQueueFull):
+	case errors.Is(err, connector.ErrSteerQueueFull):
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
 		return
-	case errors.Is(err, steer.ErrRunNotFound):
+	case errors.Is(err, connector.ErrRunNotInFlight):
 		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		return
+	case errors.Is(err, connector.ErrSteeringUnavailable):
+		http.Error(w, "steering is not enabled on this server", http.StatusServiceUnavailable)
 		return
 	case err != nil:
 		http.Error(w, err.Error(), http.StatusInternalServerError)

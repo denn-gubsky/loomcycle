@@ -30,6 +30,8 @@ package connector
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
 // Connector is the operation surface every wire transport exposes.
@@ -312,6 +314,39 @@ type Connector interface {
 	ListChannels(ctx context.Context) (ListChannelsResponse, error)
 	StreamUserRunStates(ctx context.Context, req StreamUserRunStatesRequest, visit RunStateVisitor) error
 
+	// --- RFC AI interactive sessions ---
+	//
+	// SteerRun pushes an operator steering message into a LIVE interactive run
+	// (one parked at end_turn, or mid-turn — drained at the next iteration
+	// boundary). `source` is the auth-boundary-resolved origin ("api"|"webui"),
+	// stamped by the caller, NOT wire-trusted. Cross-replica routing is
+	// inherited from the underlying steer registry (a local miss delegates to
+	// the cluster coordinator) — no extra work here. Tenant-ownership is gated:
+	// a cross-tenant run is folded into ErrRunNotInFlight (opaque).
+	// Reachable via POST /v1/runs/{run_id}/input + the gRPC RunInput RPC.
+	//
+	// Typed errors:
+	//   ErrSteeringUnavailable — no steer registry wired. Transports: Unavailable.
+	//   ErrRunNotInFlight      — no live run for run_id (or cross-tenant). NotFound.
+	//   ErrSteerQueueFull      — the run's buffer is full. ResourceExhausted.
+	SteerRun(ctx context.Context, runID, text, source string) (delivered bool, err error)
+
+	// StreamRunEvents tails a single run's persisted events to a visitor,
+	// replaying from fromSeq and live-tailing — the streaming counterpart to
+	// GET /v1/runs/{run_id}/stream. The operator's own turns are replayed too
+	// (RFC AI self-sufficient re-attach), so a cold client reconstructs the
+	// whole conversation. Exits nil when the run is terminal and drained, or
+	// when ctx fires (a client disconnect does NOT stop an interactive run; a
+	// PARKED run is non-terminal so the tail stays open). Visitors that return
+	// ErrStopStreaming exit cleanly; other visitor errors propagate.
+	// Tenant-ownership gated (cross-tenant → ErrRunNotInFlight, opaque).
+	// Reachable via GET /v1/runs/{run_id}/stream + the gRPC StreamRun RPC.
+	//
+	// Typed errors:
+	//   ErrSteeringUnavailable — no persistence backend wired. Transports: Unavailable.
+	//   ErrRunNotInFlight      — unknown or cross-tenant run_id. NotFound.
+	StreamRunEvents(ctx context.Context, runID string, fromSeq int64, visit RunEventVisitor) error
+
 	// Channel CRUD (v0.9.x): admin + per-user publish / subscribe /
 	// peek / ack on operator-declared channels. Bearer-authed at the
 	// HTTP transport boundary; scope + scope_id select the cursor
@@ -387,6 +422,12 @@ type Connector interface {
 // non-nil error aborts the stream and propagates out of
 // StreamUserRunStates.
 type RunStateVisitor func(evt RunStateEvent) error
+
+// RunEventVisitor is the visitor callback for StreamRunEvents (RFC AI) — one
+// providers.Event per persisted run frame. Return ErrStopStreaming to end the
+// tail cleanly; any other non-nil error aborts it and propagates out of
+// StreamRunEvents.
+type RunEventVisitor func(ev providers.Event) error
 
 // InterruptionResolveRequest is the input to Connector.InterruptionResolve.
 type InterruptionResolveRequest struct {
