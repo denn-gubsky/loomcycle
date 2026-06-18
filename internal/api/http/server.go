@@ -409,6 +409,17 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 			return def.MaxConcurrentChildren
 		},
 	})
+	// F45: `Context op=tools` introspects the runtime-wide catalog via the
+	// Context tool's Tools field. main.go can only set that to the PRE-server
+	// list (builtinTools) — the AgentTool appended just above isn't in that
+	// snapshot, so `Context op=tools` silently omitted Agent. The server owns
+	// its tool set, so wire the catalog here, at serve time, AFTER the last
+	// New()-time append: re-point any Context tool to the COMPLETE s.tools.
+	for _, t := range s.tools {
+		if ct, ok := t.(*builtin.Context); ok {
+			ct.Tools = s.tools
+		}
+	}
 	return s
 }
 
@@ -2725,9 +2736,16 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 
 // runRequest is the JSON body shape for POST /v1/runs.
 type runRequest struct {
-	Agent        string               `json:"agent"`
-	Segments     []loop.PromptSegment `json:"segments"`
-	AllowedTools []string             `json:"allowed_tools,omitempty"`
+	Agent string `json:"agent"`
+	// Segments is the explicit, typed input form (role + content blocks).
+	Segments []loop.PromptSegment `json:"segments"`
+	// Prompt is convenience sugar (F47): a bare top-level user prompt. When
+	// set and Segments is empty, it expands to a single trusted-text user
+	// segment. Segments wins when both are present. It exists because callers
+	// naturally send {"prompt":"..."}; without the field Go silently dropped
+	// it, leaving an empty messages array (Anthropic 400; DeepSeek silent).
+	Prompt       string   `json:"prompt,omitempty"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
 	// AllowedHosts narrows the HTTP/WebFetch/WebSearch host allowlist
 	// for THIS run only. nil/omitted = no narrowing (operator's static
 	// list applies). Empty array `[]` = deny all (every network call
@@ -2916,6 +2934,23 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Agent == "" {
 		http.Error(w, `agent is required`, http.StatusBadRequest)
+		return
+	}
+
+	// F47: expand a top-level `prompt` string into a single trusted-text user
+	// segment when no explicit `segments` were given. The explicit form wins
+	// when both are present.
+	if len(req.Segments) == 0 && req.Prompt != "" {
+		req.Segments = []loop.PromptSegment{{
+			Role:    "user",
+			Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: req.Prompt}},
+		}}
+	}
+	// F47: refuse a run with no input rather than dispatching an empty messages
+	// array to the provider (Anthropic 400s; DeepSeek silently accepts) — a
+	// clear 400 here beats a confusing provider-side error downstream.
+	if len(req.Segments) == 0 {
+		http.Error(w, `no input: provide "segments" (or a top-level "prompt" string)`, http.StatusBadRequest)
 		return
 	}
 
