@@ -1245,6 +1245,14 @@ type Store interface {
 	// EphemeralVolumeListByRun returns all ephemeral rows for one root run,
 	// ordered by name. Empty slice (not error) when the run owns none.
 	EphemeralVolumeListByRun(ctx context.Context, rootRunID string) ([]EphemeralVolumeDefRow, error)
+	// EphemeralVolumeListByTenant returns all LIVE ephemeral rows owned by one
+	// tenant, ordered by (root_run_id, name). The persisted table is the
+	// cross-replica source of truth — rows are deleted at run completion (inline
+	// purge) or by the sweeper, so a tenant-scoped read returns exactly the
+	// currently-active ephemeral volumes. tenantID "" = the shared/legacy
+	// tenant. Drives the RFC AH Phase 4 Web UI ephemeral view; scoped here at
+	// the store boundary so a tenant can never observe another tenant's rows.
+	EphemeralVolumeListByTenant(ctx context.Context, tenantID string) ([]EphemeralVolumeDefRow, error)
 	// EphemeralVolumeDeleteByRun deletes ALL ephemeral rows for one root run,
 	// returning the count removed. Idempotent (0 when none existed). It NEVER
 	// touches on-disk directories — the caller (inline purge / sweeper) does

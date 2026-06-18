@@ -172,6 +172,35 @@ func (s *Store) EphemeralVolumeListByRun(ctx context.Context, rootRunID string) 
 	return out, rows.Err()
 }
 
+// EphemeralVolumeListByTenant returns the tenant's LIVE ephemeral rows
+// (RFC AH Phase 4 Web UI). Ordered by (root_run_id, name) for a stable
+// view. Tenant-scoped at the query, so a tenant never sees another's rows.
+func (s *Store) EphemeralVolumeListByTenant(ctx context.Context, tenantID string) ([]store.EphemeralVolumeDefRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT root_run_id, name, tenant_id, definition, created_at
+		 FROM ephemeral_volume_defs WHERE tenant_id = ? ORDER BY root_run_id, name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.EphemeralVolumeDefRow
+	for rows.Next() {
+		var (
+			r          store.EphemeralVolumeDefRow
+			definition string
+			createdAt  int64
+		)
+		if err := rows.Scan(&r.RootRunID, &r.Name, &r.TenantID, &definition, &createdAt); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) EphemeralVolumeDeleteByRun(ctx context.Context, rootRunID string) (int, error) {
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM ephemeral_volume_defs WHERE root_run_id = ?`, rootRunID)
