@@ -8,7 +8,7 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
-## What's in vNEXT
+## What's in v1.1.1
 
 **🗣️ Interactive agentic sessions over gRPC + TS (RFC AI).** The interactive session
 — a run that parks at `end_turn` awaiting operator **steering**, survives client
