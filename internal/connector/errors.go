@@ -139,4 +139,23 @@ var (
 	// when the requested name is neither yaml-declared nor in the
 	// runtime substrate. Transports map to NotFound / HTTP 404.
 	ErrChannelNotFound = errors.New("connector: channel not found")
+
+	// --- RFC AI interactive sessions ---
+
+	// ErrSteeringUnavailable is returned by SteerRun when the server has no
+	// steer registry wired (a test harness, or steering disabled).
+	// StreamRunEvents returns it when no persistence backend is wired.
+	// Transports map to Unavailable / HTTP 503.
+	ErrSteeringUnavailable = errors.New("connector: steering not configured on this server")
+
+	// ErrRunNotInFlight is returned by SteerRun when no live (registered) run
+	// holds run_id, AND by StreamRunEvents when the run_id is unknown or
+	// cross-tenant. Opaque on purpose — run_ids are not secret, so the gate
+	// must not become an existence oracle. Transports map to NotFound / 404.
+	ErrRunNotInFlight = errors.New("connector: no in-flight run for run_id")
+
+	// ErrSteerQueueFull is returned by SteerRun when the run's steer buffer is
+	// full (back-pressure against a stuck run). Transports map to
+	// ResourceExhausted / HTTP 429.
+	ErrSteerQueueFull = errors.New("connector: run input queue full")
 )

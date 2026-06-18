@@ -215,6 +215,14 @@ func (m *mockConnector) StreamUserRunStates(_ context.Context, req connector.Str
 	return m.streamErr
 }
 
+// RFC AI interactive-session stubs.
+func (m *mockConnector) SteerRun(context.Context, string, string, string) (bool, error) {
+	return false, connector.ErrRunNotInFlight
+}
+func (m *mockConnector) StreamRunEvents(context.Context, string, int64, connector.RunEventVisitor) error {
+	return connector.ErrRunNotInFlight
+}
+
 // v0.9.x MCPServerDef stub.
 func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
