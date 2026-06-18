@@ -51,6 +51,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"subagents",
 		"system-channels",
 		"vector-memory",
+		"volumedef",
 		"volumes",
 		"voyage-embedder",
 	}
