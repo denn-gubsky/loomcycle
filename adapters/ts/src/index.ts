@@ -88,6 +88,8 @@
  */
 
 export { LoomcycleClient } from "./client.js";
+export { InteractiveSession } from "./interactive.js";
+export type { InteractiveSessionOps } from "./interactive.js";
 
 export type {
   // Run lifecycle
