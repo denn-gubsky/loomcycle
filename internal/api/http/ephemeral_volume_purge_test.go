@@ -104,6 +104,22 @@ func TestFinishRun_SubAgentDoesNotPurgeEphemeralTree(t *testing.T) {
 	}
 }
 
+// A TOP-LEVEL run that FAILS (finishRunFailedReason — incl. mid-flight panic
+// paths) must still purge its ephemeral subtree, not just a clean completion.
+func TestFinishRun_TopLevelFailedPurgesEphemeralTree(t *testing.T) {
+	srv, st, root := ephemeralPurgeServer(t)
+	runID, dir := seedEphemeral(t, st, root, "work")
+
+	srv.finishRunFailedReason(runID, "boom", runStateMeta{RunID: runID, IsTopLevel: true, RootRunID: runID})
+
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("ephemeral dir survived a top-level FAILURE: %q (err=%v)", dir, err)
+	}
+	if rows, _ := st.EphemeralVolumeListByRun(context.Background(), runID); len(rows) != 0 {
+		t.Errorf("ephemeral rows survived a top-level FAILURE: %+v", rows)
+	}
+}
+
 // rehydrateEphemeralVolumes rebuilds the in-memory set from persisted rows so
 // a resumed paused run keeps resolving its own ephemeral volumes.
 func TestRehydrateEphemeralVolumes_RoundTrip(t *testing.T) {
@@ -114,5 +130,21 @@ func TestRehydrateEphemeralVolumes_RoundTrip(t *testing.T) {
 	ref, ok := set.Get("work")
 	if !ok || ref.Root != dir || ref.ReadOnly {
 		t.Errorf("rehydrated set.Get(work) = %+v ok=%v, want root=%q ro=false", ref, ok, dir)
+	}
+}
+
+// rehydrate is scoped to its own run — it must NOT load another run's ephemeral
+// volumes (a regression to list-all would breach run isolation).
+func TestRehydrateEphemeralVolumes_DoesNotLeakOtherRun(t *testing.T) {
+	srv, st, root := ephemeralPurgeServer(t)
+	runID, _ := seedEphemeral(t, st, root, "mine")
+	seedEphemeral(t, st, root, "theirs") // a DIFFERENT run's volume
+
+	set := srv.rehydrateEphemeralVolumes(context.Background(), runID)
+	if _, ok := set.Get("mine"); !ok {
+		t.Error("rehydrate should load the run's own volume")
+	}
+	if _, ok := set.Get("theirs"); ok {
+		t.Error("rehydrate leaked a DIFFERENT run's ephemeral volume — run isolation breach")
 	}
 }

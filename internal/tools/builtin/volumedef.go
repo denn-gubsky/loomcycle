@@ -233,6 +233,22 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 	if set.Has(in.Name) {
 		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", in.Name)), nil
 	}
+	// Refuse a name that collides with a PERSISTENT dynamic volume (the static
+	// collision is already refused in execCreate above). effectiveRoot resolves
+	// ephemeral FIRST, so an ephemeral volume shadowing a durable same-named one
+	// would silently route the agent's writes into the run-scoped tree — which
+	// is purged at run completion (silent data loss). Names must be unambiguous.
+	// (A store fault here is non-fatal: skip the check and let create proceed —
+	// the persistent volume would be equally unresolvable under the same fault.)
+	tenantID := tools.RunIdentity(ctx).TenantID
+	if _, err := v.Store.VolumeDefGetByName(ctx, tenantID, in.Name); err == nil {
+		return errResult(fmt.Sprintf("create: %q collides with an existing dynamic volume — ephemeral names must be unique", in.Name)), nil
+	}
+	if tenantID != "" {
+		if _, err := v.Store.VolumeDefGetByName(ctx, "", in.Name); err == nil {
+			return errResult(fmt.Sprintf("create: %q collides with a shared dynamic volume — ephemeral names must be unique", in.Name)), nil
+		}
+	}
 
 	dynRoot, err := v.dynamicRoot()
 	if err != nil {

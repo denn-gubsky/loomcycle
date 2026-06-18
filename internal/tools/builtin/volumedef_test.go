@@ -427,6 +427,23 @@ func TestVolumeDefTool_CreateEphemeralRefusesStaticCollision(t *testing.T) {
 	}
 }
 
+// create ephemeral refuses a name colliding with a PERSISTENT DYNAMIC volume —
+// else the ephemeral (resolved first by effectiveRoot) would silently shadow
+// the durable one and writes meant for it would be purged at run end.
+func TestVolumeDefTool_CreateEphemeralRefusesPersistentDynamicCollision(t *testing.T) {
+	tool, base, _, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	ctx, _ := ephemeralCtx(base, "run-1")
+	// A persistent dynamic volume "durable" in the same (shared) tenant.
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"durable","mode":"rw"}`); res.IsError {
+		t.Fatalf("persistent create: %s", res.Text)
+	}
+	// An ephemeral volume of the same name must be refused (would shadow it).
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"durable","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "collides") {
+		t.Errorf("ephemeral name colliding with a persistent dynamic volume must refuse; got %s", res.Text)
+	}
+}
+
 // the reserved _ephemeral tenant id is refused at the op boundary (same as
 // _shared), so a persistent volume can never collide with the run-scoped
 // _ephemeral subtree.

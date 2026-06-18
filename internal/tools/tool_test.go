@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -220,6 +222,30 @@ func TestEphemeralVolumes_NilSafe(t *testing.T) {
 		t.Errorf("nil set Has reported true")
 	}
 	nilSet.Add("x", EphemeralVolumeRef{}) // must not panic
+}
+
+// The set is shared by concurrent parallel_spawn sub-agents, so its map must be
+// mutex-guarded. Exercise concurrent Add/Get/Has (catches a data race under -race).
+func TestEphemeralVolumeSet_ConcurrentAddGet(t *testing.T) {
+	set := NewEphemeralVolumeSet()
+	const n = 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("v%d", i)
+			set.Add(name, EphemeralVolumeRef{Root: "/r/" + name})
+			set.Get(name)
+			set.Has(name)
+		}(i)
+	}
+	wg.Wait()
+	for i := 0; i < n; i++ {
+		if _, ok := set.Get(fmt.Sprintf("v%d", i)); !ok {
+			t.Errorf("v%d missing after concurrent adds", i)
+		}
+	}
 }
 
 // ---- RFC F per-run credentials sugar in WithRunIdentity -----------
