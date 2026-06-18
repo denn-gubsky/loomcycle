@@ -2678,3 +2678,37 @@ func TestValidate_ContextPlugins(t *testing.T) {
 		t.Errorf("empty name: got %v, want 'name is required' error", err)
 	}
 }
+
+// RFC AH Phase 2b: the ephemeral-volume sweep interval defaults to 60s and is
+// disabled by a non-positive LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS.
+func TestEphemeralVolumeSweepInterval_DefaultAndDisable(t *testing.T) {
+	writeMinimal := func(t *testing.T) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(p, []byte("defaults: { provider: anthropic, model: x }\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("default 60s", func(t *testing.T) {
+		cfg, err := Load(writeMinimal(t))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Env.EphemeralVolumeSweepInterval != 60*time.Second {
+			t.Errorf("default = %s, want 60s", cfg.Env.EphemeralVolumeSweepInterval)
+		}
+	})
+
+	t.Run("disable with 0", func(t *testing.T) {
+		t.Setenv("LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS", "0")
+		cfg, err := Load(writeMinimal(t))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Env.EphemeralVolumeSweepInterval != 0 {
+			t.Errorf("disabled = %s, want 0", cfg.Env.EphemeralVolumeSweepInterval)
+		}
+	})
+}

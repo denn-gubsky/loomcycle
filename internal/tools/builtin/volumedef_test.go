@@ -441,6 +441,79 @@ func TestVolumeDefTool_ReservedEphemeralTenantRefused(t *testing.T) {
 	}
 }
 
+// ---- PurgeEphemeralRunTree fence (RFC AH Phase 2b) ----
+
+// the shared purge fence removes a real per-run ephemeral subtree.
+func TestPurgeEphemeralRunTree_RemovesSubtree(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(root, "_ephemeral", "run-1")
+	if err := os.MkdirAll(filepath.Join(runDir, "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "work", "f.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := PurgeEphemeralRunTree(root, "run-1", "test")
+	if err != nil || !removed {
+		t.Fatalf("purge: removed=%v err=%v", removed, err)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Errorf("run dir survived purge: %v", err)
+	}
+	// Idempotent: a second purge of the (now-gone) subtree is a no-op success.
+	if removed, err := PurgeEphemeralRunTree(root, "run-1", "test"); err != nil || removed {
+		t.Errorf("second purge: removed=%v err=%v, want (false, nil)", removed, err)
+	}
+}
+
+// the fence refuses to follow a symlinked run dir that escapes the dynamic
+// root — a swapped symlink can't redirect the RemoveAll outside the volume.
+func TestPurgeEphemeralRunTree_RefusesSymlinkEscape(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A precious dir OUTSIDE the dynamic root.
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	precious := filepath.Join(outside, "precious.txt")
+	if err := os.WriteFile(precious, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// <root>/_ephemeral/run-evil -> outside  (a symlink that escapes).
+	if err := os.MkdirAll(filepath.Join(root, "_ephemeral"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "_ephemeral", "run-evil")); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := PurgeEphemeralRunTree(root, "run-evil", "test")
+	if removed || err == nil {
+		t.Fatalf("FENCE BREACH: symlink escape was followed (removed=%v err=%v)", removed, err)
+	}
+	if _, statErr := os.Stat(precious); statErr != nil {
+		t.Errorf("FENCE BREACH: purge followed the symlink and deleted %q: %v", precious, statErr)
+	}
+}
+
+// the fence refuses an empty run id (which would otherwise resolve to the
+// _ephemeral parent dir itself — a far wider delete).
+func TestPurgeEphemeralRunTree_RefusesEmptyRunID(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := PurgeEphemeralRunTree(root, "", "test"); removed || err == nil {
+		t.Errorf("empty run id must be refused; removed=%v err=%v", removed, err)
+	}
+}
+
 // ---- effectiveRoot ephemeral tier (RFC AH Phase 2b) ----
 
 // a NAMED ephemeral volume resolves to its root via effectiveRoot; rw allows

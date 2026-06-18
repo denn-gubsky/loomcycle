@@ -1996,6 +1996,44 @@ func main() {
 			})
 		log.Printf("dynamic_agents: sweeper enabled (interval=%s)", cfg.Env.DynamicAgentSweepInterval)
 	}
+
+	// RFC AH Phase 2b ephemeral-volume crash-recovery sweeper. The inline
+	// run-completion purge is the primary path; this backstops a host that
+	// crashed before the inline purge ran. Each tick lists (root_run_id,
+	// tenant_id) of TERMINAL-and-NOT-paused runs that still own ephemeral
+	// rows, then runs the SAME fenced RemoveAll the inline purge uses +
+	// deletes the rows. Cluster-gated so one replica per tick does the work.
+	// Needs a dynamic_root to have anything to clean (no root → no ephemeral
+	// volumes); skipped otherwise.
+	if dynRoot, hasDynRoot := builtin.DynamicVolumeRoot(cfg); cfg.Env.EphemeralVolumeSweepInterval > 0 && storeIface != nil && hasDynRoot {
+		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.EphemeralVolumeSweepInterval, advisoryLock, coord.LockKeyEphemeralVolumeSweeper, "ephemeral_volumes",
+			func(ctx context.Context) {
+				cands, err := storeIface.EphemeralVolumeSweepCandidates(ctx)
+				if err != nil {
+					log.Printf("ephemeral_volumes sweep: candidates: %v", err)
+					return
+				}
+				purged := 0
+				for _, c := range cands {
+					// Fenced RemoveAll of the per-run subtree (re-derived;
+					// never a stored path). removed=false → already gone.
+					if _, perr := builtin.PurgeEphemeralRunTree(dynRoot, c.RootRunID, "ephemeral sweeper"); perr != nil {
+						log.Printf("ephemeral_volumes sweep: purge run=%s: %v", c.RootRunID, perr)
+						// Still drop the rows below — a purge fault must not
+						// wedge the row forever (the dir may be partly gone).
+					}
+					if _, derr := storeIface.EphemeralVolumeDeleteByRun(ctx, c.RootRunID); derr != nil {
+						log.Printf("ephemeral_volumes sweep: delete rows run=%s: %v", c.RootRunID, derr)
+						continue
+					}
+					purged++
+				}
+				if purged > 0 {
+					log.Printf("ephemeral_volumes sweep: purged %d terminal run tree(s)", purged)
+				}
+			})
+		log.Printf("ephemeral_volumes: sweeper enabled (interval=%s, dynamic_root=%s)", cfg.Env.EphemeralVolumeSweepInterval, dynRoot)
+	}
 	// Optional operator default for the spawn_run transport timeout
 	// (RFC P). 0/unset → disabled (defer to the run's own budget).
 	// Read outside the mcpMode block: the HTTP MCP transport below is
