@@ -12,13 +12,9 @@ import (
 
 // Read returns text from a file path. Bounded by MaxBytes (default 256 KiB)
 // so a malicious or confused model can't blow the context window with a huge
-// file. Always sandboxed: Root must be set to a directory the tool may read
-// from. An empty Root is rejected at call time — there is no "open mode".
+// file. Always sandboxed to a volume: the call resolves a root from the run's
+// VolumePolicy (RFC AH) — an agent bound to no volume is refused.
 type Read struct {
-	// Root is the sandbox root. All paths must resolve inside Root after
-	// full symlink evaluation; otherwise the call returns an error.
-	// Required: a Read with empty Root rejects every call.
-	Root     string
 	MaxBytes int64
 }
 
@@ -47,12 +43,9 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Path == "" {
 		return tools.Result{Text: "path is required", IsError: true}, nil
 	}
-	root, err := effectiveRoot(ctx, r.Root, args.Volume, false)
+	root, err := effectiveRoot(ctx, args.Volume, false)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	if root == "" {
-		return tools.Result{Text: "Read tool is not configured with a sandbox root; refusing to read", IsError: true}, nil
 	}
 
 	resolved, err := resolveInsideRoot(root, args.Path)

@@ -23,13 +23,10 @@ import (
 // on huge trees for a self-contained binary; for the typical agent
 // workload (single-digit MB of source) the difference is invisible.
 //
-// Sandbox model: same Root as Read. A Grep with Root="" rejects every
-// call (matching Read's posture). All paths resolved via
+// Sandbox model: same as Read — the root comes from the run's VolumePolicy
+// (RFC AH); an agent bound to no volume is refused. All paths resolved via
 // resolveInsideRoot — symlinks evaluated; refusal on root escape.
 type Grep struct {
-	// Root is the sandbox root. Reuses LOOMCYCLE_READ_ROOT in
-	// production (set in cmd/loomcycle/main.go). Empty = refuse.
-	Root string
 	// MaxOutputBytes caps the assembled response so a model-readable
 	// pattern that matches half the repo doesn't blow the context
 	// window. 0 = 256 KiB default.
@@ -88,12 +85,9 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Pattern == "" {
 		return errResult("pattern is required"), nil
 	}
-	root, rootErr := effectiveRoot(ctx, g.Root, args.Volume, false)
+	root, rootErr := effectiveRoot(ctx, args.Volume, false)
 	if rootErr != nil {
 		return errResult(rootErr.Error()), nil
-	}
-	if root == "" {
-		return errResult("Grep tool is not configured with a sandbox root; set LOOMCYCLE_READ_ROOT"), nil
 	}
 
 	// Compile regex with applied flags. Use bracket prefix so user

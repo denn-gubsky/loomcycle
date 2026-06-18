@@ -16,13 +16,11 @@ import (
 // occur EXACTLY once — ambiguity is an error so the model can supply
 // more surrounding context. ReplaceAll lifts that requirement.
 //
-// Sandbox shares Root with Write. The file must already exist; Edit
-// does not create files (callers should use Write for that). The whole
-// file is read into memory, mutated, and written back via the same
-// atomic tempfile + rename dance Write uses.
+// Sandbox mirrors Write: a rw volume is required. The file must already
+// exist; Edit does not create files (callers should use Write for that).
+// The whole file is read into memory, mutated, and written back via the
+// same atomic tempfile + rename dance Write uses.
 type Edit struct {
-	// Root is the sandbox root (same one used by Write). Required.
-	Root string
 	// MaxBytes caps the file size Edit will load. Default 1 MiB.
 	MaxBytes int64
 }
@@ -63,12 +61,9 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.OldString == args.NewString {
 		return tools.Result{Text: "old_string and new_string must differ", IsError: true}, nil
 	}
-	root, err := effectiveRoot(ctx, e.Root, args.Volume, true)
+	root, err := effectiveRoot(ctx, args.Volume, true)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	if root == "" {
-		return tools.Result{Text: "Edit tool is not configured with a sandbox root; refusing to edit", IsError: true}, nil
 	}
 
 	maxBytes := e.MaxBytes

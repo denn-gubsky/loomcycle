@@ -10,19 +10,20 @@ import (
 )
 
 // effectiveRoot resolves which sandbox root a file/exec tool call targets
-// (RFC AH Phase 1). It is the ONE seam volumes add: every file tool calls
-// this to pick a root, then the UNCHANGED resolveInsideRoot(root, path)
-// does the TOCTOU-safe containment check against it.
+// (RFC AH). It is the ONE seam volumes add: every file tool calls this to
+// pick a root, then the UNCHANGED resolveInsideRoot(root, path) does the
+// TOCTOU-safe containment check against it.
 //
-// Two paths:
+// Phase 3 retired the legacy jail (LOOMCYCLE_READ_ROOT/WRITE_ROOT/BASH_CWD):
+// volumes are now the SOLE filesystem mechanism, and access is
+// sandbox-by-default. An agent with no active VolumePolicy is bound to no
+// volume and is REFUSED — the same posture the network model uses (no
+// allowed_hosts → no egress).
 //
 //   - No VolumePolicy on ctx (an UNBOUND agent, or a deployment with no
-//     `volumes:` config) → return fallbackRoot, the tool's
-//     construction-time Root (the legacy jail). This is the
-//     backward-compat path: behaviour is byte-identical to pre-feature.
-//     The `volume` argument is ignored in this mode — there are no named
-//     volumes to address, so naming one is meaningless rather than an
-//     error (the legacy single-jail has exactly one root).
+//     `volumes:` config) → DENY. There is no fallback root; declare a
+//     `volumes:` block (with a `default` volume to restore the old
+//     single-jail behaviour).
 //
 //   - A VolumePolicy exists (a BOUND agent) → resolve the named binding,
 //     or the designated default when volumeName is empty, and enforce the
@@ -40,7 +41,7 @@ import (
 //   - needWrite && binding.ReadOnly → refuse (Write/Edit/NotebookEdit
 //     and Bash require rw; Bash cannot truly enforce ro, so it refuses
 //     rather than ship a false guarantee — RFC §6).
-func effectiveRoot(ctx context.Context, fallbackRoot, volumeName string, needWrite bool) (string, error) {
+func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (string, error) {
 	// RFC AH Phase 2b — ephemeral (run-tree-scoped) volumes resolve FIRST,
 	// but ONLY for an explicitly NAMED volume (ephemeral volumes are always
 	// named — an omitted `volume` uses the existing default-binding logic
@@ -60,15 +61,15 @@ func effectiveRoot(ctx context.Context, fallbackRoot, volumeName string, needWri
 
 	pol := tools.VolumePolicy(ctx)
 	if !pol.Active {
-		// No volume confinement in force → legacy construction-time root.
-		// fallbackRoot may be "" (an unset root), in which case the caller's
-		// existing empty-Root guard refuses the call exactly as before.
-		return fallbackRoot, nil
+		// No volume confinement in force → DENY (RFC AH Phase 3:
+		// sandbox-by-default; the legacy fallback root is gone). An agent
+		// gets filesystem access only via a `volumes:` binding.
+		return "", fmt.Errorf("no filesystem volume available to this agent — bind one via the agent's `volumes:` list (Read/Write/etc. require a volume)")
 	}
 	if len(pol.Bindings) == 0 {
 		// Active but confined to NOTHING (e.g. a sub-agent whose declared
-		// volumes share none of the parent's). Deny — do NOT fall back to the
-		// legacy jail, or spawn confinement would be a no-op.
+		// volumes share none of the parent's). Deny — identical posture to
+		// the inactive case above; spawn confinement must never leak a root.
 		return "", fmt.Errorf("no filesystem volume is available to this agent; refusing")
 	}
 

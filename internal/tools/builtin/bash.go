@@ -31,12 +31,10 @@ import (
 // + a startup warning + this comment lets the right operator wire it up
 // for their controlled environment.
 type Bash struct {
-	// Enabled gates the entire tool. False (default) refuses every call,
-	// even when Cwd is set.
+	// Enabled gates the entire tool. False (default) refuses every call.
+	// The working directory comes from the run's VolumePolicy (RFC AH) —
+	// Bash requires a rw volume (it cannot honestly enforce ro; see §6).
 	Enabled bool
-	// Cwd is the working directory for spawned commands. Required when
-	// Enabled. Empty Cwd refuses every call.
-	Cwd string
 	// MaxOutputBytes caps stdout+stderr. Default 1 MiB.
 	MaxOutputBytes int64
 	// Timeout caps wall-clock per call. Default 30s. Hard ceiling 5min.
@@ -91,12 +89,9 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	// read-only (a shell can write via absolute paths / redirection — see
 	// the "not a true sandbox" doc above + RFC AH §6). Rather than ship a
 	// false ro guarantee, effectiveRoot refuses a read-only volume here.
-	cwdRoot, rootErr := effectiveRoot(ctx, b.Cwd, args.Volume, true)
+	cwdRoot, rootErr := effectiveRoot(ctx, args.Volume, true)
 	if rootErr != nil {
 		return tools.Result{Text: rootErr.Error(), IsError: true}, nil
-	}
-	if cwdRoot == "" {
-		return tools.Result{Text: "Bash tool has no cwd configured; refusing", IsError: true}, nil
 	}
 
 	cwd, err := filepath.EvalSymlinks(cwdRoot)

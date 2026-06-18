@@ -153,21 +153,22 @@ type Config struct {
 	// factory land in MR-3b.
 	MemoryBackends map[string]MemoryBackend `yaml:"memory_backends"`
 
-	// Volumes is the RFC AH Phase 1 registry of named filesystem volumes
-	// — the universe of ro/rw roots an AgentDef may bind to (the
-	// filesystem analog of "registered tools" for allowed_tools). Each
-	// entry's `path` MUST already exist and be a directory (validated at
-	// config-load; the runtime never mkdir's a static volume); at most
-	// one entry may be `default: true`. When the operator declares no
-	// `volumes:` block, agents run UNCONFINED by volumes and the file tools
-	// use their legacy LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD roots
-	// (byte-identical to a pre-feature deployment) — the three legacy roots
-	// are deliberately NOT collapsed into one synthesized `default` volume (a
-	// single root can't reproduce three distinct ones: Read would read
-	// WriteRoot, Bash would lose BashCwd). A `default` volume exists only if
-	// the operator declares it; unbound agents bind to it when present. Only
-	// the static Phase 1 surface lives here; the dynamic VolumeDef substrate
-	// (Phase 2) is a separate, later feature.
+	// Volumes is the RFC AH registry of named filesystem volumes — the
+	// universe of ro/rw roots an AgentDef may bind to (the filesystem
+	// analog of "registered tools" for allowed_tools). Each entry's `path`
+	// MUST already exist and be a directory (validated at config-load; the
+	// runtime never mkdir's a static volume); at most one entry may be
+	// `default: true`.
+	//
+	// RFC AH Phase 3: Volumes are the SOLE filesystem mechanism — the legacy
+	// LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD jail is gone. No binding =
+	// no disk access (sandbox-by-default): an agent bound to no volume (and a
+	// deployment with no `default` volume) has every file/exec tool refuse.
+	// To restore the old single shared jail, declare one `default` volume:
+	//   volumes:
+	//     default: { path: /work/sandbox, mode: rw, default: true }
+	// Unbound agents bind to `default` when it exists. The dynamic VolumeDef
+	// substrate (Phase 2) is a separate, later feature.
 	Volumes map[string]Volume `yaml:"volumes"`
 
 	// Interruption is the v0.8.16 top-level config block for the
@@ -1802,13 +1803,6 @@ type Env struct {
 	// opaque regardless (no oracle) — this only affects local logs.
 	AuthVerbose bool
 	DataDir     string
-	// ReadRoot is the sandbox root for the built-in Read tool. Empty by
-	// default — the tool is registered but rejects every call until set.
-	ReadRoot string
-	// WriteRoot is the sandbox root for both Write and Edit. Empty by
-	// default — both tools refuse every call until set. Same TOCTOU
-	// guarantees as ReadRoot.
-	WriteRoot string
 	// HTTPHostAllowlist is the comma-separated list of hostnames the
 	// HTTP and WebFetch tools may reach. Empty = both tools refuse all
 	// calls. Suffix-matched: an entry "example.com" matches both
@@ -1850,9 +1844,6 @@ type Env struct {
 	// network calls. Operators wanting real isolation should run
 	// loomcycle inside a container or VM.
 	BashEnabled bool
-	// BashCwd is the working directory for spawned bash commands. Required
-	// when BashEnabled is true; if unset the tool refuses every call.
-	BashCwd string
 	// SkillsRoot points at a directory holding subdirectories of the
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
@@ -2522,15 +2513,12 @@ func Load(path string) (*Config, error) {
 		AuditLogPath:             os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
 		AuthVerbose:              os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		DataDir:                  getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
-		ReadRoot:                 os.Getenv("LOOMCYCLE_READ_ROOT"),
-		WriteRoot:                os.Getenv("LOOMCYCLE_WRITE_ROOT"),
 		HTTPHostAllowlist:        splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist: splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
 		HTTPCallerAuthoritative:  os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
 		ResumeFanout:             os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		BraveAPIKey:              os.Getenv("BRAVE_API_KEY"),
 		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
-		BashCwd:                  os.Getenv("LOOMCYCLE_BASH_CWD"),
 		SkillsRoot:               os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
 		AgentsRoot:               os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
 		HelpRoot:                 os.Getenv("LOOMCYCLE_HELP_ROOT"),
@@ -2538,6 +2526,14 @@ func Load(path string) (*Config, error) {
 		// env var below was set. The fallbacks are applied in
 		// cmd/loomcycle/main.go where the goroutines are started.
 		HeartbeatSweeperEnabled: true,
+	}
+
+	// RFC AH Phase 3 — the legacy filesystem jail is retired. The three env
+	// vars (LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD) no longer exist.
+	// Fail fast with a migration hint when a stale deploy still sets one,
+	// rather than silently denying every file op (sandbox-by-default).
+	if err := checkRetiredJailEnv(); err != nil {
+		return nil, err
 	}
 
 	// Env-overrides for the storage block. Env wins over YAML so prod
@@ -3183,6 +3179,23 @@ func addContextToolDefaults(cfg *Config) {
 		def.AllowedTools = append(def.AllowedTools, "Context")
 		cfg.Agents[name] = def
 	}
+}
+
+// checkRetiredJailEnv fails config load when a deploy still sets one of the
+// retired legacy-jail env vars (RFC AH Phase 3). Volumes are now the sole
+// filesystem mechanism; honoring these silently would no-op (an unbound agent
+// is denied all disk access), so we surface a clear migration hint instead.
+func checkRetiredJailEnv() error {
+	var set []string
+	for _, name := range []string{"LOOMCYCLE_READ_ROOT", "LOOMCYCLE_WRITE_ROOT", "LOOMCYCLE_BASH_CWD"} {
+		if os.Getenv(name) != "" {
+			set = append(set, name)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s retired in RFC AH Phase 3 — declare a `volumes:` block instead, e.g. `default: {path: …, mode: rw, default: true}` (see docs/CONFIGURATION.md)", strings.Join(set, ", "))
 }
 
 // validateVolumes checks the top-level `volumes:` map (RFC AH Phase 1)
@@ -4247,10 +4260,11 @@ func validate(c *Config) error {
 			return err
 		}
 	}
-	// RFC AH Phase 1: validate the top-level `volumes:` map. Each path must
+	// RFC AH: validate the top-level `volumes:` map. Each path must
 	// already exist + be a directory (static volumes map existing
-	// infrastructure; the runtime never creates them — same posture as a
-	// missing legacy ReadRoot failing at call time, surfaced earlier here).
+	// infrastructure; the runtime never creates them — a missing/non-dir
+	// path is a config-load error surfaced here rather than a baffling
+	// call-time failure).
 	// At most one volume may be `default: true`. Mode must be ro/rw/empty.
 	// Paths are resolved to absolute IN PLACE so the run-start binding
 	// resolution gets a stable absolute Root regardless of process cwd.

@@ -26,13 +26,10 @@ import (
 // `**` is the value-add over stdlib `filepath.Match`. Inline matcher
 // below (~30 LOC) keeps the binary self-contained — no doublestar dep.
 //
-// Sandbox model: same Root as Read. Empty Root = refuse every call.
-// All paths resolved via resolveInsideRoot — symlinks evaluated;
-// refusal on root escape.
+// Sandbox model: same as Read — the root comes from the run's VolumePolicy
+// (RFC AH); an agent bound to no volume is refused. All paths resolved via
+// resolveInsideRoot — symlinks evaluated; refusal on root escape.
 type Glob struct {
-	// Root is the sandbox root (reuses LOOMCYCLE_READ_ROOT in
-	// production; set in cmd/loomcycle/main.go). Empty = refuse.
-	Root string
 	// MaxResults caps the result list so a model-issued `**` doesn't
 	// blow the context window. 0 = 100 default (matches Claude Code).
 	MaxResults int
@@ -73,12 +70,9 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Pattern == "" {
 		return errResult("pattern is required"), nil
 	}
-	root, rootErr := effectiveRoot(ctx, g.Root, args.Volume, false)
+	root, rootErr := effectiveRoot(ctx, args.Volume, false)
 	if rootErr != nil {
 		return errResult(rootErr.Error()), nil
-	}
-	if root == "" {
-		return errResult("Glob tool is not configured with a sandbox root; set LOOMCYCLE_READ_ROOT"), nil
 	}
 	// Validate every pattern segment up-front. filepath.Match returns
 	// ErrBadPattern on malformed brackets etc.; without this pre-check

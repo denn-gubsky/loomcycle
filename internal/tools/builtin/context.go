@@ -243,9 +243,10 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// verb each allows, instead of guessing host paths.
 	//
 	// Active volume policy → report the binding list (an active-but-empty
-	// policy reports an empty bindings list = confined to no volume). Inactive
-	// (no policy) → fall back to the legacy read_root/write_root/bash_cwd
-	// sandbox fields so single-jail deployments report unchanged.
+	// policy reports an empty bindings list = confined to no volume).
+	// Inactive (no policy) → the agent has NO filesystem access (RFC AH
+	// Phase 3 sandbox-by-default; the legacy jail is gone), reported so the
+	// model knows file/exec tools will refuse rather than guessing host paths.
 	if vp := tools.VolumePolicy(ctx); vp.Active {
 		vols := make([]map[string]any, 0, len(vp.Bindings))
 		for _, b := range vp.Bindings {
@@ -264,24 +265,8 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			"bindings":        vols,
 			"path_convention": "Pass paths RELATIVE to a volume root (e.g. \"src/main.go\"); ~ is not expanded and an absolute path must resolve inside the root. Set the \"volume\" tool argument to target a non-default volume; omit it to use the one marked default.",
 		}
-	} else if c.Cfg != nil {
-		// Legacy single-jail fallback (unbound agent). Omitted when no roots
-		// are configured (Cfg is nil in some test fixtures; an unset root means
-		// that tool refuses every call).
-		sb := map[string]any{}
-		if c.Cfg.Env.ReadRoot != "" {
-			sb["read_root"] = c.Cfg.Env.ReadRoot
-		}
-		if c.Cfg.Env.WriteRoot != "" {
-			sb["write_root"] = c.Cfg.Env.WriteRoot
-		}
-		if c.Cfg.Env.BashCwd != "" {
-			sb["bash_cwd"] = c.Cfg.Env.BashCwd
-		}
-		if len(sb) > 0 {
-			sb["path_convention"] = "Pass paths RELATIVE to these roots (e.g. \"src/main.go\"); ~ is not expanded and an absolute path must resolve inside the root."
-			out["sandbox"] = sb
-		}
+	} else {
+		out["filesystem"] = "none — no volume bound; Read/Write/Edit/Glob/Grep/Bash refuse. Bind a volume via the agent's `volumes:` list (operator declares the universe in the top-level `volumes:` config)."
 	}
 	// network: the host allowlist the HTTP/WebFetch/WebSearch tools enforce for
 	// this run, so an agent knows which hosts it may reach instead of probing
