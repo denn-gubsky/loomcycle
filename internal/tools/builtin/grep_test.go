@@ -7,7 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// grepCtx attaches a default rw volume rooted at root, the standard ctx the
+// Grep tests run under (RFC AH Phase 3: file tools require a bound volume).
+func grepCtx(root string) context.Context {
+	return ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
+}
 
 // makeGrepTree builds a small sandbox with a known structure for the
 // Grep tests. Returns the root path; t.TempDir handles cleanup.
@@ -46,8 +54,8 @@ func makeGrepTree(t *testing.T) string {
 
 func TestGrep_FilesWithMatchesIsDefault(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"func main"}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"func main"}`))
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Text)
 	}
@@ -68,8 +76,8 @@ func TestGrep_FilesWithMatchesIsDefault(t *testing.T) {
 
 func TestGrep_NoMatchesReturnsClearMessage(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"this-pattern-matches-nothing"}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"this-pattern-matches-nothing"}`))
 	if res.IsError {
 		t.Fatalf("no-match should not be IsError: %s", res.Text)
 	}
@@ -80,37 +88,39 @@ func TestGrep_NoMatchesReturnsClearMessage(t *testing.T) {
 
 func TestGrep_InvalidRegexIsError(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"["}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"["}`))
 	if !res.IsError {
 		t.Errorf("invalid regex should be IsError: %s", res.Text)
 	}
 }
 
-func TestGrep_MissingRootRefuses(t *testing.T) {
-	g := &Grep{} // no Root
+// RFC AH Phase 3: an agent bound to no volume must refuse (sandbox-by-default;
+// the legacy LOOMCYCLE_READ_ROOT jail is gone).
+func TestGrep_NoVolumeRefuses(t *testing.T) {
+	g := &Grep{}
 	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"x"}`))
 	if !res.IsError {
-		t.Errorf("missing Root should refuse: %s", res.Text)
+		t.Errorf("no volume bound should refuse: %s", res.Text)
 	}
-	if !strings.Contains(res.Text, "LOOMCYCLE_READ_ROOT") {
-		t.Errorf("refusal should mention the env var, got %q", res.Text)
+	if !strings.Contains(res.Text, "no filesystem volume available") {
+		t.Errorf("refusal should report no volume, got %q", res.Text)
 	}
 }
 
 func TestGrep_CaseInsensitive(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"TODO","case_insensitive":false}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"TODO","case_insensitive":false}`))
 	if res.IsError || !strings.Contains(res.Text, "b.go") {
 		t.Errorf("case-sensitive TODO should match b.go: %s", res.Text)
 	}
-	res, _ = g.Execute(context.Background(), json.RawMessage(`{"pattern":"todo","case_insensitive":true}`))
+	res, _ = g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"todo","case_insensitive":true}`))
 	if res.IsError || !strings.Contains(res.Text, "b.go") {
 		t.Errorf("case-insensitive todo should match b.go: %s", res.Text)
 	}
 	// Default case-sensitive: lowercase "todo" shouldn't match.
-	res, _ = g.Execute(context.Background(), json.RawMessage(`{"pattern":"todo"}`))
+	res, _ = g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"todo"}`))
 	if !strings.Contains(res.Text, "no matches") {
 		t.Errorf("default case-sensitive lowercase 'todo' should not match: %s", res.Text)
 	}
@@ -118,13 +128,13 @@ func TestGrep_CaseInsensitive(t *testing.T) {
 
 func TestGrep_GlobFilter(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"hello","glob":"*.go"}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"hello","glob":"*.go"}`))
 	// hello is only in c.txt; glob excludes it.
 	if !strings.Contains(res.Text, "no matches") {
 		t.Errorf("glob=*.go should exclude c.txt: %s", res.Text)
 	}
-	res, _ = g.Execute(context.Background(), json.RawMessage(`{"pattern":"hello","glob":"*.txt"}`))
+	res, _ = g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"hello","glob":"*.txt"}`))
 	if res.IsError || !strings.Contains(res.Text, "c.txt") {
 		t.Errorf("glob=*.txt should include c.txt: %s", res.Text)
 	}
@@ -132,8 +142,8 @@ func TestGrep_GlobFilter(t *testing.T) {
 
 func TestGrep_ContentModeFormatsLineNumber(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"func main","output_mode":"content"}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"func main","output_mode":"content"}`))
 	if res.IsError {
 		t.Fatalf("content mode err: %s", res.Text)
 	}
@@ -145,8 +155,8 @@ func TestGrep_ContentModeFormatsLineNumber(t *testing.T) {
 
 func TestGrep_ContentModeWithContextLines(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"func main","output_mode":"content","-C":1}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"func main","output_mode":"content","-C":1}`))
 	if res.IsError {
 		t.Fatalf("%s", res.Text)
 	}
@@ -163,8 +173,8 @@ func TestGrep_ContentModeWithContextLines(t *testing.T) {
 
 func TestGrep_CountModeReportsPerFileCount(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"func","output_mode":"count"}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"func","output_mode":"count"}`))
 	if res.IsError {
 		t.Fatalf("%s", res.Text)
 	}
@@ -179,11 +189,11 @@ func TestGrep_CountModeReportsPerFileCount(t *testing.T) {
 
 func TestGrep_BinaryFileSkipped(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
+	g := &Grep{}
 	// The binary file contains \x00\x01\x02\x03 — bytes 1 and 2 are
 	// ASCII chars. Search for "\x02" via regex would match bytes;
 	// but binary detection should skip the file entirely.
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":".","output_mode":"files_with_matches"}`))
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":".","output_mode":"files_with_matches"}`))
 	if res.IsError {
 		t.Fatalf("%s", res.Text)
 	}
@@ -194,8 +204,8 @@ func TestGrep_BinaryFileSkipped(t *testing.T) {
 
 func TestGrep_PathEscapeIsRefused(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"x","path":"/etc"}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"x","path":"/etc"}`))
 	if !res.IsError {
 		t.Errorf("path outside root should refuse, got %q", res.Text)
 	}
@@ -210,8 +220,8 @@ func TestGrep_HeadLimitTruncates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"MATCH","head_limit":5}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"MATCH","head_limit":5}`))
 	if res.IsError {
 		t.Fatalf("%s", res.Text)
 	}
@@ -232,8 +242,8 @@ func TestGrep_HeadLimitExactCountNoTruncation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"MATCH","head_limit":5}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"MATCH","head_limit":5}`))
 	if res.IsError {
 		t.Fatalf("%s", res.Text)
 	}
@@ -244,8 +254,8 @@ func TestGrep_HeadLimitExactCountNoTruncation(t *testing.T) {
 
 func TestGrep_InvalidGlobFilterIsError(t *testing.T) {
 	root := makeGrepTree(t)
-	g := &Grep{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"x","glob":"[unclosed"}`))
+	g := &Grep{}
+	res, _ := g.Execute(grepCtx(root), json.RawMessage(`{"pattern":"x","glob":"[unclosed"}`))
 	if !res.IsError {
 		t.Errorf("invalid glob filter must be reported, got %q", res.Text)
 	}

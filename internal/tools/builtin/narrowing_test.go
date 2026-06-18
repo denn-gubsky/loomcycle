@@ -14,7 +14,7 @@ import (
 func TestNarrowHostsNilPassThrough(t *testing.T) {
 	original := []tools.Tool{
 		&HTTP{HostAllowlist: []string{"a.example"}},
-		&Read{Root: "/x"},
+		&Read{},
 	}
 	out := NarrowHosts(original, nil, "", false)
 	if len(out) != 2 {
@@ -136,9 +136,9 @@ func TestNarrowHostsEmptyCallerDeniesAll(t *testing.T) {
 
 // Non-network tools pass through untouched even when narrowing applies.
 func TestNarrowHostsLeavesUnrelatedToolsAlone(t *testing.T) {
-	r := &Read{Root: "/x"}
-	w := &Write{Root: "/x"}
-	b := &Bash{Enabled: true, Cwd: "/x"}
+	r := &Read{}
+	w := &Write{}
+	b := &Bash{Enabled: true}
 	out := NarrowHosts([]tools.Tool{r, w, b}, []string{"x.example"}, "", false)
 	if len(out) != 3 {
 		t.Fatalf("len = %d, want 3", len(out))

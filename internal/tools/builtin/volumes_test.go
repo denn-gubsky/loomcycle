@@ -33,7 +33,7 @@ func realDir(t *testing.T) string {
 func TestWrite_RwVolumeAllowsWrite(t *testing.T) {
 	root := realDir(t)
 	ctx := ctxWith(tools.VolumeBinding{Name: "work", Root: root, Default: true})
-	w := &Write{Root: ""} // construction-time Root unset: only the volume can satisfy it.
+	w := &Write{} // RFC AH Phase 3: only the volume can satisfy a file tool.
 	body, _ := json.Marshal(map[string]string{"path": "out.txt", "content": "hi", "volume": "work"})
 	res, err := w.Execute(ctx, body)
 	if err != nil {
@@ -316,46 +316,48 @@ func TestContextSelf_ReportsBoundVolumes(t *testing.T) {
 	}
 }
 
-// Backward-compat: an UNBOUND agent (no VolumePolicy on ctx) uses the tool's
-// construction-time Root exactly as before the feature.
-func TestRead_UnboundAgentUsesLegacyRoot(t *testing.T) {
+// RFC AH Phase 3 (the load-bearing behavior): an UNBOUND agent (no
+// VolumePolicy on ctx) is bound to no volume, so every file tool REFUSES —
+// sandbox-by-default; the legacy construction-time fallback root is gone.
+// Fail-before: revert effectiveRoot's inactive branch to `return
+// fallbackRoot, nil` and this test fails (the Read would succeed on a host
+// path / silently no-op instead of denying).
+func TestRead_UnboundAgentDenies(t *testing.T) {
 	root := realDir(t)
 	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("legacy"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// No VolumePolicy attached → effectiveRoot returns the construction-time Root.
-	r := &Read{Root: root}
-	body, _ := json.Marshal(map[string]string{"path": "f.txt"})
+	// No VolumePolicy attached → effectiveRoot denies (no fallback root exists).
+	r := &Read{}
+	body, _ := json.Marshal(map[string]string{"path": filepath.Join(root, "f.txt")})
 	res, err := r.Execute(context.Background(), body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.IsError || res.Text != "legacy" {
-		t.Fatalf("unbound agent should use legacy Root, got Text=%q IsError=%v", res.Text, res.IsError)
+	if !res.IsError || !strings.Contains(res.Text, "no filesystem volume available") {
+		t.Fatalf("unbound agent must refuse (no legacy fallback), got Text=%q IsError=%v", res.Text, res.IsError)
 	}
 }
 
 // An ACTIVE policy with NO bindings (a sub-agent narrowed to an empty
 // intersection — it shares none of the parent's volumes) DENIES every
-// file-tool call. It must NOT fall back to the construction-time Root, or
-// spawn confinement would silently hand the child the (broader) legacy jail.
-// Fail-before: pre-fix, effectiveRoot keyed off len(Bindings)==0 and treated an
-// empty policy as "no policy", returning the Root.
+// file-tool call, identically to the inactive case. Spawn confinement must
+// never leak a root.
 func TestRead_ActiveEmptyPolicyRefuses(t *testing.T) {
 	root := realDir(t)
 	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Active, zero bindings. A legacy Root IS set — it must NOT be reached.
+	// Active, zero bindings → deny.
 	ctx := tools.WithVolumePolicy(context.Background(), tools.VolumePolicyValue{Active: true})
-	r := &Read{Root: root}
-	body, _ := json.Marshal(map[string]string{"path": "f.txt"})
+	r := &Read{}
+	body, _ := json.Marshal(map[string]string{"path": filepath.Join(root, "f.txt")})
 	res, err := r.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.IsError || !strings.Contains(res.Text, "no filesystem volume is available") {
-		t.Fatalf("active-empty policy must refuse (not fall back to the legacy Root); got Text=%q IsError=%v", res.Text, res.IsError)
+		t.Fatalf("active-empty policy must refuse; got Text=%q IsError=%v", res.Text, res.IsError)
 	}
 }
 

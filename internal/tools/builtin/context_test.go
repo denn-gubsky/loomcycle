@@ -114,18 +114,15 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	}
 }
 
-// TestContextTool_SelfReportsSandboxAndNetwork: op=self surfaces the
-// filesystem jail (read/write roots + bash cwd, with the relative-path
-// convention) and the effective host allowlist, so a jailed agent can
-// introspect its sandbox instead of guessing host paths / probing hosts. With
-// no per-run caller list, the operator's static allowlist is reported as the
-// floor (source=operator_default).
-func TestContextTool_SelfReportsSandboxAndNetwork(t *testing.T) {
+// TestContextTool_SelfReportsNoFilesystemAndNetwork: RFC AH Phase 3 retired
+// the legacy jail, so an agent with no volume bound reports
+// `filesystem: "none …"` (sandbox-by-default — the file/exec tools refuse)
+// rather than read/write roots. The effective host allowlist still surfaces;
+// with no per-run caller list, the operator's static allowlist is reported as
+// the floor (source=operator_default).
+func TestContextTool_SelfReportsNoFilesystemAndNetwork(t *testing.T) {
 	tool, ctx := contextFixture(t)
 	tool.Cfg = &config.Config{Env: config.Env{
-		ReadRoot:          "/work/sandbox",
-		WriteRoot:         "/work/sandbox/out",
-		BashCwd:           "/work/sandbox",
 		HTTPHostAllowlist: []string{"api.example.com", "docs.example.com"},
 	}}
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
@@ -134,21 +131,12 @@ func TestContextTool_SelfReportsSandboxAndNetwork(t *testing.T) {
 	}
 	out := decodeResult(t, res.Text)
 
-	sb, ok := out["sandbox"].(map[string]any)
-	if !ok {
-		t.Fatalf("sandbox = %v (%T), want an object", out["sandbox"], out["sandbox"])
+	if _, ok := out["sandbox"]; ok {
+		t.Errorf("legacy `sandbox` block must be gone post-Phase-3, got %v", out["sandbox"])
 	}
-	if sb["read_root"] != "/work/sandbox" {
-		t.Errorf("sandbox.read_root = %v, want /work/sandbox", sb["read_root"])
-	}
-	if sb["write_root"] != "/work/sandbox/out" {
-		t.Errorf("sandbox.write_root = %v, want /work/sandbox/out", sb["write_root"])
-	}
-	if sb["bash_cwd"] != "/work/sandbox" {
-		t.Errorf("sandbox.bash_cwd = %v, want /work/sandbox", sb["bash_cwd"])
-	}
-	if s, _ := sb["path_convention"].(string); !strings.Contains(s, "RELATIVE") {
-		t.Errorf("sandbox.path_convention should mention RELATIVE, got %q", s)
+	fs, _ := out["filesystem"].(string)
+	if !strings.Contains(fs, "none") || !strings.Contains(fs, "volume") {
+		t.Errorf("filesystem = %q, want a 'none — no volume bound' report", fs)
 	}
 
 	net, ok := out["network"].(map[string]any)
@@ -191,14 +179,20 @@ func TestContextTool_SelfNetworkCallerList(t *testing.T) {
 	}
 }
 
-// TestContextTool_SelfOmitsSandboxWhenNoCfg: a bare fixture (no Cfg, no host
-// policy) omits sandbox + network rather than emitting empty objects.
-func TestContextTool_SelfOmitsSandboxWhenNoCfg(t *testing.T) {
+// TestContextTool_SelfOmitsNetworkWhenNoCfg: a bare fixture (no Cfg, no host
+// policy) omits network rather than emitting an empty object. The filesystem
+// report does NOT depend on Cfg post-Phase-3 — with no volume bound it always
+// reports "none" (sandbox-by-default).
+func TestContextTool_SelfOmitsNetworkWhenNoCfg(t *testing.T) {
 	tool, ctx := contextFixture(t)
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	out := decodeResult(t, res.Text)
 	if _, ok := out["sandbox"]; ok {
-		t.Errorf("sandbox should be omitted when Cfg is nil, got %v", out["sandbox"])
+		t.Errorf("legacy `sandbox` block must never appear post-Phase-3, got %v", out["sandbox"])
+	}
+	fs, _ := out["filesystem"].(string)
+	if !strings.Contains(fs, "none") {
+		t.Errorf("filesystem should report 'none' with no volume bound, got %q", fs)
 	}
 	if _, ok := out["network"]; ok {
 		t.Errorf("network should be omitted with no caller list and nil Cfg, got %v", out["network"])

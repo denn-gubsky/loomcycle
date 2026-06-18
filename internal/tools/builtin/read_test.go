@@ -7,21 +7,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// Regression: with no Root configured, Read must refuse rather than open
-// any path the process can reach.
-func TestReadRefusesEmptyRoot(t *testing.T) {
+// Regression: an agent bound to no volume (no VolumePolicy on ctx) must
+// refuse rather than open any path the process can reach. RFC AH Phase 3
+// retired the legacy jail — no volume = no disk access.
+func TestReadRefusesNoVolume(t *testing.T) {
 	r := &Read{}
 	res, err := r.Execute(context.Background(), json.RawMessage(`{"path":"/etc/hosts"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.IsError {
-		t.Fatal("expected IsError=true when Root is empty")
+		t.Fatal("expected IsError=true with no volume bound")
 	}
-	if !strings.Contains(res.Text, "sandbox") {
-		t.Errorf("error text should mention sandbox; got %q", res.Text)
+	if !strings.Contains(res.Text, "no filesystem volume available") {
+		t.Errorf("error text should report no volume; got %q", res.Text)
 	}
 }
 
@@ -53,9 +56,10 @@ func TestReadRejectsSymlinkEscapingRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := &Read{Root: root}
+	r := &Read{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	input, _ := json.Marshal(map[string]string{"path": link})
-	res, err := r.Execute(context.Background(), input)
+	res, err := r.Execute(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,14 +79,15 @@ func TestReadRejectsParentTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &Read{Root: root}
+	r := &Read{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 
 	// Construct an absolute path one level above root.
 	parent := filepath.Dir(root)
 	probe := filepath.Join(parent, "anything.txt")
 
 	input, _ := json.Marshal(map[string]string{"path": probe})
-	res, err := r.Execute(context.Background(), input)
+	res, err := r.Execute(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,9 +112,10 @@ func TestReadAllowsInsideSandbox(t *testing.T) {
 	if err := os.WriteFile(target, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := &Read{Root: root}
+	r := &Read{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	input, _ := json.Marshal(map[string]string{"path": target})
-	res, err := r.Execute(context.Background(), input)
+	res, err := r.Execute(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +139,7 @@ func TestRead_FullReadBoundedAndEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 
 	// (1) Multi-page file (1 MiB), cap above size → read in full, intact.
 	big := strings.Repeat("ABCDEFGH", 1<<17) // 1 MiB
@@ -140,9 +147,9 @@ func TestRead_FullReadBoundedAndEmpty(t *testing.T) {
 	if err := os.WriteFile(bigPath, []byte(big), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := &Read{Root: root, MaxBytes: 4 << 20}
+	r := &Read{MaxBytes: 4 << 20}
 	in, _ := json.Marshal(map[string]string{"path": bigPath})
-	res, _ := r.Execute(context.Background(), in)
+	res, _ := r.Execute(ctx, in)
 	if res.IsError {
 		t.Fatalf("big read errored: %q", res.Text)
 	}
@@ -151,8 +158,8 @@ func TestRead_FullReadBoundedAndEmpty(t *testing.T) {
 	}
 
 	// (2) File larger than the cap → bounded to exactly maxBytes.
-	rCap := &Read{Root: root, MaxBytes: 1024}
-	res, _ = rCap.Execute(context.Background(), in)
+	rCap := &Read{MaxBytes: 1024}
+	res, _ = rCap.Execute(ctx, in)
 	if res.IsError {
 		t.Fatalf("capped read errored: %q", res.Text)
 	}
@@ -169,7 +176,7 @@ func TestRead_FullReadBoundedAndEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	inEmpty, _ := json.Marshal(map[string]string{"path": emptyPath})
-	res, _ = r.Execute(context.Background(), inEmpty)
+	res, _ = r.Execute(ctx, inEmpty)
 	if res.IsError {
 		t.Fatalf("empty read errored: %q", res.Text)
 	}
