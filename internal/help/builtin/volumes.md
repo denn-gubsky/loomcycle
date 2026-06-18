@@ -5,17 +5,18 @@ description: filesystem volumes — the named ro/rw roots your file/exec tools r
 A **volume** is a named filesystem root your file/exec tools
 (Read / Write / Edit / Glob / Grep / Bash / NotebookEdit) resolve paths
 against. The operator binds you to a set of volumes; each is either
-read-write (`rw`) or read-only (`ro`). Volumes replace the older single
-"sandbox jail" — they let one runtime confine different agents to
-different working trees.
+read-write (`rw`) or read-only (`ro`). Volumes are the *only* way you get
+filesystem access — they let one runtime confine different agents to
+different working trees. **If you're bound to no volume, every file/exec
+tool refuses: you have no disk access.**
 
 ## Seeing your volumes
 
 Call `Context op=self`. When you're bound to volumes it reports a
 `volumes.bindings` list — each entry's `name`, `path`, `mode` (`ro`/`rw`),
-and whether it's the `default`. If you're unbound (the legacy single-jail
-case) it reports a `sandbox` block with `read_root` / `write_root` /
-`bash_cwd` instead.
+and whether it's the `default`. If you're bound to no volume it reports
+`filesystem: "none — no volume bound"` — ask the operator to bind one
+(file/exec tools will refuse until then).
 
 ## The `volume` tool argument
 

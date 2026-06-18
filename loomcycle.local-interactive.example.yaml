@@ -25,8 +25,14 @@
 #   LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX=131072  # pin the context window (see note).
 #   LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS=300000  # time-to-FIRST-token budget.
 #   LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS=300000    # inter-token idle budget.
-#   LOOMCYCLE_BASH_ENABLED=1   LOOMCYCLE_BASH_CWD=<dir>   # if the agent runs shell
-#   LOOMCYCLE_READ_ROOT=<dir>  LOOMCYCLE_WRITE_ROOT=<dir> # the file sandbox jail
+#   LOOMCYCLE_BASH_ENABLED=1   # if the agent runs shell (NOT a true sandbox)
+#
+# Filesystem access (RFC AH Phase 3): declare a `volumes:` block — the legacy
+# LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD jail is retired (setting one now
+# fails startup). To restore the old single shared jail, give the agent a
+# default volume:
+#   volumes:
+#     default: { path: <dir>, mode: rw, default: true }
 #
 # num_ctx is GLOBAL (one value for ALL ollama-local models) and is sent as
 # options.num_ctx — it both CAPS the window the model loads AND is what the

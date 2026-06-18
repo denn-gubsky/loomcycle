@@ -10,6 +10,24 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
+**⚠️ BREAKING — the legacy filesystem jail is retired (RFC AH Phase 3).** The
+`LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD` env vars are **removed**;
+Volumes (below) are now the SOLE filesystem mechanism. An agent not bound to any
+volume — and a deployment with no `default` volume declared — has **no
+filesystem access**: every Read/Write/Edit/Glob/Grep/Bash/NotebookEdit call
+refuses (sandbox-by-default, mirroring "no `allowed_hosts` → no egress").
+
+- **Migration:** replace the three env vars with a single `default` volume —
+  `volumes: { default: { path: /work/sandbox, mode: rw, default: true } }`
+  reproduces the old single-jail behaviour. A deploy that still sets any of the
+  retired env vars now **fails at config-load** with a migration hint (so a
+  stale config is caught at boot, not silently denied).
+- This **supersedes** the Phase-1 interim "unbound agents fall back to the
+  legacy roots" behaviour described below — that fallback no longer exists.
+- The TOCTOU-safe `resolveInsideRoot` containment is unchanged; the only change
+  is that an inactive volume policy now DENIES instead of falling back, and the
+  tools no longer carry a construction-time `Root`/`Cwd`.
+
 **📁 Filesystem Volumes — per-agent ro/rw scopes (RFC AH Phase 1).** The
 file/exec tools were confined to a single per-instance jail
 (`LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD`) shared by every agent and

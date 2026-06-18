@@ -855,7 +855,7 @@ loomcycle is configured entirely through environment variables (the `loomcycle.y
 | File | Holds | Git posture | Safe to read/diff/share? |
 |---|---|---|---|
 | **`.env.local`** | **Secrets** — provider API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), the sidecar bearer `LOOMCYCLE_AUTH_TOKEN`, `BRAVE_API_KEY`, the operator-token pepper, and the secret **values** behind any trigger-credential env names. | **git-ignored**, never committed | **No** — surfacing it leaks credentials |
-| **`.env.insecure`** | **Non-secret config** — `LOOMCYCLE_LISTEN_ADDR`, `LOOMCYCLE_DATA_DIR`, the sandbox roots (`READ_ROOT`/`WRITE_ROOT`/`BASH_CWD`), host allowlists, feature flags (metrics, webhooks, fallback), timeouts, and the trigger-credential allowlist **names** (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` / `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`). | git-ignored in *this* repo; commit it in your own deployment repo if you wish | **Yes** — nothing here is a secret |
+| **`.env.insecure`** | **Non-secret config** — `LOOMCYCLE_LISTEN_ADDR`, `LOOMCYCLE_DATA_DIR`, host allowlists, feature flags (metrics, webhooks, fallback), timeouts, and the trigger-credential allowlist **names** (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` / `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`). (Filesystem sandboxing moved to the YAML `volumes:` block — RFC AH Phase 3 retired the `READ_ROOT`/`WRITE_ROOT`/`BASH_CWD` env vars.) | git-ignored in *this* repo; commit it in your own deployment repo if you wish | **Yes** — nothing here is a secret |
 
 **Why split.** The two halves have different blast radii. `.env.insecure` is the part you want in code review, in a config-management repo, in a teammate's hands when they ask "what's your sandbox set to?" — none of it is dangerous to expose. `.env.local` is the part one accidental `cat` in a screen-share burns. Keeping them in one file forces the whole thing to the secret tier and makes the operational config needlessly hard to share. The split also matches the security rule in `CLAUDE.md` — agents (and Claude Code) must never open `.env.local`, but `.env.insecure` is freely readable.
 
@@ -877,9 +877,9 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 
 ---
 
-## 9d. Filesystem Volumes — per-agent ro/rw scopes (RFC AH Phase 1)
+## 9d. Filesystem Volumes — per-agent ro/rw scopes (RFC AH)
 
-The file/exec tools (Read / Write / Edit / Glob / Grep / Bash / NotebookEdit) used to share a single per-instance jail (`LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD`). A **Volume** is a named, per-agent, read-only-or-read-write root that replaces it — the filesystem analog of the caller-authoritative `allowed_hosts` host policy. Two ensembles in one runtime can now be confined to separate working trees.
+The file/exec tools (Read / Write / Edit / Glob / Grep / Bash / NotebookEdit) used to share a single per-instance jail (`LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD`). **Phase 3 retired that jail** — a **Volume** (a named, per-agent, read-only-or-read-write root) is now the *sole* filesystem mechanism, the filesystem analog of the caller-authoritative `allowed_hosts` host policy. Two ensembles in one runtime can be confined to separate working trees, and **disk access is sandbox-by-default**: an agent bound to no volume has none.
 
 **Top-level `volumes:` map** — the universe of bindable roots (the filesystem analog of registered tools). Declared once by the operator:
 
@@ -903,16 +903,23 @@ agents:
     volumes: [repo-a, shared-ro]   # confined to these; cannot touch default or repo-b
 ```
 
-- An agent that declares **no** `volumes` is implicitly bound to `[default]` — backward-compatible.
+- An agent that declares **no** `volumes` is implicitly bound to `[default]` — *if* a `default` volume exists. With no `default` volume declared, an unbound agent has **no filesystem access** (sandbox-by-default).
 - An agent that declares volumes is confined to **exactly those** — it does *not* implicitly also get `default`.
 
 **ro / rw enforcement.** Read / Glob / Grep operate on any bound volume. Write / Edit / NotebookEdit require a `rw` volume (a `ro` target is refused). **Bash requires `rw` and is refused on a `ro` volume** — a shell can write via absolute paths and redirection, so loomcycle refuses rather than ship a read-only guarantee it cannot keep (CLAUDE.md rule #7).
 
-**Spawn confinement.** A sub-agent inherits its parent's confinement: an *unbound* child gets the parent's policy verbatim; a child that *declares* volumes is **narrowed** to (child-declared) ∩ (parent's active bindings), with ro/rw resolving to the more restrictive. A child can never gain a volume its parent lacks; a child that shares none of the parent's volumes is confined to nothing — its file tools are denied (it does **not** fall back to the legacy jail). Mirrors host-allowlist narrowing.
+**Spawn confinement.** A sub-agent inherits its parent's confinement: an *unbound* child gets the parent's policy verbatim; a child that *declares* volumes is **narrowed** to (child-declared) ∩ (parent's active bindings), with ro/rw resolving to the more restrictive. A child can never gain a volume its parent lacks; a child that shares none of the parent's volumes is confined to nothing — its file tools are denied. Mirrors host-allowlist narrowing.
 
-**Backward compatibility.** With no `volumes:` block and no agent bindings, agents run **unconfined by volumes** and each file tool uses its own legacy root (`Read`←`LOOMCYCLE_READ_ROOT`, `Write`←`WRITE_ROOT`, `Bash`←`BASH_CWD`) — **byte-identical** to before. The three legacy roots are deliberately **not** collapsed into one synthesized `default` volume: a single root can't reproduce three distinct ones (Read would read `WriteRoot`, Bash would lose `BashCwd`), and a `ReadRoot`-only "writes disabled" deployment must not silently gain write access. A `default` volume exists only if you declare it (unbound agents then bind to it); declare explicit `volumes:` to adopt the feature.
+**Sandbox-by-default & migration (RFC AH Phase 3).** The legacy `LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD` jail is **retired** — volumes are the only filesystem mechanism. With no `volumes:` block and no agent bindings, every file/exec tool **refuses** (no disk access), mirroring the network model (no `allowed_hosts` → no egress). **Setting any of the three retired env vars now fails startup** with a migration hint. To restore the old single shared jail, declare one `default` volume:
 
-**Introspection.** `Context op=self` reports the bound volumes (`volumes.bindings`: name / path / mode / default), so an agent knows precisely which roots it may touch and which verb each allows. An unbound agent still sees the legacy `sandbox` block.
+```yaml
+volumes:
+  default: { path: /work/sandbox, mode: rw, default: true }
+```
+
+Unbound agents then bind to it. (There is no auto-synthesis from the old env vars — a single root can't reproduce three distinct ones, and a `READ_ROOT`-only "writes disabled" deploy must not silently gain write access — so the operator declares the replacement volume once, explicitly.)
+
+**Introspection.** `Context op=self` reports the bound volumes (`volumes.bindings`: name / path / mode / default), so an agent knows precisely which roots it may touch and which verb each allows. An agent with no volume bound reports `filesystem: "none — no volume bound"`.
 
 ### 9d.1 Dynamic volumes — the `VolumeDef` substrate (RFC AH Phase 2a)
 
