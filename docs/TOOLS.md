@@ -61,6 +61,11 @@ Sandbox semantics (file tools):
 - `Grep` skips binary files via NUL-byte heuristic on the first 8 KiB; caps output at 256 KiB + `head_limit` (default 100).
 - `Glob` supports `**` for recursive segment match; returns paths sorted by mtime DESC, capped at 100 results.
 - `NotebookEdit` accepts `replace` / `insert` / `delete` modes; preserves all non-target cells and notebook metadata verbatim.
+- **Filesystem Volumes (RFC AH Phase 1).** When the operator declares a top-level `volumes:` map (named ro/rw roots) and binds an agent via `AgentDef.volumes`, the file/exec tools resolve paths against those volumes instead of the single jail. Each of `Read` / `Write` / `Edit` / `Glob` / `Grep` / `Bash` / `NotebookEdit` then accepts an optional `"volume"` string argument:
+  - **omitted** → the agent's designated default binding (the one marked `default: true`, or the sole binding). Multiple bindings + no designated default → an error listing the available names.
+  - **named** → that binding; naming a volume the agent isn't bound to → an error listing the bound volumes.
+  - **ro / rw**: `Read` / `Glob` / `Grep` operate on any volume; `Write` / `Edit` / `NotebookEdit` and **`Bash`** require a `rw` volume (a `ro` target is refused — `Bash` cannot enforce read-only, so it refuses rather than ship a false guarantee). The unchanged `resolveInsideRoot` containment still applies per-volume — a `..` escape from one volume into another is rejected.
+  - An agent with **no** volume binding (or a deployment with no `volumes:` config) is unaffected: the tools use the legacy `LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD` jail exactly as before. Sub-agents inherit the **narrow-only** intersection of the parent's volumes. Agents read their bound volumes at runtime via `Context op=self` (`volumes.bindings`: name / path / mode / default). See `docs/CONFIGURATION.md` §9d.
 
 SSRF semantics (network tools):
 - `HostAllowlist` is **suffix-anchored** at a dot boundary: an entry `example.com` matches `example.com` and `api.example.com` but not `evilexample.com`.

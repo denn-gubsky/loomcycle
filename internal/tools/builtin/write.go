@@ -37,8 +37,9 @@ func (w *Write) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"path":    {"type": "string", "description": "Path RELATIVE to the sandbox write root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see the root."},
-			"content": {"type": "string", "description": "UTF-8 text to write. Replaces any existing content."}
+			"path":    {"type": "string", "description": "Path RELATIVE to the volume root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see your volumes."},
+			"content": {"type": "string", "description": "UTF-8 text to write. Replaces any existing content."},
+			"volume":  {"type": "string", "description": "Optional read-write volume name to write to. Omit to use your default volume. Read-only volumes are refused. Call Context op=self for the volumes you may access."}
 		},
 		"required": ["path", "content"]
 	}`)
@@ -48,6 +49,7 @@ func (w *Write) Execute(ctx context.Context, input json.RawMessage) (tools.Resul
 	var args struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
+		Volume  string `json:"volume"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.Result{Text: "invalid input: " + err.Error(), IsError: true}, nil
@@ -55,7 +57,11 @@ func (w *Write) Execute(ctx context.Context, input json.RawMessage) (tools.Resul
 	if args.Path == "" {
 		return tools.Result{Text: "path is required", IsError: true}, nil
 	}
-	if w.Root == "" {
+	root, err := effectiveRoot(ctx, w.Root, args.Volume, true)
+	if err != nil {
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	if root == "" {
 		return tools.Result{Text: "Write tool is not configured with a sandbox root; refusing to write", IsError: true}, nil
 	}
 
@@ -67,7 +73,7 @@ func (w *Write) Execute(ctx context.Context, input json.RawMessage) (tools.Resul
 		return tools.Result{Text: fmt.Sprintf("content exceeds %d bytes (got %d)", maxBytes, len(args.Content)), IsError: true}, nil
 	}
 
-	target, err := resolveParentInsideRoot(w.Root, args.Path)
+	target, err := resolveParentInsideRoot(root, args.Path)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}

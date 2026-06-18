@@ -53,7 +53,8 @@ func (n *NotebookEdit) InputSchema() json.RawMessage {
 			"cell_id":   {"type": "string", "description": "Target cell id. Required for replace+delete. For insert, when empty the new cell is prepended at index 0; when set, the new cell is inserted AFTER it."},
 			"cell_type": {"type": "string", "enum": ["code", "markdown"], "description": "Cell type for replace/insert. Defaults to 'code' for insert; preserves existing type for replace when omitted."},
 			"source":    {"type": "string", "description": "Cell content. Required for replace and insert."},
-			"mode":      {"type": "string", "enum": ["replace", "insert", "delete"], "description": "Operation. Defaults to 'replace'."}
+			"mode":      {"type": "string", "enum": ["replace", "insert", "delete"], "description": "Operation. Defaults to 'replace'."},
+			"volume":    {"type": "string", "description": "Optional read-write volume name. Omit to use your default volume. Read-only volumes are refused. Call Context op=self for the volumes you may access."}
 		},
 		"required": ["file_path"]
 	}`)
@@ -65,6 +66,7 @@ type notebookEditInput struct {
 	CellType string `json:"cell_type,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Mode     string `json:"mode,omitempty"`
+	Volume   string `json:"volume,omitempty"`
 }
 
 // notebook is the minimal struct we care about. Other keys ride along
@@ -94,7 +96,11 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	if err := json.Unmarshal(input, &args); err != nil {
 		return errResult("invalid input: " + err.Error()), nil
 	}
-	if n.Root == "" {
+	root, rootErr := effectiveRoot(ctx, n.Root, args.Volume, true)
+	if rootErr != nil {
+		return errResult(rootErr.Error()), nil
+	}
+	if root == "" {
 		return errResult("NotebookEdit tool is not configured with a sandbox root; set LOOMCYCLE_WRITE_ROOT"), nil
 	}
 	if args.FilePath == "" {
@@ -130,9 +136,9 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	// exist, matching Edit's posture.
 	target := args.FilePath
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(n.Root, target)
+		target = filepath.Join(root, target)
 	}
-	resolved, rerr := resolveInsideRoot(n.Root, target)
+	resolved, rerr := resolveInsideRoot(root, target)
 	if rerr != nil {
 		return errResult(rerr.Error()), nil
 	}

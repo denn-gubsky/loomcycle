@@ -8,6 +8,55 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in vNEXT
+
+**📁 Filesystem Volumes — per-agent ro/rw scopes (RFC AH Phase 1).** The
+file/exec tools were confined to a single per-instance jail
+(`LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD`) shared by every agent and
+ensemble, so two ensembles in one runtime could read and write into each
+other's working tree with no operator control. Phase 1 introduces a **Volume** —
+a named, per-agent, read-only-or-read-write filesystem root — as the
+filesystem analog of the existing caller-authoritative `allowed_hosts`
+host policy.
+
+- **A new top-level `volumes:` map** (`name -> {path, mode: ro|rw, default}`)
+  declares the universe of bindable roots — the filesystem analog of registered
+  tools. Each `path` MUST already exist and be a directory (validated at
+  config-load; the runtime never creates a static volume), and at most one may
+  be `default: true`.
+- **A per-agent `volumes: [names]` binding** on `AgentDef` confines an agent to
+  exactly the named volumes (validated against the `volumes:` map, like
+  `allowed_tools`). An agent that declares none is implicitly bound to the
+  `default` volume **when one is declared**; otherwise it runs unconfined on the
+  legacy roots (below).
+- **An optional `volume` parameter** on Read / Write / Edit / Glob / Grep / Bash
+  / NotebookEdit selects the binding; omitted → the agent's designated default
+  (or sole binding). **ro/rw enforced:** Write / Edit / NotebookEdit and **Bash**
+  require a read-write volume — Bash refuses a read-only volume rather than ship
+  a guarantee a shell cannot keep (CLAUDE.md rule #7).
+- **Backward-compatible by NOT synthesizing.** With no `volumes:` block and no
+  agent bindings, agents run **unconfined by volumes** and each file tool uses
+  its own legacy root (`Read`←`LOOMCYCLE_READ_ROOT`, `Write`←`WRITE_ROOT`,
+  `Bash`←`BASH_CWD`) — **byte-identical** to before. The three legacy roots are
+  deliberately NOT collapsed into one synthesized `default` volume: a single root
+  cannot reproduce three distinct ones (Read would read WriteRoot, Bash would
+  lose BashCwd), and a `ReadRoot`-only "writes disabled" deploy must not silently
+  gain write access. A `default` volume exists only if the operator declares it.
+- **Spawn confinement (the load-bearing invariant):** a sub-agent inherits its
+  parent's confinement — an *unbound* child gets the parent's policy verbatim; a
+  child that *declares* volumes is **narrowed** to (child-declared) ∩ (parent's
+  active bindings), ro/rw resolving to the more restrictive. A child can never
+  gain a volume its parent lacks; a child that shares none is confined to nothing
+  (its file tools are denied — it does not fall back to the legacy jail).
+  Mirrors host-allowlist narrowing.
+- **Introspection:** `Context op=self` now reports the bound-volume list
+  (name / path / mode / which is default), falling back to the legacy
+  read_root / write_root / bash_cwd dump for an unbound agent.
+
+The TOCTOU-safe path-containment code (`resolveInsideRoot` and siblings) is
+unchanged — volumes only change *which root is passed in*. Phase 2 (the dynamic,
+tenant-scoped `VolumeDef` substrate) is a separate, later release.
+
 ## What's in v1.0.2
 
 **🌐 Permitted host-widen grants now work with no static HTTP allowlist.** A

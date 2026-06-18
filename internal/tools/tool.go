@@ -191,6 +191,67 @@ func ExtraAllowedHosts(ctx context.Context) []string {
 	return v
 }
 
+// ctxKeyVolumePolicy is the context key for the run's effective
+// filesystem-volume policy (RFC AH). It mirrors HostPolicy exactly:
+// the run-start path resolves the agent's declared `volumes` against
+// the operator's top-level `volumes:` config into a binding set and
+// attaches it here; the file/exec tools read it via VolumePolicy to
+// resolve which root a given call targets; sub-agents read the
+// parent's policy from ctx and re-apply NARROW-ONLY narrowing (child ⊆
+// parent), the filesystem analog of the host-allowlist narrowing.
+//
+// A run with NO policy attached (unbound agent, no `volumes:` config)
+// falls back to each tool's construction-time Root — the legacy global
+// jail — so behaviour is byte-identical to pre-feature deployments.
+type ctxKeyVolumePolicy struct{}
+
+// VolumeBinding is one filesystem volume an agent is bound to. Root is
+// the already-resolved absolute path (validated to exist + be a dir at
+// config-load for static volumes); ReadOnly enforces the ro/rw axis
+// (Write/Edit/NotebookEdit and Bash require ReadOnly=false); Default
+// marks the binding used when a tool call omits the `volume` argument.
+type VolumeBinding struct {
+	Name     string
+	Root     string
+	ReadOnly bool
+	Default  bool
+}
+
+// VolumePolicyValue is the run's resolved volume policy.
+//
+// Active distinguishes "volume confinement is in force" from "no policy",
+// which is load-bearing for spawn confinement:
+//   - Active == false (the zero value / never attached): the file tools
+//     fall back to their construction-time Root (the legacy jail). This is
+//     the backward-compat path for deployments + agents that don't use
+//     volumes.
+//   - Active == true: the run is confined to Bindings. An Active policy with
+//     an EMPTY Bindings slice DENIES every file-tool call (e.g. a sub-agent
+//     whose declared volumes share none of the parent's). It must NOT fall
+//     back to the legacy jail — otherwise narrowing a child to nothing would
+//     silently hand it the (broader) jail instead of denying it.
+type VolumePolicyValue struct {
+	Active   bool
+	Bindings []VolumeBinding
+}
+
+// WithVolumePolicy attaches the run's volume policy to ctx. It ALWAYS sets
+// the value — even an inactive/empty policy must OVERWRITE any policy a child
+// ctx inherited from its parent. (A sub-agent narrowed to an empty binding
+// set would otherwise keep the parent's policy via ctx-value inheritance, a
+// confinement-widening bug.)
+func WithVolumePolicy(ctx context.Context, p VolumePolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyVolumePolicy{}, p)
+}
+
+// VolumePolicy returns the run's volume policy from ctx, or the zero value
+// (Active=false) when none was attached. Active=false is the "unbound /
+// legacy jail" signal — the tools use their construction-time Root.
+func VolumePolicy(ctx context.Context) VolumePolicyValue {
+	v, _ := ctx.Value(ctxKeyVolumePolicy{}).(VolumePolicyValue)
+	return v
+}
+
 // ctxKeyRunIdentity is the context key under which the runtime
 // stashes the current run's user_id and agent_id (v0.4 tracking
 // fields). Sub-agents read these via RunIdentity to inherit the

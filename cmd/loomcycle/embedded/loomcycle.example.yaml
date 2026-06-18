@@ -412,6 +412,28 @@ defaults:
 
 # (Model aliases are defined at the TOP of this file — see "Model aliases".)
 
+# ─── Volumes (RFC AH Phase 1) ─────────────────────────────────────────
+# Named filesystem roots the file/exec tools (Read/Write/Edit/Glob/Grep/
+# Bash/NotebookEdit) resolve paths against — the filesystem analog of the
+# host allowlist. Each path MUST already exist and be a directory
+# (validated at config-load; the runtime never creates a static volume).
+# At most one may be `default: true` — it's used when a tool call omits
+# the `volume` argument.
+#
+# OMIT this whole block to keep the legacy single jail: with no volumes:
+# and no per-agent `volumes:`, the file tools use LOOMCYCLE_READ_ROOT /
+# WRITE_ROOT / BASH_CWD exactly as before (nothing is synthesized — the
+# three legacy roots are NOT collapsed into one volume). Declare a volume
+# named `default` here to give unbound agents a default; otherwise bind an
+# agent via its `volumes:` list (see the agents block below).
+# ro = Read/Glob/Grep only; rw = also Write/Edit/Bash/Notebook.
+# `loomcycle help volumes` for the full topic.
+#
+# volumes:
+#   default:   { path: /work/sandbox,     mode: rw, default: true }
+#   reference: { path: /work/reference,   mode: ro }
+#   repo-a:    { path: /work/ensembles/a, mode: rw }
+
 # ─── Agents ───────────────────────────────────────────────────────────
 # Each agent is addressed by name in POST /v1/runs's "agent" field.
 # allowed_tools is the ANCHORED allowlist — anything not on the list is

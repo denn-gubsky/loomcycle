@@ -153,6 +153,23 @@ type Config struct {
 	// factory land in MR-3b.
 	MemoryBackends map[string]MemoryBackend `yaml:"memory_backends"`
 
+	// Volumes is the RFC AH Phase 1 registry of named filesystem volumes
+	// — the universe of ro/rw roots an AgentDef may bind to (the
+	// filesystem analog of "registered tools" for allowed_tools). Each
+	// entry's `path` MUST already exist and be a directory (validated at
+	// config-load; the runtime never mkdir's a static volume); at most
+	// one entry may be `default: true`. When the operator declares no
+	// `volumes:` block, agents run UNCONFINED by volumes and the file tools
+	// use their legacy LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD roots
+	// (byte-identical to a pre-feature deployment) — the three legacy roots
+	// are deliberately NOT collapsed into one synthesized `default` volume (a
+	// single root can't reproduce three distinct ones: Read would read
+	// WriteRoot, Bash would lose BashCwd). A `default` volume exists only if
+	// the operator declares it; unbound agents bind to it when present. Only
+	// the static Phase 1 surface lives here; the dynamic VolumeDef substrate
+	// (Phase 2) is a separate, later feature.
+	Volumes map[string]Volume `yaml:"volumes"`
+
 	// Interruption is the v0.8.16 top-level config block for the
 	// Interruption tool. Operator picks the delivery backend
 	// (webui / mcp_server:<name> / cli) and the env-cap defaults.
@@ -669,6 +686,18 @@ type AgentDef struct {
 	// compact runs. Inherited down the spawn tree (parent-set fields win; a
 	// child def fills gaps), overridable per-spawn via the Agent tool.
 	Compaction *Compaction `yaml:"compaction,omitempty"`
+
+	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
+	// names of top-level `volumes:` entries the agent's file/exec tools
+	// (Read/Write/Edit/Glob/Grep/Bash/NotebookEdit) may resolve paths
+	// against. Validated at config-load to reference declared volumes
+	// (mirrors how allowed_tools validates against registered tools). An
+	// agent that declares NO volumes is implicitly bound to [default]
+	// (backward-compatible). An agent that declares volumes is confined
+	// to EXACTLY those — it does NOT implicitly also get `default`.
+	// Sub-agents inherit a NARROW-ONLY intersection of (child-declared) ∩
+	// (parent's active bindings); see server.runSubAgent.
+	Volumes []string `yaml:"volumes"`
 
 	// Providers is the per-agent override of the library
 	// ProviderPriority for tier resolution. Full replacement
@@ -1213,6 +1242,36 @@ type AgentInterruptionACL struct {
 //     an ACL pattern looks wrong for the semantic (e.g. multiple
 //     subscribers on a queue-shaped channel with the same scope
 //     will compete for messages).
+//
+// Volume is one entry in the top-level `volumes:` map (RFC AH Phase 1)
+// — a named filesystem root plus its access mode. It is the root the
+// file/exec tools resolve paths against; an agent binds to a set of
+// these by name via AgentDef.Volumes.
+//
+// Trust posture: static volumes are OPERATOR-AUTHORED (the same trust
+// the legacy jail roots carry) and may map anywhere on disk, but the
+// path MUST already exist + be a directory (validated at config-load —
+// the runtime never creates a static volume). The dynamic, confined,
+// auto-provisioned VolumeDef substrate is Phase 2, not in this struct.
+type Volume struct {
+	// Path is the absolute-or-relative directory root. Resolved to an
+	// absolute path at config-load and validated to exist + be a dir.
+	Path string `yaml:"path"`
+	// Mode is "rw" (read+write) or "ro" (read-only). Empty defaults to
+	// "rw" — validated to one of the two. Write/Edit/NotebookEdit and
+	// Bash require "rw"; Read/Glob/Grep operate on either.
+	Mode string `yaml:"mode"`
+	// Default marks this volume as the one a tool call uses when it omits
+	// the `volume` argument. At most one volume may set this (validated).
+	Default bool `yaml:"default"`
+}
+
+// ReadOnly reports whether this volume is read-only. Empty Mode (the
+// default) is read+write; only an explicit "ro" is read-only. Mode is
+// validated to {rw, ro, ""} at config-load, so a non-empty non-"ro"
+// value here is already "rw".
+func (v Volume) ReadOnly() bool { return v.Mode == "ro" }
+
 type Channel struct {
 	Scope       string `yaml:"scope"`
 	DefaultTTL  int    `yaml:"default_ttl"`
@@ -3079,6 +3138,64 @@ func addContextToolDefaults(cfg *Config) {
 	}
 }
 
+// validateVolumes checks the top-level `volumes:` map (RFC AH Phase 1)
+// and normalises each path to absolute in place. Rules:
+//   - Mode is one of "ro" / "rw" / "" (empty defaults to rw).
+//   - Path is required, must already exist, and must be a directory.
+//     Static volumes map EXISTING infrastructure — the runtime never
+//     creates one — so a missing/non-dir path is a config-load error
+//     (surfaced here rather than as a baffling call-time failure).
+//   - At most one volume may be `default: true`.
+//
+// Paths are resolved to absolute so the run-start binding resolution +
+// the tools' resolveInsideRoot get a stable root independent of process
+// cwd. Symlinks are left intact here; resolveInsideRoot EvalSymlinks at
+// call time (the TOCTOU-safe containment check is unchanged).
+func validateVolumes(c *Config) error {
+	defaultSeen := ""
+	// Deterministic iteration order so the "two defaults" error names a
+	// stable pair across runs (Go map order is randomised).
+	names := make([]string, 0, len(c.Volumes))
+	for name := range c.Volumes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		v := c.Volumes[name]
+		if name == "" {
+			return fmt.Errorf("volumes: empty volume name")
+		}
+		switch v.Mode {
+		case "", "rw", "ro":
+		default:
+			return fmt.Errorf("volumes.%s: invalid mode %q (want \"rw\", \"ro\", or empty for rw)", name, v.Mode)
+		}
+		if v.Path == "" {
+			return fmt.Errorf("volumes.%s: path is required", name)
+		}
+		abs, err := filepath.Abs(v.Path)
+		if err != nil {
+			return fmt.Errorf("volumes.%s: resolve path %q: %w", name, v.Path, err)
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return fmt.Errorf("volumes.%s: path %q must already exist (static volumes map existing infrastructure; the runtime never creates them): %w", name, abs, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("volumes.%s: path %q is not a directory", name, abs)
+		}
+		v.Path = abs
+		c.Volumes[name] = v
+		if v.Default {
+			if defaultSeen != "" {
+				return fmt.Errorf("volumes: at most one volume may be default:true (found %q and %q)", defaultSeen, name)
+			}
+			defaultSeen = name
+		}
+	}
+	return nil
+}
+
 // ResolveAgentModel returns (provider, model) for the named agent, walking
 // model aliases and provider defaults.
 func (c *Config) ResolveAgentModel(agent string) (provider string, model string, err error) {
@@ -4048,6 +4165,16 @@ func validate(c *Config) error {
 			return err
 		}
 	}
+	// RFC AH Phase 1: validate the top-level `volumes:` map. Each path must
+	// already exist + be a directory (static volumes map existing
+	// infrastructure; the runtime never creates them — same posture as a
+	// missing legacy ReadRoot failing at call time, surfaced earlier here).
+	// At most one volume may be `default: true`. Mode must be ro/rw/empty.
+	// Paths are resolved to absolute IN PLACE so the run-start binding
+	// resolution gets a stable absolute Root regardless of process cwd.
+	if err := validateVolumes(c); err != nil {
+		return err
+	}
 	for name, agent := range c.Agents {
 		// Tier-based resolution and explicit pin are mutually
 		// exclusive — pinning a model and asking for a tier is
@@ -4102,6 +4229,17 @@ func validate(c *Config) error {
 		for i, sc := range agent.MemoryScopes {
 			if !validMemoryScopes[sc] {
 				return fmt.Errorf("agent %q: memory_scopes[%d]: unknown scope %q (want one of: agent, user)", name, i, sc)
+			}
+		}
+		// RFC AH Phase 1: a per-agent `volumes` binding must reference a
+		// declared top-level `volumes:` entry (mirrors how allowed_tools
+		// validates against registered tools — operator-yaml is the floor,
+		// the model can never enlarge its own filesystem access). An agent
+		// that declares NO volumes is implicitly bound to [default] and so
+		// needs no validation here.
+		for i, vn := range agent.Volumes {
+			if _, ok := c.Volumes[vn]; !ok {
+				return fmt.Errorf("agent %q: volumes[%d]: unknown volume %q (declare it in the top-level volumes: map)", name, i, vn)
 			}
 		}
 		// Non-fatal: "tool in allowed_tools but its capability gate is unset"

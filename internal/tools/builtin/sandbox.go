@@ -1,10 +1,109 @@
 package builtin
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// effectiveRoot resolves which sandbox root a file/exec tool call targets
+// (RFC AH Phase 1). It is the ONE seam volumes add: every file tool calls
+// this to pick a root, then the UNCHANGED resolveInsideRoot(root, path)
+// does the TOCTOU-safe containment check against it.
+//
+// Two paths:
+//
+//   - No VolumePolicy on ctx (an UNBOUND agent, or a deployment with no
+//     `volumes:` config) → return fallbackRoot, the tool's
+//     construction-time Root (the legacy jail). This is the
+//     backward-compat path: behaviour is byte-identical to pre-feature.
+//     The `volume` argument is ignored in this mode — there are no named
+//     volumes to address, so naming one is meaningless rather than an
+//     error (the legacy single-jail has exactly one root).
+//
+//   - A VolumePolicy exists (a BOUND agent) → resolve the named binding,
+//     or the designated default when volumeName is empty, and enforce the
+//     ro/rw axis. Returns a model-facing error (surfaced as is_error so
+//     the model can self-correct) listing the available volumes on a
+//     miss. Resolution rules (RFC §2/§5):
+//
+//   - volumeName == "" → the binding marked Default, or the SOLE
+//     binding when there's exactly one. Multiple bindings + no
+//     designated default → error listing the names.
+//
+//   - volumeName != "" → that binding; the agent isn't bound to it →
+//     error listing the volumes it IS bound to.
+//
+//   - needWrite && binding.ReadOnly → refuse (Write/Edit/NotebookEdit
+//     and Bash require rw; Bash cannot truly enforce ro, so it refuses
+//     rather than ship a false guarantee — RFC §6).
+func effectiveRoot(ctx context.Context, fallbackRoot, volumeName string, needWrite bool) (string, error) {
+	pol := tools.VolumePolicy(ctx)
+	if !pol.Active {
+		// No volume confinement in force → legacy construction-time root.
+		// fallbackRoot may be "" (an unset root), in which case the caller's
+		// existing empty-Root guard refuses the call exactly as before.
+		return fallbackRoot, nil
+	}
+	if len(pol.Bindings) == 0 {
+		// Active but confined to NOTHING (e.g. a sub-agent whose declared
+		// volumes share none of the parent's). Deny — do NOT fall back to the
+		// legacy jail, or spawn confinement would be a no-op.
+		return "", fmt.Errorf("no filesystem volume is available to this agent; refusing")
+	}
+
+	var binding *tools.VolumeBinding
+	if volumeName == "" {
+		binding = defaultBinding(pol.Bindings)
+		if binding == nil {
+			return "", fmt.Errorf("no volume specified and no default binding; specify one of: %s", volumeNames(pol.Bindings))
+		}
+	} else {
+		for i := range pol.Bindings {
+			if pol.Bindings[i].Name == volumeName {
+				binding = &pol.Bindings[i]
+				break
+			}
+		}
+		if binding == nil {
+			return "", fmt.Errorf("not bound to volume %q; available: %s", volumeName, volumeNames(pol.Bindings))
+		}
+	}
+
+	if needWrite && binding.ReadOnly {
+		return "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", binding.Name)
+	}
+	return binding.Root, nil
+}
+
+// defaultBinding returns the binding a call with no explicit `volume`
+// targets: the one marked Default, else the sole binding when there's
+// exactly one, else nil (the caller errors listing the names). Returns a
+// pointer into the input slice — do not retain past the call.
+func defaultBinding(bindings []tools.VolumeBinding) *tools.VolumeBinding {
+	for i := range bindings {
+		if bindings[i].Default {
+			return &bindings[i]
+		}
+	}
+	if len(bindings) == 1 {
+		return &bindings[0]
+	}
+	return nil
+}
+
+// volumeNames renders the bound volume names for a model-facing error so
+// the model can pick a valid one without an extra Context op=self call.
+func volumeNames(bindings []tools.VolumeBinding) string {
+	names := make([]string, 0, len(bindings))
+	for _, b := range bindings {
+		names = append(names, b.Name)
+	}
+	return strings.Join(names, ", ")
+}
 
 // absUnderRoot makes target absolute, anchoring a RELATIVE target to the
 // sandbox root — NOT the loomcycle process's working directory.

@@ -64,6 +64,8 @@ file/network group (`Read` / `Write` / `Edit` / `HTTP` / `WebFetch` /
 Cross-cutting topics that explain how these compose:
 
 - `help(topic="scopes")` — agent vs user scope across Memory + Channel
+- `help(topic="volumes")` — filesystem volumes: the named ro/rw roots
+  your file/exec tools use + the optional `volume` tool argument
 - `help(topic="subagents")` — when to spawn vs publish to a channel
 - `help(topic="experimentation")` — AgentDef + Evaluation fork-and-score
 - `help(topic="skills-evolution")` — SkillDef substrate for runtime

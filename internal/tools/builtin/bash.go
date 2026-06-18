@@ -57,8 +57,9 @@ func (b *Bash) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"command":         {"type": "string", "description": "Shell command to execute via /bin/sh -c. The working directory is already set to your sandbox; use paths RELATIVE to it (e.g. \"ls .\", \"cat src/main.go\") — not absolute host paths or ~. Call Context op=self to see the cwd."},
-			"timeout_seconds": {"type": "integer", "description": "Per-call timeout. Capped at 300s."}
+			"command":         {"type": "string", "description": "Shell command to execute via /bin/sh -c. The working directory is already set to your volume root; use paths RELATIVE to it (e.g. \"ls .\", \"cat src/main.go\") — not absolute host paths or ~. Call Context op=self to see your volumes."},
+			"timeout_seconds": {"type": "integer", "description": "Per-call timeout. Capped at 300s."},
+			"volume":          {"type": "string", "description": "Optional read-write volume name to run in (sets the working directory). Omit to use your default volume. Read-only volumes are refused — Bash cannot enforce read-only, so it requires read-write. Call Context op=self for the volumes you may access."}
 		},
 		"required": ["command"]
 	}`)
@@ -74,6 +75,7 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	var args struct {
 		Command        string `json:"command"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
+		Volume         string `json:"volume"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.Result{Text: "invalid input: " + err.Error(), IsError: true}, nil
@@ -81,14 +83,23 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if !b.Enabled {
 		return tools.Result{Text: "Bash tool is not enabled (set LOOMCYCLE_BASH_ENABLED=1); refusing", IsError: true}, nil
 	}
-	if b.Cwd == "" {
-		return tools.Result{Text: "Bash tool has no cwd configured; refusing", IsError: true}, nil
-	}
 	if args.Command == "" {
 		return tools.Result{Text: "command is required", IsError: true}, nil
 	}
 
-	cwd, err := filepath.EvalSymlinks(b.Cwd)
+	// needWrite=true: Bash binds cwd to the volume root but CANNOT enforce
+	// read-only (a shell can write via absolute paths / redirection — see
+	// the "not a true sandbox" doc above + RFC AH §6). Rather than ship a
+	// false ro guarantee, effectiveRoot refuses a read-only volume here.
+	cwdRoot, rootErr := effectiveRoot(ctx, b.Cwd, args.Volume, true)
+	if rootErr != nil {
+		return tools.Result{Text: rootErr.Error(), IsError: true}, nil
+	}
+	if cwdRoot == "" {
+		return tools.Result{Text: "Bash tool has no cwd configured; refusing", IsError: true}, nil
+	}
+
+	cwd, err := filepath.EvalSymlinks(cwdRoot)
 	if err != nil {
 		return tools.Result{Text: "cwd: " + err.Error(), IsError: true}, nil
 	}

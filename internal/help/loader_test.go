@@ -51,6 +51,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"subagents",
 		"system-channels",
 		"vector-memory",
+		"volumes",
 		"voyage-embedder",
 	}
 	for _, w := range want {
