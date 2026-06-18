@@ -17,6 +17,7 @@ func TestMaskOutbound_RenamesLoomcycleOnlyBuiltins(t *testing.T) {
 		{Name: "Memory", Description: "memory tool", InputSchema: json.RawMessage(`{}`)},
 		{Name: "Channel", Description: "channel tool"},
 		{Name: "Agent", Description: "spawn"},
+		{Name: "VolumeDef", Description: "volume def"},             // RFC AH Phase 2a
 		{Name: "Read", Description: "file read"},                  // Claude Code overlap; untouched
 		{Name: "mcp__github__list_issues", Description: "github"}, // real MCP; untouched
 	}
@@ -30,11 +31,14 @@ func TestMaskOutbound_RenamesLoomcycleOnlyBuiltins(t *testing.T) {
 	if out[2].Name != "mcp__loomcycle__agent" {
 		t.Errorf("Agent → %q", out[2].Name)
 	}
-	if out[3].Name != "Read" {
-		t.Errorf("Read should pass through unmasked: %q", out[3].Name)
+	if out[3].Name != "mcp__loomcycle__volumedef" {
+		t.Errorf("VolumeDef → %q, want mcp__loomcycle__volumedef", out[3].Name)
 	}
-	if out[4].Name != "mcp__github__list_issues" {
-		t.Errorf("real mcp__* should pass through unmasked: %q", out[4].Name)
+	if out[4].Name != "Read" {
+		t.Errorf("Read should pass through unmasked: %q", out[4].Name)
+	}
+	if out[5].Name != "mcp__github__list_issues" {
+		t.Errorf("real mcp__* should pass through unmasked: %q", out[5].Name)
 	}
 	// Description gets the prefix so transcripts make the masking
 	// visible to operators + model.
@@ -42,8 +46,8 @@ func TestMaskOutbound_RenamesLoomcycleOnlyBuiltins(t *testing.T) {
 		t.Errorf("masked descriptor missing prefix: %q", out[0].Description)
 	}
 	// Non-masked tools' descriptions stay unchanged.
-	if strings.HasPrefix(out[3].Description, DescriptionPrefix) {
-		t.Errorf("Read description should not get mask prefix: %q", out[3].Description)
+	if strings.HasPrefix(out[4].Description, DescriptionPrefix) {
+		t.Errorf("Read description should not get mask prefix: %q", out[4].Description)
 	}
 }
 

@@ -1127,12 +1127,10 @@ func main() {
 		}
 	}
 
-	// Back-fill Context tool's catalog with the FINAL allTools slice
-	// (including MCP-served tools registered above) so doc/tools ops
-	// reflect the complete runtime catalog. Must happen AFTER every
-	// allTools = append(...) line above.
-	contextTool.Tools = allTools
-
+	// The Context tool's catalog (used by `Context op=tools`) is wired inside
+	// lchttp.New — it must include the Agent tool that New appends to the
+	// server's tool set, which isn't in allTools here (F45). New re-points any
+	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	// v0.9.x — wire the MCPServerDef substrate tool. NOT in allTools
 	// (operator-admin-only); reached via Connector.MCPServerDef + the

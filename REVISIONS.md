@@ -220,6 +220,21 @@ them and the adapters stay thin.
   programmatic transport (that's a Phase-4 UI affordance) — callers are trusted
   code; the server-side four-way fence is the real guard.
 
+**🩹 Two sandbox-finding fixes (F45, F47).** Surfaced by the exp8 sandbox run:
+- **F45 — `Context op=tools` now lists the Agent tool.** The Context tool's
+  advertised catalog was the pre-server tool list; the runtime appends the
+  `Agent` (sub-agent spawn) tool to its own set inside `New()`, so `Context
+  op=tools` silently omitted it (the tool always *worked* — it just wasn't
+  advertised). `New()` now re-points the Context tool's catalog to the complete
+  post-append set, so introspection matches what the agent can actually call.
+- **F47 — `POST /v1/runs` accepts a top-level `prompt` + rejects empty input.**
+  The run request only had `segments`; a caller that sent `{"prompt":"..."}`
+  had the unknown field silently dropped → an empty messages array → a confusing
+  provider-side 400 (Anthropic) or a silently empty run (DeepSeek). `prompt` is
+  now accepted as sugar (expands to one trusted-text user segment; explicit
+  `segments` wins when both are present), and a run that resolves to no input
+  returns a clear `400 no input` instead of reaching the provider empty.
+
 ## What's in v1.0.2
 
 **🌐 Permitted host-widen grants now work with no static HTTP allowlist.** A
