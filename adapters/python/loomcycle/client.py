@@ -682,6 +682,40 @@ class LoomcycleClient:
             "applied": resp.applied,
         }
 
+    async def run_input(self, run_id: str, text: str) -> Mapping[str, Any]:
+        """Push an operator steering message into a LIVE interactive run
+        (RFC AI; mirror of ``POST /v1/runs/{run_id}/input``). The run must
+        be in-flight — parked at end_turn awaiting input, or mid-turn (the
+        message is drained at the next iteration boundary). Returns
+        ``{run_id, delivered}``. An unknown / cross-tenant run_id maps to
+        :class:`AgentNotFoundError` (NotFound); a full steer queue to
+        :class:`BackpressureError` (ResourceExhausted). The injected source
+        is server-stamped (``"api"``), never sent from here."""
+        req = pb.RunInputRequest(run_id=run_id, text=text)
+        try:
+            resp = await self._stub.RunInput(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {"run_id": resp.run_id, "delivered": resp.delivered}
+
+    def stream_run(self, run_id: str, *, from_seq: int = 0) -> AsyncIterator[AgentEvent]:
+        """Re-attach to a run's event stream by ``run_id`` (RFC AI; mirror
+        of ``GET /v1/runs/{run_id}/stream``), replaying from ``from_seq``
+        then live-tailing. The operator's own turns are replayed too (as
+        ``steer`` events with ``user_input.source == "replay"``), so a
+        cold client — e.g. resuming on another device — reconstructs the
+        whole conversation. A PARKED interactive run keeps streaming until
+        it ends or the call's context is cancelled. An unknown /
+        cross-tenant run_id maps to :class:`AgentNotFoundError` (NotFound).
+
+        Sync-returning — consume with ``async for`` (see
+        :meth:`run_streaming`)."""
+        req = pb.StreamRunRequest(run_id=run_id, from_seq=from_seq)
+        return self._drive_stream(
+            self._stub.StreamRun(req, metadata=self._auth_metadata()),
+            on_handle=None,
+        )
+
     async def resolve_probe(self) -> Mapping[str, Any]:
         """Return the resolver's current per-(provider, model)
         availability matrix (issue #88 operator escape hatch; mirror of
@@ -908,10 +942,16 @@ class LoomcycleClient:
         user_bearer: str = "",
         sampling: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
+        interactive: bool = False,
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Drive one agent run end-to-end, yielding each
         ``AgentEvent`` as it arrives.
+
+        ``interactive=True`` (RFC AI) starts a PERSISTENT run that parks
+        at end_turn awaiting operator steering instead of terminating;
+        drive it with :meth:`run_input`, re-attach with :meth:`stream_run`,
+        and ``cancel_agent`` to end it.
 
         The synthetic ``"session"`` and ``"agent"`` registration
         frames the server emits before the first provider event are
@@ -958,6 +998,7 @@ class LoomcycleClient:
             user_bearer=user_bearer,
             sampling=sampling,
             compaction=compaction,
+            interactive=interactive,
         )
         return self._drive_stream(
             self._stub.Run(req, metadata=self._auth_metadata()),
@@ -977,11 +1018,15 @@ class LoomcycleClient:
         user_bearer: str = "",
         sampling: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
+        interactive: bool = False,
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Continue an existing session. Same yield shape as
         ``run_streaming``; the agent + user_id + tenant_id are
         inherited from the existing session row server-side.
+
+        ``interactive=True`` (RFC AI) parks the continuation at end_turn
+        for operator steering (see :meth:`run_streaming`).
 
         ``user_tier`` and ``user_bearer`` are per-call (not session-
         bound) — a user upgrading mid-session sees the new tier
@@ -999,6 +1044,7 @@ class LoomcycleClient:
             agent_id=agent_id,
             user_tier=user_tier,
             user_bearer=user_bearer,
+            interactive=interactive,
         )
         if allowed_hosts is not None:
             req.allowed_hosts.list.extend(allowed_hosts)
@@ -1270,6 +1316,7 @@ def _build_run_request(
     user_bearer: str = "",
     sampling: Optional[Mapping[str, Any]] = None,
     compaction: Optional[Mapping[str, Any]] = None,
+    interactive: bool = False,
 ) -> "pb.RunRequest":
     """Construct a pb.RunRequest from the run params. Shared by
     run_streaming + the batch builder so the field-mapping lives in one
@@ -1286,6 +1333,7 @@ def _build_run_request(
         tenant_id=tenant_id,
         user_tier=user_tier,
         user_bearer=user_bearer,
+        interactive=interactive,
     )
     if allowed_hosts is not None:
         req.allowed_hosts.list.extend(allowed_hosts)

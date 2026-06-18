@@ -68,6 +68,28 @@ class HostWidening:
 
 
 @dataclass(frozen=True)
+class AwaitingInput:
+    """Structured payload on ``awaiting_input`` events (RFC AI) — a
+    persistent interactive run parked at end_turn. ``since_turn`` is the
+    iteration it parked after. Mirrors
+    ``providers.AwaitingInputEventInfo``."""
+
+    since_turn: int
+
+
+@dataclass(frozen=True)
+class UserInput:
+    """Structured payload on ``steer`` events (RFC AI) — an operator
+    steering message drained into the conversation, or (on a
+    ``stream_run`` re-attach) a replayed operator turn (``source="replay"``).
+    Mirrors ``providers.UserInputEventInfo``."""
+
+    text: str
+    source: str  # "api" | "webui" | "replay"
+    seen_at: str  # RFC3339Nano
+
+
+@dataclass(frozen=True)
 class AgentEvent:
     """One frame from a Run/Continue stream.
 
@@ -87,6 +109,8 @@ class AgentEvent:
     usage: Optional[Usage] = None
     retry: Optional[Retry] = None
     host_widening: Optional[HostWidening] = None
+    awaiting_input: Optional[AwaitingInput] = None
+    user_input: Optional[UserInput] = None
     error: str = ""
     is_error: bool = False
     stop_reason: str = ""
@@ -130,6 +154,16 @@ class AgentEvent:
                 hook_name=ev.host_widening.hook_name,
                 hosts_added=tuple(ev.host_widening.hosts_added),
             )
+        ai: Optional[AwaitingInput] = None
+        if ev.HasField("awaiting_input"):
+            ai = AwaitingInput(since_turn=ev.awaiting_input.since_turn)
+        ui: Optional[UserInput] = None
+        if ev.HasField("user_input"):
+            ui = UserInput(
+                text=ev.user_input.text,
+                source=ev.user_input.source,
+                seen_at=ev.user_input.seen_at,
+            )
         return cls(
             type=ev.type,
             text=ev.text,
@@ -137,6 +171,8 @@ class AgentEvent:
             usage=u,
             retry=r,
             host_widening=hw,
+            awaiting_input=ai,
+            user_input=ui,
             error=ev.error,
             is_error=ev.is_error,
             stop_reason=ev.stop_reason,
