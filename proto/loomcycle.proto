@@ -270,6 +270,17 @@ service Loomcycle {
   // (create / rotate / retire / get / list).
   rpc OperatorTokenDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // VolumeDef dispatches to the RFC AH dynamic filesystem-volume
+  // substrate. Mirrors POST /v1/_volumedef. TENANT-CONFINED (ScopeTenant,
+  // like AgentDef/SkillDef — NOT operator-admin-only): the tool stamps the
+  // caller's authoritative tenant + opaque-404s cross-tenant reads. A
+  // VolumeDef is flat (a pointer to mutable on-disk state, not a versioned
+  // definition), so the op set is create / get / list / delete / purge —
+  // NOT the content-addressed retire/promote/fork of the families above.
+  // Same SubstrateRequest body shape (op-discriminated input_json +
+  // is_error tool refusals in the response).
+  rpc VolumeDef(SubstrateRequest) returns (SubstrateResponse);
+
   // ----- v0.9.x n8n RFC Phase 0 -----
   //
   // ListChannels mirrors GET /v1/_channels — operator-declared

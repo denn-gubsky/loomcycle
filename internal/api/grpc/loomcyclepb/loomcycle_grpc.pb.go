@@ -69,6 +69,7 @@ const (
 	Loomcycle_WebhookDef_FullMethodName          = "/loomcycle.v1.Loomcycle/WebhookDef"
 	Loomcycle_MemoryBackendDef_FullMethodName    = "/loomcycle.v1.Loomcycle/MemoryBackendDef"
 	Loomcycle_OperatorTokenDef_FullMethodName    = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
+	Loomcycle_VolumeDef_FullMethodName           = "/loomcycle.v1.Loomcycle/VolumeDef"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
 	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
 	Loomcycle_PublishChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PublishChannel"
@@ -266,6 +267,16 @@ type LoomcycleClient interface {
 	// SubstrateRequest body shape — op-discriminated input_json
 	// (create / rotate / retire / get / list).
 	OperatorTokenDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// VolumeDef dispatches to the RFC AH dynamic filesystem-volume
+	// substrate. Mirrors POST /v1/_volumedef. TENANT-CONFINED (ScopeTenant,
+	// like AgentDef/SkillDef — NOT operator-admin-only): the tool stamps the
+	// caller's authoritative tenant + opaque-404s cross-tenant reads. A
+	// VolumeDef is flat (a pointer to mutable on-disk state, not a versioned
+	// definition), so the op set is create / get / list / delete / purge —
+	// NOT the content-addressed retire/promote/fork of the families above.
+	// Same SubstrateRequest body shape (op-discriminated input_json +
+	// is_error tool refusals in the response).
+	VolumeDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -639,6 +650,16 @@ func (c *loomcycleClient) OperatorTokenDef(ctx context.Context, in *SubstrateReq
 	return out, nil
 }
 
+func (c *loomcycleClient) VolumeDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_VolumeDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListChannelsResponse)
@@ -915,6 +936,16 @@ type LoomcycleServer interface {
 	// SubstrateRequest body shape — op-discriminated input_json
 	// (create / rotate / retire / get / list).
 	OperatorTokenDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// VolumeDef dispatches to the RFC AH dynamic filesystem-volume
+	// substrate. Mirrors POST /v1/_volumedef. TENANT-CONFINED (ScopeTenant,
+	// like AgentDef/SkillDef — NOT operator-admin-only): the tool stamps the
+	// caller's authoritative tenant + opaque-404s cross-tenant reads. A
+	// VolumeDef is flat (a pointer to mutable on-disk state, not a versioned
+	// definition), so the op set is create / get / list / delete / purge —
+	// NOT the content-addressed retire/promote/fork of the families above.
+	// Same SubstrateRequest body shape (op-discriminated input_json +
+	// is_error tool refusals in the response).
+	VolumeDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -1052,6 +1083,9 @@ func (UnimplementedLoomcycleServer) MemoryBackendDef(context.Context, *Substrate
 }
 func (UnimplementedLoomcycleServer) OperatorTokenDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method OperatorTokenDef not implemented")
+}
+func (UnimplementedLoomcycleServer) VolumeDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumeDef not implemented")
 }
 func (UnimplementedLoomcycleServer) ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListChannels not implemented")
@@ -1642,6 +1676,24 @@ func _Loomcycle_OperatorTokenDef_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_VolumeDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).VolumeDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_VolumeDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).VolumeDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_ListChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListChannelsRequest)
 	if err := dec(in); err != nil {
@@ -1901,6 +1953,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "OperatorTokenDef",
 			Handler:    _Loomcycle_OperatorTokenDef_Handler,
+		},
+		{
+			MethodName: "VolumeDef",
+			Handler:    _Loomcycle_VolumeDef_Handler,
 		},
 		{
 			MethodName: "ListChannels",
