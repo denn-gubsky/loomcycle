@@ -107,6 +107,13 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	if sdp.SelfName == "" {
 		t.Errorf("ScheduleDefPolicy.SelfName empty; `self` scope check would always fail")
 	}
+
+	// VolumeDefPolicy: empty Scopes ⇒ MCP `volumedef` meta-tool refuses
+	// create/delete/purge with default-deny. RFC AH Phase 5 regression guard.
+	vdp := tools.VolumeDefPolicy(ctx)
+	if len(vdp.Scopes) == 0 {
+		t.Errorf("VolumeDefPolicy.Scopes empty; VolumeDef create/delete/purge via MCP would fail")
+	}
 }
 
 // TestOperatorCtx_PreservesParentValues ensures operatorCtx layers on

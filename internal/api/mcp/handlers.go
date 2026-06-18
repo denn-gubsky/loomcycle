@@ -91,6 +91,14 @@ var handlersByName = map[string]toolHandler{
 	"operatortokendef": wrapBuiltin("operatortokendef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.OperatorTokenDef(ctx, in)
 	}),
+	// volumedef: RFC AH dynamic filesystem-volume substrate. Tenant-confined
+	// (NOT operator-admin-only): the tenant is authoritative from ctx
+	// (operatorCtx → RunIdentity), never the wire, and paths are runtime-
+	// derived inside the operator-blessed dynamic_root — callers never control
+	// the host path. ops: create/get/list/delete/purge.
+	"volumedef": wrapBuiltin("volumedef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.VolumeDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

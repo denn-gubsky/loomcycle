@@ -91,6 +91,8 @@ import type {
   MemoryScopeIDsResponse,
   MemoryScopesResponse,
   PauseResult,
+  PersistentVolumesResponse,
+  EphemeralVolumesResponse,
   RegisterHookOptions,
   RegisterHookResponse,
   ResolveInterruptOptions,
@@ -1015,6 +1017,59 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_operatortokendef", input, opts);
+  }
+
+  // ---- RFC AH (v0.35.0) dynamic filesystem volumes ----
+
+  /** Invoke the RFC AH VolumeDef substrate tool over HTTP. Provision +
+   *  manage CONFINED, per-tenant filesystem volumes at runtime.
+   *  Tenant-confined (ScopeTenant, not operator-admin-only): the runtime
+   *  stamps the caller's authoritative tenant and opaque-404s cross-tenant.
+   *
+   *  Op-discriminated input. A VolumeDef is FLAT (a pointer to mutable
+   *  on-disk state, not a versioned definition), so the op set is
+   *  `{op: "create" | "get" | "list" | "delete" | "purge", ...}` — NOT the
+   *  content-addressed retire/promote/fork of the other Def families:
+   *  - `create` — `{op, name, mode}`. The runtime DERIVES the path inside the
+   *    operator-blessed `dynamic_root` (`<root>/<tenant>/<name>`) and
+   *    `MkdirAll`s it; you never supply a host path.
+   *  - `delete` — non-destructive: drops the mapping, leaves files on disk.
+   *  - `purge`  — destructive: drops the mapping AND `RemoveAll`s the tree.
+   *
+   *  Raises {@link SubstrateToolRefusedError} on tool-level refusals
+   *  (collision with a static volume name, no `dynamic_root` configured,
+   *  cross-tenant); {@link InvalidArgumentError} on 400; {@link AuthError}
+   *  on 401. */
+  async volumeDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_volumedef", input, opts);
+  }
+
+  /** List the PERSISTENT volume universe for the caller's tenant — every
+   *  static volume (the shared bind floor, `source: "static"`, read-only)
+   *  plus the tenant's own dynamic VolumeDefs (`source: "dynamic"`). Host
+   *  paths are redacted (`""`) for a non-operator (tenant) caller.
+   *
+   *  Wraps `GET /v1/_volumes` (RFC AH Phase 4). Bearer-authed; tenant-scoped
+   *  from the authoritative principal. */
+  async listVolumes(opts?: {
+    signal?: AbortSignal;
+  }): Promise<PersistentVolumesResponse> {
+    return jsonFetch<PersistentVolumesResponse>(this.ctx, "/v1/_volumes", opts);
+  }
+
+  /** List the LIVE ephemeral (run-scoped) volumes for the caller's tenant —
+   *  created mid-run, inherited by sub-agents, auto-purged when the run
+   *  completes. Host paths are redacted (`""`) for a non-operator caller.
+   *
+   *  Wraps `GET /v1/_volumes/ephemeral` (RFC AH Phase 4). Bearer-authed;
+   *  tenant-scoped from the authoritative principal. */
+  async listEphemeralVolumes(opts?: {
+    signal?: AbortSignal;
+  }): Promise<EphemeralVolumesResponse> {
+    return jsonFetch<EphemeralVolumesResponse>(this.ctx, "/v1/_volumes/ephemeral", opts);
   }
 
   // ---- v0.10.3 Library v2 enumeration (read-only, merged yaml+substrate) ----

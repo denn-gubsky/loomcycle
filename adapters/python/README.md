@@ -1,13 +1,14 @@
 # loomcycle — async Python client
 
 `loomcycle` is the async Python client for [loomcycle][1]'s gRPC API
-(introduced in v0.5.5). As of **v0.8.0 it covers all 39 gRPC RPCs** —
+(introduced in v0.5.5). As of **v0.9.0 it covers all 40 gRPC RPCs** —
 run streaming + continuation, batch fan-out, run compaction, agent
 metadata + transcript, pause / resume / state, the snapshot lifecycle,
-the resolver probe, the full substrate-def family, channel publish /
-subscribe / peek / ack / await / broadcast, and run-state streaming —
-through an ergonomic `LoomcycleClient` class with no need to import
-generated protobuf types in your application code.
+the resolver probe, the full substrate-def family (incl. RFC AH
+volume_def), channel publish / subscribe / peek / ack / await /
+broadcast, and run-state streaming — through an ergonomic
+`LoomcycleClient` class with no need to import generated protobuf types
+in your application code.
 
 [1]: https://github.com/denn-gubsky/loomcycle
 
@@ -15,14 +16,14 @@ generated protobuf types in your application code.
 
 - Wraps loomcycle's gRPC server (`LOOMCYCLE_GRPC_ADDR`).
 - Async-only (`grpc.aio`). Python 3.9+.
-- **Full parity with the gRPC service surface** (39 RPCs).
+- **Full parity with the gRPC service surface** (40 RPCs).
 - The TypeScript adapter (`adapters/ts/`) additionally exposes
   **HTTP-only** operations that have no gRPC RPC — memory-entry admin,
   interruptions, library enumeration, the LLM gateway, and
   whoami / list-users. Those are not reachable over gRPC and so are not
   in this client; use the HTTP+SSE surface for them.
-- Production tag: `0.8.0` (39-RPC parity, ships alongside the
-  loomcycle v0.34.x line).
+- Production tag: `0.9.0` (40-RPC parity, ships alongside the
+  loomcycle v1.0.x line).
 
 ## Install
 
@@ -121,6 +122,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `resolve_probe()` | `dict` | v0.8.0 — resolver provider/model availability matrix. |
 | `agent_def(input)` / `skill_def(input)` | `dict` | Substrate AgentDef / SkillDef tool; op-discriminated body. |
 | `mcp_server_def` / `schedule_def` / `a2a_server_card_def` / `a2a_agent_def` / `webhook_def` / `memory_backend_def` / `operator_token_def` `(input)` | `dict` | v0.8.0 — the rest of the substrate-def family; same shape + `SubstrateToolRefusedError` contract. |
+| `volume_def(input)` | `dict` | v0.9.0 — RFC AH dynamic filesystem-volume substrate; op-discriminated (create / get / list / delete / purge), tenant-confined, same `SubstrateToolRefusedError` contract. |
 | `list_channels()` | `list[dict]` | v0.8.0 — declared + runtime channels with aggregate stats. |
 | `publish_channel(channel, payload, scope="global", scope_id="", deliver_at="")` | `dict` | v0.8.0 — publish raw-JSON `payload` (bytes); `deliver_at` defers. |
 | `subscribe_channel(channel, ...)` / `peek_channel(channel, ...)` | `dict` | v0.8.0 — long-poll / non-destructive read; `{messages, next_cursor?}`. |

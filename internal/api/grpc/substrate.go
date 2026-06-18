@@ -97,6 +97,13 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	// OperatorTokenDef: gRPC substrate admin is operator-trust → grant
 	// admin (RFC L).
 	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
+	// VolumeDef: same operator-trust posture; "any" scope lets the
+	// gRPC-admin call create/delete/purge any volume name. The tool still
+	// stamps the authoritative tenant (RunIdentity above) + opaque-404s
+	// cross-tenant (RFC AH / mirrors MemoryBackendDef).
+	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{
+		Scopes: []string{"any"},
+	})
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
@@ -227,6 +234,22 @@ func (s *Server) MemoryBackendDef(ctx context.Context, req *loomcyclepb.Substrat
 func (s *Server) OperatorTokenDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPC(ctx, "OperatorTokenDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.OperatorTokenDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// VolumeDef serves the RFC AH VolumeDef gRPC RPC — dynamic filesystem-volume
+// substrate. Same shape as the other substrate RPCs; op-discriminated
+// input_json (create / get / list / delete / purge) routes via the Connector
+// to the in-process tool. TENANT-CONFINED (the scope gate maps it to
+// ScopeTenant, not ScopeAdmin); tenant authority + opaque-404 are enforced in
+// the tool.
+func (s *Server) VolumeDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "VolumeDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.VolumeDef(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}

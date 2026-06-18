@@ -191,6 +191,17 @@ type Connector interface {
 	// adapter's client.operatorTokenDef() — all dispatch through here.
 	OperatorTokenDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// VolumeDef — RFC AH dynamic filesystem-volume substrate.
+	// Op-discriminated (create / get / list / delete / purge — flat, NOT the
+	// content-addressed retire/promote/fork of the families above, because a
+	// volume points at mutable on-disk state). TENANT-CONFINED (ScopeTenant,
+	// like AgentDef/SkillDef — not operator-admin-only): the tool stamps the
+	// caller's authoritative tenant + opaque-404s cross-tenant. Reachable via
+	// POST /v1/_volumedef admin endpoint, the gRPC VolumeDef RPC, the LoomCycle
+	// MCP meta-tool `volumedef`, and the TS adapter's client.volumeDef() — all
+	// dispatch through this single Connector method.
+	VolumeDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

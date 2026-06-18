@@ -38,7 +38,7 @@ def _async_returning(result: Any):
     return fn, captured
 
 
-# (python method name, stub RPC attribute) for the 7 new substrate defs.
+# (python method name, stub RPC attribute) for the substrate defs.
 _CASES = [
     ("mcp_server_def", "MCPServerDef"),
     ("schedule_def", "ScheduleDef"),
@@ -47,6 +47,7 @@ _CASES = [
     ("webhook_def", "WebhookDef"),
     ("memory_backend_def", "MemoryBackendDef"),
     ("operator_token_def", "OperatorTokenDef"),
+    ("volume_def", "VolumeDef"),
 ]
 
 

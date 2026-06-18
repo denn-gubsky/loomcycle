@@ -588,6 +588,14 @@ class LoomcycleClient:
         :meth:`agent_def`."""
         return await self._dispatch_substrate("OperatorTokenDef", input)
 
+    async def volume_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the VolumeDef substrate tool — dynamic filesystem-volume
+        provisioning (RFC AH). Op-discriminated: create / get / list /
+        delete / purge. Tenant-confined; the runtime derives the path inside
+        an operator-blessed parent, so you pass name + mode, never a host
+        path. Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("VolumeDef", input)
+
     async def _dispatch_substrate(
         self, tool: str, input: Mapping[str, Any]
     ) -> Mapping[str, Any]:
