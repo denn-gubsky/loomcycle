@@ -8,7 +8,10 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
-## What's in vNEXT
+## What's in v1.1.0
+
+The **Filesystem Volumes** feature line (RFC AH, Phases 1→5) plus two exp8 finding
+fixes. The headline is **breaking** — read the jail-retirement note first.
 
 **⚠️ BREAKING — the legacy filesystem jail is retired (RFC AH Phase 3).** The
 `LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD` env vars are **removed**;
