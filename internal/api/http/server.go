@@ -1114,6 +1114,13 @@ func (s *Server) skillDefPolicyForAgent(agentDef config.AgentDef) tools.SkillDef
 	return tools.SkillDefPolicyValue{Scopes: agentDef.SkillDefScopes}
 }
 
+// volumeDefPolicyForAgent returns the RFC AH Phase 2a VolumeDef policy
+// for one agent. Default-deny: empty VolumeDefScopes → no create/delete/
+// purge ops.
+func (s *Server) volumeDefPolicyForAgent(agentDef config.AgentDef) tools.VolumeDefPolicyValue {
+	return tools.VolumeDefPolicyValue{Scopes: agentDef.VolumeDefScopes}
+}
+
 // runPromptProvenance captures the per-run metadata that fed into
 // the resolved system prompt. Used as the payload sidecar on the
 // v0.9.x `system_prompt` event so an operator inspecting the run
@@ -1276,10 +1283,15 @@ func (s *Server) interruptionPolicyForAgent(agentDef config.AgentDef) tools.Inte
 //     flag carries through from the config volume's `default: true`, so
 //     an omitted `volume` arg resolves to that one (or the sole binding).
 //
-// Config-load validation guarantees every declared name exists and every
-// volume path is an existing directory resolved absolute, so this never
-// errors — a missing name here would be a config-validation bug.
-func (s *Server) volumePolicyForAgent(agentDef config.AgentDef) tools.VolumePolicyValue {
+// Config-load validation guarantees every STATICALLY-declared name exists
+// and every static volume path is an existing directory resolved absolute.
+// A bound name NOT in cfg.Volumes is resolved as a dynamic VolumeDef
+// (RFC AH Phase 2a) via lookup.VolumeDef within the run's authoritative
+// tenant (from ctx's RunIdentity) — config-validation deliberately does NOT
+// reject an unknown bound name when dynamic volumes are in play, so a miss
+// here means "no static AND no dynamic row" → the binding is dropped (the
+// agent simply isn't confined to a volume that doesn't exist).
+func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.AgentDef) tools.VolumePolicyValue {
 	if len(agentDef.Volumes) == 0 {
 		def, ok := s.cfg.Volumes["default"]
 		if !ok {
@@ -1296,15 +1308,28 @@ func (s *Server) volumePolicyForAgent(agentDef config.AgentDef) tools.VolumePoli
 			Name: "default", Root: def.Path, ReadOnly: def.ReadOnly(), Default: true,
 		}}}
 	}
+	tenantID := tools.RunIdentity(ctx).TenantID
 	bindings := make([]tools.VolumeBinding, 0, len(agentDef.Volumes))
 	for _, name := range agentDef.Volumes {
-		v, ok := s.cfg.Volumes[name]
-		if !ok {
-			continue // unreachable post-validation; skip defensively.
+		if v, ok := s.cfg.Volumes[name]; ok {
+			bindings = append(bindings, tools.VolumeBinding{
+				Name: name, Root: v.Path, ReadOnly: v.ReadOnly(), Default: v.Default,
+			})
+			continue
 		}
-		bindings = append(bindings, tools.VolumeBinding{
-			Name: name, Root: v.Path, ReadOnly: v.ReadOnly(), Default: v.Default,
-		})
+		// Not a static volume → resolve a dynamic VolumeDef. lookup.VolumeDef
+		// puts static FIRST (the line above already covered it), then
+		// tenant-dynamic, then shared-dynamic. Default flag stays false — a
+		// dynamic volume is never the implicit default (the agent picks it by
+		// name, or designates a static `default: true` as its default).
+		if s.store != nil {
+			if spec, ok := lookup.VolumeDef(ctx, s.cfg, s.store, tenantID, name); ok {
+				bindings = append(bindings, tools.VolumeBinding{
+					Name: name, Root: spec.Path, ReadOnly: spec.Mode == "ro", Default: false,
+				})
+			}
+		}
+		// A name that is neither static nor dynamic is dropped defensively.
 	}
 	return tools.VolumePolicyValue{Active: true, Bindings: bindings}
 }
@@ -1360,14 +1385,14 @@ func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValu
 //     sub-agent inherits the parent's host allowlist.
 //   - Bound child of a confined parent: NARROW — child-declared ∩ parent
 //     (narrow-only; a child can never reach a volume the parent lacks).
-func (s *Server) childVolumePolicy(parentVol tools.VolumePolicyValue, def config.AgentDef) tools.VolumePolicyValue {
+func (s *Server) childVolumePolicy(ctx context.Context, parentVol tools.VolumePolicyValue, def config.AgentDef) tools.VolumePolicyValue {
 	if !parentVol.Active {
-		return s.volumePolicyForAgent(def)
+		return s.volumePolicyForAgent(ctx, def)
 	}
 	if len(def.Volumes) == 0 {
 		return parentVol
 	}
-	return narrowVolumes(parentVol, s.volumePolicyForAgent(def))
+	return narrowVolumes(parentVol, s.volumePolicyForAgent(ctx, def))
 }
 
 // applyAgentDefOverlay overlays the v0.8.5 agent_defs.definition JSON
@@ -1948,12 +1973,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
-	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(agentDef))
+	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
+	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
@@ -2232,6 +2258,10 @@ func (s *Server) Mux() http.Handler {
 	// admin-only (no per-agent surface). Same dispatch shape as the
 	// other two substrate admin endpoints.
 	mux.Handle("POST /v1/_mcpserverdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMCPServerDef))))
+	// RFC AH Phase 2a dynamic-volume substrate. Bearer-authed; tenant-
+	// confined (ScopeTenant via isTenantConfinedDefPath) — the tool stamps
+	// the caller's authoritative tenant + opaque-404s cross-tenant reads.
+	mux.Handle("POST /v1/_volumedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateVolumeDef))))
 	// v1.x scheduled-runs substrate. Same operator-admin-only dispatch
 	// shape; the tool is reachable only via this endpoint + the MCP
 	// meta-tool + the future gRPC RPC (no per-agent dispatcher slot).
@@ -3261,12 +3291,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
-	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(agentDef))
+	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
+	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
@@ -3741,12 +3772,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
-	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(agentDef))
+	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
+	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
@@ -4566,7 +4598,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// bindings). A sub-agent can never gain a volume its parent lacks, and
 	// where both hold one the ro/rw axis resolves to the more restrictive.
 	// Mirrors the host-allowlist narrowing read from ctx just above (4376).
-	subCtx = tools.WithVolumePolicy(subCtx, s.childVolumePolicy(tools.VolumePolicy(ctx), def))
+	subCtx = tools.WithVolumePolicy(subCtx, s.childVolumePolicy(subCtx, tools.VolumePolicy(ctx), def))
 	// Sub-agent's Channel policy follows the same per-yaml shape as
 	// MemoryPolicy above. The Channels map (operator-declared
 	// channels) IS shared with the parent — those are operator
@@ -4584,6 +4616,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subADPolicy, subEvPolicy := s.substratePoliciesForAgent(def, name)
 	subCtx = tools.WithAgentDefPolicy(subCtx, subADPolicy)
 	subCtx = tools.WithSkillDefPolicy(subCtx, s.skillDefPolicyForAgent(def))
+	subCtx = tools.WithVolumeDefPolicy(subCtx, s.volumeDefPolicyForAgent(def))
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(def))
 	subCtx = tools.WithInterruptionPolicy(subCtx, s.interruptionPolicyForAgent(def))

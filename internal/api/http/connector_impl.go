@@ -464,6 +464,17 @@ func (s *Server) SkillDef(ctx context.Context, input json.RawMessage) (connector
 	return s.dispatchBuiltin(ctx, "SkillDef", input)
 }
 
+// VolumeDef dispatches to the RFC AH Phase 2a dynamic-volume substrate
+// tool. Unlike MCPServerDef (operator-admin-only) the VolumeDef tool IS in
+// the per-agent dispatcher (s.tools) with a default-deny volume_def_scopes
+// gate, so it routes through dispatchBuiltin like AgentDef/SkillDef — this
+// connector method is what the POST /v1/_volumedef admin endpoint calls.
+// (No gRPC/MCP-meta parity in Phase 2a — the tool is already reachable
+// in-loop + over the MCP server; a gRPC RPC is a follow-up.)
+func (s *Server) VolumeDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	return s.dispatchBuiltin(ctx, "VolumeDef", input)
+}
+
 func (s *Server) Evaluation(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
 	return s.dispatchBuiltin(ctx, "Evaluation", input)
 }

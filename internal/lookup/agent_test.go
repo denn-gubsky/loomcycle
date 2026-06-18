@@ -310,6 +310,8 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"skill_def_scopes":           true,
 		"a2a_server_card_def_scopes": true,
 		"a2a_agent_def_scopes":       true,
+		// RFC AH Phase 2a — the dynamic-volume slice of the F40 closure.
+		"volume_def_scopes": true,
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateAgentDef{}))
 	for tag := range want {

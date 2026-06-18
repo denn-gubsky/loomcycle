@@ -663,6 +663,17 @@ func main() {
 	}
 	allTools = append(allTools, skillDefTool)
 
+	// VolumeDef tool (RFC AH Phase 2a) — the dynamic-volume substrate.
+	// In-loop (per-agent dispatcher) with a default-deny volume_def_scopes
+	// gate, NOT operator-admin-only like MCPServerDef. Store late-bound
+	// below. Cfg supplies the dynamic_root + the static-name collision
+	// guard. MaxNameLen mirrors the regex ceiling (64).
+	volumeDefTool := &builtin.VolumeDef{
+		Cfg:        cfg,
+		MaxNameLen: 64,
+	}
+	allTools = append(allTools, volumeDefTool)
+
 	// MCPServerDef tool construction is deferred until after the pool
 	// + dynamic registry are built (operator-admin-only — NOT appended
 	// to allTools; wired via SetMCPServerDefTool after the pool exists).
@@ -1025,6 +1036,7 @@ func main() {
 	}
 	agentDefTool.Store = storeIface
 	skillDefTool.Store = storeIface
+	volumeDefTool.Store = storeIface
 	skillTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface
