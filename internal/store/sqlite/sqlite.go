@@ -529,6 +529,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			tenant_id             TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY(tenant_id, name)
 		)`,
+		// RFC AH Phase 2a — persistent dynamic volumes. FLAT (tenant_id,
+		// name) table, NOT the versioned Def shape: a Volume points at
+		// mutable on-disk state outside the def, so there is no version,
+		// parent_def_id, content_sha256, or active pointer. definition holds
+		// the runtime-derived {"path":..,"mode":..}; the path is always
+		// <dynamic_root>/<tenant-segment>/<name> derived by the tool.
+		`CREATE TABLE IF NOT EXISTS volume_defs (
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			name        TEXT NOT NULL,
+			definition  TEXT NOT NULL,
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, name)
+		)`,
 		// RFC L OSS multi-tenant authorization — bearer tokens bound to
 		// an authoritative principal (tenant_id + subject + allowed_scopes).
 		// NOT versioned/forkable: no version, no active pointer, no parent.
