@@ -28,6 +28,18 @@ func reqWithTenant(path, tenant string) *http.Request {
 	}))
 }
 
+// reqWithAdmin is reqWithTenant for an operator-equivalent (substrate:admin)
+// principal — the set that sees host filesystem paths the tenant operator does
+// not (volumesShowPaths).
+func reqWithAdmin(path, tenant string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	return r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{
+		TenantID: tenant,
+		Subject:  "admin-" + tenant,
+		Scopes:   []string{auth.ScopeAdmin},
+	}))
+}
+
 // mkDynamicVolume creates a persistent dynamic VolumeDef for a tenant via the
 // real tool, so the test exercises the same write path the runtime uses.
 func mkDynamicVolume(t *testing.T, st store.Store, cfg *config.Config, tenant, name, mode string) {
@@ -139,8 +151,13 @@ func TestListEphemeralVolumes_TenantScoped(t *testing.T) {
 		if e.RootRunID == "run-other-1" {
 			t.Errorf("cross-tenant ephemeral row leaked: %+v", e)
 		}
-		if e.Path == "" || e.CreatedAt == "" {
-			t.Errorf("entry missing path/created_at: %+v", e)
+		// A tenant-operator principal gets the host path REDACTED (covered by
+		// TestListVolumes_RedactsHostPathsForTenantOperator); created_at stays.
+		if e.CreatedAt == "" {
+			t.Errorf("entry missing created_at: %+v", e)
+		}
+		if e.Path != "" {
+			t.Errorf("tenant operator must not see ephemeral host path: %+v", e)
 		}
 	}
 }
@@ -159,5 +176,90 @@ func TestRequiredScopeFor_VolumeReadsAreTenantConfined(t *testing.T) {
 	// The def-authoring route stays tenant-confined too (unchanged).
 	if got := requiredScopeFor(http.MethodPost, "/v1/_volumedef"); got != auth.ScopeTenant {
 		t.Errorf("requiredScopeFor(POST /v1/_volumedef) = %q, want %q", got, auth.ScopeTenant)
+	}
+}
+
+// TestListVolumes_RedactsHostPathsForTenantOperator is the fail-before guard
+// for the path-disclosure fix: a ScopeTenant caller (the tenant operator who
+// drives the Volumes tab) sees the volume UNIVERSE (name / mode / source /
+// default / dynamic-root / created-at) but NOT host filesystem paths — those
+// are operator infrastructure. Only an operator-equivalent principal
+// (substrate:admin / legacy / open dev mode) sees them. Dropping redactedPath
+// → a tenant token sees the operator's host layout → both halves below fail.
+func TestListVolumes_RedactsHostPathsForTenantOperator(t *testing.T) {
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Volumes: map[string]config.Volume{
+		"pool": {Path: root, Mode: "rw", DynamicRoot: true},
+	}}
+	mkDynamicVolume(t, st, cfg, "acme", "repo-a", "rw")
+	body, _ := json.Marshal(map[string]string{"path": "/pool/_ephemeral/run-1/work", "mode": "rw"})
+	if _, err := st.EphemeralVolumeCreate(context.Background(), store.EphemeralVolumeDefRow{
+		RootRunID: "run-1", Name: "work", TenantID: "acme", Definition: body,
+	}); err != nil {
+		t.Fatalf("create ephemeral: %v", err)
+	}
+	srv := &Server{store: st, cfg: cfg}
+
+	// Operator-equivalent (substrate:admin) sees real host paths everywhere.
+	recA := httptest.NewRecorder()
+	srv.handleListVolumes(recA, reqWithAdmin("/v1/_volumes", "acme"))
+	var adminResp persistentVolumesResponse
+	if err := json.Unmarshal(recA.Body.Bytes(), &adminResp); err != nil {
+		t.Fatalf("decode admin: %v", err)
+	}
+	for _, e := range adminResp.Entries {
+		if e.Path == "" {
+			t.Errorf("admin must see host path for %q (source=%s)", e.Name, e.Source)
+		}
+	}
+	recAE := httptest.NewRecorder()
+	srv.handleListEphemeralVolumes(recAE, reqWithAdmin("/v1/_volumes/ephemeral", "acme"))
+	var adminEph ephemeralVolumesResponse
+	if err := json.Unmarshal(recAE.Body.Bytes(), &adminEph); err != nil {
+		t.Fatalf("decode admin ephemeral: %v", err)
+	}
+	if len(adminEph.Entries) != 1 || adminEph.Entries[0].Path == "" {
+		t.Errorf("admin must see ephemeral host path, got %+v", adminEph.Entries)
+	}
+
+	// Tenant operator (ScopeTenant) gets every host path redacted — but the
+	// rest of the universe survives.
+	recT := httptest.NewRecorder()
+	srv.handleListVolumes(recT, reqWithTenant("/v1/_volumes", "acme"))
+	var tenantResp persistentVolumesResponse
+	if err := json.Unmarshal(recT.Body.Bytes(), &tenantResp); err != nil {
+		t.Fatalf("decode tenant: %v", err)
+	}
+	if len(tenantResp.Entries) != 2 {
+		t.Fatalf("tenant should see 2 persistent entries (1 static + 1 own dynamic), got %d: %+v", len(tenantResp.Entries), tenantResp.Entries)
+	}
+	for _, e := range tenantResp.Entries {
+		if e.Path != "" {
+			t.Errorf("tenant operator must NOT see host path for %q: %q", e.Name, e.Path)
+		}
+		if e.Name == "" || e.Mode == "" || e.Source == "" {
+			t.Errorf("redaction nuked non-path fields: %+v", e)
+		}
+	}
+	recTE := httptest.NewRecorder()
+	srv.handleListEphemeralVolumes(recTE, reqWithTenant("/v1/_volumes/ephemeral", "acme"))
+	var tenantEph ephemeralVolumesResponse
+	if err := json.Unmarshal(recTE.Body.Bytes(), &tenantEph); err != nil {
+		t.Fatalf("decode tenant ephemeral: %v", err)
+	}
+	if len(tenantEph.Entries) != 1 {
+		t.Fatalf("tenant should see its 1 ephemeral row, got %d", len(tenantEph.Entries))
+	}
+	if tenantEph.Entries[0].Path != "" {
+		t.Errorf("tenant operator must NOT see ephemeral host path: %q", tenantEph.Entries[0].Path)
 	}
 }

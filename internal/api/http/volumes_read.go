@@ -32,6 +32,31 @@ func volumesReadTenant(r *http.Request) string {
 	return principal.TenantID
 }
 
+// volumesShowPaths reports whether the caller may see host FILESYSTEM PATHS.
+// A static volume's `path` (and the dynamic-root parent) is operator
+// infrastructure: it reveals the host layout the runtime can reach. The route
+// is gated at ScopeTenant (a tenant operator manages its own dynamic volumes),
+// but a tenant operator is NOT the operator — so it sees the volume UNIVERSE
+// (names / modes / which is default / which is the dynamic root / created-at)
+// without the host paths. Only the operator-equivalent set sees them: it
+// reuses tenantScopeFromCtx's exemption (substrate:admin, the legacy
+// single-operator token, and open dev mode — the exact mirror of the Web UI's
+// is_admin). Defense-in-depth at the API: independent of whether the console
+// nav surfaces the tab to a given role.
+func volumesShowPaths(r *http.Request) bool {
+	_, allTenants := tenantScopeFromCtx(r.Context())
+	return allTenants
+}
+
+// redactedPath returns p when the caller may see host paths, else "" (rendered
+// as an empty `path` so a non-operator gets the volume but not its location).
+func redactedPath(show bool, p string) string {
+	if show {
+		return p
+	}
+	return ""
+}
+
 // persistentVolumeEntry is one row of GET /v1/_volumes.
 type persistentVolumeEntry struct {
 	Name string `json:"name"`
@@ -60,9 +85,11 @@ type persistentVolumesResponse struct {
 // bind floor, read-only) plus the tenant's own dynamic VolumeDef rows.
 func (s *Server) handleListVolumes(w http.ResponseWriter, r *http.Request) {
 	entries := make([]persistentVolumeEntry, 0, len(s.cfg.Volumes))
+	showPaths := volumesShowPaths(r)
 
 	// Static volumes — the operator-authored universe, shown to every tenant
 	// (it's the bind floor). Read-only from the UI; config is ground truth.
+	// Host paths are redacted for a non-operator (volumesShowPaths).
 	for name, vol := range s.cfg.Volumes {
 		mode := vol.Mode
 		if mode == "" {
@@ -71,7 +98,7 @@ func (s *Server) handleListVolumes(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, persistentVolumeEntry{
 			Name:        name,
 			Source:      "static",
-			Path:        vol.Path,
+			Path:        redactedPath(showPaths, vol.Path),
 			Mode:        mode,
 			Default:     vol.Default,
 			DynamicRoot: vol.DynamicRoot,
@@ -91,7 +118,7 @@ func (s *Server) handleListVolumes(w http.ResponseWriter, r *http.Request) {
 			entries = append(entries, persistentVolumeEntry{
 				Name:      row.Name,
 				Source:    "dynamic",
-				Path:      path,
+				Path:      redactedPath(showPaths, path),
 				Mode:      mode,
 				CreatedAt: row.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
 			})
@@ -131,6 +158,7 @@ type ephemeralVolumesResponse struct {
 // another tenant's rows.
 func (s *Server) handleListEphemeralVolumes(w http.ResponseWriter, r *http.Request) {
 	entries := make([]ephemeralVolumeEntry, 0)
+	showPaths := volumesShowPaths(r)
 	if s.store != nil {
 		rows, err := s.store.EphemeralVolumeListByTenant(r.Context(), volumesReadTenant(r))
 		if err != nil {
@@ -142,7 +170,7 @@ func (s *Server) handleListEphemeralVolumes(w http.ResponseWriter, r *http.Reque
 			entries = append(entries, ephemeralVolumeEntry{
 				Name:      row.Name,
 				RootRunID: row.RootRunID,
-				Path:      path,
+				Path:      redactedPath(showPaths, path),
 				Mode:      mode,
 				CreatedAt: row.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
 			})
