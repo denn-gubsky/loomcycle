@@ -83,15 +83,17 @@ const volumeDefInputSchema = `{
   "properties": {
     "op":   {"type": "string", "enum": ["create","get","list","delete","purge"]},
     "name": {"type": "string", "description": "Dynamic volume name (required for create/get/delete/purge). Charset ^[a-z0-9][a-z0-9_-]{0,63}$ — no slashes or dots."},
-    "mode": {"type": "string", "enum": ["rw","ro"], "description": "Access mode for create (default rw). rw allows Write/Edit/Bash; ro is read-only."}
+    "mode": {"type": "string", "enum": ["rw","ro"], "description": "Access mode for create (default rw). rw allows Write/Edit/Bash; ro is read-only."},
+    "ephemeral": {"type": "boolean", "description": "create only: make a RUN-SCOPED ephemeral volume instead of a persistent tenant volume. Resolvable by this run + its sub-agents; auto-purged when the top-level run completes. Requires an active run."}
   },
   "required": ["op"]
 }`
 
 type volumeDefInput struct {
-	Op   string `json:"op"`
-	Name string `json:"name,omitempty"`
-	Mode string `json:"mode,omitempty"`
+	Op        string `json:"op"`
+	Name      string `json:"name,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Ephemeral bool   `json:"ephemeral,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -116,8 +118,13 @@ func (v *VolumeDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Res
 	// that string, so the reserved segment can never be shared by two distinct
 	// tenants (which would let one purge the other's volume tree). The tenant
 	// is authoritative from the principal, never the wire.
-	if tools.RunIdentity(ctx).TenantID == sharedTenantSegment {
-		return errResult(fmt.Sprintf("VolumeDef tool: tenant id %q is reserved", sharedTenantSegment)), nil
+	//
+	// _ephemeral is RESERVED the same way: a tenant id literally equal to it
+	// would let a persistent volume's <root>/_ephemeral/<name> tree collide
+	// with the run-scoped <root>/_ephemeral/<run_id>/ subtree, blurring the
+	// two purge fences. Reject it up front.
+	if tid := tools.RunIdentity(ctx).TenantID; tid == sharedTenantSegment || tid == ephemeralSegment {
+		return errResult(fmt.Sprintf("VolumeDef tool: tenant id %q is reserved", tid)), nil
 	}
 	var in volumeDefInput
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -159,10 +166,16 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 	}
 	// Static cfg.Volumes is ground truth — refuse a name that collides with
 	// an operator-declared static volume (mirrors MCPServerDef refusing a
-	// static-name collision). The resolver also puts static first, so this
-	// is belt-and-braces.
+	// static-name collision). Applies to BOTH persistent and ephemeral
+	// volumes: an ephemeral volume must never shadow an operator-blessed
+	// static name. The resolver also puts static first, so this is
+	// belt-and-braces.
 	if _, ok := v.Cfg.Volumes[in.Name]; ok {
 		return errResult(fmt.Sprintf("create: name %q matches a static volumes: entry — yaml is ground truth; use a different name", in.Name)), nil
+	}
+
+	if in.Ephemeral {
+		return v.execCreateEphemeral(ctx, in, mode)
 	}
 
 	dynRoot, err := v.dynamicRoot()
@@ -197,6 +210,70 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	return okJSON(volumeDefRowResponse(row, mode))
+}
+
+// execCreateEphemeral provisions a RUN-TREE-SCOPED ephemeral volume (RFC AH
+// Phase 2b). Derivation: <dynamic_root>/_ephemeral/<root_run_id>/<name>.
+// Run ids are globally unique, so two runs (any tenant) never collide. The
+// volume is added to the run's in-memory EphemeralVolumeSet (the resolution
+// source) AND persisted to ephemeral_volume_defs for durable crash-cleanup;
+// it gets NO tenant-shared active pointer. name/mode/static-collision were
+// already validated by execCreate.
+func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, mode string) (tools.Result, error) {
+	rootRunID := tools.RunIdentity(ctx).RootRunID
+	if rootRunID == "" {
+		return errResult("create: ephemeral volumes require an active run (no root run id on context)"), nil
+	}
+	set := tools.EphemeralVolumes(ctx)
+	if set == nil {
+		return errResult("create: ephemeral volumes are unavailable for this run (no ephemeral set on context)"), nil
+	}
+	// Refuse a duplicate ephemeral name within THIS run tree. (A different
+	// run's identically-named ephemeral volume is fine — they're run-scoped.)
+	if set.Has(in.Name) {
+		return errResult(fmt.Sprintf("create: ephemeral volume %q already exists in this run", in.Name)), nil
+	}
+
+	dynRoot, err := v.dynamicRoot()
+	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	path := derivedEphemeralVolumePath(dynRoot, rootRunID, in.Name)
+
+	// Defence-in-depth: assert the derived path resolves STRICTLY inside the
+	// dynamic root before MkdirAll (same posture as the persistent path).
+	if err := assertInsideDynamicRoot(dynRoot, path); err != nil {
+		return errResult(fmt.Sprintf("create: refusing to provision outside the dynamic root: %s", err)), nil
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return errResult(fmt.Sprintf("create: mkdir %q: %s", path, err)), nil
+	}
+
+	body, err := json.Marshal(volumeDefBody{Path: path, Mode: mode})
+	if err != nil {
+		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
+	}
+	row, err := v.Store.EphemeralVolumeCreate(ctx, store.EphemeralVolumeDefRow{
+		RootRunID:  rootRunID,
+		Name:       in.Name,
+		TenantID:   tools.RunIdentity(ctx).TenantID,
+		Definition: body,
+	})
+	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	// Register in the run-scoped set ONLY after the row + dir are in place, so
+	// a failed persist never leaves a resolvable-but-unrecorded volume.
+	set.Add(in.Name, tools.EphemeralVolumeRef{Root: path, ReadOnly: mode == "ro"})
+
+	resp := map[string]any{
+		"name":       row.Name,
+		"path":       path,
+		"mode":       mode,
+		"ephemeral":  true,
+		"created_at": row.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
+	}
+	return okJSON(resp)
 }
 
 // ---- get / list ----
@@ -303,54 +380,25 @@ func (v *VolumeDef) execPurge(ctx context.Context, in volumeDefInput) (tools.Res
 	// Fence (2): RE-DERIVE the path — never trust the stored definition.path.
 	derived := derivedVolumePath(dynRoot, tenantID, in.Name)
 
-	// Resolve the dynamic root's real path once for all containment checks.
+	// Fences (3)+(4): EvalSymlinks + strictly-inside + expected
+	// <root>/<tenant-segment>/ prefix + not-the-root/parent, via the shared
+	// fence helper. expectedParent is the tenant-segment dir (resolved under
+	// the dynamic root). removed=false means the dir was already gone.
 	rootResolved, err := filepath.EvalSymlinks(dynRoot)
 	if err != nil {
 		return errResult(fmt.Sprintf("purge: dynamic root: %s", err)), nil
 	}
 	tenantDir := filepath.Join(rootResolved, tenantSegment(tenantID))
-
-	// Fence (3): EvalSymlinks the derived path; delete the RESOLVED real
-	// path. If the directory doesn't exist (already gone), there is nothing
-	// to delete — drop the row and report files_removed=false.
-	resolved, err := filepath.EvalSymlinks(derived)
+	who := fmt.Sprintf("VolumeDef purge (tenant=%q name=%q)", tenantID, in.Name)
+	removed, err := fencedRemoveAll(dynRoot, tenantDir, derived, who)
 	if err != nil {
-		if os.IsNotExist(err) {
-			found, derr := v.Store.VolumeDefDelete(ctx, tenantID, in.Name)
-			if derr != nil {
-				return errResult(fmt.Sprintf("purge: delete row: %s", derr)), nil
-			}
-			return okJSON(map[string]any{"name": in.Name, "deleted": found, "files_removed": false})
-		}
-		return errResult(fmt.Sprintf("purge: resolve path: %s", err)), nil
-	}
-
-	// Fence (4): the resolved path must be STRICTLY inside the dynamic root,
-	// carry the expected <root>/<tenant-segment>/ prefix, and NOT be the
-	// root or the tenant-segment dir itself.
-	if err := relInsideRoot(rootResolved, derived, resolved); err != nil {
-		log.Printf("VolumeDef purge REFUSED: %s (tenant=%q name=%q)", err, tenantID, in.Name)
-		return errResult(fmt.Sprintf("purge: refusing to delete %q — it does not resolve strictly inside the dynamic root", resolved)), nil
-	}
-	if resolved == rootResolved || resolved == tenantDir {
-		log.Printf("VolumeDef purge REFUSED: resolved path %q is the dynamic root or tenant dir (tenant=%q name=%q)", resolved, tenantID, in.Name)
-		return errResult("purge: refusing to delete the dynamic root or the tenant directory itself"), nil
-	}
-	expectedPrefix := tenantDir + string(filepath.Separator)
-	if !strings.HasPrefix(resolved+string(filepath.Separator), expectedPrefix) {
-		log.Printf("VolumeDef purge REFUSED: resolved %q lacks expected tenant prefix %q (tenant=%q name=%q)", resolved, expectedPrefix, tenantID, in.Name)
-		return errResult(fmt.Sprintf("purge: refusing to delete %q — it is not under this tenant's volume directory", resolved)), nil
-	}
-
-	// All four fences passed: delete the RESOLVED real path, then the row.
-	if err := os.RemoveAll(resolved); err != nil {
-		return errResult(fmt.Sprintf("purge: remove %q: %s", resolved, err)), nil
+		return errResult(fmt.Sprintf("purge: %s", err)), nil
 	}
 	found, err := v.Store.VolumeDefDelete(ctx, tenantID, in.Name)
 	if err != nil {
-		return errResult(fmt.Sprintf("purge: delete row (files already removed): %s", err)), nil
+		return errResult(fmt.Sprintf("purge: delete row (files already removed=%v): %s", removed, err)), nil
 	}
-	return okJSON(map[string]any{"name": in.Name, "deleted": found, "files_removed": true})
+	return okJSON(map[string]any{"name": in.Name, "deleted": found, "files_removed": removed})
 }
 
 // ---- helpers ----
@@ -405,6 +453,14 @@ func (v *VolumeDef) checkScopeForName(ctx context.Context, name string) error {
 // tenants can never share a directory subtree.
 const sharedTenantSegment = "_shared"
 
+// ephemeralSegment is the RESERVED first on-disk segment under the dynamic
+// root for RUN-TREE-SCOPED ephemeral volumes (RFC AH Phase 2b):
+// <dynamic_root>/_ephemeral/<root_run_id>/<name>. It must never collide with
+// a tenant segment or a volume name — Execute rejects a tenant id literally
+// equal to it (so a tenant can't author under _ephemeral) and validateName's
+// charset already forbids a leading "_" so no volume name can be _ephemeral.
+const ephemeralSegment = "_ephemeral"
+
 // tenantSegment maps a tenant id to its on-disk path segment. The shared
 // tenant "" uses sharedTenantSegment; every other tenant uses its id verbatim.
 // The Execute guard rejects a tenant id equal to sharedTenantSegment, so the
@@ -420,6 +476,101 @@ func tenantSegment(tenantID string) string {
 // MUST already be charset-validated (no path components) by the caller.
 func derivedVolumePath(dynRoot, tenantID, name string) string {
 	return filepath.Join(dynRoot, tenantSegment(tenantID), name)
+}
+
+// derivedEphemeralVolumePath builds
+// <dynamic_root>/_ephemeral/<root_run_id>/<name> (RFC AH Phase 2b). The name
+// MUST already be charset-validated; rootRunID is a globally-unique run id
+// (charset [A-Za-z0-9_-], validated at the wire boundary), so two runs — any
+// tenant — never collide. The _ephemeral first segment is reserved (see
+// ephemeralSegment).
+func derivedEphemeralVolumePath(dynRoot, rootRunID, name string) string {
+	return filepath.Join(dynRoot, ephemeralSegment, rootRunID, name)
+}
+
+// ephemeralRunDir is the per-run ephemeral subtree
+// <dynamic_root>/_ephemeral/<root_run_id> — the unit BOTH purge paths
+// (inline at run completion + the sweeper backstop) RemoveAll. Re-derived,
+// never trusted from a stored row.
+func ephemeralRunDir(dynRoot, rootRunID string) string {
+	return filepath.Join(dynRoot, ephemeralSegment, rootRunID)
+}
+
+// fencedRemoveAll is the shared os.RemoveAll fence used by EVERY destructive
+// volume path (RFC AH §6): VolumeDef `purge` (Phase 2a), the inline
+// run-completion ephemeral purge, and the ephemeral sweeper backstop (Phase
+// 2b). It NEVER trusts a stored/caller path — `target` is a runtime-RE-DERIVED
+// path, and the fence re-checks containment before deleting.
+//
+// Fences, in order:
+//
+//  1. EvalSymlinks the dynamic root + the target, and delete the RESOLVED
+//     real path — so a swapped symlink can't redirect the delete outside the
+//     volume. A non-existent target is a no-op success (removed=false): the
+//     directory is already gone.
+//  2. The resolved path must be STRICTLY inside the dynamic root
+//     (relInsideRoot), and NOT equal the dynamic root OR the expectedParent
+//     dir itself (you can never RemoveAll an operator-blessed root or a
+//     shared parent like the tenant / _ephemeral dir).
+//  3. The resolved path must carry the expectedParent/ prefix — belt-and-
+//     braces on top of the strict-inside check.
+//
+// dynRoot is the operator-blessed parent (the dynamic_root). expectedParent
+// is the directory the target must sit strictly under (the tenant-segment
+// dir for Phase 2a; the per-run _ephemeral/<run_id> dir for Phase 2b — note
+// for 2b the target IS that dir, so expectedParent is its parent
+// _ephemeral/<run_id>'s PARENT is the dynamic-root subtree; callers pass the
+// dir one level up). On any fence failure it logs `who` + the reason and
+// returns (false, error) WITHOUT deleting.
+func fencedRemoveAll(dynRoot, expectedParent, target, who string) (removed bool, err error) {
+	rootResolved, err := filepath.EvalSymlinks(dynRoot)
+	if err != nil {
+		return false, fmt.Errorf("dynamic root: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil // already gone — nothing to delete
+		}
+		return false, fmt.Errorf("resolve path: %w", err)
+	}
+	if err := relInsideRoot(rootResolved, target, resolved); err != nil {
+		log.Printf("%s REFUSED: %s (target=%q)", who, err, target)
+		return false, fmt.Errorf("refusing to delete %q — it does not resolve strictly inside the dynamic root", resolved)
+	}
+	if resolved == rootResolved || resolved == expectedParent {
+		log.Printf("%s REFUSED: resolved path %q is the dynamic root or the parent dir itself", who, resolved)
+		return false, fmt.Errorf("refusing to delete the dynamic root or the parent directory itself")
+	}
+	expectedPrefix := expectedParent + string(filepath.Separator)
+	if !strings.HasPrefix(resolved+string(filepath.Separator), expectedPrefix) {
+		log.Printf("%s REFUSED: resolved %q lacks expected prefix %q", who, resolved, expectedPrefix)
+		return false, fmt.Errorf("refusing to delete %q — it is not under the expected parent directory", resolved)
+	}
+	if err := os.RemoveAll(resolved); err != nil {
+		return false, fmt.Errorf("remove %q: %w", resolved, err)
+	}
+	return true, nil
+}
+
+// purgeEphemeralRunTree RemoveAll's the <dynamic_root>/_ephemeral/<root_run_id>
+// subtree behind fencedRemoveAll (RFC AH §6). expectedParent is
+// <dynamic_root>/_ephemeral — the run dir must sit strictly under it and not
+// equal it (so a missing/escaping run id can never widen the delete to the
+// whole _ephemeral tree or the dynamic root). Re-derives the path; never
+// trusts a stored row. Shared by the inline run-completion purge + the
+// sweeper backstop. who is a log prefix (e.g. "ephemeral inline purge").
+func purgeEphemeralRunTree(dynRoot, rootRunID, who string) (removed bool, err error) {
+	if rootRunID == "" {
+		return false, fmt.Errorf("empty root run id")
+	}
+	rootResolved, rerr := filepath.EvalSymlinks(dynRoot)
+	if rerr != nil {
+		return false, fmt.Errorf("dynamic root: %w", rerr)
+	}
+	expectedParent := filepath.Join(rootResolved, ephemeralSegment)
+	target := ephemeralRunDir(dynRoot, rootRunID)
+	return fencedRemoveAll(dynRoot, expectedParent, target, who)
 }
 
 // assertInsideDynamicRoot verifies path resolves strictly inside dynRoot.

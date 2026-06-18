@@ -343,3 +343,170 @@ func mustJSON(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// ---- RFC AH Phase 2b ephemeral volume tool tests ----
+
+// ephemeralCtx derives an ephemeral-capable ctx (RootRunID + a fresh
+// EphemeralVolumeSet) from the fixture's base ctx.
+func ephemeralCtx(base context.Context, rootRunID string) (context.Context, *tools.EphemeralVolumeSet) {
+	set := tools.NewEphemeralVolumeSet()
+	ctx := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a", RootRunID: rootRunID})
+	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.WithEphemeralVolumes(ctx, set)
+	return ctx, set
+}
+
+// create ephemeral derives <root>/_ephemeral/<run>/<name>, mkdirs it, and
+// registers it in the run-scoped set.
+func TestVolumeDefTool_CreateEphemeralDerivesPathAndRegisters(t *testing.T) {
+	tool, base, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	ctx, set := ephemeralCtx(base, "run-xyz")
+
+	out, res := vdExec(t, tool, ctx, `{"op":"create","name":"work","mode":"rw","ephemeral":true}`)
+	if res.IsError {
+		t.Fatalf("create ephemeral: %s", res.Text)
+	}
+	want := filepath.Join(root, "_ephemeral", "run-xyz", "work")
+	if out["path"] != want {
+		t.Errorf("path = %v, want %v", out["path"], want)
+	}
+	if out["ephemeral"] != true {
+		t.Errorf("ephemeral flag = %v, want true", out["ephemeral"])
+	}
+	if info, err := os.Stat(want); err != nil || !info.IsDir() {
+		t.Errorf("ephemeral directory not created at %q: err=%v", want, err)
+	}
+	// Registered in the run-scoped set for resolution.
+	ref, ok := set.Get("work")
+	if !ok || ref.Root != want || ref.ReadOnly {
+		t.Errorf("set.Get(work) = %+v ok=%v, want root=%q ro=false", ref, ok, want)
+	}
+}
+
+// create ephemeral refuses when no RootRunID is on ctx (no active run).
+func TestVolumeDefTool_CreateEphemeralRefusesWithoutRootRun(t *testing.T) {
+	tool, base, _, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	// RootRunID="" but a set IS attached — the missing run id is the refusal.
+	ctx := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a"})
+	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.WithEphemeralVolumes(ctx, tools.NewEphemeralVolumeSet())
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"work","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "active run") {
+		t.Errorf("ephemeral create without root run id must refuse; got %s", res.Text)
+	}
+}
+
+// create ephemeral refuses a duplicate name within the SAME run tree, but a
+// DIFFERENT run's identically-named ephemeral volume is fine (run-scoped).
+func TestVolumeDefTool_CreateEphemeralRefusesDuplicateInRun(t *testing.T) {
+	tool, base, _, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	ctx1, _ := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, ctx1, `{"op":"create","name":"work","ephemeral":true}`); res.IsError {
+		t.Fatalf("first create: %s", res.Text)
+	}
+	if _, res := vdExec(t, tool, ctx1, `{"op":"create","name":"work","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "already exists") {
+		t.Errorf("duplicate ephemeral name in same run must refuse; got %s", res.Text)
+	}
+	// A different run can create the same name — fresh set, no collision.
+	ctx2, _ := ephemeralCtx(base, "run-2")
+	if _, res := vdExec(t, tool, ctx2, `{"op":"create","name":"work","ephemeral":true}`); res.IsError {
+		t.Errorf("different run's ephemeral `work` must succeed; got %s", res.Text)
+	}
+}
+
+// create ephemeral refuses a name colliding with a static volume (static is
+// ground truth — an ephemeral volume must never shadow it).
+func TestVolumeDefTool_CreateEphemeralRefusesStaticCollision(t *testing.T) {
+	tool, base, _, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	ctx, _ := ephemeralCtx(base, "run-1")
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"static","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "static volumes") {
+		t.Errorf("ephemeral name colliding with a static volume must refuse; got %s", res.Text)
+	}
+}
+
+// the reserved _ephemeral tenant id is refused at the op boundary (same as
+// _shared), so a persistent volume can never collide with the run-scoped
+// _ephemeral subtree.
+func TestVolumeDefTool_ReservedEphemeralTenantRefused(t *testing.T) {
+	tool, base, _, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	ctx := tools.WithVolumeDefPolicy(
+		tools.WithRunIdentity(base, tools.RunIdentityValue{TenantID: "_ephemeral"}),
+		tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"x"}`); !res.IsError || !strings.Contains(res.Text, "reserved") {
+		t.Errorf("_ephemeral tenant must be refused; got %s", res.Text)
+	}
+}
+
+// ---- effectiveRoot ephemeral tier (RFC AH Phase 2b) ----
+
+// a NAMED ephemeral volume resolves to its root via effectiveRoot; rw allows
+// a write, ro refuses; a name not in the set falls through (and with no
+// VolumePolicy → the legacy fallback root).
+func TestEffectiveRoot_EphemeralTier(t *testing.T) {
+	set := tools.NewEphemeralVolumeSet()
+	set.Add("work", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/run-1/work", ReadOnly: false})
+	set.Add("ref", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/run-1/ref", ReadOnly: true})
+	ctx := tools.WithEphemeralVolumes(context.Background(), set)
+
+	// rw ephemeral resolves for both read + write.
+	if got, err := effectiveRoot(ctx, "/fallback", "work", false); err != nil || got != "/pool/_ephemeral/run-1/work" {
+		t.Errorf("read work = %q err=%v", got, err)
+	}
+	if got, err := effectiveRoot(ctx, "/fallback", "work", true); err != nil || got != "/pool/_ephemeral/run-1/work" {
+		t.Errorf("write work = %q err=%v", got, err)
+	}
+	// ro ephemeral allows read, refuses write.
+	if got, err := effectiveRoot(ctx, "/fallback", "ref", false); err != nil || got != "/pool/_ephemeral/run-1/ref" {
+		t.Errorf("read ref = %q err=%v", got, err)
+	}
+	if _, err := effectiveRoot(ctx, "/fallback", "ref", true); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("write ref must refuse ro; err=%v", err)
+	}
+	// A name not in the set + no VolumePolicy → legacy fallback (unchanged).
+	if got, err := effectiveRoot(ctx, "/fallback", "other", false); err != nil || got != "/fallback" {
+		t.Errorf("unknown name = %q err=%v, want fallback", got, err)
+	}
+}
+
+// containment is still enforced for an ephemeral volume: effectiveRoot only
+// picks the root; resolveInsideRoot rejects a `..` escape under it.
+func TestEffectiveRoot_EphemeralStillContains(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	realRoot := filepath.Join(parent, "vol")
+	if err := os.MkdirAll(realRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realRoot, "ok.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A real file OUTSIDE the volume root (a sibling under the parent), so the
+	// `..` escape targets an EXISTING file — the rejection is the containment
+	// check, not an ENOENT.
+	if err := os.WriteFile(filepath.Join(parent, "secret.txt"), []byte("s"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	set := tools.NewEphemeralVolumeSet()
+	set.Add("work", tools.EphemeralVolumeRef{Root: realRoot})
+	ctx := tools.WithEphemeralVolumes(context.Background(), set)
+
+	root, err := effectiveRoot(ctx, "", "work", false)
+	if err != nil {
+		t.Fatalf("effectiveRoot: %v", err)
+	}
+	// In-root path resolves.
+	if _, err := resolveInsideRoot(root, "ok.txt"); err != nil {
+		t.Errorf("in-root resolve failed: %v", err)
+	}
+	// `..` escape to an EXISTING sibling is rejected — the ephemeral tier
+	// never bypasses containment (resolveInsideRoot still applies).
+	if _, err := resolveInsideRoot(root, "../secret.txt"); err == nil {
+		t.Errorf("escape under ephemeral volume was NOT rejected")
+	}
+}

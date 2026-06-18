@@ -37,6 +37,15 @@ no slashes or dots (so a name can't inject a path component).
   mode updates the mapping. Refused if the name collides with a static
   `volumes:` entry (operator yaml is ground truth) or if no `dynamic_root`
   is configured.
+- **create** `{name, mode, ephemeral: true}` — provision a **run-scoped
+  ephemeral** volume instead of a tenant volume. The path is derived as
+  `<dynamic_root>/_ephemeral/<root_run_id>/<name>`, so two concurrent runs
+  (even in one tenant) each get their OWN `work` with no collision. The
+  whole spawn tree resolves it (sub-agents inherit it via the narrow-only
+  rule); it is **auto-purged when the top-level run completes** (a singleton
+  sweeper backstops crashes). Requires an active run; refused if the name
+  collides with a static volume or already exists in this run. There is no
+  `delete`/`purge` for ephemeral volumes — lifetime is the run.
 - **get** `{name}` / **list** — inspect your tenant's dynamic volumes.
   A volume owned by another tenant is reported as not-found.
 - **delete** `{name}` — remove the mapping but **LEAVE the files on disk**.
