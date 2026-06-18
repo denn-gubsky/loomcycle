@@ -457,6 +457,15 @@ func requiredScopeFor(method, path string) string {
 	// ScopeAdmin.
 	case isTenantConfinedDefPath(path):
 		return auth.ScopeTenant
+	// RFC AH Phase 4: the two read-only volume views (GET /v1/_volumes +
+	// /v1/_volumes/ephemeral). Same tenant-confined posture as the def plane —
+	// the handlers filter dynamic + ephemeral rows to the principal's
+	// authoritative tenant (statics are the shared bind floor, shown to all).
+	// ScopeTenant (ScopeAdmin also satisfies). Distinct from the
+	// isTenantConfinedDefPath set because these are GETs at /v1/_volumes(/...),
+	// not the /v1/_volumedef def-authoring route.
+	case path == "/v1/_volumes" || path == "/v1/_volumes/ephemeral":
+		return auth.ScopeTenant
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, audit, cross-tenant user focus.
