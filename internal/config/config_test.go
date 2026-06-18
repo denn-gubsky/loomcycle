@@ -596,6 +596,98 @@ agents:
 	}
 }
 
+// TestSqlScopes_RejectsUnknownScope is the RFC AA config-validation
+// regression: an agent with a bogus sql_scopes entry must fail Load.
+func TestSqlScopes_RejectsUnknownScope(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  bad:
+    model: claude-sonnet-4-6
+    allowed_tools: [Memory]
+    sql_scopes: [bogus]
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected error for unknown sql scope")
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("error should name the offending scope: %v", err)
+	}
+}
+
+// TestSqlScopes_AcceptsKnownScopes confirms {agent, run} round-trips and
+// sql_quota_bytes is carried through Load.
+func TestSqlScopes_AcceptsKnownScopes(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  ok:
+    model: claude-sonnet-4-6
+    allowed_tools: [Memory]
+    sql_scopes: [agent, run]
+    sql_quota_bytes: 1048576
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := cfg.Agents["ok"]
+	if len(def.SqlScopes) != 2 || def.SqlScopes[0] != "agent" || def.SqlScopes[1] != "run" {
+		t.Errorf("SqlScopes round-trip: %v", def.SqlScopes)
+	}
+	if def.SqlQuotaBytes != 1048576 {
+		t.Errorf("SqlQuotaBytes = %d", def.SqlQuotaBytes)
+	}
+}
+
+// TestSqlMem_StorageDefaultsAndEnv confirms the StorageConfig SQL defaults
+// (timeout/rows/audit) land even when unset.
+func TestSqlMem_StorageDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Storage.SqlMemEnabled {
+		t.Error("SqlMemEnabled should default to false")
+	}
+	if cfg.Storage.SqlMemStatementTimeoutMS != 30000 {
+		t.Errorf("SqlMemStatementTimeoutMS = %d, want 30000", cfg.Storage.SqlMemStatementTimeoutMS)
+	}
+	if cfg.Storage.SqlMemMaxRows != 10000 {
+		t.Errorf("SqlMemMaxRows = %d, want 10000", cfg.Storage.SqlMemMaxRows)
+	}
+	if cfg.Storage.SqlMemAuditMode != "full" {
+		t.Errorf("SqlMemAuditMode = %q, want full", cfg.Storage.SqlMemAuditMode)
+	}
+}
+
+// TestSqlMemConfigWarnings_FlagsDisabledSubsystem confirms the boot warning
+// fires when sql_scopes is set + Memory is allowed but the subsystem is off.
+func TestSqlMemConfigWarnings_FlagsDisabledSubsystem(t *testing.T) {
+	a := AgentDef{AllowedTools: []string{"Memory"}, SqlScopes: []string{"agent"}}
+	if w := sqlMemConfigWarnings("x", a, false); len(w) != 1 {
+		t.Fatalf("expected 1 warning when subsystem disabled, got %v", w)
+	}
+	if w := sqlMemConfigWarnings("x", a, true); len(w) != 0 {
+		t.Fatalf("expected 0 warnings when subsystem enabled, got %v", w)
+	}
+	// No Memory in allowed_tools → no warning even if sql_scopes set.
+	b := AgentDef{SqlScopes: []string{"agent"}}
+	if w := sqlMemConfigWarnings("x", b, false); len(w) != 0 {
+		t.Fatalf("expected 0 warnings without Memory tool, got %v", w)
+	}
+}
+
 // TestMemoryBackend_RoundTripsAndResolvesAgainstStaticMap confirms a
 // static agent's memory_backend round-trips through Load AND validates
 // against a declared memory_backends entry (RFC I MR-3b).

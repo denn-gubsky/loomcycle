@@ -535,6 +535,42 @@ func MemoryPolicy(ctx context.Context) MemoryPolicyValue {
 	return v
 }
 
+// ctxKeySqlMemPolicy is the context key for the per-agent RFC AA SQL Memory
+// policy (allowed scopes + per-scope byte-quota override). Set by the HTTP
+// server from the agent's yaml `sql_scopes` / `sql_quota_bytes`; read by the
+// Memory tool's sql_query / sql_exec ops to gate access. Sub-agents inherit
+// the parent's policy via this ctx key, like MemoryPolicy / HostPolicy.
+type ctxKeySqlMemPolicy struct{}
+
+// SqlMemPolicyValue is the per-agent SQL Memory access policy.
+//
+//   - AllowedScopes is the yaml `sql_scopes` allowlist {agent,user,run}. An
+//     empty slice means the agent has NO SQL access — the DEFAULT-DENY
+//     invariant (the Memory tool must be in allowed_tools for the agent to
+//     call it at all, but the scope allowlist is a second, SQL-specific gate).
+//   - QuotaBytes is the yaml `sql_quota_bytes` override; 0 falls back to the
+//     global LOOMCYCLE_SQLMEM_QUOTA_BYTES default.
+//
+// Same trust posture as MemoryPolicyValue: operator-resolved from agent
+// config, never model-supplied. The model picks the scope; the operator
+// decides which scopes exist.
+type SqlMemPolicyValue struct {
+	AllowedScopes []string
+	QuotaBytes    int
+}
+
+// WithSqlMemPolicy attaches the agent's resolved SQL Memory policy to ctx.
+func WithSqlMemPolicy(ctx context.Context, p SqlMemPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeySqlMemPolicy{}, p)
+}
+
+// SqlMemPolicy returns the agent's SQL Memory policy from ctx. Zero value
+// (empty AllowedScopes, QuotaBytes=0) means "no SQL access".
+func SqlMemPolicy(ctx context.Context) SqlMemPolicyValue {
+	v, _ := ctx.Value(ctxKeySqlMemPolicy{}).(SqlMemPolicyValue)
+	return v
+}
+
 // ctxKeyChannelPolicy is the context key for the per-agent Channel
 // tool ACL (v0.8.4). Set by the HTTP server from the agent's yaml
 // definition; read by the Channel tool to gate publish/subscribe and

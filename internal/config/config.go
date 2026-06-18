@@ -285,6 +285,35 @@ type StorageConfig struct {
 	// `loomcycle migrate up` explicitly. When true, Open() runs
 	// migrations transparently. Env: LOOMCYCLE_PG_AUTOMIGRATE=1.
 	PgAutoMigrate bool `yaml:"pg_automigrate"`
+
+	// --- RFC AA SQL Memory (Phase 1, sqlite-only) ---
+	//
+	// SQL Memory is OFF by default: even an agent with sql_scopes set sees
+	// its SQL ops refuse until the operator enables the subsystem here. The
+	// per-scope databases are a SEPARATE store from the main loomcycle DB.
+
+	// SqlMemEnabled turns the SQL Memory subsystem on. Env:
+	// LOOMCYCLE_SQLMEM_ENABLED=1.
+	SqlMemEnabled bool `yaml:"sqlmem_enabled"`
+	// SqlMemRoot is the parent dir for per-scope .db files. Empty defaults
+	// to <DataDir>/sqlmem. Env: LOOMCYCLE_SQLMEM_ROOT.
+	SqlMemRoot string `yaml:"sqlmem_root"`
+	// SqlMemQuotaBytes caps a single scope file's on-disk size (checked
+	// before each write). 0 = no quota. Per-agent sql_quota_bytes overrides
+	// this. Env: LOOMCYCLE_SQLMEM_QUOTA_BYTES.
+	SqlMemQuotaBytes int `yaml:"sqlmem_quota_bytes"`
+	// SqlMemStatementTimeoutMS bounds a single sql_query/sql_exec. Default
+	// 30000. Env: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS.
+	SqlMemStatementTimeoutMS int `yaml:"sqlmem_statement_timeout_ms"`
+	// SqlMemMaxRows caps the rows a sql_query returns (the rest is dropped
+	// and the result is flagged truncated). Default 10000. Env:
+	// LOOMCYCLE_SQLMEM_MAX_ROWS.
+	SqlMemMaxRows int `yaml:"sqlmem_max_rows"`
+	// SqlMemAuditMode controls how much of an audited statement is recorded:
+	// "full" (the default) records the redacted statement text; "metadata"
+	// records only op/scope/row counts, never the statement. Env:
+	// LOOMCYCLE_SQLMEM_AUDIT_MODE.
+	SqlMemAuditMode string `yaml:"sqlmem_audit_mode"`
 }
 
 // ConfigDir returns the directory the YAML was loaded from. Used by
@@ -731,6 +760,25 @@ type AgentDef struct {
 	// legitimately maintain large state (cv-adapter); set lower for
 	// noisy agents you want to keep on a tight leash.
 	MemoryQuotaBytes int `yaml:"memory_quota_bytes"`
+
+	// SqlScopes is the RFC AA SQL Memory ACL — the closed set of
+	// per-scope sqlite databases the agent may run sql_query / sql_exec
+	// against. Empty = NO SQL access (the default-deny invariant: even
+	// with Memory in allowed_tools, an agent without sql_scopes sees its
+	// SQL ops refused). Closed enum {agent, user, run}:
+	//
+	//   - "agent" → this agent's durable DB (tenant-keyed, cross-run)
+	//   - "user"  → this end-user's durable DB (tenant-keyed, cross-agent)
+	//   - "run"   → an ephemeral DB dropped when the top-level run ends
+	//
+	// Same trust posture as MemoryScopes: the model picks the scope, the
+	// operator-resolved config decides which scopes exist at all.
+	SqlScopes []string `yaml:"sql_scopes"`
+
+	// SqlQuotaBytes overrides the global per-scope SQL DB byte cap
+	// (LOOMCYCLE_SQLMEM_QUOTA_BYTES) for this agent. 0 = use the global
+	// default. Checked before each write (approximate; see internal/sqlmem).
+	SqlQuotaBytes int `yaml:"sql_quota_bytes"`
 
 	// MemoryBackend names a memory_backends entry / MemoryBackendDef
 	// this agent routes its Memory ops through. Empty = the
@@ -2563,6 +2611,43 @@ func Load(path string) (*Config, error) {
 		cfg.Storage.Backend = "sqlite"
 	}
 
+	// RFC AA SQL Memory (Phase 1). Off by default; env overrides yaml.
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_ENABLED"); v == "1" {
+		cfg.Storage.SqlMemEnabled = true
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_ROOT"); v != "" {
+		cfg.Storage.SqlMemRoot = v
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_QUOTA_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.SqlMemQuotaBytes = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.SqlMemStatementTimeoutMS = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_ROWS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.SqlMemMaxRows = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_AUDIT_MODE"); v != "" {
+		cfg.Storage.SqlMemAuditMode = v
+	}
+	// Defaults for the bounds the operator did not set. quota stays 0 (off);
+	// timeout/rows get sensible ceilings; audit defaults to full.
+	if cfg.Storage.SqlMemStatementTimeoutMS == 0 {
+		cfg.Storage.SqlMemStatementTimeoutMS = 30000
+	}
+	if cfg.Storage.SqlMemMaxRows == 0 {
+		cfg.Storage.SqlMemMaxRows = 10000
+	}
+	if cfg.Storage.SqlMemAuditMode == "" {
+		cfg.Storage.SqlMemAuditMode = "full"
+	}
+
 	// Hooks block (v0.8.17). The env-var override APPENDS to whatever
 	// yaml already declared rather than replacing, so an operator can
 	// keep their static list in yaml and add an ops-only entry via env
@@ -3685,6 +3770,12 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.MemoryQuotaBytes != 0 {
 		out.MemoryQuotaBytes = override.MemoryQuotaBytes
 	}
+	if override.SqlScopes != nil {
+		out.SqlScopes = override.SqlScopes
+	}
+	if override.SqlQuotaBytes != 0 {
+		out.SqlQuotaBytes = override.SqlQuotaBytes
+	}
 	if override.MemoryBackend != "" {
 		out.MemoryBackend = override.MemoryBackend
 	}
@@ -3916,6 +4007,15 @@ var validMemoryScopes = map[string]bool{
 	"user":  true,
 }
 
+// validSqlScopes is the closed set of RFC AA SQL Memory scope names
+// accepted in agent yaml. Unlike Memory's k/v scopes it also includes
+// `run` — an ephemeral per-run database dropped at run completion.
+var validSqlScopes = map[string]bool{
+	"agent": true,
+	"user":  true,
+	"run":   true,
+}
+
 // validChannelScopes is the closed set of Channel tool scope names
 // accepted on a top-level `channels:` entry. agent + user mirror
 // Memory's vocabulary; global is the cross-tenant fan-out shape.
@@ -4105,6 +4205,28 @@ func agentGateWarnings(name string, a AgentDef) []string {
 		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Interruption but interruption.enabled is false — every Interruption op will refuse; set interruption.enabled: true", name))
 	}
 	return w
+}
+
+// sqlMemConfigWarnings returns the non-fatal advisory when an agent is
+// configured for RFC AA SQL Memory (Memory in allowed_tools + a non-empty
+// sql_scopes) but the subsystem is disabled at the storage layer — the agent
+// boots, but every sql_query/sql_exec refuses with "not enabled". Kept pure +
+// separate from agentGateWarnings because it needs the storage flag, not just
+// the AgentDef. The inverse (sql_scopes empty → default-deny) is enforced at
+// runtime, not flagged here.
+func sqlMemConfigWarnings(name string, a AgentDef, sqlMemEnabled bool) []string {
+	has := func(tool string) bool {
+		for _, t := range a.AllowedTools {
+			if t == tool {
+				return true
+			}
+		}
+		return false
+	}
+	if has("Memory") && len(a.SqlScopes) > 0 && !sqlMemEnabled {
+		return []string{fmt.Sprintf("agent %q: sql_scopes is set but storage.sqlmem_enabled is false — every sql_query/sql_exec will refuse; set LOOMCYCLE_SQLMEM_ENABLED=1 (or storage.sqlmem_enabled: true)", name)}
+	}
+	return nil
 }
 
 // validateStaticWebhook checks a static `webhooks:` entry's delivery target +
@@ -4327,6 +4449,14 @@ func validate(c *Config) error {
 				return fmt.Errorf("agent %q: memory_scopes[%d]: unknown scope %q (want one of: agent, user)", name, i, sc)
 			}
 		}
+		// RFC AA SQL Memory: validate sql_scopes are known scope strings.
+		// Empty = no SQL access (default-deny, enforced at runtime, not here).
+		// Non-empty must be a subset of {agent, user, run}.
+		for i, sc := range agent.SqlScopes {
+			if !validSqlScopes[sc] {
+				return fmt.Errorf("agent %q: sql_scopes[%d]: unknown scope %q (want one of: agent, user, run)", name, i, sc)
+			}
+		}
 		// RFC AH Phase 1: a per-agent `volumes` binding must reference a
 		// declared top-level `volumes:` entry (mirrors how allowed_tools
 		// validates against registered tools — operator-yaml is the floor,
@@ -4344,8 +4474,12 @@ func validate(c *Config) error {
 		// logged once at boot, never fatal — an operator may legitimately list a
 		// tool they haven't gated yet.
 		c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
+		c.Warnings = append(c.Warnings, sqlMemConfigWarnings(name, agent, c.Storage.SqlMemEnabled)...)
 		if agent.MemoryQuotaBytes < 0 {
 			return fmt.Errorf("agent %q: memory_quota_bytes must be >= 0", name)
+		}
+		if agent.SqlQuotaBytes < 0 {
+			return fmt.Errorf("agent %q: sql_quota_bytes must be >= 0", name)
 		}
 		// Memory backend routing (RFC I MR-3b): a static agent that names
 		// a memory_backend must reference a declared memory_backends key
