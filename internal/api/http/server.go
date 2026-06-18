@@ -3447,8 +3447,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, runID, loopRes, runErr, meta)
 		}()
 		// Tail the store to this client until they disconnect (r.Context()) or
-		// the run terminates. from_seq=0 → stream the whole run live.
-		s.streamRunEvents(r.Context(), stream, runID, 0)
+		// the run terminates. from_seq=0 → stream the whole run live. The SSE
+		// writer never errors, so the visitor always returns nil.
+		_ = s.streamRunEvents(r.Context(), runID, 0, func(pe providers.Event) error {
+			stream.send(pe)
+			return nil
+		})
 		return
 	}
 

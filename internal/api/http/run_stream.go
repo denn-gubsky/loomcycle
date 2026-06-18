@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -16,31 +18,84 @@ import (
 // tight that a long-idle parked run hammers the store.
 const runStreamPollInterval = 250 * time.Millisecond
 
-// nonStreamableEventTypes are persisted transcript rows whose payload is NOT a
-// providers.Event (so they can't round-trip to an SSE frame) — the operator's
-// own prompt segments and the resolved system prompt. A re-attaching client
-// renders those from the one-shot transcript fetch; the live tail only carries
-// the loop's typed events. Steer/session/agent frames are never persisted, so
-// they never appear here.
-var nonStreamableEventTypes = map[string]bool{
-	"user_input":    true,
-	"system_prompt": true,
+// runEventToFrame converts a persisted transcript row into the streamable
+// providers.Event frame a re-attaching client should see, or reports false to
+// skip it. Most rows round-trip directly (text / tool_call / tool_result / done
+// / …). The exceptions:
+//
+//   - system_prompt — the resolved system prompt; not a conversational frame.
+//     Skipped.
+//   - user_input — the operator's own turns (the opening prompt + every steer
+//     message), persisted as a []loop.PromptSegment, NOT a providers.Event.
+//     RFC AI makes the re-attach stream SELF-SUFFICIENT: a cold client (e.g.
+//     resuming on another device) must reconstruct the operator's side, so we
+//     synthesize an EventSteer frame (source="replay") from the segments
+//     rather than dropping it. The live run already emits its own EventSteer
+//     for in-flight steers, so a same-session client de-dupes the replay
+//     against its optimistic echo (web/src/hooks/useRunStream.ts).
+func runEventToFrame(ev store.Event) (providers.Event, bool) {
+	switch ev.Type {
+	case "system_prompt":
+		return providers.Event{}, false
+	case "user_input":
+		return userInputToSteerFrame(ev.Payload)
+	default:
+		var pe providers.Event
+		if json.Unmarshal(ev.Payload, &pe) != nil {
+			return providers.Event{}, false // not a providers.Event — skip defensively
+		}
+		return pe, true
+	}
 }
 
-// streamRunEvents tails a run's persisted events to an SSE stream by polling
-// the store, re-emitting each loop event (text / tool_call / tool_result /
-// done / …) as the same providers.Event frame the live run stream produces.
-// It is the shared engine behind two callers: the interactive POST /v1/runs
-// handler (whose loop runs detached in a goroutine) and the re-attach endpoint
-// GET /v1/runs/{run_id}/stream.
+// userInputToSteerFrame turns a persisted user_input row (a JSON
+// []loop.PromptSegment) into a replayable EventSteer frame. Joins the segments'
+// trusted-text so a cold re-attach shows the operator's turn. Returns false if
+// the payload is malformed or carries no text (defensive — never fires in
+// practice; the writer always persists a well-formed user segment).
+func userInputToSteerFrame(payload json.RawMessage) (providers.Event, bool) {
+	var segs []loop.PromptSegment
+	if json.Unmarshal(payload, &segs) != nil {
+		return providers.Event{}, false
+	}
+	var b strings.Builder
+	for _, seg := range segs {
+		for _, c := range seg.Content {
+			if c.Text == "" {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(c.Text)
+		}
+	}
+	if b.Len() == 0 {
+		return providers.Event{}, false
+	}
+	return providers.Event{
+		Type:      providers.EventSteer,
+		UserInput: &providers.UserInputEventInfo{Text: b.String(), Source: "replay"},
+	}, true
+}
+
+// streamRunEvents tails a run's persisted events to a visitor by polling the
+// store, re-emitting each loop event (text / tool_call / tool_result / done /
+// …) as the same providers.Event frame the live run stream produces, plus
+// replayed operator turns (see runEventToFrame). It is the shared engine behind
+// three callers: the interactive POST /v1/runs handler (whose loop runs
+// detached in a goroutine), the HTTP re-attach endpoint GET /v1/runs/{run_id}/
+// stream, and the gRPC StreamRun RPC (via connector.StreamRunEvents) — so the
+// visitor abstraction keeps a single tail engine across transports (RFC AI).
 //
-// It returns when ctx is done (the client disconnected — which for an
+// It returns nil when ctx is done (the client disconnected — which for an
 // interactive run does NOT stop the run itself) or the run reaches a terminal
-// state and all its events have been streamed. fromSeq lets a re-attaching
-// client skip events it already rendered from the transcript snapshot.
-func (s *Server) streamRunEvents(ctx context.Context, stream *sse, runID string, fromSeq int64) {
+// state and all its events have been streamed. If visit returns an error
+// (e.g. a broken SSE/gRPC stream), streamRunEvents returns it immediately.
+// fromSeq lets a re-attaching client skip events it already rendered.
+func (s *Server) streamRunEvents(ctx context.Context, runID string, fromSeq int64, visit func(providers.Event) error) error {
 	if s.store == nil {
-		return
+		return nil
 	}
 	cursor := fromSeq
 	ticker := time.NewTicker(runStreamPollInterval)
@@ -56,14 +111,13 @@ func (s *Server) streamRunEvents(ctx context.Context, stream *sse, runID string,
 			}
 			for _, ev := range evs {
 				cursor = ev.Seq
-				if nonStreamableEventTypes[ev.Type] {
+				pe, ok := runEventToFrame(ev)
+				if !ok {
 					continue
 				}
-				var pe providers.Event
-				if json.Unmarshal(ev.Payload, &pe) != nil {
-					continue // payload not a providers.Event — skip defensively
+				if err := visit(pe); err != nil {
+					return err
 				}
-				stream.send(pe)
 			}
 			if !more {
 				break
@@ -74,12 +128,12 @@ func (s *Server) streamRunEvents(ctx context.Context, stream *sse, runID string,
 		// stays live until the client disconnects (ctx) — exactly what we want.
 		if !drainErr {
 			if run, err := s.store.GetRun(ctx, runID); err == nil && isTerminalRunStatus(run.Status) {
-				return
+				return nil
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
 		}
 	}
@@ -159,5 +213,11 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 		"run_id":     runID,
 		"session_id": run.SessionID,
 	})
-	s.streamRunEvents(r.Context(), stream, runID, fromSeq)
+	// The SSE writer never returns an error from send (it buffers + flushes),
+	// so the visitor always returns nil; the tail ends on ctx (disconnect) or
+	// terminal status.
+	_ = s.streamRunEvents(r.Context(), runID, fromSeq, func(pe providers.Event) error {
+		stream.send(pe)
+		return nil
+	})
 }
