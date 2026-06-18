@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -62,6 +63,13 @@ type Server struct {
 	tools     []tools.Tool
 	sem       *concurrency.Semaphore
 	store     store.Store // optional; nil means "don't persist"
+
+	// sqlMem is the RFC AA SQL Memory manager (per-scope sqlite databases
+	// backing the Memory tool's sql_query/sql_exec). Nil when the subsystem
+	// is disabled. Wired from main.go via SetSqlMem; the server uses it ONLY
+	// to drop a run-scope SQL database when the top-level run completes
+	// (mirroring the ephemeral-volume purge).
+	sqlMem *sqlmem.Manager
 
 	// redactor masks secret-shaped substrings in tool I/O before it is
 	// persisted to events.payload (F32). Built in New() from the secret-
@@ -724,6 +732,19 @@ func (s *Server) SetMemoryBackendDefTool(t tools.Tool) {
 func (s *Server) SetOperatorTokenDefTool(t tools.Tool) {
 	s.operatorTokenDefTool = t
 }
+
+// SetSqlMem wires the RFC AA SQL Memory manager so the server can drop a
+// run-scope SQL database when the top-level run completes. Nil leaves the
+// run-scope drop a no-op (the subsystem is disabled).
+func (s *Server) SetSqlMem(m *sqlmem.Manager) {
+	s.sqlMem = m
+}
+
+// Redactor returns the server's secret redactor (nil when redaction is
+// disabled). Exposed so the Memory tool's SQL audit reuses the SAME redactor
+// the server built from the secret-classified env — one source of truth for
+// what counts as a secret. The returned *Redactor's methods are nil-safe.
+func (s *Server) Redactor() *redact.Redactor { return s.redactor }
 
 // newDispatcher centralises Dispatcher construction so the three call
 // sites (handleRuns, handleMessages, runSubAgent) all pick up the
@@ -1978,6 +1999,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
+	})
+	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
+	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
+		AllowedScopes: agentDef.SqlScopes,
+		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	// Resolved compaction settings flow down the spawn tree via ctx: a sub-agent
 	// inherits the parent's effective policy (its def fills any gaps the parent
@@ -3340,6 +3366,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
+	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
+		AllowedScopes: agentDef.SqlScopes,
+		QuotaBytes:    agentDef.SqlQuotaBytes,
+	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, req.Compaction))
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
@@ -3832,6 +3863,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
+	})
+	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
+	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
+		AllowedScopes: agentDef.SqlScopes,
+		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, body.Compaction))
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
@@ -4652,6 +4688,15 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		AllowedScopes: def.MemoryScopes,
 		QuotaBytes:    def.MemoryQuotaBytes,
 		Backend:       def.MemoryBackend,
+	})
+	// RFC AA: the sub-agent's SQL Memory ACL is its OWN def's sql_scopes
+	// (like memory/channels, not inherited down the tree). Empty →
+	// default-deny. The run-scope DB keys off RootRunID (inherited unchanged
+	// above), so a child granted `run` reads/writes the SAME ephemeral DB as
+	// the rest of the tree — dropped once at the top-level run's completion.
+	subCtx = tools.WithSqlMemPolicy(subCtx, tools.SqlMemPolicyValue{
+		AllowedScopes: def.SqlScopes,
+		QuotaBytes:    def.SqlQuotaBytes,
 	})
 	// Compaction flows DOWN the spawn tree (unlike memory/channels/sampling,
 	// which are the child's own). The parent's effective policy (on ctx) wins per
@@ -5823,7 +5868,19 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 // Gated to top-level runs by the caller (meta.IsTopLevel): a sub-agent
 // completing must NOT purge the tree its parent + siblings still use.
 func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
-	if rootRunID == "" || s.store == nil {
+	if rootRunID == "" {
+		return
+	}
+	// RFC AA SQL Memory: drop the run-scope SQL database for this top-level
+	// run. Independent of dynamic volumes (a deployment may run SQL Memory
+	// without any dynamic_root), so it happens BEFORE the volume early-return.
+	// Best-effort + logged — a drop fault must never fail the run.
+	if s.sqlMem != nil {
+		if _, err := s.sqlMem.DropRunScope(rootRunID); err != nil {
+			log.Printf("sqlmem run-scope drop (run=%s): %v", rootRunID, err)
+		}
+	}
+	if s.store == nil {
 		return
 	}
 	dynRoot, ok := builtin.DynamicVolumeRoot(s.cfg)

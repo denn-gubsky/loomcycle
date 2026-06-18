@@ -250,6 +250,15 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// RFC AA SQL Memory: re-derive the sql_scopes ACL from the agent def too —
+	// without this a resumed/restored run reads a zero SqlMemPolicy and every
+	// sql_query/sql_exec default-denies, a silent loss of SQL Memory access
+	// across pause / snapshot / cross-instance resume (mirrors the memory +
+	// volume policy re-derivation above).
+	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
+		AllowedScopes: agentDef.SqlScopes,
+		QuotaBytes:    agentDef.SqlQuotaBytes,
+	})
 	// Compaction re-derived from the agent def (per-run override not snapshotted),
 	// stamped for sub-agent inheritance.
 	loopCtx = tools.WithCompactionPolicy(loopCtx, agentDef.Compaction)
