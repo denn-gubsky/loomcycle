@@ -4772,3 +4772,54 @@ button.primary:disabled {
 .orchestrator-children {
   overflow-y: auto;
 }
+
+/* ---- RFC AH Phase 4 Volumes tab ---- */
+.volumes-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0 12px;
+}
+.volumes-toolbar .muted {
+  font-size: 13px;
+  max-width: 70ch;
+}
+/* Reuse .snapshots-table layout; widen the path column + truncate long
+   path / bound-by cells so a deep path doesn't blow the table width. */
+.volumes-table .volumes-path {
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.volumes-table .volumes-boundby {
+  display: inline-block;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The dynamic_root marker sits next to the source chip. */
+.volumes-table .badge-label {
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--bg-soft, #333);
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+/* Destructive purge action + confirm button — danger-coloured. */
+.snapshots-table td.actions .link-btn-danger {
+  color: var(--danger);
+}
+.snapshots-table td.actions .link-btn-danger:hover {
+  color: var(--danger);
+  font-weight: 600;
+}
+.modal-buttons button.primary-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}

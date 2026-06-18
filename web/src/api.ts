@@ -1237,7 +1237,9 @@ export type SubstrateKind =
   | "webhookdef"
   | "a2aservercarddef"
   | "a2aagentdef"
-  | "memorybackenddef";
+  | "memorybackenddef"
+  // RFC AH dynamic volume substrate. Flat (no versioning): the only ops are
+  | "volumedef"; // create / delete / purge — not the create/fork/promote/retire lifecycle.
 
 export function createDef(
   kind: SubstrateKind,
@@ -1301,6 +1303,98 @@ function substrateDispatch<T>(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+// ---- RFC AH Phase 4 Volumes (Web UI volume management) ----
+//
+// Reads come from two ADDITIVE, tenant-scoped endpoints; CRUD reuses the
+// existing POST /v1/_volumedef op-discriminated dispatch. A VolumeDef is FLAT
+// (no versions / promote / retire) — the op set is create / delete / purge.
+
+export type VolumeMode = "rw" | "ro";
+
+// PersistentVolumeEntry is one row of GET /v1/_volumes. STATIC rows
+// (source="static") are operator yaml — read-only from the UI; DYNAMIC rows
+// (source="dynamic") are the caller-tenant's VolumeDefs — create/delete/purge.
+export interface PersistentVolumeEntry {
+  name: string;
+  source: "static" | "dynamic";
+  path: string;
+  mode: VolumeMode | string;
+  /** Static volume the operator flagged default:true. Dynamic rows: false. */
+  default: boolean;
+  /** Static volume that is the operator-blessed parent dynamic volumes are
+   *  provisioned inside. Dynamic rows: false. */
+  dynamic_root: boolean;
+  /** Set for dynamic rows (substrate-stamped); absent/"" for static volumes. */
+  created_at?: string;
+}
+
+export interface PersistentVolumesResponse {
+  entries: PersistentVolumeEntry[];
+}
+
+// EphemeralVolumeEntry is one row of GET /v1/_volumes/ephemeral — a live,
+// run-scoped volume auto-purged at run completion.
+export interface EphemeralVolumeEntry {
+  name: string;
+  root_run_id: string;
+  path: string;
+  mode: VolumeMode | string;
+  created_at: string;
+}
+
+export interface EphemeralVolumesResponse {
+  entries: EphemeralVolumeEntry[];
+}
+
+// listVolumes fetches the merged persistent volume universe for the caller's
+// tenant: static cfg volumes (the shared bind floor) + the tenant's dynamic
+// VolumeDefs. Tenant scoping is server-side (authoritative principal).
+export function listVolumes(): Promise<PersistentVolumesResponse> {
+  return jsonFetch<PersistentVolumesResponse>("/v1/_volumes");
+}
+
+// listEphemeralVolumes fetches the caller-tenant's live ephemeral volumes.
+export function listEphemeralVolumes(): Promise<EphemeralVolumesResponse> {
+  return jsonFetch<EphemeralVolumesResponse>("/v1/_volumes/ephemeral");
+}
+
+// VolumeDefRow mirrors the {name, path, mode, created_at} the VolumeDef tool
+// returns on create. The runtime DERIVES the path (the caller never supplies a
+// host path), so create takes only name + mode.
+export interface VolumeDefRow {
+  name: string;
+  path?: string;
+  mode?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// createVolume provisions a dynamic VolumeDef (name + mode only — the runtime
+// derives the path inside the operator-blessed dynamic_root). Idempotent: a
+// re-create with the same name updates the mode.
+export function createVolume(name: string, mode: VolumeMode): Promise<VolumeDefRow> {
+  return substrateDispatch<VolumeDefRow>("volumedef", { op: "create", name, mode });
+}
+
+// deleteVolume is NON-destructive — it unmaps the volume (removes the row) but
+// LEAVES the files on disk. Mirrors the tool's `delete` op.
+export function deleteVolume(name: string): Promise<{ name: string; deleted: boolean; files_removed: boolean }> {
+  return substrateDispatch<{ name: string; deleted: boolean; files_removed: boolean }>(
+    "volumedef",
+    { op: "delete", name },
+  );
+}
+
+// purgeVolume is DESTRUCTIVE — it removes the row AND RemoveAll's the directory
+// tree (behind the server-side four-way fence). The UI gates this behind a
+// type-to-confirm modal; the server-side fence is the real guard.
+export function purgeVolume(name: string): Promise<{ name: string; deleted: boolean; files_removed: boolean }> {
+  return substrateDispatch<{ name: string; deleted: boolean; files_removed: boolean }>(
+    "volumedef",
+    { op: "purge", name },
+  );
 }
 
 // ---- Channel fetchers ----

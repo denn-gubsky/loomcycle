@@ -18,6 +18,7 @@ import AuditView from "./pages/AuditView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
 import IntegrationsView from "./pages/IntegrationsView";
+import VolumesView from "./pages/VolumesView";
 import ChannelsView from "./pages/ChannelsView";
 import SchedulesView from "./pages/SchedulesView";
 import Layout from "./components/Layout";
@@ -65,6 +66,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             path="integrations/memory-backends"
             element={<IntegrationsView />}
           />
+          <Route path="volumes" element={<VolumesView />}>
+            <Route index element={<Navigate to="/volumes/persistent" replace />} />
+          </Route>
+          <Route path="volumes/persistent" element={<VolumesView />} />
+          <Route path="volumes/ephemeral" element={<VolumesView />} />
           <Route path="channels" element={<ChannelsView />} />
           <Route path="schedules" element={<SchedulesView />} />
           <Route path="memory" element={<MemoryView />} />
