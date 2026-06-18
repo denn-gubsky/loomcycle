@@ -87,3 +87,102 @@ func (s *Store) VolumeDefDelete(ctx context.Context, tenantID, name string) (boo
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// ---- RFC AH Phase 2b ephemeral (run-tree-scoped) volumes ----
+
+// EphemeralVolumeCreate UPSERTs the (root_run_id, name) row on Postgres.
+// Re-creating an existing name within the same run updates the definition,
+// leaving created_at intact (mirrors VolumeDefCreate).
+func (s *Store) EphemeralVolumeCreate(ctx context.Context, row store.EphemeralVolumeDefRow) (store.EphemeralVolumeDefRow, error) {
+	now := time.Now().UTC()
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO ephemeral_volume_defs (root_run_id, name, tenant_id, definition, created_at)
+		 VALUES ($1, $2, $3, $4::jsonb, $5)
+		 ON CONFLICT (root_run_id, name) DO UPDATE SET
+		     tenant_id  = EXCLUDED.tenant_id,
+		     definition = EXCLUDED.definition`,
+		row.RootRunID, row.Name, row.TenantID, string(row.Definition), now,
+	); err != nil {
+		return store.EphemeralVolumeDefRow{}, err
+	}
+	return s.ephemeralVolumeGet(ctx, row.RootRunID, row.Name)
+}
+
+func (s *Store) ephemeralVolumeGet(ctx context.Context, rootRunID, name string) (store.EphemeralVolumeDefRow, error) {
+	var (
+		out        store.EphemeralVolumeDefRow
+		definition string
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT root_run_id, name, tenant_id, definition::text, created_at
+		 FROM ephemeral_volume_defs WHERE root_run_id = $1 AND name = $2`, rootRunID, name,
+	).Scan(&out.RootRunID, &out.Name, &out.TenantID, &definition, &out.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.EphemeralVolumeDefRow{}, &store.ErrNotFound{Kind: "ephemeral_volume_def", ID: name}
+	}
+	if err != nil {
+		return store.EphemeralVolumeDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	return out, nil
+}
+
+func (s *Store) EphemeralVolumeListByRun(ctx context.Context, rootRunID string) ([]store.EphemeralVolumeDefRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT root_run_id, name, tenant_id, definition::text, created_at
+		 FROM ephemeral_volume_defs WHERE root_run_id = $1 ORDER BY name`, rootRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.EphemeralVolumeDefRow
+	for rows.Next() {
+		var (
+			r          store.EphemeralVolumeDefRow
+			definition string
+		)
+		if err := rows.Scan(&r.RootRunID, &r.Name, &r.TenantID, &definition, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) EphemeralVolumeDeleteByRun(ctx context.Context, rootRunID string) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM ephemeral_volume_defs WHERE root_run_id = $1`, rootRunID)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// EphemeralVolumeSweepCandidates returns DISTINCT (root_run_id, tenant_id)
+// whose owning run is TERMINAL and NOT paused/pausing. The filter mirrors
+// SweepStaleRuns: a paused run is parked, not crashed — its ephemeral
+// volumes must survive to be reused on resume.
+func (s *Store) EphemeralVolumeSweepCandidates(ctx context.Context) ([]store.EphemeralVolumeSweepRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT e.root_run_id, e.tenant_id
+		 FROM ephemeral_volume_defs e
+		 JOIN runs r ON r.id = e.root_run_id
+		 WHERE r.status IN ('completed', 'failed', 'cancelled')
+		   AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.EphemeralVolumeSweepRow
+	for rows.Next() {
+		var r store.EphemeralVolumeSweepRow
+		if err := rows.Scan(&r.RootRunID, &r.TenantID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

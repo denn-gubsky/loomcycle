@@ -1227,6 +1227,36 @@ type Store interface {
 	// op, which deletes the row AND the files behind a four-way fence.
 	VolumeDefDelete(ctx context.Context, tenantID, name string) (bool, error)
 
+	// ---- RFC AH Phase 2b ephemeral (run-tree-scoped) volumes ----
+	//
+	// A SEPARATE table from volume_defs: an ephemeral volume is scoped to
+	// the creating run TREE, not to (tenant, name), so two concurrent runs
+	// — even in one tenant — can each create a `work` volume with no clobber.
+	// The PK is (root_run_id, name). The row carries root_run_id +
+	// tenant_id + the runtime-derived {"path":..,"mode":..} body for durable
+	// crash-cleanup; the in-memory EphemeralVolumeSet is the resolution
+	// source (this table only backs the sweeper backstop + inline purge).
+	//
+	// definition.path is ALWAYS <dynamic_root>/_ephemeral/<root_run_id>/<name>,
+	// derived by the tool — never caller-supplied. The purge paths re-derive
+	// the path rather than trust this stored value (same posture as VolumeDef
+	// purge), so a tampered row can't redirect an os.RemoveAll.
+	EphemeralVolumeCreate(ctx context.Context, row EphemeralVolumeDefRow) (EphemeralVolumeDefRow, error)
+	// EphemeralVolumeListByRun returns all ephemeral rows for one root run,
+	// ordered by name. Empty slice (not error) when the run owns none.
+	EphemeralVolumeListByRun(ctx context.Context, rootRunID string) ([]EphemeralVolumeDefRow, error)
+	// EphemeralVolumeDeleteByRun deletes ALL ephemeral rows for one root run,
+	// returning the count removed. Idempotent (0 when none existed). It NEVER
+	// touches on-disk directories — the caller (inline purge / sweeper) does
+	// the fenced RemoveAll first, then calls this to drop the rows.
+	EphemeralVolumeDeleteByRun(ctx context.Context, rootRunID string) (int, error)
+	// EphemeralVolumeSweepCandidates returns the DISTINCT (root_run_id,
+	// tenant_id) pairs whose owning run is TERMINAL and NOT paused/pausing —
+	// the crash-recovery backstop's work list. The terminal-and-not-paused
+	// filter mirrors SweepStaleRuns exactly (a paused run is parked, not
+	// crashed: its ephemeral volumes must survive to be reused on resume).
+	EphemeralVolumeSweepCandidates(ctx context.Context) ([]EphemeralVolumeSweepRow, error)
+
 	// ---- v1.x RFC E ScheduleDef substrate ----
 	//
 	// Fourth substrate primitive after AgentDef + SkillDef + MCPServerDef.
@@ -2203,6 +2233,37 @@ type VolumeDefRow struct {
 	Definition json.RawMessage `json:"definition"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
+// EphemeralVolumeDefRow is one run-tree-scoped ephemeral volume (RFC AH
+// Phase 2b). Distinct from VolumeDefRow: the PK is (root_run_id, name),
+// NOT (tenant_id, name) — two concurrent runs (any tenant) can each own a
+// `work` volume with no collision. TenantID is carried for the sweeper's
+// per-tenant fence (the purge derives <dynamic_root>/_ephemeral/<root>/<name>
+// and re-checks containment).
+type EphemeralVolumeDefRow struct {
+	// RootRunID is the TOP-LEVEL run id the ephemeral volume is scoped to.
+	// The whole spawn tree shares one root id, so a sub-agent's create lands
+	// under the same root and the tree resolves it via the shared in-memory
+	// set. Set from ctx's RunIdentity.RootRunID, never the wire.
+	RootRunID string `json:"root_run_id"`
+	// Name is the ephemeral volume name (charset-validated at the tool layer
+	// to `^[a-z0-9][a-z0-9_-]{0,63}$` so it can't inject path components).
+	Name string `json:"name"`
+	// TenantID is the run's authoritative tenant (RFC N), carried for the
+	// purge fence's tenant-prefix check. "" = the shared/operator tenant.
+	TenantID string `json:"tenant_id,omitempty"`
+	// Definition is the runtime-derived {"path":..,"mode":..} body.
+	Definition json.RawMessage `json:"definition"`
+	CreatedAt  time.Time       `json:"created_at"`
+}
+
+// EphemeralVolumeSweepRow is one (root_run_id, tenant_id) the sweeper must
+// purge — the run is terminal and not paused, so its ephemeral subtree is
+// safe to delete. Returned by EphemeralVolumeSweepCandidates.
+type EphemeralVolumeSweepRow struct {
+	RootRunID string
+	TenantID  string
 }
 
 // ScheduleDefRow mirrors AgentDefRow / SkillDefRow / MCPServerDefRow
