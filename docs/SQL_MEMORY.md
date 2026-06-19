@@ -99,9 +99,14 @@ runs any number of `sql_exec` / `sql_query` on the scope, then `sql_commit` or
   connection-pinning + cleanup. While a transaction is open for a `(run, scope)`,
   that scope's `sql_exec`/`sql_query` run **on** it; with none open they
   auto-commit exactly as before.
-- **One open transaction per `(run, scope)`** — a second `sql_begin` before
+- **One open transaction per `(run-tree, scope)`** — a second `sql_begin` before
   finishing errors (no nesting / `SAVEPOINT` yet). At most `sqlmem_max_open_txns`
-  process-wide.
+  process-wide. The key is the run-**tree** root, so within one run tree an open
+  transaction on a scope is **shared**: if a parent opens a transaction on a
+  scope and a (parallel) sub-agent then runs `sql_exec`/`sql_query` on that *same*
+  scope, it runs on the parent's transaction (and is committed/rolled-back with
+  it). Agents that must transact independently should use the per-agent `agent`
+  scope (distinct per agent name) rather than a shared `user`/`run` scope.
 - **Read-write.** A `sql_query` inside a transaction relies on the validator's
   SELECT-only rule for read-safety (not the auto-commit read-only transaction).
 - **Always cleaned up.** A transaction is rolled back if the run ends with it
@@ -109,12 +114,12 @@ runs any number of `sql_exec` / `sql_query` on the scope, then `sql_commit` or
   held connection + locks never leak past a stuck agent. Commit before doing
   anything that ends the run.
 - **Concurrency / replica notes.** On **sqlite** a scope is a single writer, so
-  while a transaction is open on a scope, other ops on that *same* scope (e.g. a
-  sibling sub-agent sharing a durable `agent`/`user` scope) block until it
-  finishes. On **postgres** the per-scope pool serves a couple of concurrent
-  connections. A transaction is **replica-local**: a run that migrates to another
-  replica (steer/resume) orphans its open transaction → it is reaped and the
-  continuation auto-commits.
+  while one run holds a transaction on a durable scope, *another* run's
+  auto-commit op on that same scope blocks until the transaction finishes (its
+  ctx deadline still applies). On **postgres** the per-scope pool serves a couple
+  of concurrent connections. A transaction is **replica-local**: a run that
+  migrates to another replica (steer/resume) orphans its open transaction → it is
+  reaped and the continuation auto-commits.
 
 ## Postgres tier — security model
 

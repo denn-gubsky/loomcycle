@@ -82,12 +82,14 @@ func (r *txnRegistry) rollbackAll() {
 	}
 }
 
-// InTxn reports whether an explicit transaction is open for txnID.
+// InTxn reports whether a fully-open explicit transaction exists for txnID. A
+// nil entry is a reservation placeholder for a BeginTxn still mid-round-trip
+// (see BeginTxn) — treated as NOT open, so a concurrent op auto-commits rather
+// than routing onto a transaction that isn't ready.
 func (m *Manager) InTxn(txnID string) bool {
 	m.txns.mu.Lock()
 	defer m.txns.mu.Unlock()
-	_, ok := m.txns.open[txnID]
-	return ok
+	return m.txns.open[txnID] != nil
 }
 
 // BeginTxn opens an explicit transaction for txnID against scope key. Errors if
