@@ -319,6 +319,15 @@ type StorageConfig struct {
 	// main Backend is "postgres" and SQL Memory is enabled; ignored on the
 	// sqlite backend (file-per-scope). Env: LOOMCYCLE_SQLMEM_PG_DSN.
 	SqlMemPgDSN string `yaml:"sqlmem_pg_dsn"`
+	// SqlMemTxnTimeoutMS bounds how long an explicit transaction (Phase 3a
+	// sql_begin) may stay open before the reaper rolls it back — a held scope
+	// connection must never leak past a stuck agent. Default 30000. 0 disables
+	// the reaper. Env: LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS.
+	SqlMemTxnTimeoutMS int `yaml:"sqlmem_txn_timeout_ms"`
+	// SqlMemMaxOpenTxns caps concurrent open explicit transactions process-wide
+	// (each pins a scope connection). Default 64. 0 = unbounded. Env:
+	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS.
+	SqlMemMaxOpenTxns int `yaml:"sqlmem_max_open_txns"`
 }
 
 // ConfigDir returns the directory the YAML was loaded from. Used by
@@ -2644,6 +2653,16 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_PG_DSN"); v != "" {
 		cfg.Storage.SqlMemPgDSN = v
 	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.SqlMemTxnTimeoutMS = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.SqlMemMaxOpenTxns = n
+		}
+	}
 	// Defaults for the bounds the operator did not set. quota stays 0 (off);
 	// timeout/rows get sensible ceilings; audit defaults to full.
 	if cfg.Storage.SqlMemStatementTimeoutMS == 0 {
@@ -2654,6 +2673,16 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Storage.SqlMemAuditMode == "" {
 		cfg.Storage.SqlMemAuditMode = "full"
+	}
+	// Explicit-transaction bounds (Phase 3a). A txn TTL ensures a held scope
+	// connection is reclaimed if an agent abandons a transaction; the
+	// MaxOpenTxns cap bounds total pinned connections. Both apply only when the
+	// agent uses sql_begin. A negative env (unparseable) leaves the default.
+	if cfg.Storage.SqlMemTxnTimeoutMS == 0 {
+		cfg.Storage.SqlMemTxnTimeoutMS = 30000
+	}
+	if cfg.Storage.SqlMemMaxOpenTxns == 0 {
+		cfg.Storage.SqlMemMaxOpenTxns = 64
 	}
 
 	// Hooks block (v0.8.17). The env-var override APPENDS to whatever

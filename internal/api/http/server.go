@@ -5892,11 +5892,15 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	if rootRunID == "" {
 		return
 	}
-	// RFC AA SQL Memory: drop the run-scope SQL database for this top-level
-	// run. Independent of dynamic volumes (a deployment may run SQL Memory
-	// without any dynamic_root), so it happens BEFORE the volume early-return.
-	// Best-effort + logged — a drop fault must never fail the run.
+	// RFC AA SQL Memory: roll back any explicit transactions this run tree left
+	// open (Phase 3a) — releasing their pinned scope connections — BEFORE
+	// dropping the run-scope database (an open txn on the run scope would hold a
+	// connection the drop needs). Then drop the run-scope SQL database for this
+	// top-level run. Independent of dynamic volumes (a deployment may run SQL
+	// Memory without any dynamic_root), so it happens BEFORE the volume
+	// early-return. Best-effort + logged — a fault must never fail the run.
 	if s.sqlMem != nil {
+		s.sqlMem.RollbackRunTxns(rootRunID)
 		if _, err := s.sqlMem.DropRunScope(rootRunID); err != nil {
 			log.Printf("sqlmem run-scope drop (run=%s): %v", rootRunID, err)
 		}
