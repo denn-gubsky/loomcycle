@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -390,7 +391,7 @@ const memoryInputSchema = `{
     "metadata":   {"type": "object", "description": "add-only: opaque key/value context attached to the ingestion.", "additionalProperties": {"type": "string"}},
     "threshold":  {"type": "number", "description": "recall-only: 0..1 relevance floor for returned facts (0 = backend default)."},
     "statement":  {"type": "string", "description": "sql_query / sql_exec: ONE SQL statement. sql_query is read-only (SELECT / WITH … SELECT); sql_exec is DDL/DML (CREATE/INSERT/UPDATE/DELETE/etc.). ATTACH, PRAGMA, load_extension, transactions, and multiple statements are refused."},
-    "args":       {"type": "array", "description": "sql_query / sql_exec: positional bind parameters for ? placeholders in statement.", "items": {}},
+    "args":       {"type": "array", "description": "sql_query / sql_exec: positional bind parameters for ? placeholders. An element of the form {\"$embed\": \"text\"} is replaced server-side by the embedding of that text as a pgvector value (reference it with a ::vector cast, e.g. ... ORDER BY embedding <=> ?::vector); requires the postgres tier with pgvector + a configured embedder.", "items": {}},
     "timeout_ms": {"type": "integer", "description": "sql_query / sql_exec: reserved — the server-configured statement timeout is authoritative in this version."}
   },
   "required": ["op","scope"],
@@ -624,15 +625,20 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 	if strings.TrimSpace(in.Statement) == "" {
 		return errResult("sql_query: missing required field: statement"), nil
 	}
+	args, aerr := m.resolveEmbedArgs(ctx, in.Args)
+	if aerr != nil {
+		m.auditSql(ctx, "sql_query", scope, scopeID, in.Statement, 0, 0, aerr)
+		return errResult(fmt.Sprintf("sql_query: %s", aerr)), nil
+	}
 	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
 	var res *sqlmem.QueryResult
 	var qerr error
 	if txnID != "" && m.SqlMem.InTxn(txnID) {
-		res, qerr = m.SqlMem.QueryTxn(ctx, txnID, in.Statement, in.Args)
+		res, qerr = m.SqlMem.QueryTxn(ctx, txnID, in.Statement, args)
 	} else {
-		res, qerr = m.SqlMem.Query(ctx, key, in.Statement, in.Args)
+		res, qerr = m.SqlMem.Query(ctx, key, in.Statement, args)
 	}
 	durMs := time.Since(start).Milliseconds()
 	if qerr != nil {
@@ -659,6 +665,11 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 	if strings.TrimSpace(in.Statement) == "" {
 		return errResult("sql_exec: missing required field: statement"), nil
 	}
+	args, aerr := m.resolveEmbedArgs(ctx, in.Args)
+	if aerr != nil {
+		m.auditSql(ctx, "sql_exec", scope, scopeID, in.Statement, 0, 0, aerr)
+		return errResult(fmt.Sprintf("sql_exec: %s", aerr)), nil
+	}
 	// Per-agent quota override wins over the manager default when > 0.
 	quota := tools.SqlMemPolicy(ctx).QuotaBytes
 	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
@@ -667,9 +678,9 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 	var res *sqlmem.ExecResult
 	var xerr error
 	if txnID != "" && m.SqlMem.InTxn(txnID) {
-		res, xerr = m.SqlMem.ExecTxn(ctx, txnID, in.Statement, in.Args, quota)
+		res, xerr = m.SqlMem.ExecTxn(ctx, txnID, in.Statement, args, quota)
 	} else {
-		res, xerr = m.SqlMem.Exec(ctx, key, in.Statement, in.Args, quota)
+		res, xerr = m.SqlMem.Exec(ctx, key, in.Statement, args, quota)
 	}
 	durMs := time.Since(start).Milliseconds()
 	if xerr != nil {
@@ -761,6 +772,78 @@ func (m *Memory) execSqlTxnFinish(ctx context.Context, in memoryInput, commit bo
 	}
 	m.auditSql(ctx, op, scope, scopeID, "", 0, durMs, nil)
 	return okJSON(map[string]any{"ok": true})
+}
+
+// embedDirective reports whether a bind arg is an {"$embed": "<text>"} directive
+// (RFC AA Phase 3c) — the server-side embedding form that keeps a raw vector out
+// of the model context.
+func embedDirective(arg any) (string, bool) {
+	mp, ok := arg.(map[string]any)
+	if !ok || len(mp) != 1 {
+		return "", false
+	}
+	v, ok := mp["$embed"]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// resolveEmbedArgs replaces every {"$embed": "<text>"} bind arg with the
+// pgvector text of that text's embedding, so the agent never handles a raw
+// N-float vector. All directives in one statement embed in ONE Embed call.
+// Returns args unchanged when none are present; refuses (typed) when an embedder
+// or the vector-capable tier is missing.
+func (m *Memory) resolveEmbedArgs(ctx context.Context, args []any) ([]any, error) {
+	var texts []string
+	var slots []int
+	for i, a := range args {
+		if txt, ok := embedDirective(a); ok {
+			if strings.TrimSpace(txt) == "" {
+				return nil, fmt.Errorf("$embed directive has empty text")
+			}
+			texts = append(texts, txt)
+			slots = append(slots, i)
+		}
+	}
+	if len(texts) == 0 {
+		return args, nil
+	}
+	if m.Embedder == nil {
+		return nil, fmt.Errorf("$embed requires a configured embedder (set memory.embedder)")
+	}
+	if m.SqlMem == nil || !m.SqlMem.VectorsEnabled() {
+		return nil, fmt.Errorf("$embed requires vector columns — the postgres tier with pgvector installed in the sqlmem_ext schema (see docs/SQL_MEMORY.md)")
+	}
+	vecs, err := m.Embedder.Embed(ctx, texts)
+	if err != nil {
+		return nil, fmt.Errorf("embed: %w", err)
+	}
+	if len(vecs) != len(texts) {
+		return nil, fmt.Errorf("embedder returned %d vectors for %d texts", len(vecs), len(texts))
+	}
+	out := make([]any, len(args))
+	copy(out, args)
+	for j, i := range slots {
+		out[i] = encodePgvector(vecs[j])
+	}
+	return out, nil
+}
+
+// encodePgvector formats a float32 vector as pgvector's text wire form
+// "[1,2,3]" (the agent casts it to ::vector). Mirrors the main store's encoder.
+func encodePgvector(v []float32) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, f := range v {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(float64(f), 'g', -1, 32))
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // auditSql records one append-only SQL Memory audit event. Best-effort: a

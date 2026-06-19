@@ -75,6 +75,9 @@ type backend interface {
 	// transaction (sqlite: page_count*page_size; postgres: pg_total_relation_size
 	// over the scope schema) — for the per-write quota check inside a txn.
 	txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeKey) (int64, error)
+	// vectorsEnabled reports whether the tier can serve vector columns (Phase 3c
+	// — postgres with pgvector installed; sqlite is always false for now).
+	vectorsEnabled() bool
 	close() error
 }
 
@@ -169,6 +172,11 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 func (m *Manager) DropRunScope(runID string) (removed bool, err error) {
 	return m.backend.dropRunScope(runID)
 }
+
+// VectorsEnabled reports whether this Manager's tier can serve vector columns
+// (Phase 3c). True only on the postgres tier with pgvector installed in the
+// sqlmem_ext schema.
+func (m *Manager) VectorsEnabled() bool { return m.backend.vectorsEnabled() }
 
 // Close stops the reaper, rolls back every still-open transaction (releasing
 // their scope pins), and releases the backend (sqlite: every open scope handle;
