@@ -3,6 +3,7 @@ package sqlmem
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -41,9 +42,9 @@ func pgTestManager(t *testing.T, cfg Config) (*Manager, *sql.DB) {
 		t.Fatalf("NewPostgres: %v", err)
 	}
 	t.Cleanup(func() {
+		_ = m.Close() // close scope pools first so DROP ROLE isn't "role in use"
 		dropAllScopes(t, raw)
 		_ = raw.Close()
-		_ = m.Close()
 	})
 	return m, raw
 }
@@ -78,9 +79,9 @@ func dropAllScopes(t *testing.T, raw *sql.DB) {
 		}
 		roles.Close()
 		for _, n := range names {
-			// Schemas were dropped above, so the role owns nothing — a plain
-			// DROP ROLE suffices (DROP OWNED needs privileges the admin lacks).
-			_, _ = raw.ExecContext(ctx, `DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname=`+lit(n)+`) THEN DROP ROLE `+q(n)+`; END IF; END $$`)
+			// Schemas were dropped above, so the role owns nothing — but the
+			// database CONNECT grant must be revoked before DROP ROLE (2BP01).
+			_, _ = raw.ExecContext(ctx, `DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname=`+lit(n)+`) THEN EXECUTE format('REVOKE ALL ON DATABASE %I FROM %I', current_database(), `+lit(n)+`); DROP ROLE `+q(n)+`; END IF; END $$`)
 		}
 	}
 }
@@ -146,6 +147,54 @@ func TestPostgres_CrossScopeQualifiedReadDenied(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
 		t.Fatalf("error = %v; want a 'permission denied for schema' refusal", err)
+	}
+}
+
+// TestPostgres_SetRoleFunctionPivotDenied is the regression for the CRITICAL
+// adversarial finding: a `SET role` function clause (or set_config('role',…) /
+// RESET ROLE) that pivots the agent into another scope's role. On the abandoned
+// "shared admin + SET LOCAL ROLE" design this returned the victim's secret
+// (session_user stayed the admin, a WITH-SET member of every scope role). With
+// the agent's session_user = its OWN per-scope role, the pivot is engine-denied:
+// the scope role is a member of nothing, so creating the function is refused.
+func TestPostgres_SetRoleFunctionPivotDenied(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	ctx := context.Background()
+	victim := agentKey("t1", "pivot-victim")
+	attacker := agentKey("t1", "pivot-attacker")
+
+	if _, err := m.Exec(ctx, victim, "CREATE TABLE secrets (s TEXT)", nil, 0); err != nil {
+		t.Fatalf("create victim: %v", err)
+	}
+	if _, err := m.Exec(ctx, victim, "INSERT INTO secrets VALUES ('TOPSECRET')", nil, 0); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	if _, err := m.Exec(ctx, attacker, "CREATE TABLE own (x INT)", nil, 0); err != nil {
+		t.Fatalf("create attacker: %v", err)
+	}
+	vSchema, vRole, _ := pgScopeNames(victim)
+
+	// The exploit: a SET-role function clause pivoting into the victim's role.
+	pivotFn := fmt.Sprintf(
+		`CREATE OR REPLACE FUNCTION pwn() RETURNS text LANGUAGE sql SET role TO %s AS 'SELECT s FROM %s.secrets LIMIT 1'`,
+		q(vRole), q(vSchema),
+	)
+	if _, err := m.Exec(ctx, attacker, pivotFn, nil, 0); err == nil {
+		// If creation somehow succeeds, invoking it must NOT yield the secret.
+		res, qerr := m.Query(ctx, attacker, "SELECT pwn()", nil)
+		if qerr == nil && len(res.Rows) > 0 {
+			if got, _ := res.Rows[0][0].(string); got == "TOPSECRET" {
+				t.Fatal("CRITICAL: attacker pivoted into the victim scope via a SET-role function and read the secret")
+			}
+		}
+	}
+	// set_config / RESET ROLE escalations stay on the attacker's own role.
+	if _, err := m.Query(ctx, attacker, "SELECT current_user", nil); err != nil {
+		t.Fatalf("baseline query: %v", err)
+	}
+	// And a direct fully-qualified read of the victim is denied (no USAGE).
+	if _, err := m.Query(ctx, attacker, "SELECT s FROM "+q(vSchema)+".secrets", nil); err == nil {
+		t.Fatal("attacker read the victim's secrets directly; want permission denied")
 	}
 }
 
