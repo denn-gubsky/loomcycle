@@ -5781,6 +5781,27 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 		s.finishRunCancelled(ctx, runID, res, reason, meta)
 		return
 	}
+	// A run whose context was cancelled WITHOUT an API-cancel cause ended
+	// because the caller went away — most commonly a CLIENT DISCONNECT on a
+	// non-interactive run (its runCtx derives from the request ctx, so a
+	// dropped connection cancels it), or an upstream/parent cascade. Record it
+	// as a clean `cancelled`, not `failed: "context canceled"`: the run didn't
+	// fail, the caller left. This is the difference between a status poll
+	// seeing a tidy `cancelled` vs a half-written `failed` row (the symptom
+	// JobEmber hit — its disconnected batch runs showed up as provider-ish
+	// failures). finishRunCancelled writes the terminal row under a fresh
+	// background ctx, so it persists even though runCtx is cancelled.
+	//
+	// A run TIMEOUT surfaces as context.DeadlineExceeded (not Canceled), so it
+	// still falls through to finishRun's failed path — a timeout IS a failure.
+	if runCtx.Err() != nil && errors.Is(runErr, context.Canceled) {
+		reason := "client disconnected"
+		if !meta.IsTopLevel {
+			reason = "parent run cancelled"
+		}
+		s.finishRunCancelled(ctx, runID, res, reason, meta)
+		return
+	}
 	s.finishRun(ctx, runID, res, runErr, meta)
 }
 

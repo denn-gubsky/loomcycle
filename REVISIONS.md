@@ -40,6 +40,21 @@ sqlite3` cost + safety hole.
   the op.
 - **Out of scope (Phase 2/3):** postgres schema-per-scope (multi-replica), vector
   columns, snapshot/backup integration, explicit transactions.
+**🔌 A client-disconnected run is recorded as `cancelled`, not `failed`.** A
+non-interactive run's context derives from its HTTP/gRPC request ctx, so a
+dropped connection (the caller timing out or going away) cancels the run. The
+loop returns `context.Canceled` — but with no `ErrCancelledByAPI` cause, so
+`finishRunWithCancel` fell through to the failed path and wrote
+**`status=failed, error="context canceled"`**. A later status poll then saw a
+run that looked like it *failed* (a consumer surfaced these as provider-ish
+errors) when the caller had simply left. Now a context-cancellation that isn't
+an API cancel is recorded as a clean **`cancelled`** (reason `"client
+disconnected"`, or `"parent run cancelled"` for a sub-agent cascade); the
+terminal row is written under a fresh background ctx (via the existing
+`finishRunCancelled`), so it persists even though the run ctx is gone. A run
+**timeout** surfaces as `context.DeadlineExceeded` (not `Canceled`) and still
+records as `failed` — a timeout is a real failure. Surfaced by the JobEmber VPS
+deploy (batch runs cancelled on the client side showed up as failures).
 
 ## What's in v1.1.1
 
