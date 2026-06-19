@@ -80,7 +80,6 @@ type postgresBackend struct {
 	admin   *sql.DB         // admin pool — provisioning/drop ONLY, never agent SQL
 	baseCfg *pgx.ConnConfig // parsed admin DSN; template for per-scope DSNs
 	secret  []byte          // HMAC key for per-scope role passwords (= admin password)
-	pg16    bool
 
 	mu          sync.Mutex
 	provisioned map[string]bool        // schema names provisioned in THIS process
@@ -122,8 +121,7 @@ func newPostgresBackend(ctx context.Context, cfg Config) (*postgresBackend, erro
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	var verNum int
-	if err := admin.QueryRowContext(pingCtx, "SELECT current_setting('server_version_num')::int").Scan(&verNum); err != nil {
+	if err := admin.PingContext(pingCtx); err != nil {
 		_ = admin.Close()
 		return nil, fmt.Errorf("sqlmem: connect aux postgres: %w", err)
 	}
@@ -132,7 +130,6 @@ func newPostgresBackend(ctx context.Context, cfg Config) (*postgresBackend, erro
 		admin:       admin,
 		baseCfg:     baseCfg,
 		secret:      []byte(baseCfg.Password),
-		pg16:        verNum >= 160000,
 		provisioned: make(map[string]bool),
 		provLocks:   make(map[string]*sync.Mutex),
 		scopes:      make(map[string]*scopeConn),
