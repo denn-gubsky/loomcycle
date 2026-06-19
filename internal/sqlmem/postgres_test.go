@@ -79,9 +79,9 @@ func dropAllScopes(t *testing.T, raw *sql.DB) {
 		}
 		roles.Close()
 		for _, n := range names {
-			// Schemas were dropped above, so the role owns nothing — but the
-			// database CONNECT grant must be revoked before DROP ROLE (2BP01).
-			_, _ = raw.ExecContext(ctx, `DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname=`+lit(n)+`) THEN EXECUTE format('REVOKE ALL ON DATABASE %I FROM %I', current_database(), `+lit(n)+`); DROP ROLE `+q(n)+`; END IF; END $$`)
+			// Schemas were dropped above and the role holds no per-scope DB grant,
+			// so a plain DROP ROLE suffices.
+			_, _ = raw.ExecContext(ctx, `DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname=`+lit(n)+`) THEN DROP ROLE `+q(n)+`; END IF; END $$`)
 		}
 	}
 }
@@ -343,6 +343,42 @@ func TestPostgres_DropRunScope(t *testing.T) {
 	// Dropping again is a clean no-op (removed=false).
 	if removed, err := m.DropRunScope(runID); err != nil || removed {
 		t.Fatalf("second DropRunScope = (%v, %v); want (false, nil)", removed, err)
+	}
+}
+
+// TestPostgres_ConcurrentScopeChurnEviction touches MORE distinct scopes than
+// the connection-pool LRU cap, concurrently, so eviction fires while other
+// pools are mid-op — exercising retire-while-in-use (the last releaseScope
+// finalizes) and identity-based release. Run under -race it catches a regressed
+// refcount.
+func TestPostgres_ConcurrentScopeChurnEviction(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	ctx := context.Background()
+	const n = 50 // > pgScopeConnLRU (32)
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(k int) {
+			defer wg.Done()
+			key := agentKey("t1", fmt.Sprintf("churn-%d", k))
+			if _, err := m.Exec(ctx, key, "CREATE TABLE t (x INT)", nil, 0); err != nil {
+				errs <- err
+				return
+			}
+			if _, err := m.Exec(ctx, key, "INSERT INTO t VALUES ($1)", []any{k}, 0); err != nil {
+				errs <- err
+				return
+			}
+			if _, err := m.Query(ctx, key, "SELECT x FROM t", nil); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("churn op error: %v", err)
 	}
 }
 

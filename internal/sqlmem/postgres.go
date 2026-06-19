@@ -47,6 +47,15 @@ import (
 // sql_query runs in a READ-ONLY transaction (the write backstop). The
 // validate_postgres.go denies are defense-in-depth.
 //
+// TIMEOUT POSTURE: a non-superuser role CAN durably ALTER its own role-level
+// settings (Postgres permits it), so the baked statement_timeout is NOT
+// tamper-proof — an `ALTER ROLE <self> SET statement_timeout` is blocked by the
+// validator ONLY (pgDangerousDDLRe). The AUTHORITATIVE per-statement bound is
+// therefore the ctx deadline applied by withTimeout in query/exec, not the
+// baked GUC; a baked-setting tamper (or a validator-regex drift) is at worst a
+// timeout regression the ctx deadline still catches, never a confinement break
+// (a search_path tamper is inert — cross-schema USAGE is still required).
+//
 // The operator-provisioned ADMIN role (CREATEROLE + CREATE on the aux DB) is
 // used ONLY to provision/drop scopes and never to run agent SQL — so the
 // admin's authority is never reachable from an agent statement. Per-scope role
@@ -72,6 +81,7 @@ type scopeConn struct {
 	connStr string
 	used    uint64
 	inUse   int
+	closing bool // retired from the open set; the last releaseScope finalizes it
 }
 
 // postgresBackend implements `backend` over the aux database.
@@ -254,7 +264,11 @@ func (b *postgresBackend) runProvisionDDL(ctx context.Context, schema, role stri
 		fmt.Sprintf(`ALTER ROLE %s SET search_path TO %s`, q(role), q(schema)),
 		fmt.Sprintf(`REVOKE ALL ON SCHEMA %s FROM PUBLIC`, q(schema)),
 		fmt.Sprintf(`GRANT USAGE, CREATE ON SCHEMA %s TO %s`, q(schema), q(role)),
-		fmt.Sprintf(`GRANT CONNECT ON DATABASE %s TO %s`, q(b.baseCfg.Database), q(role)),
+		// NOTE: no per-scope GRANT CONNECT — the scope role connects via the aux
+		// DB's default PUBLIC CONNECT. Granting CONNECT per scope would update the
+		// shared pg_database ACL row, and concurrent first-touches of DISTINCT
+		// scopes would then collide ("tuple concurrently updated"). The aux DB is
+		// dedicated; per-scope SCHEMA isolation (not DB CONNECT) is the boundary.
 	}
 	if b.cfg.StatementTimeoutMS > 0 {
 		stmts = append(stmts, fmt.Sprintf(`ALTER ROLE %s SET statement_timeout TO '%dms'`, q(role), b.cfg.StatementTimeoutMS))
@@ -300,9 +314,11 @@ func (b *postgresBackend) openScopeDB(role string) (*sql.DB, string, error) {
 	return db, connStr, nil
 }
 
-// acquireScope returns the (cached or freshly opened) per-scope *sql.DB and pins
-// it (inUse++) so eviction can't close it mid-op. Pair with releaseScope.
-func (b *postgresBackend) acquireScope(role string) (*sql.DB, error) {
+// acquireScope returns the (cached or freshly opened) per-scope pool and pins it
+// (inUse++) so it cannot be closed mid-op. Pair with releaseScope(sc) — the
+// returned *scopeConn is the release IDENTITY (releasing by role would race a
+// concurrent invalidate+reopen that replaced the map entry under the same key).
+func (b *postgresBackend) acquireScope(role string) (*scopeConn, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.clock++
@@ -318,19 +334,36 @@ func (b *postgresBackend) acquireScope(role string) (*sql.DB, error) {
 	sc.used = b.clock
 	sc.inUse++
 	b.evictScopesLocked()
-	return sc.db, nil
+	return sc, nil
 }
 
-func (b *postgresBackend) releaseScope(role string) {
+// releaseScope drops one in-flight reference on the exact pool acquireScope
+// returned. If that pool has been retired (closing) and this was the last
+// holder, it is finalized here — so a retire never tears the pool out from
+// under a live op.
+func (b *postgresBackend) releaseScope(sc *scopeConn) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if sc, ok := b.scopes[role]; ok && sc.inUse > 0 {
+	if sc.inUse > 0 {
 		sc.inUse--
+	}
+	finalize := sc.inUse == 0 && sc.closing
+	b.mu.Unlock()
+	if finalize {
+		b.finalizeScope(sc)
 	}
 }
 
-// evictScopesLocked closes the least-recently-used IDLE scope pool while the set
-// exceeds the cap. Caller holds b.mu. An in-use pool is never evicted.
+// finalizeScope closes a retired (already off-map) pool and unregisters its
+// config. Only ever called at inUse==0, so db.Close() returns promptly.
+func (b *postgresBackend) finalizeScope(sc *scopeConn) {
+	if err := sc.db.Close(); err != nil {
+		log.Printf("sqlmem: close scope pool: %v", err)
+	}
+	stdlib.UnregisterConnConfig(sc.connStr)
+}
+
+// evictScopesLocked retires the least-recently-used IDLE scope pool while the
+// set exceeds the cap. Caller holds b.mu. An in-use pool is never chosen.
 func (b *postgresBackend) evictScopesLocked() {
 	for len(b.scopes) > pgScopeConnLRU {
 		var lru string
@@ -346,32 +379,36 @@ func (b *postgresBackend) evictScopesLocked() {
 		if lru == "" {
 			return // every pool is in use
 		}
-		b.closeScopeLocked(lru)
+		b.retireScopeLocked(lru)
 	}
 }
 
-// closeScopeLocked closes + forgets one scope pool and unregisters its config.
+// retireScopeLocked removes a scope pool from the open set: closed immediately
+// if idle, else flagged so the last releaseScope finalizes it (a force-close
+// would break a live holder's next physical connect after UnregisterConnConfig).
 // Caller holds b.mu.
-func (b *postgresBackend) closeScopeLocked(role string) {
+func (b *postgresBackend) retireScopeLocked(role string) {
 	sc, ok := b.scopes[role]
 	if !ok {
 		return
 	}
-	if err := sc.db.Close(); err != nil {
-		log.Printf("sqlmem: close scope pool %s: %v", role, err)
-	}
-	stdlib.UnregisterConnConfig(sc.connStr)
 	delete(b.scopes, role)
+	if sc.inUse == 0 {
+		b.finalizeScope(sc)
+		return
+	}
+	sc.closing = true
 }
 
-// invalidate forgets a scope's provisioned flag and closes its pool, so the next
-// op re-provisions + reconnects. Used to self-heal an auth failure (e.g. a role
-// whose password drifted from the current derivation).
+// invalidate forgets a scope's provisioned flag + provisioning lock and retires
+// its pool, so the next op re-provisions + reconnects. Used to self-heal an auth
+// failure (e.g. a role whose password drifted from the current derivation).
 func (b *postgresBackend) invalidate(schema, role string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.provisioned, schema)
-	b.closeScopeLocked(role)
+	delete(b.provLocks, schema)
+	b.retireScopeLocked(role)
 }
 
 // query runs a (already-validated, read-only) statement on the scope connection
@@ -385,16 +422,16 @@ func (b *postgresBackend) query(ctx context.Context, key ScopeKey, statement str
 	if err := b.provision(ctx, schema, role); err != nil {
 		return nil, err
 	}
-	db, err := b.acquireScope(role)
+	sc, err := b.acquireScope(role)
 	if err != nil {
 		return nil, err
 	}
-	defer b.releaseScope(role)
+	defer b.releaseScope(sc)
 
 	qctx, cancel := withTimeout(b.cfg, ctx)
 	defer cancel()
 
-	tx, err := db.BeginTx(qctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sc.db.BeginTx(qctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, b.healAuth(schema, role, err)
 	}
@@ -418,16 +455,16 @@ func (b *postgresBackend) exec(ctx context.Context, key ScopeKey, statement stri
 	if err := b.provision(ctx, schema, role); err != nil {
 		return nil, err
 	}
-	db, err := b.acquireScope(role)
+	sc, err := b.acquireScope(role)
 	if err != nil {
 		return nil, err
 	}
-	defer b.releaseScope(role)
+	defer b.releaseScope(sc)
 
 	ectx, cancel := withTimeout(b.cfg, ctx)
 	defer cancel()
 
-	tx, err := db.BeginTx(ectx, nil)
+	tx, err := sc.db.BeginTx(ectx, nil)
 	if err != nil {
 		return nil, b.healAuth(schema, role, err)
 	}
@@ -498,10 +535,13 @@ func (b *postgresBackend) dropRunScope(runID string) (removed bool, err error) {
 		return false, err
 	}
 
-	// Close this scope's pool so the role has no live sessions before DROP ROLE.
+	// Retire this scope's pool so the role has no live sessions before DROP ROLE
+	// (idle => closed now; an in-flight holder finalizes on release). Run scopes
+	// are dropped at run completion, so inUse is normally already 0.
 	b.mu.Lock()
-	b.closeScopeLocked(role)
+	b.retireScopeLocked(role)
 	delete(b.provisioned, schema)
+	delete(b.provLocks, schema)
 	b.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -515,14 +555,13 @@ func (b *postgresBackend) dropRunScope(runID string) (removed bool, err error) {
 			return false, fmt.Errorf("sqlmem: drop run schema: %w", err)
 		}
 	}
-	// Best-effort role drop (schema CASCADE already removed the data). Terminate
-	// any lingering backend first so DROP ROLE doesn't fail on a live session,
-	// and REVOKE the database CONNECT grant so the role has no remaining
-	// dependency (else DROP ROLE fails 2BP01 dependent_objects_still_exist).
+	// Best-effort role drop (schema CASCADE already removed the data, and the
+	// role holds no per-scope DB grant). Terminate any lingering backend first so
+	// DROP ROLE doesn't fail on a live session.
 	_, _ = b.admin.ExecContext(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1`, role)
 	dropRole := fmt.Sprintf(
-		`DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname=%s) THEN REVOKE ALL ON DATABASE %s FROM %s; DROP ROLE %s; END IF; END $$`,
-		lit(role), q(b.baseCfg.Database), q(role), q(role),
+		`DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname=%s) THEN DROP ROLE %s; END IF; END $$`,
+		lit(role), q(role),
 	)
 	if _, err := b.admin.ExecContext(ctx, dropRole); err != nil {
 		log.Printf("sqlmem: drop run-scope role (schema already dropped): %v", err)
@@ -530,12 +569,15 @@ func (b *postgresBackend) dropRunScope(runID string) (removed bool, err error) {
 	return removed, nil
 }
 
-// close closes every scope pool (unregistering its config) and the admin pool.
+// close retires every scope pool (unregistering its config) and closes the
+// admin pool. Assumes the runtime has quiesced (no in-flight ops); a pool still
+// in use is flagged and finalized by its last releaseScope. Deleting the current
+// key during the range is safe in Go.
 func (b *postgresBackend) close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for role := range b.scopes {
-		b.closeScopeLocked(role)
+		b.retireScopeLocked(role)
 	}
 	return b.admin.Close()
 }

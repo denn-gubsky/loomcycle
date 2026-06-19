@@ -109,6 +109,12 @@ is defense-in-depth):
 - Per-scope role passwords are derived `HMAC(aux-admin-password, role-name)` (so
   every replica computes the same value without coordination); the agent has no
   network path to the aux DB regardless.
+- **Known, content-safe metadata leak:** an agent can read the system catalogs
+  (`pg_namespace`/`pg_roles`/`pg_largeobject_metadata`) and so *enumerate* other
+  scopes' schema/role **names** and large-object oids in the same aux DB. No
+  **content** is reachable — cross-schema `USAGE`, large-object bytes, and
+  `rolpassword` are all engine-denied — and the names are a one-way SHA-256 of
+  `(tenant, scope, scope_id)`, revealing nothing about the victim's identity.
 
 > **Strongest posture:** point `LOOMCYCLE_SQLMEM_PG_DSN` at a **separate
 > PostgreSQL instance/cluster** (not just a separate database). The admin role
@@ -155,6 +161,13 @@ Requirements / notes:
   covers them (e.g. `host loomcycle_sqlmem all <runtime-cidr> scram-sha-256`).
   This is what makes the scope role the agent's `session_user` — the property
   the cross-scope isolation rests on.
+- **Leave `PUBLIC`'s `CONNECT` on the aux database in place** (the default). The
+  scope roles connect via it; the runtime does **not** grant `CONNECT` per scope
+  (that would serialize concurrent first-touches on the shared `pg_database`
+  row). The isolation boundary is the per-scope **schema** (`USAGE` is granted
+  per scope, never to `PUBLIC`), not DB-level `CONNECT` — so on a *dedicated* aux
+  DB, `PUBLIC CONNECT` is safe. (Revoking schema-level `PUBLIC` access, below, is
+  still correct + recommended.)
 - **PostgreSQL 13+** (the runtime relies only on `LOGIN` roles, `ALTER ROLE …
   SET`, and per-role `search_path`/`statement_timeout` — all long-standing).
 - Do **not** install `dblink` / `postgres_fdw` / `file_fdw` / untrusted
