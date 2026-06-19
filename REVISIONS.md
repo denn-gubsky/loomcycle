@@ -10,6 +10,25 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
+**🧲 SQL Memory — vector columns (RFC AA, Phase 3c, postgres tier).** Agents can
+keep **embeddings inside their own SQL tables** — semantic KNN *and* structured
+filters/joins in one query (`SELECT … WHERE lang='en' ORDER BY embedding <=> ?`),
+the thing the K/V + the main vector Memory can't do.
+
+- **No raw vector in the model's context.** A bind arg `{"$embed": "<text>"}` is
+  replaced **server-side** by the embedding of that text (a pgvector value),
+  reusing the existing `memory.embedder` — so a multi-KB vector never round-trips
+  through the LLM. The agent writes ordinary SQL (`… <=> ?::vector`) + declares
+  its own `vector(N)` column + HNSW index.
+- **Postgres only** (pgvector); the sqlite tier returns a typed "vectors require
+  the postgres tier" refusal (sqlite-vec is deferred — cgo build + vec0 schema).
+- **The agent can't install the extension** (`CREATE EXTENSION` stays denied):
+  the operator installs pgvector once into a shared, read-only **`sqlmem_ext`**
+  schema (type + operators, no data); the runtime detects it and bakes
+  `sqlmem_ext` onto each scope role's `search_path`. Per-scope isolation is
+  unchanged. Auto-probed (no new flag); `$embed` refuses (typed) without an
+  embedder or pgvector. Verified end-to-end against pgvector on PostgreSQL 16.
+
 **🔁 SQL Memory — explicit transactions (RFC AA, Phase 3a).** Agents can now do
 **atomic multi-step writes**: three new `Memory` ops — **`sql_begin`** /
 **`sql_commit`** / **`sql_rollback`** — open a runtime-managed transaction for a
