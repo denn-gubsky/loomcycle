@@ -38,6 +38,9 @@ type Config struct {
 	// Root is the parent directory under which every per-scope .db file
 	// lives (<DataDir>/sqlmem by convention). Required for the sqlite tier.
 	Root string
+	// PgDSN is the SEPARATE aux-database DSN for the postgres tier (distinct
+	// from the main store DSN). Required by NewPostgres; ignored by New.
+	PgDSN string
 	// QuotaBytes caps a single scope's on-disk size. 0 = no quota. Checked
 	// BEFORE a write; an approximate bound that can overshoot by at most one
 	// statement (see each backend's exec).

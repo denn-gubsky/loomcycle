@@ -1144,12 +1144,35 @@ func main() {
 		if sqlMemRoot == "" {
 			sqlMemRoot = filepath.Join(cfg.Env.DataDir, "sqlmem")
 		}
-		sqlMemMgr, smErr := sqlmem.New(sqlmem.Config{
+		sqlMemCfg := sqlmem.Config{
 			Root:               sqlMemRoot,
+			PgDSN:              cfg.Storage.SqlMemPgDSN,
 			QuotaBytes:         cfg.Storage.SqlMemQuotaBytes,
 			StatementTimeoutMS: cfg.Storage.SqlMemStatementTimeoutMS,
 			MaxRows:            cfg.Storage.SqlMemMaxRows,
-		})
+		}
+		// SQL Memory FOLLOWS the main store backend (RFC AA decision 4): a
+		// postgres deploy gets schema-per-scope in the SEPARATE aux DB; a
+		// sqlite deploy gets file-per-scope. The aux DSN is required on
+		// postgres and ignored on sqlite.
+		var (
+			sqlMemMgr  *sqlmem.Manager
+			smErr      error
+			sqlMemTier string
+		)
+		if cfg.Storage.Backend == "postgres" {
+			if strings.TrimSpace(cfg.Storage.SqlMemPgDSN) == "" {
+				log.Fatalf("sqlmem: SQL Memory on a postgres backend requires a separate aux DSN — set LOOMCYCLE_SQLMEM_PG_DSN (a DIFFERENT database from the main store)")
+			}
+			sqlMemMgr, smErr = sqlmem.NewPostgres(context.Background(), sqlMemCfg)
+			sqlMemTier = "postgres (schema-per-scope, aux DB)"
+		} else {
+			if strings.TrimSpace(cfg.Storage.SqlMemPgDSN) != "" {
+				log.Printf("sqlmem: LOOMCYCLE_SQLMEM_PG_DSN is set but the backend is sqlite — ignoring it (file-per-scope at %s)", sqlMemRoot)
+			}
+			sqlMemMgr, smErr = sqlmem.New(sqlMemCfg)
+			sqlMemTier = "sqlite (file-per-scope, root=" + sqlMemRoot + ")"
+		}
 		if smErr != nil {
 			log.Fatalf("sqlmem: %v", smErr)
 		}
@@ -1173,8 +1196,8 @@ func main() {
 		// Close the manager (all open scope handles) on shutdown, after the
 		// store closer so an in-flight finish-path drop still has a live handle.
 		defer func() { _ = sqlMemMgr.Close() }()
-		log.Printf("sqlmem: SQL Memory enabled (root=%s, quota_bytes=%d, max_rows=%d, timeout_ms=%d, audit=%s)",
-			sqlMemRoot, cfg.Storage.SqlMemQuotaBytes, cfg.Storage.SqlMemMaxRows,
+		log.Printf("sqlmem: SQL Memory enabled (tier=%s, quota_bytes=%d, max_rows=%d, timeout_ms=%d, audit=%s)",
+			sqlMemTier, cfg.Storage.SqlMemQuotaBytes, cfg.Storage.SqlMemMaxRows,
 			cfg.Storage.SqlMemStatementTimeoutMS, cfg.Storage.SqlMemAuditMode)
 	}
 

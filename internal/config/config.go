@@ -314,6 +314,11 @@ type StorageConfig struct {
 	// records only op/scope/row counts, never the statement. Env:
 	// LOOMCYCLE_SQLMEM_AUDIT_MODE.
 	SqlMemAuditMode string `yaml:"sqlmem_audit_mode"`
+	// SqlMemPgDSN is the SEPARATE aux-database DSN for the postgres SQL Memory
+	// tier (Phase 2), distinct from the main-store PgDSN. Required when the
+	// main Backend is "postgres" and SQL Memory is enabled; ignored on the
+	// sqlite backend (file-per-scope). Env: LOOMCYCLE_SQLMEM_PG_DSN.
+	SqlMemPgDSN string `yaml:"sqlmem_pg_dsn"`
 }
 
 // ConfigDir returns the directory the YAML was loaded from. Used by
@@ -2636,6 +2641,9 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_AUDIT_MODE"); v != "" {
 		cfg.Storage.SqlMemAuditMode = v
 	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_PG_DSN"); v != "" {
+		cfg.Storage.SqlMemPgDSN = v
+	}
 	// Defaults for the bounds the operator did not set. quota stays 0 (off);
 	// timeout/rows get sensible ceilings; audit defaults to full.
 	if cfg.Storage.SqlMemStatementTimeoutMS == 0 {
@@ -3560,6 +3568,7 @@ func ExpandEnvAllowed(name string) bool {
 var expandDenyNames = map[string]bool{
 	"PG_DSN":                               true,
 	"LOOMCYCLE_PG_DSN":                     true,
+	"LOOMCYCLE_SQLMEM_PG_DSN":              true, // RFC AA aux-DB DSN (carries the aux credentials)
 	"LOOMCYCLE_AUTH_TOKEN":                 true,
 	"LOOMCYCLE_OPERATOR_TOKEN_PEPPER":      true, // RFC L token-hash pepper (S1: the high-value miss)
 	"LOOMCYCLE_MCP_UPSTREAM_TOKEN":         true, // thin-client upstream MCP bearer
