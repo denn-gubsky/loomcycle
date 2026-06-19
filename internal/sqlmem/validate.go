@@ -32,6 +32,18 @@ func (e *ErrStatement) Error() string { return e.Reason }
 
 func refuse(format string, a ...any) error { return &ErrStatement{Reason: fmt.Sprintf(format, a...)} }
 
+// dialect selects the engine-specific deny rules layered on top of the shared
+// floor. The shared checks (comment-strip, one-statement, leading-keyword
+// allow/deny, read-only SELECT/WITH) hold for both; each dialect adds the
+// escapes peculiar to its engine (sqlite: ATTACH/load_extension/VACUUM;
+// postgres: COPY/SET/dangerous server functions — see validate_postgres.go).
+type dialect int
+
+const (
+	dialectSQLite dialect = iota
+	dialectPostgres
+)
+
 // loadExtensionRe matches a load_extension(...) function call anywhere in a
 // statement (it can be nested inside an otherwise-allowed SELECT/INSERT), with
 // optional whitespace before the paren. It covers the BARE name AND sqlite's
@@ -84,14 +96,23 @@ var deniedLeading = map[string]string{
 	"release":   "explicit transactions are not supported",
 }
 
-// validateStatement enforces the Phase-1 SQL security floor on one
+// validateStatement enforces the SQL security floor for the sqlite dialect
+// (the file-backed default). It is the entry point used by the validator's
+// own tests; the Manager facade calls validateStatementForDialect with the
+// configured backend's dialect.
+func validateStatement(raw string, readOnly bool) error {
+	return validateStatementForDialect(raw, readOnly, dialectSQLite)
+}
+
+// validateStatementForDialect enforces the SQL security floor on one
 // agent-authored statement. readOnly (sql_query) additionally requires a
-// read-only SELECT/WITH-read statement. Returns *ErrStatement on refusal.
+// read-only SELECT/WITH-read statement. The dialect adds engine-specific
+// escape denies on top of the shared floor. Returns *ErrStatement on refusal.
 //
 // Steps: strip comments → reject empty → reject multi-statement → reject
 // load_extension anywhere → check the leading keyword against the deny-set and
-// the per-op allow-set.
-func validateStatement(raw string, readOnly bool) error {
+// the per-op allow-set → apply the dialect's extra denies.
+func validateStatementForDialect(raw string, readOnly bool, d dialect) error {
 	stripped := stripComments(raw)
 	trimmed := strings.TrimSpace(stripped)
 	if trimmed == "" {
@@ -133,6 +154,15 @@ func validateStatement(raw string, readOnly bool) error {
 
 	if reason, denied := deniedLeading[kw]; denied {
 		return refuse("%s", reason)
+	}
+
+	// Dialect-specific escapes the shared allow-sets don't catch (their leading
+	// keyword is otherwise legal). Applied before the read-only/exec split so it
+	// guards both ops.
+	if d == dialectPostgres {
+		if err := postgresStatementDenies(trimmed, readOnly); err != nil {
+			return err
+		}
 	}
 
 	if readOnly {
