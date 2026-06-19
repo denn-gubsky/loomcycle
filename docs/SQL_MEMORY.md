@@ -76,10 +76,31 @@ agents:
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `sqlmem_audit_mode` | `full` (redacted statement text, default) or `metadata` (counts only) |
 | `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `sqlmem_txn_timeout_ms` | explicit-transaction TTL — the reaper rolls back a txn open longer than this (default 30000; 0 disables) |
 | `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `sqlmem_max_open_txns` | cap on concurrent open transactions process-wide (default 64; each pins a connection) |
+| `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `sqlmem_scope_ttl_ms` | durable-scope GC: drop an `agent`/`user` scope idle longer than this. **0 = OFF** (default — GC discards data) |
+| `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | `sqlmem_gc_interval_ms` | how often the GC sweeper runs (default 1h; only when the TTL is set) |
 
 `LOOMCYCLE_SQLMEM_PG_DSN` carries the aux credentials — like `LOOMCYCLE_PG_DSN`
 it is on the env-expand denylist and is **never** interpolatable into a
 `${...}` config/MCP field.
+
+## Durable-scope garbage collection
+
+`agent`/`user` scopes are **durable** — they persist across runs and are never
+dropped automatically (only `run` scopes drop at run completion). Over time a
+deployment accumulates one scope per distinct agent + per distinct end-user that
+ever used SQL Memory. Optional GC reclaims the idle ones.
+
+Set **`sqlmem_scope_ttl_ms`** (off by default) and a background sweeper (every
+`sqlmem_gc_interval_ms`, default 1h) drops any durable scope **not used** for
+longer than the TTL — the sqlite `.db` file (fenced removal), or the postgres
+schema + role. `run` scopes are never touched.
+
+> **GC is lossy — opt in deliberately.** A dropped scope's tables are gone; an
+> agent or user that returns *after* the TTL starts empty. Set the TTL generously
+> (days/weeks) so "idle past the TTL" reliably means "abandoned." Last-use is
+> tracked by the `.db` mtime (sqlite — reads count too) / a `sqlmem_meta`
+> bookkeeping table the runtime creates in the aux DB (postgres). GC is global
+> across tenants (it only *drops* idle scopes; it never reads their data).
 
 ## Explicit transactions
 
