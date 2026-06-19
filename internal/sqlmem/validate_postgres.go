@@ -48,17 +48,30 @@ var pgServerFnRe = regexp.MustCompile(
 	`(?i)(?:\b(?:` + pgServerFnNames + `)\b|"(?:` + pgServerFnNames + `)")\s*\(`,
 )
 
+// pgSelectIntoRe matches a `SELECT … INTO <table>` (which CREATES a table — a
+// WRITE) in a read-only statement. Anchored as whitespace-INTO-whitespace so a
+// double-quoted column literally named "into" (`SELECT "into" FROM t`) is NOT a
+// false positive. The auto-commit sql_query path also opens a read-only
+// transaction (defense-in-depth), but an EXPLICIT transaction is read-WRITE, so
+// the validator is the only layer that catches a write-via-sql_query inside a
+// txn — hence this rule lives here (it hardens both paths).
+var pgSelectIntoRe = regexp.MustCompile(`(?i)\sinto\s`)
+
 // postgresStatementDenies applies the postgres-dialect escape denies to one
 // already-shared-validated statement (trimmed = comment-stripped + trimmed).
-// readOnly is accepted for symmetry but the read-only transaction the backend
-// opens for sql_query is the authoritative write backstop (SELECT … INTO and
-// any other write fail at the engine), so there is no separate INTO rule here.
 func postgresStatementDenies(trimmed string, readOnly bool) error {
 	if pgDangerousDDLRe.MatchString(trimmed) {
 		return refuse("this CREATE/ALTER form is denied on the postgres tier — extensions, languages, foreign servers, replication, and system/role/database changes can escape the scope")
 	}
-	if pgServerFnRe.MatchString(maskStringLiterals(trimmed)) {
+	masked := maskStringLiterals(trimmed)
+	if pgServerFnRe.MatchString(masked) {
 		return refuse("this statement calls a denied server-side function (file / large-object I/O or dblink) — it can read host files or connect to another database")
+	}
+	// SELECT … INTO creates a table; refuse it on the read-only op (it is a
+	// write the read-only-transaction backstop would catch on auto-commit but
+	// NOT inside an explicit read-write transaction).
+	if readOnly && pgSelectIntoRe.MatchString(masked) {
+		return refuse("SELECT … INTO creates a table — sql_query is read-only; use sql_exec (or CREATE TABLE AS) to write")
 	}
 	return nil
 }

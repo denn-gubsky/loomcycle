@@ -91,6 +91,7 @@ type Manager struct {
 	backend    backend
 	txns       *txnRegistry
 	reaperStop chan struct{}
+	reaperDone chan struct{} // closed by the reaper goroutine on exit (nil if none)
 }
 
 // ScopeKey identifies one scope database. Tenant/Scope/ScopeID are all

@@ -40,17 +40,25 @@ func BuildTxnID(rootRunID, scope, scopeID string) string {
 
 // openTxn is one live explicit transaction. release drops the scope-connection
 // pin taken by the backend's beginTx; it MUST run exactly once, after the tx is
-// committed or rolled back.
+// committed or rolled back. mu serializes statements on the tx: tool calls in
+// ONE agent turn dispatch concurrently (loop ToolParallelism), so two sql_exec
+// blocks for the same scope reach this same *sql.Tx at once — and *sql.Tx is NOT
+// safe for concurrent use. Every QueryTxn/ExecTxn and finish() holds mu.
 type openTxn struct {
+	mu      sync.Mutex
 	tx      *sql.Tx
 	key     ScopeKey
-	runID   string // RootRunID, for RollbackRunTxns prefix matching
+	runID   string // RootRunID, matched by RollbackRunTxns
 	started time.Time
 	release func()
 }
 
-// finish commits or rolls back the transaction and always drops the pin.
+// finish commits or rolls back the transaction and always drops the pin. It
+// takes mu so it can't race an in-flight statement on the same tx (a concurrent
+// sql_commit + sql_exec in the same turn).
 func (t *openTxn) finish(commit bool) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	var err error
 	if commit {
 		err = t.tx.Commit()
@@ -156,6 +164,13 @@ func (m *Manager) RollbackTxn(txnID string) error {
 // RollbackRunTxns rolls back every open transaction belonging to a run tree
 // (matched by RootRunID). Called from the run-completion cleanup path so a run
 // that ends mid-transaction never leaks a held connection.
+//
+// PRECONDITION: call only AFTER the run tree's goroutines have joined (the
+// top-level loop returned, all executePendingTools / parallel_spawn children
+// awaited). It skips the nil reservation placeholder of an in-flight BeginTxn,
+// so a tree with a BeginTxn still mid-round-trip would leave that txn orphaned
+// to the reaper. The current sole caller (purgeEphemeralVolumesForRun, gated
+// meta.IsTopLevel, fired after loop.Run returns) satisfies this.
 func (m *Manager) RollbackRunTxns(rootRunID string) {
 	m.txns.mu.Lock()
 	var victims []*openTxn
@@ -184,6 +199,8 @@ func (m *Manager) QueryTxn(ctx context.Context, txnID, statement string, args []
 	if t == nil {
 		return nil, fmt.Errorf("no open transaction for this scope")
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	qctx, cancel := withTimeout(m.cfg, ctx)
 	defer cancel()
 	rows, err := t.tx.QueryContext(qctx, statement, args...)
@@ -204,6 +221,8 @@ func (m *Manager) ExecTxn(ctx context.Context, txnID, statement string, args []a
 	if t == nil {
 		return nil, fmt.Errorf("no open transaction for this scope")
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	ectx, cancel := withTimeout(m.cfg, ctx)
 	defer cancel()
 	if quota := effectiveQuota(m.cfg, quotaOverride); quota > 0 {
@@ -242,10 +261,9 @@ func (m *Manager) txnFor(txnID string) *openTxn {
 // TxnTimeoutMS <= 0). It rolls back any transaction open longer than the TTL,
 // so a stuck/abandoned agent can't hold a scope connection + locks forever.
 func (m *Manager) startReaper() {
-	stop := make(chan struct{})
-	m.reaperStop = stop
+	m.reaperStop = make(chan struct{})
 	if m.cfg.TxnTimeoutMS <= 0 {
-		return
+		return // no goroutine; reaperDone stays nil
 	}
 	ttl := time.Duration(m.cfg.TxnTimeoutMS) * time.Millisecond
 	tick := ttl / 2
@@ -255,9 +273,12 @@ func (m *Manager) startReaper() {
 	if tick > 30*time.Second {
 		tick = 30 * time.Second
 	}
-	// Capture `stop` as a local so the goroutine never re-reads m.reaperStop
-	// (which stopReaper nils — that would be a data race on the field).
+	m.reaperDone = make(chan struct{})
+	// Capture stop/done as locals so the goroutine never re-reads the fields
+	// (stopReaper nils them — that would be a data race on the field).
+	stop, done := m.reaperStop, m.reaperDone
 	go func() {
+		defer close(done)
 		t := time.NewTicker(tick)
 		defer t.Stop()
 		for {
@@ -271,10 +292,16 @@ func (m *Manager) startReaper() {
 	}()
 }
 
+// stopReaper signals the reaper and JOINS it, so no reap (a tx.Rollback +
+// release) can run after Close proceeds to rollbackAll / backend.close().
 func (m *Manager) stopReaper() {
 	if m.reaperStop != nil {
 		close(m.reaperStop)
 		m.reaperStop = nil
+	}
+	if m.reaperDone != nil {
+		<-m.reaperDone // wait for the goroutine (incl. any in-flight reap) to exit
+		m.reaperDone = nil
 	}
 }
 

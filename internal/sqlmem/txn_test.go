@@ -2,6 +2,7 @@ package sqlmem
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -181,6 +182,49 @@ func TestTxn_ReapStale(t *testing.T) {
 	}
 	if n := rowCount(t, m, key); n != 0 {
 		t.Fatalf("after reap count=%d, want 0 (insert rolled back)", n)
+	}
+}
+
+// TestTxn_ConcurrentStatementsSameTxn fires many ExecTxn at the SAME open
+// transaction concurrently — tool calls in one agent turn dispatch in parallel,
+// so two sql_exec for the same scope reach one *sql.Tx at once. A *sql.Tx must
+// not be driven concurrently (a Query's open Rows hold the connection, so a
+// concurrent Exec would error "connection busy", and ordering is otherwise
+// undefined); the per-txn lock serializes them. This asserts all concurrent
+// inserts on one txn land — run under -race in CI.
+func TestTxn_ConcurrentStatementsSameTxn(t *testing.T) {
+	m := newTestManager(t, Config{})
+	ctx := context.Background()
+	key := agentKey("t1", "concurrent-txn")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE t (x INT)", nil, 0); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := agentTxnID("run1", "concurrent-txn")
+	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	const n = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(v int) {
+			defer wg.Done()
+			if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (?)", []any{v}, 0); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent ExecTxn: %v", err)
+	}
+	if err := m.CommitTxn(id); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := rowCount(t, m, key); got != n {
+		t.Fatalf("after concurrent inserts + commit count=%d, want %d", got, n)
 	}
 }
 

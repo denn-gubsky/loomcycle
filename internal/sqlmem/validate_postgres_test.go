@@ -36,6 +36,9 @@ func TestValidatePostgres_DeniesEscapes(t *testing.T) {
 		{"schema-qualified quoted pg_read_file", `SELECT "pg_catalog"."pg_read_file"('/etc/passwd')`, true},
 		{"quoted lo_import", `SELECT "lo_import"('/etc/passwd')`, true},
 		{"quoted dblink", `SELECT * FROM "dblink"('host=x', 'SELECT 1') AS t(x int)`, true},
+		// SELECT … INTO creates a table — a write through the read-only op.
+		{"select into", "SELECT * INTO newtab FROM t", true},
+		{"select x into temp", "SELECT x INTO TEMP scratch FROM t", true},
 		// Leading-keyword escapes — blocked by the shared closed allow-sets.
 		{"copy from program (exec)", "COPY t FROM PROGRAM 'id'", false},
 		{"copy to file (exec)", "COPY t TO '/tmp/x'", false},
@@ -77,6 +80,10 @@ func TestValidatePostgres_DeniesEscapes(t *testing.T) {
 		{"fn-name in string literal", "INSERT INTO notes VALUES (1, 'see pg_read_file(x) in docs')", false},
 		// A column named like a denied function (no call paren) is fine.
 		{"fn-name-like column", "SELECT pg_read_file_note FROM notes", true},
+		// A double-quoted column literally named "into" is NOT a SELECT … INTO.
+		{"quoted into column", `SELECT "into" FROM notes`, true},
+		// "into" as part of a longer identifier must not trip the INTO rule.
+		{"into-substring column", "SELECT migrated_into FROM notes", true},
 	}
 	for _, tc := range allowed {
 		t.Run("allow/"+tc.name, func(t *testing.T) {

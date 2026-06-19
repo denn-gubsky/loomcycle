@@ -422,6 +422,35 @@ func pgCount(res *QueryResult) int64 {
 	}
 }
 
+// TestPostgres_QueryTxnSelectIntoDenied regresses the security finding: an
+// explicit transaction is read-WRITE, so sql_query inside it loses the
+// auto-commit read-only-transaction backstop — a SELECT … INTO (which creates a
+// table) must be refused by the validator instead.
+func TestPostgres_QueryTxnSelectIntoDenied(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	ctx := context.Background()
+	key := agentKey("t1", "into")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE src (x INT)", nil, 0); err != nil {
+		t.Fatalf("create src: %v", err)
+	}
+	if _, err := m.Exec(ctx, key, "INSERT INTO src VALUES (1)", nil, 0); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	id := BuildTxnID("run1", "agent", "into")
+	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := m.QueryTxn(ctx, id, "SELECT x INTO sneaky FROM src", nil); err == nil {
+		t.Fatal("SELECT … INTO via QueryTxn was allowed; want a validator refusal")
+	}
+	if err := m.CommitTxn(id); err != nil { // commit: if INTO had run, the table would persist
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := m.Query(ctx, key, "SELECT 1 FROM sneaky LIMIT 1", nil); err == nil {
+		t.Fatal("SELECT … INTO created the table despite the refusal")
+	}
+}
+
 // TestPostgres_ConcurrentScopeChurnEviction touches MORE distinct scopes than
 // the connection-pool LRU cap, concurrently, so eviction fires while other
 // pools are mid-op — exercising retire-while-in-use (the last releaseScope
