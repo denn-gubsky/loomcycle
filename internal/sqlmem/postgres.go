@@ -109,7 +109,7 @@ func NewPostgres(ctx context.Context, cfg Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{dialect: dialectPostgres, backend: b}, nil
+	return newManager(dialectPostgres, cfg, b), nil
 }
 
 func newPostgresBackend(ctx context.Context, cfg Config) (*postgresBackend, error) {
@@ -503,6 +503,38 @@ func (b *postgresBackend) healAuth(schema, role string, err error) error {
 		b.invalidate(schema, role)
 	}
 	return err
+}
+
+// beginTx provisions the scope, pins a per-scope-pool connection (authenticated
+// as the scope role) so it is not evicted while the txn is open, and opens a
+// transaction on it. release drops the pin.
+func (b *postgresBackend) beginTx(ctx context.Context, key ScopeKey) (*sql.Tx, func(), error) {
+	schema, role, err := pgScopeNames(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := b.provision(ctx, schema, role); err != nil {
+		return nil, nil, err
+	}
+	sc, err := b.acquireScope(role)
+	if err != nil {
+		return nil, nil, err
+	}
+	tx, err := sc.db.BeginTx(ctx, nil)
+	if err != nil {
+		b.releaseScope(sc)
+		return nil, nil, b.healAuth(schema, role, err)
+	}
+	return tx, func() { b.releaseScope(sc) }, nil
+}
+
+// txnSizeBytes measures the scope schema's size on the open transaction.
+func (b *postgresBackend) txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeKey) (int64, error) {
+	schema, _, err := pgScopeNames(key)
+	if err != nil {
+		return 0, err
+	}
+	return pgSchemaSizeBytes(ctx, tx, schema)
 }
 
 // pgSchemaSizeBytes sums pg_total_relation_size over every table in the scope

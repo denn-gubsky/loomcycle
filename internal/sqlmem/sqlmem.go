@@ -50,6 +50,13 @@ type Config struct {
 	// MaxRows caps the rows a Query returns; the remainder is drained and
 	// Truncated is set. 0 = no cap.
 	MaxRows int
+	// TxnTimeoutMS bounds how long an explicit transaction (sql_begin) may stay
+	// open before the reaper rolls it back. 0 = no reaper (txns end only on
+	// commit/rollback/run-end).
+	TxnTimeoutMS int
+	// MaxOpenTxns caps concurrent open explicit transactions process-wide (each
+	// pins a scope connection). 0 = unbounded.
+	MaxOpenTxns int
 }
 
 // backend is the per-tier DB engine the Manager delegates to AFTER the
@@ -59,6 +66,15 @@ type backend interface {
 	query(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error)
 	exec(ctx context.Context, key ScopeKey, statement string, args []any, quotaOverride int) (*ExecResult, error)
 	dropRunScope(runID string) (removed bool, err error)
+	// beginTx pins the scope connection (so it is not evicted while the txn is
+	// open) and opens a transaction on it. release drops the pin; the caller
+	// MUST call it after Commit/Rollback. The *sql.Tx is backend-agnostic, so
+	// the Manager runs validated statements on it directly.
+	beginTx(ctx context.Context, key ScopeKey) (tx *sql.Tx, release func(), err error)
+	// txnSizeBytes returns the scope's current on-disk size measured ON the open
+	// transaction (sqlite: page_count*page_size; postgres: pg_total_relation_size
+	// over the scope schema) — for the per-write quota check inside a txn.
+	txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeKey) (int64, error)
 	close() error
 }
 
@@ -70,8 +86,11 @@ type backend interface {
 // agent's arbitrary SQL can only ever reach its own scope, never the
 // runtime's operational database.
 type Manager struct {
-	dialect dialect
-	backend backend
+	dialect    dialect
+	cfg        Config
+	backend    backend
+	txns       *txnRegistry
+	reaperStop chan struct{}
 }
 
 // ScopeKey identifies one scope database. Tenant/Scope/ScopeID are all
@@ -111,7 +130,15 @@ func New(cfg Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{dialect: dialectSQLite, backend: b}, nil
+	return newManager(dialectSQLite, cfg, b), nil
+}
+
+// newManager wires the facade + the explicit-transaction registry and starts
+// the abandoned-txn reaper. Shared by New (sqlite) and NewPostgres.
+func newManager(d dialect, cfg Config, b backend) *Manager {
+	m := &Manager{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry()}
+	m.startReaper()
+	return m
 }
 
 // Query runs a read-only statement against the scope database. The statement
@@ -142,10 +169,20 @@ func (m *Manager) DropRunScope(runID string) (removed bool, err error) {
 	return m.backend.dropRunScope(runID)
 }
 
-// Close releases the backend (sqlite: every open scope handle; postgres: the
-// aux connection pool).
+// Close stops the reaper, rolls back every still-open transaction (releasing
+// their scope pins), and releases the backend (sqlite: every open scope handle;
+// postgres: the aux connection pool).
 func (m *Manager) Close() error {
+	m.stopReaper()
+	m.txns.rollbackAll()
 	return m.backend.close()
+}
+
+// rowQueryer is satisfied by both *sql.DB and *sql.Tx, so the per-scope size
+// check (the quota) can run either on the scope handle (auto-commit exec) or on
+// an open transaction (ExecTxn).
+type rowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // collectRows scans up to maxRows rows from a *sql.Rows into a QueryResult,

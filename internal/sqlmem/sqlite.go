@@ -308,17 +308,42 @@ func (b *sqliteBackend) exec(ctx context.Context, key ScopeKey, statement string
 }
 
 // scopeSizeBytes returns the on-disk size of the scope database as
-// page_count * page_size. Both pragmas are engine-internal (read-only
+// page_count * page_size. Runs on either the scope handle (auto-commit) or an
+// open transaction (rowQueryer). Both pragmas are engine-internal (read-only
 // here); they never touch agent data.
-func scopeSizeBytes(ctx context.Context, db *sql.DB) (int64, error) {
+func scopeSizeBytes(ctx context.Context, q rowQueryer) (int64, error) {
 	var pageCount, pageSize int64
-	if err := db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
+	if err := q.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
 		return 0, fmt.Errorf("page_count: %w", err)
 	}
-	if err := db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
+	if err := q.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
 		return 0, fmt.Errorf("page_size: %w", err)
 	}
 	return pageCount * pageSize, nil
+}
+
+// beginTx pins the scope handle (so it is not evicted while the txn is open)
+// and opens a transaction on it. release drops the pin.
+func (b *sqliteBackend) beginTx(ctx context.Context, key ScopeKey) (*sql.Tx, func(), error) {
+	path, err := key.keyPath(b.cfg.Root)
+	if err != nil {
+		return nil, nil, err
+	}
+	db, err := b.acquire(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		b.release(path)
+		return nil, nil, err
+	}
+	return tx, func() { b.release(path) }, nil
+}
+
+// txnSizeBytes measures the scope's size on the open transaction.
+func (b *sqliteBackend) txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeKey) (int64, error) {
+	return scopeSizeBytes(ctx, tx)
 }
 
 // dropRunScope closes+evicts the handle for the run/<runID>.db file and

@@ -346,6 +346,82 @@ func TestPostgres_DropRunScope(t *testing.T) {
 	}
 }
 
+// TestPostgres_TxnAtomicityAndIsolation exercises the postgres explicit-txn
+// path: rollback discards, commit persists, the txn pins one pool connection
+// while an auto-commit read on the SAME scope uses the other (read-committed:
+// the uncommitted row is invisible), and another scope can't see the table at
+// all during the open txn.
+func TestPostgres_TxnAtomicityAndIsolation(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	ctx := context.Background()
+	key := agentKey("t1", "pgtxn")
+	other := agentKey("t1", "pgtxn-other")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE t (x INT)", nil, 0); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := m.Exec(ctx, other, "CREATE TABLE own (x INT)", nil, 0); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	id := BuildTxnID("run1", "agent", "pgtxn")
+	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (1)", nil, 0); err != nil {
+		t.Fatalf("exec in txn: %v", err)
+	}
+	// Auto-commit read on the SAME scope (the other pool connection) does NOT
+	// see the uncommitted row (read-committed).
+	res, err := m.Query(ctx, key, "SELECT count(*) FROM t", nil)
+	if err != nil {
+		t.Fatalf("concurrent read: %v", err)
+	}
+	if got := pgCount(res); got != 0 {
+		t.Fatalf("auto-commit read saw the uncommitted row (count=%d); want 0", got)
+	}
+	// Another scope cannot reach the table at all (isolation holds during a txn).
+	if _, err := m.Query(ctx, other, "SELECT count(*) FROM t", nil); err == nil {
+		t.Fatal("other scope read the in-txn scope's table; want a no-such-table / permission error")
+	}
+	if err := m.RollbackTxn(id); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	// Commit path persists.
+	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+		t.Fatalf("begin 2: %v", err)
+	}
+	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (2)", nil, 0); err != nil {
+		t.Fatalf("exec 2: %v", err)
+	}
+	if err := m.CommitTxn(id); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	res2, err := m.Query(ctx, key, "SELECT count(*) FROM t", nil)
+	if err != nil {
+		t.Fatalf("post-commit read: %v", err)
+	}
+	if got := pgCount(res2); got != 1 {
+		t.Fatalf("after rollback+commit count=%d, want 1", got)
+	}
+}
+
+// pgCount reads a count(*) result, which pgx returns as int64.
+func pgCount(res *QueryResult) int64 {
+	switch v := res.Rows[0][0].(type) {
+	case int64:
+		return v
+	case string:
+		var n int64
+		for _, c := range v {
+			n = n*10 + int64(c-'0')
+		}
+		return n
+	default:
+		return -1
+	}
+}
+
 // TestPostgres_ConcurrentScopeChurnEviction touches MORE distinct scopes than
 // the connection-pool LRU cap, concurrently, so eviction fires while other
 // pools are mid-op — exercising retire-while-in-use (the last releaseScope
