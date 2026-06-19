@@ -99,6 +99,25 @@ jobs:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
         run: go test -count=1 ./internal/store/...
 
+      # RFC AA SQL Memory postgres tier: provision a SEPARATE aux DB reached by a
+      # NON-superuser CREATEROLE admin (exactly the production provisioning), so
+      # CI exercises the per-scope-login-role isolation tests (incl. the
+      # cross-scope SET-role pivot regression) — not only SQLite. Without this
+      # the postgres sqlmem tests skip.
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Provision sqlmem aux DB + admin role
+        env:
+          PGPASSWORD: loomcycle
+        run: |
+          psql -h 127.0.0.1 -U loomcycle -d loomcycle_test -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE sqlmem_admin LOGIN PASSWORD 'auxpw' CREATEROLE;" \
+            -c "CREATE DATABASE sqlmem_aux OWNER sqlmem_admin;"
+      - name: SQL Memory postgres tier
+        env:
+          LOOMCYCLE_TEST_SQLMEM_PG_DSN: postgres://sqlmem_admin:auxpw@127.0.0.1:5432/sqlmem_aux?sslmode=disable
+        run: go test -count=1 -race ./internal/sqlmem/...
+
   runtime-codejs:
     name: Runtime suites (code-js)
     runs-on: ubuntu-latest
