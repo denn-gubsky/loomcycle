@@ -153,6 +153,13 @@ func newPostgresBackend(ctx context.Context, cfg Config) (*postgresBackend, erro
 		`SELECT EXISTS(
 		   SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
 		    WHERE t.typname = 'vector' AND n.nspname = $1)`, pgVectorExtSchema).Scan(&vectors)
+	// Durable-scope GC (Phase 3d): provision the bookkeeping table when enabled.
+	if cfg.ScopeTTLMS > 0 {
+		if err := ensureMetaTable(pingCtx, admin); err != nil {
+			_ = admin.Close()
+			return nil, fmt.Errorf("sqlmem: provision GC meta table: %w", err)
+		}
+	}
 	return &postgresBackend{
 		cfg:         cfg,
 		admin:       admin,
@@ -598,25 +605,29 @@ func (b *postgresBackend) dropRunScope(runID string) (removed bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return b.dropScopePG(ctx, schema, role)
+}
 
+// dropScopePG retires the scope's pool, drops its schema (CASCADE) + role, and
+// removes its GC meta row. Shared by run-scope drop and the durable-scope GC
+// sweeper. removed reflects the actual schema drop (3F000 => already gone).
+func (b *postgresBackend) dropScopePG(ctx context.Context, schema, role string) (removed bool, err error) {
 	// Retire this scope's pool so the role has no live sessions before DROP ROLE
-	// (idle => closed now; an in-flight holder finalizes on release). Run scopes
-	// are dropped at run completion, so inUse is normally already 0.
+	// (idle => closed now; an in-flight holder finalizes on release).
 	b.mu.Lock()
 	b.retireScopeLocked(role)
 	delete(b.provisioned, schema)
 	delete(b.provLocks, schema)
 	b.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	removed = true
 	if _, err := b.admin.ExecContext(ctx, fmt.Sprintf(`DROP SCHEMA %s CASCADE`, q(schema))); err != nil {
 		if isUndefinedSchema(err) {
 			removed = false // already gone
 		} else {
-			return false, fmt.Errorf("sqlmem: drop run schema: %w", err)
+			return false, fmt.Errorf("sqlmem: drop scope schema: %w", err)
 		}
 	}
 	// Best-effort role drop (schema CASCADE already removed the data, and the
@@ -628,9 +639,91 @@ func (b *postgresBackend) dropRunScope(runID string) (removed bool, err error) {
 		lit(role), q(role),
 	)
 	if _, err := b.admin.ExecContext(ctx, dropRole); err != nil {
-		log.Printf("sqlmem: drop run-scope role (schema already dropped): %v", err)
+		log.Printf("sqlmem: drop scope role (schema already dropped): %v", err)
+	}
+	if b.cfg.ScopeTTLMS > 0 {
+		// A late, deferred touch from a just-finished op could re-INSERT this row
+		// after the DELETE (the touch fires after the op released its pin). That
+		// is benign + self-healing: the next sweep finds the dangling row, the
+		// DROP SCHEMA returns 3F000 (removed=false, not counted), and the row is
+		// DELETEd then.
+		_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_access WHERE schema_name = $1`, schema)
 	}
 	return removed, nil
+}
+
+// touchScope records a durable scope's last-use in the GC meta table.
+func (b *postgresBackend) touchScope(key ScopeKey) error {
+	schema, _, err := pgScopeNames(key)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = b.admin.ExecContext(ctx,
+		`INSERT INTO sqlmem_meta.scope_access (schema_name, last_used) VALUES ($1, now())
+		   ON CONFLICT (schema_name) DO UPDATE SET last_used = EXCLUDED.last_used`, schema)
+	return err
+}
+
+// sweepStale drops every durable scope whose meta last_used is before cutoff.
+// The role is derived from the schema (sqlmem_s_<h> -> sqlmem_r_<h>) and both are
+// re-validated against pgIdentRe before any DDL.
+func (b *postgresBackend) sweepStale(cutoff time.Time) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	rows, err := b.admin.QueryContext(ctx,
+		`SELECT schema_name FROM sqlmem_meta.scope_access WHERE last_used < $1`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	var schemas []string
+	for rows.Next() {
+		var s string
+		if rows.Scan(&s) == nil {
+			schemas = append(schemas, s)
+		}
+	}
+	rows.Close()
+	var dropped int
+	for _, schema := range schemas {
+		role := "sqlmem_r_" + strings.TrimPrefix(schema, "sqlmem_s_")
+		if !pgIdentRe.MatchString(schema) || !pgIdentRe.MatchString(role) {
+			continue // defensive — only our own hashed identifiers
+		}
+		// Skip a scope that is actively in use. beginTx pins the scope pool
+		// (inUse>0) for the whole transaction, and auto-commit ops pin it for
+		// their duration — so this excludes BOTH a durable scope with an open
+		// explicit transaction (which dropScopePG would otherwise terminate) and
+		// any in-flight op. The next sweep catches it once idle.
+		b.mu.Lock()
+		sc, ok := b.scopes[role]
+		busy := ok && sc.inUse > 0
+		b.mu.Unlock()
+		if busy {
+			continue
+		}
+		if _, err := b.dropScopePG(ctx, schema, role); err != nil {
+			log.Printf("sqlmem: GC drop scope %s: %v", schema, err)
+			continue
+		}
+		dropped++
+	}
+	return dropped, nil
+}
+
+// ensureMetaTable provisions the GC bookkeeping table (run once at startup when
+// GC is enabled). The admin owns the aux DB, so it can create the schema/table.
+func ensureMetaTable(ctx context.Context, admin *sql.DB) error {
+	for _, s := range []string{
+		`CREATE SCHEMA IF NOT EXISTS sqlmem_meta`,
+		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_access (schema_name text PRIMARY KEY, last_used timestamptz NOT NULL)`,
+	} {
+		if _, err := admin.ExecContext(ctx, s); err != nil && !isAlreadyExists(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // close retires every scope pool (unregistering its config) and closes the

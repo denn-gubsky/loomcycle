@@ -27,6 +27,7 @@ package sqlmem
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"time"
 )
 
@@ -57,6 +58,14 @@ type Config struct {
 	// MaxOpenTxns caps concurrent open explicit transactions process-wide (each
 	// pins a scope connection). 0 = unbounded.
 	MaxOpenTxns int
+	// ScopeTTLMS turns on durable-scope GC: a durable (agent/user) scope idle
+	// longer than this is dropped by the sweeper. 0 = GC OFF (the default — GC
+	// discards data, so it is opt-in). Run scopes are never GC'd (dropped at
+	// run-end).
+	ScopeTTLMS int
+	// GCIntervalMS is how often the GC sweeper runs. 0 → a sensible default
+	// (one hour). Only meaningful when ScopeTTLMS > 0.
+	GCIntervalMS int
 }
 
 // backend is the per-tier DB engine the Manager delegates to AFTER the
@@ -78,6 +87,12 @@ type backend interface {
 	// vectorsEnabled reports whether the tier can serve vector columns (Phase 3c
 	// — postgres with pgvector installed; sqlite is always false for now).
 	vectorsEnabled() bool
+	// touchScope records that a DURABLE scope was just used (sqlite: the .db
+	// mtime; postgres: the meta table), so the GC sweeper can find idle ones.
+	touchScope(key ScopeKey) error
+	// sweepStale drops every DURABLE (agent/user) scope last used before cutoff
+	// and returns how many were dropped. Never touches the run scope.
+	sweepStale(cutoff time.Time) (dropped int, err error)
 	close() error
 }
 
@@ -95,6 +110,12 @@ type Manager struct {
 	txns       *txnRegistry
 	reaperStop chan struct{}
 	reaperDone chan struct{} // closed by the reaper goroutine on exit (nil if none)
+
+	// Durable-scope GC (Phase 3d). touch debounce + the sweeper goroutine.
+	touchMu   sync.Mutex
+	lastTouch map[string]time.Time
+	gcStop    chan struct{}
+	gcDone    chan struct{} // closed by the GC sweeper on exit (nil if none)
 }
 
 // ScopeKey identifies one scope database. Tenant/Scope/ScopeID are all
@@ -140,8 +161,9 @@ func New(cfg Config) (*Manager, error) {
 // newManager wires the facade + the explicit-transaction registry and starts
 // the abandoned-txn reaper. Shared by New (sqlite) and NewPostgres.
 func newManager(d dialect, cfg Config, b backend) *Manager {
-	m := &Manager{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry()}
+	m := &Manager{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry(), lastTouch: make(map[string]time.Time)}
 	m.startReaper()
+	m.startGC()
 	return m
 }
 
@@ -153,6 +175,7 @@ func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, arg
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
+	defer m.touch(key)
 	return m.backend.query(ctx, key, statement, args)
 }
 
@@ -163,6 +186,7 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 	if err := validateStatementForDialect(statement, false, m.dialect); err != nil {
 		return nil, err
 	}
+	defer m.touch(key)
 	return m.backend.exec(ctx, key, statement, args, quotaOverride)
 }
 
@@ -183,6 +207,7 @@ func (m *Manager) VectorsEnabled() bool { return m.backend.vectorsEnabled() }
 // postgres: the aux connection pool).
 func (m *Manager) Close() error {
 	m.stopReaper()
+	m.stopGC()
 	m.txns.rollbackAll()
 	return m.backend.close()
 }

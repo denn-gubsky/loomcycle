@@ -127,6 +127,7 @@ func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key Sco
 	m.txns.mu.Lock()
 	m.txns.open[txnID] = &openTxn{tx: tx, key: key, runID: rootRunID, started: time.Now(), release: release}
 	m.txns.mu.Unlock()
+	m.touch(key) // a transaction is durable-scope use (GC last_used)
 	return nil
 }
 

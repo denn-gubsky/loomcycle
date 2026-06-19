@@ -10,6 +10,19 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
+**🧹 SQL Memory — durable-scope GC (RFC AA, Phase 3d).** `agent`/`user` scopes are
+durable (persist across runs, never auto-dropped — only `run` scopes drop at
+run-end), so a deployment accumulates one per distinct agent + end-user forever.
+Optional GC reclaims the idle ones: set **`sqlmem_scope_ttl_ms`** and a sweeper
+(every `sqlmem_gc_interval_ms`, default 1h) drops any durable scope not used for
+longer than the TTL — the sqlite `.db` (fenced removal) or the postgres
+schema + role. **Off by default + lossy by contract** (a returning agent/user
+past the TTL starts empty — set the TTL generously). Last-use is tracked by the
+`.db` mtime (sqlite; reads count) / a `sqlmem_meta` table the runtime creates in
+the aux DB (postgres). `run` scopes are never GC'd; the sweep reuses the existing
+fenced/owned drop, so no new trust surface; GC is global across tenants (it only
+drops idle scopes, never reads them).
+
 **🧲 SQL Memory — vector columns (RFC AA, Phase 3c, postgres tier).** Agents can
 keep **embeddings inside their own SQL tables** — semantic KNN *and* structured
 filters/joins in one query (`SELECT … WHERE lang='en' ORDER BY embedding <=> ?`),

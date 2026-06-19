@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -54,6 +55,8 @@ func pgTestManager(t *testing.T, cfg Config) (*Manager, *sql.DB) {
 func dropAllScopes(t *testing.T, raw *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
+	// Clear the GC bookkeeping (best-effort — absent when GC was never enabled).
+	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_access`)
 	schemas, err := raw.QueryContext(ctx, `SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sqlmem\_s\_%'`)
 	if err == nil {
 		var names []string
@@ -419,6 +422,52 @@ func pgCount(res *QueryResult) int64 {
 		return n
 	default:
 		return -1
+	}
+}
+
+// TestPostgres_GCSweep: a durable scope whose meta last_used is older than the
+// cutoff is dropped (schema + role + meta row gone); a fresh durable scope
+// survives. Exercises the postgres GC path (the meta table + dropScopePG).
+func TestPostgres_GCSweep(t *testing.T) {
+	m, raw := pgTestManager(t, Config{ScopeTTLMS: 3600_000}) // GC on → meta table provisioned
+	ctx := context.Background()
+	stale := agentKey("t1", "gc-stale")
+	fresh := agentKey("t1", "gc-fresh")
+	for _, k := range []ScopeKey{stale, fresh} {
+		if _, err := m.Exec(ctx, k, "CREATE TABLE t (x INT)", nil, 0); err != nil {
+			t.Fatalf("create %s: %v", k.ScopeID, err)
+		}
+	}
+	staleSchema, staleRole, _ := pgScopeNames(stale)
+	freshSchema, _, _ := pgScopeNames(fresh)
+	if _, err := raw.ExecContext(ctx,
+		`UPDATE sqlmem_meta.scope_access SET last_used = now() - interval '2 hours' WHERE schema_name = $1`, staleSchema); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	dropped, err := m.backend.sweepStale(time.Now().Add(-1 * time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped=%d, want 1", dropped)
+	}
+	exists := func(q, arg string) bool {
+		var e bool
+		_ = raw.QueryRowContext(ctx, q, arg).Scan(&e)
+		return e
+	}
+	if exists(`SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name=$1)`, staleSchema) {
+		t.Fatal("stale schema still exists after GC")
+	}
+	if exists(`SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)`, staleRole) {
+		t.Fatal("stale role still exists after GC")
+	}
+	if exists(`SELECT EXISTS(SELECT 1 FROM sqlmem_meta.scope_access WHERE schema_name=$1)`, staleSchema) {
+		t.Fatal("stale meta row still exists after GC")
+	}
+	if !exists(`SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name=$1)`, freshSchema) {
+		t.Fatal("fresh schema was dropped by GC")
 	}
 }
 
