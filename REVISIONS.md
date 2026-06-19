@@ -10,6 +10,36 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
+**🗄️ SQL Memory — in-runtime structured SQL storage for agents (RFC AA, Phase 1).**
+A new facet of the `Memory` tool: two ops, **`sql_query`** (read-only SELECT) and
+**`sql_exec`** (DDL/DML), run agent-authored SQL against a **per-scope sqlite
+database the runtime hosts**, fully isolated from the main loomcycle store. It
+targets sandboxed/short-lived agents that need related tables + joins + aggregates
+— structured storage the K/V + vector Memory can't give — without the `Bash +
+sqlite3` cost + safety hole.
+
+- **Scopes:** durable **`agent`** / **`user`** (keyed by the authoritative tenant,
+  persist across runs) + ephemeral **`run`** (one DB per spawn tree, dropped at
+  run completion — fenced removal, mirrors RFC AH ephemeral volumes).
+- **Default-deny `sql_scopes` ACL** (closed enum `{agent,user,run}`, per-agent yaml,
+  boot warning) — `Memory` in `allowed_tools` is not enough; the agent needs an
+  explicit `sql_scopes` list (RFC W pattern). Off unless `storage.sqlmem_enabled`.
+- **Security (the crux): the default `modernc.org/sqlite` driver has no
+  authorizer**, so the primary, driver-agnostic defence is a **Go-layer parsed
+  statement validator** that refuses `ATTACH`/`DETACH`/`VACUUM [INTO]`/`PRAGMA`,
+  `load_extension(…)` (incl. quoted-identifier forms — latent RCE on a future cgo
+  vec build), multi-statement smuggling, and any write on `sql_query` — backed by
+  **per-scope FILE isolation** (one .db per scope ⇒ a missed escape can't cross
+  scopes). Path derivation sanitizes every identifier (no `..`/separator escape,
+  collision-safe).
+- **Limits:** per-scope size **quota** (page-count×page-size, checked before a
+  write; per-agent override), per-statement **timeout** (ctx, honored by modernc's
+  interrupt), **row cap** + `truncated` flag, bind params.
+- **Audit:** every op records actor/scope/op/rows/duration + the **redacted**
+  statement (RFC Z redactor) — `full` or `metadata` mode; best-effort, never blocks
+  the op.
+- **Out of scope (Phase 2/3):** postgres schema-per-scope (multi-replica), vector
+  columns, snapshot/backup integration, explicit transactions.
 **🔌 A client-disconnected run is recorded as `cancelled`, not `failed`.** A
 non-interactive run's context derives from its HTTP/gRPC request ctx, so a
 dropped connection (the caller timing out or going away) cancels the run. The

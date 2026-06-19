@@ -30,6 +30,18 @@ type Event struct {
 	ScopesBefore     []string  `json:"scopes_before,omitempty"`
 	ScopesAfter      []string  `json:"scopes_after,omitempty"`
 	SourceAddr       string    `json:"source_addr,omitempty"`
+
+	// --- RFC AA SQL Memory (Action = "sql_query" | "sql_exec") ---
+	// All omitempty so a non-SQL audit record is byte-identical to before.
+	// SqlStatement is the REDACTED statement; it is omitted entirely when the
+	// operator runs audit_mode=metadata (statements never recorded).
+	SqlOp         string `json:"sql_op,omitempty"`        // "sql_query" | "sql_exec"
+	SqlScope      string `json:"sql_scope,omitempty"`     // "agent" | "user" | "run"
+	SqlScopeID    string `json:"sql_scope_id,omitempty"`  // resolved scope id (agent name / user id / run id)
+	SqlStatement  string `json:"sql_statement,omitempty"` // redacted; omitted in metadata mode
+	SqlRows       int64  `json:"sql_rows,omitempty"`      // rows returned (query) or affected (exec)
+	SqlDurationMs int64  `json:"sql_duration_ms,omitempty"`
+	SqlError      string `json:"sql_error,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

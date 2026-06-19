@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -17,6 +18,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/mem9"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -103,6 +106,29 @@ type Memory struct {
 	// in-process (a non-allowlisted key must never produce a silent
 	// unauthenticated call).
 	EnvAllowlist map[string]bool
+
+	// SqlMem is the RFC AA SQL Memory manager backing sql_query / sql_exec.
+	// Nil = the SQL ops refuse with "SQL Memory is not enabled on this
+	// server" (the subsystem is off by default; main.go sets it only when
+	// storage.sqlmem_enabled). The k/v ops are unaffected.
+	SqlMem *sqlmem.Manager
+
+	// SqlAudit records one append-only event per sql_query / sql_exec
+	// (WHO ran WHAT op against WHICH scope; the statement is redacted, or
+	// omitted in metadata mode). Nil = SQL ops are not audited (best-effort:
+	// an audit failure never blocks the SQL op).
+	SqlAudit audit.Sink
+
+	// SqlAuditMode is "full" (record the redacted statement) or "metadata"
+	// (record op/scope/row counts only). Empty defaults to "full".
+	SqlAuditMode string
+
+	// Redactor masks operator infra-secrets out of an audited SQL statement
+	// before it is written (full mode only). Nil-safe — a nil Redactor
+	// leaves the statement unchanged (the validator already blocks the
+	// dangerous statement shapes; redaction is defence for incidental
+	// secret-bearing literals in agent SQL).
+	Redactor *redact.Redactor
 }
 
 // backend resolves the memrank.Backend the data ops route through,
@@ -339,13 +365,14 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 	`Values are JSON. Optional TTL is in seconds. ` +
 	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity. ` +
 	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible. ` +
-	`add / recall (memory-layer backends only): add ingests conversation messages (the backend may LLM-extract durable facts); recall is a natural-language semantic search over those facts. These require a memory-layer backend (memory_backend kind=mem9); against the default key/value store they return capability_unsupported. Unlike set/get, add does not store value-at-key and is often async — do not assume read-after-write.`
+	`add / recall (memory-layer backends only): add ingests conversation messages (the backend may LLM-extract durable facts); recall is a natural-language semantic search over those facts. These require a memory-layer backend (memory_backend kind=mem9); against the default key/value store they return capability_unsupported. Unlike set/get, add does not store value-at-key and is often async — do not assume read-after-write. ` +
+	`RFC AA SQL Memory: sql_query runs a read-only SELECT and sql_exec runs a single DDL/DML statement (CREATE/INSERT/UPDATE/DELETE) against a per-scope sqlite database SEPARATE from the rest of your memory. Pass statement (one statement, no ATTACH/PRAGMA/load_extension/multiple statements) and optional positional args for ? placeholders. scope selects the database: agent (this agent, durable), user (this end-user, durable), or run (ephemeral, dropped when the run ends). Requires sql_scopes on the agent AND the server-side subsystem enabled.`
 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall"], "description": "Which operation to perform."},
-    "scope":      {"type": "string", "enum": ["agent","user"], "description": "Which keyspace: this agent's (cross-run, cross-user) or this user's (cross-agent)."},
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec"], "description": "Which operation to perform."},
+    "scope":      {"type": "string", "enum": ["agent","user","run"], "description": "Which keyspace/database. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
@@ -361,7 +388,10 @@ const memoryInputSchema = `{
     "messages":   {"type": "array", "description": "add-only (memory-layer backends): conversation turns to ingest. Each item is {role, content}.", "items": {"type": "object", "properties": {"role": {"type": "string", "enum": ["user","assistant","system"]}, "content": {"type": "string"}}, "required": ["role","content"]}},
     "infer":      {"type": "boolean", "description": "add-only: when true (default) the memory-layer backend LLM-extracts durable facts from the messages; false stores them verbatim."},
     "metadata":   {"type": "object", "description": "add-only: opaque key/value context attached to the ingestion.", "additionalProperties": {"type": "string"}},
-    "threshold":  {"type": "number", "description": "recall-only: 0..1 relevance floor for returned facts (0 = backend default)."}
+    "threshold":  {"type": "number", "description": "recall-only: 0..1 relevance floor for returned facts (0 = backend default)."},
+    "statement":  {"type": "string", "description": "sql_query / sql_exec: ONE SQL statement. sql_query is read-only (SELECT / WITH … SELECT); sql_exec is DDL/DML (CREATE/INSERT/UPDATE/DELETE/etc.). ATTACH, PRAGMA, load_extension, transactions, and multiple statements are refused."},
+    "args":       {"type": "array", "description": "sql_query / sql_exec: positional bind parameters for ? placeholders in statement.", "items": {}},
+    "timeout_ms": {"type": "integer", "description": "sql_query / sql_exec: reserved — the server-configured statement timeout is authoritative in this version."}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -400,6 +430,18 @@ type memoryInput struct {
 	// Threshold is the 0..1 relevance floor for `recall` (RFC K). 0 = the
 	// backend's default.
 	Threshold float64 `json:"threshold,omitempty"`
+
+	// --- RFC AA SQL Memory (sql_query / sql_exec) ---
+	// Statement is the single SQL statement to run (validated by the
+	// Go-layer security floor before it reaches the driver).
+	Statement string `json:"statement,omitempty"`
+	// Args are positional bind parameters for `?` placeholders in Statement.
+	Args []any `json:"args,omitempty"`
+	// TimeoutMs is a per-call statement timeout request. RESERVED in Phase 1:
+	// the operator-configured LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS is
+	// authoritative (a per-call override that could only ever tighten, never
+	// widen, is a Phase-2 refinement). Accepted so the wire shape is stable.
+	TimeoutMs int `json:"timeout_ms,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -422,6 +464,18 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
+
+	// RFC AA SQL Memory ops resolve scope through resolveSqlScope (their own
+	// {agent,user,run} gate keyed off SqlMemPolicy), NOT the k/v resolveScope
+	// — which is gated on memory_scopes and rejects `run`. Dispatch them
+	// before the k/v scope resolution so a SQL op never trips the k/v gate.
+	switch in.Op {
+	case "sql_query":
+		return m.execSqlQuery(ctx, in)
+	case "sql_exec":
+		return m.execSqlExec(ctx, in)
+	}
+
 	scope, scopeID, err := m.resolveScope(ctx, in.Scope)
 	if err != nil {
 		return errResult(err.Error()), nil
@@ -453,7 +507,7 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, sql_query, sql_exec)", in.Op)), nil
 	}
 }
 
@@ -489,6 +543,167 @@ func (m *Memory) resolveScope(ctx context.Context, requested string) (store.Memo
 	default:
 		return "", "", fmt.Errorf("Memory tool: unknown scope %q (only agent / user are supported in v0.8.0)", requested)
 	}
+}
+
+// resolveSqlScope is the RFC AA SQL Memory scope gate. It is SEPARATE from
+// resolveScope: SQL scopes are {agent, user, run} (run has no k/v analogue),
+// and the gate is the agent's sql_scopes ACL (SqlMemPolicy), not memory_scopes.
+//
+// Default-deny: an empty sql_scopes refuses ALL SQL. The scope_id is resolved
+// SERVER-SIDE from the run context (never the wire) exactly like resolveScope:
+//
+//	agent → tools.AgentName(ctx)
+//	user  → tools.RunIdentity(ctx).UserID
+//	run   → tools.RunIdentity(ctx).RootRunID
+//
+// so one agent's run can never read another agent's / user's / run's SQL DB.
+//
+// The run scope keys off RootRunID (the TOP-LEVEL run at the root of the
+// spawn tree), NOT the per-sub-run RunID: that way the whole tree shares one
+// ephemeral DB, and the server's run-completion drop (which targets
+// meta.RootRunID) reclaims exactly the file the tree used — keying off the
+// per-sub-run id instead would orphan a sub-agent's DB (never dropped) and
+// hide the parent's tables from a child granted `run`. Mirrors how RFC AH
+// ephemeral volumes scope to RootRunID.
+func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, scopeID string, err error) {
+	if requested == "" {
+		return "", "", fmt.Errorf("missing required field: scope (one of: agent, user, run)")
+	}
+	pol := tools.SqlMemPolicy(ctx)
+	if len(pol.AllowedScopes) == 0 {
+		return "", "", fmt.Errorf("Memory tool: this agent has no sql_scopes configured — add `sql_scopes: [agent]` (and/or user, run) to the agent yaml")
+	}
+	if !contains(pol.AllowedScopes, requested) {
+		return "", "", fmt.Errorf("Memory tool: sql scope %q not in this agent's sql_scopes %v", requested, pol.AllowedScopes)
+	}
+	switch requested {
+	case "agent":
+		name := tools.AgentName(ctx)
+		if name == "" {
+			return "", "", fmt.Errorf("Memory tool: sql scope=agent requires a yaml-declared agent (no agent name on the run context)")
+		}
+		return "agent", name, nil
+	case "user":
+		uid := tools.RunIdentity(ctx).UserID
+		if uid == "" {
+			return "", "", fmt.Errorf("Memory tool: sql scope=user requires a user_id on the run (caller must supply user_id when starting the run)")
+		}
+		return "user", uid, nil
+	case "run":
+		// RootRunID roots the spawn tree; fall back to RunID for a run started
+		// outside the volume-aware run-start path (RootRunID unset there).
+		ident := tools.RunIdentity(ctx)
+		rid := ident.RootRunID
+		if rid == "" {
+			rid = tools.RunID(ctx)
+		}
+		if rid == "" {
+			return "", "", fmt.Errorf("Memory tool: sql scope=run requires an active run (no run id on the context)")
+		}
+		return "run", rid, nil
+	default:
+		return "", "", fmt.Errorf("Memory tool: unknown sql scope %q (want one of: agent, user, run)", requested)
+	}
+}
+
+// execSqlQuery runs a read-only SELECT against the resolved scope DB.
+func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result, error) {
+	scope, scopeID, err := m.resolveSqlScope(ctx, in.Scope)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	if m.SqlMem == nil {
+		return errResult("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+	}
+	if strings.TrimSpace(in.Statement) == "" {
+		return errResult("sql_query: missing required field: statement"), nil
+	}
+	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
+	start := time.Now()
+	res, qerr := m.SqlMem.Query(ctx, key, in.Statement, in.Args)
+	durMs := time.Since(start).Milliseconds()
+	if qerr != nil {
+		m.auditSql(ctx, "sql_query", scope, scopeID, in.Statement, 0, durMs, qerr)
+		return errResult(fmt.Sprintf("sql_query: %s", qerr)), nil
+	}
+	m.auditSql(ctx, "sql_query", scope, scopeID, in.Statement, int64(len(res.Rows)), durMs, nil)
+	return okJSON(map[string]any{
+		"columns":   res.Columns,
+		"rows":      res.Rows,
+		"truncated": res.Truncated,
+	})
+}
+
+// execSqlExec runs a DDL/DML statement against the resolved scope DB.
+func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result, error) {
+	scope, scopeID, err := m.resolveSqlScope(ctx, in.Scope)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	if m.SqlMem == nil {
+		return errResult("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+	}
+	if strings.TrimSpace(in.Statement) == "" {
+		return errResult("sql_exec: missing required field: statement"), nil
+	}
+	// Per-agent quota override wins over the manager default when > 0.
+	quota := tools.SqlMemPolicy(ctx).QuotaBytes
+	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
+	start := time.Now()
+	res, xerr := m.SqlMem.Exec(ctx, key, in.Statement, in.Args, quota)
+	durMs := time.Since(start).Milliseconds()
+	if xerr != nil {
+		m.auditSql(ctx, "sql_exec", scope, scopeID, in.Statement, 0, durMs, xerr)
+		return errResult(fmt.Sprintf("sql_exec: %s", xerr)), nil
+	}
+	m.auditSql(ctx, "sql_exec", scope, scopeID, in.Statement, res.RowsAffected, durMs, nil)
+	return okJSON(map[string]any{
+		"rows_affected":  res.RowsAffected,
+		"last_insert_id": res.LastInsertID,
+	})
+}
+
+// auditSql records one append-only SQL Memory audit event. Best-effort: a
+// nil sink is skipped, and a Record error is logged but NEVER blocks the op
+// (audit is observability, not a transaction participant). In "full" mode
+// the statement is REDACTED before recording (operator infra-secrets out);
+// in "metadata" mode the statement is omitted entirely.
+func (m *Memory) auditSql(ctx context.Context, op, scope, scopeID, statement string, rows, durMs int64, opErr error) {
+	if m.SqlAudit == nil {
+		return
+	}
+	ident := tools.RunIdentity(ctx)
+	ev := audit.Event{
+		ActorTenant:   ident.TenantID,
+		ActorSubject:  ident.UserID,
+		Action:        op,
+		SqlOp:         op,
+		SqlScope:      scope,
+		SqlScopeID:    scopeID,
+		SqlRows:       rows,
+		SqlDurationMs: durMs,
+	}
+	if opErr != nil {
+		ev.SqlError = opErr.Error()
+	}
+	if m.sqlAuditMode() == "full" {
+		if m.Redactor != nil {
+			ev.SqlStatement = m.Redactor.String(statement)
+		} else {
+			ev.SqlStatement = statement
+		}
+	}
+	if err := m.SqlAudit.Record(ev); err != nil {
+		log.Printf("sqlmem: audit record (%s scope=%s) failed: %v", op, scope, err)
+	}
+}
+
+// sqlAuditMode normalizes the audit mode; empty defaults to "full".
+func (m *Memory) sqlAuditMode() string {
+	if m.SqlAuditMode == "metadata" {
+		return "metadata"
+	}
+	return "full"
 }
 
 func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {

@@ -72,6 +72,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
@@ -1132,6 +1133,51 @@ func main() {
 	// server's tool set, which isn't in allTools here (F45). New re-points any
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
+
+	// RFC AA SQL Memory (Phase 1). Off by default; constructed only when the
+	// operator enables it. The manager hosts per-scope sqlite databases that
+	// SEPARATE from the main store — an agent's arbitrary SQL can only ever
+	// reach its own scope file. Wired into the Memory tool (sql_query/sql_exec)
+	// and the server (run-scope drop at top-level run completion).
+	if cfg.Storage.SqlMemEnabled {
+		sqlMemRoot := cfg.Storage.SqlMemRoot
+		if sqlMemRoot == "" {
+			sqlMemRoot = filepath.Join(cfg.Env.DataDir, "sqlmem")
+		}
+		sqlMemMgr, smErr := sqlmem.New(sqlmem.Config{
+			Root:               sqlMemRoot,
+			QuotaBytes:         cfg.Storage.SqlMemQuotaBytes,
+			StatementTimeoutMS: cfg.Storage.SqlMemStatementTimeoutMS,
+			MaxRows:            cfg.Storage.SqlMemMaxRows,
+		})
+		if smErr != nil {
+			log.Fatalf("sqlmem: %v", smErr)
+		}
+		// Audit sink: reuse the operator audit log file when configured (the
+		// records carry a distinct action=sql_query/sql_exec), else NopSink.
+		var sqlAudit audit.Sink = audit.NopSink{}
+		if cfg.Env.AuditLogPath != "" {
+			fs, aerr := audit.NewFileSink(cfg.Env.AuditLogPath)
+			if aerr != nil {
+				log.Fatalf("sqlmem audit: %v", aerr)
+			}
+			sqlAudit = fs
+		}
+		memoryTool.SqlMem = sqlMemMgr
+		memoryTool.SqlAudit = sqlAudit
+		memoryTool.SqlAuditMode = cfg.Storage.SqlMemAuditMode
+		// Reuse the server's redactor (same secret-classified env) so an
+		// audited statement is masked exactly like the rest of the transcript.
+		memoryTool.Redactor = srv.Redactor()
+		srv.SetSqlMem(sqlMemMgr)
+		// Close the manager (all open scope handles) on shutdown, after the
+		// store closer so an in-flight finish-path drop still has a live handle.
+		defer func() { _ = sqlMemMgr.Close() }()
+		log.Printf("sqlmem: SQL Memory enabled (root=%s, quota_bytes=%d, max_rows=%d, timeout_ms=%d, audit=%s)",
+			sqlMemRoot, cfg.Storage.SqlMemQuotaBytes, cfg.Storage.SqlMemMaxRows,
+			cfg.Storage.SqlMemStatementTimeoutMS, cfg.Storage.SqlMemAuditMode)
+	}
+
 	// v0.9.x — wire the MCPServerDef substrate tool. NOT in allTools
 	// (operator-admin-only); reached via Connector.MCPServerDef + the
 	// admin endpoint + the LoomCycle MCP meta-tool.
