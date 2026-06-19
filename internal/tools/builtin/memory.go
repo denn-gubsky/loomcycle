@@ -366,12 +366,12 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity. ` +
 	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible. ` +
 	`add / recall (memory-layer backends only): add ingests conversation messages (the backend may LLM-extract durable facts); recall is a natural-language semantic search over those facts. These require a memory-layer backend (memory_backend kind=mem9); against the default key/value store they return capability_unsupported. Unlike set/get, add does not store value-at-key and is often async — do not assume read-after-write. ` +
-	`RFC AA SQL Memory: sql_query runs a read-only SELECT and sql_exec runs a single DDL/DML statement (CREATE/INSERT/UPDATE/DELETE) against a per-scope sqlite database SEPARATE from the rest of your memory. Pass statement (one statement, no ATTACH/PRAGMA/load_extension/multiple statements) and optional positional args for ? placeholders. scope selects the database: agent (this agent, durable), user (this end-user, durable), or run (ephemeral, dropped when the run ends). Requires sql_scopes on the agent AND the server-side subsystem enabled.`
+	`RFC AA SQL Memory: sql_query runs a read-only SELECT and sql_exec runs a single DDL/DML statement (CREATE/INSERT/UPDATE/DELETE) against a per-scope sqlite database SEPARATE from the rest of your memory. Pass statement (one statement, no ATTACH/PRAGMA/load_extension/multiple statements) and optional positional args for ? placeholders. scope selects the database: agent (this agent, durable), user (this end-user, durable), or run (ephemeral, dropped when the run ends). For atomic multi-step writes, sql_begin opens a transaction for the scope, subsequent sql_exec/sql_query run on it, and sql_commit / sql_rollback finish it (one open transaction per scope; it auto-rolls-back if the run ends or it is abandoned). Requires sql_scopes on the agent AND the server-side subsystem enabled.`
 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec"], "description": "Which operation to perform."},
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback"], "description": "Which operation to perform."},
     "scope":      {"type": "string", "enum": ["agent","user","run"], "description": "Which keyspace/database. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
@@ -474,6 +474,12 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		return m.execSqlQuery(ctx, in)
 	case "sql_exec":
 		return m.execSqlExec(ctx, in)
+	case "sql_begin":
+		return m.execSqlBegin(ctx, in)
+	case "sql_commit":
+		return m.execSqlTxnFinish(ctx, in, true)
+	case "sql_rollback":
+		return m.execSqlTxnFinish(ctx, in, false)
 	}
 
 	scope, scopeID, err := m.resolveScope(ctx, in.Scope)
@@ -507,7 +513,7 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, sql_query, sql_exec)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
 	}
 }
 
@@ -619,8 +625,15 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 		return errResult("sql_query: missing required field: statement"), nil
 	}
 	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
+	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
-	res, qerr := m.SqlMem.Query(ctx, key, in.Statement, in.Args)
+	var res *sqlmem.QueryResult
+	var qerr error
+	if txnID != "" && m.SqlMem.InTxn(txnID) {
+		res, qerr = m.SqlMem.QueryTxn(ctx, txnID, in.Statement, in.Args)
+	} else {
+		res, qerr = m.SqlMem.Query(ctx, key, in.Statement, in.Args)
+	}
 	durMs := time.Since(start).Milliseconds()
 	if qerr != nil {
 		m.auditSql(ctx, "sql_query", scope, scopeID, in.Statement, 0, durMs, qerr)
@@ -649,8 +662,15 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 	// Per-agent quota override wins over the manager default when > 0.
 	quota := tools.SqlMemPolicy(ctx).QuotaBytes
 	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
+	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
-	res, xerr := m.SqlMem.Exec(ctx, key, in.Statement, in.Args, quota)
+	var res *sqlmem.ExecResult
+	var xerr error
+	if txnID != "" && m.SqlMem.InTxn(txnID) {
+		res, xerr = m.SqlMem.ExecTxn(ctx, txnID, in.Statement, in.Args, quota)
+	} else {
+		res, xerr = m.SqlMem.Exec(ctx, key, in.Statement, in.Args, quota)
+	}
 	durMs := time.Since(start).Milliseconds()
 	if xerr != nil {
 		m.auditSql(ctx, "sql_exec", scope, scopeID, in.Statement, 0, durMs, xerr)
@@ -661,6 +681,86 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 		"rows_affected":  res.RowsAffected,
 		"last_insert_id": res.LastInsertID,
 	})
+}
+
+// currentSqlTxnID returns the explicit-transaction registry key for the current
+// run + scope, or "" when there is no run id on the context (then SQL ops
+// auto-commit). Keyed off the run-tree root so run-completion cleanup reclaims
+// any open transaction.
+func currentSqlTxnID(ctx context.Context, scope, scopeID string) string {
+	rid := tools.RunIdentity(ctx).RootRunID
+	if rid == "" {
+		rid = tools.RunID(ctx)
+	}
+	if rid == "" {
+		return ""
+	}
+	return sqlmem.BuildTxnID(rid, scope, scopeID)
+}
+
+// execSqlBegin opens an explicit (multi-call) transaction for the resolved
+// scope. Subsequent sql_exec/sql_query on this scope (in this run) run on it
+// until sql_commit / sql_rollback.
+func (m *Memory) execSqlBegin(ctx context.Context, in memoryInput) (tools.Result, error) {
+	scope, scopeID, err := m.resolveSqlScope(ctx, in.Scope)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	if m.SqlMem == nil {
+		return errResult("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+	}
+	rid := tools.RunIdentity(ctx).RootRunID
+	if rid == "" {
+		rid = tools.RunID(ctx)
+	}
+	if rid == "" {
+		return errResult("sql_begin: an explicit transaction requires an active run"), nil
+	}
+	txnID := sqlmem.BuildTxnID(rid, scope, scopeID)
+	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
+	start := time.Now()
+	berr := m.SqlMem.BeginTxn(ctx, txnID, rid, key)
+	durMs := time.Since(start).Milliseconds()
+	if berr != nil {
+		m.auditSql(ctx, "sql_begin", scope, scopeID, "", 0, durMs, berr)
+		return errResult(fmt.Sprintf("sql_begin: %s", berr)), nil
+	}
+	m.auditSql(ctx, "sql_begin", scope, scopeID, "", 0, durMs, nil)
+	return okJSON(map[string]any{"ok": true})
+}
+
+// execSqlTxnFinish commits (commit=true) or rolls back the open transaction for
+// the resolved scope.
+func (m *Memory) execSqlTxnFinish(ctx context.Context, in memoryInput, commit bool) (tools.Result, error) {
+	op := "sql_rollback"
+	if commit {
+		op = "sql_commit"
+	}
+	scope, scopeID, err := m.resolveSqlScope(ctx, in.Scope)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	if m.SqlMem == nil {
+		return errResult("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+	}
+	txnID := currentSqlTxnID(ctx, scope, scopeID)
+	if txnID == "" {
+		return errResult(fmt.Sprintf("%s: an explicit transaction requires an active run", op)), nil
+	}
+	start := time.Now()
+	var ferr error
+	if commit {
+		ferr = m.SqlMem.CommitTxn(txnID)
+	} else {
+		ferr = m.SqlMem.RollbackTxn(txnID)
+	}
+	durMs := time.Since(start).Milliseconds()
+	if ferr != nil {
+		m.auditSql(ctx, op, scope, scopeID, "", 0, durMs, ferr)
+		return errResult(fmt.Sprintf("%s: %s", op, ferr)), nil
+	}
+	m.auditSql(ctx, op, scope, scopeID, "", 0, durMs, nil)
+	return okJSON(map[string]any{"ok": true})
 }
 
 // auditSql records one append-only SQL Memory audit event. Best-effort: a

@@ -1150,6 +1150,8 @@ func main() {
 			QuotaBytes:         cfg.Storage.SqlMemQuotaBytes,
 			StatementTimeoutMS: cfg.Storage.SqlMemStatementTimeoutMS,
 			MaxRows:            cfg.Storage.SqlMemMaxRows,
+			TxnTimeoutMS:       cfg.Storage.SqlMemTxnTimeoutMS,
+			MaxOpenTxns:        cfg.Storage.SqlMemMaxOpenTxns,
 		}
 		// SQL Memory FOLLOWS the main store backend (RFC AA decision 4): a
 		// postgres deploy gets schema-per-scope in the SEPARATE aux DB; a

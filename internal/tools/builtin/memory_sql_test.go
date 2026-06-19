@@ -65,6 +65,68 @@ func TestMemorySQL_DefaultDenyWithoutScopes(t *testing.T) {
 	}
 }
 
+// TestMemorySQL_ExplicitTransactionThroughTool drives the Phase-3a ops through
+// the tool's Execute: begin→insert→rollback discards, begin→insert→commit
+// persists (so sql_exec correctly routes onto the open txn), and a double begin
+// errors.
+func TestMemorySQL_ExplicitTransactionThroughTool(t *testing.T) {
+	tool, _, ctx, cleanup := sqlMemoryFixture(t)
+	defer cleanup()
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", TenantID: "tenantA", AgentID: "a_test", RootRunID: "run-1"})
+	ctx = withSqlScopes(ctx, "agent")
+
+	exec := func(payload string) {
+		t.Helper()
+		res, err := tool.Execute(ctx, json.RawMessage(payload))
+		if err != nil {
+			t.Fatalf("execute %s: %v", payload, err)
+		}
+		if res.IsError {
+			t.Fatalf("op errored: %s -> %s", payload, res.Text)
+		}
+	}
+	count := func() int {
+		t.Helper()
+		res, err := tool.Execute(ctx, json.RawMessage(`{"op":"sql_query","scope":"agent","statement":"SELECT count(*) FROM t"}`))
+		if err != nil || res.IsError {
+			t.Fatalf("count query: err=%v %s", err, res.Text)
+		}
+		var out struct {
+			Rows [][]any `json:"rows"`
+		}
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("decode count: %v (%s)", err, res.Text)
+		}
+		n, _ := out.Rows[0][0].(float64)
+		return int(n)
+	}
+
+	exec(`{"op":"sql_exec","scope":"agent","statement":"CREATE TABLE t (x INT)"}`)
+
+	// begin → insert → rollback ⇒ 0 rows
+	exec(`{"op":"sql_begin","scope":"agent"}`)
+	exec(`{"op":"sql_exec","scope":"agent","statement":"INSERT INTO t VALUES (1)"}`)
+	exec(`{"op":"sql_rollback","scope":"agent"}`)
+	if c := count(); c != 0 {
+		t.Fatalf("after rollback count=%d, want 0", c)
+	}
+
+	// begin → insert → commit ⇒ 1 row (sql_exec routed onto the open txn)
+	exec(`{"op":"sql_begin","scope":"agent"}`)
+	exec(`{"op":"sql_exec","scope":"agent","statement":"INSERT INTO t VALUES (2)"}`)
+	exec(`{"op":"sql_commit","scope":"agent"}`)
+	if c := count(); c != 1 {
+		t.Fatalf("after commit count=%d, want 1", c)
+	}
+
+	// double begin errors
+	exec(`{"op":"sql_begin","scope":"agent"}`)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"sql_begin","scope":"agent"}`)); !res.IsError {
+		t.Fatal("double sql_begin should error")
+	}
+	exec(`{"op":"sql_rollback","scope":"agent"}`)
+}
+
 // TestMemorySQL_NotEnabledServer refuses when the manager is nil even if the
 // agent is granted scopes.
 func TestMemorySQL_NotEnabledServer(t *testing.T) {
