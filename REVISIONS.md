@@ -49,17 +49,26 @@ an agent's arbitrary SQL is isolated from the operational data by a *different
 database* as well as a least-privilege role.
 
 - **Engine-enforced isolation.** Each scope lazily provisions a schema + a
-  **`NOLOGIN NOINHERIT` role with `USAGE` only on its own schema** (`PUBLIC`
-  revoked). The runtime connects as an operator-provisioned **non-superuser**
-  admin (`CREATEROLE` + `CREATE` on the aux DB) and, per statement, opens a
-  transaction that `SET LOCAL ROLE`s down to the scope role with `search_path`
-  pinned + `statement_timeout` set — so the agent runs as a role that **cannot
-  reach another scope's schema** (no `USAGE`, even with a fully-qualified
-  reference), read host files, run programs, load extensions, or connect out
+  dedicated **per-scope `LOGIN` role** with `USAGE` only on its own schema
+  (`PUBLIC` revoked), non-superuser, `NOCREATEDB`/`NOCREATEROLE`/`NOINHERIT`,
+  `search_path` + `statement_timeout` baked on. The runtime runs the agent's SQL
+  on a **dedicated connection authenticated AS that scope role** — so the agent's
+  `session_user` **is** the scope role, a member of **nothing**. That is the
+  load-bearing property: every role-switch primitive (`SET ROLE`,
+  `set_config('role',…)`, `RESET ROLE`, a function's `SET role` clause) is checked
+  against the scope role and **cannot reach another scope**. (An earlier
+  shared-admin + `SET LOCAL ROLE` design was found broken by an adversarial review
+  — `SET LOCAL ROLE` leaves `session_user` as the admin, a member of every scope
+  role, so an agent could pivot via a `SET role` function clause; fixed before
+  ship.) The agent therefore cannot reach another scope's schema (no `USAGE`, even
+  fully-qualified), read host files, run programs, load extensions, or connect out
   (`COPY … PROGRAM` / `pg_read_file` / `CREATE EXTENSION` / `dblink` are all
-  engine-denied). `sql_query` runs in a **read-only transaction** (the write
-  backstop). The Go-layer validator gains a postgres dialect (denies dangerous
-  `CREATE`/`ALTER` DDL + nested server-side functions) as defense-in-depth.
+  engine-denied). The operator-provisioned **non-superuser** admin (`CREATEROLE` +
+  `CREATE` on the aux DB) provisions/drops scopes ONLY and never runs agent SQL.
+  `sql_query` runs in a **read-only transaction** (the write backstop). The
+  Go-layer validator gains a postgres dialect (denies dangerous `CREATE`/`ALTER`
+  DDL + nested server-side functions, incl. quoted-identifier forms) as
+  defense-in-depth.
 - **Limits + ops:** schema-size **quota** via `pg_total_relation_size`;
   per-statement `statement_timeout` + ctx deadline; row cap. **Multi-replica**
   (shared schemas, idempotent provisioning, duplicate-object races tolerated).

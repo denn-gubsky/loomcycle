@@ -78,24 +78,37 @@ is defense-in-depth):
 
 - The aux DB is a **different database** from the main loomcycle store, so even a
   hypothetical escape can't reach sessions/runs/tokens/memory.
-- Each scope lazily provisions a **schema** + a **`NOLOGIN NOINHERIT` role with
-  `USAGE` only on that schema** (`PUBLIC` revoked).
-- The runtime connects as the operator-provisioned **non-superuser** admin and,
-  per statement, opens a transaction that pins `statement_timeout` + `search_path`
-  and then `SET LOCAL ROLE`s down to the scope role before running the agent's
-  statement. So the agent runs as a role that **cannot**:
+- Each scope lazily provisions a **schema** + a dedicated **per-scope `LOGIN`
+  role** with `USAGE` only on that schema (`PUBLIC` revoked), non-superuser,
+  `NOCREATEDB`/`NOCREATEROLE`/`NOINHERIT`, with `search_path` + `statement_timeout`
+  baked onto the role.
+- The runtime runs the agent's SQL on a **dedicated connection authenticated AS
+  that scope role** — so the agent's `session_user` **is** the scope role. This
+  is the load-bearing property: a scope role is a member of **nothing**, so every
+  PostgreSQL role-switch primitive (`SET ROLE`, `set_config('role',…)`,
+  `RESET ROLE`, a function's `SET role` attribute) is checked against the scope
+  role and **cannot reach another scope**. (An earlier design that connected as
+  one shared admin and `SET LOCAL ROLE`d down to the scope role was *broken* —
+  `SET LOCAL ROLE` leaves `session_user` as the admin, which was a member of
+  every scope role, so an agent could pivot via a `SET role` function clause.)
+  The agent therefore **cannot**:
   - reach another scope's schema — no `USAGE`, even with a fully-qualified
-    `other_schema.table` reference (engine: *permission denied for schema*);
+    `other_schema.table` reference (engine: *permission denied for schema*),
+    and no role-switch can change that;
   - read host files / run programs — `COPY … TO/FROM PROGRAM`, `COPY … '/file'`,
     `pg_read_file`, `pg_ls_dir`, `lo_import`/`lo_export` are all denied;
   - load code or connect out — `CREATE EXTENSION` / `CREATE LANGUAGE` / `dblink`
     are denied;
-  - escalate — it is not a member of any privileged role, so `SET ROLE` to one
-    fails.
+  - escalate — the scope role is a member of no privileged role, and the
+    operator-provisioned admin role (which CAN provision/drop scopes) **never
+    runs agent SQL**, so its authority is unreachable from a statement.
 - `sql_query` additionally runs in a **read-only transaction**, so any write the
   validator missed (e.g. `SELECT … INTO`) fails at the engine.
 - The schema-size quota uses a `pg_total_relation_size` sweep over the scope
   schema before a write.
+- Per-scope role passwords are derived `HMAC(aux-admin-password, role-name)` (so
+  every replica computes the same value without coordination); the agent has no
+  network path to the aux DB regardless.
 
 > **Strongest posture:** point `LOOMCYCLE_SQLMEM_PG_DSN` at a **separate
 > PostgreSQL instance/cluster** (not just a separate database). The admin role
@@ -132,9 +145,18 @@ LOOMCYCLE_SQLMEM_PG_DSN=postgres://loomcycle_sqlmem:<strong-secret>@db-host:5432
 
 Requirements / notes:
 
-- **PostgreSQL 16+** is recommended (the runtime uses `GRANT … WITH SET` to let
-  the admin `SET ROLE` into a scope role; it falls back to the pre-16 grant form
-  on older servers).
+- **The aux DSN must use password authentication.** The admin password is the
+  key from which every per-scope role's password is derived
+  (`HMAC(admin-password, role-name)`), so the runtime can authenticate as each
+  scope role. A passwordless DSN (trust / peer / cert) is refused at startup.
+- **`pg_hba.conf` must let the per-scope roles connect.** The runtime opens a
+  dedicated connection authenticated as each scope's `LOGIN` role
+  (`sqlmem_r_…`); the same host/auth rule that admits the admin role generally
+  covers them (e.g. `host loomcycle_sqlmem all <runtime-cidr> scram-sha-256`).
+  This is what makes the scope role the agent's `session_user` — the property
+  the cross-scope isolation rests on.
+- **PostgreSQL 13+** (the runtime relies only on `LOGIN` roles, `ALTER ROLE …
+  SET`, and per-role `search_path`/`statement_timeout` — all long-standing).
 - Do **not** install `dblink` / `postgres_fdw` / `file_fdw` / untrusted
   procedural languages in the aux DB — the scope roles can't `CREATE EXTENSION`,
   but not installing them removes the surface entirely.
