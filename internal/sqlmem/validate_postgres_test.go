@@ -30,6 +30,12 @@ func TestValidatePostgres_DeniesEscapes(t *testing.T) {
 		{"lo_import", "SELECT lo_import('/etc/passwd')", true},
 		{"lo_export in exec", "SELECT lo_export(1, '/tmp/x')", true},
 		{"dblink", "SELECT * FROM dblink('host=other', 'SELECT 1') AS t(x int)", true},
+		// Double-quoted identifier call forms — Postgres resolves a quoted
+		// identifier in call position as the function name (M-2 bypass).
+		{"quoted pg_read_file", `SELECT "pg_read_file"('/etc/passwd')`, true},
+		{"schema-qualified quoted pg_read_file", `SELECT "pg_catalog"."pg_read_file"('/etc/passwd')`, true},
+		{"quoted lo_import", `SELECT "lo_import"('/etc/passwd')`, true},
+		{"quoted dblink", `SELECT * FROM "dblink"('host=x', 'SELECT 1') AS t(x int)`, true},
 		// Leading-keyword escapes — blocked by the shared closed allow-sets.
 		{"copy from program (exec)", "COPY t FROM PROGRAM 'id'", false},
 		{"copy to file (exec)", "COPY t TO '/tmp/x'", false},

@@ -31,13 +31,21 @@ var pgDangerousDDLRe = regexp.MustCompile(
 	`(?i)^\s*(?:create\s+(?:or\s+replace\s+)?(?:extension|language|server|foreign|publication|subscription)|alter\s+(?:system|role|database|user|group|tablespace))\b`,
 )
 
+// pgServerFnNames is the alternation of denied server-side function names
+// (file I/O, large-object I/O, cross-database links).
+const pgServerFnNames = `pg_read_file|pg_read_binary_file|pg_stat_file|pg_ls_dir|pg_ls_logdir|pg_ls_waldir|pg_ls_tmpdir|lo_import|lo_export|lo_get|lo_put|lo_from_bytea|dblink|dblink_connect|dblink_exec`
+
 // pgServerFnRe matches a call to a denied server-side function anywhere in the
-// statement (file I/O, large-object I/O, or cross-database links). Applied to
-// maskStringLiterals output so a value mentioning the name is not a false
-// positive. Word-boundary anchored + a following '(' so it only matches a
-// genuine call, not a column like my_pg_read_file_flag.
+// statement. Applied to maskStringLiterals output so a value mentioning the
+// name is not a false positive. It covers BOTH the bare name (word-boundary
+// anchored, so a column like my_pg_read_file_flag is NOT matched) AND the
+// DOUBLE-QUOTED identifier form: Postgres resolves a quoted identifier in call
+// position as the function name, so `SELECT "pg_read_file"('x')` (or the
+// schema-qualified `"pg_catalog"."pg_read_file"('x')`) is a genuine call —
+// mirrors the sqlite loadExtensionRe handling of quoted forms (an avoidable
+// asymmetry otherwise, and a live escape against a mis-provisioned role).
 var pgServerFnRe = regexp.MustCompile(
-	`(?i)\b(?:pg_read_file|pg_read_binary_file|pg_stat_file|pg_ls_dir|pg_ls_logdir|pg_ls_waldir|pg_ls_tmpdir|lo_import|lo_export|lo_get|lo_put|lo_from_bytea|dblink|dblink_connect|dblink_exec)\s*\(`,
+	`(?i)(?:\b(?:` + pgServerFnNames + `)\b|"(?:` + pgServerFnNames + `)")\s*\(`,
 )
 
 // postgresStatementDenies applies the postgres-dialect escape denies to one
