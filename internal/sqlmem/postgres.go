@@ -91,12 +91,22 @@ type postgresBackend struct {
 	baseCfg *pgx.ConnConfig // parsed admin DSN; template for per-scope DSNs
 	secret  []byte          // HMAC key for per-scope role passwords (= admin password)
 
+	vectors bool // pgvector present in the aux DB (RFC AA Phase 3c — vector columns)
+
 	mu          sync.Mutex
 	provisioned map[string]bool        // schema names provisioned in THIS process
 	provLocks   map[string]*sync.Mutex // per-schema provisioning lock (parallelize distinct scopes)
 	scopes      map[string]*scopeConn  // per-scope connection pools, keyed by role name
 	clock       uint64
 }
+
+// pgVectorExtSchema is the dedicated schema the operator installs pgvector into
+// (CREATE EXTENSION vector SCHEMA sqlmem_ext). When present, the runtime bakes it
+// onto each scope role's search_path + grants USAGE, so an agent can use the
+// `vector` type + distance operators in its own tables without CREATE EXTENSION.
+// The schema holds ONLY the extension's type/operators (no cross-scope data), so
+// it is a safe shared-read surface.
+const pgVectorExtSchema = "sqlmem_ext"
 
 // NewPostgres constructs a Manager backed by the postgres tier. It opens the
 // admin pool, verifies connectivity, and detects the server version. The DSN
@@ -135,16 +145,29 @@ func newPostgresBackend(ctx context.Context, cfg Config) (*postgresBackend, erro
 		_ = admin.Close()
 		return nil, fmt.Errorf("sqlmem: connect aux postgres: %w", err)
 	}
+	// Probe for pgvector: the operator-installed `vector` type living in the
+	// dedicated sqlmem_ext schema enables Phase-3c vector columns. Both must be
+	// present (a stray `vector` type elsewhere isn't reachable by scope roles).
+	var vectors bool
+	_ = admin.QueryRowContext(pingCtx,
+		`SELECT EXISTS(
+		   SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+		    WHERE t.typname = 'vector' AND n.nspname = $1)`, pgVectorExtSchema).Scan(&vectors)
 	return &postgresBackend{
 		cfg:         cfg,
 		admin:       admin,
 		baseCfg:     baseCfg,
 		secret:      []byte(baseCfg.Password),
+		vectors:     vectors,
 		provisioned: make(map[string]bool),
 		provLocks:   make(map[string]*sync.Mutex),
 		scopes:      make(map[string]*scopeConn),
 	}, nil
 }
+
+// vectorsEnabled reports whether the postgres tier can serve vector columns
+// (pgvector installed in sqlmem_ext).
+func (b *postgresBackend) vectorsEnabled() bool { return b.vectors }
 
 // pgIdentRe is the shape EVERY interpolated identifier must match before it is
 // placed into DDL (pgScopeNames produces exactly this). Hex-only names are
@@ -256,12 +279,21 @@ func (b *postgresBackend) runProvisionDDL(ctx context.Context, schema, role stri
 		`DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname=%s) THEN CREATE ROLE %s LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION; END IF; END $$`,
 		lit(role), q(role), lit(pw),
 	)
+	// search_path = the scope schema first, then sqlmem_ext (the pgvector type +
+	// operators) when vectors are enabled — so unqualified table refs go to the
+	// scope schema and the `vector` type/operators resolve. USAGE on sqlmem_ext is
+	// granted to PUBLIC once by the operator (a per-scope GRANT would contend on
+	// the shared schema ACL row, like the dropped per-scope GRANT CONNECT).
+	searchPath := q(schema)
+	if b.vectors {
+		searchPath = q(schema) + ", " + q(pgVectorExtSchema)
+	}
 	stmts := []string{
 		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, q(schema)),
 		createRole,
 		// Keep the role password in sync with the current derivation (idempotent).
 		fmt.Sprintf(`ALTER ROLE %s WITH PASSWORD %s`, q(role), lit(pw)),
-		fmt.Sprintf(`ALTER ROLE %s SET search_path TO %s`, q(role), q(schema)),
+		fmt.Sprintf(`ALTER ROLE %s SET search_path TO %s`, q(role), searchPath),
 		fmt.Sprintf(`REVOKE ALL ON SCHEMA %s FROM PUBLIC`, q(schema)),
 		fmt.Sprintf(`GRANT USAGE, CREATE ON SCHEMA %s TO %s`, q(schema), q(role)),
 		// NOTE: no per-scope GRANT CONNECT — the scope role connects via the aux

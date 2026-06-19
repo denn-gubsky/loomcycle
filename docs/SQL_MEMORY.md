@@ -121,6 +121,41 @@ runs any number of `sql_exec` / `sql_query` on the scope, then `sql_commit` or
   migrates to another replica (steer/resume) orphans its open transaction → it is
   reaped and the continuation auto-commits.
 
+## Vector columns (postgres tier)
+
+An agent can keep **embeddings inside its own SQL tables** — semantic KNN *and*
+structured filters/joins in one query. **Postgres only** (pgvector); the sqlite
+tier returns a typed "vectors require the postgres tier" refusal.
+
+The agent never handles a raw vector. A bind arg of the form `{"$embed":
+"<text>"}` is replaced **server-side** by the embedding of that text (a pgvector
+value), so the multi-KB vector never enters the model's context. Reference it
+with a `::vector` cast:
+
+```jsonc
+// the agent declares the column + (optionally) an index
+{"op":"sql_exec","scope":"agent","statement":"CREATE TABLE docs (id serial, body text, lang text, embedding vector(1536))"}
+{"op":"sql_exec","scope":"agent","statement":"CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops)"}
+// store a doc + its embedding (no vector in context)
+{"op":"sql_exec","scope":"agent","statement":"INSERT INTO docs(body, lang, embedding) VALUES ($1, $2, $3::vector)",
+ "args":["the body text","en",{"$embed":"the body text"}]}
+// semantic KNN with a structured filter
+{"op":"sql_query","scope":"agent","statement":"SELECT id, body FROM docs WHERE lang=$1 ORDER BY embedding <=> $2::vector LIMIT 5",
+ "args":["en",{"$embed":"machine learning"}]}
+```
+
+Notes:
+- The embedding **dimension** is the configured embedder's (`memory.embedder`);
+  declare the column to match (`vector(<dim>)`), or use an unsized `vector`.
+  Postgres placeholders are `$1, $2, …` (not `?`).
+- `$embed` requires a **configured embedder** (`memory.embedder`) AND the
+  postgres tier with **pgvector installed** (provisioning below); otherwise the
+  op refuses with a message naming the missing piece.
+- The agent cannot install the extension (`CREATE EXTENSION` stays denied) — the
+  operator installs it once. The `vector` type/operators live in a shared,
+  read-only `sqlmem_ext` schema; per-scope isolation is unchanged (your tables
+  stay in your own schema).
+
 ## Postgres tier — security model
 
 Isolation is **engine-enforced least privilege** (the parsed-statement validator
@@ -190,6 +225,14 @@ CREATE DATABASE loomcycle_sqlmem OWNER loomcycle_sqlmem;
 -- Lock down the public schema of the aux DB (defense-in-depth; scopes never use it).
 \connect loomcycle_sqlmem
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
+
+-- OPTIONAL — vector columns (Phase 3c). Install pgvector into a dedicated
+-- read-only schema the scope roles can USE. Run as a role that may CREATE
+-- EXTENSION (e.g. a superuser); the runtime detects this at startup and bakes
+-- sqlmem_ext onto each scope role's search_path.
+CREATE SCHEMA sqlmem_ext;
+CREATE EXTENSION vector SCHEMA sqlmem_ext;
+GRANT USAGE ON SCHEMA sqlmem_ext TO PUBLIC;  -- only the type/operators; no data
 ```
 
 Then point the runtime at it (keep the DSN in `.env.local`, not yaml):

@@ -346,6 +346,10 @@ func (b *sqliteBackend) txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeK
 	return scopeSizeBytes(ctx, tx)
 }
 
+// vectorsEnabled is always false for the sqlite tier (Phase 3c is postgres-only;
+// sqlite-vec is deferred — see RFC AA).
+func (b *sqliteBackend) vectorsEnabled() bool { return false }
+
 // dropRunScope closes+evicts the handle for the run/<runID>.db file and
 // removes it (plus -wal/-shm sidecars) behind a fence: the resolved target
 // must sit STRICTLY inside <Root>/run and not equal <Root>/run itself, so a

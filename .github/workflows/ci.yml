@@ -74,7 +74,9 @@ jobs:
     # exercise it.
     services:
       postgres:
-        image: postgres:16-alpine
+        # pgvector image (postgres 16 + pgvector) so the SQL Memory vector-column
+        # tests (Phase 3c) run on real pgvector, not only the base store contract.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: loomcycle
           POSTGRES_PASSWORD: loomcycle
@@ -113,10 +115,20 @@ jobs:
           psql -h 127.0.0.1 -U loomcycle -d loomcycle_test -v ON_ERROR_STOP=1 \
             -c "CREATE ROLE sqlmem_admin LOGIN PASSWORD 'auxpw' CREATEROLE;" \
             -c "CREATE DATABASE sqlmem_aux OWNER sqlmem_admin;"
+          # Phase 3c vector columns: install pgvector into a dedicated read-only
+          # sqlmem_ext schema (the operator step) so the vector tests exercise it.
+          psql -h 127.0.0.1 -U loomcycle -d sqlmem_aux -v ON_ERROR_STOP=1 \
+            -c "CREATE SCHEMA sqlmem_ext;" \
+            -c "CREATE EXTENSION vector SCHEMA sqlmem_ext;" \
+            -c "GRANT USAGE ON SCHEMA sqlmem_ext TO PUBLIC;"
       - name: SQL Memory postgres tier
         env:
           LOOMCYCLE_TEST_SQLMEM_PG_DSN: postgres://sqlmem_admin:auxpw@127.0.0.1:5432/sqlmem_aux?sslmode=disable
-        run: go test -count=1 -race ./internal/sqlmem/...
+        run: |
+          go test -count=1 -race ./internal/sqlmem/...
+          # The {"$embed"} round-trip lives in the Memory tool package; run the
+          # vector tests there too (they skip without the aux DSN).
+          go test -count=1 -run 'TestEmbedDirective|TestEncodePgvector|TestResolveEmbedArgs|TestMemorySQL_EmbedDirective' ./internal/tools/builtin/...
 
   runtime-codejs:
     name: Runtime suites (code-js)
