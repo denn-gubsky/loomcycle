@@ -30,6 +30,18 @@ func agentKey(tenant, agent string) ScopeKey {
 	return ScopeKey{Tenant: tenant, Scope: "agent", ScopeID: agent}
 }
 
+// managerRoot returns the on-disk root of a sqlite-backed Manager — the
+// file-path tests below need it now that the facade delegates the root to the
+// backend.
+func managerRoot(t *testing.T, m *Manager) string {
+	t.Helper()
+	sb, ok := m.backend.(*sqliteBackend)
+	if !ok {
+		t.Fatalf("manager is not sqlite-backed (%T)", m.backend)
+	}
+	return sb.cfg.Root
+}
+
 // TestManager_RoundTripsWithinOneScope asserts CREATE TABLE + INSERT + SELECT
 // flows end-to-end through one scope database.
 func TestManager_RoundTripsWithinOneScope(t *testing.T) {
@@ -121,7 +133,7 @@ func TestManager_AttachRefusedAndCannotSeeOtherFile(t *testing.T) {
 	if _, err := m.Exec(ctx, victim, "INSERT INTO secrets VALUES ('topsecret')", nil, 0); err != nil {
 		t.Fatalf("insert victim: %v", err)
 	}
-	victimPath, err := victim.keyPath(m.cfg.Root)
+	victimPath, err := victim.keyPath(managerRoot(t, m))
 	if err != nil {
 		t.Fatalf("keyPath: %v", err)
 	}
@@ -230,7 +242,7 @@ func TestManager_RunScopeFileLifecycle(t *testing.T) {
 	if _, err := m.Exec(ctx, key, "CREATE TABLE scratch (x INT)", nil, 0); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	path, err := key.keyPath(m.cfg.Root)
+	path, err := key.keyPath(managerRoot(t, m))
 	if err != nil {
 		t.Fatalf("keyPath: %v", err)
 	}
