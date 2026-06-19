@@ -422,6 +422,43 @@ func pgCount(res *QueryResult) int64 {
 	}
 }
 
+// TestPostgres_VectorColumn verifies the Phase-3c provisioning + capability: a
+// scope role (with sqlmem_ext baked onto its search_path) can CREATE a vector
+// column, an HNSW index, and run a cosine KNN — and another scope can't see it.
+// Skips when pgvector isn't installed in the test aux DB.
+func TestPostgres_VectorColumn(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	if !m.VectorsEnabled() {
+		t.Skip("pgvector not installed in the sqlmem_ext schema of the test aux DB")
+	}
+	ctx := context.Background()
+	key := agentKey("t1", "vec")
+	other := agentKey("t1", "vec-other")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE docs (id int, embedding vector(3))", nil, 0); err != nil {
+		t.Fatalf("create vector table: %v", err)
+	}
+	if _, err := m.Exec(ctx, key, "INSERT INTO docs VALUES (1,'[1,0,0]'),(2,'[0,1,0]'),(3,'[0.9,0.1,0]')", nil, 0); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := m.Exec(ctx, key, "CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops)", nil, 0); err != nil {
+		t.Fatalf("hnsw index: %v", err)
+	}
+	res, err := m.Query(ctx, key, "SELECT id FROM docs ORDER BY embedding <=> '[1,0,0]'::vector LIMIT 1", nil)
+	if err != nil {
+		t.Fatalf("knn query: %v", err)
+	}
+	if got, _ := res.Rows[0][0].(int64); got != 1 {
+		t.Fatalf("nearest id = %v, want 1", res.Rows[0][0])
+	}
+	// Isolation holds with vectors: another scope can't see the table.
+	if _, err := m.Exec(ctx, other, "CREATE TABLE own (x int)", nil, 0); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	if _, err := m.Query(ctx, other, "SELECT id FROM docs", nil); err == nil {
+		t.Fatal("other scope saw the vector table; want a no-such-table error")
+	}
+}
+
 // TestPostgres_QueryTxnSelectIntoDenied regresses the security finding: an
 // explicit transaction is read-WRITE, so sql_query inside it loses the
 // auto-commit read-only-transaction backstop — a SELECT … INTO (which creates a
