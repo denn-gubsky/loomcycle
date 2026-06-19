@@ -30,6 +30,14 @@ end-user, durable), or `run` (ephemeral scratch, dropped at run completion).
 Durable scopes are keyed by the authoritative tenant. One statement per call;
 `ATTACH`/`PRAGMA`/`load_extension`/`COPY`/`SET`/multiple statements are refused.
 
+For **atomic multi-step writes**, three more ops manage a transaction:
+
+- `op: "sql_begin"` — open a transaction for the scope. From here, `sql_exec` /
+  `sql_query` on that scope (in this run) run **on** the transaction.
+- `op: "sql_commit"` / `op: "sql_rollback"` — finish it.
+
+See [Explicit transactions](#explicit-transactions) below.
+
 ## Capability gate — default-deny `sql_scopes`
 
 SQL Memory is **off** unless the operator enables the subsystem *and* the agent
@@ -66,10 +74,47 @@ agents:
 | `LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS` | `sqlmem_statement_timeout_ms` | per-statement timeout (default 30000) |
 | `LOOMCYCLE_SQLMEM_MAX_ROWS` | `sqlmem_max_rows` | `sql_query` row cap (default 10000) |
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `sqlmem_audit_mode` | `full` (redacted statement text, default) or `metadata` (counts only) |
+| `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `sqlmem_txn_timeout_ms` | explicit-transaction TTL — the reaper rolls back a txn open longer than this (default 30000; 0 disables) |
+| `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `sqlmem_max_open_txns` | cap on concurrent open transactions process-wide (default 64; each pins a connection) |
 
 `LOOMCYCLE_SQLMEM_PG_DSN` carries the aux credentials — like `LOOMCYCLE_PG_DSN`
 it is on the env-expand denylist and is **never** interpolatable into a
 `${...}` config/MCP field.
+
+## Explicit transactions
+
+For atomic multi-step writes, an agent opens a transaction with `sql_begin`,
+runs any number of `sql_exec` / `sql_query` on the scope, then `sql_commit` or
+`sql_rollback`:
+
+```jsonc
+{"op":"sql_begin",    "scope":"agent"}
+{"op":"sql_exec",     "scope":"agent", "statement":"UPDATE accounts SET bal = bal - 10 WHERE id = 1"}
+{"op":"sql_exec",     "scope":"agent", "statement":"UPDATE accounts SET bal = bal + 10 WHERE id = 2"}
+{"op":"sql_commit",   "scope":"agent"}    // or sql_rollback to undo both
+```
+
+- **Runtime-managed.** The agent never writes a raw `BEGIN`/`COMMIT` (the
+  validator refuses those) — the dedicated ops let the runtime own the
+  connection-pinning + cleanup. While a transaction is open for a `(run, scope)`,
+  that scope's `sql_exec`/`sql_query` run **on** it; with none open they
+  auto-commit exactly as before.
+- **One open transaction per `(run, scope)`** — a second `sql_begin` before
+  finishing errors (no nesting / `SAVEPOINT` yet). At most `sqlmem_max_open_txns`
+  process-wide.
+- **Read-write.** A `sql_query` inside a transaction relies on the validator's
+  SELECT-only rule for read-safety (not the auto-commit read-only transaction).
+- **Always cleaned up.** A transaction is rolled back if the run ends with it
+  open, or if it stays open longer than `sqlmem_txn_timeout_ms` (the reaper) — a
+  held connection + locks never leak past a stuck agent. Commit before doing
+  anything that ends the run.
+- **Concurrency / replica notes.** On **sqlite** a scope is a single writer, so
+  while a transaction is open on a scope, other ops on that *same* scope (e.g. a
+  sibling sub-agent sharing a durable `agent`/`user` scope) block until it
+  finishes. On **postgres** the per-scope pool serves a couple of concurrent
+  connections. A transaction is **replica-local**: a run that migrates to another
+  replica (steer/resume) orphans its open transaction → it is reaped and the
+  continuation auto-commits.
 
 ## Postgres tier — security model
 

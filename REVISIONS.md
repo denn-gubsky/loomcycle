@@ -10,6 +10,31 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
+**🔁 SQL Memory — explicit transactions (RFC AA, Phase 3a).** Agents can now do
+**atomic multi-step writes**: three new `Memory` ops — **`sql_begin`** /
+**`sql_commit`** / **`sql_rollback`** — open a runtime-managed transaction for a
+scope; subsequent `sql_exec`/`sql_query` on that scope (in that run) run **on**
+it until commit/rollback (with none open, ops auto-commit exactly as before).
+
+- **Runtime-managed, not raw SQL.** The agent never writes a `BEGIN` (the
+  validator still refuses that); the dedicated ops let the runtime own the
+  connection-pinning + cleanup. One open transaction per `(RootRunID, scope)`
+  (no nesting/`SAVEPOINT` in 3a). An open txn **pins** its scope connection
+  (reusing the Phase-2 `inUse` refcount, so the pool/handle isn't evicted under
+  it); the per-statement timeout, row cap, and byte quota still apply.
+- **Always cleaned up:** explicit commit/rollback, **run-end auto-rollback**
+  (hooked into the run-completion purge, before the run-scope drop), and a **TTL
+  reaper** (`sqlmem_txn_timeout_ms`, default 30s) that rolls back an abandoned
+  transaction — a held connection + locks never leak past a stuck agent. A
+  `sqlmem_max_open_txns` cap (default 64) bounds total pinned connections.
+- **Replica-local** (postgres): a transaction lives on the replica that opened
+  it; a run that migrates orphans it → reaped, and the continuation
+  auto-commits. The transaction is read-write — `sql_query` inside it relies on
+  the validator's SELECT-only rule, not the auto-commit read-only-transaction.
+- Resolves the RFC's Open Question 6 (one-statement-per-call vs explicit
+  begin/commit). Verified sqlite + live PG16 under `-race` (atomicity,
+  isolation-during-txn, run-end + TTL cleanup, the begin/commit/cap guards).
+
 **🗄️ SQL Memory — in-runtime structured SQL storage for agents (RFC AA, Phase 1).**
 A new facet of the `Memory` tool: two ops, **`sql_query`** (read-only SELECT) and
 **`sql_exec`** (DDL/DML), run agent-authored SQL against a **per-scope sqlite
