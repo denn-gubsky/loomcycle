@@ -38,8 +38,36 @@ sqlite3` cost + safety hole.
 - **Audit:** every op records actor/scope/op/rows/duration + the **redacted**
   statement (RFC Z redactor) — `full` or `metadata` mode; best-effort, never blocks
   the op.
-- **Out of scope (Phase 2/3):** postgres schema-per-scope (multi-replica), vector
-  columns, snapshot/backup integration, explicit transactions.
+- **Out of scope (Phase 3):** vector columns, snapshot/backup integration,
+  explicit transactions, durable-scope GC.
+
+**🐘 SQL Memory — postgres schema-per-scope tier (RFC AA, Phase 2).** SQL Memory
+now **follows the main store backend**: a postgres deployment gets one **schema
+per scope** inside a **separate aux database** (`LOOMCYCLE_SQLMEM_PG_DSN`,
+distinct from the main-store DSN), so multi-replica deployments share scopes and
+an agent's arbitrary SQL is isolated from the operational data by a *different
+database* as well as a least-privilege role.
+
+- **Engine-enforced isolation.** Each scope lazily provisions a schema + a
+  **`NOLOGIN NOINHERIT` role with `USAGE` only on its own schema** (`PUBLIC`
+  revoked). The runtime connects as an operator-provisioned **non-superuser**
+  admin (`CREATEROLE` + `CREATE` on the aux DB) and, per statement, opens a
+  transaction that `SET LOCAL ROLE`s down to the scope role with `search_path`
+  pinned + `statement_timeout` set — so the agent runs as a role that **cannot
+  reach another scope's schema** (no `USAGE`, even with a fully-qualified
+  reference), read host files, run programs, load extensions, or connect out
+  (`COPY … PROGRAM` / `pg_read_file` / `CREATE EXTENSION` / `dblink` are all
+  engine-denied). `sql_query` runs in a **read-only transaction** (the write
+  backstop). The Go-layer validator gains a postgres dialect (denies dangerous
+  `CREATE`/`ALTER` DDL + nested server-side functions) as defense-in-depth.
+- **Limits + ops:** schema-size **quota** via `pg_total_relation_size`;
+  per-statement `statement_timeout` + ctx deadline; row cap. **Multi-replica**
+  (shared schemas, idempotent provisioning, duplicate-object races tolerated).
+  The operator provisions the aux DB + admin role once — see
+  [`docs/SQL_MEMORY.md`](docs/SQL_MEMORY.md) (postgres tier provisioning recipe).
+  **Out of scope (Phase 3):** vector columns, snapshot/backup, explicit
+  transactions, durable-scope GC.
+
 **🔌 A client-disconnected run is recorded as `cancelled`, not `failed`.** A
 non-interactive run's context derives from its HTTP/gRPC request ctx, so a
 dropped connection (the caller timing out or going away) cancels the run. The
