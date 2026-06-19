@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -349,6 +350,65 @@ func (b *sqliteBackend) txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeK
 // vectorsEnabled is always false for the sqlite tier (Phase 3c is postgres-only;
 // sqlite-vec is deferred — see RFC AA).
 func (b *sqliteBackend) vectorsEnabled() bool { return false }
+
+// touchScope sets the durable scope's .db mtime to now, so a read-only-but-live
+// scope also counts as used (writes already bump mtime). A not-yet-created file
+// is a no-op (the next write creates it with a fresh mtime).
+func (b *sqliteBackend) touchScope(key ScopeKey) error {
+	path, err := key.keyPath(b.cfg.Root)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	if err := os.Chtimes(path, now, now); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// sweepStale walks the durable scope tree (everything EXCEPT <root>/run) and
+// fenced-removes each .db whose mtime is before cutoff. The run subtree is
+// skipped — run scopes drop at run-end, never via GC.
+func (b *sqliteBackend) sweepStale(cutoff time.Time) (int, error) {
+	runDir := filepath.Join(b.cfg.Root, runScope)
+	var dropped int
+	err := filepath.WalkDir(b.cfg.Root, func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return nil // skip unreadable entries
+		}
+		if d.IsDir() {
+			if path == runDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".db") {
+			return nil // skip -wal/-shm + anything else
+		}
+		info, ierr := d.Info()
+		if ierr != nil || !info.ModTime().Before(cutoff) {
+			return nil
+		}
+		// Skip a scope that is actively in use — an in-flight Query/Exec OR an
+		// open explicit transaction pins the handle (inUse>0). Never evict/remove
+		// a pinned handle (it would break the live op, exactly what the inUse
+		// refcount exists to prevent); the next sweep catches it once idle.
+		b.mu.Lock()
+		if h, ok := b.open[path]; ok && h.inUse > 0 {
+			b.mu.Unlock()
+			return nil
+		}
+		b.evictPathLocked(path)
+		b.mu.Unlock()
+		// Fence under the scope's OWN directory (tighter than <root>) so a
+		// symlinked .db can't widen the delete to another tenant's subtree.
+		if removed, rerr := fencedRemoveDB(filepath.Dir(path), path); rerr == nil && removed {
+			dropped++
+		}
+		return nil
+	})
+	return dropped, err
+}
 
 // dropRunScope closes+evicts the handle for the run/<runID>.db file and
 // removes it (plus -wal/-shm sidecars) behind a fence: the resolved target

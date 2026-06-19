@@ -1152,6 +1152,8 @@ func main() {
 			MaxRows:            cfg.Storage.SqlMemMaxRows,
 			TxnTimeoutMS:       cfg.Storage.SqlMemTxnTimeoutMS,
 			MaxOpenTxns:        cfg.Storage.SqlMemMaxOpenTxns,
+			ScopeTTLMS:         cfg.Storage.SqlMemScopeTTLMS,
+			GCIntervalMS:       cfg.Storage.SqlMemGCIntervalMS,
 		}
 		// SQL Memory FOLLOWS the main store backend (RFC AA decision 4): a
 		// postgres deploy gets schema-per-scope in the SEPARATE aux DB; a
