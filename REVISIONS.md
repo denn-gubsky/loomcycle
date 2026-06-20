@@ -8,7 +8,15 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
-## What's in vNEXT
+## What's in v1.2.0
+
+**🗃️ SQL Memory — a per-scope SQL database for agents (RFC AA).** The headline of
+this release: a third facet of the `Memory` tool — authorized agents run
+arbitrary SQL against a per-scope database the runtime hosts, isolated from the
+main store. Shipped across RFC AA Phases 1→3g (each summarised below): the
+sqlite + postgres tiers, the default-deny `sql_scopes` gate, durable + ephemeral
+scopes, explicit + nested transactions, vector columns, snapshot integration,
+GC, and read-only shared schemas. Additive + off-by-default; no breaking changes.
 
 **🔗 SQL Memory — read-only shared schemas (RFC AA, Phase 3g, postgres tier).**
 Agents are otherwise fully isolated; now an operator can expose **curated
