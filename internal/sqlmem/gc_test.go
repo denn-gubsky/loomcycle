@@ -215,6 +215,34 @@ func TestGC_SweepBudgetSkipsInUse(t *testing.T) {
 	}
 }
 
+// TestGC_SweepBudgetAllInUse: when the only over-budget scope is in use, the
+// sweep drops nothing and terminates (no spin) — it can't get under budget this
+// round and catches the scope on a later sweep once idle.
+func TestGC_SweepBudgetAllInUse(t *testing.T) {
+	m := newTestManager(t, Config{})
+	ctx := context.Background()
+	key := agentKey("t1", "only-big")
+	fillScope(t, m, key, 500)
+	txnID := agentTxnID("run1", "only-big")
+	if _, err := m.BeginTxn(ctx, txnID, "run1", key); err != nil { // pin it
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _, _ = m.RollbackTxn(txnID) }()
+
+	dropped, err := m.backend.sweepBudget(64 * 1024) // far below the scope; but it's pinned
+	if err != nil {
+		t.Fatalf("sweepBudget: %v", err)
+	}
+	if dropped != 0 {
+		t.Fatalf("dropped=%d, want 0 (the only over-budget scope is in use)", dropped)
+	}
+	root := managerRoot(t, m)
+	p, _ := key.keyPath(root)
+	if _, err := os.Stat(p); err != nil {
+		t.Fatal("in-use scope was dropped despite being pinned")
+	}
+}
+
 // TestGC_SweepBudgetPostgres: the size sweep drops the largest durable scope on
 // the postgres tier and leaves the small one. Gated on LOOMCYCLE_TEST_SQLMEM_PG_DSN.
 func TestGC_SweepBudgetPostgres(t *testing.T) {

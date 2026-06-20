@@ -789,12 +789,18 @@ func (b *postgresBackend) sweepBudget(budget int64) (int, error) {
 		if busy {
 			continue // pinned by a live op / open txn — skip, catch it next sweep
 		}
-		if _, err := b.dropScopePG(ctx, s.schema, role); err != nil {
+		removed, err := b.dropScopePG(ctx, s.schema, role)
+		if err != nil {
 			log.Printf("sqlmem: size GC drop scope %s: %v", s.schema, err)
-			continue
+			continue // real failure — the schema's bytes are still on disk
 		}
-		dropped++
+		// On a nil error the schema is gone (whether we dropped it or a concurrent
+		// drop already had — removed=false on 3F000), so its bytes left the budget;
+		// only count it as OUR drop when we actually removed it (log accuracy).
 		total -= s.size
+		if removed {
+			dropped++
+		}
 	}
 	return dropped, nil
 }
