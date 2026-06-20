@@ -109,6 +109,7 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	// manager is non-nil (RFC AA Phase 3e; SQL Memory disabled ⇒ section absent).
 	if s.sqlMem != nil {
 		opts.SqlMem = s.sqlMem
+		opts.SqlMemMaxScopeBytes = s.cfg.Storage.SqlMemSnapshotMaxScopeBytes // 3f.2 per-scope cap
 	}
 	row, _, err := snapshot.Capture(r.Context(), s.store, opts)
 	if err != nil {

@@ -366,6 +366,22 @@ type SqlMemSection struct {
 	Version string        `json:"version"`
 	Tier    string        `json:"tier"`
 	Scopes  []SqlMemScope `json:"scopes"`
+	// SkippedScopes records durable scopes EXCLUDED from this snapshot because
+	// their logical dump exceeded the per-scope cap (CaptureOptions
+	// SqlMemMaxScopeBytes, Phase 3f.2). Recording them here — rather than failing
+	// the whole snapshot or silently dropping — keeps one runaway scope from
+	// sinking an otherwise-good capture, stays visible on inspection, and lets
+	// Restore warn. Omitted (nil) when no scope was skipped.
+	SkippedScopes []SqlMemSkippedScope `json:"skipped_scopes,omitempty"`
+}
+
+// SqlMemSkippedScope identifies a scope left out of the snapshot for exceeding
+// the per-scope size cap, with the dump size that tripped it.
+type SqlMemSkippedScope struct {
+	Tenant  string `json:"tenant"`
+	Scope   string `json:"scope"`
+	ScopeID string `json:"scope_id"`
+	Bytes   int64  `json:"bytes"`
 }
 
 // SqlMemScope is one durable scope's identity + logical dump. DDL is the

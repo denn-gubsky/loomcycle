@@ -70,6 +70,12 @@ type CaptureOptions struct {
 	// envelope. The HTTP/connector capture paths pass the runtime's
 	// *sqlmem.Manager (a guarded nil-pointer is left nil — see the call sites).
 	SqlMem SqlMemSnapshotter
+
+	// SqlMemMaxScopeBytes caps a single SQL Memory scope's serialized dump
+	// (Phase 3f.2). A scope over the cap is EXCLUDED from the snapshot and
+	// recorded in the section's SkippedScopes (so one runaway scope can't sink
+	// the whole capture or blow the envelope cap). 0 = no per-scope cap.
+	SqlMemMaxScopeBytes int64
 }
 
 // Capture reads every section the pause-resume-snapshot RFC defines
@@ -146,7 +152,7 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 		envelope.Sections.InteractionHistory = hist
 	}
 	if opts.SqlMem != nil {
-		sec, err := captureSqlMem(ctx, opts.SqlMem)
+		sec, err := captureSqlMem(ctx, opts.SqlMem, opts.SqlMemMaxScopeBytes)
 		if err != nil {
 			return nil, nil, err
 		}

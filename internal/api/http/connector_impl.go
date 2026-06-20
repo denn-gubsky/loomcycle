@@ -729,7 +729,8 @@ func (s *Server) CreateSnapshot(ctx context.Context, req connector.CreateSnapsho
 		opts.IncludeHistorySince = *req.SinceTS
 	}
 	if s.sqlMem != nil {
-		opts.SqlMem = s.sqlMem // RFC AA Phase 3e
+		opts.SqlMem = s.sqlMem                                               // RFC AA Phase 3e
+		opts.SqlMemMaxScopeBytes = s.cfg.Storage.SqlMemSnapshotMaxScopeBytes // 3f.2 per-scope cap
 	}
 	row, _, err := snapshot.Capture(ctx, s.store, opts)
 	if err != nil {
