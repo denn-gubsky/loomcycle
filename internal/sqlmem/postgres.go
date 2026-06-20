@@ -153,12 +153,14 @@ func newPostgresBackend(ctx context.Context, cfg Config) (*postgresBackend, erro
 		`SELECT EXISTS(
 		   SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
 		    WHERE t.typname = 'vector' AND n.nspname = $1)`, pgVectorExtSchema).Scan(&vectors)
-	// Durable-scope GC (Phase 3d): provision the bookkeeping table when enabled.
-	if cfg.ScopeTTLMS > 0 {
-		if err := ensureMetaTable(pingCtx, admin); err != nil {
-			_ = admin.Close()
-			return nil, fmt.Errorf("sqlmem: provision GC meta table: %w", err)
-		}
+	// Provision the bookkeeping schema: the GC last-used table (Phase 3d) and the
+	// snapshot scope-identity registry (Phase 3e). Both are cheap and unconditional
+	// — the registry must exist whether or not GC is on, since snapshot capture is
+	// opt-in and orthogonal to GC, and the hashed schema name alone can't recover a
+	// scope's (tenant, scope, scope_id) for the dump.
+	if err := ensureMetaTable(pingCtx, admin); err != nil {
+		_ = admin.Close()
+		return nil, fmt.Errorf("sqlmem: provision meta tables: %w", err)
 	}
 	return &postgresBackend{
 		cfg:         cfg,
@@ -249,7 +251,13 @@ func (b *postgresBackend) provLock(schema string) *sync.Mutex {
 // the derived value so the runtime can authenticate as it). Idempotent and
 // tolerant of the cross-replica race; cached per process. The DDL runs on the
 // admin pool in autocommit (NOT inside a caller's transaction).
-func (b *postgresBackend) provision(ctx context.Context, schema, role string) error {
+//
+// key is the scope this (schema, role) was derived from — passed so a durable
+// scope's identity can be recorded in scope_registry for snapshot capture (the
+// hashed schema name is one-way). The registry write is part of the success
+// criteria (not cached on failure → retried) so coverage self-heals; the run
+// scope is never registered (it is not snapshotted).
+func (b *postgresBackend) provision(ctx context.Context, schema, role string, key ScopeKey) error {
 	b.mu.Lock()
 	done := b.provisioned[schema]
 	b.mu.Unlock()
@@ -270,6 +278,11 @@ func (b *postgresBackend) provision(ctx context.Context, schema, role string) er
 
 	if err := b.runProvisionDDL(ctx, schema, role); err != nil {
 		return err // NOT cached → the next op retries (self-heal)
+	}
+	if key.Scope != runScope {
+		if err := b.registerScope(ctx, schema, key); err != nil {
+			return fmt.Errorf("sqlmem: register scope: %w", err) // NOT cached → retry
+		}
 	}
 	b.mu.Lock()
 	b.provisioned[schema] = true
@@ -458,7 +471,7 @@ func (b *postgresBackend) query(ctx context.Context, key ScopeKey, statement str
 	if err != nil {
 		return nil, err
 	}
-	if err := b.provision(ctx, schema, role); err != nil {
+	if err := b.provision(ctx, schema, role, key); err != nil {
 		return nil, err
 	}
 	sc, err := b.acquireScope(role)
@@ -491,7 +504,7 @@ func (b *postgresBackend) exec(ctx context.Context, key ScopeKey, statement stri
 	if err != nil {
 		return nil, err
 	}
-	if err := b.provision(ctx, schema, role); err != nil {
+	if err := b.provision(ctx, schema, role, key); err != nil {
 		return nil, err
 	}
 	sc, err := b.acquireScope(role)
@@ -552,7 +565,7 @@ func (b *postgresBackend) beginTx(ctx context.Context, key ScopeKey) (*sql.Tx, f
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := b.provision(ctx, schema, role); err != nil {
+	if err := b.provision(ctx, schema, role, key); err != nil {
 		return nil, nil, err
 	}
 	sc, err := b.acquireScope(role)
@@ -649,6 +662,10 @@ func (b *postgresBackend) dropScopePG(ctx context.Context, schema, role string) 
 		// DELETEd then.
 		_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_access WHERE schema_name = $1`, schema)
 	}
+	// Drop the snapshot identity row (always present for a durable scope; a no-op
+	// for the never-registered run scope). listScopes also guards against a
+	// dangling row whose schema is already gone, so a missed delete here is inert.
+	_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_registry WHERE schema_name = $1`, schema)
 	return removed, nil
 }
 
@@ -712,18 +729,33 @@ func (b *postgresBackend) sweepStale(cutoff time.Time) (int, error) {
 	return dropped, nil
 }
 
-// ensureMetaTable provisions the GC bookkeeping table (run once at startup when
-// GC is enabled). The admin owns the aux DB, so it can create the schema/table.
+// ensureMetaTable provisions the bookkeeping schema: scope_access (Phase-3d GC
+// last-used) and scope_registry (Phase-3e snapshot identity — maps the one-way
+// hashed schema name back to the scope's (tenant, scope, scope_id) so a dump can
+// name the scope it restores into). Run once at startup. The admin owns the aux
+// DB, so it can create the schema/tables.
 func ensureMetaTable(ctx context.Context, admin *sql.DB) error {
 	for _, s := range []string{
 		`CREATE SCHEMA IF NOT EXISTS sqlmem_meta`,
 		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_access (schema_name text PRIMARY KEY, last_used timestamptz NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_registry (schema_name text PRIMARY KEY, tenant text NOT NULL, scope text NOT NULL, scope_id text NOT NULL)`,
 	} {
 		if _, err := admin.ExecContext(ctx, s); err != nil && !isAlreadyExists(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+// registerScope records a durable scope's identity so a snapshot can enumerate
+// it (the hashed schema name is one-way). Idempotent; safe under the cross-
+// replica first-touch race (ON CONFLICT DO NOTHING).
+func (b *postgresBackend) registerScope(ctx context.Context, schema string, key ScopeKey) error {
+	_, err := b.admin.ExecContext(ctx,
+		`INSERT INTO sqlmem_meta.scope_registry (schema_name, tenant, scope, scope_id)
+		   VALUES ($1, $2, $3, $4) ON CONFLICT (schema_name) DO NOTHING`,
+		schema, key.Tenant, key.Scope, key.ScopeID)
+	return err
 }
 
 // close retires every scope pool (unregistering its config) and closes the
@@ -740,9 +772,18 @@ func (b *postgresBackend) close() error {
 }
 
 // isAlreadyExists reports a postgres duplicate-object error — tolerated during
-// idempotent / cross-replica provisioning.
+// idempotent / cross-replica provisioning AND idempotent snapshot restore (a
+// re-restore re-runs the schema DDL: 42P16 is "table already has a primary key"
+// from re-adding the PK constraint; provisioning DDL never adds PKs, so widening
+// the set is safe there).
 func isAlreadyExists(err error) bool {
-	return pgCodeIn(err, "42P06" /*dup schema*/, "42710" /*dup object/role*/, "42P07" /*dup table*/, "23505" /*unique_violation*/)
+	return pgCodeIn(err,
+		"42P06", /*dup schema*/
+		"42710", /*dup object/role/constraint*/
+		"42P07", /*dup table/index*/
+		"42P16", /*multiple primary keys (re-add PK on restore)*/
+		"23505", /*unique_violation*/
+	)
 }
 
 // isTransientRace reports a transient serialization error worth retrying during

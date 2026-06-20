@@ -76,6 +76,12 @@ type Sections struct {
 	Evaluations        EvaluationsSection         `json:"evaluations"`
 	PausedRuns         PausedRunsSection          `json:"paused_runs"`
 	InteractionHistory *InteractionHistorySection `json:"interaction_history,omitempty"`
+	// SqlMem is the optional RFC AA Phase-3e SQL Memory facet — a logical dump
+	// of every durable per-scope SQL database. Present only when the runtime has
+	// SQL Memory enabled at capture time (the pointer is omitempty); a snapshot
+	// taken without it, or restored into a reader that predates it, sees the
+	// section absent (back-compat, like interaction_history).
+	SqlMem *SqlMemSection `json:"sqlmem,omitempty"`
 }
 
 // AgentDefsSection wraps the list of every agent_defs row.
@@ -349,4 +355,38 @@ type InteractionHistorySection struct {
 	Version string            `json:"version"`
 	SinceTs time.Time         `json:"since_ts"`
 	Events  []TranscriptEvent `json:"events"`
+}
+
+// SqlMemSection is the RFC AA Phase-3e SQL Memory facet: a tier-tagged logical
+// dump of every durable per-scope SQL database. Tier ("sqlite" | "postgres") is
+// the load-bearing field — Restore SKIPS a cross-tier archive (a postgres dump
+// carries per-column cast types a sqlite scope can't replay, and vice versa),
+// mirroring how the embedding snapshot skips on a vector-support mismatch.
+type SqlMemSection struct {
+	Version string        `json:"version"`
+	Tier    string        `json:"tier"`
+	Scopes  []SqlMemScope `json:"scopes"`
+}
+
+// SqlMemScope is one durable scope's identity + logical dump. DDL is the
+// pre-data schema (sequences/tables/non-FK constraints/indexes); PostDDL holds
+// FK constraints applied after data load; Tables is the per-table data.
+type SqlMemScope struct {
+	Tenant  string        `json:"tenant"`
+	Scope   string        `json:"scope"`
+	ScopeID string        `json:"scope_id"`
+	DDL     []string      `json:"ddl"`
+	PostDDL []string      `json:"post_ddl,omitempty"`
+	Tables  []SqlMemTable `json:"tables"`
+}
+
+// SqlMemTable is one table's data. ColumnTypes is populated for the postgres
+// tier (used to cast text values back to their column type on restore) and
+// empty for sqlite. Rows hold JSON-safe values (strings/numbers/null, or a
+// {"$b64": "..."} object for a sqlite binary cell).
+type SqlMemTable struct {
+	Name        string   `json:"name"`
+	Columns     []string `json:"columns"`
+	ColumnTypes []string `json:"column_types,omitempty"`
+	Rows        [][]any  `json:"rows"`
 }

@@ -292,8 +292,46 @@ Requirements / notes:
   role each) — GC for abandoned durable scopes is a Phase 3 item; today an
   operator reclaims one by `DROP SCHEMA … CASCADE; DROP ROLE …` for the unused
   scope (its name is `sqlmem_s_…` / `sqlmem_r_…`).
-- **Backups** of SQL Memory data are taken at the database level (the JSON
-  snapshot covers only the main store).
+- **Backups:** SQL Memory is included in the runtime JSON snapshot — see
+  *Snapshot integration* below. A database-level backup of the aux DB / the
+  sqlmem root is still recommended for large datasets (the snapshot is built
+  in-memory under a 512 MB cap).
+
+## Snapshot integration
+
+`POST /v1/_snapshot` (and the connector / CLI) capture every **durable**
+(`agent`/`user`) scope as a tier-tagged **logical dump** — the schema DDL plus
+each table's data — into an optional `sqlmem` section of the envelope. Restore
+replays it through the normal provisioned path, so a restored scope is identical
+to one the runtime created itself. `run` scopes are never snapshotted.
+
+- **Opt-in by configuration:** the section appears only when SQL Memory is
+  enabled. A runtime without it produces a byte-identical pre-3e envelope.
+- **Same-tier:** a dump is tier-specific (a postgres dump carries per-column
+  cast types a sqlite scope can't replay). Restore into a **different** tier is
+  **skipped** with a warning (mirrors the embedding snapshot's vector-support
+  skip); restore into the **same** tier on any host works (scope identity is a
+  deterministic hash, so a postgres scope restores under the same schema name).
+- **Idempotent:** a re-restore skips a table that is already non-empty.
+- **Postgres identity registry:** because a scope's postgres schema name is a
+  one-way hash of `(tenant, scope, scope_id)`, the runtime records that mapping
+  in a small `sqlmem_meta.scope_registry` table (created automatically) so a
+  capture can name the scope it restores into. sqlite recovers identity from its
+  file-path layout — no registry needed.
+- **Fidelity (postgres):** tables (columns/`DEFAULT`/`NOT NULL`/stored-generated),
+  enum types, owned sequences (serial round-trips — counter restored via
+  `setval`), PK/UNIQUE/CHECK/exclusion + standalone indexes, and foreign keys
+  (applied after data). Documented non-goals — a scope using one yields a
+  per-scope restore **warning**, not silent loss: other user-defined types
+  (domains, composite, functions, aggregates, operators), views/triggers,
+  `GENERATED ALWAYS AS IDENTITY` (restored as a plain column; values preserved),
+  and custom sequence parameters. sqlite captures the verbatim `sqlite_master`
+  DDL + data (binary BLOBs survive base64-tagged, integers keep full precision
+  and storage class).
+
+For consistency across sections, **pause the runtime** (`POST /v1/runtime/pause`)
+before capturing — a scope written between the section reads is otherwise
+captured at the read instant.
 
 ## Audit
 

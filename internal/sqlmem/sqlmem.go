@@ -93,6 +93,11 @@ type backend interface {
 	// sweepStale drops every DURABLE (agent/user) scope last used before cutoff
 	// and returns how many were dropped. Never touches the run scope.
 	sweepStale(cutoff time.Time) (dropped int, err error)
+	// listScopes enumerates every DURABLE scope for snapshot capture (RFC AA
+	// Phase 3e); exportScope/restoreScope move one scope's logical dump in/out.
+	listScopes(ctx context.Context) ([]ScopeKey, error)
+	exportScope(ctx context.Context, key ScopeKey) (*ScopeDump, error)
+	restoreScope(ctx context.Context, key ScopeKey, dump *ScopeDump) error
 	close() error
 }
 

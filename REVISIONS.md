@@ -10,6 +10,24 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
+**💾 SQL Memory — snapshot/backup integration (RFC AA, Phase 3e).** The runtime
+JSON snapshot now captures SQL Memory. Every **durable** (`agent`/`user`) scope
+is dumped **logically** (schema DDL + table data) into an optional, tier-tagged
+`sqlmem` envelope section; restore replays it through the normal provisioned
+path, so a restored scope is identical to one the runtime created (`run` scopes
+are never snapshotted). **Opt-in** (present only when SQL Memory is enabled — a
+runtime without it produces a byte-identical pre-3e envelope) and **idempotent**
+(a re-restore skips an already-populated table). Dumps are **tier-specific**: a
+cross-tier restore is skipped with a warning (a postgres dump carries per-column
+cast types a sqlite scope can't replay), while a same-tier restore works on any
+host (scope identity is a deterministic hash). On postgres the schema name is a
+one-way hash, so provision now records `(tenant, scope, scope_id)` in a small
+auto-created `sqlmem_meta.scope_registry`; sqlite recovers identity from its file
+layout. Fidelity (postgres): tables, serial sequences (counter restored via
+`setval`), PK/UNIQUE/CHECK + indexes, and FKs; documented non-goals are IDENTITY
+columns (restored as plain — values preserved), views/triggers, and custom
+sequence params. Closes the "snapshot covers only the main store" gap.
+
 **🧹 SQL Memory — durable-scope GC (RFC AA, Phase 3d).** `agent`/`user` scopes are
 durable (persist across runs, never auto-dropped — only `run` scopes drop at
 run-end), so a deployment accumulates one per distinct agent + end-user forever.

@@ -55,8 +55,9 @@ func pgTestManager(t *testing.T, cfg Config) (*Manager, *sql.DB) {
 func dropAllScopes(t *testing.T, raw *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	// Clear the GC bookkeeping (best-effort — absent when GC was never enabled).
+	// Clear the bookkeeping (best-effort — absent when never provisioned).
 	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_access`)
+	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_registry`)
 	schemas, err := raw.QueryContext(ctx, `SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sqlmem\_s\_%'`)
 	if err == nil {
 		var names []string

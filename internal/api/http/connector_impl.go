@@ -728,6 +728,9 @@ func (s *Server) CreateSnapshot(ctx context.Context, req connector.CreateSnapsho
 	if req.SinceTS != nil {
 		opts.IncludeHistorySince = *req.SinceTS
 	}
+	if s.sqlMem != nil {
+		opts.SqlMem = s.sqlMem // RFC AA Phase 3e
+	}
 	row, _, err := snapshot.Capture(ctx, s.store, opts)
 	if err != nil {
 		var tooLarge *snapshot.ErrSnapshotTooLarge
@@ -859,6 +862,9 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req connector.RestoreSnaps
 	opts := snapshot.RestoreOptions{IncludeHistory: req.IncludeHistory}
 	if s.resolver != nil {
 		opts.ForceProbe = s.resolver.ForceProbe
+	}
+	if s.sqlMem != nil {
+		opts.SqlMem = s.sqlMem // RFC AA Phase 3e
 	}
 	result, err := snapshot.Restore(ctx, s.store, rawBytes, opts)
 	if err != nil {
