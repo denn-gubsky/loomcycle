@@ -339,9 +339,16 @@ type StorageConfig struct {
 	// GC'd. Env: LOOMCYCLE_SQLMEM_SCOPE_TTL_MS.
 	SqlMemScopeTTLMS int `yaml:"sqlmem_scope_ttl_ms"`
 	// SqlMemGCIntervalMS is how often the durable-scope GC sweeper runs. 0 → a
-	// sensible default (one hour); only meaningful when SqlMemScopeTTLMS > 0.
-	// Env: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS.
+	// sensible default (one hour); meaningful when SqlMemScopeTTLMS > 0 OR
+	// SqlMemTotalMaxBytes > 0. Env: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS.
 	SqlMemGCIntervalMS int `yaml:"sqlmem_gc_interval_ms"`
+	// SqlMemTotalMaxBytes turns on size-based GC (Phase 3f): when the AGGREGATE
+	// on-disk size of all durable (agent/user) scopes exceeds this, the sweeper
+	// evicts the largest idle scopes until back under budget (per-scope size is
+	// already capped per-write by the quota; this bounds the total). 0 = OFF (the
+	// default — GC DISCARDS DATA, so it is opt-in). Complements the TTL sweep.
+	// Env: LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES.
+	SqlMemTotalMaxBytes int64 `yaml:"sqlmem_total_max_bytes"`
 }
 
 // ConfigDir returns the directory the YAML was loaded from. Used by
@@ -2690,6 +2697,11 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_GC_INTERVAL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemGCIntervalMS = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			cfg.Storage.SqlMemTotalMaxBytes = n
 		}
 	}
 	// Defaults for the bounds the operator did not set. quota stays 0 (off);

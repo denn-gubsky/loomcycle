@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -408,6 +409,74 @@ func (b *sqliteBackend) sweepStale(cutoff time.Time) (int, error) {
 		return nil
 	})
 	return dropped, err
+}
+
+// sweepBudget drops the LARGEST idle durable scopes until the aggregate durable
+// footprint is at or under budget (Phase 3f size-based GC). Size is the true
+// on-disk footprint — the .db file PLUS its -wal/-shm sidecars (in WAL mode
+// un-checkpointed pages live in -wal, so the .db alone undercounts an active
+// scope). In-use scopes (inUse>0) are skipped — the next sweep catches them once
+// idle — and the run subtree is never counted or dropped.
+func (b *sqliteBackend) sweepBudget(budget int64) (int, error) {
+	runDir := filepath.Join(b.cfg.Root, runScope)
+	type scopeFile struct {
+		path string
+		size int64
+	}
+	var files []scopeFile
+	var total int64
+	err := filepath.WalkDir(b.cfg.Root, func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path == runDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".db") {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		size := info.Size()
+		for _, suffix := range []string{"-wal", "-shm"} {
+			if si, serr := os.Stat(path + suffix); serr == nil {
+				size += si.Size()
+			}
+		}
+		files = append(files, scopeFile{path: path, size: size})
+		total += size
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if total <= budget {
+		return 0, nil
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].size > files[j].size })
+	var dropped int
+	for _, f := range files {
+		if total <= budget {
+			break
+		}
+		b.mu.Lock()
+		if h, ok := b.open[f.path]; ok && h.inUse > 0 {
+			b.mu.Unlock()
+			continue // pinned by a live op / open txn — skip, catch it next sweep
+		}
+		b.evictPathLocked(f.path)
+		b.mu.Unlock()
+		if removed, rerr := fencedRemoveDB(filepath.Dir(f.path), f.path); rerr == nil && removed {
+			dropped++
+			total -= f.size
+		}
+	}
+	return dropped, nil
 }
 
 // dropRunScope closes+evicts the handle for the run/<runID>.db file and
