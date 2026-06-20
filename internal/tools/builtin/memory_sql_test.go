@@ -65,6 +65,43 @@ func TestMemorySQL_DefaultDenyWithoutScopes(t *testing.T) {
 	}
 }
 
+// TestMemorySQL_OpenModeEmptyTenant: in open mode / legacy-token deployments the
+// run carries NO authoritative tenant (TenantID==""). A durable agent/user SQL
+// scope must still work without the caller passing tenant_id — the empty tenant
+// is canonicalized to "default" (unlike the k/v store, SQL Memory can't key on
+// "" because it sanitizes the tenant into a path / identifier). Regression for
+// the open-mode "empty scope identifier" failure.
+func TestMemorySQL_OpenModeEmptyTenant(t *testing.T) {
+	tool, _, ctx, cleanup := sqlMemoryFixture(t)
+	defer cleanup()
+	// Re-stamp the run identity with NO tenant (open mode); AgentName stays on ctx.
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"}) // TenantID == ""
+	ctx = withSqlScopes(ctx, "agent")
+
+	for _, stmt := range []string{
+		`{"op":"sql_exec","scope":"agent","statement":"CREATE TABLE t (x INT)"}`,
+		`{"op":"sql_exec","scope":"agent","statement":"INSERT INTO t VALUES (1)"}`,
+	} {
+		if res, _ := tool.Execute(ctx, json.RawMessage(stmt)); res.IsError {
+			t.Fatalf("durable sql op in open mode (empty tenant) errored: %s -> %s", stmt, res.Text)
+		}
+	}
+	open, _ := tool.Execute(ctx, json.RawMessage(`{"op":"sql_query","scope":"agent","statement":"SELECT count(*) FROM t"}`))
+	if open.IsError {
+		t.Fatalf("query in open mode: %s", open.Text)
+	}
+	// Continuity: an explicit tenant_id="default" (the documented manual
+	// workaround) resolves to the SAME scope, so data is shared across both.
+	ctxDefault := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "default"})
+	def, _ := tool.Execute(ctxDefault, json.RawMessage(`{"op":"sql_query","scope":"agent","statement":"SELECT count(*) FROM t"}`))
+	if def.IsError {
+		t.Fatalf("query via explicit tenant=default: %s", def.Text)
+	}
+	if open.Text != def.Text {
+		t.Fatalf("open-mode empty tenant and explicit tenant=default resolved to DIFFERENT scopes: %q vs %q", open.Text, def.Text)
+	}
+}
+
 // TestMemorySQL_ExplicitTransactionThroughTool drives the Phase-3a ops through
 // the tool's Execute: begin→insert→rollback discards, begin→insert→commit
 // persists (so sql_exec correctly routes onto the open txn), and a second

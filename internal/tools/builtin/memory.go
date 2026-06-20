@@ -630,7 +630,7 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 		m.auditSql(ctx, "sql_query", scope, scopeID, in.Statement, 0, 0, aerr)
 		return errResult(fmt.Sprintf("sql_query: %s", aerr)), nil
 	}
-	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
+	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
 	var res *sqlmem.QueryResult
@@ -672,7 +672,7 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 	}
 	// Per-agent quota override wins over the manager default when > 0.
 	quota := tools.SqlMemPolicy(ctx).QuotaBytes
-	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
+	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
 	var res *sqlmem.ExecResult
@@ -692,6 +692,23 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 		"rows_affected":  res.RowsAffected,
 		"last_insert_id": res.LastInsertID,
 	})
+}
+
+// sqlScopeTenant returns the tenant partition for a DURABLE SQL Memory scope.
+// Unlike the k/v store (which accepts an empty tenant as a valid partition), SQL
+// Memory sanitizes the tenant into a filesystem path (sqlite) / postgres
+// identifier (postgres) and so cannot key on "". In open mode / legacy-token
+// deployments the run carries no authoritative tenant (TenantID==""), which would
+// otherwise fail durable agent/user ops with "empty scope identifier";
+// canonicalize it to "default" — the value keyPath's docs assume and the
+// documented manual `tenant_id: default` workaround used (so data is continuous
+// across both). A real (non-empty) tenant is used verbatim; the run scope is not
+// tenant-keyed, so this is a no-op there.
+func sqlScopeTenant(ctx context.Context) string {
+	if t := tools.RunIdentity(ctx).TenantID; t != "" {
+		return t
+	}
+	return "default"
 }
 
 // currentSqlTxnID returns the explicit-transaction registry key for the current
@@ -728,7 +745,7 @@ func (m *Memory) execSqlBegin(ctx context.Context, in memoryInput) (tools.Result
 		return errResult("sql_begin: an explicit transaction requires an active run"), nil
 	}
 	txnID := sqlmem.BuildTxnID(rid, scope, scopeID)
-	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
+	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
 	start := time.Now()
 	depth, berr := m.SqlMem.BeginTxn(ctx, txnID, rid, key)
 	durMs := time.Since(start).Milliseconds()
