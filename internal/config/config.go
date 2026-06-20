@@ -328,6 +328,11 @@ type StorageConfig struct {
 	// (each pins a scope connection). Default 64. 0 = unbounded. Env:
 	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS.
 	SqlMemMaxOpenTxns int `yaml:"sqlmem_max_open_txns"`
+	// SqlMemMaxTxnDepth caps the SAVEPOINT nesting depth of one explicit
+	// transaction (Phase 3b): a nested sql_begin past this errors, bounding the
+	// in-memory savepoint stack a looping agent can grow. Default 16. 0 =
+	// unbounded. Env: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH.
+	SqlMemMaxTxnDepth int `yaml:"sqlmem_max_txn_depth"`
 	// SqlMemScopeTTLMS turns on durable-scope GC (Phase 3d): a durable
 	// (agent/user) scope idle longer than this is dropped by the sweeper. 0 =
 	// OFF (the default — GC DISCARDS DATA, so it is opt-in). Run scopes are never
@@ -2672,6 +2677,11 @@ func Load(path string) (*Config, error) {
 			cfg.Storage.SqlMemMaxOpenTxns = n
 		}
 	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.SqlMemMaxTxnDepth = n
+		}
+	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_SCOPE_TTL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemScopeTTLMS = n
@@ -2702,6 +2712,11 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Storage.SqlMemMaxOpenTxns == 0 {
 		cfg.Storage.SqlMemMaxOpenTxns = 64
+	}
+	// SAVEPOINT nesting depth cap (Phase 3b). Bounds the in-memory savepoint
+	// stack per transaction; a nested sql_begin past it errors.
+	if cfg.Storage.SqlMemMaxTxnDepth == 0 {
+		cfg.Storage.SqlMemMaxTxnDepth = 16
 	}
 
 	// Hooks block (v0.8.17). The env-var override APPENDS to whatever

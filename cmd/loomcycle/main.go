@@ -1152,6 +1152,7 @@ func main() {
 			MaxRows:            cfg.Storage.SqlMemMaxRows,
 			TxnTimeoutMS:       cfg.Storage.SqlMemTxnTimeoutMS,
 			MaxOpenTxns:        cfg.Storage.SqlMemMaxOpenTxns,
+			MaxTxnDepth:        cfg.Storage.SqlMemMaxTxnDepth,
 			ScopeTTLMS:         cfg.Storage.SqlMemScopeTTLMS,
 			GCIntervalMS:       cfg.Storage.SqlMemGCIntervalMS,
 		}

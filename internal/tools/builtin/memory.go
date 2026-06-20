@@ -367,7 +367,7 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity. ` +
 	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible. ` +
 	`add / recall (memory-layer backends only): add ingests conversation messages (the backend may LLM-extract durable facts); recall is a natural-language semantic search over those facts. These require a memory-layer backend (memory_backend kind=mem9); against the default key/value store they return capability_unsupported. Unlike set/get, add does not store value-at-key and is often async — do not assume read-after-write. ` +
-	`RFC AA SQL Memory: sql_query runs a read-only SELECT and sql_exec runs a single DDL/DML statement (CREATE/INSERT/UPDATE/DELETE) against a per-scope sqlite database SEPARATE from the rest of your memory. Pass statement (one statement, no ATTACH/PRAGMA/load_extension/multiple statements) and optional positional args for ? placeholders. scope selects the database: agent (this agent, durable), user (this end-user, durable), or run (ephemeral, dropped when the run ends). For atomic multi-step writes, sql_begin opens a transaction for the scope, subsequent sql_exec/sql_query run on it, and sql_commit / sql_rollback finish it (one open transaction per scope; it auto-rolls-back if the run ends or it is abandoned). Requires sql_scopes on the agent AND the server-side subsystem enabled.`
+	`RFC AA SQL Memory: sql_query runs a read-only SELECT and sql_exec runs a single DDL/DML statement (CREATE/INSERT/UPDATE/DELETE) against a per-scope sqlite database SEPARATE from the rest of your memory. Pass statement (one statement, no ATTACH/PRAGMA/load_extension/multiple statements) and optional positional args for ? placeholders. scope selects the database: agent (this agent, durable), user (this end-user, durable), or run (ephemeral, dropped when the run ends). For atomic multi-step writes, sql_begin opens a transaction for the scope, subsequent sql_exec/sql_query run on it, and sql_commit / sql_rollback finish it (it auto-rolls-back if the run ends or it is abandoned). A second sql_begin while one is open NESTS a savepoint — sql_commit/sql_rollback then affect the innermost level (the outer transaction continues on rollback); each result reports the current depth (0 = closed). Requires sql_scopes on the agent AND the server-side subsystem enabled.`
 
 const memoryInputSchema = `{
   "type": "object",
@@ -730,14 +730,16 @@ func (m *Memory) execSqlBegin(ctx context.Context, in memoryInput) (tools.Result
 	txnID := sqlmem.BuildTxnID(rid, scope, scopeID)
 	key := sqlmem.ScopeKey{Tenant: tools.RunIdentity(ctx).TenantID, Scope: scope, ScopeID: scopeID}
 	start := time.Now()
-	berr := m.SqlMem.BeginTxn(ctx, txnID, rid, key)
+	depth, berr := m.SqlMem.BeginTxn(ctx, txnID, rid, key)
 	durMs := time.Since(start).Milliseconds()
 	if berr != nil {
 		m.auditSql(ctx, "sql_begin", scope, scopeID, "", 0, durMs, berr)
 		return errResult(fmt.Sprintf("sql_begin: %s", berr)), nil
 	}
 	m.auditSql(ctx, "sql_begin", scope, scopeID, "", 0, durMs, nil)
-	return okJSON(map[string]any{"ok": true})
+	// depth is the nesting level after this begin (1 = root txn; 2+ = a nested
+	// SAVEPOINT level — Phase 3b).
+	return okJSON(map[string]any{"ok": true, "depth": depth})
 }
 
 // execSqlTxnFinish commits (commit=true) or rolls back the open transaction for
@@ -759,11 +761,12 @@ func (m *Memory) execSqlTxnFinish(ctx context.Context, in memoryInput, commit bo
 		return errResult(fmt.Sprintf("%s: an explicit transaction requires an active run", op)), nil
 	}
 	start := time.Now()
+	var depth int
 	var ferr error
 	if commit {
-		ferr = m.SqlMem.CommitTxn(txnID)
+		depth, ferr = m.SqlMem.CommitTxn(txnID)
 	} else {
-		ferr = m.SqlMem.RollbackTxn(txnID)
+		depth, ferr = m.SqlMem.RollbackTxn(txnID)
 	}
 	durMs := time.Since(start).Milliseconds()
 	if ferr != nil {
@@ -771,7 +774,9 @@ func (m *Memory) execSqlTxnFinish(ctx context.Context, in memoryInput, commit bo
 		return errResult(fmt.Sprintf("%s: %s", op, ferr)), nil
 	}
 	m.auditSql(ctx, op, scope, scopeID, "", 0, durMs, nil)
-	return okJSON(map[string]any{"ok": true})
+	// depth is the nesting level AFTER this op: a nested level was closed (still
+	// >0) or the whole transaction committed/rolled back (0). Phase 3b.
+	return okJSON(map[string]any{"ok": true, "depth": depth})
 }
 
 // embedDirective reports whether a bind arg is an {"$embed": "<text>"} directive

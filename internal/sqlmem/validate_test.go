@@ -34,6 +34,12 @@ func TestValidateStatement_EscapeBlocked(t *testing.T) {
 		{"multi-stmt-drop", `CREATE TABLE t(a); DROP TABLE other`},
 		{"begin-txn", `BEGIN`},
 		{"commit-txn", `COMMIT`},
+		// Phase 3b runtime-issues SAVEPOINT/RELEASE/ROLLBACK TO; an agent must
+		// never issue them raw (it would desync the runtime's savepoint stack).
+		{"rollback-txn", `ROLLBACK`},
+		{"rollback-to", `ROLLBACK TO SAVEPOINT sp1`},
+		{"savepoint", `SAVEPOINT sp1`},
+		{"release", `RELEASE SAVEPOINT sp1`},
 		{"comment-hidden-attach", `/* harmless */ ATTACH DATABASE 'x' AS y`},
 		{"line-comment-attach", "-- note\nATTACH DATABASE 'x' AS y"},
 	}
