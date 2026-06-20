@@ -66,7 +66,7 @@ func TestGC_SkipsInUseScope(t *testing.T) {
 	// Open a transaction → pins the scope handle (inUse>0); backdate AFTER begin
 	// (BeginTxn touches the scope forward).
 	txnID := agentTxnID("run1", "busy")
-	if err := m.BeginTxn(ctx, txnID, "run1", key); err != nil {
+	if _, err := m.BeginTxn(ctx, txnID, "run1", key); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	_ = os.Chtimes(path, old, old)
@@ -78,7 +78,7 @@ func TestGC_SkipsInUseScope(t *testing.T) {
 	}
 
 	// Finish the txn → inUse drops → now reclaimable.
-	if err := m.RollbackTxn(txnID); err != nil {
+	if _, err := m.RollbackTxn(txnID); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	_ = os.Chtimes(path, old, old)

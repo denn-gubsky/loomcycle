@@ -58,6 +58,10 @@ type Config struct {
 	// MaxOpenTxns caps concurrent open explicit transactions process-wide (each
 	// pins a scope connection). 0 = unbounded.
 	MaxOpenTxns int
+	// MaxTxnDepth caps the SAVEPOINT nesting depth of one explicit transaction
+	// (Phase 3b): a nested sql_begin past this errors, bounding the in-memory
+	// savepoint stack. 0 = unbounded.
+	MaxTxnDepth int
 	// ScopeTTLMS turns on durable-scope GC: a durable (agent/user) scope idle
 	// longer than this is dropped by the sweeper. 0 = GC OFF (the default — GC
 	// discards data, so it is opt-in). Run scopes are never GC'd (dropped at

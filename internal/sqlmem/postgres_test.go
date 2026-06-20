@@ -368,7 +368,7 @@ func TestPostgres_TxnAtomicityAndIsolation(t *testing.T) {
 	}
 
 	id := BuildTxnID("run1", "agent", "pgtxn")
-	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+	if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (1)", nil, 0); err != nil {
@@ -387,18 +387,18 @@ func TestPostgres_TxnAtomicityAndIsolation(t *testing.T) {
 	if _, err := m.Query(ctx, other, "SELECT count(*) FROM t", nil); err == nil {
 		t.Fatal("other scope read the in-txn scope's table; want a no-such-table / permission error")
 	}
-	if err := m.RollbackTxn(id); err != nil {
+	if _, err := m.RollbackTxn(id); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 
 	// Commit path persists.
-	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+	if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
 		t.Fatalf("begin 2: %v", err)
 	}
 	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (2)", nil, 0); err != nil {
 		t.Fatalf("exec 2: %v", err)
 	}
-	if err := m.CommitTxn(id); err != nil {
+	if _, err := m.CommitTxn(id); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	res2, err := m.Query(ctx, key, "SELECT count(*) FROM t", nil)
@@ -524,13 +524,13 @@ func TestPostgres_QueryTxnSelectIntoDenied(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	id := BuildTxnID("run1", "agent", "into")
-	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+	if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	if _, err := m.QueryTxn(ctx, id, "SELECT x INTO sneaky FROM src", nil); err == nil {
 		t.Fatal("SELECT … INTO via QueryTxn was allowed; want a validator refusal")
 	}
-	if err := m.CommitTxn(id); err != nil { // commit: if INTO had run, the table would persist
+	if _, err := m.CommitTxn(id); err != nil { // commit: if INTO had run, the table would persist
 		t.Fatalf("commit: %v", err)
 	}
 	if _, err := m.Query(ctx, key, "SELECT 1 FROM sneaky LIMIT 1", nil); err == nil {

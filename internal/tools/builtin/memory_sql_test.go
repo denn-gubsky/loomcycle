@@ -67,8 +67,8 @@ func TestMemorySQL_DefaultDenyWithoutScopes(t *testing.T) {
 
 // TestMemorySQL_ExplicitTransactionThroughTool drives the Phase-3a ops through
 // the tool's Execute: begin→insert→rollback discards, begin→insert→commit
-// persists (so sql_exec correctly routes onto the open txn), and a double begin
-// errors.
+// persists (so sql_exec correctly routes onto the open txn), and a second
+// sql_begin nests via a SAVEPOINT (Phase 3b).
 func TestMemorySQL_ExplicitTransactionThroughTool(t *testing.T) {
 	tool, _, ctx, cleanup := sqlMemoryFixture(t)
 	defer cleanup()
@@ -119,12 +119,20 @@ func TestMemorySQL_ExplicitTransactionThroughTool(t *testing.T) {
 		t.Fatalf("after commit count=%d, want 1", c)
 	}
 
-	// double begin errors
-	exec(`{"op":"sql_begin","scope":"agent"}`)
-	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"sql_begin","scope":"agent"}`)); !res.IsError {
-		t.Fatal("double sql_begin should error")
+	// Nested begin → SAVEPOINT (Phase 3b): a second sql_begin nests (depth 2)
+	// rather than erroring; an inner rollback undoes only the inner write, and the
+	// outer commit persists the outer write.
+	exec(`{"op":"sql_begin","scope":"agent"}`) // depth 1
+	exec(`{"op":"sql_exec","scope":"agent","statement":"INSERT INTO t VALUES (10)"}`)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"sql_begin","scope":"agent"}`)); res.IsError || !strings.Contains(res.Text, `"depth":2`) {
+		t.Fatalf("nested sql_begin should nest to depth 2, got is_error=%v %s", res.IsError, res.Text)
 	}
-	exec(`{"op":"sql_rollback","scope":"agent"}`)
+	exec(`{"op":"sql_exec","scope":"agent","statement":"INSERT INTO t VALUES (11)"}`)
+	exec(`{"op":"sql_rollback","scope":"agent"}`) // pop inner → 11 undone, txn open
+	exec(`{"op":"sql_commit","scope":"agent"}`)   // commit root → 10 persists
+	if c := count(); c != 2 {
+		t.Fatalf("after nested round-trip count=%d, want 2 (x=2 + x=10)", c)
+	}
 }
 
 // TestMemorySQL_NotEnabledServer refuses when the manager is nil even if the

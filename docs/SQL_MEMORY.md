@@ -76,6 +76,7 @@ agents:
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `sqlmem_audit_mode` | `full` (redacted statement text, default) or `metadata` (counts only) |
 | `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `sqlmem_txn_timeout_ms` | explicit-transaction TTL — the reaper rolls back a txn open longer than this (default 30000; 0 disables) |
 | `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `sqlmem_max_open_txns` | cap on concurrent open transactions process-wide (default 64; each pins a connection) |
+| `LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH` | `sqlmem_max_txn_depth` | cap on SAVEPOINT nesting depth within one transaction (default 16; a nested `sql_begin` past it errors) |
 | `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `sqlmem_scope_ttl_ms` | durable-scope GC: drop an `agent`/`user` scope idle longer than this. **0 = OFF** (default — GC discards data) |
 | `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | `sqlmem_gc_interval_ms` | how often the GC sweeper runs (default 1h; only when the TTL is set) |
 
@@ -120,14 +121,30 @@ runs any number of `sql_exec` / `sql_query` on the scope, then `sql_commit` or
   connection-pinning + cleanup. While a transaction is open for a `(run, scope)`,
   that scope's `sql_exec`/`sql_query` run **on** it; with none open they
   auto-commit exactly as before.
-- **One open transaction per `(run-tree, scope)`** — a second `sql_begin` before
-  finishing errors (no nesting / `SAVEPOINT` yet). At most `sqlmem_max_open_txns`
+- **One open transaction per `(run-tree, scope)`**, at most `sqlmem_max_open_txns`
   process-wide. The key is the run-**tree** root, so within one run tree an open
   transaction on a scope is **shared**: if a parent opens a transaction on a
   scope and a (parallel) sub-agent then runs `sql_exec`/`sql_query` on that *same*
   scope, it runs on the parent's transaction (and is committed/rolled-back with
   it). Agents that must transact independently should use the per-agent `agent`
   scope (distinct per agent name) rather than a shared `user`/`run` scope.
+- **Nesting (`SAVEPOINT`).** A second `sql_begin` while a transaction is open
+  **nests** — it opens a SAVEPOINT instead of erroring. The matching `sql_commit`
+  releases that inner level (merging it up); `sql_rollback` undoes only the inner
+  level's writes, with the outer transaction continuing. Each op's result reports
+  the current `depth` (1 = the root transaction; 0 = closed). This is the "try a
+  sub-step, undo only that on failure" idiom — no agent-managed savepoint names.
+  Nesting is LIFO (commit/rollback affect the innermost level) and capped at
+  `sqlmem_max_txn_depth` (default 16). A whole-transaction rollback (explicit, a
+  run end, or the reaper) discards every savepoint with it.
+  ```jsonc
+  {"op":"sql_begin",  "scope":"agent"}                                  // depth 1
+  {"op":"sql_exec",   "scope":"agent", "statement":"INSERT INTO log VALUES ('a')"}
+  {"op":"sql_begin",  "scope":"agent"}                                  // depth 2 (SAVEPOINT)
+  {"op":"sql_exec",   "scope":"agent", "statement":"INSERT INTO log VALUES ('b')"}
+  {"op":"sql_rollback","scope":"agent"}    // undoes only 'b'; depth → 1, txn still open
+  {"op":"sql_commit", "scope":"agent"}     // commits 'a'; depth → 0
+  ```
 - **Read-write.** A `sql_query` inside a transaction relies on the validator's
   SELECT-only rule for read-safety (not the auto-commit read-only transaction).
 - **Always cleaned up.** A transaction is rolled back if the run ends with it

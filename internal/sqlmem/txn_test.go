@@ -39,7 +39,7 @@ func TestTxn_CommitPersists(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	id := agentTxnID("run1", "txn-commit")
-	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+	if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	if !m.InTxn(id) {
@@ -48,7 +48,7 @@ func TestTxn_CommitPersists(t *testing.T) {
 	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (1)", nil, 0); err != nil {
 		t.Fatalf("exec in txn: %v", err)
 	}
-	if err := m.CommitTxn(id); err != nil {
+	if _, err := m.CommitTxn(id); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	if m.InTxn(id) {
@@ -71,7 +71,7 @@ func TestTxn_RollbackDiscards(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	id := agentTxnID("run1", "txn-rb")
-	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+	if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (2)", nil, 0); err != nil {
@@ -85,7 +85,7 @@ func TestTxn_RollbackDiscards(t *testing.T) {
 	if got, _ := res.Rows[0][0].(int64); got != 2 {
 		t.Fatalf("in-txn count=%v, want 2", res.Rows[0][0])
 	}
-	if err := m.RollbackTxn(id); err != nil {
+	if _, err := m.RollbackTxn(id); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	if n := rowCount(t, m, key); n != 1 {
@@ -93,26 +93,33 @@ func TestTxn_RollbackDiscards(t *testing.T) {
 	}
 }
 
-// TestTxn_Guards: double-begin, and commit/rollback with none open, all error.
+// TestTxn_Guards: commit/rollback with none open error; a second begin NESTS
+// (Phase 3b — was an error in 3a) and the depths are reported correctly.
 func TestTxn_Guards(t *testing.T) {
 	m := newTestManager(t, Config{})
 	ctx := context.Background()
 	key := agentKey("t1", "txn-g")
 	id := agentTxnID("run1", "txn-g")
-	if err := m.CommitTxn(id); err == nil {
+	if _, err := m.CommitTxn(id); err == nil {
 		t.Fatal("commit with no open txn was allowed")
 	}
-	if err := m.RollbackTxn(id); err == nil {
+	if _, err := m.RollbackTxn(id); err == nil {
 		t.Fatal("rollback with no open txn was allowed")
 	}
-	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
-		t.Fatalf("begin: %v", err)
+	if d, err := m.BeginTxn(ctx, id, "run1", key); err != nil || d != 1 {
+		t.Fatalf("begin: depth=%d err=%v, want depth 1", d, err)
 	}
-	if err := m.BeginTxn(ctx, id, "run1", key); err == nil {
-		t.Fatal("double begin was allowed")
+	// A second begin opens a nested SAVEPOINT level (depth 2), not an error.
+	if d, err := m.BeginTxn(ctx, id, "run1", key); err != nil || d != 2 {
+		t.Fatalf("nested begin: depth=%d err=%v, want depth 2", d, err)
 	}
-	if err := m.RollbackTxn(id); err != nil {
-		t.Fatalf("rollback: %v", err)
+	// First rollback pops the nested level (back to depth 1, txn still open).
+	if d, err := m.RollbackTxn(id); err != nil || d != 1 {
+		t.Fatalf("nested rollback: depth=%d err=%v, want depth 1", d, err)
+	}
+	// Second rollback ends the whole transaction (depth 0).
+	if d, err := m.RollbackTxn(id); err != nil || d != 0 {
+		t.Fatalf("root rollback: depth=%d err=%v, want depth 0", d, err)
 	}
 }
 
@@ -122,19 +129,19 @@ func TestTxn_MaxOpen(t *testing.T) {
 	ctx := context.Background()
 	k1, k2 := agentKey("t1", "a1"), agentKey("t1", "a2")
 	id1, id2 := agentTxnID("run1", "a1"), agentTxnID("run1", "a2")
-	if err := m.BeginTxn(ctx, id1, "run1", k1); err != nil {
+	if _, err := m.BeginTxn(ctx, id1, "run1", k1); err != nil {
 		t.Fatalf("begin 1: %v", err)
 	}
-	if err := m.BeginTxn(ctx, id2, "run1", k2); err == nil {
+	if _, err := m.BeginTxn(ctx, id2, "run1", k2); err == nil {
 		t.Fatal("begin past MaxOpenTxns was allowed")
 	}
-	if err := m.RollbackTxn(id1); err != nil {
+	if _, err := m.RollbackTxn(id1); err != nil {
 		t.Fatalf("rollback 1: %v", err)
 	}
-	if err := m.BeginTxn(ctx, id2, "run1", k2); err != nil {
+	if _, err := m.BeginTxn(ctx, id2, "run1", k2); err != nil {
 		t.Fatalf("begin 2 after freeing a slot: %v", err)
 	}
-	_ = m.RollbackTxn(id2)
+	_, _ = m.RollbackTxn(id2)
 }
 
 // TestTxn_RollbackRunTxns: run-end cleanup rolls back the tree's open txns.
@@ -146,7 +153,7 @@ func TestTxn_RollbackRunTxns(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	id := agentTxnID("runX", "rr")
-	if err := m.BeginTxn(ctx, id, "runX", key); err != nil {
+	if _, err := m.BeginTxn(ctx, id, "runX", key); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (9)", nil, 0); err != nil {
@@ -170,7 +177,7 @@ func TestTxn_ReapStale(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	id := agentTxnID("run1", "reap")
-	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+	if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (1)", nil, 0); err != nil {
@@ -200,7 +207,7 @@ func TestTxn_ConcurrentStatementsSameTxn(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	id := agentTxnID("run1", "concurrent-txn")
-	if err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+	if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	const n = 16
@@ -220,7 +227,7 @@ func TestTxn_ConcurrentStatementsSameTxn(t *testing.T) {
 	for err := range errs {
 		t.Fatalf("concurrent ExecTxn: %v", err)
 	}
-	if err := m.CommitTxn(id); err != nil {
+	if _, err := m.CommitTxn(id); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	if got := rowCount(t, m, key); got != n {
