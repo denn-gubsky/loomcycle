@@ -38,6 +38,20 @@ For **atomic multi-step writes**, three more ops manage a transaction:
 
 See [Explicit transactions](#explicit-transactions) below.
 
+### Why a `Memory` facet, not a separate `Sql` tool
+
+SQL is exposed as ops on the existing `Memory` tool rather than as a dedicated
+`Sql` tool — a deliberate choice (RFC AA Phase 3f). The one real argument for a
+separate tool is gating granularity, and **`sql_scopes` already provides it**:
+SQL is off unless the agent declares `sql_scopes` (below), so `Memory` in
+`allowed_tools` grants the key/value + memory-layer ops *without* SQL — the
+separation a distinct tool would give, without a second wire surface duplicating
+the scope-resolution, audit, and ACL machinery. SQL also shares the Memory
+primitive's scope model (`agent`/`user`/`run`, tenant-keyed), so it belongs with
+it conceptually. If real consumer feedback shows the combined tool schema hurts
+discoverability, a thin `Sql` alias can be added later — it is not built
+speculatively now.
+
 ## Capability gate — default-deny `sql_scopes`
 
 SQL Memory is **off** unless the operator enables the subsystem *and* the agent
