@@ -355,6 +355,15 @@ type StorageConfig struct {
 	// sink the whole capture or blow the 512 MB envelope cap); it is not
 	// restored. 0 = no per-scope cap. Env: LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES.
 	SqlMemSnapshotMaxScopeBytes int64 `yaml:"sqlmem_snapshot_max_scope_bytes"`
+	// SqlMemSharedSchemas lists operator-curated READ-ONLY shared schemas (Phase
+	// 3g, postgres tier only). Each is baked onto every scope role's search_path so
+	// agents can SELECT/JOIN the operator's reference tables; read-only is
+	// engine-enforced (the operator grants SELECT only — see docs/SQL_MEMORY.md).
+	// A shared schema is GLOBAL (visible to every tenant's scopes) — put only
+	// non-sensitive, non-tenant-specific data there. Invalid/missing names are
+	// skipped with a boot warning. Ignored on the sqlite tier. Env (comma-
+	// separated): LOOMCYCLE_SQLMEM_SHARED_SCHEMAS.
+	SqlMemSharedSchemas []string `yaml:"sqlmem_shared_schemas"`
 }
 
 // ConfigDir returns the directory the YAML was loaded from. Used by
@@ -2714,6 +2723,15 @@ func Load(path string) (*Config, error) {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
 			cfg.Storage.SqlMemSnapshotMaxScopeBytes = n
 		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_SHARED_SCHEMAS"); v != "" {
+		var names []string
+		for _, n := range strings.Split(v, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+		cfg.Storage.SqlMemSharedSchemas = names
 	}
 	// Defaults for the bounds the operator did not set. quota stays 0 (off);
 	// timeout/rows get sensible ceilings; audit defaults to full.

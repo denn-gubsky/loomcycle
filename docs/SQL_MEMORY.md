@@ -95,6 +95,7 @@ agents:
 | `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | `sqlmem_gc_interval_ms` | how often the GC sweeper runs (default 1h; runs when the TTL or the size budget is set) |
 | `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` | `sqlmem_total_max_bytes` | size-based GC: when ALL durable scopes together exceed this, evict the largest idle ones until under budget. **0 = OFF** (default — GC discards data) |
 | `LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES` | `sqlmem_snapshot_max_scope_bytes` | snapshot per-scope cap: a scope whose dump exceeds this is excluded + recorded (not restored). **0 = no cap** (default) |
+| `LOOMCYCLE_SQLMEM_SHARED_SCHEMAS` | `sqlmem_shared_schemas` | **postgres tier:** comma-separated list of operator-curated **read-only** shared schemas every scope can `SELECT` (Phase 3g). Empty by default; ignored on sqlite. See *Read-only shared schemas* |
 
 `LOOMCYCLE_SQLMEM_PG_DSN` carries the aux credentials — like `LOOMCYCLE_PG_DSN`
 it is on the env-expand denylist and is **never** interpolatable into a
@@ -382,6 +383,56 @@ to one the runtime created itself. `run` scopes are never snapshotted.
 For consistency across sections, **pause the runtime** (`POST /v1/runtime/pause`)
 before capturing — a scope written between the section reads is otherwise
 captured at the read instant.
+
+## Read-only shared schemas (postgres tier)
+
+Agents are otherwise fully isolated — each reads only its own scope. To share
+**operator-curated reference data** (lookup/taxonomy/config tables) across every
+agent, the operator loads it into a dedicated schema, grants `SELECT`, and lists
+it in `sqlmem_shared_schemas`. The runtime bakes that schema onto every scope
+role's `search_path`, so an agent can `SELECT` / `JOIN` it — but **cannot write
+it** (read-only is engine-enforced). This generalizes the `sqlmem_ext` pattern
+(which exposes the pgvector type the same way).
+
+One-time provisioning, as the admin in the aux DB (use any non-`sqlmem_`,
+non-`pg_` schema name — the `sqlmem_*` namespace is reserved for the runtime):
+
+```sql
+CREATE SCHEMA refdata;
+CREATE TABLE refdata.countries (code text PRIMARY KEY, name text);
+INSERT INTO refdata.countries VALUES ('US','United States'), ('UA','Ukraine');
+GRANT USAGE  ON SCHEMA refdata TO PUBLIC;                              -- reach the schema
+GRANT SELECT ON ALL TABLES IN SCHEMA refdata TO PUBLIC;               -- read existing tables
+ALTER DEFAULT PRIVILEGES IN SCHEMA refdata GRANT SELECT ON TABLES TO PUBLIC;  -- and future ones
+```
+```yaml
+# loomcycle.yaml — bake it onto every scope role's search_path
+storage:
+  sqlmem_shared_schemas: [refdata]
+```
+
+An agent: `SELECT o.id, c.name FROM orders o JOIN countries c ON c.code = o.country`
+(unqualified `countries` resolves via `search_path`; `orders` is the scope's
+own). `INSERT INTO countries …` → `permission denied`.
+
+- **Read-only is engine-enforced.** The scope role holds only `SELECT` (no
+  `INSERT`/`UPDATE`/`DELETE`, no `CREATE` on the schema), so postgres denies every
+  write + `DROP` — the same hard guarantee as scope isolation. **Grant `SELECT`
+  only**; granting more is operator error (the runtime grants nothing here).
+- **Isolation preserved.** A scope gains read access to *only* the listed shared
+  schema(s) — never another scope's. The shared read does not widen cross-scope
+  or cross-tenant isolation.
+- **Global / cross-tenant.** A shared schema is visible to **every tenant's**
+  scopes. Put only non-sensitive, non-tenant-specific reference data there.
+- **Shadowing = scope wins.** A scope's own table of the same name shadows the
+  shared one for unqualified refs (and `CREATE TABLE` always lands in the scope
+  schema); qualify (`refdata.countries`) to force the shared one.
+- **Resilient config.** An invalid, missing, or reserved name is skipped with a
+  boot warning — never fatal. Reserved = `sqlmem_*` / `pg_*` / `information_schema`
+  / `public` (the runtime's own namespaces, plus `public` — on PG ≤14 it ships
+  `CREATE`-to-PUBLIC, so exposing it could make a *writable* cross-tenant surface;
+  use a dedicated schema like `refdata`). The feature is **postgres-only**; on the
+  sqlite tier the setting is ignored.
 
 ## Audit
 

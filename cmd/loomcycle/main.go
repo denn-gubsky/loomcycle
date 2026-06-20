@@ -1156,6 +1156,7 @@ func main() {
 			ScopeTTLMS:         cfg.Storage.SqlMemScopeTTLMS,
 			GCIntervalMS:       cfg.Storage.SqlMemGCIntervalMS,
 			TotalMaxBytes:      cfg.Storage.SqlMemTotalMaxBytes,
+			SharedSchemas:      cfg.Storage.SqlMemSharedSchemas,
 		}
 		// SQL Memory FOLLOWS the main store backend (RFC AA decision 4): a
 		// postgres deploy gets schema-per-scope in the SEPARATE aux DB; a
@@ -1175,6 +1176,9 @@ func main() {
 		} else {
 			if strings.TrimSpace(cfg.Storage.SqlMemPgDSN) != "" {
 				log.Printf("sqlmem: LOOMCYCLE_SQLMEM_PG_DSN is set but the backend is sqlite — ignoring it (file-per-scope at %s)", sqlMemRoot)
+			}
+			if len(cfg.Storage.SqlMemSharedSchemas) > 0 {
+				log.Printf("sqlmem: sqlmem_shared_schemas is set but the backend is sqlite — ignoring it (read-only shared schemas are a postgres-tier feature, RFC AA Phase 3g)")
 			}
 			sqlMemMgr, smErr = sqlmem.New(sqlMemCfg)
 			sqlMemTier = "sqlite (file-per-scope, root=" + sqlMemRoot + ")"

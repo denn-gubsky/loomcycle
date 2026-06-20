@@ -74,6 +74,12 @@ type Config struct {
 	// size of all durable scopes exceeds this, the sweeper evicts the largest idle
 	// scopes until back under budget. 0 = OFF. Complements ScopeTTLMS.
 	TotalMaxBytes int64
+	// SharedSchemas lists operator-curated READ-ONLY shared schemas (Phase 3g,
+	// postgres tier only): each is baked onto every scope role's search_path so
+	// agents can SELECT the operator's reference tables. Read-only is engine-
+	// enforced (the operator grants SELECT only). Invalid/missing names are
+	// dropped at construction with a warning. Ignored by the sqlite tier.
+	SharedSchemas []string
 }
 
 // backend is the per-tier DB engine the Manager delegates to AFTER the
