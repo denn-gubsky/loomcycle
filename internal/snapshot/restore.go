@@ -26,6 +26,11 @@ type RestoreOptions struct {
 	// an immediate probe so the matrix is populated before the
 	// operator calls Resume. Pass nil to skip.
 	ForceProbe func(ctx context.Context)
+
+	// SqlMem restores the RFC AA Phase-3e SQL Memory facet when non-nil. nil
+	// (SQL Memory disabled on the restoring host) skips the section with a
+	// warning. The call sites pass the runtime's *sqlmem.Manager.
+	SqlMem SqlMemSnapshotter
 }
 
 // RestoreResult is the operator-facing summary of a Restore() call.
@@ -48,6 +53,7 @@ type RestoreResult struct {
 	SynthesizedSessions        int      `json:"synthesized_sessions"`
 	TranscriptEventsRestored   int      `json:"transcript_events_restored"`
 	InteractionHistoryRestored int      `json:"interaction_history_restored"`
+	SqlMemScopesRestored       int      `json:"sqlmem_scopes_restored"`
 	Warnings                   []string `json:"warnings,omitempty"`
 }
 
@@ -562,6 +568,22 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	} else if _, ok := sections[migrations.SectionInteractionHistory]; ok {
 		result.Warnings = append(result.Warnings,
 			"interaction_history section present in snapshot but RestoreOptions.IncludeHistory=false; skipped")
+	}
+
+	// sqlmem (RFC AA Phase 3e) — replayed through the live SQL Memory manager
+	// (its own per-scope DBs, not the main store). Restored only when a manager
+	// is wired AND the archive's tier matches; absent/disabled is a warning.
+	if rawSection, ok := sections[migrations.SectionSqlMem]; ok {
+		if opts.SqlMem == nil {
+			result.Warnings = append(result.Warnings,
+				"sqlmem section present in snapshot but SQL Memory is not enabled on this host; skipped")
+		} else {
+			var sec SqlMemSection
+			if err := decodeWithMigration(migrations.SectionSqlMem, rawSection, &sec); err != nil {
+				return result, err
+			}
+			restoreSqlMem(ctx, opts.SqlMem, &sec, &result)
+		}
 	}
 
 	// Stage 3: trigger an immediate resolver probe so the matrix is

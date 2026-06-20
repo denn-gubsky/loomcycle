@@ -42,6 +42,7 @@ const (
 	SectionEvaluations        = "evaluations"
 	SectionPausedRuns         = "paused_runs"
 	SectionInteractionHistory = "interaction_history"
+	SectionSqlMem             = "sqlmem"
 )
 
 // Migrator transforms a section's raw JSON bytes from one version
@@ -104,6 +105,7 @@ var registry = map[string]map[string]Migrator{
 	SectionEvaluations:        {"1.0": identityMigrator},
 	SectionPausedRuns:         {"1.0": identityMigrator},
 	SectionInteractionHistory: {"1.0": identityMigrator},
+	SectionSqlMem:             {"1.0": identityMigrator},
 }
 
 // identityMigrator is the no-op migrator. Used when fromVersion ==

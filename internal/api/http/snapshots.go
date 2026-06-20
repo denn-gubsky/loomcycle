@@ -105,6 +105,11 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		opts.IncludeHistorySince = ts
 	}
+	// Guard the typed-nil interface trap: only set SqlMem when the concrete
+	// manager is non-nil (RFC AA Phase 3e; SQL Memory disabled ⇒ section absent).
+	if s.sqlMem != nil {
+		opts.SqlMem = s.sqlMem
+	}
 	row, _, err := snapshot.Capture(r.Context(), s.store, opts)
 	if err != nil {
 		var tooLarge *snapshot.ErrSnapshotTooLarge
@@ -281,6 +286,9 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.resolver != nil {
 		opts.ForceProbe = s.resolver.ForceProbe
+	}
+	if s.sqlMem != nil {
+		opts.SqlMem = s.sqlMem // RFC AA Phase 3e
 	}
 	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, opts)
 	if err != nil {

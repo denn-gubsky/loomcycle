@@ -64,6 +64,12 @@ type CaptureOptions struct {
 	// reconcile against its own yaml. Pass nil if the operator yaml
 	// declares no channels (the section emits an empty config slice).
 	Channels []ChannelConfigEntry
+
+	// SqlMem captures the RFC AA Phase-3e SQL Memory facet when non-nil. nil
+	// (SQL Memory disabled) omits the section entirely — a pre-3e-identical
+	// envelope. The HTTP/connector capture paths pass the runtime's
+	// *sqlmem.Manager (a guarded nil-pointer is left nil — see the call sites).
+	SqlMem SqlMemSnapshotter
 }
 
 // Capture reads every section the pause-resume-snapshot RFC defines
@@ -138,6 +144,13 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 			return nil, nil, err
 		}
 		envelope.Sections.InteractionHistory = hist
+	}
+	if opts.SqlMem != nil {
+		sec, err := captureSqlMem(ctx, opts.SqlMem)
+		if err != nil {
+			return nil, nil, err
+		}
+		envelope.Sections.SqlMem = sec
 	}
 
 	// Route through Export so the produced snapshot carries the additive
