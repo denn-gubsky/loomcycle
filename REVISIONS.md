@@ -10,6 +10,19 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
+**🔗 SQL Memory — read-only shared schemas (RFC AA, Phase 3g, postgres tier).**
+Agents are otherwise fully isolated; now an operator can expose **curated
+reference data** (lookup/taxonomy/config tables) to every agent. Load it into a
+dedicated schema, `GRANT SELECT … TO PUBLIC`, and list it in
+**`sqlmem_shared_schemas`** — the runtime bakes it onto every scope role's
+`search_path` so agents can `SELECT`/`JOIN` it, but **cannot write it**
+(read-only is engine-enforced — the role holds `SELECT` only). Generalizes the
+`sqlmem_ext` pattern. Isolation preserved (a scope reads *only* the blessed
+schema, never another scope's); a shared schema is **global/cross-tenant** (put
+only non-sensitive reference data there). A scope's own table shadows a same-named
+shared one; invalid/missing/reserved names are skipped with a boot warning.
+postgres-only (ignored on sqlite).
+
 **📦 SQL Memory — snapshot per-scope cap (RFC AA, Phase 3f.2).** A snapshot can
 now bound an individual SQL Memory scope: set **`sqlmem_snapshot_max_scope_bytes`**
 and a scope whose logical dump exceeds it is **excluded** from the snapshot and
