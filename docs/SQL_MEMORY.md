@@ -38,6 +38,20 @@ For **atomic multi-step writes**, three more ops manage a transaction:
 
 See [Explicit transactions](#explicit-transactions) below.
 
+### Why a `Memory` facet, not a separate `Sql` tool
+
+SQL is exposed as ops on the existing `Memory` tool rather than as a dedicated
+`Sql` tool — a deliberate choice (RFC AA Phase 3f). The one real argument for a
+separate tool is gating granularity, and **`sql_scopes` already provides it**:
+SQL is off unless the agent declares `sql_scopes` (below), so `Memory` in
+`allowed_tools` grants the key/value + memory-layer ops *without* SQL — the
+separation a distinct tool would give, without a second wire surface duplicating
+the scope-resolution, audit, and ACL machinery. SQL also shares the Memory
+primitive's scope model (`agent`/`user`/`run`, tenant-keyed), so it belongs with
+it conceptually. If real consumer feedback shows the combined tool schema hurts
+discoverability, a thin `Sql` alias can be added later — it is not built
+speculatively now.
+
 ## Capability gate — default-deny `sql_scopes`
 
 SQL Memory is **off** unless the operator enables the subsystem *and* the agent
@@ -78,7 +92,8 @@ agents:
 | `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `sqlmem_max_open_txns` | cap on concurrent open transactions process-wide (default 64; each pins a connection) |
 | `LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH` | `sqlmem_max_txn_depth` | cap on SAVEPOINT nesting depth within one transaction (default 16; a nested `sql_begin` past it errors) |
 | `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `sqlmem_scope_ttl_ms` | durable-scope GC: drop an `agent`/`user` scope idle longer than this. **0 = OFF** (default — GC discards data) |
-| `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | `sqlmem_gc_interval_ms` | how often the GC sweeper runs (default 1h; only when the TTL is set) |
+| `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | `sqlmem_gc_interval_ms` | how often the GC sweeper runs (default 1h; runs when the TTL or the size budget is set) |
+| `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` | `sqlmem_total_max_bytes` | size-based GC: when ALL durable scopes together exceed this, evict the largest idle ones until under budget. **0 = OFF** (default — GC discards data) |
 | `LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES` | `sqlmem_snapshot_max_scope_bytes` | snapshot per-scope cap: a scope whose dump exceeds this is excluded + recorded (not restored). **0 = no cap** (default) |
 
 `LOOMCYCLE_SQLMEM_PG_DSN` carries the aux credentials — like `LOOMCYCLE_PG_DSN`
@@ -96,6 +111,15 @@ Set **`sqlmem_scope_ttl_ms`** (off by default) and a background sweeper (every
 `sqlmem_gc_interval_ms`, default 1h) drops any durable scope **not used** for
 longer than the TTL — the sqlite `.db` file (fenced removal), or the postgres
 schema + role. `run` scopes are never touched.
+
+The same sweeper also enforces an optional **aggregate size budget**: set
+**`sqlmem_total_max_bytes`** (off by default) and when the combined on-disk
+footprint of all durable scopes exceeds it, the sweeper evicts the **largest
+idle** scopes until back under budget. This complements the TTL (which targets
+*idle* scopes regardless of size); the budget targets *bulk* regardless of
+recency. Per-scope size is already capped per write by the quota — the budget
+bounds the total. An in-use scope (an in-flight op or open transaction) is never
+evicted; the next sweep catches it once idle.
 
 > **GC is lossy — opt in deliberately.** A dropped scope's tables are gone; an
 > agent or user that returns *after* the TTL starts empty. Set the TTL generously

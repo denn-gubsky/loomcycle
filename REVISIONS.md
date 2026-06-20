@@ -19,6 +19,16 @@ by default. (Bounded-memory *streaming* export was evaluated and deferred —
 snapshots persist as a single `json_content` row, so the envelope is materialized
 in memory regardless; true bounded memory needs a snapshot-to-file model.)
 
+**📐 SQL Memory — size-based GC (RFC AA, Phase 3f.3).** The durable-scope sweeper
+gains an optional aggregate **size budget**: set **`sqlmem_total_max_bytes`** and
+when all durable (`agent`/`user`) scopes together exceed it, the sweeper evicts
+the **largest idle** scopes until back under budget — complementing the TTL sweep
+(idle-targeting) with a bulk-targeting one. Off by default + lossy (like all GC);
+per-scope size is already the quota's job, this bounds the total. In-use scopes
+(in-flight op / open transaction) are never evicted; `run` scopes never counted.
+sqlite measures the true on-disk footprint (`.db` + `-wal`/`-shm`); postgres sums
+`pg_total_relation_size` per scope schema.
+
 **🪆 SQL Memory — nested transactions / SAVEPOINT (RFC AA, Phase 3b).** A second
 `sql_begin` while a transaction is open now **nests** (opens a `SAVEPOINT`)
 instead of erroring — the agent uses the same `sql_begin`/`sql_commit`/

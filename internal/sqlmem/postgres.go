@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -725,6 +726,81 @@ func (b *postgresBackend) sweepStale(cutoff time.Time) (int, error) {
 			continue
 		}
 		dropped++
+	}
+	return dropped, nil
+}
+
+// sweepBudget drops the LARGEST idle durable scopes until the aggregate durable
+// footprint is at or under budget (Phase 3f size-based GC). Size is
+// pg_total_relation_size summed per scope schema (tables + indexes + toast),
+// read as admin; durable scopes come from the scope_registry joined with live
+// namespaces (a dropped schema doesn't join, so ghosts aren't counted). In-use
+// scopes (inUse>0 — a live op or open txn pins the pool) are skipped; the run
+// scope is never registered, so never counted.
+func (b *postgresBackend) sweepBudget(budget int64) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	rows, err := b.admin.QueryContext(ctx,
+		`SELECT n.nspname, COALESCE(SUM(pg_total_relation_size(c.oid)), 0)
+		   FROM sqlmem_meta.scope_registry r
+		   JOIN pg_catalog.pg_namespace n ON n.nspname = r.schema_name
+		   LEFT JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relkind IN ('r','m','p')
+		  WHERE r.scope <> $1
+		  GROUP BY n.nspname`, runScope)
+	if err != nil {
+		return 0, err
+	}
+	type scopeSize struct {
+		schema string
+		size   int64
+	}
+	var scopes []scopeSize
+	var total int64
+	for rows.Next() {
+		var s scopeSize
+		if err := rows.Scan(&s.schema, &s.size); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		scopes = append(scopes, s)
+		total += s.size
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if total <= budget {
+		return 0, nil
+	}
+	sort.Slice(scopes, func(i, j int) bool { return scopes[i].size > scopes[j].size })
+	var dropped int
+	for _, s := range scopes {
+		if total <= budget {
+			break
+		}
+		role := "sqlmem_r_" + strings.TrimPrefix(s.schema, "sqlmem_s_")
+		if !pgIdentRe.MatchString(s.schema) || !pgIdentRe.MatchString(role) {
+			continue // defensive — only our own hashed identifiers
+		}
+		b.mu.Lock()
+		sc, ok := b.scopes[role]
+		busy := ok && sc.inUse > 0
+		b.mu.Unlock()
+		if busy {
+			continue // pinned by a live op / open txn — skip, catch it next sweep
+		}
+		removed, err := b.dropScopePG(ctx, s.schema, role)
+		if err != nil {
+			log.Printf("sqlmem: size GC drop scope %s: %v", s.schema, err)
+			continue // real failure — the schema's bytes are still on disk
+		}
+		// On a nil error the schema is gone (whether we dropped it or a concurrent
+		// drop already had — removed=false on 3F000), so its bytes left the budget;
+		// only count it as OUR drop when we actually removed it (log accuracy).
+		total -= s.size
+		if removed {
+			dropped++
+		}
 	}
 	return dropped, nil
 }

@@ -53,10 +53,11 @@ func (m *Manager) touch(key ScopeKey) {
 	}
 }
 
-// startGC launches the durable-scope sweeper (no-op when ScopeTTLMS <= 0).
+// startGC launches the durable-scope sweeper. No-op unless TTL GC (ScopeTTLMS)
+// OR size-based GC (TotalMaxBytes) is enabled.
 func (m *Manager) startGC() {
 	m.gcStop = make(chan struct{})
-	if m.cfg.ScopeTTLMS <= 0 {
+	if m.cfg.ScopeTTLMS <= 0 && m.cfg.TotalMaxBytes <= 0 {
 		return
 	}
 	interval := time.Duration(m.cfg.GCIntervalMS) * time.Millisecond
@@ -93,15 +94,32 @@ func (m *Manager) stopGC() {
 	}
 }
 
-// runGC sweeps durable scopes idle longer than ttl.
+// runGC sweeps durable scopes: first by TTL (idle longer than ttl), then by the
+// aggregate size budget (TotalMaxBytes, evicting the largest idle scopes). Each
+// sub-sweep is independent and only runs when its knob is set.
 func (m *Manager) runGC(ttl time.Duration) {
-	cutoff := time.Now().Add(-ttl)
-	dropped, err := m.backend.sweepStale(cutoff)
-	if err != nil {
-		log.Printf("sqlmem: durable-scope GC sweep: %v", err)
+	var dropped int
+	if m.cfg.ScopeTTLMS > 0 {
+		n, err := m.backend.sweepStale(time.Now().Add(-ttl))
+		if err != nil {
+			log.Printf("sqlmem: durable-scope TTL GC sweep: %v", err)
+		}
+		if n > 0 {
+			log.Printf("sqlmem: durable-scope TTL GC dropped %d idle scope(s)", n)
+		}
+		dropped += n
+	}
+	if m.cfg.TotalMaxBytes > 0 {
+		n, err := m.backend.sweepBudget(m.cfg.TotalMaxBytes)
+		if err != nil {
+			log.Printf("sqlmem: durable-scope size GC sweep: %v", err)
+		}
+		if n > 0 {
+			log.Printf("sqlmem: durable-scope size GC dropped %d scope(s) over the %d-byte budget", n, m.cfg.TotalMaxBytes)
+		}
+		dropped += n
 	}
 	if dropped > 0 {
-		log.Printf("sqlmem: durable-scope GC dropped %d idle scope(s)", dropped)
 		// Forget debounce entries so a scope that is recreated after a drop
 		// re-records its last_used promptly (the old entry would suppress it).
 		m.touchMu.Lock()
