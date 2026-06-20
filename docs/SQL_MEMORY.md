@@ -27,8 +27,11 @@ Two `Memory` ops (the `Memory` tool must be in the agent's `allowed_tools`):
 
 `scope` selects the database: `agent` (this agent, durable), `user` (this
 end-user, durable), or `run` (ephemeral scratch, dropped at run completion).
-Durable scopes are keyed by the authoritative tenant. One statement per call;
-`ATTACH`/`PRAGMA`/`load_extension`/`COPY`/`SET`/multiple statements are refused.
+Durable scopes are keyed by the authoritative tenant; in open mode / with the
+legacy token (no per-principal tenant) durable scopes fall back to the `default`
+tenant, so they work without the caller passing `tenant_id`. One statement per
+call; `ATTACH`/`PRAGMA`/`load_extension`/`COPY`/`SET`/multiple statements are
+refused.
 
 For **atomic multi-step writes**, three more ops manage a transaction:
 
