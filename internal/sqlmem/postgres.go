@@ -93,6 +93,10 @@ type postgresBackend struct {
 	secret  []byte          // HMAC key for per-scope role passwords (= admin password)
 
 	vectors bool // pgvector present in the aux DB (RFC AA Phase 3c — vector columns)
+	// sharedSchemas are the operator's READ-ONLY shared schemas (RFC AA Phase 3g)
+	// that EXIST + passed name validation — baked onto every scope role's
+	// search_path. Empty when none configured / all skipped.
+	sharedSchemas []string
 
 	mu          sync.Mutex
 	provisioned map[string]bool        // schema names provisioned in THIS process
@@ -163,16 +167,54 @@ func newPostgresBackend(ctx context.Context, cfg Config) (*postgresBackend, erro
 		_ = admin.Close()
 		return nil, fmt.Errorf("sqlmem: provision meta tables: %w", err)
 	}
+	shared := validateSharedSchemas(pingCtx, admin, cfg.SharedSchemas)
 	return &postgresBackend{
-		cfg:         cfg,
-		admin:       admin,
-		baseCfg:     baseCfg,
-		secret:      []byte(baseCfg.Password),
-		vectors:     vectors,
-		provisioned: make(map[string]bool),
-		provLocks:   make(map[string]*sync.Mutex),
-		scopes:      make(map[string]*scopeConn),
+		cfg:           cfg,
+		admin:         admin,
+		baseCfg:       baseCfg,
+		secret:        []byte(baseCfg.Password),
+		vectors:       vectors,
+		sharedSchemas: shared,
+		provisioned:   make(map[string]bool),
+		provLocks:     make(map[string]*sync.Mutex),
+		scopes:        make(map[string]*scopeConn),
 	}, nil
+}
+
+// pgSharedSchemaRe is the shape an operator-configured shared schema name must
+// match before it is interpolated into search_path DDL (RFC AA Phase 3g). A
+// plain lowercase identifier — postgres folds unquoted identifiers to lowercase,
+// and the recipe creates lowercase schemas. Belt-and-braces over the
+// operator-trusted config (a typo / injection attempt is rejected, not run).
+var pgSharedSchemaRe = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
+
+// validateSharedSchemas filters the configured shared schemas down to the ones
+// that pass name validation AND actually exist in the aux DB. An invalid or
+// missing name is SKIPPED with a boot warning (never fatal — a misconfigured
+// shared schema must not take the runtime down), mirroring the pgvector probe.
+// The reserved sqlmem_* / information_schema / pg_* namespaces are refused so a
+// shared schema can't shadow the runtime's own.
+func validateSharedSchemas(ctx context.Context, admin *sql.DB, names []string) []string {
+	var out []string
+	for _, name := range names {
+		if !pgSharedSchemaRe.MatchString(name) {
+			log.Printf("sqlmem: shared schema %q skipped — not a valid lowercase identifier", name)
+			continue
+		}
+		if strings.HasPrefix(name, "sqlmem_") || strings.HasPrefix(name, "pg_") || name == "information_schema" {
+			log.Printf("sqlmem: shared schema %q skipped — reserved namespace", name)
+			continue
+		}
+		var exists bool
+		if err := admin.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)`, name).Scan(&exists); err != nil || !exists {
+			log.Printf("sqlmem: shared schema %q skipped — not found in the aux DB (create + GRANT SELECT first; see docs/SQL_MEMORY.md)", name)
+			continue
+		}
+		out = append(out, name)
+		log.Printf("sqlmem: read-only shared schema %q exposed to all scopes (Phase 3g — global, cross-tenant)", name)
+	}
+	return out
 }
 
 // vectorsEnabled reports whether the postgres tier can serve vector columns
@@ -308,6 +350,14 @@ func (b *postgresBackend) runProvisionDDL(ctx context.Context, schema, role stri
 	searchPath := q(schema)
 	if b.vectors {
 		searchPath = q(schema) + ", " + q(pgVectorExtSchema)
+	}
+	// Append the operator's read-only shared schemas (RFC AA Phase 3g) AFTER the
+	// scope schema (+ sqlmem_ext), so an unqualified ref hits the scope's own
+	// table first (shadowing) and CREATE TABLE still lands in the scope schema
+	// (the role has CREATE only there). Names are pre-validated in
+	// validateSharedSchemas, so q() interpolation is safe.
+	for _, sh := range b.sharedSchemas {
+		searchPath += ", " + q(sh)
 	}
 	stmts := []string{
 		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, q(schema)),
