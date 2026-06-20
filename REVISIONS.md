@@ -10,6 +10,19 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
+**🪆 SQL Memory — nested transactions / SAVEPOINT (RFC AA, Phase 3b).** A second
+`sql_begin` while a transaction is open now **nests** (opens a `SAVEPOINT`)
+instead of erroring — the agent uses the same `sql_begin`/`sql_commit`/
+`sql_rollback` ops at any depth, no savepoint names to manage. A nested
+`sql_rollback` undoes only the inner level's writes (the outer transaction
+continues); a nested `sql_commit` releases it. Each op's result reports the
+current `depth` (1 = the root transaction, 0 = closed). Nesting is LIFO and
+capped at **`sqlmem_max_txn_depth`** (default 16); a whole-transaction rollback
+(explicit, run-end, or the reaper) discards every savepoint with it. The runtime
+issues + names the savepoints — the validator still refuses agent-issued
+`SAVEPOINT`/`RELEASE`/`ROLLBACK`, so the model can't desync the stack. Works on
+both tiers (savepoints are standard SQL).
+
 **💾 SQL Memory — snapshot/backup integration (RFC AA, Phase 3e).** The runtime
 JSON snapshot now captures SQL Memory. Every **durable** (`agent`/`user`) scope
 is dumped **logically** (schema DDL + table data) into an optional, tier-tagged
