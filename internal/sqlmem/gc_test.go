@@ -3,6 +3,7 @@ package sqlmem
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -117,6 +118,142 @@ func TestGC_TouchUpdatesMtime(t *testing.T) {
 	}
 	if info.ModTime().Before(time.Now().Add(-time.Minute)) {
 		t.Fatalf("read did not touch the scope mtime forward (still %v)", info.ModTime())
+	}
+}
+
+// fillScope writes rows*~3KB into scope key's table (created if needed), making
+// its on-disk footprint comfortably exceed a sub-megabyte budget.
+func fillScope(t *testing.T, m *Manager, key ScopeKey, rows int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := m.Exec(ctx, key, "CREATE TABLE IF NOT EXISTS t (x TEXT)", nil, 0); err != nil {
+		t.Fatalf("create %s/%s: %v", key.Scope, key.ScopeID, err)
+	}
+	blob := strings.Repeat("x", 3000)
+	for i := 0; i < rows; i++ {
+		if _, err := m.Exec(ctx, key, "INSERT INTO t VALUES (?)", []any{blob}, 0); err != nil {
+			t.Fatalf("fill %s/%s: %v", key.Scope, key.ScopeID, err)
+		}
+	}
+}
+
+// TestGC_SweepBudgetSqlite: the size sweep drops the LARGEST idle durable scope
+// to get under the aggregate budget, leaves the small scopes alone, and never
+// touches the run scope even when it is large.
+func TestGC_SweepBudgetSqlite(t *testing.T) {
+	m := newTestManager(t, Config{})
+	ctx := context.Background()
+	big := agentKey("t1", "big")
+	small1 := agentKey("t1", "small1")
+	small2 := agentKey("t2", "small2")
+	run := ScopeKey{Scope: "run", ScopeID: "run-big"}
+	for _, k := range []ScopeKey{small1, small2} {
+		if _, err := m.Exec(ctx, k, "CREATE TABLE t (x TEXT)", nil, 0); err != nil {
+			t.Fatalf("create %s: %v", k.ScopeID, err)
+		}
+	}
+	fillScope(t, m, big, 500) // ~1.5 MB
+	fillScope(t, m, run, 500) // large too — but a run scope is never swept
+
+	const budget = 300 * 1024 // 300 KB: well below `big`, well above the smalls
+	dropped, err := m.backend.sweepBudget(budget)
+	if err != nil {
+		t.Fatalf("sweepBudget: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped=%d, want 1 (only the largest durable scope)", dropped)
+	}
+	root := managerRoot(t, m)
+	bigPath, _ := big.keyPath(root)
+	if _, err := os.Stat(bigPath); !os.IsNotExist(err) {
+		t.Fatal("largest scope was not dropped by the size sweep")
+	}
+	for _, k := range []ScopeKey{small1, small2} {
+		p, _ := k.keyPath(root)
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("small scope %s dropped by size sweep: %v", k.ScopeID, err)
+		}
+	}
+	runPath, _ := run.keyPath(root)
+	if _, err := os.Stat(runPath); err != nil {
+		t.Fatal("run scope dropped by size GC — run scopes must NEVER be swept")
+	}
+}
+
+// TestGC_SweepBudgetSkipsInUse: the size sweep never drops an in-use scope even
+// when it is over budget; it drops the largest IDLE scope instead.
+func TestGC_SweepBudgetSkipsInUse(t *testing.T) {
+	m := newTestManager(t, Config{})
+	ctx := context.Background()
+	busy := agentKey("t1", "busy-big")
+	idle := agentKey("t1", "idle-big")
+	fillScope(t, m, busy, 500)
+	fillScope(t, m, idle, 500)
+
+	// Pin `busy` with an open transaction (inUse>0).
+	txnID := agentTxnID("run1", "busy-big")
+	if _, err := m.BeginTxn(ctx, txnID, "run1", busy); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _, _ = m.RollbackTxn(txnID) }()
+
+	dropped, err := m.backend.sweepBudget(300 * 1024)
+	if err != nil {
+		t.Fatalf("sweepBudget: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped=%d, want 1 (the idle scope; the in-use one is skipped)", dropped)
+	}
+	root := managerRoot(t, m)
+	busyPath, _ := busy.keyPath(root)
+	if _, err := os.Stat(busyPath); err != nil {
+		t.Fatal("in-use scope was dropped by the size sweep")
+	}
+	idlePath, _ := idle.keyPath(root)
+	if _, err := os.Stat(idlePath); !os.IsNotExist(err) {
+		t.Fatal("idle over-budget scope was not dropped")
+	}
+}
+
+// TestGC_SweepBudgetPostgres: the size sweep drops the largest durable scope on
+// the postgres tier and leaves the small one. Gated on LOOMCYCLE_TEST_SQLMEM_PG_DSN.
+func TestGC_SweepBudgetPostgres(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	ctx := context.Background()
+	big := agentKey("t1", "pg-big")
+	small := agentKey("t1", "pg-small")
+	if _, err := m.Exec(ctx, small, "CREATE TABLE t (x text)", nil, 0); err != nil {
+		t.Fatalf("create small: %v", err)
+	}
+	if _, err := m.Exec(ctx, big, "CREATE TABLE t (x text)", nil, 0); err != nil {
+		t.Fatalf("create big: %v", err)
+	}
+	// Incompressible distinct rows so pg_total_relation_size is genuinely large
+	// (a repeated string would TOAST-compress to almost nothing).
+	if _, err := m.Exec(ctx, big, "INSERT INTO t SELECT md5(g::text) FROM generate_series(1, 30000) g", nil, 0); err != nil {
+		t.Fatalf("fill big: %v", err)
+	}
+
+	dropped, err := m.backend.sweepBudget(64 * 1024) // 64 KB: below big, above the empty small
+	if err != nil {
+		t.Fatalf("sweepBudget: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped=%d, want 1 (the largest scope)", dropped)
+	}
+	scopes, err := m.ListScopes(ctx)
+	if err != nil {
+		t.Fatalf("ListScopes: %v", err)
+	}
+	got := map[ScopeKey]bool{}
+	for _, s := range scopes {
+		got[s] = true
+	}
+	if got[big] {
+		t.Fatal("largest scope not dropped by the size sweep")
+	}
+	if !got[small] {
+		t.Fatal("small scope wrongly dropped by the size sweep")
 	}
 }
 

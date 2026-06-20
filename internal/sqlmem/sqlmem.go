@@ -68,8 +68,12 @@ type Config struct {
 	// run-end).
 	ScopeTTLMS int
 	// GCIntervalMS is how often the GC sweeper runs. 0 → a sensible default
-	// (one hour). Only meaningful when ScopeTTLMS > 0.
+	// (one hour). Meaningful when ScopeTTLMS > 0 or TotalMaxBytes > 0.
 	GCIntervalMS int
+	// TotalMaxBytes turns on size-based GC (Phase 3f): when the aggregate on-disk
+	// size of all durable scopes exceeds this, the sweeper evicts the largest idle
+	// scopes until back under budget. 0 = OFF. Complements ScopeTTLMS.
+	TotalMaxBytes int64
 }
 
 // backend is the per-tier DB engine the Manager delegates to AFTER the
@@ -97,6 +101,10 @@ type backend interface {
 	// sweepStale drops every DURABLE (agent/user) scope last used before cutoff
 	// and returns how many were dropped. Never touches the run scope.
 	sweepStale(cutoff time.Time) (dropped int, err error)
+	// sweepBudget drops the LARGEST idle DURABLE scopes until the aggregate
+	// durable footprint is at or under budget (Phase 3f size-based GC). Skips
+	// in-use scopes (inUse>0) and the run scope; returns how many were dropped.
+	sweepBudget(budget int64) (dropped int, err error)
 	// listScopes enumerates every DURABLE scope for snapshot capture (RFC AA
 	// Phase 3e); exportScope/restoreScope move one scope's logical dump in/out.
 	listScopes(ctx context.Context) ([]ScopeKey, error)
