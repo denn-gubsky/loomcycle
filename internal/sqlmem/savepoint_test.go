@@ -2,6 +2,7 @@ package sqlmem
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -161,5 +162,49 @@ func TestTxn_NestedRollback_Postgres(t *testing.T) {
 	wantDepth(t, 0)(m.CommitTxn(id))
 	if n := rowCount(t, m, key); n != 1 {
 		t.Fatalf("count=%d, want 1 (inner insert rolled back)", n)
+	}
+}
+
+// TestTxn_NestedConcurrentBeginFinish stresses the F1 race: a nested sql_begin
+// racing the root commit on one scope (tool calls in a turn dispatch
+// concurrently). The fix serializes the pop-vs-finish choice and any push under
+// the openTxn mutex + a `done` flag, so a savepoint is never opened on a
+// torn-down tx, the pin never leaks, and the scope stays usable. Meaningful
+// under -race.
+func TestTxn_NestedConcurrentBeginFinish(t *testing.T) {
+	m := newTestManager(t, Config{})
+	ctx := context.Background()
+	key := agentKey("t1", "sp-race")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE t (x INT)", nil, 0); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := agentTxnID("run1", "sp-race")
+	for i := 0; i < 200; i++ {
+		if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+			t.Fatalf("iter %d begin: %v", i, err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { // nested begin then close that level (best-effort under the race)
+			defer wg.Done()
+			if _, err := m.BeginTxn(ctx, id, "run1", key); err == nil {
+				_, _ = m.CommitTxn(id)
+			}
+		}()
+		go func() { // finish the root concurrently
+			defer wg.Done()
+			_, _ = m.CommitTxn(id)
+		}()
+		wg.Wait()
+		// Drain any level still open (single-threaded now), then the scope MUST be
+		// usable — a leaked pin would wedge the sqlite single-writer handle.
+		for m.InTxn(id) {
+			if _, err := m.CommitTxn(id); err != nil {
+				break
+			}
+		}
+		if _, err := m.Exec(ctx, key, "INSERT INTO t VALUES (1)", nil, 0); err != nil {
+			t.Fatalf("iter %d: scope wedged after race (pin leak?): %v", i, err)
+		}
 	}
 }

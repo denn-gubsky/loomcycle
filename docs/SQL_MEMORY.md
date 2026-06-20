@@ -76,6 +76,7 @@ agents:
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `sqlmem_audit_mode` | `full` (redacted statement text, default) or `metadata` (counts only) |
 | `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `sqlmem_txn_timeout_ms` | explicit-transaction TTL — the reaper rolls back a txn open longer than this (default 30000; 0 disables) |
 | `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `sqlmem_max_open_txns` | cap on concurrent open transactions process-wide (default 64; each pins a connection) |
+| `LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH` | `sqlmem_max_txn_depth` | cap on SAVEPOINT nesting depth within one transaction (default 16; a nested `sql_begin` past it errors) |
 | `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `sqlmem_scope_ttl_ms` | durable-scope GC: drop an `agent`/`user` scope idle longer than this. **0 = OFF** (default — GC discards data) |
 | `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | `sqlmem_gc_interval_ms` | how often the GC sweeper runs (default 1h; only when the TTL is set) |
 

@@ -60,14 +60,24 @@ type openTxn struct {
 	// cleanup is needed on the reaper / run-end / Close paths.
 	savepoints []string
 	spCounter  int
+	// done is set (under mu) the moment the whole tx is committed/rolled back, so
+	// a nested pushSavepoint that races a root finish refuses cleanly instead of
+	// SAVEPOINT-ing a finished *sql.Tx. The finish decision (pop-vs-finish) and
+	// any push both run under mu, so they are coherently serialized — a savepoint
+	// can never be opened on a tx being torn down (the F1 race).
+	done bool
 }
 
 // pushSavepoint opens a nested level: SAVEPOINT on the tx + push the name.
-// Returns the new depth. Refuses past maxDepth (the stack cap). Holds mu so it
-// can't race a statement / finish on the same tx.
+// Returns the new depth. Refuses past maxDepth (the stack cap), or if the whole
+// tx was already finished (a concurrent root commit/rollback won the mu first —
+// the F1 race). Holds mu so it can't race a statement / finish on the same tx.
 func (t *openTxn) pushSavepoint(ctx context.Context, maxDepth int) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.done {
+		return 0, fmt.Errorf("the transaction for this scope was just finished — begin a new one")
+	}
 	if maxDepth > 0 && len(t.savepoints) >= maxDepth {
 		return 1 + len(t.savepoints), fmt.Errorf("transaction nesting depth limit (%d) reached — commit or roll back a nested level first", maxDepth)
 	}
@@ -80,17 +90,21 @@ func (t *openTxn) pushSavepoint(ctx context.Context, maxDepth int) (int, error) 
 	return 1 + len(t.savepoints), nil
 }
 
-// popSavepoint closes the innermost nested level: commit → RELEASE (merge up),
-// rollback → ROLLBACK TO + RELEASE (undo + exit). Returns (newDepth, popped).
-// popped is false when there is no savepoint (the caller then finishes the whole
-// txn). Holds mu. SAVEPOINT/RELEASE/ROLLBACK TO are standard SQL on both tiers.
-func (t *openTxn) popSavepoint(ctx context.Context, commit bool) (depth int, popped bool, err error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if len(t.savepoints) == 0 {
+// popSavepointLocked closes the innermost nested level: commit → RELEASE (merge
+// up), rollback → ROLLBACK TO + RELEASE (undo + exit). Returns (newDepth,
+// popped); popped is false when there is no savepoint (the caller then finishes
+// the whole txn). The caller MUST hold t.mu (finishLevel does, so the
+// pop-vs-finish choice is atomic with a racing push). The name is popped even on
+// error: the level is logically closed regardless, and a leftover DB savepoint
+// is discarded at whole-tx end — keeping the name would desync depth from the
+// agent's view (the F2 fix). SAVEPOINT/RELEASE/ROLLBACK TO are standard SQL on
+// both tiers.
+func (t *openTxn) popSavepointLocked(ctx context.Context, commit bool) (depth int, popped bool, err error) {
+	n := len(t.savepoints)
+	if n == 0 {
 		return 0, false, nil
 	}
-	name := t.savepoints[len(t.savepoints)-1]
+	name := t.savepoints[n-1]
 	if commit {
 		_, err = t.tx.ExecContext(ctx, "RELEASE SAVEPOINT "+q(name))
 	} else {
@@ -100,11 +114,8 @@ func (t *openTxn) popSavepoint(ctx context.Context, commit bool) (depth int, pop
 			_, err = t.tx.ExecContext(ctx, "RELEASE SAVEPOINT "+q(name))
 		}
 	}
-	if err != nil {
-		return 1 + len(t.savepoints), true, err
-	}
-	t.savepoints = t.savepoints[:len(t.savepoints)-1]
-	return 1 + len(t.savepoints), true, nil
+	t.savepoints = t.savepoints[:n-1]
+	return 1 + len(t.savepoints), true, err
 }
 
 // finish commits or rolls back the transaction and always drops the pin. It
@@ -113,6 +124,13 @@ func (t *openTxn) popSavepoint(ctx context.Context, commit bool) (depth int, pop
 func (t *openTxn) finish(commit bool) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.finishLocked(commit)
+}
+
+// finishLocked commits/rolls back the whole tx, drops the pin, and marks the txn
+// done. Caller MUST hold t.mu. The done flag is what makes a racing push refuse
+// instead of SAVEPOINT-ing a finished tx.
+func (t *openTxn) finishLocked(commit bool) error {
 	var err error
 	if commit {
 		err = t.tx.Commit()
@@ -120,6 +138,7 @@ func (t *openTxn) finish(commit bool) error {
 		err = t.tx.Rollback()
 	}
 	t.release()
+	t.done = true
 	return err
 }
 
@@ -209,43 +228,57 @@ func (m *Manager) RollbackTxn(txnID string) (int, error) {
 }
 
 // finishLevel closes one level of txnID: a nested savepoint (depth stays open)
-// or, at the root, the whole transaction. Lock discipline: m.txns.mu and the
-// per-openTxn mu are never held simultaneously (BeginTxn takes m.txns.mu then
-// the openTxn mu via pushSavepoint; here we take them sequentially in the same
-// order), so there is no deadlock. A truly-concurrent root finish + nested begin
-// on one scope is serialized but ordering is undefined (documented) — never
-// corrupting: finish always releases the pin.
+// or, at the root, the whole transaction.
+//
+// The pop-vs-finish choice AND the chosen action run under t.mu in one critical
+// section, so a concurrent nested BeginTxn (which also takes t.mu, via
+// pushSavepoint) is coherently serialized: either it pushes first and this call
+// then pops THAT savepoint (a clean LIFO release), or this call finishes first
+// (setting done) and the push then refuses — a savepoint can never be opened on
+// a tx being torn down, nor a fresh savepoint be silently committed away (F1).
+//
+// Lock order: t.mu is taken FIRST, then m.txns.mu (only for the root-finish
+// registry delete). No other path holds m.txns.mu while blocking on t.mu
+// (BeginTxn releases m.txns.mu before pushSavepoint; the sweepers delete under
+// m.txns.mu then finish outside it), so this t.mu→m.txns.mu order is the only
+// one that ever holds both — no cycle, no deadlock.
 func (m *Manager) finishLevel(txnID string, commit bool) (int, error) {
 	m.txns.mu.Lock()
 	t := m.txns.open[txnID]
 	m.txns.mu.Unlock()
 	if t == nil {
-		verb := "roll back"
-		if commit {
-			verb = "commit"
-		}
-		return 0, fmt.Errorf("no open transaction to %s for this scope", verb)
+		return 0, noOpenTxnErr(commit)
 	}
 
-	// Nested level → pop a savepoint and leave the txn open.
-	if depth, popped, err := t.popSavepoint(context.Background(), commit); popped || err != nil {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return 0, noOpenTxnErr(commit) // finished by a concurrent caller / sweeper
+	}
+
+	// Nested level → pop the innermost savepoint, leave the txn open.
+	if depth, popped, err := t.popSavepointLocked(context.Background(), commit); popped {
 		return depth, err
 	}
 
-	// Root level → remove from the registry (guarding against a concurrent
-	// finish that already took it) and finish the whole transaction.
+	// Root level → finish the whole tx (sets done under this same mu), then
+	// remove it from the registry.
+	err := t.finishLocked(commit)
 	m.txns.mu.Lock()
 	if cur := m.txns.open[txnID]; cur == t {
 		delete(m.txns.open, txnID)
-	} else {
-		m.txns.mu.Unlock()
-		return 0, nil // another caller already finished it
 	}
 	m.txns.mu.Unlock()
-	if err := t.finish(commit); err != nil {
-		return 0, err
+	return 0, err
+}
+
+// noOpenTxnErr is the "nothing to finish" error, phrased for the op.
+func noOpenTxnErr(commit bool) error {
+	verb := "roll back"
+	if commit {
+		verb = "commit"
 	}
-	return 0, nil
+	return fmt.Errorf("no open transaction to %s for this scope", verb)
 }
 
 // RollbackRunTxns rolls back every open transaction belonging to a run tree
