@@ -188,7 +188,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// can't drift from the validation the agent loop applies.
 		{
 			Name:        "memory",
-			Description: "Memory tool ops (get/set/delete/list/incr). Pass-through to the underlying Memory builtin.",
+			Description: "Memory tool ops. Families: key/value (get/set/delete/list/incr/merge/append_dedupe/bounded_list/search); memory-layer (add/recall — mem9 backends); SQL (sql_query/sql_exec/sql_begin/sql_commit/sql_rollback — a per-scope SQL database, gated separately by sql_scopes). Pass-through to the underlying Memory builtin; see the inputSchema's op enum.",
 			InputSchema: builtinSchema("memory"),
 		},
 		{
