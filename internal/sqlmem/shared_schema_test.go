@@ -10,6 +10,33 @@ import (
 // shared_schema_test.go — RFC AA Phase 3g: operator-defined read-only shared
 // schemas (postgres tier). Gated on LOOMCYCLE_TEST_SQLMEM_PG_DSN.
 
+// TestPgSharedSchemaRe locks the shared-schema-name validation regex against
+// injection + a future (?m) drift — no DB needed, so it runs on every `go test`.
+func TestPgSharedSchemaRe(t *testing.T) {
+	valid := []string{"refdata", "_lookup", "country_codes", "a", "ref2data"}
+	for _, s := range valid {
+		if !pgSharedSchemaRe.MatchString(s) {
+			t.Errorf("pgSharedSchemaRe rejected valid name %q", s)
+		}
+	}
+	invalid := []string{
+		"",            // empty
+		"Refdata",     // uppercase (no case bypass)
+		"2ref",        // leading digit
+		"ref-data",    // dash
+		"ref data",    // space
+		"refdata\n",   // trailing newline ($ must be end-of-text, not pre-\n)
+		"a\nDROP",     // embedded newline
+		`a"b`,         // embedded quote (q() break-out attempt)
+		"refdata; --", // statement terminator
+	}
+	for _, s := range invalid {
+		if pgSharedSchemaRe.MatchString(s) {
+			t.Errorf("pgSharedSchemaRe ACCEPTED invalid name %q — injection guard weakened", s)
+		}
+	}
+}
+
 // sharedSchemaManager sets up a read-only shared schema `refdata` (loaded +
 // granted SELECT to PUBLIC, the operator recipe) and returns a Manager that
 // exposes it via SharedSchemas. The shared schema is created BEFORE NewPostgres
@@ -148,7 +175,7 @@ func TestSharedSchema_Shadowing(t *testing.T) {
 // schema names are dropped at construction (boot warning); the runtime starts and
 // scopes provision without them.
 func TestSharedSchema_MisconfigSkipped(t *testing.T) {
-	m, _ := pgTestManager(t, Config{SharedSchemas: []string{"does_not_exist", "Bad-Name!", "sqlmem_meta", "pg_catalog"}})
+	m, _ := pgTestManager(t, Config{SharedSchemas: []string{"does_not_exist", "Bad-Name!", "sqlmem_meta", "pg_catalog", "public"}})
 	ctx := context.Background()
 	pb, ok := m.backend.(*postgresBackend)
 	if !ok {

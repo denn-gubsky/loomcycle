@@ -201,7 +201,11 @@ func validateSharedSchemas(ctx context.Context, admin *sql.DB, names []string) [
 			log.Printf("sqlmem: shared schema %q skipped — not a valid lowercase identifier", name)
 			continue
 		}
-		if strings.HasPrefix(name, "sqlmem_") || strings.HasPrefix(name, "pg_") || name == "information_schema" {
+		if strings.HasPrefix(name, "sqlmem_") || strings.HasPrefix(name, "pg_") || name == "information_schema" || name == "public" {
+			// `public` is refused too: on PG ≤14 it ships CREATE-to-PUBLIC by
+			// default, so exposing it could turn the shared schema into a WRITABLE
+			// cross-tenant surface — the opposite of read-only. Operators use a
+			// dedicated schema (the recipe's `refdata`).
 			log.Printf("sqlmem: shared schema %q skipped — reserved namespace", name)
 			continue
 		}

@@ -427,9 +427,12 @@ own). `INSERT INTO countries …` → `permission denied`.
 - **Shadowing = scope wins.** A scope's own table of the same name shadows the
   shared one for unqualified refs (and `CREATE TABLE` always lands in the scope
   schema); qualify (`refdata.countries`) to force the shared one.
-- **Resilient config.** An invalid, missing, or reserved (`sqlmem_*`/`pg_*`/
-  `information_schema`) name is skipped with a boot warning — never fatal. The
-  feature is **postgres-only**; on the sqlite tier the setting is ignored.
+- **Resilient config.** An invalid, missing, or reserved name is skipped with a
+  boot warning — never fatal. Reserved = `sqlmem_*` / `pg_*` / `information_schema`
+  / `public` (the runtime's own namespaces, plus `public` — on PG ≤14 it ships
+  `CREATE`-to-PUBLIC, so exposing it could make a *writable* cross-tenant surface;
+  use a dedicated schema like `refdata`). The feature is **postgres-only**; on the
+  sqlite tier the setting is ignored.
 
 ## Audit
 
