@@ -166,18 +166,18 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 
 	res, runErr := rt.Run(runCtx, &gbash.ExecutionRequest{Script: args.Command, Timeout: timeout})
 	if runErr != nil {
-		// Covers ctx-deadline (timeout) and gbash-internal failures.
-		msg := runErr.Error()
-		if ctxErr := runCtx.Err(); ctxErr != nil {
-			msg = fmt.Sprintf("%s [killed: %v]", msg, ctxErr)
-		}
-		return tools.Result{Text: msg, IsError: true}, nil
+		// A genuine gbash-internal failure. A wall-clock TIMEOUT does NOT land
+		// here: gbash returns (result, nil) with ExitCode 124 and an
+		// "execution timed out after <d>" stderr line, surfaced via the
+		// exit-code path below.
+		return tools.Result{Text: "bashbox: " + runErr.Error(), IsError: true}, nil
 	}
 
 	out := combineBashboxOutput(res, maxOut)
 	if res.ExitCode != 0 {
-		// Non-zero exit is often legitimate (grep no-match → 1). Surface as
-		// IsError so the model can self-correct, but include the output.
+		// Non-zero exit is often legitimate (grep no-match → 1; a timeout is
+		// exit 124, with gbash's "execution timed out" line already in `out`).
+		// Surface as IsError so the model can self-correct, output preserved.
 		out += fmt.Sprintf("\n[exit: %d]", res.ExitCode)
 		return tools.Result{Text: out, IsError: true}, nil
 	}
@@ -197,7 +197,9 @@ func combineBashboxOutput(res *gbash.ExecutionResult, maxOut int64) string {
 		sb.WriteString(res.Stderr)
 	}
 	if res.StdoutTruncated || res.StderrTruncated {
-		fmt.Fprintf(&sb, "\n[output truncated at %d bytes]", maxOut)
+		// gbash caps each stream independently, so combined output can reach
+		// 2*maxOut; the cap is per-stream.
+		fmt.Fprintf(&sb, "\n[output truncated at %d bytes per stream]", maxOut)
 	}
 	return sb.String()
 }

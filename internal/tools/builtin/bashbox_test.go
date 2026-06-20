@@ -115,6 +115,107 @@ func TestBashbox_NoHostFilesystemEscape(t *testing.T) {
 	}
 }
 
+// Escape vector #1 — `..` traversal out of the volume into a sibling host
+// dir is refused in BOTH rw and ro modes. The absolute-path test above
+// covers one vector; this locks the other against a future gbash bump (the
+// whole no-escape guarantee is delegated to alpha-pinned gbash).
+func TestBashbox_DotDotTraversalRefused(t *testing.T) {
+	for _, ro := range []bool{false, true} {
+		volRoot, _ := filepath.EvalSymlinks(t.TempDir())
+		secretDir, _ := filepath.EvalSymlinks(t.TempDir()) // SIBLING of volRoot
+		if err := os.WriteFile(filepath.Join(secretDir, "secret.txt"), []byte("TOPSECRET"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx := bashCtx(volRoot)
+		if ro {
+			ctx = roCtx(volRoot)
+		}
+		b := &Bashbox{Enabled: true}
+		rel := filepath.Join("..", filepath.Base(secretDir), "secret.txt")
+		res := runBashbox(t, b, ctx, "cat "+rel)
+		if strings.Contains(res.Text, "TOPSECRET") {
+			t.Fatalf("ro=%v: `..` traversal escaped the sandbox: %q", ro, res.Text)
+		}
+		if !res.IsError {
+			t.Errorf("ro=%v: `..` traversal should fail; got %q", ro, res.Text)
+		}
+	}
+}
+
+// Escape vector #2 — a symlink INSIDE the volume pointing OUT to a host file
+// is refused (gbash's SymlinkDeny + os.Root containment), in both modes.
+func TestBashbox_SymlinkOutRefused(t *testing.T) {
+	for _, ro := range []bool{false, true} {
+		volRoot, _ := filepath.EvalSymlinks(t.TempDir())
+		secretDir, _ := filepath.EvalSymlinks(t.TempDir())
+		secret := filepath.Join(secretDir, "secret.txt")
+		if err := os.WriteFile(secret, []byte("TOPSECRET"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(secret, filepath.Join(volRoot, "escape")); err != nil {
+			t.Fatal(err)
+		}
+		ctx := bashCtx(volRoot)
+		if ro {
+			ctx = roCtx(volRoot)
+		}
+		b := &Bashbox{Enabled: true}
+		res := runBashbox(t, b, ctx, "cat escape")
+		if strings.Contains(res.Text, "TOPSECRET") {
+			t.Fatalf("ro=%v: symlink-out escaped the sandbox: %q", ro, res.Text)
+		}
+		if !res.IsError {
+			t.Errorf("ro=%v: symlink-out should be refused; got %q", ro, res.Text)
+		}
+	}
+}
+
+// An EPHEMERAL read-only volume (the run-scoped path, resolved before the
+// VolumePolicy) is honored as ro just like a static binding: writes succeed
+// in-sandbox but never touch the host. Guards against a mis-wire of
+// EphemeralVolumeRef.ReadOnly mounting it rw.
+func TestBashbox_EphemeralRoVolume_DiscardsWrites(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := tools.NewEphemeralVolumeSet()
+	set.Add("scratch", tools.EphemeralVolumeRef{Root: root, ReadOnly: true})
+	ctx := tools.WithEphemeralVolumes(context.Background(), set)
+
+	b := &Bashbox{Enabled: true}
+	body, _ := json.Marshal(map[string]any{"command": "echo x > w.txt; cat w.txt", "volume": "scratch"})
+	res, execErr := b.Execute(ctx, body)
+	if execErr != nil {
+		t.Fatal(execErr)
+	}
+	if res.IsError || !strings.Contains(res.Text, "x") {
+		t.Fatalf("ephemeral ro write should succeed in-sandbox: err=%v out=%q", res.IsError, res.Text)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "w.txt")); !os.IsNotExist(statErr) {
+		t.Errorf("ephemeral read-only volume leaked a write to the host: %v", statErr)
+	}
+}
+
+// A wall-clock timeout is surfaced as an error with gbash's timeout line
+// preserved. (gbash returns exit 124 + an "execution timed out" stderr on a
+// deadline — NOT a Go error — so this exercises the exit-code path.)
+func TestBashbox_TimeoutSurfacesAsError(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true}
+	body, _ := json.Marshal(map[string]any{"command": "sleep 5", "timeout_seconds": 1})
+	res, err := b.Execute(bashCtx(root), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Errorf("a timed-out command should be IsError; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "timed out") {
+		t.Errorf("expected gbash timeout line in output; got %q", res.Text)
+	}
+}
+
 // No host shell-out: an unknown command (git is not a gbash command) is
 // refused with a non-zero exit rather than falling through to a host binary.
 func TestBashbox_UnknownCommandRefused(t *testing.T) {
@@ -150,7 +251,7 @@ func TestBashbox_ExecutionBudget_Truncates(t *testing.T) {
 	}
 	b := &Bashbox{Enabled: true, MaxOutputBytes: 100}
 	res := runBashbox(t, b, bashCtx(root), "cat big.txt")
-	if !strings.Contains(res.Text, "[output truncated at 100 bytes]") {
+	if !strings.Contains(res.Text, "[output truncated at 100 bytes per stream]") {
 		t.Errorf("missing truncation marker; len=%d text=%q", len(res.Text), res.Text)
 	}
 }
