@@ -159,6 +159,45 @@ func TestDump_PostgresRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDump_PostgresEnumRoundTrip: a user CREATE TYPE … AS ENUM and a table
+// column using it round-trip (the enum DDL is recreated before the table).
+func TestDump_PostgresEnumRoundTrip(t *testing.T) {
+	m, raw := pgTestManager(t, Config{})
+	ctx := context.Background()
+	key := agentKey("t1", "enum")
+	for _, s := range []string{
+		`CREATE TYPE mood AS ENUM ('low','mid','high')`,
+		`CREATE TABLE t (id int PRIMARY KEY, m mood)`,
+	} {
+		if _, err := m.Exec(ctx, key, s, nil, 0); err != nil {
+			t.Fatalf("ddl %q: %v", s, err)
+		}
+	}
+	if _, err := m.Exec(ctx, key, `INSERT INTO t VALUES (1,'high'),(2,'low')`, nil, 0); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	dump, err := m.ExportScope(ctx, key)
+	if err != nil {
+		t.Fatalf("ExportScope: %v", err)
+	}
+	dropScopeSchema(t, raw, key) // CASCADE drops the enum type too
+	fresh := freshPgManager(t, Config{})
+	if err := fresh.RestoreScope(ctx, key, dump); err != nil {
+		t.Fatalf("RestoreScope: %v", err)
+	}
+	res, err := fresh.Query(ctx, key, `SELECT m FROM t WHERE id=1`, nil)
+	if err != nil {
+		t.Fatalf("Query restored: %v", err)
+	}
+	if got, _ := res.Rows[0][0].(string); got != "high" {
+		t.Fatalf("enum value = %q, want high", got)
+	}
+	// The enum type survived: a value outside the labels is rejected.
+	if _, err := fresh.Exec(ctx, key, `INSERT INTO t VALUES (3,'bogus')`, nil, 0); err == nil {
+		t.Fatal("invalid enum value accepted — enum type not faithfully restored")
+	}
+}
+
 // TestDump_PostgresVectorRoundTrip: a pgvector column round-trips via the
 // ::text/::vector bridge. Skipped when pgvector isn't installed.
 func TestDump_PostgresVectorRoundTrip(t *testing.T) {

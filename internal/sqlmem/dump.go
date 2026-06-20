@@ -45,9 +45,17 @@ type TableDump struct {
 	Rows        [][]any
 }
 
-// b64Key is the marshal tag for a binary (non-UTF-8) value inside Rows. A
-// JSON object with exactly this one key round-trips a sqlite BLOB.
-const b64Key = "$b64"
+// b64Key tags a binary (non-UTF-8) value inside Rows; intKey tags a sqlite
+// INTEGER as a decimal string. Both are needed because JSON has no byte type and
+// no int64 type — a bare JSON number decodes to float64, which silently loses
+// precision above 2^53 and re-binds an integer as REAL (changing typeof). A
+// {"$int": "<decimal>"} / {"$b64": "<base64>"} object round-trips exactly and
+// preserves the storage class. Used only by the sqlite tier (postgres reads
+// every column as ::text, so its values are already plain strings).
+const (
+	b64Key = "$b64"
+	intKey = "$int"
+)
 
 // Tier reports the storage tier backing this Manager — "sqlite" or "postgres".
 // The snapshot stamps it on the section so Restore can skip a cross-tier

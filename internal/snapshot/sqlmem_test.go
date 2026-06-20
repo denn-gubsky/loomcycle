@@ -70,6 +70,53 @@ func TestSnapshot_SqlMemRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSnapshot_SqlMemIntegerFidelity: a large sqlite integer (> 2^53) and its
+// storage class survive the JSON envelope round-trip. Regression for the bug
+// where sqlite int64 values decoded as float64 — precision loss + typeof drift.
+func TestSnapshot_SqlMemIntegerFidelity(t *testing.T) {
+	ctx := context.Background()
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	src := newSqlMemManager(t)
+	key := sqlmem.ScopeKey{Tenant: "t1", Scope: "agent", ScopeID: "a1"}
+
+	const bigInt = int64(9007199254740993) // 2^53 + 1 — not representable as float64
+	if _, err := src.Exec(ctx, key, "CREATE TABLE t (id INTEGER PRIMARY KEY, big INTEGER, r REAL)", nil, 0); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := src.Exec(ctx, key, "INSERT INTO t (id, big, r) VALUES (?,?,?)", []any{int64(1), bigInt, 1.5}, 0); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, jsonBytes, err := Capture(ctx, s, CaptureOptions{SqlMem: src})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	s2, cleanup2 := newTestStore(t)
+	defer cleanup2()
+	dst := newSqlMemManager(t)
+	if _, err := Restore(ctx, s2, jsonBytes, RestoreOptions{SqlMem: dst}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	q, err := dst.Query(ctx, key, "SELECT big, r, typeof(big), typeof(r) FROM t WHERE id=1", nil)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(q.Rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(q.Rows))
+	}
+	if got, _ := q.Rows[0][0].(int64); got != bigInt {
+		t.Fatalf("big = %d, want %d (precision lost through JSON)", got, bigInt)
+	}
+	if got, _ := q.Rows[0][2].(string); got != "integer" {
+		t.Fatalf("typeof(big) = %q, want integer (storage class changed)", got)
+	}
+	if got, _ := q.Rows[0][3].(string); got != "real" {
+		t.Fatalf("typeof(r) = %q, want real", got)
+	}
+}
+
 // TestSnapshot_SqlMemAbsentWhenDisabled: no SqlMem ⇒ no section (byte-compatible
 // with a pre-3e envelope).
 func TestSnapshot_SqlMemAbsentWhenDisabled(t *testing.T) {

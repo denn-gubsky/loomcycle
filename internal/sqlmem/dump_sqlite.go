@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -134,7 +135,8 @@ func (b *sqliteBackend) exportScope(ctx context.Context, key ScopeKey) (*ScopeDu
 }
 
 // exportTableSQLite reads one table's columns + rows, JSON-normalizing each
-// value (UTF-8 []byte → string; binary []byte → the $b64 tagged form).
+// value (UTF-8 []byte → string; binary []byte → the $b64 tagged form; int64 →
+// the $int tagged form to survive JSON without precision/storage-class drift).
 func (b *sqliteBackend) exportTableSQLite(ctx context.Context, db *sql.DB, table string) (*TableDump, error) {
 	rows, err := db.QueryContext(ctx, `SELECT * FROM "`+strings.ReplaceAll(table, `"`, `""`)+`"`)
 	if err != nil {
@@ -156,12 +158,17 @@ func (b *sqliteBackend) exportTableSQLite(ctx context.Context, db *sql.DB, table
 			return nil, err
 		}
 		for i, v := range scan {
-			if bs, ok := v.([]byte); ok {
-				if utf8.Valid(bs) {
-					scan[i] = string(bs)
+			switch x := v.(type) {
+			case []byte:
+				if utf8.Valid(x) {
+					scan[i] = string(x)
 				} else {
-					scan[i] = map[string]any{b64Key: base64.StdEncoding.EncodeToString(bs)}
+					scan[i] = map[string]any{b64Key: base64.StdEncoding.EncodeToString(x)}
 				}
+			case int64:
+				// Tag so the value survives JSON exactly (a bare number would
+				// decode to float64 — precision loss + INTEGER→REAL drift).
+				scan[i] = map[string]any{intKey: strconv.FormatInt(x, 10)}
 			}
 		}
 		td.Rows = append(td.Rows, scan)
@@ -285,8 +292,9 @@ type execer interface {
 }
 
 // bindValue converts a dumped (possibly JSON-round-tripped) value into a driver
-// argument. The only special case is the $b64 tagged binary form, decoded to
-// []byte; everything else (string / float64 / int64 / bool / nil) binds as-is.
+// argument. The tagged forms are decoded back to their exact type: $b64 → []byte
+// (BLOB), $int → int64 (so a large integer keeps full precision and INTEGER
+// storage class). Everything else (string / float64 / bool / nil) binds as-is.
 func bindValue(v any) (any, error) {
 	if m, ok := v.(map[string]any); ok {
 		if enc, ok := m[b64Key].(string); ok {
@@ -295,6 +303,13 @@ func bindValue(v any) (any, error) {
 				return nil, fmt.Errorf("decode binary value: %w", err)
 			}
 			return raw, nil
+		}
+		if s, ok := m[intKey].(string); ok {
+			n, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("decode integer value: %w", err)
+			}
+			return n, nil
 		}
 	}
 	return v, nil

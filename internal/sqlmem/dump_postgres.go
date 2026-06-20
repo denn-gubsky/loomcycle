@@ -13,14 +13,17 @@ import (
 // replays it as the scope role through the normal provisioned path.
 //
 // Fidelity scope: tables (columns with type/DEFAULT/NOT NULL/generated-stored),
-// owned sequences (serial round-trips: CREATE SEQUENCE + nextval default +
-// setval; custom increment/min/max are NOT preserved), PK/UNIQUE/CHECK/exclusion
-// + standalone indexes, and FOREIGN KEY constraints (applied after data). Data
-// is read column-by-column as ::text and re-inserted with per-column ::type
-// casts — the one universal text↔type bridge that handles vector / jsonb /
-// timestamptz / numeric uniformly. Documented non-goals: GENERATED-ALWAYS
-// IDENTITY (restored as a plain column; data values preserved), views/triggers,
-// and custom sequence parameters.
+// enum types, owned sequences (serial round-trips: CREATE SEQUENCE + nextval
+// default + setval; custom increment/min/max are NOT preserved),
+// PK/UNIQUE/CHECK/exclusion + standalone indexes, and FOREIGN KEY constraints
+// (applied after data). Data is read column-by-column as ::text and re-inserted
+// with per-column ::type casts — the one universal text↔type bridge that handles
+// vector / jsonb / timestamptz / numeric uniformly. Documented non-goals (a
+// scope using one of these yields a per-scope restore WARNING, not silent loss):
+// other user-defined types (domains, composite, functions, aggregates,
+// operators, collations, casts), views/triggers, GENERATED-ALWAYS IDENTITY
+// (restored as a plain column; data values preserved), and custom sequence
+// parameters.
 
 // listScopes reads the durable scopes from the identity registry, skipping any
 // whose schema has since been dropped (a dangling row that a missed cleanup
@@ -71,7 +74,14 @@ func (b *postgresBackend) exportScope(ctx context.Context, key ScopeKey) (*Scope
 
 	dump := &ScopeDump{}
 
-	// Sequences first (a serial column's DEFAULT references them).
+	// Enum types first (a column may reference one).
+	enumDDL, err := pgEnumDDL(ctx, tx, schema)
+	if err != nil {
+		return nil, err
+	}
+	dump.DDL = append(dump.DDL, enumDDL...)
+
+	// Sequences next (a serial column's DEFAULT references them).
 	seqDDL, err := pgSequenceDDL(ctx, tx, schema)
 	if err != nil {
 		return nil, err
@@ -109,6 +119,47 @@ func (b *postgresBackend) exportScope(ctx context.Context, key ScopeKey) (*Scope
 	dump.DDL = append(dump.DDL, indexDDL...)
 	dump.PostDDL = fkDDL
 	return dump, nil
+}
+
+// pgEnumDDL reconstructs CREATE TYPE … AS ENUM for the scope's own enum types,
+// emitted before tables so an enum column resolves on restore. Enums are the
+// common agent-created custom type; other user-defined kinds (domains,
+// functions, aggregates, operators, composite types) are NOT captured — a scope
+// using one yields a per-scope restore warning (see exportScope's header).
+// Re-restore re-runs CREATE TYPE → 42710, tolerated by isAlreadyExists.
+func pgEnumDDL(ctx context.Context, tx *sql.Tx, schema string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT t.typname, e.enumlabel
+		   FROM pg_catalog.pg_type t
+		   JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+		   JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid
+		  WHERE n.nspname = $1 AND t.typtype = 'e'
+		  ORDER BY t.typname, e.enumsortorder`, schema)
+	if err != nil {
+		return nil, fmt.Errorf("sqlmem: read enum types: %w", err)
+	}
+	defer rows.Close()
+	var order []string
+	labels := map[string][]string{}
+	for rows.Next() {
+		var name, label string
+		if err := rows.Scan(&name, &label); err != nil {
+			return nil, err
+		}
+		if _, ok := labels[name]; !ok {
+			order = append(order, name)
+		}
+		labels[name] = append(labels[name], lit(label)) // enum labels are agent text → quoted
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, name := range order {
+		out = append(out, fmt.Sprintf(`CREATE TYPE %s.%s AS ENUM (%s)`,
+			q(schema), q(name), strings.Join(labels[name], ", ")))
+	}
+	return out, nil
 }
 
 // pgSequenceDDL emits CREATE SEQUENCE IF NOT EXISTS + a setval to restore each

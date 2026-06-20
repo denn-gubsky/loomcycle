@@ -319,12 +319,15 @@ to one the runtime created itself. `run` scopes are never snapshotted.
   capture can name the scope it restores into. sqlite recovers identity from its
   file-path layout — no registry needed.
 - **Fidelity (postgres):** tables (columns/`DEFAULT`/`NOT NULL`/stored-generated),
-  owned sequences (serial round-trips — counter restored via `setval`),
-  PK/UNIQUE/CHECK/exclusion + standalone indexes, and foreign keys (applied after
-  data). Documented non-goals: `GENERATED ALWAYS AS IDENTITY` (restored as a
-  plain column; values preserved), views/triggers, and custom sequence
-  parameters. sqlite captures the verbatim `sqlite_master` DDL + data (binary
-  BLOBs survive base64-tagged).
+  enum types, owned sequences (serial round-trips — counter restored via
+  `setval`), PK/UNIQUE/CHECK/exclusion + standalone indexes, and foreign keys
+  (applied after data). Documented non-goals — a scope using one yields a
+  per-scope restore **warning**, not silent loss: other user-defined types
+  (domains, composite, functions, aggregates, operators), views/triggers,
+  `GENERATED ALWAYS AS IDENTITY` (restored as a plain column; values preserved),
+  and custom sequence parameters. sqlite captures the verbatim `sqlite_master`
+  DDL + data (binary BLOBs survive base64-tagged, integers keep full precision
+  and storage class).
 
 For consistency across sections, **pause the runtime** (`POST /v1/runtime/pause`)
 before capturing — a scope written between the section reads is otherwise
