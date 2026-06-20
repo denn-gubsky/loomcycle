@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -30,8 +31,11 @@ type SqlMemSnapshotter interface {
 
 // captureSqlMem dumps every durable scope into the section shape. A failure on
 // any scope aborts the capture (loud, like captureMemory's embedding rule) so an
-// operator never ships a silently-partial SQL Memory archive.
-func captureSqlMem(ctx context.Context, snap SqlMemSnapshotter) (*SqlMemSection, error) {
+// operator never ships a silently-partial SQL Memory archive. maxScopeBytes > 0
+// caps a single scope's serialized dump (Phase 3f.2): an oversized scope is
+// EXCLUDED and recorded in SkippedScopes (not aborted, not silently dropped), so
+// one runaway scope can't sink the whole snapshot or blow the envelope cap.
+func captureSqlMem(ctx context.Context, snap SqlMemSnapshotter, maxScopeBytes int64) (*SqlMemSection, error) {
 	keys, err := snap.ListScopes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot sqlmem: list scopes: %w", err)
@@ -62,6 +66,14 @@ func captureSqlMem(ctx context.Context, snap SqlMemSnapshotter) (*SqlMemSection,
 				Rows:        t.Rows,
 			})
 		}
+		if maxScopeBytes > 0 {
+			if b, mErr := json.Marshal(sc); mErr == nil && int64(len(b)) > maxScopeBytes {
+				sec.SkippedScopes = append(sec.SkippedScopes, SqlMemSkippedScope{
+					Tenant: k.Tenant, Scope: k.Scope, ScopeID: k.ScopeID, Bytes: int64(len(b)),
+				})
+				continue // exclude the oversized scope; recorded above
+			}
+		}
 		sec.Scopes = append(sec.Scopes, sc)
 	}
 	return sec, nil
@@ -76,6 +88,12 @@ func restoreSqlMem(ctx context.Context, snap SqlMemSnapshotter, sec *SqlMemSecti
 		result.Warnings = append(result.Warnings,
 			fmt.Sprintf("sqlmem section is tier %q but this host is tier %q; skipped (SQL Memory dumps are tier-specific)", sec.Tier, target))
 		return
+	}
+	// Surface scopes the capture excluded for exceeding the per-scope cap — they
+	// are NOT in this snapshot and so are not restored (3f.2).
+	for _, sk := range sec.SkippedScopes {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("sqlmem scope %s/%s/%s was SKIPPED at capture (%d bytes exceeded the per-scope cap) — not restored", sk.Tenant, sk.Scope, sk.ScopeID, sk.Bytes))
 	}
 	for _, sc := range sec.Scopes {
 		dump := &sqlmem.ScopeDump{DDL: sc.DDL, PostDDL: sc.PostDDL}

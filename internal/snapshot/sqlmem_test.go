@@ -205,6 +205,72 @@ func TestSnapshot_SqlMemPresentButDisabledOnRestore(t *testing.T) {
 	}
 }
 
+// TestSnapshot_SqlMemPerScopeCap: a scope whose dump exceeds the per-scope cap
+// is excluded from the snapshot and recorded in SkippedScopes; small scopes are
+// captured normally; restore warns about the skip and does not restore it.
+func TestSnapshot_SqlMemPerScopeCap(t *testing.T) {
+	ctx := context.Background()
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	src := newSqlMemManager(t)
+	small := sqlmem.ScopeKey{Tenant: "t1", Scope: "agent", ScopeID: "small"}
+	big := sqlmem.ScopeKey{Tenant: "t1", Scope: "agent", ScopeID: "big"}
+	if _, err := src.Exec(ctx, small, "CREATE TABLE t (x TEXT)", nil, 0); err != nil {
+		t.Fatalf("create small: %v", err)
+	}
+	if _, err := src.Exec(ctx, small, "INSERT INTO t VALUES ('s')", nil, 0); err != nil {
+		t.Fatalf("insert small: %v", err)
+	}
+	if _, err := src.Exec(ctx, big, "CREATE TABLE t (x TEXT)", nil, 0); err != nil {
+		t.Fatalf("create big: %v", err)
+	}
+	blob := strings.Repeat("y", 300)
+	for i := 0; i < 100; i++ { // ~30 KB dump, well over the 4 KB cap
+		if _, err := src.Exec(ctx, big, "INSERT INTO t VALUES (?)", []any{blob}, 0); err != nil {
+			t.Fatalf("fill big: %v", err)
+		}
+	}
+
+	_, jsonBytes, err := Capture(ctx, s, CaptureOptions{SqlMem: src, SqlMemMaxScopeBytes: 4096})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(jsonBytes, &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sec := env.Sections.SqlMem
+	if sec == nil {
+		t.Fatal("no sqlmem section")
+	}
+	if len(sec.Scopes) != 1 || sec.Scopes[0].ScopeID != "small" {
+		t.Fatalf("kept scopes = %+v, want only [small]", sec.Scopes)
+	}
+	if len(sec.SkippedScopes) != 1 || sec.SkippedScopes[0].ScopeID != "big" || sec.SkippedScopes[0].Bytes <= 4096 {
+		t.Fatalf("skipped scopes = %+v, want [big > 4096 bytes]", sec.SkippedScopes)
+	}
+
+	s2, cleanup2 := newTestStore(t)
+	defer cleanup2()
+	dst := newSqlMemManager(t)
+	res, err := Restore(ctx, s2, jsonBytes, RestoreOptions{SqlMem: dst})
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if res.SqlMemScopesRestored != 1 {
+		t.Fatalf("SqlMemScopesRestored = %d, want 1 (only the small scope)", res.SqlMemScopesRestored)
+	}
+	if q, err := dst.Query(ctx, small, "SELECT x FROM t", nil); err != nil || len(q.Rows) != 1 {
+		t.Fatalf("small scope not restored: err=%v rows=%v", err, q)
+	}
+	if _, err := dst.Query(ctx, big, "SELECT x FROM t", nil); err == nil {
+		t.Fatal("big scope was restored despite exceeding the cap")
+	}
+	if !warningsContain(res.Warnings, "SKIPPED") {
+		t.Fatalf("expected a skip warning on restore, got: %v", res.Warnings)
+	}
+}
+
 func warningsContain(ws []string, sub string) bool {
 	for _, w := range ws {
 		if strings.Contains(w, sub) {

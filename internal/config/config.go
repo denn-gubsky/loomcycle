@@ -342,13 +342,19 @@ type StorageConfig struct {
 	// sensible default (one hour); meaningful when SqlMemScopeTTLMS > 0 OR
 	// SqlMemTotalMaxBytes > 0. Env: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS.
 	SqlMemGCIntervalMS int `yaml:"sqlmem_gc_interval_ms"`
-	// SqlMemTotalMaxBytes turns on size-based GC (Phase 3f): when the AGGREGATE
+	// SqlMemTotalMaxBytes turns on size-based GC (Phase 3f.3): when the AGGREGATE
 	// on-disk size of all durable (agent/user) scopes exceeds this, the sweeper
 	// evicts the largest idle scopes until back under budget (per-scope size is
 	// already capped per-write by the quota; this bounds the total). 0 = OFF (the
 	// default — GC DISCARDS DATA, so it is opt-in). Complements the TTL sweep.
 	// Env: LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES.
 	SqlMemTotalMaxBytes int64 `yaml:"sqlmem_total_max_bytes"`
+	// SqlMemSnapshotMaxScopeBytes caps a single SQL Memory scope's serialized
+	// dump in a runtime snapshot (Phase 3f.2). A scope over the cap is EXCLUDED
+	// from the snapshot and recorded in the section (so one runaway scope can't
+	// sink the whole capture or blow the 512 MB envelope cap); it is not
+	// restored. 0 = no per-scope cap. Env: LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES.
+	SqlMemSnapshotMaxScopeBytes int64 `yaml:"sqlmem_snapshot_max_scope_bytes"`
 }
 
 // ConfigDir returns the directory the YAML was loaded from. Used by
@@ -2702,6 +2708,11 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
 			cfg.Storage.SqlMemTotalMaxBytes = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			cfg.Storage.SqlMemSnapshotMaxScopeBytes = n
 		}
 	}
 	// Defaults for the bounds the operator did not set. quota stays 0 (off);

@@ -10,7 +10,16 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in vNEXT
 
-**📐 SQL Memory — size-based GC (RFC AA, Phase 3f).** The durable-scope sweeper
+**📦 SQL Memory — snapshot per-scope cap (RFC AA, Phase 3f.2).** A snapshot can
+now bound an individual SQL Memory scope: set **`sqlmem_snapshot_max_scope_bytes`**
+and a scope whose logical dump exceeds it is **excluded** from the snapshot and
+recorded in the section's `skipped_scopes` (restore emits a warning), so one
+runaway scope can't fail the whole capture or blow the 512 MB envelope cap. Off
+by default. (Bounded-memory *streaming* export was evaluated and deferred —
+snapshots persist as a single `json_content` row, so the envelope is materialized
+in memory regardless; true bounded memory needs a snapshot-to-file model.)
+
+**📐 SQL Memory — size-based GC (RFC AA, Phase 3f.3).** The durable-scope sweeper
 gains an optional aggregate **size budget**: set **`sqlmem_total_max_bytes`** and
 when all durable (`agent`/`user`) scopes together exceed it, the sweeper evicts
 the **largest idle** scopes until back under budget — complementing the TTL sweep

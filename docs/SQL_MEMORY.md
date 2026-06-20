@@ -94,6 +94,7 @@ agents:
 | `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `sqlmem_scope_ttl_ms` | durable-scope GC: drop an `agent`/`user` scope idle longer than this. **0 = OFF** (default — GC discards data) |
 | `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | `sqlmem_gc_interval_ms` | how often the GC sweeper runs (default 1h; runs when the TTL or the size budget is set) |
 | `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` | `sqlmem_total_max_bytes` | size-based GC: when ALL durable scopes together exceed this, evict the largest idle ones until under budget. **0 = OFF** (default — GC discards data) |
+| `LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES` | `sqlmem_snapshot_max_scope_bytes` | snapshot per-scope cap: a scope whose dump exceeds this is excluded + recorded (not restored). **0 = no cap** (default) |
 
 `LOOMCYCLE_SQLMEM_PG_DSN` carries the aux credentials — like `LOOMCYCLE_PG_DSN`
 it is on the env-expand denylist and is **never** interpolatable into a
@@ -354,6 +355,14 @@ to one the runtime created itself. `run` scopes are never snapshotted.
   skip); restore into the **same** tier on any host works (scope identity is a
   deterministic hash, so a postgres scope restores under the same schema name).
 - **Idempotent:** a re-restore skips a table that is already non-empty.
+- **Per-scope cap:** set `sqlmem_snapshot_max_scope_bytes` (off by default) and a
+  scope whose serialized dump exceeds it is **excluded** from the snapshot and
+  recorded in the section's `skipped_scopes` (restore emits a warning) — so one
+  runaway scope can't sink the whole capture or blow the 512 MB envelope cap.
+  Snapshots are stored as a single row (`json_content`), so the whole envelope is
+  materialized in memory regardless; this cap bounds *which* scopes are included,
+  not the per-section memory peak (true bounded-memory snapshots would need a
+  snapshot-to-file storage model — deferred).
 - **Postgres identity registry:** because a scope's postgres schema name is a
   one-way hash of `(tenant, scope, scope_id)`, the runtime records that mapping
   in a small `sqlmem_meta.scope_registry` table (created automatically) so a
