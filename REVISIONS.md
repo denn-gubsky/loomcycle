@@ -8,6 +8,49 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.3.0
+
+**🧰 Bashbox — a TRUE in-process shell sandbox (RFC AJ).** A new opt-in tool that
+runs shell commands **in-process** via [gbash](https://github.com/ewhauser/gbash)
+(pure-Go, Apache-2.0): no OS process is spawned, every path is rooted at the
+bound volume, and there is no network. Unlike the existing `Bash` tool — which
+shells out via `os/exec` and is "restricted, not isolated" — Bashbox's isolation
+is real, so it **honors read-only volumes**: a `ro` binding mounts under an
+in-RAM write overlay, so a script's writes succeed in-run but **never touch the
+host tree** (the asymmetry RFC AH left open — `Bash` refuses `ro` because it
+can't enforce it). Opt-in exactly like Bash: `LOOMCYCLE_BASHBOX_ENABLED=1` per
+deployment + `allowed_tools:[Bashbox]` per agent; stateless per call. Bundles the
+pure-Go `awk`/`jq` contrib commands on top of gbash's coreutils builtins (a
+command-coverage spike measured ~97% `/bin/sh` parity on a representative agent
+corpus). gbash is alpha and pinned to an exact version; the per-agent gate is the
+escape hatch.
+
+**🔌 Bashbox host-command fallback — operator opt-in (RFC AJ §13).** Commands
+gbash doesn't implement (`git`, `gh`, …) normally fail inside Bashbox. An
+operator can allowlist specific ones to fall through to the **real host shell**
+via `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` — and **only** those names
+escape the sandbox; every other command stays sandboxed (so `git status; curl …`
+runs git on the host but `curl` in the sandbox — **no smuggling escape**). The
+mechanism is a per-command host-exec proxy registered into gbash. It **requires a
+read-write volume** (a host process can't honor the read-only overlay → a
+fallback command on a `ro` volume refuses), runs with its working directory
+mapped to the host path for the script's cwd (containment-checked), and reaches
+credentials only through a second operator allowlist
+`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GH_TOKEN,HOME,SSH_AUTH_SOCK` — injected
+**only** into the host child, never the sandbox env (the model can't read them
+via `env`). Off by default; a loud boot warning fires when configured.
+
+### Compatibility
+
+Additive + off-by-default — **no breaking changes, no new wire RPCs.** Bashbox is
+an in-band tool reachable on every transport; the TS (`@loomcycle/client`) and
+Python (`loomcycle`) adapters are **unchanged** since v1.1.1 — there is
+intentionally no `@loomcycle/client@1.3.0` and no `python-v1.3.0`.
+
+Operator detail: the `bashbox` `Context op=help` topic + `docs/TOOLS.md`.
+
+---
+
 ## What's in v1.2.0
 
 **🗃️ SQL Memory — a per-scope SQL database for agents (RFC AA).** The headline of
