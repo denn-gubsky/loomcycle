@@ -28,6 +28,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"code-agents",
 		"compaction",
 		"content-signatures",
+		"document",
 		"dynamic-mcp",
 		"experimentation",
 		"fairness",

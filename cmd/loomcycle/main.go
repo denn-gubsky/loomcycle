@@ -689,6 +689,12 @@ func main() {
 	pathTool := &builtin.Path{}
 	allTools = append(allTools, pathTool)
 
+	// RFC AK — the Document tool (chunked-graph documents). Store late-bound
+	// below; SqlMem bound in the SQL Memory block (Document requires it); Bus
+	// for change events.
+	documentTool := &builtin.Document{Bus: channelBus}
+	allTools = append(allTools, documentTool)
+
 	// MCPServerDef tool construction is deferred until after the pool
 	// + dynamic registry are built (operator-admin-only — NOT appended
 	// to allTools; wired via SetMCPServerDefTool after the pool exists).
@@ -1056,6 +1062,7 @@ func main() {
 	skillDefTool.Store = storeIface
 	volumeDefTool.Store = storeIface
 	pathTool.Store = storeIface
+	documentTool.Store = storeIface
 	skillTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface
@@ -1219,6 +1226,7 @@ func main() {
 			sqlAudit = fs
 		}
 		memoryTool.SqlMem = sqlMemMgr
+		documentTool.SqlMem = sqlMemMgr
 		memoryTool.SqlAudit = sqlAudit
 		memoryTool.SqlAuditMode = cfg.Storage.SqlMemAuditMode
 		// Reuse the server's redactor (same secret-classified env) so an
