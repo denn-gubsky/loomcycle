@@ -165,8 +165,12 @@ func (s *Store) DirentMove(ctx context.Context, tenantID, scope, scopeID, fromPa
 	fromFull := fromParent + fromName + "/"
 	toFull := toParent + toName + "/"
 	if _, err := tx.Exec(ctx,
+		// $2::int — without the cast Postgres infers $2 as text (it can't tell
+		// SUBSTRING's FROM arg is an integer from a bare placeholder) and pgx
+		// fails to encode the Go int. SQLite is untyped so its contract run
+		// passed; the go-postgres CI job caught this parity gap.
 		`UPDATE dirents
-		 SET parent_path = $1 || SUBSTRING(parent_path FROM $2), updated_at = $3
+		 SET parent_path = $1 || SUBSTRING(parent_path FROM $2::int), updated_at = $3
 		 WHERE tenant_id = $4 AND scope = $5 AND scope_id = $6
 		   AND (parent_path = $7 OR parent_path LIKE $8 ESCAPE '\')`,
 		toFull, len(fromFull)+1, now,
