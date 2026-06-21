@@ -3,7 +3,9 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -41,6 +43,14 @@ import (
 //     Opt-in, operator-allowlisted egress is a deliberate follow-up so its
 //     URL-prefix matching gets its own review.
 //
+//   - **Host-command fallback (RFC AJ §13, operator opt-in).** gbash can't run
+//     commands it doesn't implement (git, gh, …). When the operator allowlists
+//     such names (FallbackCommands), each gets a host-exec proxy that runs the
+//     REAL host binary — but ONLY those names; every other command stays
+//     sandboxed (so `git status; curl evil` runs git on the host and curl in
+//     the sandbox — no smuggling escape). Fallback requires a rw volume (a host
+//     process can't honor the ro overlay) and is off by default.
+//
 // Opt-in like Bash: Enabled=false refuses every call; enable per deployment
 // with LOOMCYCLE_BASHBOX_ENABLED=1 and per agent via allowed_tools:[Bashbox].
 //
@@ -58,23 +68,44 @@ type Bashbox struct {
 	// Timeout caps wall-clock per call. Default 30s. Hard ceiling 5min.
 	Timeout time.Duration
 
-	// regOnce builds the command registry exactly once per tool instance: the
-	// default builtins plus the opt-in contrib commands. The registry is then
-	// shared read-only across concurrent calls (Lookup is RLock-guarded).
+	// FallbackCommands names host commands (e.g. git, gh) that gbash does NOT
+	// implement and that the operator allows to ESCAPE the sandbox to the real
+	// host shell (RFC AJ §13). Empty (default) = no fallback. Operator-only,
+	// never model-supplied. Each listed name is registered as a host-exec
+	// proxy; every other command stays sandboxed. Requires a rw volume (a host
+	// process can't honor the in-RAM ro overlay) — a fallback command on a ro
+	// volume refuses.
+	FallbackCommands []string
+	// FallbackAllowedEnv names env vars passed into fallback commands (e.g.
+	// GH_TOKEN, HOME, SSH_AUTH_SOCK). Injected ONLY into the host child, never
+	// into the sandbox env — the model can't read them via `env`. PATH always
+	// passes. Empty (default) = only PATH.
+	FallbackAllowedEnv []string
+
+	// regOnce builds the base command registry exactly once per tool instance
+	// (default builtins + contrib awk/jq), shared read-only across concurrent
+	// calls (Lookup is RLock-guarded). Used only when no fallback is
+	// configured; with fallback the per-call proxies force a fresh registry.
 	regOnce sync.Once
 	reg     commands.CommandRegistry
 }
 
 func (b *Bashbox) Name() string { return "Bashbox" }
 func (b *Bashbox) Description() string {
-	return "Run a shell command in a TRUE in-process sandbox (no OS process, virtual filesystem rooted at your volume, no network). Honors read-only volumes — writes never touch the host. Returns combined stdout+stderr."
+	d := "Run a shell command in a TRUE in-process sandbox (no OS process, virtual filesystem rooted at your volume, no network). Honors read-only volumes — writes never touch the host. Returns combined stdout+stderr."
+	if len(b.FallbackCommands) > 0 {
+		// Tell the model which host commands the operator has allowlisted to
+		// run on the real host (they require a read-write volume).
+		d += " The operator has allowlisted these host commands to run on the real host (read-write volume required): " + strings.Join(b.FallbackCommands, ", ") + "."
+	}
+	return d
 }
 
 func (b *Bashbox) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"command":         {"type": "string", "description": "Shell command to run inside the sandbox. Use paths RELATIVE to your volume root (e.g. \"ls .\", \"grep -rn foo src\"). Common coreutils are available (grep/sed/awk/find/sort/uniq/cut/tr/wc/jq/...); NO host binaries (git/curl) and NO network are reachable. Call Context op=self to see your volumes."},
+			"command":         {"type": "string", "description": "Shell command to run inside the sandbox. Use paths RELATIVE to your volume root (e.g. \"ls .\", \"grep -rn foo src\"). Common coreutils are available (grep/sed/awk/find/sort/uniq/cut/tr/wc/jq/...). Host binaries and network are NOT reachable unless the operator allowlisted specific host commands — see this tool's description for which (if any). Call Context op=self to see your volumes."},
 			"timeout_seconds": {"type": "integer", "description": "Per-call timeout. Capped at 300s."},
 			"volume":          {"type": "string", "description": "Optional volume name to run in (sets the working directory). Omit to use your default volume. READ-ONLY volumes are allowed here — writes succeed inside the sandbox but never touch the host. Call Context op=self for the volumes you may access."}
 		},
@@ -82,18 +113,95 @@ func (b *Bashbox) InputSchema() json.RawMessage {
 	}`)
 }
 
-// registry lazily assembles the command set once per tool instance: gbash's
-// default builtins (grep/sed/find/sort/cut/tr/wc/...) plus the opt-in,
-// pure-Go contrib commands agents commonly reach for (awk, jq). Built under a
-// sync.Once and shared read-only thereafter.
-func (b *Bashbox) registry() commands.CommandRegistry {
-	b.regOnce.Do(func() {
-		reg := gbash.DefaultRegistry()
-		_ = awkcmd.Register(reg) // contrib/awk — pure-Go awk
-		_ = jqcmd.Register(reg)  // contrib/jq  — pure-Go jq
-		b.reg = reg
+// buildRegistry assembles the gbash command set for one call: the default
+// builtins (grep/sed/find/sort/cut/tr/wc/...) plus the opt-in pure-Go contrib
+// commands (awk, jq). When the operator configured host-command fallback it
+// ALSO registers a host-exec proxy for each allowlisted name (RFC AJ §13),
+// bound to this call's resolved host root + ro/rw mode.
+//
+// With no fallback the registry is identical across calls, so it is built once
+// under a sync.Once and shared read-only. With fallback the proxies capture
+// per-call state (the host root), so a fresh registry is built per call.
+func (b *Bashbox) buildRegistry(hostRoot string, readOnly bool) commands.CommandRegistry {
+	if len(b.FallbackCommands) == 0 {
+		b.regOnce.Do(func() {
+			reg := gbash.DefaultRegistry()
+			_ = awkcmd.Register(reg) // contrib/awk — pure-Go awk
+			_ = jqcmd.Register(reg)  // contrib/jq  — pure-Go jq
+			b.reg = reg
+		})
+		return b.reg
+	}
+	reg := gbash.DefaultRegistry()
+	_ = awkcmd.Register(reg)
+	_ = jqcmd.Register(reg)
+	for _, name := range b.FallbackCommands {
+		// A proxy OVERRIDES a same-named gbash builtin (Register replaces by
+		// name) — operators shouldn't allowlist commands gbash already has
+		// unless they specifically want host behavior.
+		_ = reg.Register(b.fallbackProxy(name, hostRoot, readOnly))
+	}
+	return reg
+}
+
+// fallbackProxy returns a gbash command that execs the REAL host binary `name`
+// (RFC AJ §13) — the deliberate, operator-gated escape from the sandbox. Only
+// the operator-allowlisted names get one, so every other command in a script
+// still runs in gbash (a `git status; curl evil` script runs git on the host
+// but curl in the sandbox, where it has no network). It composes with gbash:
+// args + stdin/stdout/stderr come from the invocation, so pipes and redirection
+// work, and the exit code is propagated.
+//
+// A host process cannot honor gbash's in-RAM read-only overlay, so on a ro
+// volume the proxy REFUSES rather than write to the real host behind a false
+// read-only guarantee.
+func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.Command {
+	return commands.DefineCommand(name, func(ctx context.Context, inv *commands.Invocation) error {
+		if readOnly {
+			fmt.Fprintf(inv.Stderr, "%s: requires a read-write volume — the host-command fallback cannot honor read-only\n", name)
+			return &commands.ExitError{Code: 1}
+		}
+		// Translate the sandbox cwd to a real host path, re-checking containment
+		// so a `cd ../..` can't run the host command outside the volume.
+		hostCwd, err := fallbackHostCwd(hostRoot, inv.Cwd)
+		if err != nil {
+			fmt.Fprintf(inv.Stderr, "%s: %v\n", name, err)
+			return &commands.ExitError{Code: 1}
+		}
+		// inv.Args excludes argv[0] (the command name) — see find.go:86.
+		cmd := exec.CommandContext(ctx, name, inv.Args...)
+		cmd.Dir = hostCwd
+		cmd.Env = scrubbedHostEnv(b.FallbackAllowedEnv)
+		cmd.Stdin = inv.Stdin
+		cmd.Stdout = inv.Stdout
+		cmd.Stderr = inv.Stderr
+		runErr := cmd.Run()
+		if runErr == nil {
+			return nil
+		}
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			// The host command ran and exited non-zero — propagate its code.
+			return &commands.ExitError{Code: exitErr.ExitCode()}
+		}
+		// Couldn't start it (binary not on the host PATH, etc.).
+		fmt.Fprintf(inv.Stderr, "%s: %v\n", name, runErr)
+		return &commands.ExitError{Code: 127}
 	})
-	return b.reg
+}
+
+// fallbackHostCwd maps the sandbox working directory to a real host path. In rw
+// mode (the only mode fallback runs in) gbash roots the sandbox at "/" == the
+// host volume root, so a sandbox cwd of "/sub" is hostRoot/sub. resolveInsideRoot
+// re-validates containment (EvalSymlinks + relInsideRoot), so a path that
+// escapes the volume is rejected rather than run on the host.
+func fallbackHostCwd(hostRoot, sandboxCwd string) (string, error) {
+	rel := strings.TrimPrefix(filepath.ToSlash(sandboxCwd), "/")
+	resolved, err := resolveInsideRoot(hostRoot, filepath.FromSlash(rel))
+	if err != nil {
+		return "", fmt.Errorf("working directory %q escapes the volume: %w", sandboxCwd, err)
+	}
+	return resolved, nil
 }
 
 func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
@@ -152,10 +260,12 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 
 	rt, err := gbash.New(
 		fsOpt,
-		gbash.WithRegistry(b.registry()),
+		gbash.WithRegistry(b.buildRegistry(rootResolved, readOnly)),
 		// Per-stream output cap inside gbash; combineOutput appends a marker.
 		gbash.WithLimitOverrides(policy.Limits{MaxStdoutBytes: maxOut, MaxStderrBytes: maxOut}),
-		// No network option → no egress (curl refused). Egress is a follow-up.
+		// No network option → gbash itself has no egress. Operator-allowlisted
+		// host commands (FallbackCommands) run as real processes and DO have
+		// host network — that's inherent to the fallback (RFC AJ §13).
 	)
 	if err != nil {
 		return tools.Result{Text: "bashbox init: " + err.Error(), IsError: true}, nil

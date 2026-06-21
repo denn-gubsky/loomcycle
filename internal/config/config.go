@@ -1949,6 +1949,18 @@ type Env struct {
 	// enable with LOOMCYCLE_BASHBOX_ENABLED=1. gbash is alpha — the per-agent
 	// allowed_tools gate is the escape hatch.
 	BashboxEnabled bool
+	// BashboxFallbackCommands is the operator allowlist of host commands that
+	// gbash does NOT implement (e.g. git, gh) and that may ESCAPE the Bashbox
+	// sandbox to run on the real host shell (RFC AJ §13). Empty (default) = no
+	// fallback. Only these names reach the host; every other command stays
+	// sandboxed. Requires a rw volume. Sourced from
+	// LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS (comma-separated).
+	BashboxFallbackCommands []string
+	// BashboxFallbackAllowedEnv names env vars passed into fallback commands
+	// (e.g. GH_TOKEN, HOME, SSH_AUTH_SOCK) — injected only into the host child,
+	// never the sandbox. PATH always passes. Sourced from
+	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV (comma-separated).
+	BashboxFallbackAllowedEnv []string
 	// SkillsRoot points at a directory holding subdirectories of the
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
@@ -2602,32 +2614,34 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.Env = Env{
-		AnthropicAPIKey:          os.Getenv("ANTHROPIC_API_KEY"),
-		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
-		VoyageAPIKey:             os.Getenv("VOYAGE_API_KEY"),
-		OllamaBaseURL:            getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
-		OllamaAPIKey:             os.Getenv("OLLAMA_API_KEY"),
-		OllamaCloudBaseURL:       getenvDefault("OLLAMA_CLOUD_BASE_URL", "https://ollama.com"),
-		DeepSeekAPIKey:           os.Getenv("DEEPSEEK_API_KEY"),
-		DeepSeekBaseURL:          os.Getenv("DEEPSEEK_BASE_URL"),
-		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
-		GeminiBaseURL:            os.Getenv("GEMINI_BASE_URL"),
-		ListenAddr:               getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
-		AuthToken:                os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
-		OperatorTokenPepper:      os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
-		AuditLogPath:             os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
-		AuthVerbose:              os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
-		DataDir:                  getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
-		HTTPHostAllowlist:        splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
-		HTTPPrivateHostAllowlist: splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
-		HTTPCallerAuthoritative:  os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
-		ResumeFanout:             os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
-		BraveAPIKey:              os.Getenv("BRAVE_API_KEY"),
-		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
-		BashboxEnabled:           os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
-		SkillsRoot:               os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
-		AgentsRoot:               os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
-		HelpRoot:                 os.Getenv("LOOMCYCLE_HELP_ROOT"),
+		AnthropicAPIKey:           os.Getenv("ANTHROPIC_API_KEY"),
+		OpenAIAPIKey:              os.Getenv("OPENAI_API_KEY"),
+		VoyageAPIKey:              os.Getenv("VOYAGE_API_KEY"),
+		OllamaBaseURL:             getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
+		OllamaAPIKey:              os.Getenv("OLLAMA_API_KEY"),
+		OllamaCloudBaseURL:        getenvDefault("OLLAMA_CLOUD_BASE_URL", "https://ollama.com"),
+		DeepSeekAPIKey:            os.Getenv("DEEPSEEK_API_KEY"),
+		DeepSeekBaseURL:           os.Getenv("DEEPSEEK_BASE_URL"),
+		GeminiAPIKey:              os.Getenv("GEMINI_API_KEY"),
+		GeminiBaseURL:             os.Getenv("GEMINI_BASE_URL"),
+		ListenAddr:                getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
+		AuthToken:                 os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
+		OperatorTokenPepper:       os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
+		AuditLogPath:              os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
+		AuthVerbose:               os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
+		DataDir:                   getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
+		HTTPHostAllowlist:         splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
+		HTTPPrivateHostAllowlist:  splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
+		HTTPCallerAuthoritative:   os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
+		ResumeFanout:              os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
+		BraveAPIKey:               os.Getenv("BRAVE_API_KEY"),
+		BashEnabled:               os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
+		BashboxEnabled:            os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
+		BashboxFallbackCommands:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
+		BashboxFallbackAllowedEnv: splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV")),
+		SkillsRoot:                os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
+		AgentsRoot:                os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
+		HelpRoot:                  os.Getenv("LOOMCYCLE_HELP_ROOT"),
 		// Sweeper / GC defaults — populated above zero only if the
 		// env var below was set. The fallbacks are applied in
 		// cmd/loomcycle/main.go where the goroutines are started.
