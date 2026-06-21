@@ -263,6 +263,39 @@ func (d *Document) query(ctx context.Context, key sqlmem.ScopeKey, stmt string, 
 	return d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(stmt), args)
 }
 
+// withSqlTxn runs fn inside a FRESH, independent SQL Memory transaction —
+// committing on success, rolling back on any error. A unique txn id means it
+// never nests onto an agent's explicit sql_begin, so the delete is its own
+// atomic unit: a mid-cascade failure rolls back the whole SQL side, leaving the
+// chunk graph untouched (no half-deleted mess). The chunk Memory BODIES live in
+// a separate store and can't join this txn — callers delete them AFTER a
+// successful commit (an orphaned body is invisible dead k/v; an orphaned row
+// would be visible, so SQL-first is least-bad).
+func (d *Document) withSqlTxn(ctx context.Context, key sqlmem.ScopeKey, fn func(txnID string) error) error {
+	txnID := "doc-tx:" + newDocID()
+	if _, err := d.SqlMem.BeginTxn(ctx, txnID, tools.RunIdentity(ctx).RootRunID, key); err != nil {
+		return err
+	}
+	if err := fn(txnID); err != nil {
+		_, _ = d.SqlMem.RollbackTxn(txnID)
+		return err
+	}
+	if _, err := d.SqlMem.CommitTxn(txnID); err != nil {
+		_, _ = d.SqlMem.RollbackTxn(txnID)
+		return err
+	}
+	return nil
+}
+
+func (d *Document) execTxn(ctx context.Context, txnID, stmt string, args ...any) error {
+	_, err := d.SqlMem.ExecTxn(ctx, txnID, d.SqlMem.Rebind(stmt), args, 0)
+	return err
+}
+
+func (d *Document) queryTxn(ctx context.Context, txnID, stmt string, args ...any) (*sqlmem.QueryResult, error) {
+	return d.SqlMem.QueryTxn(ctx, txnID, d.SqlMem.Rebind(stmt), args)
+}
+
 // chunkRow is the SQL-side chunk record (body/fields come from Memory).
 type chunkRow struct {
 	ID         string `json:"id"`
@@ -447,27 +480,37 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return errResult("delete_document: " + err.Error()), nil
 	}
-	// Gather every chunk id so we can drop its Memory body (SQL deletes don't
-	// reach the separate Memory store).
-	res, err := d.query(ctx, key, `SELECT id FROM chunks WHERE document_id = ?`, docID)
-	if err != nil {
-		return errResult("delete_document: " + err.Error()), nil
-	}
-	n := 0
-	for _, r := range res.Rows {
-		id := asStr(r[0])
-		_, _ = d.Store.MemoryDelete(ctx, mscope, key.ScopeID, chunkBodyKey(id))
-		n++
-	}
-	for _, stmt := range []string{
-		`DELETE FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?)`,
-		`DELETE FROM chunks WHERE document_id = ?`,
-		`DELETE FROM documents WHERE id = ?`,
-	} {
-		if err := d.exec(ctx, key, stmt, docID); err != nil {
-			return errResult("delete_document: " + err.Error()), nil
+	// The SQL side runs in ONE transaction: enumerate the chunk ids (for the
+	// Memory-body cleanup below), then delete edges (BOTH directions — so an
+	// INCOMING cross-document edge from another doc no longer dangles), then
+	// the chunk rows, then the document row. Any failure rolls the whole thing
+	// back — no half-deleted document.
+	var ids []string
+	txErr := d.withSqlTxn(ctx, key, func(txnID string) error {
+		res, err := d.queryTxn(ctx, txnID, `SELECT id FROM chunks WHERE document_id = ?`, docID)
+		if err != nil {
+			return err
 		}
+		for _, r := range res.Rows {
+			ids = append(ids, asStr(r[0]))
+		}
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID, docID); err != nil {
+			return err
+		}
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE document_id = ?`, docID); err != nil {
+			return err
+		}
+		return d.execTxn(ctx, txnID, `DELETE FROM documents WHERE id = ?`, docID)
+	})
+	if txErr != nil {
+		return errResult("delete_document: " + txErr.Error()), nil
 	}
+	// Bodies AFTER commit (separate store; best-effort — an orphaned body is
+	// invisible dead k/v, never reachable once its chunk row is gone).
+	for _, id := range ids {
+		_, _ = d.Store.MemoryDelete(ctx, mscope, key.ScopeID, chunkBodyKey(id))
+	}
+	n := len(ids)
 	// Drop any Path-tree dirent(s) pointing at this document — best-effort, by
 	// document_id (works whether the caller addressed by id or path, so a
 	// delete-by-id never leaves a dangling name). Scans the scope's document
@@ -643,40 +686,68 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if !ok {
 		return errResult("delete_chunk: no such chunk: " + in.ID), nil
 	}
-	// Enumerate the chunk + all descendants (iterative BFS — portable, no
-	// recursive CTE). A visited set guarantees termination even if a parent_id
-	// cycle somehow exists (move_chunk refuses to create one, but the walk must
-	// never hang on corrupt data).
-	ids := []string{in.ID}
-	visited := map[string]bool{in.ID: true}
-	frontier := []string{in.ID}
-	for len(frontier) > 0 {
-		next := []string{}
-		for _, pid := range frontier {
-			res, qerr := d.query(ctx, key, `SELECT id FROM chunks WHERE parent_id = ?`, pid)
-			if qerr != nil {
-				return errResult("delete_chunk: " + qerr.Error()), nil
-			}
-			for _, r := range res.Rows {
-				cid := asStr(r[0])
-				if visited[cid] {
-					continue
+	// Refuse to delete a document's ROOT chunk — that would orphan the
+	// documents row (root_chunk_id dangling, zero chunks). Use delete_document.
+	// Fail CLOSED if the lookup errors: a guard that silently skips on a query
+	// fault would let exactly the orphan it protects against slip through.
+	if rr, rerr := d.query(ctx, key, `SELECT 1 FROM documents WHERE root_chunk_id = ? LIMIT 1`, in.ID); rerr != nil {
+		return errResult("delete_chunk: " + rerr.Error()), nil
+	} else if len(rr.Rows) > 0 {
+		return errResult("delete_chunk: refusing to delete a document's root chunk — use delete_document"), nil
+	}
+	// The cascade runs in ONE transaction: enumerate the chunk + all
+	// descendants (iterative BFS — portable, no recursive CTE; a visited set
+	// guarantees termination even on a corrupt parent cycle), then delete each
+	// node's edges (both directions) + row. Any failure rolls back the whole
+	// subtree — never a half-deleted graph.
+	var ids []string
+	txErr := d.withSqlTxn(ctx, key, func(txnID string) error {
+		ids = []string{in.ID}
+		visited := map[string]bool{in.ID: true}
+		frontier := []string{in.ID}
+		for len(frontier) > 0 {
+			next := []string{}
+			for _, pid := range frontier {
+				res, qerr := d.queryTxn(ctx, txnID, `SELECT id FROM chunks WHERE parent_id = ?`, pid)
+				if qerr != nil {
+					return qerr
 				}
-				visited[cid] = true
-				ids = append(ids, cid)
-				next = append(next, cid)
+				// Fail CLOSED on truncation: if one frontier level has more
+				// children than the row cap, the unseen rows would survive a
+				// parent delete as orphans. Refuse rather than half-delete the
+				// subtree (the txn rolls back). Pathological (cap default 10k
+				// siblings) but exactly the orphan-mess we're hardening against.
+				if res.Truncated {
+					return fmt.Errorf("subtree too wide to cascade safely (a level exceeds the row cap) — delete children in smaller batches first")
+				}
+				for _, r := range res.Rows {
+					cid := asStr(r[0])
+					if visited[cid] {
+						continue
+					}
+					visited[cid] = true
+					ids = append(ids, cid)
+					next = append(next, cid)
+				}
+			}
+			frontier = next
+		}
+		for _, cid := range ids {
+			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_edges WHERE from_id = ? OR to_id = ?`, cid, cid); err != nil {
+				return err
+			}
+			if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE id = ?`, cid); err != nil {
+				return err
 			}
 		}
-		frontier = next
+		return nil
+	})
+	if txErr != nil {
+		return errResult("delete_chunk: " + txErr.Error()), nil
 	}
+	// Bodies after commit (best-effort; see delete_document).
 	for _, cid := range ids {
 		_, _ = d.Store.MemoryDelete(ctx, mscope, key.ScopeID, chunkBodyKey(cid))
-		if err := d.exec(ctx, key, `DELETE FROM chunk_edges WHERE from_id = ? OR to_id = ?`, cid, cid); err != nil {
-			return errResult("delete_chunk: edges: " + err.Error()), nil
-		}
-		if err := d.exec(ctx, key, `DELETE FROM chunks WHERE id = ?`, cid); err != nil {
-			return errResult("delete_chunk: " + err.Error()), nil
-		}
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "delete_chunk", in.ID)
 	return jsonResult(map[string]any{"deleted": true, "cascade_deleted_descendants": len(ids) - 1})
@@ -734,6 +805,20 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.FromID == "" || in.ToID == "" || in.Kind == "" {
 		return errResult("link_chunks: from_id, to_id, and kind are required"), nil
+	}
+	// Both endpoints MUST exist (in this scope) — otherwise the edge is born
+	// dangling. Cross-document edges are allowed (both chunks just have to
+	// exist; they may be in different documents of this scope), but an edge to
+	// a non-existent chunk is refused.
+	if _, ok, err := d.getChunkRow(ctx, key, in.FromID); err != nil {
+		return errResult("link_chunks: " + err.Error()), nil
+	} else if !ok {
+		return errResult("link_chunks: from_id: no such chunk: " + in.FromID), nil
+	}
+	if _, ok, err := d.getChunkRow(ctx, key, in.ToID); err != nil {
+		return errResult("link_chunks: " + err.Error()), nil
+	} else if !ok {
+		return errResult("link_chunks: to_id: no such chunk: " + in.ToID), nil
 	}
 	now := time.Now().UnixNano()
 	// Idempotent (INSERT OR IGNORE-equivalent via existence check for portability).

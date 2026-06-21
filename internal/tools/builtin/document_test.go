@@ -280,13 +280,14 @@ func TestDocument_MoveChunkCycleRefused(t *testing.T) {
 	if _, r := docExec(t, d, ctx, `{"op":"move_chunk","scope":"user","id":"`+a+`","new_parent_id":"`+a+`"}`); !r.IsError {
 		t.Errorf("move under self must be refused")
 	}
-	// a is intact, and delete_chunk(root) terminates (no hang) and removes all.
-	out, r := docExec(t, d, ctx, `{"op":"delete_chunk","scope":"user","id":"`+root+`"}`)
+	// a is intact, and delete_chunk(a) terminates (no hang) and cascades b.
+	// (Can't delete the root chunk directly now — that's delete_document.)
+	out, r := docExec(t, d, ctx, `{"op":"delete_chunk","scope":"user","id":"`+a+`"}`)
 	if r.IsError {
 		t.Fatalf("delete after refused move: %q", r.Text)
 	}
-	if int(out["cascade_deleted_descendants"].(float64)) != 2 { // a + b
-		t.Errorf("cascade count = %v, want 2", out["cascade_deleted_descendants"])
+	if int(out["cascade_deleted_descendants"].(float64)) != 1 { // b
+		t.Errorf("cascade count = %v, want 1", out["cascade_deleted_descendants"])
 	}
 }
 
@@ -375,9 +376,115 @@ func TestDocument_Postgres(t *testing.T) {
 	if _, r := docExec(t, d, ctx, `{"op":"update_chunk","scope":"user","id":"`+c1+`","revision":1,"body":"x"}`); !r.IsError {
 		t.Errorf("pg stale revision should conflict")
 	}
-	// delete cascade (BFS) on pg.
-	out, res = docExec(t, d, ctx, `{"op":"delete_chunk","scope":"user","id":"`+root+`"}`)
-	if res.IsError || int(out["cascade_deleted_descendants"].(float64)) != 1 {
-		t.Errorf("pg delete cascade = %s", res.Text)
+	// delete_chunk cascade (BFS + txn) on pg: c1 is a leaf, cascade 0.
+	out, res = docExec(t, d, ctx, `{"op":"delete_chunk","scope":"user","id":"`+c1+`"}`)
+	if res.IsError || int(out["cascade_deleted_descendants"].(float64)) != 0 {
+		t.Errorf("pg delete_chunk = %s", res.Text)
+	}
+	// delete_document (transactional, bidirectional edge sweep) on pg.
+	out, res = docExec(t, d, ctx, `{"op":"delete_document","scope":"user","id":"`+docID+`"}`)
+	if res.IsError {
+		t.Errorf("pg delete_document = %s", res.Text)
+	}
+}
+
+// Hardening: link_chunks must refuse an edge to a non-existent chunk (no
+// born-dangling edges).
+func TestDocument_LinkChunksValidatesEndpoints(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D"}`)
+	root := out["root_chunk_id"].(string)
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+out["document_id"].(string)+`","parent_id":"`+root+`","title":"a","body":""}`)
+	a := out["id"].(string)
+	// to_id doesn't exist → refuse.
+	if _, r := docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+a+`","to_id":"nope","kind":"promotes"}`); !r.IsError || !strings.Contains(r.Text, "no such chunk") {
+		t.Errorf("link to a non-existent chunk should refuse; got %q", r.Text)
+	}
+	// from_id doesn't exist → refuse.
+	if _, r := docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"ghost","to_id":"`+a+`","kind":"promotes"}`); !r.IsError {
+		t.Errorf("link from a non-existent chunk should refuse; got %q", r.Text)
+	}
+}
+
+// Hardening: deleting a document's root chunk is refused (would orphan the doc).
+func TestDocument_DeleteRootChunkRefused(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D"}`)
+	root := out["root_chunk_id"].(string)
+	if _, r := docExec(t, d, ctx, `{"op":"delete_chunk","scope":"user","id":"`+root+`"}`); !r.IsError || !strings.Contains(r.Text, "root chunk") {
+		t.Errorf("deleting the root chunk should be refused; got %q", r.Text)
+	}
+	// The document is intact.
+	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+out["document_id"].(string)+`"}`); r.IsError {
+		t.Errorf("document should survive a refused root-chunk delete")
+	}
+}
+
+// Hardening: delete_document removes INCOMING cross-document edges too (the
+// bidirectional cleanup), so no dangling edge points at a deleted chunk.
+func TestDocument_DeleteDocumentCleansIncomingCrossDocEdges(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	// doc1 with chunk A.
+	o1, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D1"}`)
+	doc1, r1 := o1["document_id"].(string), o1["root_chunk_id"].(string)
+	oa, _ := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+doc1+`","parent_id":"`+r1+`","title":"a","body":""}`)
+	a := oa["id"].(string)
+	// doc2 with chunk B.
+	o2, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D2"}`)
+	doc2, r2 := o2["document_id"].(string), o2["root_chunk_id"].(string)
+	ob, _ := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+doc2+`","parent_id":"`+r2+`","title":"b","body":""}`)
+	b := ob["id"].(string)
+	// B (doc2) → A (doc1): an INCOMING edge into doc1. Both exist → allowed.
+	if _, r := docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+b+`","to_id":"`+a+`","kind":"targets"}`); r.IsError {
+		t.Fatalf("cross-doc link: %q", r.Text)
+	}
+	// Delete doc1. The B→A edge (from_id=B is in doc2, to_id=A is in doc1) must
+	// be cleaned by the bidirectional sweep — not left dangling.
+	if _, r := docExec(t, d, ctx, `{"op":"delete_document","scope":"user","id":"`+doc1+`"}`); r.IsError {
+		t.Fatalf("delete_document: %q", r.Text)
+	}
+	out, res := docExec(t, d, ctx, `{"op":"query_chunks","scope":"user","sql":"SELECT from_id, to_id FROM chunk_edges"}`)
+	if res.IsError {
+		t.Fatalf("edge query: %q", res.Text)
+	}
+	if rows, _ := out["rows"].([]any); len(rows) != 0 {
+		t.Errorf("incoming cross-doc edge left dangling after delete_document: %s", res.Text)
+	}
+}
+
+// Hardening: delete_chunk fails CLOSED when a BFS frontier level exceeds the
+// SQL Memory row cap — a truncated enumeration would orphan the unseen
+// children's rows under a deleted parent, so we refuse rather than half-delete.
+func TestDocument_DeleteChunkRefusesTruncatedSubtree(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	// MaxRows:1 → any parent with ≥2 children truncates the frontier query.
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir(), MaxRows: 1})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	ctx := tools.WithAgentName(context.Background(), "doc-agent")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
+	d := &Document{Store: s, SqlMem: mgr, Bus: channels.NewBus()}
+
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D"}`)
+	doc, root := out["document_id"].(string), out["root_chunk_id"].(string)
+	// A parent with two children under it → frontier level of 2 > cap of 1.
+	op, _ := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+doc+`","parent_id":"`+root+`","title":"p","body":""}`)
+	parent := op["id"].(string)
+	for _, name := range []string{"c1", "c2"} {
+		docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+doc+`","parent_id":"`+parent+`","title":"`+name+`","body":""}`)
+	}
+	// delete_chunk(parent) must refuse (fail closed), not orphan a child.
+	if _, r := docExec(t, d, ctx, `{"op":"delete_chunk","scope":"user","id":"`+parent+`"}`); !r.IsError || !strings.Contains(r.Text, "too wide") {
+		t.Fatalf("delete_chunk over a truncated subtree should refuse; got err=%v text=%q", r.IsError, r.Text)
+	}
+	// The parent and both children must still exist (txn rolled back).
+	if _, r := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+parent+`"}`); r.IsError {
+		t.Errorf("parent must survive the refused delete; got %q", r.Text)
 	}
 }
