@@ -164,11 +164,20 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // allow-listed names. Sensitive secrets like API keys never leak — the
 // model could otherwise extract them via `env`.
 func (b *Bash) buildEnv() []string {
+	return scrubbedHostEnv(b.AllowedExtraEnv)
+}
+
+// scrubbedHostEnv builds the environment for a host child process: PATH always
+// (most binaries break without it) plus the operator-allow-listed names.
+// Anything not on the allowlist (API keys, secrets) never leaks. Shared by the
+// Bash tool and the Bashbox host-command fallback (RFC AJ §13) so the two
+// security-sensitive env paths can't drift apart.
+func scrubbedHostEnv(allowedExtra []string) []string {
 	out := []string{}
 	if v := os.Getenv("PATH"); v != "" {
 		out = append(out, "PATH="+v)
 	}
-	for _, name := range b.AllowedExtraEnv {
+	for _, name := range allowedExtra {
 		if v := os.Getenv(name); v != "" {
 			out = append(out, name+"="+v)
 		}

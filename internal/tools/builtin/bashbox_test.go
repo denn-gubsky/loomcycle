@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -290,5 +291,169 @@ func TestBashbox_NonZeroExitSurfacesAsError(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "[exit: 7]") {
 		t.Errorf("exit marker missing: %q", res.Text)
+	}
+}
+
+// ── RFC AJ §13: operator host-command fallback ──────────────────────────────
+
+func skipIfNoHostCmd(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		t.Skipf("host command %q not available; skipping", name)
+	}
+}
+
+// An operator-allowlisted host command (git — gbash has no git) runs on the
+// real host instead of 127ing.
+func TestBashbox_FallbackCommandRunsOnHost(t *testing.T) {
+	skipIfNoHostCmd(t, "git")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	res := runBashbox(t, b, bashCtx(root), "git --version")
+	if res.IsError {
+		t.Fatalf("allowlisted git should run on host: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "git version") {
+		t.Errorf("expected host git output; got %q", res.Text)
+	}
+}
+
+// A non-allowlisted command stays sandboxed even when another (git) IS
+// allowlisted: curl gets no host proxy, so it resolves only against gbash and
+// 127s. gbash has no host-PATH fallback, so 127 is its baseline for any
+// unregistered name — the DISCRIMINATING assertion is the "libcurl" check: if
+// proxies were ever registered for non-allowlisted names, host curl would run
+// and print "libcurl". (See also TestBashbox_FallbackProxyExactNameOnly.)
+func TestBashbox_NonAllowlistedCommandStaysSandboxed(t *testing.T) {
+	skipIfNoHostCmd(t, "curl")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	res := runBashbox(t, b, bashCtx(root), "curl --version")
+	if !res.IsError {
+		t.Fatalf("non-allowlisted curl must not escape the sandbox; got %q", res.Text)
+	}
+	if strings.Contains(res.Text, "libcurl") {
+		t.Fatalf("curl reached the host (sandbox escape!): %q", res.Text)
+	}
+}
+
+// A script mixing an allowlisted and a non-allowlisted command runs only the
+// allowlisted one on the host; the other stays sandboxed (no smuggling).
+func TestBashbox_SmugglingBlocked(t *testing.T) {
+	skipIfNoHostCmd(t, "git")
+	skipIfNoHostCmd(t, "curl")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	res := runBashbox(t, b, bashCtx(root), "git --version; curl --version")
+	if !strings.Contains(res.Text, "git version") {
+		t.Errorf("git (allowlisted) should have run on host: %q", res.Text)
+	}
+	if strings.Contains(res.Text, "libcurl") {
+		t.Fatalf("curl (NOT allowlisted) reached the host inside a mixed script: %q", res.Text)
+	}
+}
+
+// The allowlist is keyed to the command BASENAME, and the proxy always execs
+// the operator's name via the host PATH (the model's path string is ignored —
+// gbash resolves a path-form command by basename, and the proxy closure runs
+// its captured name, not the model's spelling). So no spelling of a
+// NON-allowlisted command — a sibling basename or a path-form — can reach a
+// non-allowlisted host binary. (`git` is allowlisted here; curl is not.)
+func TestBashbox_FallbackProxyExactNameOnly(t *testing.T) {
+	skipIfNoHostCmd(t, "git")
+	skipIfNoHostCmd(t, "curl")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	for _, cmd := range []string{
+		"git-notathing --version", // sibling basename of an allowlisted name
+		"curl --version",          // bare non-allowlisted command
+		"/usr/bin/curl --version", // path-form of a non-allowlisted command
+	} {
+		res := runBashbox(t, b, bashCtx(root), cmd)
+		if !res.IsError {
+			t.Errorf("%q should be refused; got %q", cmd, res.Text)
+		}
+		if strings.Contains(res.Text, "libcurl") {
+			t.Errorf("%q reached host curl (sandbox escape): %q", cmd, res.Text)
+		}
+	}
+}
+
+// A fallback command on a read-only volume refuses (a host process can't honor
+// the in-RAM overlay) rather than writing to the real host behind a false ro.
+func TestBashbox_FallbackRefusedOnRoVolume(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	res := runBashbox(t, b, roCtx(root), "git status")
+	if !res.IsError {
+		t.Fatalf("fallback on a ro volume must refuse; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "read-write volume") {
+		t.Errorf("expected ro refusal message; got %q", res.Text)
+	}
+}
+
+// The env-credential allowlist: an allowlisted var reaches the host command; a
+// non-allowlisted secret does not; and the sandbox `env` (no fallback) sees
+// neither, so the model can't read host credentials.
+func TestBashbox_FallbackEnvAllowlist(t *testing.T) {
+	skipIfNoHostCmd(t, "env")
+	t.Setenv("LOOMCYCLE_FB_PUBLIC", "public-ok")
+	t.Setenv("LOOMCYCLE_FB_SECRET", "secret-leak")
+	// An AMBIENT secret-shaped var the operator never mentioned — the model's
+	// real target. It must not reach the host child either.
+	t.Setenv("AMBIENT_API_KEY", "sk-ambient-must-not-leak")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"env"}, FallbackAllowedEnv: []string{"LOOMCYCLE_FB_PUBLIC"}}
+	res := runBashbox(t, b, bashCtx(root), "env")
+	if res.IsError {
+		t.Fatalf("host env should run: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "LOOMCYCLE_FB_PUBLIC=public-ok") {
+		t.Errorf("allowlisted var did not reach the host command: %q", res.Text)
+	}
+	if strings.Contains(res.Text, "secret-leak") {
+		t.Fatalf("non-allowlisted secret leaked into the host command env: %q", res.Text)
+	}
+	if strings.Contains(res.Text, "sk-ambient-must-not-leak") {
+		t.Fatalf("an ambient (never-allowlisted) secret leaked into the host command env: %q", res.Text)
+	}
+
+	// Without fallback, `env` is gbash's sandbox builtin — neither var is in the
+	// sandbox env, so the model can't read host credentials via env.
+	b2 := &Bashbox{Enabled: true}
+	res2 := runBashbox(t, b2, bashCtx(root), "env")
+	if strings.Contains(res2.Text, "public-ok") || strings.Contains(res2.Text, "secret-leak") {
+		t.Errorf("host env leaked into the sandbox env: %q", res2.Text)
+	}
+}
+
+// With no fallback configured, a gbash-unknown command (git) 127s as before.
+func TestBashbox_FallbackDisabledByDefault(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true} // no FallbackCommands
+	res := runBashbox(t, b, bashCtx(root), "git --version")
+	if !res.IsError {
+		t.Errorf("without fallback, git should 127; got %q", res.Text)
+	}
+}
+
+// cwd translation: a fallback command runs in the host path for the script's
+// current dir (cd sub → hostRoot/sub), proving it executes on the host (not the
+// sandbox virtual "/") with the cwd mapped + containment-checked. Uses git
+// (a registry-dispatched proxy) — `pwd`/`cd` are gbash shell builtins a proxy
+// can't override. `git rev-parse --show-toplevel` prints the real host path.
+func TestBashbox_FallbackHostCwdTranslated(t *testing.T) {
+	skipIfNoHostCmd(t, "git")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	res := runBashbox(t, b, bashCtx(root), "mkdir -p sub && cd sub && git init -q && git rev-parse --show-toplevel")
+	if res.IsError {
+		t.Fatalf("host git should run: %q", res.Text)
+	}
+	want := filepath.Join(root, "sub")
+	if !strings.Contains(res.Text, want) {
+		t.Errorf("fallback git did not run in the translated host cwd %q; got %q", want, res.Text)
 	}
 }

@@ -579,7 +579,11 @@ func main() {
 		// Bashbox — a TRUE in-process sandbox (gbash): no OS process, paths
 		// rooted at the volume, no network, and read-only volumes are honored
 		// (writes hit an in-RAM overlay). Opt-in like Bash.
-		&builtin.Bashbox{Enabled: cfg.Env.BashboxEnabled},
+		&builtin.Bashbox{
+			Enabled:            cfg.Env.BashboxEnabled,
+			FallbackCommands:   cfg.Env.BashboxFallbackCommands,
+			FallbackAllowedEnv: cfg.Env.BashboxFallbackAllowedEnv,
+		},
 		// SkillTool's Store is late-bound below (so DB-active SkillDef
 		// rows override the static Set body). Nil-Store before
 		// late-binding falls back to the static Set; the assignment
@@ -768,6 +772,9 @@ func main() {
 	}
 	if cfg.Env.BashboxEnabled {
 		log.Printf("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha; gate per agent via allowed_tools.")
+		if len(cfg.Env.BashboxFallbackCommands) > 0 {
+			log.Printf("WARNING: Bashbox host-command fallback is enabled (LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=%s). These commands ESCAPE the sandbox and run on the real host shell (with host filesystem + network) — only allowlist commands you trust, and only enable for trusted prompts. Fallback requires a read-write volume.", strings.Join(cfg.Env.BashboxFallbackCommands, ","))
+		}
 	} else {
 		log.Printf("note: Bashbox tool is registered but disabled — set LOOMCYCLE_BASHBOX_ENABLED=1 to enable (in-process sandbox; see docs)")
 	}
