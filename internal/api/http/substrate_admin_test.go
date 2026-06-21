@@ -517,6 +517,34 @@ func TestSubstrateAdmin_Document_HappyPath(t *testing.T) {
 	}
 }
 
+// TestSubstrateAdminUserCtx_ResolvesPrincipalSubject: the user-aware ctx used
+// by the Path/Document endpoints stamps user_id from the principal's Subject
+// (so an off-run user-scope op interoperates with that user's agent runs),
+// falling back to the synthetic id when no principal is present.
+func TestSubstrateAdminUserCtx_ResolvesPrincipalSubject(t *testing.T) {
+	// With a principal → user_id is the principal subject (tenant preserved).
+	withP := auth.WithPrincipal(context.Background(), auth.Principal{
+		Subject:  "alice",
+		TenantID: "acme",
+	})
+	id := tools.RunIdentity(substrateAdminUserCtx(withP))
+	if id.UserID != "alice" {
+		t.Errorf("UserID = %q, want alice (the principal subject)", id.UserID)
+	}
+	if id.TenantID != "acme" {
+		t.Errorf("TenantID = %q, want acme (authoritative principal tenant)", id.TenantID)
+	}
+	if id.AgentID != substrateAdminAgentID {
+		t.Errorf("AgentID = %q, want the synthetic %q", id.AgentID, substrateAdminAgentID)
+	}
+
+	// No principal (legacy token / open mode) → synthetic fallback.
+	idNoP := tools.RunIdentity(substrateAdminUserCtx(context.Background()))
+	if idNoP.UserID != substrateAdminUserID {
+		t.Errorf("no-principal UserID = %q, want synthetic %q", idNoP.UserID, substrateAdminUserID)
+	}
+}
+
 func postAdmin(t *testing.T, ts *httptest.Server, path, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest("POST", ts.URL+path, bytes.NewReader([]byte(body)))

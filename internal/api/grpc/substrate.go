@@ -113,6 +113,25 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	return ctx
 }
 
+// substrateGRPCUserCtx is substrateGRPCCtx with the user_id resolved to the
+// authenticated principal's Subject (not the synthetic grpc-admin id), so an
+// off-run scope:"user" Path/Document op operates on the SAME user-scope data
+// the principal's agent runs use (runs derive user_id from principal.Subject).
+// Mirror of the HTTP substrateAdminUserCtx. Tenant + the synthetic agent
+// identity are unchanged; no principal / empty subject → synthetic fallback.
+func substrateGRPCUserCtx(ctx context.Context) context.Context {
+	base := substrateGRPCCtx(ctx)
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.Subject == "" {
+		return base
+	}
+	return tools.WithRunIdentity(base, tools.RunIdentityValue{
+		UserID:   principal.Subject,
+		AgentID:  grpcSubstrateAdminAgentID,
+		TenantID: principal.TenantID,
+	})
+}
+
 // v0.8.22 substrate admin RPCs. Mirror of the
 // /v1/_agentdef + /v1/_skilldef HTTP endpoints — different
 // transport, identical semantics. Both dispatch through the
@@ -263,7 +282,10 @@ func (s *Server) VolumeDef(ctx context.Context, req *loomcyclepb.SubstrateReques
 // the operator-trust identity + the caller's authoritative tenant; the tool
 // resolves scope from that, never the wire.
 func (s *Server) Path(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "Path", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	// User-aware ctx: an off-run scope:"user" op keys on the principal's
+	// Subject (= the run user_id), so it interoperates with the principal's
+	// agent runs. See substrateGRPCUserCtx.
+	return s.dispatchSubstrateRPCCtx(ctx, "Path", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.Path(ctx, in)
 		if err != nil {
 			return nil, false, err
@@ -275,7 +297,7 @@ func (s *Server) Path(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*
 // Document serves the RFC AK Document gRPC RPC. Same shape + tenant-confined
 // posture as Path; requires SQL Memory enabled on the runtime.
 func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "Document", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "Document", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.Document(ctx, in)
 		if err != nil {
 			return nil, false, err
@@ -284,13 +306,26 @@ func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest
 	})
 }
 
-// dispatchSubstrateRPC is the shared body of the two substrate
-// handlers. callerFn closes over the specific Connector method
-// (AgentDef or SkillDef).
+// dispatchSubstrateRPC is the shared body of the substrate-def handlers. The
+// def-tools scope on tenant (not user), so they use the plain operator-trust
+// substrateGRPCCtx.
 func (s *Server) dispatchSubstrateRPC(
 	ctx context.Context,
 	toolName string,
 	req *loomcyclepb.SubstrateRequest,
+	callerFn func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error),
+) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, toolName, req, substrateGRPCCtx, callerFn)
+}
+
+// dispatchSubstrateRPCCtx is the generalized body: ctxFn builds the
+// operator-trust ctx (substrateGRPCCtx for the tenant-scoped def-tools;
+// substrateGRPCUserCtx for the user-scope-aware Path/Document tools).
+func (s *Server) dispatchSubstrateRPCCtx(
+	ctx context.Context,
+	toolName string,
+	req *loomcyclepb.SubstrateRequest,
+	ctxFn func(context.Context) context.Context,
 	callerFn func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error),
 ) (*loomcyclepb.SubstrateResponse, error) {
 	if s.connector == nil {
@@ -308,7 +343,7 @@ func (s *Server) dispatchSubstrateRPC(
 	// this, every substrate call from gRPC returns is_error=true
 	// with the "no scopes" refusal — invisible under mock-based
 	// tests, broken in production.
-	ctx = substrateGRPCCtx(ctx)
+	ctx = ctxFn(ctx)
 	out, isErr, err := callerFn(ctx, json.RawMessage(in))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%s: %v", toolName, err)

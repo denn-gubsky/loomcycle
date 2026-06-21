@@ -10,9 +10,11 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -177,6 +179,28 @@ func TestGrpcVolumeDef_HappyPath(t *testing.T) {
 	}
 	if string(resp.GetOutputJson()) != `{"name":"repo-a","path":"/pool/_shared/repo-a","mode":"rw"}` {
 		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
+// TestSubstrateGRPCUserCtx_ResolvesPrincipalSubject mirrors the HTTP
+// substrateAdminUserCtx test: the user-aware ctx used by the Path/Document
+// RPCs stamps user_id from the principal's Subject, with a synthetic fallback.
+func TestSubstrateGRPCUserCtx_ResolvesPrincipalSubject(t *testing.T) {
+	withP := auth.WithPrincipal(context.Background(), auth.Principal{
+		Subject:  "alice",
+		TenantID: "acme",
+	})
+	id := tools.RunIdentity(substrateGRPCUserCtx(withP))
+	if id.UserID != "alice" {
+		t.Errorf("UserID = %q, want alice (the principal subject)", id.UserID)
+	}
+	if id.TenantID != "acme" {
+		t.Errorf("TenantID = %q, want acme", id.TenantID)
+	}
+
+	idNoP := tools.RunIdentity(substrateGRPCUserCtx(context.Background()))
+	if idNoP.UserID != grpcSubstrateAdminUserID {
+		t.Errorf("no-principal UserID = %q, want synthetic %q", idNoP.UserID, grpcSubstrateAdminUserID)
 	}
 }
 

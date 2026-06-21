@@ -101,27 +101,41 @@ func (s *Server) handleSubstrateVolumeDef(w http.ResponseWriter, r *http.Request
 }
 
 // handleSubstratePath serves POST /v1/_path.
-// RFC AL Path VFS. Bearer-authed; same dispatch shape as the other endpoints.
-// No per-tool scope policy (gated by allowed_tools; substrateAdminCtx grants
-// the ["*"] tool ceiling), so the operator-trust caller isn't default-denied.
+// RFC AL Path VFS. Bearer-authed; no per-tool scope policy (gated by
+// allowed_tools; substrateAdminUserCtx grants the ["*"] tool ceiling). Uses
+// the USER-aware ctx so an off-run user-scoped op operates on the SAME
+// user-scope tree an agent run for this principal uses (see
+// substrateAdminUserCtx).
 func (s *Server) handleSubstratePath(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrate(w, r, "Path", s.Path)
+	s.dispatchSubstrateCtx(w, r, "Path", s.Path, substrateAdminUserCtx)
 }
 
 // handleSubstrateDocument serves POST /v1/_document.
-// RFC AK chunked-graph documents. Bearer-authed; same dispatch shape as the
-// other endpoints. Requires SQL Memory enabled.
+// RFC AK chunked-graph documents. Bearer-authed; requires SQL Memory. Uses the
+// USER-aware ctx so off-run user-scoped documents interoperate with the
+// principal's agent runs (see substrateAdminUserCtx).
 func (s *Server) handleSubstrateDocument(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrate(w, r, "Document", s.Document)
+	s.dispatchSubstrateCtx(w, r, "Document", s.Document, substrateAdminUserCtx)
 }
 
-// dispatchSubstrate is the shared body of the two handlers.
-// connectorFn is the Connector method (already a method value
-// bound to the Server). toolName is the label used in error
-// envelopes.
+// dispatchSubstrate is the shared body of the substrate-def handlers.
+// connectorFn is the Connector method (already a method value bound to the
+// Server). toolName is the label used in error envelopes. The def-tools scope
+// on tenant (not user), so they use the plain operator-trust substrateAdminCtx.
 func (s *Server) dispatchSubstrate(
 	w http.ResponseWriter, r *http.Request, toolName string,
 	connectorFn func(ctx context.Context, input json.RawMessage) (connector.ToolResult, error),
+) {
+	s.dispatchSubstrateCtx(w, r, toolName, connectorFn, substrateAdminCtx)
+}
+
+// dispatchSubstrateCtx is the generalized body: ctxFn builds the operator-trust
+// ctx (substrateAdminCtx for the tenant-scoped def-tools; substrateAdminUserCtx
+// for the user-scope-aware Path/Document tools).
+func (s *Server) dispatchSubstrateCtx(
+	w http.ResponseWriter, r *http.Request, toolName string,
+	connectorFn func(ctx context.Context, input json.RawMessage) (connector.ToolResult, error),
+	ctxFn func(context.Context) context.Context,
 ) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20)) // 1 MB cap
 	if err != nil {
@@ -140,7 +154,7 @@ func (s *Server) dispatchSubstrate(
 		return
 	}
 
-	ctx := substrateAdminCtx(r.Context())
+	ctx := ctxFn(r.Context())
 	result, err := connectorFn(ctx, body)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
@@ -278,6 +292,29 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	// route behind the substrate:admin scope.
 	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	return ctx
+}
+
+// substrateAdminUserCtx is substrateAdminCtx with the user_id resolved to the
+// authenticated principal's Subject (not the synthetic http-admin id). It's
+// used by the scope-aware Path + Document endpoints so an off-run
+// `scope:"user"` op operates on the SAME user-scope tree/documents an agent run
+// for this principal uses — runs derive their user_id from principal.Subject
+// (auth.applyPrincipal), so without this, externally-created user-scope data
+// would be invisible to the user's agents (and differ between the HTTP/gRPC
+// clients). Tenant + the synthetic agent identity are unchanged (agent-scope
+// stays operator-private out-of-band). Open mode / no principal / empty subject
+// → falls back to the synthetic id (single-user behaviour preserved).
+func substrateAdminUserCtx(ctx context.Context) context.Context {
+	base := substrateAdminCtx(ctx)
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.Subject == "" {
+		return base
+	}
+	return tools.WithRunIdentity(base, tools.RunIdentityValue{
+		UserID:   principal.Subject,
+		AgentID:  substrateAdminAgentID,
+		TenantID: principal.TenantID,
+	})
 }
 
 // handleSubstrateOperatorTokenDef serves POST /v1/_operatortokendef.
