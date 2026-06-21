@@ -52,6 +52,7 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `SkillDef`  | Always registered (v0.8.22). Per-agent `skill_def_scopes:` YAML gate (default-deny); no extra env var. Storage shared with the rest of the substrate. |
 | `VolumeDef` | Always registered (RFC AH Phase 2a/2b). Per-agent `volume_def_scopes:` YAML gate (default-deny) for create/delete/purge; get/list are tenant-scoped reads. `create {ephemeral:true}` provisions a run-scoped volume auto-purged at top-level-run completion. Requires a static volume marked `dynamic_root: true`. Storage shared with the rest of the substrate. |
 | `Memory`    | Storage backend (SQLite default; Postgres opt-in) + per-agent `memory_scopes:` allowlist. |
+| `Path`      | Always registered (RFC AL). Per-agent `allowed_tools:[Path]`. A Unix-like VFS (`resolve`/`ls`/`stat`/`mkdir`/`mv`/`rm`) over the `dirents` runtime-store table, naming Memory entries / Volume mounts / Documents by tenant-rooted, scope-aware (agent/user/tenant) paths. Resources keep native ids; a dirent is a name, not an authority grant. Paths reject `..`; tenant-isolated. Resources opt in via `Memory.set path:` / `VolumeDef.create mount_at:` / `Document.create_document path:`. |
 
 Bash has additional warnings: it is **not a true sandbox** even when enabled. Run loomcycle inside a container or VM if Bash is exposed to untrusted prompts. See `internal/tools/builtin/bash.go` for the full warning.
 
