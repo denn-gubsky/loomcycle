@@ -2,7 +2,9 @@ package builtin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -305,5 +307,77 @@ func TestDocument_DeleteByIDCleansDirent(t *testing.T) {
 	// dirent is gone (no dangling name).
 	if _, derr := s.DirentGet(context.Background(), "tnt", "agent", "doc-agent", "/docs/", "d"); derr == nil {
 		t.Errorf("dirent should be removed after delete-by-id")
+	}
+}
+
+// TestDocument_Postgres exercises the Document tool's SQL against the POSTGRES
+// SQL Memory tier (the sqlite contract runs everywhere; this catches
+// sqlite-vs-postgres parity bugs in the DDL / `?` rebind / type coercion — the
+// class that bit Plan 1's DirentMove). Gated on the aux DSN; runs in CI's
+// go-postgres job. (Dirents + bodies stay sqlite — only the structure tier is
+// PG here, which is the parity surface under test.)
+func TestDocument_Postgres(t *testing.T) {
+	dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
+	if dsn == "" {
+		t.Skip("set LOOMCYCLE_TEST_SQLMEM_PG_DSN to run the Document postgres-tier parity test")
+	}
+	raw, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	dropAllSqlmemScopes(t, raw)
+	mgr, err := sqlmem.NewPostgres(context.Background(), sqlmem.Config{PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = mgr.Close()
+		dropAllSqlmemScopes(t, raw)
+		_ = raw.Close()
+	})
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	d := &Document{Store: s, SqlMem: mgr, Bus: channels.NewBus()}
+	ctx := tools.WithAgentName(context.Background(), "pg-doc")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "u1", TenantID: "tnt"})
+
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"PG"}`)
+	if res.IsError {
+		t.Fatalf("create_document(pg): %q", res.Text)
+	}
+	docID := out["document_id"].(string)
+	root := out["root_chunk_id"].(string)
+	// root-level append (parent_id IS NULL branch) + a parented chunk.
+	out, res = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","type":"pub","status":"draft","title":"c1","body":"b"}`)
+	if res.IsError {
+		t.Fatalf("create_chunk(pg): %q", res.Text)
+	}
+	c1 := out["id"].(string)
+	if int(out["revision"].(float64)) != 1 {
+		t.Errorf("pg revision = %v", out["revision"])
+	}
+	// query by type/status (BIGINT/INTEGER columns + ? rebind).
+	out, res = docExec(t, d, ctx, `{"op":"query_chunks","scope":"user","type":"pub","status":"draft"}`)
+	if res.IsError {
+		t.Fatalf("query(pg): %q", res.Text)
+	}
+	if rows, _ := out["chunks"].([]any); len(rows) != 1 {
+		t.Errorf("pg query by type = %s", res.Text)
+	}
+	// update revision (atomic bump + RowsAffected gate on pg).
+	out, res = docExec(t, d, ctx, `{"op":"update_chunk","scope":"user","id":"`+c1+`","revision":1,"status":"published"}`)
+	if res.IsError || int(out["revision"].(float64)) != 2 {
+		t.Fatalf("update(pg): %s", res.Text)
+	}
+	if _, r := docExec(t, d, ctx, `{"op":"update_chunk","scope":"user","id":"`+c1+`","revision":1,"body":"x"}`); !r.IsError {
+		t.Errorf("pg stale revision should conflict")
+	}
+	// delete cascade (BFS) on pg.
+	out, res = docExec(t, d, ctx, `{"op":"delete_chunk","scope":"user","id":"`+root+`"}`)
+	if res.IsError || int(out["cascade_deleted_descendants"].(float64)) != 1 {
+		t.Errorf("pg delete cascade = %s", res.Text)
 	}
 }

@@ -250,13 +250,17 @@ func chunkBodyKey(chunkID string) string { return "doc.chunk:" + chunkID }
 
 // --- SQL helpers ---
 
+// exec/query run the tool's OWN statements (written with portable `?`
+// placeholders) — Rebind converts `?`→`$N` on the postgres tier. The raw `sql:`
+// escape hatch does NOT go through these (it calls the Manager directly with
+// the model's dialect-native SQL).
 func (d *Document) exec(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) error {
-	_, err := d.SqlMem.Exec(ctx, key, stmt, args, 0)
+	_, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(stmt), args, 0)
 	return err
 }
 
 func (d *Document) query(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) (*sqlmem.QueryResult, error) {
-	return d.SqlMem.Query(ctx, key, stmt, args)
+	return d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(stmt), args)
 }
 
 // chunkRow is the SQL-side chunk record (body/fields come from Memory).
@@ -584,7 +588,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// fix for the silent lost-update: the read-check above is advisory; THIS is
 	// the real gate).
 	now := time.Now().UnixNano()
-	bumped, err := d.SqlMem.Exec(ctx, key, `UPDATE chunks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`, []any{now, in.ID, *in.Revision}, 0)
+	bumped, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(`UPDATE chunks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`), []any{now, in.ID, *in.Revision}, 0)
 	if err != nil {
 		return errResult("update_chunk: " + err.Error()), nil
 	}
@@ -761,7 +765,10 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 	// Raw escape hatch: route the model's SELECT straight to SQL Memory (the
 	// validator gates it — read-only, no ATTACH/etc.).
 	if in.SQL != "" {
-		res, err := d.query(ctx, key, in.SQL)
+		// Raw escape hatch: pass the model's SQL straight to the Manager (NO
+		// Rebind — the model uses the tier's native placeholders; rebinding
+		// could corrupt a `?` inside a string literal). Validator-gated.
+		res, err := d.SqlMem.Query(ctx, key, in.SQL, nil)
 		if err != nil {
 			return errResult("query_chunks: " + err.Error()), nil
 		}

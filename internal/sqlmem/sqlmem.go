@@ -27,6 +27,8 @@ package sqlmem
 import (
 	"context"
 	"database/sql"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -188,6 +190,31 @@ func newManager(d dialect, cfg Config, b backend) *Manager {
 	m.startReaper()
 	m.startGC()
 	return m
+}
+
+// Rebind converts `?` positional placeholders to the active dialect's form:
+// `$1, $2, …` for postgres (which the pgx backend requires — it does NOT
+// accept `?`), and unchanged for sqlite. This lets a tool author write ONE
+// portable statement with `?`. It is a purely positional replacement and does
+// NOT skip a `?` inside a string literal — call it only on statements you
+// construct yourself (with bound values), never on raw model/user SQL.
+func (m *Manager) Rebind(sql string) string {
+	if m.dialect != dialectPostgres {
+		return sql
+	}
+	var b strings.Builder
+	b.Grow(len(sql) + 8)
+	n := 0
+	for i := 0; i < len(sql); i++ {
+		if sql[i] == '?' {
+			n++
+			b.WriteByte('$')
+			b.WriteString(strconv.Itoa(n))
+			continue
+		}
+		b.WriteByte(sql[i])
+	}
+	return b.String()
 }
 
 // Query runs a read-only statement against the scope database. The statement
