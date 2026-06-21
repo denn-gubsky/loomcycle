@@ -129,6 +129,25 @@ func TestPath_MvRejectsClobberAndRoot(t *testing.T) {
 	}
 }
 
+// Regression (review finding #1): moving a directory into its own subtree
+// must be refused — otherwise the descendant-rewrite orphans the whole tree.
+func TestPath_MvIntoOwnSubtreeRefused(t *testing.T) {
+	p, ctx, s := pathFixture(t)
+	seedAgent(t, s, "/", "proj", "directory")
+	seedAgent(t, s, "/proj/", "file", "document")
+
+	if _, r := pathExec(t, p, ctx, `{"op":"mv","path":"/proj","to":"/proj/inner"}`); !r.IsError {
+		t.Fatalf("mv into own subtree must be refused; got %q", r.Text)
+	}
+	// The tree must be intact — /proj and /proj/file still resolve.
+	if _, r := pathExec(t, p, ctx, `{"op":"resolve","path":"/proj"}`); r.IsError {
+		t.Errorf("/proj was corrupted by a refused mv: %q", r.Text)
+	}
+	if _, r := pathExec(t, p, ctx, `{"op":"resolve","path":"/proj/file"}`); r.IsError {
+		t.Errorf("/proj/file was corrupted by a refused mv: %q", r.Text)
+	}
+}
+
 func TestPath_RmRecursiveRefusal(t *testing.T) {
 	p, ctx, s := pathFixture(t)
 	seedAgent(t, s, "/", "docs", "directory")

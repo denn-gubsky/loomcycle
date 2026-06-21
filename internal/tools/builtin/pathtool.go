@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -214,6 +215,13 @@ func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	}
 	if fromC == toC {
 		return errResult("source and destination are the same path"), nil
+	}
+	// A directory can't be moved into itself or its own subtree — the
+	// descendant-rewrite would reparent the moved node beneath itself and
+	// orphan the whole subtree (real filesystems reject this, EINVAL). The
+	// trailing-slash form avoids a /docs vs /docs2 false positive.
+	if strings.HasPrefix(toC+"/", fromC+"/") {
+		return errResult("cannot move a path into itself or its own subtree: " + fromC + " -> " + toC), nil
 	}
 	// No-clobber: the destination must not already exist.
 	if _, err := p.Store.DirentGet(ctx, tenantID, scope, scopeID, toParent, toName); err == nil {

@@ -28,6 +28,12 @@ func likeEscape(s string) string {
 
 func (s *Store) DirentCreate(ctx context.Context, row store.DirentRow) (store.DirentRow, error) {
 	now := time.Now()
+	// resource_ref is NOT NULL and must be valid JSON (postgres stores it as
+	// jsonb, which rejects ""); default an empty ref to "{}" for backend
+	// parity.
+	if len(row.ResourceRef) == 0 {
+		row.ResourceRef = json.RawMessage("{}")
+	}
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO dirents (`+direntCols+`)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

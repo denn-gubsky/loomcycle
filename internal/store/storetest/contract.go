@@ -7360,6 +7360,16 @@ func testDirentCreateAndGet(t *testing.T, s store.Store) {
 	if _, err := s.DirentGet(ctx, "", "user", "u1", "/", "nope"); !errors.As(err, &nf) {
 		t.Errorf("miss err = %v, want *ErrNotFound", err)
 	}
+	// An empty resource_ref must round-trip as valid JSON on BOTH backends
+	// (sqlite TEXT accepts ""; postgres jsonb rejects "" — DirentCreate
+	// defaults empty to "{}"). Review finding #2 / backend-parity guard.
+	got2, err := s.DirentCreate(ctx, store.DirentRow{Scope: "user", ScopeID: "u1", ParentPath: "/", Name: "noref", Kind: "directory"})
+	if err != nil {
+		t.Fatalf("create with empty ref: %v", err)
+	}
+	if !jsonEqual(got2.ResourceRef, `{}`) {
+		t.Errorf("empty ref = %s, want {}", got2.ResourceRef)
+	}
 }
 
 func testDirentListOneLevel(t *testing.T, s store.Store) {

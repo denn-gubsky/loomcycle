@@ -29,6 +29,11 @@ func likeEscape(s string) string {
 
 func (s *Store) DirentCreate(ctx context.Context, row store.DirentRow) (store.DirentRow, error) {
 	now := time.Now().UTC()
+	// resource_ref is jsonb NOT NULL — an empty string is not valid JSON and
+	// the cast would fail; default to "{}" (matches the sqlite backend).
+	if len(row.ResourceRef) == 0 {
+		row.ResourceRef = json.RawMessage("{}")
+	}
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO dirents (tenant_id, scope, scope_id, parent_path, name, kind, resource_ref, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
