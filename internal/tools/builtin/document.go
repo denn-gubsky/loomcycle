@@ -39,35 +39,39 @@ func (d *Document) Description() string {
 	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types. Scope is agent or user; documents can be named in the Path tree (path:)."
 }
 
-func (d *Document) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types"]},
-			"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
-			"id":          {"type": "string", "description": "Document id (get/delete_document) or chunk id (get/update/delete/move_chunk)."},
-			"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (e.g. /docs/launch). get/delete_document: address by path instead of id."},
-			"title":       {"type": "string"},
-			"document_id": {"type": "string"},
-			"parent_id":   {"type": "string", "description": "create_chunk: parent chunk (omit for a child of the root)."},
-			"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
-			"type":        {"type": "string", "description": "Optional supertag-like chunk type."},
-			"body":        {"type": "string", "description": "Markdown body."},
-			"fields":      {"type": "object", "description": "Type-specific structured fields."},
-			"status":      {"type": "string"},
-			"position":    {"type": "integer"},
-			"revision":    {"type": "integer", "description": "update_chunk: the chunk's current revision (optimistic concurrency)."},
-			"from_id":     {"type": "string"},
-			"to_id":       {"type": "string"},
-			"kind":        {"type": "string", "description": "link/unlink_chunks: edge kind (promotes/targets/...)."},
-			"under_path":  {"type": "string", "description": "query_chunks: restrict to documents at/under this Path-tree path."},
-			"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
-			"limit":       {"type": "integer"},
-			"name":        {"type": "string", "description": "define/list_types: the type name."}
-		},
-		"required": ["op"]
-	}`)
-}
+// documentInputSchema is a package const so the LoomCycle MCP server can
+// source the wrapper's advertised inputSchema verbatim (via
+// MCPWrapperInputSchema) rather than restating it — the same pattern as
+// memoryInputSchema.
+const documentInputSchema = `{
+	"type": "object",
+	"properties": {
+		"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types"]},
+		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
+		"id":          {"type": "string", "description": "Document id (get/delete_document) or chunk id (get/update/delete/move_chunk)."},
+		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (e.g. /docs/launch). get/delete_document: address by path instead of id."},
+		"title":       {"type": "string"},
+		"document_id": {"type": "string"},
+		"parent_id":   {"type": "string", "description": "create_chunk: parent chunk (omit for a child of the root)."},
+		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
+		"type":        {"type": "string", "description": "Optional supertag-like chunk type."},
+		"body":        {"type": "string", "description": "Markdown body."},
+		"fields":      {"type": "object", "description": "Type-specific structured fields."},
+		"status":      {"type": "string"},
+		"position":    {"type": "integer"},
+		"revision":    {"type": "integer", "description": "update_chunk: the chunk's current revision (optimistic concurrency)."},
+		"from_id":     {"type": "string"},
+		"to_id":       {"type": "string"},
+		"kind":        {"type": "string", "description": "link/unlink_chunks: edge kind (promotes/targets/...)."},
+		"under_path":  {"type": "string", "description": "query_chunks: restrict to documents at/under this Path-tree path."},
+		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
+		"limit":       {"type": "integer"},
+		"name":        {"type": "string", "description": "define/list_types: the type name."}
+	},
+	"required": ["op"]
+}`
+
+func (d *Document) InputSchema() json.RawMessage { return json.RawMessage(documentInputSchema) }
 
 type docInput struct {
 	Op          string          `json:"op"`

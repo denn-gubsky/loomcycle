@@ -256,6 +256,12 @@ func (m *mockConnector) OperatorTokenDef(context.Context, json.RawMessage) (conn
 func (m *mockConnector) VolumeDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) Path(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+func (m *mockConnector) Document(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 
 // v0.9.x Channel CRUD stubs.
 func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
@@ -374,15 +380,15 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 44 {
-		t.Errorf("got %d tools, want 44 (volumedef on top of the spawn_runs + compact_run list)", len(result.Tools))
+	if len(result.Tools) != 46 {
+		t.Errorf("got %d tools, want 46 (path + document on top of volumedef + the spawn_runs + compact_run list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}

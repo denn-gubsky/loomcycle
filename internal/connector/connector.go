@@ -128,6 +128,24 @@ type Connector interface {
 	Evaluation(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Context(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// Path — RFC AL Unix-like VFS over the dirents runtime-store table.
+	// Op-discriminated (resolve / ls / stat / mkdir / mv / rm). Scope-aware
+	// (agent / user / tenant) and tenant-isolated; gated purely by the
+	// agent's allowed_tools (a dirent is a name, not an authority grant — no
+	// separate scope policy). Reachable via POST /v1/_path, the gRPC Path RPC,
+	// the LoomCycle MCP meta-tool `path`, and the TS/Python adapters'
+	// client.path() — all dispatch through this single Connector method.
+	Path(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
+	// Document — RFC AK chunked-graph documents. Op-discriminated (13 ops:
+	// document/chunk lifecycle, edges, query_chunks, type defs). Scope-aware
+	// (agent / user; tenant deferred) and tenant-isolated via the SQL Memory
+	// scope key; gated by the agent's allowed_tools. Requires SQL Memory.
+	// Reachable via POST /v1/_document, the gRPC Document RPC, the LoomCycle
+	// MCP meta-tool `document`, and the TS/Python adapters' client.document()
+	// — all dispatch through this single Connector method.
+	Document(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// MCPServerDef — v0.9.x dynamic MCP server registration substrate.
 	// Op-discriminated (create / fork / get / list / promote / retire
 	// / rediscover / verify). Operator-admin-only: NOT auto-attached

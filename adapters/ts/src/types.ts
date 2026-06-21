@@ -928,6 +928,81 @@ export type SubstrateToolInput = {
  *  Callers narrow as needed. */
 export type SubstrateToolResponse = unknown;
 
+/** Input for {@link LoomcycleClient.path} — the RFC AL Unix-like VFS tool
+ *  (POST /v1/_path). Op-discriminated; the server resolves scope + tenant
+ *  from the authenticated principal, never the wire. Address Memory entries,
+ *  Volume mounts, and Documents by human-readable paths (e.g. /docs/launch). */
+export type PathToolInput = {
+  op: "resolve" | "ls" | "stat" | "mkdir" | "mv" | "rm";
+  /** Absolute path, e.g. /docs/launch. Segments are [a-zA-Z0-9._-]; no "..". */
+  path?: string;
+  /** Destination path (mv only). */
+  to?: string;
+  /** Which tree (default agent). user needs a user on the run; tenant is shared. */
+  scope?: "agent" | "user" | "tenant";
+  /** ls: list descendants. rm: required to remove a path that has descendants. */
+  recursive?: boolean;
+  /** ls: only entries of this kind (document/volume_mount/memory_entry/directory). */
+  kind_filter?: string;
+  /** rm: also delete the backing resource (NOT supported in v1). */
+  resource_too?: boolean;
+  [extra: string]: unknown;
+};
+
+/** Input for {@link LoomcycleClient.document} — the RFC AK chunked-graph
+ *  Document tool (POST /v1/_document). Op-discriminated (13 ops); requires
+ *  SQL Memory on the sidecar. Scope agent/user (tenant deferred). */
+export type DocumentToolInput = {
+  op:
+    | "create_document"
+    | "get_document"
+    | "delete_document"
+    | "create_chunk"
+    | "get_chunk"
+    | "update_chunk"
+    | "delete_chunk"
+    | "move_chunk"
+    | "link_chunks"
+    | "unlink_chunks"
+    | "query_chunks"
+    | "define_type"
+    | "list_types";
+  scope?: "agent" | "user";
+  /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
+  id?: string;
+  /** create_document: name the doc in the Path tree; get/delete: address by path. */
+  path?: string;
+  title?: string;
+  document_id?: string;
+  parent_id?: string;
+  new_parent_id?: string;
+  type?: string;
+  body?: string;
+  fields?: Record<string, unknown>;
+  status?: string;
+  position?: number;
+  /** update_chunk: the chunk's current revision (optimistic concurrency). */
+  revision?: number;
+  from_id?: string;
+  to_id?: string;
+  kind?: string;
+  /** query_chunks: restrict to documents at/under this Path-tree path. */
+  under_path?: string;
+  /** query_chunks: raw read-only SELECT (escape hatch; validator-gated). */
+  sql?: string;
+  limit?: number;
+  /** define/list_types: the type name. */
+  name?: string;
+  [extra: string]: unknown;
+};
+
+/** Response shape for {@link LoomcycleClient.path} and
+ *  {@link LoomcycleClient.document}. `unknown` because it varies per op —
+ *  callers narrow as needed (e.g. an `ls` returns `{path, entries}`, a
+ *  `create_document` returns `{document_id, root_chunk_id, ...}`). */
+export type PathToolResponse = unknown;
+export type DocumentToolResponse = unknown;
+
 /** Volume access mode — read-only or read-write (RFC AH). */
 export type VolumeMode = "ro" | "rw";
 

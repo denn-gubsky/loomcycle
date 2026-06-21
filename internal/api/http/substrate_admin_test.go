@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -445,6 +447,102 @@ func TestSubstrateAdmin_AgentDef_StampsPrincipalTenant(t *testing.T) {
 			t.Errorf("agent_defs row tenant_id=%q, want \"\" (no principal → shared tenant)", got)
 		}
 	})
+}
+
+// substratePathDocFixture wires the Path + Document tools (both scope-aware,
+// in the per-agent dispatcher) over HTTP so the POST /v1/_path + /v1/_document
+// endpoints exercise the full route → dispatchSubstrate → substrateAdminCtx →
+// Connector → dispatchBuiltin → tool path. Document needs SQL Memory.
+func substratePathDocFixture(t *testing.T) *httptest.Server {
+	t.Helper()
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg.Env.AuthToken = "test-token"
+	pathTool := &builtin.Path{Store: st}
+	docTool := &builtin.Document{Store: st, SqlMem: mgr, Bus: channels.NewBus()}
+	srv := New(cfg, &stubResolver{}, []tools.Tool{pathTool, docTool}, concurrency.New(1, 1, time.Second), st)
+	return httptest.NewServer(srv.Mux())
+}
+
+// TestSubstrateAdmin_Path_HappyPath: POST /v1/_path reaches the Path tool and
+// returns its structured result (RFC AL on the wire — Plan 3 / RFC AK Ph2).
+func TestSubstrateAdmin_Path_HappyPath(t *testing.T) {
+	ts := substratePathDocFixture(t)
+	defer ts.Close()
+
+	// ls of an empty user tree → 200 with an empty entries array.
+	resp := postAdmin(t, ts, "/v1/_path", `{"op":"ls","scope":"user","path":"/"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := out["entries"]; !ok {
+		t.Errorf("ls response missing entries: %v", out)
+	}
+}
+
+// TestSubstrateAdmin_Document_HappyPath: POST /v1/_document reaches the
+// Document tool and creates a document (RFC AK on the wire).
+func TestSubstrateAdmin_Document_HappyPath(t *testing.T) {
+	ts := substratePathDocFixture(t)
+	defer ts.Close()
+
+	resp := postAdmin(t, ts, "/v1/_document", `{"op":"create_document","scope":"user","title":"Launch plan"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["document_id"] == nil || out["root_chunk_id"] == nil {
+		t.Errorf("create_document response missing ids: %v", out)
+	}
+}
+
+// TestSubstrateAdminUserCtx_ResolvesPrincipalSubject: the user-aware ctx used
+// by the Path/Document endpoints stamps user_id from the principal's Subject
+// (so an off-run user-scope op interoperates with that user's agent runs),
+// falling back to the synthetic id when no principal is present.
+func TestSubstrateAdminUserCtx_ResolvesPrincipalSubject(t *testing.T) {
+	// With a principal → user_id is the principal subject (tenant preserved).
+	withP := auth.WithPrincipal(context.Background(), auth.Principal{
+		Subject:  "alice",
+		TenantID: "acme",
+	})
+	id := tools.RunIdentity(substrateAdminUserCtx(withP))
+	if id.UserID != "alice" {
+		t.Errorf("UserID = %q, want alice (the principal subject)", id.UserID)
+	}
+	if id.TenantID != "acme" {
+		t.Errorf("TenantID = %q, want acme (authoritative principal tenant)", id.TenantID)
+	}
+	if id.AgentID != substrateAdminAgentID {
+		t.Errorf("AgentID = %q, want the synthetic %q", id.AgentID, substrateAdminAgentID)
+	}
+
+	// No principal (legacy token / open mode) → synthetic fallback.
+	idNoP := tools.RunIdentity(substrateAdminUserCtx(context.Background()))
+	if idNoP.UserID != substrateAdminUserID {
+		t.Errorf("no-principal UserID = %q, want synthetic %q", idNoP.UserID, substrateAdminUserID)
+	}
 }
 
 func postAdmin(t *testing.T, ts *httptest.Server, path, body string) *http.Response {

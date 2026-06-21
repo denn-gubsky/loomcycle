@@ -2306,6 +2306,13 @@ func (s *Server) Mux() http.Handler {
 	// confined (ScopeTenant via isTenantConfinedDefPath) — the tool stamps
 	// the caller's authoritative tenant + opaque-404s cross-tenant reads.
 	mux.Handle("POST /v1/_volumedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateVolumeDef))))
+	// RFC AL Path VFS + RFC AK Document — the two scope-aware primitives lifted
+	// to the wire (Plan 3 / RFC AK Phase 2). Bearer-authed; tenant-confined
+	// (ScopeTenant via isTenantConfinedDefPath) — the tools resolve scope from
+	// the operator-trust ctx + stamp the caller's authoritative tenant, never
+	// the wire. Same dispatch shape as the other substrate admin endpoints.
+	mux.Handle("POST /v1/_path", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstratePath))))
+	mux.Handle("POST /v1/_document", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocument))))
 	// RFC AH Phase 4 (Web UI) — two ADDITIVE read-only views of the volume
 	// universe. Tenant-confined (ScopeTenant via isTenantConfinedDefPath):
 	// statics are shown to all (the shared bind floor), dynamic + ephemeral

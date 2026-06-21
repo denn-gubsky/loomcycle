@@ -115,6 +115,10 @@ import type {
   StreamUserRunStatesOptions,
   SubstrateToolInput,
   SubstrateToolResponse,
+  PathToolInput,
+  PathToolResponse,
+  DocumentToolInput,
+  DocumentToolResponse,
   TranscriptResponse,
   WhoamiResponse,
 } from "./types.js";
@@ -1125,6 +1129,47 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_volumedef", input, opts);
+  }
+
+  /** Invoke the RFC AL Path VFS tool over HTTP (`POST /v1/_path`). A
+   *  Unix-like filesystem over your Memory entries, Volume mounts, and
+   *  Documents — address them by human-readable paths (e.g. /docs/launch).
+   *  Op-discriminated (`resolve`/`ls`/`stat`/`mkdir`/`mv`/`rm`). Scope
+   *  (agent/user/tenant) + tenant are resolved server-side from the
+   *  authenticated principal, never the wire.
+   *
+   *  Response varies per op — an `ls` returns `{path, entries}`, a `resolve`
+   *  returns the dirent + resource_ref. Narrow as needed.
+   *
+   *  Raises {@link SubstrateToolRefusedError} on tool-level refusals (bad
+   *  path, rm of a non-empty path without recursive, etc.);
+   *  {@link InvalidArgumentError} on 400; {@link AuthError} on 401. */
+  async path(
+    input: PathToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<PathToolResponse> {
+    return postJSON<PathToolResponse>(this.ctx, "/v1/_path", input, opts);
+  }
+
+  /** Invoke the RFC AK Document tool over HTTP (`POST /v1/_document`). A
+   *  chunked-graph document where each chunk is a first-class unit (UUID,
+   *  hierarchy, type, fields, graph edges, Markdown body) that agents and
+   *  humans co-author. Op-discriminated (13 ops: document/chunk lifecycle,
+   *  edges, query_chunks, type defs). Scope agent/user (tenant deferred);
+   *  resolved server-side from the principal.
+   *
+   *  Requires SQL Memory enabled on the sidecar (`LOOMCYCLE_SQLMEM_ENABLED=1`)
+   *  — the chunk-structure tables live there. Without it the call is refused
+   *  ({@link SubstrateToolRefusedError}).
+   *
+   *  Response varies per op — `create_document` returns
+   *  `{document_id, root_chunk_id, ...}`, `query_chunks` returns rows.
+   *  {@link InvalidArgumentError} on 400; {@link AuthError} on 401. */
+  async document(
+    input: DocumentToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<DocumentToolResponse> {
+    return postJSON<DocumentToolResponse>(this.ctx, "/v1/_document", input, opts);
   }
 
   /** List the PERSISTENT volume universe for the caller's tenant — every

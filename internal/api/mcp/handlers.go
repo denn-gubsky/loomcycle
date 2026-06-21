@@ -105,6 +105,15 @@ var handlersByName = map[string]toolHandler{
 	"context": wrapBuiltin("context", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Context(ctx, in)
 	}),
+	// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated tools.
+	// The tenant is authoritative from ctx (operatorCtx → RunIdentity), never
+	// the wire; scope (agent/user[/tenant]) is resolved server-side.
+	"path": wrapBuiltin("path", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.Path(ctx, in)
+	}),
+	"document": wrapBuiltin("document", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.Document(ctx, in)
+	}),
 
 	// Pause/Resume (v0.8.17 primitives; exposed via Connector in v0.8.18)
 	"pause_runtime":     handlePauseRuntime,

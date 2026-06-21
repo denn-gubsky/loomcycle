@@ -36,6 +36,8 @@ var mcpWrapperSchemas = map[string]string{
 	"volumedef":        volumeDefInputSchema,
 	"evaluation":       evaluationInputSchema,
 	"context":          contextInputSchema,
+	"path":             pathInputSchema,
+	"document":         documentInputSchema,
 }
 
 // MCPWrapperInputSchema returns the canonical input schema for the
