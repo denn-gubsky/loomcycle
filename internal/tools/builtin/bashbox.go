@@ -155,6 +155,13 @@ func (b *Bashbox) buildRegistry(hostRoot string, readOnly bool) commands.Command
 // A host process cannot honor gbash's in-RAM read-only overlay, so on a ro
 // volume the proxy REFUSES rather than write to the real host behind a false
 // read-only guarantee.
+//
+// The binary that runs is always the operator's `name` resolved on the host
+// PATH — never a model-supplied path. gbash resolves a path-form command
+// (`/usr/bin/git`) by basename, so it maps to this proxy, but the proxy execs
+// the captured `name`, so the model can't substitute a different binary via the
+// path it types. A non-allowlisted basename never gets a proxy at all → it
+// stays sandboxed.
 func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.Command {
 	return commands.DefineCommand(name, func(ctx context.Context, inv *commands.Invocation) error {
 		if readOnly {
@@ -169,6 +176,10 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 			return &commands.ExitError{Code: 1}
 		}
 		// inv.Args excludes argv[0] (the command name) — see find.go:86.
+		// ctx is the timeout-bound run context, so CommandContext SIGKILLs the
+		// direct child on timeout/cancel. As with the Bash tool, descendants the
+		// child spawns (a git credential helper, hook, pager) may survive — this
+		// is not a container; run loomcycle in one for hard isolation.
 		cmd := exec.CommandContext(ctx, name, inv.Args...)
 		cmd.Dir = hostCwd
 		cmd.Env = scrubbedHostEnv(b.FallbackAllowedEnv)

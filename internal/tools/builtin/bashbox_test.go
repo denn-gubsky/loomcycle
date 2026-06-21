@@ -318,9 +318,12 @@ func TestBashbox_FallbackCommandRunsOnHost(t *testing.T) {
 	}
 }
 
-// THE security test: a non-allowlisted host binary (curl) stays sandboxed (127)
-// even when another command (git) IS allowlisted. curl is present on the host,
-// so a real escape would succeed — its 127 proves the allowlist holds.
+// A non-allowlisted command stays sandboxed even when another (git) IS
+// allowlisted: curl gets no host proxy, so it resolves only against gbash and
+// 127s. gbash has no host-PATH fallback, so 127 is its baseline for any
+// unregistered name — the DISCRIMINATING assertion is the "libcurl" check: if
+// proxies were ever registered for non-allowlisted names, host curl would run
+// and print "libcurl". (See also TestBashbox_FallbackProxyExactNameOnly.)
 func TestBashbox_NonAllowlistedCommandStaysSandboxed(t *testing.T) {
 	skipIfNoHostCmd(t, "curl")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
@@ -350,6 +353,32 @@ func TestBashbox_SmugglingBlocked(t *testing.T) {
 	}
 }
 
+// The allowlist is keyed to the command BASENAME, and the proxy always execs
+// the operator's name via the host PATH (the model's path string is ignored —
+// gbash resolves a path-form command by basename, and the proxy closure runs
+// its captured name, not the model's spelling). So no spelling of a
+// NON-allowlisted command — a sibling basename or a path-form — can reach a
+// non-allowlisted host binary. (`git` is allowlisted here; curl is not.)
+func TestBashbox_FallbackProxyExactNameOnly(t *testing.T) {
+	skipIfNoHostCmd(t, "git")
+	skipIfNoHostCmd(t, "curl")
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	for _, cmd := range []string{
+		"git-notathing --version", // sibling basename of an allowlisted name
+		"curl --version",          // bare non-allowlisted command
+		"/usr/bin/curl --version", // path-form of a non-allowlisted command
+	} {
+		res := runBashbox(t, b, bashCtx(root), cmd)
+		if !res.IsError {
+			t.Errorf("%q should be refused; got %q", cmd, res.Text)
+		}
+		if strings.Contains(res.Text, "libcurl") {
+			t.Errorf("%q reached host curl (sandbox escape): %q", cmd, res.Text)
+		}
+	}
+}
+
 // A fallback command on a read-only volume refuses (a host process can't honor
 // the in-RAM overlay) rather than writing to the real host behind a false ro.
 func TestBashbox_FallbackRefusedOnRoVolume(t *testing.T) {
@@ -371,6 +400,9 @@ func TestBashbox_FallbackEnvAllowlist(t *testing.T) {
 	skipIfNoHostCmd(t, "env")
 	t.Setenv("LOOMCYCLE_FB_PUBLIC", "public-ok")
 	t.Setenv("LOOMCYCLE_FB_SECRET", "secret-leak")
+	// An AMBIENT secret-shaped var the operator never mentioned — the model's
+	// real target. It must not reach the host child either.
+	t.Setenv("AMBIENT_API_KEY", "sk-ambient-must-not-leak")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
 
 	b := &Bashbox{Enabled: true, FallbackCommands: []string{"env"}, FallbackAllowedEnv: []string{"LOOMCYCLE_FB_PUBLIC"}}
@@ -383,6 +415,9 @@ func TestBashbox_FallbackEnvAllowlist(t *testing.T) {
 	}
 	if strings.Contains(res.Text, "secret-leak") {
 		t.Fatalf("non-allowlisted secret leaked into the host command env: %q", res.Text)
+	}
+	if strings.Contains(res.Text, "sk-ambient-must-not-leak") {
+		t.Fatalf("an ambient (never-allowlisted) secret leaked into the host command env: %q", res.Text)
 	}
 
 	// Without fallback, `env` is gbash's sandbox builtin — neither var is in the
