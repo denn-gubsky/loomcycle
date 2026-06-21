@@ -543,6 +543,25 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at  INTEGER NOT NULL,
 			PRIMARY KEY (tenant_id, name)
 		)`,
+		// RFC AL Path primitive — the dirent (path tree) substrate. Maps a
+		// (tenant_id, scope, scope_id, parent_path, name) coordinate to a
+		// backing resource (kind + resource_ref json). PK is the full
+		// coordinate so each (tenant, scope, scope_id) tree is independent and
+		// a name is unique within its parent directory. The composite PK is
+		// also the lookup index for resolve/ls; parent_path enables one-level
+		// (=) and recursive (prefix) listings.
+		`CREATE TABLE IF NOT EXISTS dirents (
+			tenant_id    TEXT NOT NULL DEFAULT '',
+			scope        TEXT NOT NULL,
+			scope_id     TEXT NOT NULL DEFAULT '',
+			parent_path  TEXT NOT NULL,
+			name         TEXT NOT NULL,
+			kind         TEXT NOT NULL,
+			resource_ref TEXT NOT NULL,
+			created_at   INTEGER NOT NULL,
+			updated_at   INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, scope, scope_id, parent_path, name)
+		)`,
 		// RFC AH Phase 2b — ephemeral (run-tree-scoped) volumes. SEPARATE
 		// from volume_defs: PK (root_run_id, name), NOT (tenant_id, name) —
 		// two concurrent runs (any tenant) can each own a `work` volume with

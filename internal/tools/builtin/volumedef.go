@@ -94,6 +94,9 @@ type volumeDefInput struct {
 	Name      string `json:"name,omitempty"`
 	Mode      string `json:"mode,omitempty"`
 	Ephemeral bool   `json:"ephemeral,omitempty"`
+	// MountAt (RFC AL) is the Path-tree mount point for this volume; defaults
+	// to "/vol/<name>". Registers a volume_mount dirent in the tenant scope.
+	MountAt string `json:"mount_at,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -209,7 +212,41 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	return okJSON(volumeDefRowResponse(row, mode))
+	resp := volumeDefRowResponse(row, mode)
+	// RFC AL — register the volume's Path-tree mount (tenant-scoped). The
+	// VolumeDef row is already durable; a dirent failure is a warning so the
+	// volume isn't lost. Default mount is /vol/<name>.
+	mountAt := in.MountAt
+	if mountAt == "" {
+		mountAt = "/vol/" + in.Name
+	}
+	if mp, perr := v.registerVolumeMount(ctx, tenantID, in.Name, mode, mountAt); perr != nil {
+		resp["mount_warning"] = fmt.Sprintf("volume created but mount registration failed: %s", perr)
+	} else {
+		resp["mount_at"] = mp
+	}
+	return okJSON(resp)
+}
+
+// registerVolumeMount registers (upserts) a volume_mount dirent for the volume
+// in the tenant-scoped Path tree. Returns the canonical mount path.
+func (v *VolumeDef) registerVolumeMount(ctx context.Context, tenantID, name, mode, rawMount string) (string, error) {
+	canonical, err := normalizePath(rawMount)
+	if err != nil {
+		return "", err
+	}
+	parent, leaf, isRoot := splitPath(canonical)
+	if isRoot {
+		return "", fmt.Errorf("mount_at may not be the root path")
+	}
+	ref, _ := json.Marshal(map[string]any{"volume_name": name, "mode": mode})
+	if _, err := v.Store.DirentCreate(ctx, store.DirentRow{
+		TenantID: tenantID, Scope: "tenant", ScopeID: "",
+		ParentPath: parent, Name: leaf, Kind: "volume_mount", ResourceRef: ref,
+	}); err != nil {
+		return "", err
+	}
+	return canonical, nil
 }
 
 // execCreateEphemeral provisions a RUN-TREE-SCOPED ephemeral volume (RFC AH

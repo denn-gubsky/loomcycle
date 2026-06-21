@@ -45,6 +45,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"n8n-integration",
 		"observability",
 		"openai-compat",
+		"path",
 		"pause-resume-snapshot",
 		"scopes",
 		"skills-evolution",

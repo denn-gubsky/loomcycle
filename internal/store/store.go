@@ -1227,6 +1227,32 @@ type Store interface {
 	// op, which deletes the row AND the files behind a four-way fence.
 	VolumeDefDelete(ctx context.Context, tenantID, name string) (bool, error)
 
+	// ---- RFC AL Path primitive — the dirent (path tree) substrate ----
+	//
+	// A dirent maps a (tenant_id, scope, scope_id, parent_path, name)
+	// coordinate to a backing resource (a Document / Volume mount / Memory
+	// entry), Linux inode/dirent style: the resource keeps its native id, the
+	// dirent is just the name. tenantID "" = the shared/operator/legacy
+	// tenant; every method scopes by (tenant_id, scope, scope_id) so tenant +
+	// scope isolation is enforced at the store boundary (and re-checked at the
+	// tool layer, opaque-404). All paths passed here are pre-normalized at the
+	// tool layer (canonical, no "..").
+	//
+	// DirentCreate upserts by the full coordinate key (re-create updates
+	// kind+resource_ref). DirentGet/DirentDelete return *ErrNotFound /
+	// found=false on a miss. DirentList is a one-level listing (ls); the
+	// *Under variants act on the whole subtree at/under a prefix (recursive ls
+	// / rm). DirentMove relocates a dirent AND rewrites every descendant's
+	// parent_path in one transaction (recursive rename); no-clobber is the
+	// tool's job (DirentGet the destination first).
+	DirentCreate(ctx context.Context, row DirentRow) (DirentRow, error)
+	DirentGet(ctx context.Context, tenantID, scope, scopeID, parentPath, name string) (DirentRow, error)
+	DirentList(ctx context.Context, tenantID, scope, scopeID, parentPath string) ([]DirentRow, error)
+	DirentListUnder(ctx context.Context, tenantID, scope, scopeID, prefix string) ([]DirentRow, error)
+	DirentDelete(ctx context.Context, tenantID, scope, scopeID, parentPath, name string) (bool, error)
+	DirentDeleteUnder(ctx context.Context, tenantID, scope, scopeID, prefix string) (int, error)
+	DirentMove(ctx context.Context, tenantID, scope, scopeID, fromParent, fromName, toParent, toName string) (bool, error)
+
 	// ---- RFC AH Phase 2b ephemeral (run-tree-scoped) volumes ----
 	//
 	// A SEPARATE table from volume_defs: an ephemeral volume is scoped to
@@ -2241,6 +2267,38 @@ type VolumeDefRow struct {
 	Definition json.RawMessage `json:"definition"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
+// DirentRow is one entry in the RFC AL Path tree: it names a backing resource
+// at a (tenant_id, scope, scope_id, parent_path, name) coordinate. The
+// resource keeps its native id (Document UUID / Volume name / Memory key) —
+// the dirent is just the name (Linux inode/dirent separation). Paths are
+// canonical (slash-rooted, no "..", normalized at the tool layer).
+type DirentRow struct {
+	// TenantID is the RFC L/N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. Set from the authoritative principal at the
+	// write site, never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
+	// Scope is the subtree: "agent" / "user" / "tenant" (validated at the
+	// tool layer). ScopeID is the owning entity (agent name / user id; empty
+	// for tenant scope). Each (tenant, scope, scope_id) tuple has its own
+	// tree rooted at "/".
+	Scope   string `json:"scope"`
+	ScopeID string `json:"scope_id,omitempty"`
+	// ParentPath is the canonical parent directory (e.g. "/docs/launches/",
+	// always trailing-slashed; the root's children have parent_path "/").
+	// Name is the leaf segment (charset-validated `[a-zA-Z0-9._-]{1,64}` at
+	// the tool layer so it can't carry slashes or "..").
+	ParentPath string `json:"parent_path"`
+	Name       string `json:"name"`
+	// Kind is "document" / "volume_mount" / "memory_entry" / "directory"
+	// (implicit dirs are rarely stored; see RFC AL §4). ResourceRef is the
+	// backing pointer, shape-by-kind ({document_id} / {volume_name,mode} /
+	// {scope,scope_id,key,facet}).
+	Kind        string          `json:"kind"`
+	ResourceRef json.RawMessage `json:"resource_ref"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // EphemeralVolumeDefRow is one run-tree-scoped ephemeral volume (RFC AH

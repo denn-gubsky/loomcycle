@@ -684,6 +684,11 @@ func main() {
 	}
 	allTools = append(allTools, volumeDefTool)
 
+	// RFC AL — the Path tool (Unix-like VFS over the dirents substrate). Store
+	// late-bound below alongside the other substrate tools.
+	pathTool := &builtin.Path{}
+	allTools = append(allTools, pathTool)
+
 	// MCPServerDef tool construction is deferred until after the pool
 	// + dynamic registry are built (operator-admin-only — NOT appended
 	// to allTools; wired via SetMCPServerDefTool after the pool exists).
@@ -1050,6 +1055,7 @@ func main() {
 	agentDefTool.Store = storeIface
 	skillDefTool.Store = storeIface
 	volumeDefTool.Store = storeIface
+	pathTool.Store = storeIface
 	skillTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface
