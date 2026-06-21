@@ -276,6 +276,14 @@ func Run(t *testing.T, factory Factory) {
 		{"VolumeDefDelete", testVolumeDefDelete},
 		{"VolumeDefList", testVolumeDefList},
 		{"VolumeDefCreateUpdatesDefinition", testVolumeDefCreateUpdatesDefinition},
+		// RFC AL Path primitive — the dirent (path tree) substrate.
+		{"DirentCreateAndGet", testDirentCreateAndGet},
+		{"DirentListOneLevel", testDirentListOneLevel},
+		{"DirentListUnderRecursive", testDirentListUnderRecursive},
+		{"DirentDeleteAndDeleteUnder", testDirentDeleteAndDeleteUnder},
+		{"DirentMoveCascade", testDirentMoveCascade},
+		{"DirentScopeIsolation", testDirentScopeIsolation},
+		{"DirentTenantIsolation", testDirentTenantIsolation},
 		// RFC AH Phase 2b ephemeral (run-tree-scoped) volumes.
 		{"EphemeralVolumeCreateListDelete", testEphemeralVolumeCreateListDelete},
 		{"EphemeralVolumeSweepCandidatesTerminalOnly", testEphemeralVolumeSweepCandidatesTerminalOnly},
@@ -7320,4 +7328,189 @@ func testEphemeralVolumeListByTenantIsolation(t *testing.T, s store.Store) {
 	if len(rowsB) != 1 || rowsB[0].RootRunID != "run-b1" {
 		t.Fatalf("tnt-b list = %+v, want one run-b1 row", rowsB)
 	}
+}
+
+// ── RFC AL Path primitive — dirent (path tree) substrate ────────────────────
+
+func mkDirent(tenantID, scope, scopeID, parentPath, name, kind, ref string) store.DirentRow {
+	return store.DirentRow{
+		TenantID: tenantID, Scope: scope, ScopeID: scopeID,
+		ParentPath: parentPath, Name: name, Kind: kind,
+		ResourceRef: json.RawMessage(ref),
+	}
+}
+
+func testDirentCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.DirentCreate(ctx, mkDirent("", "user", "u1", "/", "docs", "directory", `{}`))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.DirentGet(ctx, "", "user", "u1", "/", "docs")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "docs" || got.Kind != "directory" {
+		t.Errorf("got %+v", got)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Errorf("timestamps not stamped: %+v", got)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/", "nope"); !errors.As(err, &nf) {
+		t.Errorf("miss err = %v, want *ErrNotFound", err)
+	}
+}
+
+func testDirentListOneLevel(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	mustCreate := func(parent, name string) {
+		if _, err := s.DirentCreate(ctx, mkDirent("", "user", "u1", parent, name, "directory", `{}`)); err != nil {
+			t.Fatalf("create %s%s: %v", parent, name, err)
+		}
+	}
+	mustCreate("/", "docs")
+	mustCreate("/docs/", "a")
+	mustCreate("/docs/", "b")
+	mustCreate("/docs/a/", "deep") // must NOT show in a one-level listing of /docs/
+	got, err := s.DirentList(ctx, "", "user", "u1", "/docs/")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "a" || got[1].Name != "b" {
+		t.Errorf("one-level list of /docs/ = %+v, want [a b]", names(got))
+	}
+}
+
+func testDirentListUnderRecursive(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, d := range [][2]string{{"/", "docs"}, {"/docs/", "a"}, {"/docs/a/", "b"}, {"/", "other"}} {
+		if _, err := s.DirentCreate(ctx, mkDirent("", "user", "u1", d[0], d[1], "directory", `{}`)); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	got, err := s.DirentListUnder(ctx, "", "user", "u1", "/docs/")
+	if err != nil {
+		t.Fatalf("list under: %v", err)
+	}
+	// a (parent /docs/) + b (parent /docs/a/); NOT docs itself (parent /), NOT other.
+	if len(got) != 2 {
+		t.Fatalf("recursive list of /docs/ = %+v, want 2 (a, b)", names(got))
+	}
+}
+
+func testDirentDeleteAndDeleteUnder(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, d := range [][2]string{{"/", "docs"}, {"/docs/", "a"}, {"/docs/a/", "b"}} {
+		if _, err := s.DirentCreate(ctx, mkDirent("", "user", "u1", d[0], d[1], "directory", `{}`)); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	n, err := s.DirentDeleteUnder(ctx, "", "user", "u1", "/docs/")
+	if err != nil {
+		t.Fatalf("delete under: %v", err)
+	}
+	if n != 2 { // a + b; the /docs entry (parent /) is NOT a descendant
+		t.Errorf("deleteUnder count = %d, want 2", n)
+	}
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/", "docs"); err != nil {
+		t.Errorf("the /docs entry should survive deleteUnder: %v", err)
+	}
+	found, err := s.DirentDelete(ctx, "", "user", "u1", "/", "docs")
+	if err != nil || !found {
+		t.Fatalf("delete /docs: found=%v err=%v", found, err)
+	}
+	found, _ = s.DirentDelete(ctx, "", "user", "u1", "/", "docs")
+	if found {
+		t.Error("second delete should be idempotent (found=false)")
+	}
+}
+
+func testDirentMoveCascade(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, d := range [][2]string{{"/", "docs"}, {"/docs/", "a"}, {"/docs/a/", "b"}} {
+		if _, err := s.DirentCreate(ctx, mkDirent("", "user", "u1", d[0], d[1], "directory", `{}`)); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	// mv /docs -> /archive (a dir with descendants → cascade).
+	moved, err := s.DirentMove(ctx, "", "user", "u1", "/", "docs", "/", "archive")
+	if err != nil || !moved {
+		t.Fatalf("move: moved=%v err=%v", moved, err)
+	}
+	// The entry itself + every descendant must live under /archive now.
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/", "archive"); err != nil {
+		t.Errorf("moved entry /archive missing: %v", err)
+	}
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/archive/", "a"); err != nil {
+		t.Errorf("cascade: /archive/a missing: %v", err)
+	}
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/archive/a/", "b"); err != nil {
+		t.Errorf("cascade: /archive/a/b missing: %v", err)
+	}
+	// Old coordinates must be gone.
+	var nf *store.ErrNotFound
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/", "docs"); !errors.As(err, &nf) {
+		t.Errorf("old /docs still present after move: %v", err)
+	}
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/docs/", "a"); !errors.As(err, &nf) {
+		t.Errorf("old /docs/a still present after move: %v", err)
+	}
+	// Moving an absent source returns found=false.
+	moved, err = s.DirentMove(ctx, "", "user", "u1", "/", "ghost", "/", "x")
+	if err != nil || moved {
+		t.Errorf("move of absent source: moved=%v err=%v, want false/nil", moved, err)
+	}
+}
+
+func testDirentScopeIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Same path /notes in agent scope vs tenant scope → distinct dirents.
+	if _, err := s.DirentCreate(ctx, mkDirent("", "agent", "a1", "/", "notes", "memory_entry", `{"k":"agent"}`)); err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := s.DirentCreate(ctx, mkDirent("", "tenant", "", "/", "notes", "memory_entry", `{"k":"tenant"}`)); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	gotA, err := s.DirentGet(ctx, "", "agent", "a1", "/", "notes")
+	if err != nil || !jsonEqual(gotA.ResourceRef, `{"k":"agent"}`) {
+		t.Errorf("agent /notes = %+v err=%v", gotA, err)
+	}
+	// The agent-scope listing must not see the tenant-scope dirent.
+	list, err := s.DirentList(ctx, "", "agent", "a1", "/")
+	if err != nil {
+		t.Fatalf("list agent: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("agent / listing leaked across scope: %+v", names(list))
+	}
+}
+
+func testDirentTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, err := s.DirentCreate(ctx, mkDirent("tnt-a", "user", "u1", "/", "x", "directory", `{"t":"a"}`)); err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if _, err := s.DirentCreate(ctx, mkDirent("tnt-b", "user", "u1", "/", "x", "directory", `{"t":"b"}`)); err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+	gotB, err := s.DirentGet(ctx, "tnt-b", "user", "u1", "/", "x")
+	if err != nil || !jsonEqual(gotB.ResourceRef, `{"t":"b"}`) {
+		t.Errorf("tenant B /x = %+v err=%v", gotB, err)
+	}
+	// Deleting A's dirent leaves B's untouched.
+	if _, err := s.DirentDelete(ctx, "tnt-a", "user", "u1", "/", "x"); err != nil {
+		t.Fatalf("delete A: %v", err)
+	}
+	if _, err := s.DirentGet(ctx, "tnt-b", "user", "u1", "/", "x"); err != nil {
+		t.Errorf("tenant B vanished after A delete: %v", err)
+	}
+}
+
+func names(rows []store.DirentRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Name
+	}
+	return out
 }
