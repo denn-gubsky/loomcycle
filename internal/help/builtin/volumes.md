@@ -3,8 +3,8 @@ name: volumes
 description: filesystem volumes — the named ro/rw roots your file/exec tools resolve paths against, and the optional `volume` tool argument.
 ---
 A **volume** is a named filesystem root your file/exec tools
-(Read / Write / Edit / Glob / Grep / Bash / NotebookEdit) resolve paths
-against. The operator binds you to a set of volumes; each is either
+(Read / Write / Edit / Glob / Grep / Bash / Bashbox / NotebookEdit) resolve
+paths against. The operator binds you to a set of volumes; each is either
 read-write (`rw`) or read-only (`ro`). Volumes are the *only* way you get
 filesystem access — they let one runtime confine different agents to
 different working trees. **If you're bound to no volume, every file/exec
@@ -20,8 +20,8 @@ and whether it's the `default`. If you're bound to no volume it reports
 
 ## The `volume` tool argument
 
-Read / Write / Edit / Glob / Grep / Bash / NotebookEdit accept an optional
-`"volume"` string:
+Read / Write / Edit / Glob / Grep / Bash / Bashbox / NotebookEdit accept an
+optional `"volume"` string:
 
 - **Omit it** → the call uses your *default* volume (the one marked
   `default`, or your sole binding when you have exactly one). If you have
@@ -44,6 +44,10 @@ resolves inside that root. A `..` that climbs out of a volume is rejected
   shell can write via absolute paths and redirection), so it refuses a
   `ro` volume rather than pretend otherwise. Bash's working directory is
   set to the chosen volume's root.
+- **Bashbox** (the true in-process sandbox) is the exception: it **honors**
+  `ro` volumes. A `ro` binding mounts under an in-RAM write overlay, so a
+  script's writes succeed inside the run but never touch the host. Prefer
+  Bashbox over Bash when you only have a `ro` volume. See the `bashbox` topic.
 
 ## Sub-agents
 

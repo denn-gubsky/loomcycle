@@ -576,6 +576,10 @@ func main() {
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled},
+		// Bashbox — a TRUE in-process sandbox (gbash): no OS process, paths
+		// rooted at the volume, no network, and read-only volumes are honored
+		// (writes hit an in-RAM overlay). Opt-in like Bash.
+		&builtin.Bashbox{Enabled: cfg.Env.BashboxEnabled},
 		// SkillTool's Store is late-bound below (so DB-active SkillDef
 		// rows override the static Set body). Nil-Store before
 		// late-binding falls back to the static Set; the assignment
@@ -761,6 +765,11 @@ func main() {
 		log.Printf("note: Bash requires a rw volume binding — it runs in the bound volume's root and refuses an agent with no rw volume")
 	} else {
 		log.Printf("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
+	}
+	if cfg.Env.BashboxEnabled {
+		log.Printf("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha; gate per agent via allowed_tools.")
+	} else {
+		log.Printf("note: Bashbox tool is registered but disabled — set LOOMCYCLE_BASHBOX_ENABLED=1 to enable (in-process sandbox; see docs)")
 	}
 
 	// Per-agent tool policy is default-deny: an agent with no allowed_tools

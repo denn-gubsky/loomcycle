@@ -9,53 +9,46 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// effectiveRoot resolves which sandbox root a file/exec tool call targets
-// (RFC AH). It is the ONE seam volumes add: every file tool calls this to
-// pick a root, then the UNCHANGED resolveInsideRoot(root, path) does the
-// TOCTOU-safe containment check against it.
+// resolveVolume resolves which sandbox root a tool call targets and whether
+// that binding is read-only (RFC AH) — WITHOUT applying the read-write
+// requirement. It is the shared core of two callers with different ro
+// postures:
 //
-// Phase 3 retired the legacy jail (LOOMCYCLE_READ_ROOT/WRITE_ROOT/BASH_CWD):
-// volumes are now the SOLE filesystem mechanism, and access is
-// sandbox-by-default. An agent with no active VolumePolicy is bound to no
-// volume and is REFUSED — the same posture the network model uses (no
-// allowed_hosts → no egress).
+//   - effectiveRoot (Read/Write/Edit/Glob/Grep/Bash) refuses a read-only
+//     binding on a write, because none of them can HONESTLY enforce ro — a
+//     shell or an absolute path defeats path-confinement (RFC §6).
+//   - the Bashbox tool HONORS ro instead: it mounts the root under gbash's
+//     in-RAM write overlay, so writes succeed in-sandbox but never touch the
+//     host tree. It needs (root, readOnly) to choose the mount mode.
+//
+// The returned name is the binding's canonical name for model-facing error
+// messages (== volumeName for an ephemeral or explicitly-named binding; the
+// resolved default's real name when volumeName is empty).
+//
+// Resolution rules (RFC §2/§5):
+//
+//   - RFC AH Phase 2b — ephemeral (run-tree-scoped) volumes resolve FIRST,
+//     but ONLY for an explicitly NAMED volume (ephemeral volumes are always
+//     named — an omitted `volume` uses the default-binding logic below). A
+//     name that is NOT an ephemeral volume falls through to the Phase-1/2a
+//     VolumePolicy binding logic — ephemeral resolution is purely additive,
+//     it never bypasses confinement.
 //
 //   - No VolumePolicy on ctx (an UNBOUND agent, or a deployment with no
 //     `volumes:` config) → DENY. There is no fallback root; declare a
 //     `volumes:` block (with a `default` volume to restore the old
 //     single-jail behaviour).
 //
-//   - A VolumePolicy exists (a BOUND agent) → resolve the named binding,
-//     or the designated default when volumeName is empty, and enforce the
-//     ro/rw axis. Returns a model-facing error (surfaced as is_error so
-//     the model can self-correct) listing the available volumes on a
-//     miss. Resolution rules (RFC §2/§5):
+//   - volumeName == "" → the binding marked Default, or the SOLE binding
+//     when there's exactly one. Multiple bindings + no designated default →
+//     error listing the names.
 //
-//   - volumeName == "" → the binding marked Default, or the SOLE
-//     binding when there's exactly one. Multiple bindings + no
-//     designated default → error listing the names.
-//
-//   - volumeName != "" → that binding; the agent isn't bound to it →
-//     error listing the volumes it IS bound to.
-//
-//   - needWrite && binding.ReadOnly → refuse (Write/Edit/NotebookEdit
-//     and Bash require rw; Bash cannot truly enforce ro, so it refuses
-//     rather than ship a false guarantee — RFC §6).
-func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (string, error) {
-	// RFC AH Phase 2b — ephemeral (run-tree-scoped) volumes resolve FIRST,
-	// but ONLY for an explicitly NAMED volume (ephemeral volumes are always
-	// named — an omitted `volume` uses the existing default-binding logic
-	// below). The run-scoped set is the resolution source; the ro/rw axis is
-	// enforced here and the file tools' UNCHANGED resolveInsideRoot still
-	// applies containment per-volume. A name that is NOT an ephemeral volume
-	// falls through to the Phase-1/2a VolumePolicy binding logic — ephemeral
-	// resolution is purely additive, it never bypasses confinement.
+//   - volumeName != "" → that binding; the agent isn't bound to it → error
+//     listing the volumes it IS bound to.
+func resolveVolume(ctx context.Context, volumeName string) (root string, readOnly bool, name string, err error) {
 	if volumeName != "" {
 		if ref, ok := tools.EphemeralVolumes(ctx).Get(volumeName); ok {
-			if needWrite && ref.ReadOnly {
-				return "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", volumeName)
-			}
-			return ref.Root, nil
+			return ref.Root, ref.ReadOnly, volumeName, nil
 		}
 	}
 
@@ -64,20 +57,20 @@ func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (stri
 		// No volume confinement in force → DENY (RFC AH Phase 3:
 		// sandbox-by-default; the legacy fallback root is gone). An agent
 		// gets filesystem access only via a `volumes:` binding.
-		return "", fmt.Errorf("no filesystem volume available to this agent — bind one via the agent's `volumes:` list (Read/Write/etc. require a volume)")
+		return "", false, "", fmt.Errorf("no filesystem volume available to this agent — bind one via the agent's `volumes:` list (Read/Write/etc. require a volume)")
 	}
 	if len(pol.Bindings) == 0 {
 		// Active but confined to NOTHING (e.g. a sub-agent whose declared
 		// volumes share none of the parent's). Deny — identical posture to
 		// the inactive case above; spawn confinement must never leak a root.
-		return "", fmt.Errorf("no filesystem volume is available to this agent; refusing")
+		return "", false, "", fmt.Errorf("no filesystem volume is available to this agent; refusing")
 	}
 
 	var binding *tools.VolumeBinding
 	if volumeName == "" {
 		binding = defaultBinding(pol.Bindings)
 		if binding == nil {
-			return "", fmt.Errorf("no volume specified and no default binding; specify one of: %s", volumeNames(pol.Bindings))
+			return "", false, "", fmt.Errorf("no volume specified and no default binding; specify one of: %s", volumeNames(pol.Bindings))
 		}
 	} else {
 		for i := range pol.Bindings {
@@ -87,14 +80,31 @@ func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (stri
 			}
 		}
 		if binding == nil {
-			return "", fmt.Errorf("not bound to volume %q; available: %s", volumeName, volumeNames(pol.Bindings))
+			return "", false, "", fmt.Errorf("not bound to volume %q; available: %s", volumeName, volumeNames(pol.Bindings))
 		}
 	}
 
-	if needWrite && binding.ReadOnly {
-		return "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", binding.Name)
+	return binding.Root, binding.ReadOnly, binding.Name, nil
+}
+
+// effectiveRoot resolves which sandbox root a file/exec tool call targets
+// (RFC AH) and enforces the rw requirement. It is the ONE seam volumes add:
+// every file tool calls this to pick a root, then the UNCHANGED
+// resolveInsideRoot(root, path) does the TOCTOU-safe containment check
+// against it.
+//
+// needWrite && readOnly → refuse (Write/Edit/NotebookEdit and Bash require
+// rw; none can truly enforce ro, so they refuse rather than ship a false
+// guarantee — RFC §6). All resolution lives in resolveVolume.
+func effectiveRoot(ctx context.Context, volumeName string, needWrite bool) (string, error) {
+	root, readOnly, name, err := resolveVolume(ctx, volumeName)
+	if err != nil {
+		return "", err
 	}
-	return binding.Root, nil
+	if needWrite && readOnly {
+		return "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", name)
+	}
+	return root, nil
 }
 
 // defaultBinding returns the binding a call with no explicit `volume`

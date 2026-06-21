@@ -1942,6 +1942,13 @@ type Env struct {
 	// network calls. Operators wanting real isolation should run
 	// loomcycle inside a container or VM.
 	BashEnabled bool
+	// BashboxEnabled gates the Bashbox tool — a TRUE in-process sandbox
+	// (gbash) that spawns no OS process, roots all paths at the mounted
+	// volume, and has no network. Unlike Bash it HONORS read-only volumes
+	// (writes hit an in-RAM overlay, never the host). Defaults to false;
+	// enable with LOOMCYCLE_BASHBOX_ENABLED=1. gbash is alpha — the per-agent
+	// allowed_tools gate is the escape hatch.
+	BashboxEnabled bool
 	// SkillsRoot points at a directory holding subdirectories of the
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
@@ -2617,6 +2624,7 @@ func Load(path string) (*Config, error) {
 		ResumeFanout:             os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		BraveAPIKey:              os.Getenv("BRAVE_API_KEY"),
 		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
+		BashboxEnabled:           os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
 		SkillsRoot:               os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
 		AgentsRoot:               os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
 		HelpRoot:                 os.Getenv("LOOMCYCLE_HELP_ROOT"),
