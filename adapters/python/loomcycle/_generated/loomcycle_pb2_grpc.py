@@ -208,6 +208,16 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.Path = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/Path',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.Document = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/Document',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.ListChannels = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ListChannels',
                 request_serializer=loomcycle__pb2.ListChannelsRequest.SerializeToString,
@@ -662,6 +672,27 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Path(self, request, context):
+        """Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
+        TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
+        the operator-trust ctx + the caller's authoritative tenant, never the
+        wire. Op-discriminated input_json (resolve / ls / stat / mkdir / mv / rm);
+        same SubstrateRequest/Response body shape (is_error carries tool refusals).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Document(self, request, context):
+        """Document dispatches to the RFC AK chunked-graph Document tool. Mirrors
+        POST /v1/_document. TENANT-CONFINED (ScopeTenant); requires SQL Memory.
+        Op-discriminated input_json (13 ops: document/chunk lifecycle, edges,
+        query_chunks, type defs); same SubstrateRequest/Response body shape.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ListChannels(self, request, context):
         """----- v0.9.x n8n RFC Phase 0 -----
 
@@ -906,6 +937,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'VolumeDef': grpc.unary_unary_rpc_method_handler(
                     servicer.VolumeDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'Path': grpc.unary_unary_rpc_method_handler(
+                    servicer.Path,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'Document': grpc.unary_unary_rpc_method_handler(
+                    servicer.Document,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -1870,6 +1911,60 @@ class Loomcycle(object):
             request,
             target,
             '/loomcycle.v1.Loomcycle/VolumeDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Path(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/Path',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Document(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/Document',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,

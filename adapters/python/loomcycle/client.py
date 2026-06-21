@@ -596,6 +596,24 @@ class LoomcycleClient:
         path. Mirror of :meth:`agent_def`."""
         return await self._dispatch_substrate("VolumeDef", input)
 
+    async def path(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the Path VFS tool — a Unix-like filesystem over your Memory
+        entries, Volume mounts, and Documents (RFC AL). Op-discriminated:
+        resolve / ls / stat / mkdir / mv / rm. Address resources by
+        human-readable paths (e.g. ``/docs/launch``). Scope (agent/user/
+        tenant) + tenant are resolved server-side from the authenticated
+        principal, never the wire. Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("Path", input)
+
+    async def document(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the Document tool — chunked-graph documents where each chunk
+        is a first-class unit (UUID, hierarchy, type, fields, edges, Markdown
+        body) that agents and humans co-author (RFC AK). Op-discriminated (13
+        ops: document/chunk lifecycle, edges, query_chunks, type defs). Scope
+        agent/user (tenant deferred). Requires SQL Memory enabled on the
+        sidecar. Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("Document", input)
+
     async def _dispatch_substrate(
         self, tool: str, input: Mapping[str, Any]
     ) -> Mapping[str, Any]:
