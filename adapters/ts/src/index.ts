@@ -57,6 +57,10 @@
  *     listVolumes(): Promise<PersistentVolumesResponse>
  *     listEphemeralVolumes(): Promise<EphemeralVolumesResponse>
  *
+ *     // Path VFS + chunked-graph Documents on the wire (v1.4.0 — RFC AL / RFC AK)
+ *     path(input): Promise<PathToolResponse>                      // resolve/ls/stat/mkdir/mv/rm
+ *     document(input): Promise<DocumentToolResponse>              // 13 ops; needs SQL Memory
+ *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
  *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
  *     listLibrarySkills(): Promise<LibraryListResponse<LibrarySkillDefinition>>
@@ -172,6 +176,11 @@ export type {
   // Substrate admin (v0.8.22)
   SubstrateToolInput,
   SubstrateToolResponse,
+  // RFC AL Path VFS + RFC AK Document on the wire (v1.4.0)
+  PathToolInput,
+  PathToolResponse,
+  DocumentToolInput,
+  DocumentToolResponse,
   // RFC AH dynamic volumes (v0.35.0)
   VolumeMode,
   PersistentVolumeEntry,
