@@ -115,6 +115,10 @@ var docSchemaDDL = []string{
 	`CREATE INDEX IF NOT EXISTS chunks_doc_type_status ON chunks(document_id, type, status)`,
 }
 
+// maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
+// corrupt tree can't hang it.
+const maxChunkDepth = 10000
+
 func newDocID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -174,7 +178,12 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 }
 
 func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.ScopeKey, store.MemoryScope, error) {
-	tid := tools.RunIdentity(ctx).TenantID
+	// SQL Memory rejects an empty tenant (it sanitizes the tenant into a path/
+	// identifier); canonicalize ""→"default" exactly like the Memory tool's SQL
+	// ops. NOTE: the dirent ops use the RAW tenant instead (see direntTenant) so
+	// Document's Path-tree entries interoperate with the Path/Memory/Volume
+	// dirents, which all key on the raw RunIdentity tenant.
+	sqlTenant := sqlScopeTenant(ctx)
 	if requested == "" {
 		requested = "user"
 	}
@@ -184,19 +193,26 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 		if name == "" {
 			return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=agent requires a yaml-declared agent")
 		}
-		return sqlmem.ScopeKey{Tenant: tid, Scope: "agent", ScopeID: name}, store.MemoryScopeAgent, nil
+		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "agent", ScopeID: name}, store.MemoryScopeAgent, nil
 	case "user":
 		uid := tools.RunIdentity(ctx).UserID
 		if uid == "" {
 			return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=user requires a user_id on the run")
 		}
-		return sqlmem.ScopeKey{Tenant: tid, Scope: "user", ScopeID: uid}, store.MemoryScopeUser, nil
+		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "user", ScopeID: uid}, store.MemoryScopeUser, nil
 	case "tenant":
 		return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=tenant is not yet supported (SQL Memory has no tenant scope); use agent or user")
 	default:
 		return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: unknown scope %q (agent | user)", requested)
 	}
 }
+
+// direntTenant is the tenant used for Path-tree dirents — the RAW
+// RunIdentity tenant (NOT the SQL-canonicalized one), so Document's document
+// dirents share the same namespace as the Path/Memory/Volume dirents (which
+// all key on the raw tenant). In open mode this is "" for dirents while SQL
+// uses "default"; both consistently represent the single/default tenant.
+func direntTenant(ctx context.Context) string { return tools.RunIdentity(ctx).TenantID }
 
 func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error {
 	for _, ddl := range docSchemaDDL {
@@ -358,7 +374,7 @@ func (d *Document) registerDocDirent(ctx context.Context, key sqlmem.ScopeKey, d
 	}
 	ref, _ := json.Marshal(map[string]any{"document_id": docID})
 	if _, err := d.Store.DirentCreate(ctx, store.DirentRow{
-		TenantID: key.Tenant, Scope: key.Scope, ScopeID: key.ScopeID,
+		TenantID: direntTenant(ctx), Scope: key.Scope, ScopeID: key.ScopeID,
 		ParentPath: parent, Name: name, Kind: "document", ResourceRef: ref,
 	}); err != nil {
 		return "", err
@@ -382,7 +398,7 @@ func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in d
 	if isRoot {
 		return "", fmt.Errorf("path may not be the root")
 	}
-	row, err := d.Store.DirentGet(ctx, key.Tenant, key.Scope, key.ScopeID, parent, name)
+	row, err := d.Store.DirentGet(ctx, direntTenant(ctx), key.Scope, key.ScopeID, parent, name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
@@ -448,11 +464,21 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			return errResult("delete_document: " + err.Error()), nil
 		}
 	}
-	// Drop any Path-tree dirent pointing at this document (best-effort by path).
-	if in.Path != "" {
-		if canonical, perr := normalizePath(in.Path); perr == nil {
-			if parent, name, isRoot := splitPath(canonical); !isRoot {
-				_, _ = d.Store.DirentDelete(ctx, key.Tenant, key.Scope, key.ScopeID, parent, name)
+	// Drop any Path-tree dirent(s) pointing at this document — best-effort, by
+	// document_id (works whether the caller addressed by id or path, so a
+	// delete-by-id never leaves a dangling name). Scans the scope's document
+	// dirents (bounded; a scope's name count is small).
+	if rows, lerr := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, key.ScopeID, "/"); lerr == nil {
+		for _, r := range rows {
+			if r.Kind != "document" {
+				continue
+			}
+			var ref struct {
+				DocumentID string `json:"document_id"`
+			}
+			_ = json.Unmarshal(r.ResourceRef, &ref)
+			if ref.DocumentID == docID {
+				_, _ = d.Store.DirentDelete(ctx, direntTenant(ctx), key.Scope, key.ScopeID, r.ParentPath, r.Name)
 			}
 		}
 	}
@@ -552,11 +578,23 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if row.Revision != *in.Revision {
 		return errResult(fmt.Sprintf("update_chunk: revision conflict (you passed %d, current is %d) — re-read the chunk and retry", *in.Revision, row.Revision)), nil
 	}
+	// Claim the update ATOMICALLY first: the guarded bump only matches if the
+	// revision is still what we read. If a concurrent writer raced us, it
+	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
+	// fix for the silent lost-update: the read-check above is advisory; THIS is
+	// the real gate).
+	now := time.Now().UnixNano()
+	bumped, err := d.SqlMem.Exec(ctx, key, `UPDATE chunks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`, []any{now, in.ID, *in.Revision}, 0)
+	if err != nil {
+		return errResult("update_chunk: " + err.Error()), nil
+	}
+	if bumped.RowsAffected == 0 {
+		return errResult(fmt.Sprintf("update_chunk: revision conflict (revision %d was changed by a concurrent write) — re-read the chunk and retry", *in.Revision)), nil
+	}
 	// Detect which fields the caller actually provided (presence-based; lets a
 	// field be set to empty, unlike a zero-value check).
 	var present map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &present)
-	now := time.Now().UnixNano()
 	if _, has := present["title"]; has {
 		if err := d.exec(ctx, key, `UPDATE chunks SET title = ? WHERE id = ?`, in.Title, in.ID); err != nil {
 			return errResult("update_chunk: " + err.Error()), nil
@@ -586,10 +624,6 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return errResult("update_chunk: body: " + err.Error()), nil
 		}
 	}
-	// Bump revision + updated_at last (the optimistic token).
-	if err := d.exec(ctx, key, `UPDATE chunks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`, now, in.ID, *in.Revision); err != nil {
-		return errResult("update_chunk: " + err.Error()), nil
-	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", in.ID)
 	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
 }
@@ -606,8 +640,11 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		return errResult("delete_chunk: no such chunk: " + in.ID), nil
 	}
 	// Enumerate the chunk + all descendants (iterative BFS — portable, no
-	// recursive CTE). Delete their Memory bodies, edges, and SQL rows.
+	// recursive CTE). A visited set guarantees termination even if a parent_id
+	// cycle somehow exists (move_chunk refuses to create one, but the walk must
+	// never hang on corrupt data).
 	ids := []string{in.ID}
+	visited := map[string]bool{in.ID: true}
 	frontier := []string{in.ID}
 	for len(frontier) > 0 {
 		next := []string{}
@@ -618,6 +655,10 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			}
 			for _, r := range res.Rows {
 				cid := asStr(r[0])
+				if visited[cid] {
+					continue
+				}
+				visited[cid] = true
 				ids = append(ids, cid)
 				next = append(next, cid)
 			}
@@ -647,6 +688,29 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	}
 	if !ok {
 		return errResult("move_chunk: no such chunk: " + in.ID), nil
+	}
+	// Reject moving a chunk under itself or one of its own descendants — that
+	// would create a parent_id cycle (and a cycle makes delete_chunk's
+	// descendant walk non-terminating). Walk UP from the new parent to the
+	// root; if we reach the chunk being moved, it's a cycle.
+	if in.NewParentID != "" {
+		if in.NewParentID == in.ID {
+			return errResult("move_chunk: cannot move a chunk under itself"), nil
+		}
+		cur := in.NewParentID
+		for i := 0; cur != "" && i <= maxChunkDepth; i++ {
+			anc, found, aerr := d.getChunkRow(ctx, key, cur)
+			if aerr != nil {
+				return errResult("move_chunk: " + aerr.Error()), nil
+			}
+			if !found {
+				break
+			}
+			if anc.ID == in.ID {
+				return errResult("move_chunk: cannot move a chunk into its own subtree (would create a cycle)"), nil
+			}
+			cur = anc.ParentID
+		}
 	}
 	pos := 0
 	if in.Position != nil {
@@ -776,7 +840,7 @@ func (d *Document) documentsUnderPath(ctx context.Context, key sqlmem.ScopeKey, 
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.Store.DirentListUnder(ctx, key.Tenant, key.Scope, key.ScopeID, dirPrefix(canonical))
+	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, key.ScopeID, dirPrefix(canonical))
 	if err != nil {
 		return nil, err
 	}

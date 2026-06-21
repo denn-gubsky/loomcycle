@@ -223,3 +223,87 @@ func TestDocument_RequiresSqlMem(t *testing.T) {
 		t.Errorf("Document without SQL Memory should refuse; got %q", res.Text)
 	}
 }
+
+// Regression (review #1): open mode (empty tenant) must work — SQL Memory
+// rejects an empty tenant, so the tool canonicalizes ""→"default" for SQL
+// (sqlScopeTenant) while dirents use the raw tenant.
+func TestDocument_OpenModeEmptyTenant(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	d := &Document{Store: s, SqlMem: mgr, Bus: channels.NewBus()}
+	// No TenantID (open / single-token mode).
+	ctx := tools.WithAgentName(context.Background(), "a1")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "u1"})
+
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"open","path":"/o/x"}`)
+	if res.IsError {
+		t.Fatalf("create_document in open mode failed: %q", res.Text)
+	}
+	docID := out["document_id"].(string)
+	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+docID+`"}`); r.IsError {
+		t.Errorf("get_document in open mode failed: %q", r.Text)
+	}
+	// The dirent is at the RAW (empty) tenant — get_document by path resolves it.
+	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","path":"/o/x"}`); r.IsError {
+		t.Errorf("get_document by path in open mode failed: %q", r.Text)
+	}
+}
+
+// Regression (review #2): moving a chunk into its own subtree must be refused
+// (a parent_id cycle would make delete_chunk's descendant walk non-terminating).
+func TestDocument_MoveChunkCycleRefused(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D"}`)
+	docID := out["document_id"].(string)
+	root := out["root_chunk_id"].(string)
+	mk := func(parent, title string) string {
+		o, _ := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+parent+`","title":"`+title+`","body":""}`)
+		return o["id"].(string)
+	}
+	a := mk(root, "a")
+	b := mk(a, "b") // b is a descendant of a
+	// move a under b → cycle → refuse.
+	if _, r := docExec(t, d, ctx, `{"op":"move_chunk","scope":"user","id":"`+a+`","new_parent_id":"`+b+`"}`); !r.IsError {
+		t.Fatalf("move into own subtree must be refused; got %q", r.Text)
+	}
+	// move a under itself → refuse.
+	if _, r := docExec(t, d, ctx, `{"op":"move_chunk","scope":"user","id":"`+a+`","new_parent_id":"`+a+`"}`); !r.IsError {
+		t.Errorf("move under self must be refused")
+	}
+	// a is intact, and delete_chunk(root) terminates (no hang) and removes all.
+	out, r := docExec(t, d, ctx, `{"op":"delete_chunk","scope":"user","id":"`+root+`"}`)
+	if r.IsError {
+		t.Fatalf("delete after refused move: %q", r.Text)
+	}
+	if int(out["cascade_deleted_descendants"].(float64)) != 2 { // a + b
+		t.Errorf("cascade count = %v, want 2", out["cascade_deleted_descendants"])
+	}
+}
+
+// Regression (review #4): delete_document BY ID must also remove the Path-tree
+// dirent (no dangling name).
+func TestDocument_DeleteByIDCleansDirent(t *testing.T) {
+	d, ctx, s := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"D","path":"/docs/d"}`)
+	docID := out["document_id"].(string)
+	// dirent exists.
+	if _, derr := s.DirentGet(context.Background(), "tnt", "agent", "doc-agent", "/docs/", "d"); derr != nil {
+		t.Fatalf("dirent missing pre-delete: %v", derr)
+	}
+	// delete by ID (no path).
+	if _, r := docExec(t, d, ctx, `{"op":"delete_document","scope":"agent","id":"`+docID+`"}`); r.IsError {
+		t.Fatalf("delete_document: %q", r.Text)
+	}
+	// dirent is gone (no dangling name).
+	if _, derr := s.DirentGet(context.Background(), "tnt", "agent", "doc-agent", "/docs/", "d"); derr == nil {
+		t.Errorf("dirent should be removed after delete-by-id")
+	}
+}
