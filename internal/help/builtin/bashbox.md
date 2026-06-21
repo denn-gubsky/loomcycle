@@ -69,6 +69,25 @@ repo).
 Some cosmetic differences are expected: `wc`/`uniq` column padding differs, and
 `pwd` reports the sandbox mount root rather than the host path.
 
+## Host-command fallback (operator opt-in)
+
+Commands gbash doesn't implement — `git`, `gh`, `npm`, … — normally fail with
+`command not found`. An operator can allowlist specific ones to run on the
+**real host shell** instead:
+
+- `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` — only these names escape the
+  sandbox; **every other command still runs sandboxed** (so `git status; curl …`
+  runs git on the host but `curl` stays in the sandbox).
+- `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GH_TOKEN,HOME,SSH_AUTH_SOCK` — env
+  vars passed into those host commands (for credentials). They are injected only
+  into the host child, never the sandbox — you can't read them via `env`.
+
+Fallback commands **require a read-write volume** (a real host process can't
+honor the read-only overlay), run with their working directory set to the host
+path for your current dir, and have host filesystem + network access. They are
+off by default; this tool's description lists which (if any) the operator
+enabled.
+
 ## Caveat
 
 gbash is **alpha** and pinned to an exact version in loomcycle's `go.mod`. The
