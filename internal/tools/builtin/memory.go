@@ -399,9 +399,14 @@ const memoryInputSchema = `{
 }`
 
 type memoryInput struct {
-	Op        string          `json:"op"`
-	Scope     string          `json:"scope"`
-	Key       string          `json:"key,omitempty"`
+	Op    string `json:"op"`
+	Scope string `json:"scope"`
+	Key   string `json:"key,omitempty"`
+	// Path (RFC AL) optionally registers/addresses this entry in the Path
+	// tree. On `set`, a memory_entry dirent is registered at this path; on
+	// `get`, the path resolves to the entry's key (an alternative to `key`).
+	// Same (scope, scope_id) as the entry; tenant from the run identity.
+	Path      string          `json:"path,omitempty"`
 	Value     json.RawMessage `json:"value,omitempty"`
 	Delta     *int64          `json:"delta,omitempty"`
 	TTL       int64           `json:"ttl,omitempty"`
@@ -912,8 +917,15 @@ func (m *Memory) sqlAuditMode() string {
 }
 
 func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if in.Path != "" && in.Key == "" {
+		key, err := m.resolveMemoryPath(ctx, scope, scopeID, in.Path)
+		if err != nil {
+			return errResult("get: " + err.Error()), nil
+		}
+		in.Key = key
+	}
 	if in.Key == "" {
-		return errResult("get: missing required field: key"), nil
+		return errResult("get: missing required field: key (or path)"), nil
 	}
 	entry, err := m.backend(ctx).Get(ctx, scope, scopeID, in.Key)
 	if err != nil {
@@ -938,6 +950,12 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	}
 	if !json.Valid(in.Value) {
 		return errResult("set: value is not valid JSON"), nil
+	}
+	// Fail fast on a malformed path before writing the value (RFC AL).
+	if in.Path != "" {
+		if _, err := normalizePath(in.Path); err != nil {
+			return errResult("set: " + err.Error()), nil
+		}
 	}
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
 		return errResult(fmt.Sprintf("set: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
@@ -981,7 +999,75 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 			resp["embed_warning"] = res.EmbedWarning
 		}
 	}
+	// RFC AL — register a Path-tree dirent for this entry. The k/v value is
+	// already durable; a dirent failure is surfaced as a warning so the value
+	// isn't lost (the agent can retry the path). The path was validated at the
+	// top of execSet, so this only fails on a store fault.
+	if in.Path != "" {
+		if err := m.registerMemoryDirent(ctx, scope, scopeID, in.Key, in.Path); err != nil {
+			resp["path_warning"] = fmt.Sprintf("value set but path registration failed: %s", err)
+		} else {
+			resp["path"] = in.Path
+		}
+	}
 	return okJSON(resp)
+}
+
+// resolveMemoryPath resolves a Path-tree path to the memory key it names,
+// within the entry's own (scope, scope_id) tree. tenant from the run identity.
+func (m *Memory) resolveMemoryPath(ctx context.Context, scope store.MemoryScope, scopeID, rawPath string) (string, error) {
+	if m.Store == nil {
+		return "", fmt.Errorf("path addressing requires a Store backend")
+	}
+	canonical, err := normalizePath(rawPath)
+	if err != nil {
+		return "", err
+	}
+	parent, name, isRoot := splitPath(canonical)
+	if isRoot {
+		return "", fmt.Errorf("path may not be the root")
+	}
+	row, err := m.Store.DirentGet(ctx, tools.RunIdentity(ctx).TenantID, string(scope), scopeID, parent, name)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return "", fmt.Errorf("no such path: %s", canonical)
+		}
+		return "", err
+	}
+	if row.Kind != "memory_entry" {
+		return "", fmt.Errorf("path %s is a %s, not a memory entry", canonical, row.Kind)
+	}
+	var ref struct {
+		Key string `json:"key"`
+	}
+	_ = json.Unmarshal(row.ResourceRef, &ref)
+	if ref.Key == "" {
+		return "", fmt.Errorf("path %s has no memory key", canonical)
+	}
+	return ref.Key, nil
+}
+
+// registerMemoryDirent registers (upserts) a memory_entry dirent naming this
+// k/v entry at the given path, in the entry's own (scope, scope_id) tree.
+func (m *Memory) registerMemoryDirent(ctx context.Context, scope store.MemoryScope, scopeID, key, rawPath string) error {
+	if m.Store == nil {
+		return fmt.Errorf("path addressing requires a Store backend")
+	}
+	canonical, err := normalizePath(rawPath)
+	if err != nil {
+		return err
+	}
+	parent, name, isRoot := splitPath(canonical)
+	if isRoot {
+		return fmt.Errorf("path may not be the root")
+	}
+	ref, _ := json.Marshal(map[string]any{"scope": string(scope), "scope_id": scopeID, "key": key, "facet": "kv"})
+	_, err = m.Store.DirentCreate(ctx, store.DirentRow{
+		TenantID: tools.RunIdentity(ctx).TenantID, Scope: string(scope), ScopeID: scopeID,
+		ParentPath: parent, Name: name, Kind: "memory_entry", ResourceRef: ref,
+	})
+	return err
 }
 
 // execSearch implements the v0.9.0 Memory.search op. Refuses with
