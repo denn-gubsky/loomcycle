@@ -8,6 +8,71 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.4.0
+
+Two new substrate primitives — a filesystem-like naming layer and chunked-graph
+documents — plus their full cross-transport surface.
+
+**🗂️ Path — a Unix-like VFS over Memory / Volumes / Documents (RFC AL).** A
+tenant-rooted, scope-aware virtual filesystem that lets agents address those
+resources by human-readable paths (e.g. `/docs/launch`) instead of opaque ids.
+It borrows the Linux **inode/dirent split** — each resource keeps its permanent
+id, and a `dirents` runtime-store row maps `(parent_path, name) → resource` — so
+a rename/move is a cheap dirent update that never touches the resource, and one
+tree spans all three resource kinds. The new `Path` tool has six ops
+(`resolve`/`ls`/`stat`/`mkdir`(no-op, dirs are implicit)/`mv`/`rm`); paths reject
+`..` and are tenant-isolated. Resources opt into a name via `Memory.set path:`,
+`VolumeDef.create mount_at:`, and `Document.create_document path:`. A dirent is a
+**name, not an authority grant** — the resource's own scope/tenant check still
+applies. See `docs/PATH.md`.
+
+**📄 Document — chunked-graph documents (RFC AK Phase 1).** A document is a tree
+of **chunks**, each a first-class unit (UUID, hierarchy position, optional type,
+structured fields, graph edges, Markdown body) that agents and humans co-author.
+**Content/structure split:** chunk bodies + fields live in Memory (keyed by the
+chunk UUID); chunk structure (parent/position/type/status/title/revision +
+edges + type schemas) lives in **SQL Memory** across four tables, so agents
+query `SELECT … FROM chunks WHERE type=… AND status=…`. The new `Document` tool
+has 13 ops (document/chunk lifecycle, edges, `query_chunks` with structured
+filters + an `under_path` Path join + a validator-gated `sql:` escape hatch,
+type defs), **optimistic `revision` concurrency** on update, a `move_chunk`
+cycle guard, and a document is named in the Path tree via a `document` dirent.
+Requires SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`). Scope `agent`/`user` (tenant
+deferred — SQL Memory has no tenant scope yet), tenant-isolated via the SQL
+Memory scope key. The delete paths are **atomic**: `delete_document` /
+`delete_chunk` run their whole cascade in one SQL Memory transaction, edge
+cleanup is bidirectional (no dangling incoming cross-document edge),
+`link_chunks` validates both endpoints, and `delete_chunk` refuses a document's
+root chunk. See `docs/DOCUMENTS.md`.
+
+**🔌 Path + Document on every transport.** Besides being callable in-band by an
+agent, both are now first-class operations off-run: `POST /v1/_path` +
+`POST /v1/_document` (HTTP), the `Path` / `Document` gRPC RPCs, the LoomCycle MCP
+meta-tools `path` / `document`, and `client.path()` / `client.document()` in the
+TS (`@loomcycle/client`) and Python (`loomcycle`) adapters — so a human or a UI
+can co-author the same scoped namespace + documents agents build, without
+spawning a run. All four surfaces dispatch through one op-discriminated
+`Connector` method per tool; **scope and tenant are resolved server-side from the
+authenticated principal, never the wire** (an off-run `scope:"user"` op keys on
+the principal's subject, so it interoperates with that user's agent runs). Both
+are tenant-confined (`ScopeTenant`; `substrate:admin` also satisfies).
+
+### Compatibility
+
+**Additive — no breaking changes.** New HTTP endpoints, gRPC RPCs (reusing the
+existing `SubstrateRequest`/`SubstrateResponse` shape), and MCP meta-tools;
+nothing consumed these surfaces before, so no wire break. The adapters **do**
+change this release: **`@loomcycle/client@1.4.0`** (adds `path()` / `document()`)
+and **`python-v1.4.0`** (adds `path()` / `document()`). The Path + Document core
+(`internal/tools/builtin/pathtool.go`, `document.go`) plus the `dirents`
+runtime-store table shipped on `main` ahead of this tag; v1.4.0 is the first
+release to carry them.
+
+Docs: `docs/PATH.md`, `docs/DOCUMENTS.md`, the `path` / `document`
+`Context op=help` topics, and `docs/TOOLS.md`.
+
+---
+
 ## What's in v1.3.0
 
 **🧰 Bashbox — a TRUE in-process shell sandbox (RFC AJ).** A new opt-in tool that
