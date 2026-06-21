@@ -483,6 +483,23 @@ func (s *Server) Context(ctx context.Context, input json.RawMessage) (connector.
 	return s.dispatchBuiltin(ctx, "Context", input)
 }
 
+// Path dispatches to the RFC AL Path VFS tool. Like VolumeDef it IS in the
+// per-agent dispatcher (s.tools), so it routes through dispatchBuiltin; this
+// connector method is what POST /v1/_path, the gRPC Path RPC, and the MCP
+// `path` meta-tool call. Scope/tenant come from the operator-trust ctx the
+// caller's transport stamped (substrateAdminCtx / substrateGRPCCtx /
+// operatorCtx), never from the wire.
+func (s *Server) Path(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	return s.dispatchBuiltin(ctx, "Path", input)
+}
+
+// Document dispatches to the RFC AK Document tool. Same posture as Path —
+// in-dispatcher tool reached via dispatchBuiltin; what POST /v1/_document,
+// the gRPC Document RPC, and the MCP `document` meta-tool call.
+func (s *Server) Document(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	return s.dispatchBuiltin(ctx, "Document", input)
+}
+
 // MCPServerDef dispatches to the v0.9.x dynamic MCP-server-registration
 // substrate tool. The tool is NOT in the per-agent dispatcher (operator-
 // admin-only) — dispatchBuiltinDirect looks it up via the dedicated

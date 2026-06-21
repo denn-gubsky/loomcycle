@@ -27,16 +27,32 @@ type substrateMock struct {
 	gotSkillDefInput    json.RawMessage
 	gotScheduleDefInput json.RawMessage
 	gotVolumeDefInput   json.RawMessage
+	gotPathInput        json.RawMessage
+	gotDocumentInput    json.RawMessage
 
 	agentDefResult    connector.ToolResult
 	skillDefResult    connector.ToolResult
 	scheduleDefResult connector.ToolResult
 	volumeDefResult   connector.ToolResult
+	pathResult        connector.ToolResult
+	documentResult    connector.ToolResult
 
 	agentDefErr    error
 	skillDefErr    error
 	scheduleDefErr error
 	volumeDefErr   error
+	pathErr        error
+	documentErr    error
+}
+
+func (m *substrateMock) Path(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotPathInput = in
+	return m.pathResult, m.pathErr
+}
+
+func (m *substrateMock) Document(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotDocumentInput = in
+	return m.documentResult, m.documentErr
 }
 
 func (m *substrateMock) AgentDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -160,6 +176,60 @@ func TestGrpcVolumeDef_HappyPath(t *testing.T) {
 		t.Errorf("connector wasn't called with the input")
 	}
 	if string(resp.GetOutputJson()) != `{"name":"repo-a","path":"/pool/_shared/repo-a","mode":"rw"}` {
+		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
+func TestGrpcPath_HappyPath(t *testing.T) {
+	mc := &substrateMock{
+		pathResult: connector.ToolResult{
+			Text:    `{"kind":"document","resource_ref":{"document_id":"d1"}}`,
+			IsError: false,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.Path(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"resolve","path":"/docs/launch","scope":"user"}`),
+	})
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true, want false")
+	}
+	if string(mc.gotPathInput) == "" {
+		t.Errorf("connector wasn't called with the input")
+	}
+	if string(resp.GetOutputJson()) != `{"kind":"document","resource_ref":{"document_id":"d1"}}` {
+		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
+func TestGrpcDocument_HappyPath(t *testing.T) {
+	mc := &substrateMock{
+		documentResult: connector.ToolResult{
+			Text:    `{"document_id":"d1","root_chunk_id":"c0"}`,
+			IsError: false,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.Document(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create_document","scope":"user","title":"Launch"}`),
+	})
+	if err != nil {
+		t.Fatalf("Document: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true, want false")
+	}
+	if string(mc.gotDocumentInput) == "" {
+		t.Errorf("connector wasn't called with the input")
+	}
+	if string(resp.GetOutputJson()) != `{"document_id":"d1","root_chunk_id":"c0"}` {
 		t.Errorf("output_json = %s", resp.GetOutputJson())
 	}
 }

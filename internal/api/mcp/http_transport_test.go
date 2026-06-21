@@ -179,6 +179,12 @@ func (m *httpMockConnector) OperatorTokenDef(context.Context, json.RawMessage) (
 func (m *httpMockConnector) VolumeDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) Path(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) Document(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
 
 // v0.9.x Channel CRUD stubs.
 func (m *httpMockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {

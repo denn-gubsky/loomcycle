@@ -503,9 +503,13 @@ var grpcConsumerScopes = map[string]string{
 	"WebhookDef":       auth.ScopeTenant,
 	"MemoryBackendDef": auth.ScopeTenant,
 	"VolumeDef":        auth.ScopeTenant,
-	"RegisterHook":     auth.ScopeTenant,
-	"ListHooks":        auth.ScopeTenant,
-	"DeleteHook":       auth.ScopeTenant,
+	// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated tools
+	// lifted to the wire. Same ScopeTenant posture as VolumeDef.
+	"Path":         auth.ScopeTenant,
+	"Document":     auth.ScopeTenant,
+	"RegisterHook": auth.ScopeTenant,
+	"ListHooks":    auth.ScopeTenant,
+	"DeleteHook":   auth.ScopeTenant,
 }
 
 // requiredScopeForRPC returns the scope a caller must hold for fullMethod.

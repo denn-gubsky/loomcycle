@@ -100,6 +100,21 @@ func (s *Server) handleSubstrateVolumeDef(w http.ResponseWriter, r *http.Request
 	s.dispatchSubstrate(w, r, "VolumeDef", s.VolumeDef)
 }
 
+// handleSubstratePath serves POST /v1/_path.
+// RFC AL Path VFS. Bearer-authed; same dispatch shape as the other endpoints.
+// No per-tool scope policy (gated by allowed_tools; substrateAdminCtx grants
+// the ["*"] tool ceiling), so the operator-trust caller isn't default-denied.
+func (s *Server) handleSubstratePath(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "Path", s.Path)
+}
+
+// handleSubstrateDocument serves POST /v1/_document.
+// RFC AK chunked-graph documents. Bearer-authed; same dispatch shape as the
+// other endpoints. Requires SQL Memory enabled.
+func (s *Server) handleSubstrateDocument(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "Document", s.Document)
+}
+
 // dispatchSubstrate is the shared body of the two handlers.
 // connectorFn is the Connector method (already a method value
 // bound to the Server). toolName is the label used in error

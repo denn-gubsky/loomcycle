@@ -265,6 +265,16 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("volumedef"),
 		},
 		{
+			Name:        "path",
+			Description: "Path tool ops (resolve/ls/stat/mkdir/mv/rm). RFC AL Unix-like VFS over the dirents table — address Memory entries, Volume mounts, and Documents by human-readable paths (e.g. /docs/launch). Scope-aware (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\". mkdir is a no-op (dirs are implicit). Pass-through.",
+			InputSchema: builtinSchema("path"),
+		},
+		{
+			Name:        "document",
+			Description: "Document tool ops (create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks, define_type/list_types). RFC AK chunked-graph documents — each chunk is a first-class unit (UUID, hierarchy, type, fields, edges, Markdown body). Requires SQL Memory. Scope agent/user (tenant deferred); tenant-isolated. Pass-through.",
+			InputSchema: builtinSchema("document"),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: builtinSchema("evaluation"),

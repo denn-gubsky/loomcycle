@@ -257,6 +257,33 @@ func (s *Server) VolumeDef(ctx context.Context, req *loomcyclepb.SubstrateReques
 	})
 }
 
+// Path serves the RFC AL Path-VFS gRPC RPC. Op-discriminated input_json
+// (resolve / get / ls / stat / mkdir / mv / rm) routes via the Connector to
+// the in-process tool. TENANT-CONFINED (ScopeTenant): substrateGRPCCtx stamps
+// the operator-trust identity + the caller's authoritative tenant; the tool
+// resolves scope from that, never the wire.
+func (s *Server) Path(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "Path", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.Path(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// Document serves the RFC AK Document gRPC RPC. Same shape + tenant-confined
+// posture as Path; requires SQL Memory enabled on the runtime.
+func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "Document", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.Document(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
 // dispatchSubstrateRPC is the shared body of the two substrate
 // handlers. callerFn closes over the specific Connector method
 // (AgentDef or SkillDef).

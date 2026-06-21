@@ -577,6 +577,10 @@ func isTenantConfinedDefPath(path string) bool {
 		// it joins the ScopeTenant set. No /names sub-path: the list op
 		// dispatches via the POST body, not a GET route.
 		"/v1/_volumedef",
+		// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated
+		// tools (resolve scope from the operator-trust ctx + tenant-stamp via
+		// RunIdentity). Same posture as _volumedef: ScopeTenant, no /names.
+		"/v1/_path", "/v1/_document",
 	} {
 		if path == fam || path == fam+"/names" {
 			return true

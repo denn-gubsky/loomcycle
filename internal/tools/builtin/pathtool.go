@@ -31,21 +31,24 @@ func (p *Path) Description() string {
 	return "A Unix-like filesystem over your Memory, Volumes, and Documents. Address resources by human-readable paths (e.g. /docs/launch). Ops: resolve, ls, stat, mkdir (no-op — dirs are implicit), mv, rm. Paths are scoped (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\"."
 }
 
-func (p *Path) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"op":            {"type": "string", "enum": ["resolve","ls","stat","mkdir","mv","rm"], "description": "The operation."},
-			"path":          {"type": "string", "description": "Absolute path, e.g. /docs/launch. Segments are [a-zA-Z0-9._-]; no \"..\"."},
-			"to":            {"type": "string", "description": "Destination path (mv only)."},
-			"scope":         {"type": "string", "enum": ["agent","user","tenant"], "description": "Which tree (default agent). user requires a user_id on the run; tenant is shared across the tenant."},
-			"recursive":     {"type": "boolean", "description": "ls: list all descendants. rm: required to remove a path that has descendants."},
-			"kind_filter":   {"type": "string", "description": "ls: only entries of this kind (document/volume_mount/memory_entry/directory)."},
-			"resource_too":  {"type": "boolean", "description": "rm: also delete the backing resource. NOT supported in v1 (dirent-only removal)."}
-		},
-		"required": ["op"]
-	}`)
-}
+// pathInputSchema is a package const so the LoomCycle MCP server can source
+// the wrapper's advertised inputSchema verbatim (via MCPWrapperInputSchema)
+// rather than restating it — the same pattern as memoryInputSchema.
+const pathInputSchema = `{
+	"type": "object",
+	"properties": {
+		"op":            {"type": "string", "enum": ["resolve","ls","stat","mkdir","mv","rm"], "description": "The operation."},
+		"path":          {"type": "string", "description": "Absolute path, e.g. /docs/launch. Segments are [a-zA-Z0-9._-]; no \"..\"."},
+		"to":            {"type": "string", "description": "Destination path (mv only)."},
+		"scope":         {"type": "string", "enum": ["agent","user","tenant"], "description": "Which tree (default agent). user requires a user_id on the run; tenant is shared across the tenant."},
+		"recursive":     {"type": "boolean", "description": "ls: list all descendants. rm: required to remove a path that has descendants."},
+		"kind_filter":   {"type": "string", "description": "ls: only entries of this kind (document/volume_mount/memory_entry/directory)."},
+		"resource_too":  {"type": "boolean", "description": "rm: also delete the backing resource. NOT supported in v1 (dirent-only removal)."}
+	},
+	"required": ["op"]
+}`
+
+func (p *Path) InputSchema() json.RawMessage { return json.RawMessage(pathInputSchema) }
 
 type pathInput struct {
 	Op          string `json:"op"`

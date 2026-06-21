@@ -298,6 +298,19 @@ service Loomcycle {
   // is_error tool refusals in the response).
   rpc VolumeDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
+  // TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
+  // the operator-trust ctx + the caller's authoritative tenant, never the
+  // wire. Op-discriminated input_json (resolve / ls / stat / mkdir / mv / rm);
+  // same SubstrateRequest/Response body shape (is_error carries tool refusals).
+  rpc Path(SubstrateRequest) returns (SubstrateResponse);
+
+  // Document dispatches to the RFC AK chunked-graph Document tool. Mirrors
+  // POST /v1/_document. TENANT-CONFINED (ScopeTenant); requires SQL Memory.
+  // Op-discriminated input_json (13 ops: document/chunk lifecycle, edges,
+  // query_chunks, type defs); same SubstrateRequest/Response body shape.
+  rpc Document(SubstrateRequest) returns (SubstrateResponse);
+
   // ----- v0.9.x n8n RFC Phase 0 -----
   //
   // ListChannels mirrors GET /v1/_channels — operator-declared
