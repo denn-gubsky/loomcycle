@@ -1,0 +1,127 @@
+package mcp
+
+import (
+	"context"
+
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+)
+
+// mcpErrForbidden is the JSON-RPC error code returned when a principal calls a
+// meta-tool its scopes don't permit. It sits in the implementation-defined
+// server-error range (-32000..-32099) so a client can distinguish "forbidden"
+// from -32601 "unknown tool" and -32603 "internal error".
+const mcpErrForbidden = -32001
+
+// tenantConfinableTools is the explicit allowlist of /v1/_mcp meta-tools a
+// non-admin (substrate:tenant) principal may list + call. Membership means the
+// underlying tool keys on RunIdentity.TenantID — so the mcpPrincipalCtx tenant
+// stamp plus the tool's own tenant filter confine it — NOT that this map grants
+// any capability itself.
+//
+// A tool ABSENT from this set requires substrate:admin: deny-by-default, so a
+// newly added meta-tool is admin-only until it is explicitly classified
+// tenant-safe here (RFC AG §2 / §5). This mirrors requiredScopeFor's
+// default-deny arm on the HTTP plane — the enforcement-correctness lives in this
+// map, not the router, so an unclassified tool must fail closed.
+//
+// The route gate keeps /v1/_mcp at substrate:admin today (RFC AG Phase 2 opens
+// it to tenant tokens), so for real traffic every caller is admin and this map
+// is inert. It is built + tested now as defense-in-depth, ahead of the flip.
+var tenantConfinableTools = map[string]bool{
+	// Run lifecycle — tenant flows via the run identity (applyPrincipal on
+	// the wire identity lands in RFC AG Phase 1).
+	"spawn_run":   true,
+	"spawn_runs":  true,
+	"cancel_run":  true,
+	"get_run":     true,
+	"compact_run": true,
+	"list_runs":   true,
+
+	// Agent management.
+	"register_agent":   true,
+	"unregister_agent": true,
+	"list_agents":      true,
+
+	// Def authoring — each stamps the row's tenant from ctx and opaque-404s
+	// cross-tenant reads.
+	"agentdef":         true,
+	"skilldef":         true,
+	"mcpserverdef":     true,
+	"scheduledef":      true,
+	"a2aservercarddef": true,
+	"a2aagentdef":      true,
+	"webhookdef":       true,
+	"memorybackenddef": true,
+	"volumedef":        true,
+
+	// Per-(scope, scope_id, tenant) data tools.
+	"memory":     true,
+	"channel":    true,
+	"channeldef": true,
+	"path":       true,
+	"document":   true,
+
+	// Per-run / per-user — tenant inherited; the underlying tool applies its
+	// own own-subject / cross-tenant-404 gate.
+	"evaluation":             true,
+	"context":                true,
+	"interruption_resolve":   true,
+	"publish_channel":        true,
+	"subscribe_channel":      true,
+	"peek_channel":           true,
+	"ack_channel":            true,
+	"stream_user_run_states": true,
+}
+
+// adminOnlyTools enumerates the runtime-global / operator-plane meta-tools that
+// have NO tenant dimension and so cannot be confined — they stay admin-only
+// (RFC AG §2). The gate does NOT consult this set (it relies on
+// tenantConfinableTools + deny-by-default); it exists so the drift test can
+// assert every dispatchable tool is *consciously* classified as one or the
+// other, and that the two sets are disjoint. Adding a meta-tool without
+// classifying it here turns the drift test red.
+var adminOnlyTools = map[string]bool{
+	"operatortokendef": true, // token minting — no tenant dimension.
+
+	// Runtime-global control + introspection.
+	"pause_runtime":     true,
+	"resume_runtime":    true,
+	"get_runtime_state": true,
+	"resolve_probe":     true,
+
+	// Snapshots capture / restore cross-tenant state.
+	"create_snapshot":  true,
+	"list_snapshots":   true,
+	"get_snapshot":     true,
+	"export_snapshot":  true,
+	"restore_snapshot": true,
+	"delete_snapshot":  true,
+
+	// Hook management is tenant-isolated after PR #508, so RFC AG §2 flags it
+	// as a Phase-2 promotion candidate; keep it admin-only until the route opens.
+	"register_hook": true,
+	"list_hooks":    true,
+	"delete_hook":   true,
+
+	// Operator aggregate over every scope.
+	"list_channels": true,
+}
+
+// principalMayCallTool reports whether the principal on ctx may list/invoke
+// toolName over the /v1/_mcp transport (RFC AG §3.3):
+//
+//   - No principal (stdio / open mode): process-local operator-trust → every tool.
+//   - Admin principal (substrate:admin, incl. the legacy token): every tool.
+//   - Non-admin (substrate:tenant) principal: only the tenant-confinable
+//     allowlist; everything else — including an unclassified new tool — is
+//     admin-only (deny-by-default).
+func principalMayCallTool(ctx context.Context, toolName string) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return true
+	}
+	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return true
+	}
+	return tenantConfinableTools[toolName]
+}
