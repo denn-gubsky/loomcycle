@@ -10,7 +10,8 @@ This is a **first-class, reusable bundle** — not an `examples/` experiment.
 
 ```
 bundles/document-agent/
-├── loomcycle.yaml                 # the doc-manager agent definition
+├── loomcycle.yaml                 # the doc-manager agent (single-provider)
+├── loomcycle_oauth.yaml           # OAuth-FIRST variant (subscription → fallbacks)
 ├── skills/
 │   ├── semantic-chunking/SKILL.md # split prose into a chunk hierarchy
 │   ├── edge-linking/SKILL.md      # create/curate graph edges
@@ -41,6 +42,18 @@ loomcycle --config bundles/document-agent/loomcycle.yaml
 3. Ensure `LOOMCYCLE_SQLMEM_ENABLED=1`.
 4. Swap the provider/tier for your routing — the agent only needs a `middle`
    tier to resolve.
+
+**Anthropic OAuth (subscription) variant:** `loomcycle_oauth.yaml` is the same
+agent with `anthropic-oauth-dev` first in every tier and the API-key/cloud
+providers (deepseek/gemini/anthropic/openai) as the fallback cascade. Opt into
+the OAuth path (`LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1` + `loomcycle anthropic
+login`; see `docs/PROVIDERS.md`) and run it instead:
+```sh
+export LOOMCYCLE_SQLMEM_ENABLED=1 LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1
+export LOOMCYCLE_SKILLS_ROOT=bundles/document-agent/skills
+loomcycle anthropic login
+loomcycle --config bundles/document-agent/loomcycle_oauth.yaml
+```
 
 The Web UI Assistant targets the agent named **`doc-manager`** by default; if it
 isn't registered, the Assistant panel shows a hint pointing here instead of a

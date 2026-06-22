@@ -1,0 +1,115 @@
+# document-agent bundle — OAuth-FIRST variant.
+#
+# Same `doc-manager` agent as loomcycle.yaml in this bundle, but the
+# reverse-engineered Anthropic subscription provider `anthropic-oauth-dev` is
+# FIRST in every provider_priority + tier candidate list; the API-key / cloud
+# providers below it are the fallback cascade. `fallback_on_error: true` rolls a
+# quota/availability error over to the next candidate.
+#
+# Run it with:
+#     export LOOMCYCLE_SQLMEM_ENABLED=1                       # Documents need SQL Memory
+#     export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1          # opt into the OAuth path
+#     export LOOMCYCLE_SKILLS_ROOT=bundles/document-agent/skills
+#     loomcycle anthropic login                               # one-time browser login
+#     loomcycle --config bundles/document-agent/loomcycle_oauth.yaml
+#
+# ─── PREREQUISITES for the OAuth path (full text in docs/PROVIDERS.md) ──
+#   1. An active Claude Pro/Max subscription (with inference quota).
+#   2. LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 in the launch env (NOT this file).
+#      Without it, `anthropic-oauth-dev` is ABSENT from the resolver and every
+#      reference below silently falls through to the next provider.
+#   3. `loomcycle anthropic login` (tokens persist at
+#      ~/.config/loomcycle/anthropic-oauth.json, chmod 0600).
+#
+# ─── RISK ──────────────────────────────────────────────────────────────
+# The Anthropic OAuth flow is REVERSE-ENGINEERED, not official — RESEARCH/DEV
+# ONLY, run against YOUR OWN subscription, no warranty. See docs/PROVIDERS.md.
+#
+# ─── API-key fallbacks (set in the launch env, NOT this file) ──────────
+#   ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY
+
+# OAuth FIRST; everything else is the fallback cascade. Add `ollama-local` /
+# `ollama` here if you run a LAN/cloud Ollama (see loomcycle_oauth.yaml in your
+# config dir for that shape).
+provider_priority:
+  - anthropic-oauth-dev   # MAX subscription billing — FIRST
+  - deepseek
+  - gemini
+  - anthropic             # API-key Anthropic
+  - openai
+
+# ─── Model aliases (sensitive-path pin pattern) ───────────────────────
+models:
+  oauth-haiku:       { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+  oauth-sonnet:      { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+  haiku:             { provider: anthropic, model: claude-haiku-4-5 }
+  sonnet:            { provider: anthropic, model: claude-sonnet-4-6 }
+  deepseek-pro:      { provider: deepseek, model: deepseek-v4-pro }
+  deepseek-flash:    { provider: deepseek, model: deepseek-v4-flash }
+  gemini-pro:        { provider: gemini,   model: gemini-2.5-pro }
+  gemini-flash-lite: { provider: gemini,   model: gemini-2.5-flash-lite }
+
+# ─── Tier candidate lists — OAuth subscription model FIRST, then fallbacks ──
+tiers:
+  low:
+    - oauth-haiku        # subscription FIRST
+    - deepseek-flash
+    - gemini-flash-lite
+    - haiku              # API-key fallback
+  middle:
+    - oauth-sonnet       # subscription FIRST
+    - deepseek-pro
+    - gemini-pro
+    - sonnet             # API-key fallback
+  high:
+    - oauth-sonnet       # subscription FIRST
+    - deepseek-pro
+    - sonnet             # API-key fallback
+
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek, gemini, anthropic, openai]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+# Ultimate fallback when no agent/tier resolves: the OAuth subscription.
+defaults:
+  provider: anthropic-oauth-dev
+  model: claude-sonnet-4-6
+
+agents:
+  doc-manager:
+    tier: middle          # → oauth-sonnet first, then deepseek/gemini/anthropic
+    max_iterations: 24
+    max_tokens: 8192
+    effort: medium        # ignored by some providers; honoured on the OAuth path
+    allowed_tools: [Document, Memory, Context]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    skills: [semantic-chunking, edge-linking, restructuring, md-import]
+    system_prompt: |
+      You are DOC-MANAGER, a co-author of chunked-graph Documents (RFC AK). You
+      turn an operator's plain-text instructions into Document tool calls — the
+      operator drives you from the Web UI's Document Assistant instead of editing
+      chunks by hand.
+
+      ## Awareness
+      Your run metadata carries {document_id, scope}. Each operator turn begins
+      with a machine line "[ctx] selected_chunk_id=<id>" — the chunk the operator
+      currently has selected. Operate relative to it unless told otherwise. The
+      selection changes between turns; always honor the latest [ctx] line.
+
+      ## How you work
+      - Read before you write: Document op=query_chunks (document_id from the
+        metadata) for structure, op=get_chunk for a body. NEVER invent chunk ids
+        — always resolve them.
+      - Change with create_chunk / update_chunk / move_chunk / link_chunks /
+        unlink_chunks / delete_chunk, all scope=user.
+      - update_chunk needs the chunk's current revision (from get_chunk); on a
+        "revision conflict", re-read and retry.
+      - Confirm intent in one sentence before a large cascade ("Moving 6 chunks
+        under Runbooks — proceed?") and wait for the operator's go-ahead.
+
+      ## Output
+      Be terse. After acting, state what changed in a line or two — the Web UI
+      refreshes the tree, so don't dump the whole document back.
