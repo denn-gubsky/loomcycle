@@ -965,6 +965,9 @@ func (d *Document) documentsUnderPath(ctx context.Context, key sqlmem.ScopeKey, 
 
 // --- ops: Markdown export ---
 
+// headingReplacer collapses newlines so a chunk title stays on one heading line.
+var headingReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+
 // exportMD renders a document to Markdown (RFC AK §4.5 / RFC AM Phase 2).
 // Walks the chunk hierarchy from the root(s) depth-first in position order:
 // each chunk is a heading (level = depth+1, capped at 6) followed by its
@@ -990,7 +993,11 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 	title := asStr(dres.Rows[0][0])
 
-	cres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE document_id = ? ORDER BY position`, docID)
+	// ORDER BY parent_id first so each parent's rows are contiguous, then
+	// position, then id as a stable tiebreaker — makes the byParent grouping
+	// below deterministic even if two siblings somehow share a position
+	// (reachable via an explicit `position` on create_chunk/move_chunk).
+	cres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE document_id = ? ORDER BY parent_id, position, id`, docID)
 	if err != nil {
 		return errResult("export_md: " + err.Error()), nil
 	}
@@ -1016,7 +1023,10 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			level = 6
 		}
 		cb := d.readBody(ctx, mscope, key.ScopeID, row.ID)
-		b.WriteString(strings.Repeat("#", level) + " " + row.Title + "\n")
+		// A heading is one line — collapse any newline in the title to a space
+		// so a multi-line title can't split the heading and corrupt the doc.
+		title := headingReplacer.Replace(row.Title)
+		b.WriteString(strings.Repeat("#", level) + " " + title + "\n")
 		if includeMeta {
 			meta := map[string]any{"id": row.ID}
 			if row.Type != "" {

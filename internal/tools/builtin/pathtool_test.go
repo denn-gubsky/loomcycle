@@ -280,12 +280,18 @@ func TestPath_MkdirIdempotent(t *testing.T) {
 // dirent into a directory).
 func TestPath_MkdirRefusesClobberNonDirectory(t *testing.T) {
 	p, ctx, s := pathFixture(t)
-	seedAgent(t, s, "/docs/", "a", "document")
-	if _, r := pathExec(t, p, ctx, `{"op":"mkdir","path":"/docs/a"}`); !r.IsError {
-		t.Fatalf("mkdir over a document must be refused; got %q", r.Text)
-	}
-	if o, r := pathExec(t, p, ctx, `{"op":"resolve","path":"/docs/a"}`); r.IsError || o["kind"] != "document" {
-		t.Errorf("/docs/a should still be a document after a refused mkdir: %s (err=%v)", r.Text, r.IsError)
+	// mkdir must refuse to clobber ANY non-directory kind — the guard keys on
+	// kind != "directory", not a document-only check (DirentCreate is an upsert,
+	// so without the guard a mkdir would silently retype the entry).
+	for _, kind := range []string{"document", "volume_mount", "memory_entry"} {
+		seedAgent(t, s, "/x/", kind, kind)
+		path := "/x/" + kind
+		if _, r := pathExec(t, p, ctx, `{"op":"mkdir","path":"`+path+`"}`); !r.IsError {
+			t.Fatalf("mkdir over a %s must be refused; got %q", kind, r.Text)
+		}
+		if o, r := pathExec(t, p, ctx, `{"op":"resolve","path":"`+path+`"}`); r.IsError || o["kind"] != kind {
+			t.Errorf("%s should be intact after a refused mkdir: %s (err=%v)", path, r.Text, r.IsError)
+		}
 	}
 }
 

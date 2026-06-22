@@ -446,6 +446,44 @@ func TestDocument_ExportMD(t *testing.T) {
 	}
 }
 
+// RFC AM review hardening: a newline in a chunk title must not split the
+// heading line, and sibling/nesting order must be deterministic.
+func TestDocument_ExportMD_HeadingAndOrder(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Doc"}`)
+	docID := out["document_id"].(string)
+	root := out["root_chunk_id"].(string)
+	// A title with an embedded newline (pos 0 under root).
+	docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"line one\nline two","body":"b"}`)
+	// Siblings A (pos 1), B (pos 2); A gets children A1, A2.
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"A","body":""}`)
+	a := out["id"].(string)
+	docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"B","body":""}`)
+	docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+a+`","title":"A1","body":""}`)
+	docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+a+`","title":"A2","body":""}`)
+
+	out, res := docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`","include_metadata":false}`)
+	if res.IsError {
+		t.Fatalf("export_md: %q", res.Text)
+	}
+	md := out["markdown"].(string)
+	// Fail-before: the old heading wrote the raw title, splitting it across lines.
+	if strings.Contains(md, "line one\nline two") {
+		t.Errorf("newline in title split the heading line:\n%s", md)
+	}
+	if !strings.Contains(md, "## line one line two") {
+		t.Errorf("expected a single-line heading for the newline title:\n%s", md)
+	}
+	// Deterministic depth-first order: A, then its children A1, A2, then B.
+	iA := strings.Index(md, "## A\n")
+	iA1 := strings.Index(md, "### A1")
+	iA2 := strings.Index(md, "### A2")
+	iB := strings.Index(md, "## B")
+	if !(iA >= 0 && iA < iA1 && iA1 < iA2 && iA2 < iB) {
+		t.Errorf("sibling/nesting order wrong (A=%d A1=%d A2=%d B=%d):\n%s", iA, iA1, iA2, iB, md)
+	}
+}
+
 // Hardening: link_chunks must refuse an edge to a non-existent chunk (no
 // born-dangling edges).
 func TestDocument_LinkChunksValidatesEndpoints(t *testing.T) {

@@ -137,7 +137,11 @@ function inline(text: string): ReactNode[] {
       const lm = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(tok)!;
       const label = lm[1];
       const url = lm[2];
-      if (/^https?:\/\//i.test(url) || url.startsWith("/")) {
+      // Anchor only for http(s) or a same-origin relative path. Exclude
+      // protocol-relative `//host` (which `startsWith("/")` would otherwise
+      // accept) — it resolves to an off-site URL, not a relative path.
+      const relative = url.startsWith("/") && !url.startsWith("//");
+      if (/^https?:\/\//i.test(url) || relative) {
         nodes.push(
           <a key={key++} href={url} target="_blank" rel="noopener noreferrer">
             {label}
