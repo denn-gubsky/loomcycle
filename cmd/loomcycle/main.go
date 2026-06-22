@@ -232,6 +232,14 @@ func stripPseudoVersionSuffix(v string) string {
 	return v
 }
 
+// printVersion writes the one-line build identifier shared by the `version`
+// subcommand and the --version flag. buildVersion/buildCommit/buildTime are
+// resolved in main() before either caller runs.
+func printVersion() {
+	fmt.Printf("loomcycle version=%s commit=%s built=%s go=%s\n",
+		buildVersion, buildCommit, buildTime, runtime.Version())
+}
+
 func main() {
 	// Resolve build identifiers FIRST so subcommands (validate / agents
 	// / health / migrate) and --version see the same auto-resolved
@@ -367,6 +375,23 @@ func main() {
 		case "help", "-h", "--help":
 			cli.PrintHelp(os.Stdout, lcmcp.MetaToolCount())
 			return
+		case "version", "-v":
+			// Real `version` subcommand (mirrors --version). Prints + exits;
+			// it must NEVER fall through to booting the runtime.
+			printVersion()
+			return
+		default:
+			// A non-flag first arg that isn't a known subcommand is a
+			// mistake — e.g. `loomcycle version` historically fell through
+			// here and BOOTED the runtime, silently binding the port. Reject
+			// it loudly. Flags (--config / --version / --upstream) are NOT
+			// subcommands: they start with "-" and fall through to flag
+			// parsing below (preserving `loomcycle --config foo.yaml`).
+			if !strings.HasPrefix(os.Args[1], "-") {
+				fmt.Fprintf(os.Stderr, "loomcycle: error: unknown subcommand %q\n", os.Args[1])
+				fmt.Fprintln(os.Stderr, "run `loomcycle help` for subcommands, or `loomcycle --config <file>` to start the runtime.")
+				os.Exit(2)
+			}
 		}
 	}
 
@@ -384,8 +409,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("loomcycle version=%s commit=%s built=%s go=%s\n",
-			buildVersion, buildCommit, buildTime, runtime.Version())
+		printVersion()
 		return
 	}
 
