@@ -233,6 +233,13 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash stri
 			return auth.Principal{}, false, false
 		}
 	}
+	// Config-declared principals (RFC AO) — static service identities from the
+	// `principals:` block, matched constant-time. Tried AFTER the minted
+	// substrate (a minted def wins a value clash) and BEFORE the legacy
+	// fallback. A definitive, cacheable outcome.
+	if p, ok := auth.MatchDeclared(bearer, s.cfg.ResolvedPrincipals); ok {
+		return p, true, true
+	}
 	// Legacy shared-secret fallback.
 	if s.cfg.Env.AuthToken != "" && auth.CompareBearer(bearer, s.cfg.Env.AuthToken) {
 		if s.legacyFallbackDisabled(ctx) {

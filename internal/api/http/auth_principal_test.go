@@ -412,3 +412,37 @@ func TestApplyPrincipal_LegacyHonorsWireUserID(t *testing.T) {
 		t.Errorf("legacy+empty = (%q,%q), want (default,default)", tenant, subject)
 	}
 }
+
+// TestResolvePrincipal_DeclaredPrincipal drives the full bearer resolver through
+// RFC AO's added step: a config-declared principal resolves to its
+// (tenant, subject, scopes); the minted substrate (step 1) and the legacy
+// fallback (step 3) still resolve to their own principals — the declared step
+// sits between them and only matches its own secret. Fail-before: remove the
+// MatchDeclared block in resolvePrincipalUncached and the declared bearer falls
+// through to legacy (≠ its value) → unresolved.
+func TestResolvePrincipal_DeclaredPrincipal(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy-secret")
+	s.cfg.ResolvedPrincipals = []auth.DeclaredPrincipal{
+		{Secret: "lct_marketing", Principal: auth.Principal{TenantID: "acme", Subject: "marketing", Scopes: []string{auth.ScopeTenant}, TokenDefID: "cfg:marketing"}},
+	}
+	// A minted def whose token value differs from the declared one.
+	seedToken(t, st, "lct_minted", "beta", "svc", []string{auth.ScopeRunsCreate}, time.Time{})
+
+	// Declared bearer → its own principal (non-legacy).
+	if p, ok := s.resolvePrincipal(context.Background(), "lct_marketing"); !ok || p.TenantID != "acme" || p.Subject != "marketing" || p.Legacy {
+		t.Errorf("declared resolve = (%+v, %v), want acme/marketing non-legacy", p, ok)
+	}
+	// Minted def still resolves (precedence step 1, unaffected).
+	if p, ok := s.resolvePrincipal(context.Background(), "lct_minted"); !ok || p.TenantID != "beta" || p.Subject != "svc" {
+		t.Errorf("minted resolve = (%+v, %v), want beta/svc", p, ok)
+	}
+	// Legacy token still resolves (precedence step 3; declared is tried first
+	// but only matches its own secret).
+	if p, ok := s.resolvePrincipal(context.Background(), "legacy-secret"); !ok || !p.Legacy {
+		t.Errorf("legacy resolve = (%+v, %v), want the legacy principal", p, ok)
+	}
+	// Unknown bearer → unresolved.
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_unknown"); ok {
+		t.Error("unknown bearer must not resolve")
+	}
+}
