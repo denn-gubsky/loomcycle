@@ -49,6 +49,35 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
+// ResolveWireIdentity makes a principal authoritative over caller-asserted wire
+// tenant_id/user_id (RFC L Decision 5) and is the SINGLE source of truth for the
+// override rule shared by every run-triggering surface (HTTP applyPrincipal, the
+// MCP run-lifecycle handlers, …). It is pure / side-effect-free: callers that
+// want triage logging on a disagreement compare the inputs to the outputs
+// themselves.
+//
+// Rules:
+//   - No principal (open / un-authed): wire values pass through unchanged.
+//   - Legacy (LOOMCYCLE_AUTH_TOKEN, F18): single-operator, no-boundary mode —
+//     HONOR the wire user_id (the placeholder subject only when the caller omits
+//     it), but keep the legacy tenant (tenant routing is a real isolation axis
+//     the wire must not steer).
+//   - Real OperatorTokenDef principal: STRICT override to (p.TenantID,
+//     p.Subject) — a caller must not be able to spoof another subject/tenant.
+func ResolveWireIdentity(p Principal, ok bool, wireTenant, wireUser string) (tenant, subject string) {
+	if !ok {
+		return wireTenant, wireUser
+	}
+	if p.Legacy {
+		subject = p.Subject
+		if wireUser != "" {
+			subject = wireUser
+		}
+		return p.TenantID, subject
+	}
+	return p.TenantID, p.Subject
+}
+
 // SubjectForFairness returns the authoritative fairness key: the
 // principal's Subject when one is stamped, else the supplied fallback
 // (the wire user_id, used in open mode / un-authed internal paths). This
