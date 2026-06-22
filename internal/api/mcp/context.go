@@ -54,9 +54,10 @@ const (
 //     synthetic operatorAgentName, so agent-scoped Memory/defs keep their
 //     determinism. The operator plane (mint / cross-tenant) is admin-only.
 //
-// Today /v1/_mcp is still gated at substrate:admin, so only admin/legacy
-// principals reach here; the non-admin branch is the floor for when the route
-// opens to tenant tokens (RFC AG Phase 2).
+// The /v1/_mcp route gate is substrate:tenant (RFC AG Phase 2), so a non-admin
+// tenant principal does reach here; its branch stamps the tenant + withholds the
+// operator plane, and the per-tool gate (principalMayCallTool) keeps it off the
+// admin-only meta-tools.
 func mcpPrincipalCtx(ctx context.Context) context.Context {
 	p, ok := auth.PrincipalFromContext(ctx)
 	// No principal (stdio / open mode), or a zero-Subject principal we can't
