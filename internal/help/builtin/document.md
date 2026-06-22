@@ -43,7 +43,12 @@ for a scope-wide type), `list_types`.
 **Markdown:** `export_md` (`document_id` or `id`/`path`) renders the document to
 Markdown — each chunk a heading (level = depth) + its body. `include_metadata`
 (default `true`) embeds round-trippable chunk metadata + edges as HTML comments;
-`include_metadata:false` is clean human-facing Markdown.
+`include_metadata:false` is clean human-facing Markdown. `import_md` is the
+inverse: `markdown` (an export_md-shaped doc) builds a NEW document (omit
+`document_id`; the first heading becomes the root) or imports under an existing
+chunk (`document_id` + optional `parent_id`). Chunks get fresh ids; the edge
+graph is remapped. Bodies with `##` heading lines re-chunk — do your own
+semantic chunking (`create_chunk`) for arbitrary prose.
 
 ## Concurrency — `update_chunk` revision
 
