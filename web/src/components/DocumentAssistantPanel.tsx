@@ -18,7 +18,8 @@ import LiveRunPane from "./LiveRunPane";
 // of having to blind-probe. Each steer keeps a lighter preamble with the live
 // selection's current content. The run's user_id is the principal's subject, so
 // the agent's Document tool (scope=user) operates on the same documents the
-// viewer shows. onChanged fires at each turn boundary to refresh.
+// viewer shows. onChanged fires at each turn boundary to refresh; onStopped
+// fires when the run reaches a terminal state so the viewer closes the panel.
 
 const ASSISTANT_AGENT = "doc-manager";
 // Cap the injected outline so a huge document can't blow up the first prompt.
@@ -33,6 +34,9 @@ export interface DocumentAssistantPanelProps {
   chunks: ChunkRow[];
   selectedChunk: ChunkDetail | null;
   onChanged: () => void;
+  // Called when the run stops (completed/cancelled/failed) so the viewer can
+  // close the panel; `error` is set only on failure (so it isn't lost on close).
+  onStopped: (error?: string) => void;
 }
 
 // outlineText renders the chunk hierarchy as an indented, body-less list
@@ -74,6 +78,7 @@ export default function DocumentAssistantPanel({
   chunks,
   selectedChunk,
   onChanged,
+  onStopped,
 }: DocumentAssistantPanelProps) {
   const principal = usePrincipal();
   const run = useRunStream();
@@ -146,19 +151,28 @@ export default function DocumentAssistantPanel({
     [started, run, contextPreamble, principal, documentId, scope],
   );
 
-  // Refresh the viewer at each turn boundary: when the agent parks awaiting
-  // input, or when the run completes. Edge-triggered so it fires once per turn.
+  // Refresh the viewer when the agent parks awaiting input (a turn finished).
+  // Edge-triggered so it fires once per turn.
   const prevAwait = useRef(false);
   useEffect(() => {
     if (run.awaitingInput && !prevAwait.current) onChanged();
     prevAwait.current = run.awaitingInput;
   }, [run.awaitingInput, onChanged]);
-  const prevDone = useRef(false);
+
+  // When the run STOPS (completed / cancelled / failed — i.e. no longer running
+  // or parked), refresh once more and close the panel. On failure surface the
+  // error to the viewer so it isn't lost when the panel disappears. Edge-
+  // triggered + gated on `started` so the initial idle state doesn't trigger it.
+  const prevTerminal = useRef(false);
   useEffect(() => {
-    const done = run.status === "completed";
-    if (done && !prevDone.current) onChanged();
-    prevDone.current = done;
-  }, [run.status, onChanged]);
+    const terminal =
+      run.status === "completed" || run.status === "cancelled" || run.status === "failed";
+    if (started && terminal && !prevTerminal.current) {
+      onChanged();
+      onStopped(run.status === "failed" ? run.error || "the assistant run failed" : undefined);
+    }
+    prevTerminal.current = terminal;
+  }, [run.status, run.error, started, onChanged, onStopped]);
 
   if (available === false) {
     return (

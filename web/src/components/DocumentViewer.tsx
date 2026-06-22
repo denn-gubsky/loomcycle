@@ -270,6 +270,10 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
           chunks={chunks}
           selectedChunk={selectedDetail}
           onChanged={refresh}
+          onStopped={(e) => {
+            setAssistantOpen(false);
+            if (e) setErr("Assistant: " + e);
+          }}
         />
       )}
       {editing && (
