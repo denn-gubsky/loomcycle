@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
@@ -36,7 +37,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types. Scope is agent or user; documents can be named in the Path tree (path:)."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown). Scope is agent or user; documents can be named in the Path tree (path:)."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -46,7 +47,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types","export_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (e.g. /docs/launch). get/delete_document: address by path instead of id."},
@@ -66,7 +67,8 @@ const documentInputSchema = `{
 		"under_path":  {"type": "string", "description": "query_chunks: restrict to documents at/under this Path-tree path."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer"},
-		"name":        {"type": "string", "description": "define/list_types: the type name."}
+		"name":        {"type": "string", "description": "define/list_types: the type name."},
+		"include_metadata": {"type": "boolean", "description": "export_md: embed round-trippable chunk metadata + edges as HTML comments (default true). false = clean human-facing Markdown."}
 	},
 	"required": ["op"]
 }`
@@ -95,6 +97,9 @@ type docInput struct {
 	SQL         string          `json:"sql"`
 	Limit       int             `json:"limit"`
 	Name        string          `json:"name"`
+	// IncludeMetadata gates export_md's round-trip comments (default true when
+	// omitted; a pointer so an explicit `false` is distinguishable from unset).
+	IncludeMetadata *bool `json:"include_metadata"`
 }
 
 // docSchemaDDL is portable across SQL Memory's sqlite + postgres tiers: BIGINT
@@ -174,6 +179,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.defineType(ctx, key, in)
 	case "list_types":
 		return d.listTypes(ctx, key, in)
+	case "export_md":
+		return d.exportMD(ctx, key, mscope, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
@@ -954,6 +961,106 @@ func (d *Document) documentsUnderPath(ctx context.Context, key sqlmem.ScopeKey, 
 		}
 	}
 	return ids, nil
+}
+
+// --- ops: Markdown export ---
+
+// exportMD renders a document to Markdown (RFC AK §4.5 / RFC AM Phase 2).
+// Walks the chunk hierarchy from the root(s) depth-first in position order:
+// each chunk is a heading (level = depth+1, capped at 6) followed by its
+// Markdown body. With include_metadata (default true) each chunk carries a
+// `<!-- loom: {...} -->` comment (id/type/status/fields) and a trailing
+// `<!-- loom-edges: ... -->` block, so the output round-trips through import_md
+// (Phase 3); with include_metadata=false it is clean human-facing Markdown.
+func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	docID := in.DocumentID
+	if docID == "" {
+		var err error
+		docID, err = d.docIDFromInput(ctx, key, in)
+		if err != nil {
+			return errResult("export_md: " + err.Error()), nil
+		}
+	}
+	dres, err := d.query(ctx, key, `SELECT title, root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID)
+	if err != nil {
+		return errResult("export_md: " + err.Error()), nil
+	}
+	if len(dres.Rows) == 0 {
+		return errResult("export_md: no such document: " + docID), nil
+	}
+	title := asStr(dres.Rows[0][0])
+
+	cres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE document_id = ? ORDER BY position`, docID)
+	if err != nil {
+		return errResult("export_md: " + err.Error()), nil
+	}
+	// Group children by parent (the global position ORDER BY keeps each parent's
+	// slice in ascending position). parent_id "" = a top-level (root) chunk.
+	byParent := map[string][]chunkRow{}
+	var roots []chunkRow
+	for _, r := range cres.Rows {
+		row := scanChunkRow(cres.Columns, r)
+		if row.ParentID == "" {
+			roots = append(roots, row)
+		} else {
+			byParent[row.ParentID] = append(byParent[row.ParentID], row)
+		}
+	}
+	includeMeta := in.IncludeMetadata == nil || *in.IncludeMetadata
+
+	var b strings.Builder
+	var walk func(row chunkRow, depth int)
+	walk = func(row chunkRow, depth int) {
+		level := depth + 1
+		if level > 6 {
+			level = 6
+		}
+		cb := d.readBody(ctx, mscope, key.ScopeID, row.ID)
+		b.WriteString(strings.Repeat("#", level) + " " + row.Title + "\n")
+		if includeMeta {
+			meta := map[string]any{"id": row.ID}
+			if row.Type != "" {
+				meta["type"] = row.Type
+			}
+			if row.Status != "" {
+				meta["status"] = row.Status
+			}
+			if len(cb.Fields) > 0 {
+				meta["fields"] = cb.Fields
+			}
+			mj, _ := json.Marshal(meta)
+			b.WriteString("<!-- loom: " + string(mj) + " -->\n")
+		}
+		if cb.Body != "" {
+			b.WriteString("\n" + cb.Body + "\n")
+		}
+		b.WriteString("\n")
+		for _, c := range byParent[row.ID] {
+			walk(c, depth+1)
+		}
+	}
+	for _, r := range roots {
+		walk(r, 0)
+	}
+
+	// Edges trailer — the free-form graph edges originating from this document's
+	// chunks (parent-child is the hierarchy above, not an edge). Metadata-only:
+	// a clean export (include_metadata=false) omits it.
+	if includeMeta {
+		eres, err := d.query(ctx, key, `SELECT from_id, to_id, kind FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) ORDER BY from_id, to_id, kind`, docID)
+		if err != nil {
+			return errResult("export_md: edges: " + err.Error()), nil
+		}
+		var lines []string
+		for _, r := range eres.Rows {
+			lines = append(lines, asStr(r[0])+" -> "+asStr(r[1])+" ["+asStr(r[2])+"]")
+		}
+		if len(lines) > 0 {
+			b.WriteString("<!-- loom-edges:\n" + strings.Join(lines, "\n") + "\n-->\n")
+		}
+	}
+
+	return jsonResult(map[string]any{"markdown": b.String(), "document_id": docID, "title": title})
 }
 
 // --- ops: type definitions ---

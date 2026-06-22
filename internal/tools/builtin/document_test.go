@@ -368,6 +368,12 @@ func TestDocument_Postgres(t *testing.T) {
 	if rows, _ := out["chunks"].([]any); len(rows) != 1 {
 		t.Errorf("pg query by type = %s", res.Text)
 	}
+	// export_md (Markdown render) on pg — exercises the documents/chunks SELECTs
+	// and the chunk_edges `from_id IN (SELECT ...)` subquery + ? rebind.
+	out, res = docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`"}`)
+	if res.IsError || !strings.Contains(out["markdown"].(string), "## c1") {
+		t.Errorf("pg export_md = %s", res.Text)
+	}
 	// update revision (atomic bump + RowsAffected gate on pg).
 	out, res = docExec(t, d, ctx, `{"op":"update_chunk","scope":"user","id":"`+c1+`","revision":1,"status":"published"}`)
 	if res.IsError || int(out["revision"].(float64)) != 2 {
@@ -385,6 +391,58 @@ func TestDocument_Postgres(t *testing.T) {
 	out, res = docExec(t, d, ctx, `{"op":"delete_document","scope":"user","id":"`+docID+`"}`)
 	if res.IsError {
 		t.Errorf("pg delete_document = %s", res.Text)
+	}
+}
+
+// RFC AM Phase 2: export_md renders the chunk hierarchy to Markdown — heading
+// level = depth, round-trippable metadata + edges as HTML comments by default,
+// clean Markdown with include_metadata:false.
+func TestDocument_ExportMD(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Plan"}`)
+	docID := out["document_id"].(string)
+	root := out["root_chunk_id"].(string)
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"Intro","type":"section","status":"draft","body":"hello **world**"}`)
+	intro := out["id"].(string)
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+intro+`","title":"Detail","body":"deep"}`)
+	detail := out["id"].(string)
+	docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+intro+`","to_id":"`+detail+`","kind":"references"}`)
+
+	// Default export: metadata-rich, round-trippable.
+	out, res := docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`"}`)
+	if res.IsError {
+		t.Fatalf("export_md: %q", res.Text)
+	}
+	if out["title"] != "Plan" {
+		t.Errorf("title = %v", out["title"])
+	}
+	md, _ := out["markdown"].(string)
+	// Heading level reflects depth: root H1, Intro H2, Detail H3.
+	for _, want := range []string{"# Plan", "## Intro", "### Detail", "hello **world**", "deep"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("export_md missing %q:\n%s", want, md)
+		}
+	}
+	// Metadata comment carries the chunk id + type/status.
+	if !strings.Contains(md, "<!-- loom: ") || !strings.Contains(md, intro) || !strings.Contains(md, `"type":"section"`) {
+		t.Errorf("export_md missing metadata comment:\n%s", md)
+	}
+	// Edges trailer present (the graph edge, not the parent-child hierarchy).
+	if !strings.Contains(md, "<!-- loom-edges:") || !strings.Contains(md, intro+" -> "+detail+" [references]") {
+		t.Errorf("export_md missing edges block:\n%s", md)
+	}
+
+	// Clean export: no loom comments, no edges, but the content + headings stay.
+	out, res = docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`","include_metadata":false}`)
+	if res.IsError {
+		t.Fatalf("export_md clean: %q", res.Text)
+	}
+	md, _ = out["markdown"].(string)
+	if strings.Contains(md, "<!-- loom") {
+		t.Errorf("clean export_md must have no loom comments:\n%s", md)
+	}
+	if !strings.Contains(md, "## Intro") || !strings.Contains(md, "hello **world**") {
+		t.Errorf("clean export_md missing content:\n%s", md)
 	}
 }
 
