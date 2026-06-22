@@ -1,0 +1,215 @@
+# exp8 — code review fan-out with an EPHEMERAL volume (RFC AH Phase 2b)
+#
+# An in-loomcycle dispatcher agent creates an ephemeral run-scoped volume, clones a
+# Go repository into it, fans out 8 read-only reviewer agents via Agent op=parallel_spawn,
+# runs a consolidator that writes a report to the default volume, then the ephemeral
+# volume auto-purges when the dispatcher run ends — no `rm -rf` needed.
+#
+# Compare to exp7 (the MCP fan-out pattern):
+#   exp7: an external orchestrator pre-clones the repo, sets a READ-ONLY static volume,
+#         and uses `spawn_runs` (MCP) to fan reviewers out through the MCP server.
+#         The orchestrator drives the fan-in barrier; repo lives outside loomcycle.
+#   exp8: a dispatcher AGENT (running inside loomcycle) creates the volume, clones, fans
+#         out via Agent op=parallel_spawn (in-process barrier), and the ephemeral volume
+#         is automatically cleaned up when the dispatcher's run ends.
+#   → exp7 is better for large/shared repos or pre-existing workspaces.
+#   → exp8 is the self-contained zero-cleanup pattern for on-demand code review.
+#
+# Topology:
+#   user POST /v1/runs → exp8-dispatcher (rw default + dynamic-root)
+#     ├─ VolumeDef op=create name="lc-src" mode=rw ephemeral=true  → <EPHEMERAL_PATH>
+#     ├─ Bash: git clone <repo> <EPHEMERAL_PATH>/loomcycle
+#     ├─ Agent op=parallel_spawn: 8 × exp8-reviewer (inherit ephemeral vol, ro tools)
+#     │    each: Glob/Read/Grep lc-src/loomcycle/<path> → Memory review:<slice>:findings
+#     └─ Agent op=spawn: exp8-consolidator → reads Memory → Write exp8/review-report.md
+#   ← run ends → ephemeral volume auto-purged
+#
+# Verification after a run:
+#   F-V1: ls work/dynamic/_ephemeral/  must be empty (auto-purge)
+#   F-V2: Context.self in each reviewer must list "lc-src" in bound volumes
+#   F-V3: reviewer Glob/Read/Grep with volume="lc-src" must resolve correctly
+#   F-V4: Write in consolidator auto-creates work/exp8/ (default volume)
+#
+# Routing: anthropic-oauth-dev (primary) → deepseek (fallback).
+# Start: ./run.sh serve    Trigger: python3 work/exp8_run.py (or POST /v1/runs directly).
+
+provider_priority:
+  - anthropic-oauth-dev
+  - deepseek
+
+tiers:
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+  low:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: deepseek,            model: deepseek-v4-flash }
+  high:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+# defaults: used by `loomcycle validate` for the model-resolution dry-run path.
+# At runtime the tier resolver takes over and uses provider_priority + tiers above.
+defaults:
+  provider: deepseek
+  model: deepseek-v4-pro
+
+# path: . is the cwd run.sh cd's into ($HERE/work) — RFC AH Phase 1.
+# dynamic-root provides the backing directory for ephemeral volumes (Phase 2b).
+# run.sh creates $HERE/work/dynamic/ before starting so the volume can mount.
+volumes:
+  default:
+    path: .
+    mode: rw
+    default: true
+  dynamic-root:
+    path: ./dynamic
+    mode: rw
+    dynamic_root: true
+
+agents:
+  # ──────────── DISPATCHER — creates ephemeral volume + orchestrates fan-out ────────────
+  # volume_def_scopes: [any] + volumes: [dynamic-root] are required to create VolumeDef volumes.
+  exp8-dispatcher:
+    tier: middle
+    max_iterations: 30
+    max_tokens: 4096
+    allowed_tools: [Context, VolumeDef, Bash, Agent, Memory]
+    volume_def_scopes: [any]
+    memory_scopes: [user]
+    volumes: [default, dynamic-root]
+    system_prompt: |
+      You are the DISPATCHER for exp8: code review fan-out with an ephemeral volume.
+      Use Context op=tools once at start; Context op=doc name=<Tool> for exact arg shapes;
+      Context op=help topic=volumes for the volume model.
+
+      STEP 1 — Create ephemeral volume:
+        VolumeDef op=create name="lc-src" mode=rw ephemeral=true
+        Record the returned "path" value as <EPHEMERAL_PATH>.
+        Output: "Ephemeral volume created: <EPHEMERAL_PATH>"
+
+      STEP 2 — Clone loomcycle from GitHub into the ephemeral volume:
+        Bash: git clone --quiet https://github.com/denn-gubsky/loomcycle <EPHEMERAL_PATH>/loomcycle
+        Print the first line of git output (must be non-empty).
+
+      STEP 3 — Verify clone:
+        Bash: ls <EPHEMERAL_PATH>/loomcycle/ | head -5
+        If the listing is empty, output "FAIL: clone empty" and STOP.
+
+      STEP 4 — Fan out 8 reviewers via Agent op=parallel_spawn (wait=true):
+        agents=["exp8-reviewer"]*8, each with a distinct prompt:
+          "slice=cmd path=cmd volume=lc-src ephemeral_path=<EPHEMERAL_PATH>"
+          "slice=api path=internal/api volume=lc-src ephemeral_path=<EPHEMERAL_PATH>"
+          "slice=core path=internal/core volume=lc-src ephemeral_path=<EPHEMERAL_PATH>"
+          "slice=store path=internal/store volume=lc-src ephemeral_path=<EPHEMERAL_PATH>"
+          "slice=tools path=internal/tools volume=lc-src ephemeral_path=<EPHEMERAL_PATH>"
+          "slice=mcp path=internal/mcp volume=lc-src ephemeral_path=<EPHEMERAL_PATH>"
+          "slice=provider path=internal/providers volume=lc-src ephemeral_path=<EPHEMERAL_PATH>"
+          "slice=examples path=examples volume=lc-src ephemeral_path=<EPHEMERAL_PATH>"
+        If parallel_spawn is unavailable, fall back to 8 sequential Agent op=spawn calls.
+
+      STEP 5 — Spawn consolidator:
+        Agent op=spawn agent_name="exp8-consolidator" wait=true
+        prompt="Aggregate review:* Memory keys (user_id=exp8). Write exp8/review-report.md."
+
+      STEP 6 — Final output:
+        "DISPATCHER DONE. Ephemeral volume was: <EPHEMERAL_PATH>
+         POST-RUN CHECK: ls <EPHEMERAL_PATH> should return 'no such file or directory'."
+
+      RULES: never read/print .env* or *_KEY/*_TOKEN/*_SECRET values. Non-empty tool output always.
+
+  # ──────────── REVIEWER — read-only slice reviewer (spawned ×8 by dispatcher) ────────────
+  # volumes: intentionally omitted → inherits the dispatcher's full binding set
+  # (default + dynamic-root + ephemeral lc-src). Reviewers address files via volume="lc-src".
+  exp8-reviewer:
+    tier: middle
+    max_iterations: 40
+    max_tokens: 8192
+    effort: medium
+    memory_scopes: [user]
+    allowed_tools: [Context, Read, Grep, Glob, Memory]
+    system_prompt: |
+      You are a READ-ONLY code reviewer for one slice of the loomcycle Go repository.
+      Use Context op=self to confirm "lc-src" is in your bound volumes list and note its path.
+      Relevant help: Context op=help topic=volumes.
+
+      Your prompt gives: slice=<name> path=<subdir> volume=lc-src ephemeral_path=<EPHEMERAL_PATH>
+
+      PROCEDURE:
+      1. Context op=self — confirm "lc-src" is in your bound volumes list. Note its abs path.
+         The clone is at loomcycle/ relative to the lc-src volume root.
+         Use volume="lc-src" on ALL Read/Grep/Glob calls.
+
+      2. Glob pattern "loomcycle/<path>/**/*.go" with volume="lc-src" (skip *_test.go first pass).
+         If no matches: try "loomcycle/<path>/*.go". If still empty: note "no Go files in slice".
+
+      3. Read 10 most important files (entrypoints, handlers, lifecycle, locking, largest).
+         Grep the full slice (volume="lc-src") for risky patterns:
+         unchecked errors, panic(), goroutine/lock misuse, unbounded reads, missing ctx cancel,
+         hardcoded secrets/tokens, SQL/shell/path injection.
+
+      4. Form findings — confidence ≥ 80 only:
+         {file, line, severity:"Critical"|"Important", confidence, message, fix}
+         Cite real file:line you actually read. No speculation.
+
+      5. Memory op=set scope=user key="review:<slice>:findings"
+         value={"slice":"<slice>","path":"<path>","files_reviewed":<n>,
+                "issues":[...],"summary":"<2-3 sentence audit>"}
+         (Clean slice → issues:[] + "meets standards" summary — still record it.)
+
+      6. Output ONE line: "REVIEWED slice=<slice> files=<n> issues=<k>"
+
+      RULES: READ-ONLY — no Bash, no Write, no Edit. volume="lc-src" on every file call.
+      Never print secrets. Non-empty Memory value always (even if issues=[]).
+
+  # ──────────── CONSOLIDATOR — merges all findings, writes report ────────────
+  # volumes: omitted → implicit default binding (rw) for Write.
+  exp8-consolidator:
+    tier: middle
+    max_iterations: 15
+    max_tokens: 8192
+    effort: medium
+    memory_scopes: [user]
+    allowed_tools: [Context, Memory, Write]
+    system_prompt: |
+      You are the CONSOLIDATOR for exp8. Aggregate 8 code-review findings into a report.
+      Slices: cmd, api, core, store, tools, mcp, provider, examples
+
+      STEP 1 — Read all slice findings from Memory (scope=user):
+        Keys: review:cmd, review:api, review:core, review:store,
+              review:tools, review:mcp, review:provider, review:examples
+        If a key is missing (reviewer failed or slice was empty), note the gap; do not fabricate.
+
+      STEP 2 — Merge + count:
+        De-duplicate findings by (file, line). Count Critical vs Important.
+        Select top 5 highest-confidence findings across all slices for the executive summary.
+
+      STEP 3 — Write report (path relative to the default volume root = ./work):
+        Write op=write path="exp8/review-report.md"
+        (File will land at ./work/exp8/review-report.md)
+
+        Report format:
+        # Exp8 Code Review Report — denn-gubsky/loomcycle
+        _Generated by loomcycle exp8 fan-out (RFC AH Phase 2b ephemeral volume)_
+        ## Executive Summary
+        ## Top 5 Findings
+        ## Per-slice Statistics
+        | slice | files_reviewed | critical | important |
+
+      STEP 4 — Output:
+        "CONSOLIDATOR DONE. <total> issues (Critical:<c> Important:<i>). Report: work/exp8/review-report.md"
+
+      RULES: Non-empty output always. Never invent findings. Never print secrets.
+
+concurrency:
+  # 8 reviewers + dispatcher + consolidator + 2 buffer. Raise max_concurrent_runs if your
+  # provider/plan has the headroom (a paid API key vs. an OAuth subscription).
+  max_concurrent_runs: 12
+  max_queue_depth: 20
+  queue_timeout_ms: 600000

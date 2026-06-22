@@ -1,0 +1,174 @@
+# exp10-gbash-bench — RFC AJ GBash Comparative Benchmark
+#
+# Two code-js agents run identical file-discovery operations on a cloned copy of the
+# loomcycle repository — one using the system Bash tool (subprocess) and one using the
+# new Bashbox tool (pure-Go in-process sandbox, RFC AJ).  Per-operation wall-clock
+# timings are captured in JavaScript and returned as JSON so the Python driver can
+# produce a side-by-side comparison report.
+#
+# Both agents also create an ephemeral volume (RFC AH) to demonstrate the combined
+# feature set.  Git clone lands in the default static volume so that Bashbox can
+# reference it through its virtual filesystem; the ephemeral volume is created, its
+# path confirmed, and then auto-purged when the run ends.
+#
+# Requirements: loomcycle >= v1.1.2 + RFC AJ (Bashbox) in the build
+# Start:   LOOMCYCLE_BIN=/tmp/loomcycle-dev ./run.sh
+# Trigger: python3 work/exp10_run.py
+
+volumes:
+  default:
+    path: .          # resolves to exp10-gbash-bench/work/ (run.sh cds there)
+    mode: rw
+    default: true
+  dynamic-root:
+    path: ../dynamic # resolves to exp10-gbash-bench/dynamic/
+    mode: rw
+    dynamic_root: true
+
+agents:
+  # ────── MODE 1: System Bash (real subprocess, OS shell) ──────────────────────
+  exp10-bash-agent:
+    provider: code-js
+    run_timeout_seconds: 120
+    allowed_tools: [Bash, VolumeDef]
+    volumes: [default, dynamic-root]
+    volume_def_scopes: [any]
+    code: |
+      function run(input) {
+        var errors = [];
+        var ops    = [];
+
+        // Wall-clock timing via python3 subprocess (Date.now() only measures JS overhead;
+        // tool execution suspends the JS scheduler so it appears as ~0ms)
+        function nowMs() {
+          var raw = Bash({ command: 'python3 -c "import time; print(int(time.time()*1000))"' }) || '0';
+          return parseInt(raw.trim(), 10) || 0;
+        }
+        var t0 = nowMs();
+
+        function bench(name, cmd) {
+          var ts = nowMs();
+          var out = '';
+          try { out = Bash({ command: cmd }) || ''; }
+          catch (e) {
+            errors.push({ op: name, error: String(e) });
+            out = '[ERROR] ' + String(e);
+          }
+          ops.push({ name: name, ms: nowMs() - ts, result: out.trim().slice(0, 300) });
+          return out;
+        }
+
+        // Ephemeral volume demo (RFC AH)
+        var ephemPath = '';
+        try {
+          var volOut = VolumeDef({ op: 'create', name: 'bash-ephem', mode: 'rw', ephemeral: true });
+          ephemPath = JSON.parse(volOut || '{}').path || '';
+        } catch (e) {
+          errors.push({ op: 'ephemeral_create', error: String(e) });
+        }
+
+        // Setup: clean previous run, clone loomcycle into static volume
+        bench('cleanup',   'rm -rf loomcycle-bench && echo ok');
+        bench('git_clone', 'git clone /Users/denn/work/loomcycle loomcycle-bench 2>&1');
+
+        // Intensive discovery operations
+        bench('count_all_files', 'find loomcycle-bench -type f | wc -l');
+        bench('count_go_files',  'find loomcycle-bench -name "*.go" | wc -l');
+        bench('count_funcs',     'grep -rn "^func " loomcycle-bench --include="*.go" | wc -l');
+        bench('total_loc',       'find loomcycle-bench -name "*.go" | while read f; do wc -l < "$f"; done | awk \'{s+=$1}END{print s" lines"}\'');
+        bench('grep_rfc_aj',     'grep -rn -E "RFC AJ|Bashbox|gbash" loomcycle-bench --include="*.go" | wc -l');
+        bench('large_files',     'find loomcycle-bench -type f -size +10k | sort | head -10');
+        bench('dir_depth',       'find loomcycle-bench -type d | awk -F/ \'{print NF, $0}\' | sort -rn | head -5');
+
+        return { final_text: JSON.stringify({
+          mode: 'bash',
+          ephemeral_vol: ephemPath,
+          ops: ops,
+          total_ms: nowMs() - t0,
+          errors: errors
+        })};
+      }
+
+  # ────── MODE 2: Bashbox (pure-Go in-process sandbox, RFC AJ) ─────────────────
+  exp10-bashbox-agent:
+    provider: code-js
+    run_timeout_seconds: 120
+    allowed_tools: [Bashbox, VolumeDef]
+    volumes: [default, dynamic-root]
+    volume_def_scopes: [any]
+    code: |
+      function run(input) {
+        var errors = [];
+        var ops    = [];
+
+        // Wall-clock timing via python3 fallback (Date.now() only measures JS overhead;
+        // requires LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,python3)
+        function nowMs() {
+          var raw = Bashbox({ command: 'python3 -c "import time; print(int(time.time()*1000))"' }) || '0';
+          return parseInt(raw.trim(), 10) || 0;
+        }
+        var t0 = nowMs();
+
+        function bench(name, cmd) {
+          var ts = nowMs();
+          var out = '';
+          try { out = Bashbox({ command: cmd }) || ''; }
+          catch (e) {
+            errors.push({ op: name, error: String(e) });
+            out = '[ERROR] ' + String(e);
+          }
+          ops.push({ name: name, ms: nowMs() - ts, result: out.trim().slice(0, 300) });
+          return out;
+        }
+
+        // Ephemeral volume demo (RFC AH)
+        var ephemPath = '';
+        try {
+          var volOut = VolumeDef({ op: 'create', name: 'bashbox-ephem', mode: 'rw', ephemeral: true });
+          ephemPath = JSON.parse(volOut || '{}').path || '';
+        } catch (e) {
+          errors.push({ op: 'ephemeral_create', error: String(e) });
+        }
+
+        // Setup: clone via RFC AJ §13 fallback proxy for git
+        // (requires LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,python3 in run.sh)
+        bench('cleanup',   'rm -rf loomcycle-bench-bb && echo ok');
+        bench('git_clone', 'git clone /Users/denn/work/loomcycle loomcycle-bench-bb 2>&1');
+
+        // Discovery operations — Bashbox built-in coreutils (gbash, pure-Go).
+        //
+        // Compatibility gaps vs GNU Bash documented here:
+        //   1. find traversal: gbash's find calls EvalSymlinks on every path before
+        //      applying type filters. A relative symlink at the repo root
+        //      (loomcycle.example.yaml -> cmd/loomcycle/embedded/...) triggers the
+        //      containment check and ABORTS traversal, returning 0 files.
+        //      Workaround: enumerate top-level dirs with `ls`, then `test -d`, then
+        //      find each subdir — this bypasses the root-level symlink entirely.
+        //   2. grep --include=GLOB: NOT supported in gbash; replaced with find|while|grep.
+        //   3. xargs: NOT in gbash; replaced with while read loops.
+        //
+        // Shell glob `loomcycle-bench-bb/*/` expands to top-level SUBDIRECTORIES only.
+        // This sidesteps the gbash EvalSymlinks bug: the symlink loomcycle.example.yaml
+        // (a file, not a dir) is excluded by the `/*/` glob without any stat calls.
+        bench('ls_root',         'ls loomcycle-bench-bb 2>&1 | head -20');
+        bench('count_all_files', 'for d in loomcycle-bench-bb/*/; do find "$d" -type f 2>/dev/null; done | wc -l');
+        bench('count_go_files',  'for d in loomcycle-bench-bb/*/; do find "$d" -name "*.go" 2>/dev/null; done | wc -l');
+        bench('count_funcs',     'for d in loomcycle-bench-bb/*/; do find "$d" -name "*.go" 2>/dev/null; done | while read f; do grep "^func " "$f" 2>/dev/null; done | wc -l');
+        bench('total_loc',       'for d in loomcycle-bench-bb/*/; do find "$d" -name "*.go" 2>/dev/null; done | while read f; do wc -l < "$f"; done | awk \'{s+=$1}END{print s" lines"}\'');
+        bench('grep_rfc_aj',     'for d in loomcycle-bench-bb/*/; do find "$d" -name "*.go" 2>/dev/null; done | while read f; do grep -E "RFC AJ|Bashbox|gbash" "$f" 2>/dev/null; done | wc -l');
+        bench('large_files',     'for d in loomcycle-bench-bb/*/; do find "$d" -type f -size +10k 2>/dev/null; done | sort | head -10');
+        bench('dir_depth',       'for d in loomcycle-bench-bb/*/; do find "$d" -type d 2>/dev/null; done | awk -F/ \'{print NF, $0}\' | sort -rn | head -5');
+
+        return { final_text: JSON.stringify({
+          mode: 'bashbox',
+          ephemeral_vol: ephemPath,
+          ops: ops,
+          total_ms: nowMs() - t0,
+          errors: errors
+        })};
+      }
+
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
+  queue_timeout_ms: 300000

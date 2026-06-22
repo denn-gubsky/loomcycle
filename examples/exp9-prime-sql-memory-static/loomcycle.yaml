@@ -1,0 +1,182 @@
+# exp9-static — prime-number pipeline (code-js static agents, no LLM)
+#
+# Same topology as exp9-prime-sql-memory but both agents are replaced with
+# deterministic code-js agents: no model API calls, zero token spend.
+# Useful for CI, regression testing, and as a reference for RFC J (code-js).
+#
+# Pipeline:
+#   exp9-static-coder  (code-js)
+#     └─ Bash: python3 ../primes.py 500           → 95 primes
+#     └─ Memory sql_exec scope=user: CREATE TABLE primes
+#     └─ Memory sql_exec scope=user: INSERT OR IGNORE INTO primes VALUES (...)
+#     └─ Memory sql_query scope=user: SELECT COUNT(*) FROM primes
+#     └─ Channel publish: exp9-primes-done
+#
+#   exp9-static-validator  (code-js)
+#     └─ Channel subscribe: exp9-primes-done (retry loop, 30 s × 12 = ~6 min)
+#     └─ Memory sql_query scope=user: SELECT n FROM primes ORDER BY n
+#     └─ JS trial division (isPrime — no Bash needed)
+#     └─ Memory sql_exec scope=user: CREATE TABLE prime_check
+#     └─ Memory sql_exec scope=user: INSERT OR REPLACE INTO prime_check
+#     └─ Memory sql_query scope=user: SELECT COUNT(*) … WHERE valid=0
+#
+# Shared key: both runs use user_id=exp9 + tenant_id=default → same user-scoped DB.
+#
+# Requirements: loomcycle >= v1.1.2 (RFC AA SQL memory, RFC J code-js inline code)
+# Start:   LOOMCYCLE_BIN=/tmp/loomcycle-dev ./run.sh
+# Trigger: python3 work/exp9_static_run.py
+
+storage:
+  sqlmem_enabled: true
+
+volumes:
+  default:
+    path: .
+    mode: rw
+    default: true
+
+channels:
+  exp9-primes-done:
+    description: "Coder signals when the primes table is populated. Validator subscribes."
+    scope: global
+    default_ttl: 3600
+    max_messages: 4
+    semantic: queue
+
+agents:
+  # ────────────── STATIC CODER — generates primes, writes SQL, pings channel ──────────────
+  exp9-static-coder:
+    provider: code-js
+    run_timeout_seconds: 60
+    allowed_tools: [Bash, Memory, Channel]
+    sql_scopes: [user]
+    memory_scopes: [user]
+    volumes: [default]
+    channels:
+      publish: [exp9-primes-done]
+    code: |
+      function run(input) {
+        // Step 1 — generate primes via Python stdio
+        var raw = Bash({ command: 'python3 ../primes.py 500' });
+        var primes = raw.trim().split('\n')
+          .map(function(s) { return parseInt(s, 10); })
+          .filter(function(n) { return !isNaN(n) && n > 0; });
+        var count   = primes.length;
+        var maxPrime = primes[primes.length - 1];
+
+        // Step 2 — create SQL table
+        Memory.sql_exec({
+          scope: 'user',
+          statement: "CREATE TABLE IF NOT EXISTS primes (n INTEGER PRIMARY KEY, inserted_at TEXT)"
+        });
+
+        // Step 3 — batch-insert (single statement, datetime('now') inline)
+        var vals = primes.map(function(n) {
+          return '(' + n + ", datetime('now'))";
+        }).join(', ');
+        var insertResult = Memory.sql_exec({
+          scope: 'user',
+          statement: 'INSERT OR IGNORE INTO primes (n, inserted_at) VALUES ' + vals
+        });
+        var inserted = insertResult.rows_affected || 0;
+
+        // Step 4 — verify round-trip count
+        var cntResult = Memory.sql_query({ scope: 'user', statement: 'SELECT COUNT(*) AS cnt FROM primes' });
+        var dbCount   = cntResult.rows[0][0];
+
+        // Step 5 — ping channel
+        Channel.publish({
+          channel: 'exp9-primes-done',
+          value: { event: 'primes_ready', count: count, max_prime: maxPrime, scope: 'user', scope_id: 'exp9' }
+        });
+
+        return {
+          final_text: 'CODER DONE. ' + count + ' primes (2..' + maxPrime + ')'
+            + ' inserted=' + inserted + ' db_count=' + dbCount
+            + '. Channel exp9-primes-done pinged.'
+        };
+      }
+
+  # ────────────── STATIC VALIDATOR — waits, reads SQL, validates in JS ──────────────
+  exp9-static-validator:
+    provider: code-js
+    run_timeout_seconds: 420
+    allowed_tools: [Memory, Channel]
+    sql_scopes: [user]
+    memory_scopes: [user]
+    channels:
+      subscribe: [exp9-primes-done]
+    code: |
+      function isPrime(n) {
+        if (n < 2) return false;
+        if (n === 2) return true;
+        if (n % 2 === 0) return false;
+        for (var i = 3; i * i <= n; i += 2) {
+          if (n % i === 0) return false;
+        }
+        return true;
+      }
+
+      function run(input) {
+        // Step 1 — subscribe with retry loop (cap=30 s × 12 attempts = ~6 min)
+        var msgs = [];
+        var attempts = 0;
+        while (msgs.length === 0 && attempts < 12) {
+          var subResult = Channel.subscribe({
+            channel: 'exp9-primes-done',
+            wait_ms: 30000,
+            max_messages: 1
+          });
+          msgs = subResult.messages || [];
+          attempts++;
+        }
+        if (msgs.length === 0) {
+          return { final_text: 'TIMEOUT: coder did not publish within ~6 min (' + attempts + ' attempts).' };
+        }
+        var signal     = msgs[0].value || {};
+        var claimedCnt = signal.count    || '?';
+        var claimedMax = signal.max_prime || '?';
+
+        // Step 2 — read all primes from SQL memory
+        var qr     = Memory.sql_query({ scope: 'user', statement: 'SELECT n FROM primes ORDER BY n' });
+        var primes = qr.rows.map(function(row) { return row[0]; });
+
+        // Step 3 — trial division in JS (no Bash needed)
+        var invalid = primes.filter(function(n) { return !isPrime(n); });
+
+        // Step 4 — create validation result table
+        Memory.sql_exec({
+          scope: 'user',
+          statement: 'CREATE TABLE IF NOT EXISTS prime_check (n INTEGER PRIMARY KEY, valid INTEGER)'
+        });
+
+        // Step 5 — insert verdicts
+        var badSet = {};
+        invalid.forEach(function(n) { badSet[n] = true; });
+        var vvals = primes.map(function(n) {
+          return '(' + n + ', ' + (badSet[n] ? 0 : 1) + ')';
+        }).join(', ');
+        Memory.sql_exec({
+          scope: 'user',
+          statement: 'INSERT OR REPLACE INTO prime_check (n, valid) VALUES ' + vvals
+        });
+
+        // Step 6 — count invalid entries
+        var badCnt = Memory.sql_query({ scope: 'user', statement: 'SELECT COUNT(*) AS bad FROM prime_check WHERE valid=0' });
+        var bad    = badCnt.rows[0][0];
+
+        // Step 7 — report
+        return {
+          final_text: 'VALIDATOR DONE.'
+            + ' Signal: ' + claimedCnt + ' primes up to ' + claimedMax + '.'
+            + ' Read from DB: ' + primes.length + '.'
+            + ' Invalid (non-prime): ' + bad + '.'
+            + ' All correct: ' + (bad === 0 ? 'YES' : 'NO')
+        };
+      }
+
+
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
+  queue_timeout_ms: 600000

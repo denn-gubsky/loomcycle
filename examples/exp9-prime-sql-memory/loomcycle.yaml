@@ -1,0 +1,207 @@
+# exp9 — prime numbers via stdio → SQL memory → channel → validation agent (RFC AA)
+#
+# A Python sieve (primes.py) streams primes to stdout. The coding agent reads them via
+# Bash stdio, creates a SQL memory table in user scope, and batch-inserts every prime.
+# It then pings a channel. A validation agent waits on the channel, reads the primes
+# from the same user-scoped SQL table, and validates each one via a trial-division
+# Python snippet run through Bash — writing the verdict back to a second SQL table.
+#
+# RFC AA features exercised:
+#   - storage.sqlmem_enabled: true        (SQLite-backed per-scope DB)
+#   - sql_scopes: [user]                  (user-keyed DB shared across agents)
+#   - Memory op=sql_exec                  (DDL + DML)
+#   - Memory op=sql_query                 (SELECT with structured response)
+#
+# Topology:
+#   operator POST /v1/runs agent=exp9-coder user_id=exp9
+#     └─ Bash: python3 ../primes.py 500 → parse stdout
+#     └─ Memory sql_exec scope=user: CREATE TABLE primes (n INTEGER PRIMARY KEY)
+#     └─ Memory sql_exec scope=user: INSERT INTO primes …  (batch, one stmt)
+#     └─ Channel op=publish exp9-primes-done {"count":<N>,"max":<P>}
+#
+#   operator POST /v1/runs agent=exp9-validator user_id=exp9
+#     └─ Channel op=subscribe exp9-primes-done  (waits up to 5 min)
+#     └─ Memory sql_query scope=user: SELECT n FROM primes ORDER BY n
+#     └─ Bash: python3 inline trial-division over the list → lists any non-primes
+#     └─ Memory sql_exec scope=user: CREATE TABLE prime_check (n INT, valid INT)
+#     └─ Memory sql_exec scope=user: INSERT INTO prime_check …
+#     └─ Memory sql_query scope=user: SELECT COUNT(*) FROM prime_check WHERE valid=0
+#     └─ Report: VALIDATED <n> primes. Invalid: <k>. All correct: <yes/no>
+#
+# Shared key: user_id=exp9 is set on BOTH runs — that is what routes them to the
+# SAME user-scoped SQL DB (scope "user", scopeID "exp9").
+#
+# Start:   ./run.sh serve
+# Trigger: python3 work/exp9_run.py   (or two manual POST /v1/runs calls)
+#          Start exp9-validator first (it awaits the channel), then exp9-coder.
+
+provider_priority:
+  - anthropic-oauth-dev
+  - deepseek
+
+tiers:
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+  low:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: deepseek,            model: deepseek-v4-flash }
+
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+defaults:
+  provider: deepseek
+  model: deepseek-v4-pro
+
+storage:
+  sqlmem_enabled: true
+
+volumes:
+  default:
+    path: .
+    mode: rw
+    default: true
+
+channels:
+  exp9-primes-done:
+    description: "Published by exp9-coder when the primes table is populated. Consumed by exp9-validator."
+    scope: global
+    default_ttl: 3600
+    max_messages: 4
+    semantic: queue
+
+agents:
+  # ──────────── CODER — generates primes via Python stdio → SQL memory ────────────
+  exp9-coder:
+    tier: middle
+    max_iterations: 20
+    max_tokens: 4096
+    allowed_tools: [Context, Bash, Memory, Channel]
+    sql_scopes: [user]
+    memory_scopes: [user]
+    volumes: [default]
+    channels:
+      publish: [exp9-primes-done]
+    system_prompt: |
+      You are the CODER agent for exp9: prime-number pipeline with SQL memory.
+      Use Context op=tools once at start; Context op=doc name=<Tool> for argument shapes.
+
+      STEP 1 — Generate primes via Python stdio:
+        Bash: python3 ../primes.py 500
+        The script prints all primes ≤ 500, one per line, to stdout.
+        Capture the output. Parse it as a newline-separated list of integers.
+        Output: "Generated <N> primes. Largest: <P>"
+
+      STEP 2 — Create SQL table (user scope, shared with validator):
+        Memory op=sql_exec scope=user
+          statement: "CREATE TABLE IF NOT EXISTS primes (n INTEGER PRIMARY KEY, inserted_at TEXT)"
+        Output: "Table created (or already exists)."
+
+      STEP 3 — Batch-insert all primes (one statement, VALUES list):
+        Build a single INSERT:
+          INSERT OR IGNORE INTO primes (n, inserted_at)
+          VALUES (2, datetime('now')), (3, datetime('now')), (5, datetime('now')), ...
+        Keep the statement under 4000 chars; if the list is longer split into two sql_exec calls.
+        Memory op=sql_exec scope=user statement=<insert statement>
+        Output: "Inserted <rows_affected> rows."
+
+      STEP 4 — Verify insertion round-trip:
+        Memory op=sql_query scope=user statement="SELECT COUNT(*) AS cnt FROM primes"
+        The response JSON has {"columns":["cnt"],"rows":[[<N>]]}.
+        Output: "DB count: <N> primes stored."
+
+      STEP 5 — Ping the channel:
+        Channel op=publish channel=exp9-primes-done
+          message: {"event":"primes_ready","count":<N>,"max_prime":<P>,"scope":"user","scope_id":"exp9"}
+        Output: "Channel exp9-primes-done pinged."
+
+      STEP 6 — Final output:
+        "CODER DONE. <N> primes (2…<P>) inserted into SQL memory (user scope). Validator may proceed."
+
+      RULES:
+      - Never print .env*, *_KEY, *_TOKEN, *_SECRET values.
+      - The Bash python3 call must be exactly: python3 ../primes.py 500
+        (run.sh cd's into ./work, so ../primes.py is the correct relative path)
+      - Non-empty tool output always.
+
+  # ──────────── VALIDATOR — waits on channel, reads SQL memory, validates primes ────────────
+  exp9-validator:
+    tier: middle
+    max_iterations: 20
+    max_tokens: 4096
+    allowed_tools: [Context, Bash, Memory, Channel]
+    sql_scopes: [user]
+    memory_scopes: [user]
+    volumes: [default]
+    channels:
+      subscribe: [exp9-primes-done]
+    system_prompt: |
+      You are the VALIDATOR agent for exp9: you wait for primes to appear in SQL memory,
+      then validate each one is genuinely prime via trial division, and record the verdict.
+
+      STEP 1 — Await the channel signal:
+        Channel op=subscribe channel=exp9-primes-done timeout_ms=300000 max_messages=1
+        If no message arrives within 5 minutes, output "TIMEOUT: coder did not finish." and STOP.
+        Extract "count" and "max_prime" from the message payload.
+        Output: "Signal received: <count> primes up to <max_prime>."
+
+      STEP 2 — Read all primes from SQL memory:
+        Memory op=sql_query scope=user statement="SELECT n FROM primes ORDER BY n"
+        The result has {"columns":["n"],"rows":[[2],[3],[5],...]}. Extract the list.
+        Output: "Read <N> primes from DB."
+
+      STEP 3 — Validate via trial-division Python (inline Bash):
+        Build a Bash command that pipes the prime list into a Python snippet:
+          python3 -c "
+        import sys, math
+        nums = [<comma-separated list from Step 2>]
+        def is_prime(n):
+            if n < 2: return False
+            for i in range(2, int(math.isqrt(n)) + 1):
+                if n % i == 0: return False
+            return True
+        invalid = [n for n in nums if not is_prime(n)]
+        missing = [n for n in nums if n > 1 and is_prime(n) and n not in set(nums)]
+        print(f'checked={len(nums)} invalid={invalid[:20]}')
+          "
+        (The list must be embedded as a Python literal in the Bash command.)
+        Capture the output. Extract "checked" and "invalid".
+        Output: "Trial division: checked=<N> invalid=<list>"
+
+      STEP 4 — Create validation result table:
+        Memory op=sql_exec scope=user
+          statement: "CREATE TABLE IF NOT EXISTS prime_check (n INTEGER PRIMARY KEY, valid INTEGER)"
+
+      STEP 5 — Insert validation verdicts:
+        For each number read in Step 2, verdict = 1 if trial-division says prime, 0 otherwise.
+        Build a single INSERT OR REPLACE statement:
+          INSERT OR REPLACE INTO prime_check (n, valid) VALUES (2,1),(3,1),(5,1),...
+        Memory op=sql_exec scope=user statement=<insert>
+
+      STEP 6 — Count invalid entries:
+        Memory op=sql_query scope=user
+          statement="SELECT COUNT(*) AS bad FROM prime_check WHERE valid=0"
+        Output: "Invalid primes in table: <bad>"
+
+      STEP 7 — Final report:
+        Memory op=sql_query scope=user
+          statement="SELECT n FROM prime_check WHERE valid=0 LIMIT 10"
+        Output:
+          "VALIDATOR DONE.
+           Checked: <N> numbers
+           Invalid (non-prime stored): <bad> — first 10: <list>
+           All correct: <YES if bad=0 else NO>"
+
+      RULES:
+      - Never print .env*, *_KEY, *_TOKEN values.
+      - The trial-division check must be a real Python computation, not a hardcoded assertion.
+      - Non-empty tool output always.
+
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
+  queue_timeout_ms: 600000

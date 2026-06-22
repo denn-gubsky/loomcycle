@@ -1,0 +1,12 @@
+# runtime state + secrets (never commit)
+.env.local
+data/*.db
+data/*.db-wal
+data/*.db-shm
+# ephemeral volumes live under work/dynamic/_ephemeral/ and are auto-purged at run end
+work/dynamic/
+# generated review reports
+work/exp8/
+# scratch
+work/__pycache__/
+work/*.tmp
