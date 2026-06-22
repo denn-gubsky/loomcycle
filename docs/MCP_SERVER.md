@@ -27,6 +27,16 @@ So there's exactly **one** authoritative runtime per state, and `loomcycle mcp` 
 
 `loomcycle doctor` WARNs (it doesn't FAIL) when the configured listen address is already in use — that usually means a runtime already owns this state; add an MCP surface with `--upstream`, don't start a second runtime.
 
+## Authentication & tenant confinement (`--upstream`)
+
+The embedded `loomcycle mcp` (stdio) is process-local operator-trust — whoever launched it has full authority, no bearer involved. The thin client is different: it speaks to a running HTTP runtime over `/v1/_mcp`, which is bearer-authed.
+
+- **The bearer is `LOOMCYCLE_MCP_UPSTREAM_TOKEN`** (falls back to `LOOMCYCLE_AUTH_TOKEN`). The proxy forwards it verbatim on every upstream request, so the session authenticates as **that token's principal** — its `(tenant, subject, scopes)` resolved from the token, never the wire.
+- **A `substrate:tenant` bearer works (RFC AG).** The `/v1/_mcp` route gate is `substrate:tenant`: a tenant token may open a session, and everything it does is confined to its own tenant — its `agentdef`/`skilldef`/… authoring stamps its tenant, its `memory`/`path`/`document`/`channel` data is keyed under its `(tenant, user)`, its hooks fire only on its own runs. User-scoped tools (`document`/`memory`/`path`) key on the bearer's `subject`, so an MCP thin client and the Web UI that authenticate as the *same* principal see the *same* data.
+- **Admin-only meta-tools are withheld from a non-admin session.** Token minting (`operatortokendef`), runtime admin (`pause_runtime`/snapshots/…), and cross-scope `list_channels` are runtime-global with no tenant dimension — a `substrate:tenant` session never *sees* them in `tools/list` and is refused (`-32001`) on `tools/call`. A `substrate:admin` bearer sees + may call the full set.
+
+So you can hand a downstream tenant a narrow `substrate:tenant` token and let it drive its own confined MCP session — no admin token required, no cross-tenant reach.
+
 ## Quickest path — `loomcycle mcp install`
 
 `loomcycle mcp install` prints copy-paste-ready snippets for both Claude Code (CLI) and Claude Desktop (Mac app). It auto-detects whether you have Docker, Homebrew, or a direct binary installed and chooses the lowest-friction transport:

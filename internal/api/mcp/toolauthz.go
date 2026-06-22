@@ -24,9 +24,10 @@ const mcpErrForbidden = -32001
 // default-deny arm on the HTTP plane — the enforcement-correctness lives in this
 // map, not the router, so an unclassified tool must fail closed.
 //
-// The route gate keeps /v1/_mcp at substrate:admin today (RFC AG Phase 2 opens
-// it to tenant tokens), so for real traffic every caller is admin and this map
-// is inert. It is built + tested now as defense-in-depth, ahead of the flip.
+// The /v1/_mcp route gate is substrate:tenant (RFC AG Phase 2), so a tenant
+// token can open a session — and this map is the load-bearing per-operation
+// authz that keeps it confined: a tenant session lists + may call only these
+// tools; the admin-only ones are filtered out + 403'd by principalMayCallTool.
 var tenantConfinableTools = map[string]bool{
 	// Run lifecycle — tenant flows via the run identity (applyPrincipal on
 	// the wire identity lands in RFC AG Phase 1).
