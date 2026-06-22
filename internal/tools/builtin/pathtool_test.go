@@ -226,3 +226,72 @@ func TestPath_ScopeUserRequiresUserID(t *testing.T) {
 		t.Errorf("scope=user without a user_id should error")
 	}
 }
+
+// RFC AM: mkdir now MATERIALIZES an empty `directory` dirent (RFC AL shipped it
+// as a no-op). Fail-before — the old no-op created nothing, so resolve/ls would
+// not see the branch.
+func TestPath_MkdirMaterializesDirectory(t *testing.T) {
+	p, ctx, _ := pathFixture(t)
+	out, res := pathExec(t, p, ctx, `{"op":"mkdir","path":"/work"}`)
+	if res.IsError {
+		t.Fatalf("mkdir: %q", res.Text)
+	}
+	if out["created"] != true {
+		t.Errorf("mkdir /work created = %v, want true: %s", out["created"], res.Text)
+	}
+	// It persists: resolve sees a directory, and ls / lists it.
+	if o, r := pathExec(t, p, ctx, `{"op":"resolve","path":"/work"}`); r.IsError || o["kind"] != "directory" {
+		t.Errorf("resolve /work after mkdir = %s (err=%v)", r.Text, r.IsError)
+	}
+	out, res = pathExec(t, p, ctx, `{"op":"ls","path":"/"}`)
+	if res.IsError {
+		t.Fatalf("ls /: %q", res.Text)
+	}
+	if entries, _ := out["entries"].([]any); len(entries) != 1 {
+		t.Errorf("ls / after mkdir = %d entries, want 1: %s", len(entries), res.Text)
+	}
+	// An empty materialized dir is removable without recursive (no descendants).
+	if _, r := pathExec(t, p, ctx, `{"op":"rm","path":"/work"}`); r.IsError {
+		t.Errorf("rm of an empty dir should succeed without recursive: %q", r.Text)
+	}
+}
+
+// mkdir is idempotent: a re-mkdir, or a mkdir over a path only IMPLIED by
+// descendants, is a no-op success (created:false) — it never rewrites history.
+func TestPath_MkdirIdempotent(t *testing.T) {
+	p, ctx, s := pathFixture(t)
+	if _, r := pathExec(t, p, ctx, `{"op":"mkdir","path":"/work"}`); r.IsError {
+		t.Fatalf("mkdir 1: %q", r.Text)
+	}
+	out, res := pathExec(t, p, ctx, `{"op":"mkdir","path":"/work"}`)
+	if res.IsError || out["created"] != false {
+		t.Errorf("re-mkdir should be created:false ok; got %s (err=%v)", res.Text, res.IsError)
+	}
+	// Implied directory (has a descendant, no explicit row).
+	seedAgent(t, s, "/docs/launches/", "v1", "document")
+	out, res = pathExec(t, p, ctx, `{"op":"mkdir","path":"/docs/launches"}`)
+	if res.IsError || out["created"] != false {
+		t.Errorf("mkdir over an implied dir should be created:false ok; got %s (err=%v)", res.Text, res.IsError)
+	}
+}
+
+// mkdir must NOT clobber a non-directory — DirentCreate is an upsert, so the
+// guard is load-bearing (without it a mkdir would silently convert a document
+// dirent into a directory).
+func TestPath_MkdirRefusesClobberNonDirectory(t *testing.T) {
+	p, ctx, s := pathFixture(t)
+	seedAgent(t, s, "/docs/", "a", "document")
+	if _, r := pathExec(t, p, ctx, `{"op":"mkdir","path":"/docs/a"}`); !r.IsError {
+		t.Fatalf("mkdir over a document must be refused; got %q", r.Text)
+	}
+	if o, r := pathExec(t, p, ctx, `{"op":"resolve","path":"/docs/a"}`); r.IsError || o["kind"] != "document" {
+		t.Errorf("/docs/a should still be a document after a refused mkdir: %s (err=%v)", r.Text, r.IsError)
+	}
+}
+
+func TestPath_MkdirRejectsRoot(t *testing.T) {
+	p, ctx, _ := pathFixture(t)
+	if _, r := pathExec(t, p, ctx, `{"op":"mkdir","path":"/"}`); !r.IsError {
+		t.Errorf("mkdir of the root path should be refused")
+	}
+}
