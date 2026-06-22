@@ -19,6 +19,7 @@ import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
 import IntegrationsView from "./pages/IntegrationsView";
 import VolumesView from "./pages/VolumesView";
+import PathTreeView from "./pages/PathTreeView";
 import ChannelsView from "./pages/ChannelsView";
 import SchedulesView from "./pages/SchedulesView";
 import Layout from "./components/Layout";
@@ -71,6 +72,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           </Route>
           <Route path="volumes/persistent" element={<VolumesView />} />
           <Route path="volumes/ephemeral" element={<VolumesView />} />
+          <Route path="paths" element={<PathTreeView />} />
           <Route path="channels" element={<ChannelsView />} />
           <Route path="schedules" element={<SchedulesView />} />
           <Route path="memory" element={<MemoryView />} />

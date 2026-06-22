@@ -6,6 +6,7 @@ import {
   Brain,
   CalendarClock,
   Camera,
+  FolderTree,
   HardDrive,
   Library,
   ListTree,
@@ -43,6 +44,10 @@ const NAV_ITEMS: NavItem[] = [
   // RFC AH Phase 4. adminOnly mirrors the Library/Integrations def-management
   // gating; broadening to tenant-operator UI access is a separate concern.
   { to: "/volumes/persistent", label: "volumes", Icon: HardDrive, adminOnly: true },
+  // RFC AM Phase 1 — the Path VFS tree console. adminOnly mirrors the
+  // volumes/library def-management gating; broadening to tenant-operator UI
+  // access is a separate concern (the data is per-principal scoped regardless).
+  { to: "/paths", label: "paths", Icon: FolderTree, adminOnly: true },
   { to: "/channels", label: "channels", Icon: Radio, adminOnly: true },
   { to: "/schedules", label: "schedules", Icon: CalendarClock, adminOnly: true },
   { to: "/interrupts", label: "interrupts", Icon: Bell, adminOnly: true },

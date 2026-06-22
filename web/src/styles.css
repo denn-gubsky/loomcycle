@@ -4823,3 +4823,227 @@ button.primary:disabled {
   background: var(--danger);
   border-color: var(--danger);
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * RFC AM Phase 1 — Path tree console (/paths). Reuses the .splitter +
+ * .tree/.children/.tree-caret skeleton + the .modal-* anchors; only the
+ * path-specific row layout, toolbar, and detail pane are new.
+ * ─────────────────────────────────────────────────────────────────────────── */
+.paths-view {
+  height: 100%;
+  min-height: 0;
+}
+.paths-view .left,
+.paths-view .right {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  flex: 1;
+}
+.paths-view .left > .tree,
+.paths-view .left > .empty {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 8px 10px;
+}
+.paths-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.paths-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--lc-text-sm, 13px);
+  color: var(--fg-soft);
+}
+.paths-scope select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.paths-toolbar-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.paths-toolbar-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.paths-toolbar-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.paths-toolbar-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.paths-context {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: var(--lc-text-xs, 12px);
+  color: var(--fg-soft);
+  border-bottom: 1px solid var(--border);
+}
+.paths-err {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--failed);
+  font-size: var(--lc-text-sm, 13px);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Override the agents-tree 6-column grid for path rows — a path row is a
+ * caret + a single name affordance, not status/model/replica/time columns. */
+.paths-view .node .row {
+  display: flex;
+  grid-template-columns: none;
+  gap: 8px;
+  align-items: center;
+}
+.path-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  min-width: 0;
+}
+.path-link:hover .path-name {
+  color: var(--accent);
+}
+.path-kind-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.path-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.path-implicit {
+  font-size: var(--lc-text-xs, 11px);
+  color: var(--fg-soft);
+  opacity: 0.7;
+  font-style: italic;
+}
+.path-node.kind-document > .row .path-kind-icon {
+  filter: none;
+}
+
+/* Detail (right) pane. */
+.paths-detail {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 14px;
+}
+.paths-detail h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--lc-text-base, 14px);
+  margin: 0 0 14px;
+  flex-wrap: wrap;
+}
+.paths-detail h2 code {
+  font-family: var(--lc-font-mono, monospace);
+  font-size: var(--lc-text-sm, 13px);
+  word-break: break-all;
+}
+.paths-detail-kind {
+  text-transform: uppercase;
+  font-size: var(--lc-text-xs, 11px);
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+}
+.paths-detail-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0 0 16px;
+  font-size: var(--lc-text-sm, 13px);
+}
+.paths-detail-meta dt {
+  color: var(--fg-soft);
+}
+.paths-detail-meta dd {
+  margin: 0;
+  word-break: break-all;
+}
+.paths-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.paths-detail-actions button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.paths-detail-actions button:hover {
+  border-color: var(--accent);
+}
+.paths-detail-actions button.danger,
+.modal-buttons button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.modal-buttons button.danger {
+  background: var(--danger);
+  color: white;
+  border-radius: 4px;
+  padding: 8px 16px;
+}
+.paths-readonly,
+.paths-note {
+  font-size: var(--lc-text-sm, 13px);
+  color: var(--fg-soft);
+}
+
+/* Modal field label/input for the create/rename dialogs. */
+.path-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: var(--lc-text-sm, 13px);
+  color: var(--fg-soft);
+}
+.path-modal-input {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  box-sizing: border-box;
+}

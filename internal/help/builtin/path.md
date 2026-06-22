@@ -31,8 +31,11 @@ scopes is two different entries.
   default; `recursive:true` lists all descendants; `kind_filter` narrows to one
   kind (`document` / `volume_mount` / `memory_entry`).
 - `stat path [scope]` — the dirent's full record.
-- `mkdir path [scope]` — **no-op in v1**: directories are implicit (a leaf at
-  `/a/b/c` implies `/a/` and `/a/b/`). Kept for forward-compat.
+- `mkdir path [scope]` — materialize an empty `directory` dirent so an empty
+  branch persists and lists. Idempotent (ok if the directory already exists,
+  explicitly or implied by descendants); refuses to clobber a non-directory.
+  Intermediate directories under a resource stay implicit (a leaf at `/a/b/c`
+  implies `/a/` and `/a/b/`) — `mkdir` is only needed for an *empty* folder.
 - `mv from to [scope]` — rename/relocate; the underlying resource is unchanged.
   Refuses if `to` already exists (no clobber). Moving a directory cascades to
   every descendant atomically.

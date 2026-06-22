@@ -28,7 +28,7 @@ type Path struct {
 func (p *Path) Name() string { return "Path" }
 
 func (p *Path) Description() string {
-	return "A Unix-like filesystem over your Memory, Volumes, and Documents. Address resources by human-readable paths (e.g. /docs/launch). Ops: resolve, ls, stat, mkdir (no-op — dirs are implicit), mv, rm. Paths are scoped (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\"."
+	return "A Unix-like filesystem over your Memory, Volumes, and Documents. Address resources by human-readable paths (e.g. /docs/launch). Ops: resolve, ls, stat, mkdir (create an empty directory), mv, rm. Paths are scoped (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\"."
 }
 
 // pathInputSchema is a package const so the LoomCycle MCP server can source
@@ -81,12 +81,7 @@ func (p *Path) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, 
 	case "stat":
 		return p.stat(ctx, tenantID, scope, scopeID, in)
 	case "mkdir":
-		// Directories are implicit (S3-style) in v1 — mkdir is a no-op kept
-		// for forward-compat + ergonomic parity with a real shell.
-		if _, err := normalizePath(in.Path); err != nil {
-			return errResult(err.Error()), nil
-		}
-		return jsonResult(map[string]any{"ok": true, "note": "directories are implicit in v1; mkdir is a no-op"})
+		return p.mkdir(ctx, tenantID, scope, scopeID, in)
 	case "mv":
 		return p.mv(ctx, tenantID, scope, scopeID, in)
 	case "rm":
@@ -200,6 +195,56 @@ func (p *Path) stat(ctx context.Context, tenantID, scope, scopeID string, in pat
 		"scope": scope, "resource_ref": row.ResourceRef,
 		"created_at": row.CreatedAt, "updated_at": row.UpdatedAt,
 	})
+}
+
+// mkdir materializes an explicit `directory` dirent so an empty branch
+// persists and is listable. RFC AL shipped mkdir as a no-op (directories are
+// implicit, S3-style) and parked explicit directories as a v2 item (RFC AL
+// §11); RFC AM pulls it forward so the Web UI can create empty folders.
+// Idempotent: ok if a directory already exists at the path (an explicit row OR
+// one implied by descendants); refuses to clobber a non-directory resource
+// (DirentCreate is an upsert, so the clobber guard is load-bearing).
+func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
+	canonical, err := normalizePath(in.Path)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	parent, name, isRoot := splitPath(canonical)
+	if isRoot {
+		return errResult("cannot mkdir the root path (it always exists)"), nil
+	}
+	// Something already named here? ok if it's a directory; never overwrite a
+	// document / volume_mount / memory_entry with a directory.
+	row, gerr := p.Store.DirentGet(ctx, tenantID, scope, scopeID, parent, name)
+	if gerr == nil {
+		if row.Kind == "directory" {
+			return jsonResult(map[string]any{"ok": true, "path": canonical, "created": false, "note": "already a directory"})
+		}
+		return errResult(fmt.Sprintf("path exists and is not a directory: %s (kind=%s)", canonical, row.Kind)), nil
+	}
+	var nf *store.ErrNotFound
+	if !asNotFound(gerr, &nf) {
+		return errResult("mkdir: " + gerr.Error()), nil
+	}
+	// No explicit row. If the path is already implied (has descendants) it
+	// effectively exists — no-op success, don't rewrite history (RFC AM §13).
+	kids, lerr := p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, dirPrefix(canonical))
+	if lerr != nil {
+		return errResult("mkdir: " + lerr.Error()), nil
+	}
+	if len(kids) > 0 {
+		return jsonResult(map[string]any{"ok": true, "path": canonical, "created": false, "note": "directory already implied by descendants"})
+	}
+	// Materialize an empty directory dirent. ResourceRef is left nil (a
+	// directory backs no resource); the store coerces it to "{}" for backend
+	// parity.
+	if _, err := p.Store.DirentCreate(ctx, store.DirentRow{
+		TenantID: tenantID, Scope: scope, ScopeID: scopeID,
+		ParentPath: parent, Name: name, Kind: "directory",
+	}); err != nil {
+		return errResult("mkdir: " + err.Error()), nil
+	}
+	return jsonResult(map[string]any{"ok": true, "path": canonical, "created": true})
 }
 
 func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {

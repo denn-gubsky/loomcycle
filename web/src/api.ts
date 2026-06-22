@@ -675,6 +675,105 @@ async function postJSON<T>(path: string, body: string | undefined): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// RFC AM — Path + Document console (off-run substrate endpoints).
+//
+// The Web UI drives the Path VFS (RFC AL) and chunked-graph Documents (RFC AK)
+// through the off-run endpoints POST /v1/_path and POST /v1/_document. Scope +
+// tenant are resolved server-side from the authenticated principal
+// (substrateAdminUserCtx) — the browser never sends them as authority; `scope`
+// is only the subtree SELECTOR (which of the principal's own trees). The
+// console defaults to `user` scope so its tree lines up with the principal's
+// own agent runs (user_id = principal.subject). `agent` scope is operator-
+// private off-run; Documents support agent|user only (tenant is refused).
+
+export type PathScope = "agent" | "user" | "tenant";
+export type DocScope = "agent" | "user";
+
+// PathEntry is one dirent in an `ls` listing.
+export interface PathEntry {
+  name: string;
+  kind: string; // directory | document | volume_mount | memory_entry
+  full_path: string;
+  resource_ref?: unknown;
+}
+
+// substratePost POSTs a tool op to an off-run substrate endpoint. A 200 returns
+// the tool's JSON result verbatim; a 422 tool refusal carries {code,error,tool}
+// — surface the human-readable `error` (e.g. "Documents require SQL Memory").
+async function substratePost<T>(path: string, body: unknown): Promise<T> {
+  const resp = await fetch(baseURL + path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (resp.ok) return resp.json() as Promise<T>;
+  if (redirectToLoginOn401(resp.status)) return new Promise<T>(() => {});
+  const raw = await resp.text();
+  let msg = `${resp.status} ${resp.statusText}: ${raw.slice(0, 200)}`;
+  try {
+    const j = JSON.parse(raw) as { error?: string };
+    if (j && typeof j.error === "string") msg = j.error;
+  } catch {
+    /* non-JSON body — keep the status-line message */
+  }
+  throw new Error(msg);
+}
+
+// pathLs lists a path. recursive returns the whole subtree (the tree view
+// fetches the subtree once and reconstructs intermediate dirs client-side).
+export function pathLs(
+  path: string,
+  scope: PathScope,
+  recursive = false,
+): Promise<{ path: string; entries: PathEntry[] }> {
+  return substratePost("/v1/_path", { op: "ls", path, scope, recursive });
+}
+
+// pathMkdir materializes an empty `directory` dirent (RFC AM); idempotent.
+export function pathMkdir(
+  path: string,
+  scope: PathScope,
+): Promise<{ ok: boolean; created: boolean; path: string }> {
+  return substratePost("/v1/_path", { op: "mkdir", path, scope });
+}
+
+// pathMv renames/relocates a dirent (atomic; cascades a subtree; no-clobber).
+export function pathMv(from: string, to: string, scope: PathScope): Promise<{ ok: boolean }> {
+  return substratePost("/v1/_path", { op: "mv", path: from, to, scope });
+}
+
+// pathRm removes a dirent (recursive required for a non-empty branch). Removes
+// the path entry only — backing resources are deleted via their own tool.
+export function pathRm(
+  path: string,
+  scope: PathScope,
+  recursive = false,
+): Promise<{ ok: boolean; n_removed: number }> {
+  return substratePost("/v1/_path", { op: "rm", path, scope, recursive });
+}
+
+// documentCreate makes a new chunked-graph Document and names it in the Path
+// tree at `path`. Requires SQL Memory on the runtime; a not-enabled runtime
+// returns a tool refusal surfaced by substratePost.
+export function documentCreate(
+  title: string,
+  path: string,
+  scope: DocScope,
+): Promise<{ document_id: string; root_chunk_id: string; title: string; path?: string }> {
+  return substratePost("/v1/_document", { op: "create_document", title, path, scope });
+}
+
+// documentDelete removes a Document by id: SQL rows + Memory bodies + the Path
+// dirent, cascading its chunks (RFC AK).
+export function documentDelete(
+  id: string,
+  scope: DocScope,
+): Promise<{ deleted: boolean; document_id: string; n_chunks_deleted: number }> {
+  return substratePost("/v1/_document", { op: "delete_document", id, scope });
+}
+
 // AuditEvent mirrors wireEvent in internal/api/http/events_audit.go.
 // Payload is left as `unknown` because event payloads vary by type
 // (text / tool_call / tool_result / usage / done / …); the audit
