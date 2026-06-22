@@ -40,6 +40,11 @@ use `get_chunk` for a chunk's body.
 **Types (supertag-like):** `define_type` (`name`, `fields`; omit `document_id`
 for a scope-wide type), `list_types`.
 
+**Markdown:** `export_md` (`document_id` or `id`/`path`) renders the document to
+Markdown — each chunk a heading (level = depth) + its body. `include_metadata`
+(default `true`) embeds round-trippable chunk metadata + edges as HTML comments;
+`include_metadata:false` is clean human-facing Markdown.
+
 ## Concurrency — `update_chunk` revision
 
 Every chunk has a `revision`. `update_chunk` requires you to pass the current
