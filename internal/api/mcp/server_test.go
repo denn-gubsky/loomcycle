@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -304,8 +305,16 @@ func (m *mockConnector) BroadcastChannels(context.Context, connector.ChannelBroa
 // captured separately.
 func driveServer(t *testing.T, srv *Server, input string) (responses []loommcp.Response, notifications []loommcp.Notification) {
 	t.Helper()
+	return driveServerCtx(t, srv, context.Background(), input)
+}
+
+// driveServerCtx is driveServer with a caller-supplied base ctx — used to drive
+// the server as a specific authenticated principal (auth.WithPrincipal) so the
+// tools/list filter + tools/call gate (RFC AG §3.3) can be exercised.
+func driveServerCtx(t *testing.T, srv *Server, base context.Context, input string) (responses []loommcp.Response, notifications []loommcp.Notification) {
+	t.Helper()
 	stdout := &bytes.Buffer{}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(base, 5*time.Second)
 	defer cancel()
 	if err := srv.Serve(ctx, strings.NewReader(input), stdout); err != nil {
 		t.Fatalf("Serve: %v", err)
@@ -392,6 +401,77 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
+	}
+}
+
+// TestServer_ToolsList_FiltersAdminToolsForTenant drives tools/list as a
+// non-admin (substrate:tenant) principal and asserts the admin-only meta-tools
+// are absent while the tenant-confinable ones remain (RFC AG §3.3). Contrast
+// with TestServer_ToolsList_ReturnsFullCatalogue (no principal → full set).
+func TestServer_ToolsList_FiltersAdminToolsForTenant(t *testing.T) {
+	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	ctx := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{"substrate:tenant"}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
+	resps, _ := driveServerCtx(t, srv, ctx, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	var result loommcp.ToolsListResult
+	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	names := map[string]bool{}
+	for _, td := range result.Tools {
+		names[td.Name] = true
+	}
+	for _, hidden := range []string{"operatortokendef", "pause_runtime", "restore_snapshot", "list_channels", "register_hook", "delete_hook"} {
+		if names[hidden] {
+			t.Errorf("admin-only tool %q must be hidden from a tenant principal's tools/list", hidden)
+		}
+	}
+	for _, shown := range []string{"document", "agentdef", "memory", "spawn_run", "path", "context"} {
+		if !names[shown] {
+			t.Errorf("tenant-confinable tool %q must remain in a tenant principal's tools/list", shown)
+		}
+	}
+}
+
+// TestServer_ToolsCall_GatesAdminToolForTenant is the RFC AG §3.3 / §6
+// enforcement test: a non-admin principal that calls a (hidden) admin-only tool
+// anyway gets a clean forbidden error — the gate, not just the hide. Fail-before:
+// drop the principalMayCallTool check in handleToolsCall and the call dispatches
+// (pause_runtime returns a tool result instead of mcpErrForbidden).
+func TestServer_ToolsCall_GatesAdminToolForTenant(t *testing.T) {
+	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	ctx := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{"substrate:tenant"}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pause_runtime","arguments":{}}}` + "\n"
+	resps, _ := driveServerCtx(t, srv, ctx, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	if resps[0].Error == nil {
+		t.Fatalf("expected a JSON-RPC error for a gated tool, got result: %s", resps[0].Result)
+	}
+	if resps[0].Error.Code != mcpErrForbidden {
+		t.Errorf("error code = %d, want mcpErrForbidden (%d)", resps[0].Error.Code, mcpErrForbidden)
+	}
+}
+
+// TestServer_ToolsCall_AdminToolAllowedForNoPrincipal confirms the gate is inert
+// on the stdio / no-principal path: pause_runtime dispatches (operator-trust),
+// it is NOT a forbidden error. (It may surface a tool-level error from the mock
+// connector, but never mcpErrForbidden.)
+func TestServer_ToolsCall_AdminToolAllowedForNoPrincipal(t *testing.T) {
+	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pause_runtime","arguments":{}}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	if resps[0].Error != nil && resps[0].Error.Code == mcpErrForbidden {
+		t.Errorf("no-principal (stdio) path must not be gated; got forbidden error")
 	}
 }
 

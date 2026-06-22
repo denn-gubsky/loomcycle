@@ -331,7 +331,7 @@ func (s *Server) handleFrame(ctx context.Context, frame []byte, stdout io.Writer
 	case "initialize":
 		s.handleInitialize(stdout, req)
 	case "tools/list":
-		s.handleToolsList(stdout, req)
+		s.handleToolsList(ctx, stdout, req)
 	case "tools/call":
 		s.handleToolsCall(ctx, stdout, req)
 	default:
@@ -394,9 +394,18 @@ func (s *Server) handleInitialize(stdout io.Writer, req loommcp.Request) {
 	s.writeResult(stdout, req.ID, result)
 }
 
-// handleToolsList returns the static tool descriptor catalogue.
-func (s *Server) handleToolsList(stdout io.Writer, req loommcp.Request) {
-	descs := toolDescriptors()
+// handleToolsList returns the tool descriptor catalogue, filtered to the tools
+// the authenticated principal may call (RFC AG §3.3). A non-admin (substrate:
+// tenant) session never sees the admin-only meta-tools; stdio / admin sessions
+// see everything. The hide is UX — the tools/call gate is the enforcement.
+func (s *Server) handleToolsList(ctx context.Context, stdout io.Writer, req loommcp.Request) {
+	all := toolDescriptors()
+	descs := make([]loommcp.ToolDescriptor, 0, len(all))
+	for _, d := range all {
+		if principalMayCallTool(ctx, d.Name) {
+			descs = append(descs, d)
+		}
+	}
 	result := loommcp.ToolsListResult{Tools: descs}
 	s.writeResult(stdout, req.ID, result)
 }
@@ -414,6 +423,15 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 	handler, ok := toolHandlerByName(params.Name)
 	if !ok {
 		s.writeError(stdout, req.ID, -32601, "unknown tool: "+params.Name)
+		return
+	}
+
+	// Per-operation authz (RFC AG §3.3). A non-admin principal that calls an
+	// admin-only meta-tool (hidden from its tools/list) is refused here — the
+	// gate, not the hide, is the enforcement boundary. No principal (stdio) or
+	// an admin principal passes through unchanged.
+	if !principalMayCallTool(ctx, params.Name) {
+		s.writeError(stdout, req.ID, mcpErrForbidden, params.Name+": forbidden — requires substrate:admin")
 		return
 	}
 
