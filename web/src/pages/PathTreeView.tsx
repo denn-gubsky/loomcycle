@@ -11,6 +11,7 @@ import {
   pathRm,
 } from "../api";
 import Splitter from "../components/Splitter";
+import DocumentViewer from "../components/DocumentViewer";
 import PathTree, {
   buildPathTree,
   collectDocumentIds,
@@ -255,47 +256,53 @@ export default function PathTreeView() {
         </div>
         <div className="right">
           {selected ? (
-            <div className="paths-detail">
-              <h2>
-                <span className="paths-detail-kind">{selected.kind}</span>
-                <code>{selected.fullPath}</code>
-              </h2>
-              <dl className="paths-detail-meta">
-                <dt>scope</dt>
-                <dd>{scope}</dd>
-                <dt>stored</dt>
-                <dd>{selected.explicit ? "yes" : "implicit (no entry)"}</dd>
-                {selected.kind === "document" && (
-                  <>
-                    <dt>document_id</dt>
-                    <dd>
-                      <code>
-                        {(selected.resourceRef as { document_id?: string })?.document_id ?? "—"}
-                      </code>
-                    </dd>
-                  </>
-                )}
-              </dl>
-              {mutable ? (
-                <div className="paths-detail-actions">
-                  <button type="button" onClick={renameSelected}>
-                    rename / move
-                  </button>
-                  <button type="button" className="danger" onClick={deleteSelected}>
-                    delete
-                  </button>
+            selected.kind === "document" ? (
+              <div className="paths-doc">
+                <div className="paths-doc-head">
+                  <code className="paths-doc-path">{selected.fullPath}</code>
+                  <div className="paths-detail-actions">
+                    <button type="button" onClick={renameSelected}>
+                      rename / move
+                    </button>
+                    <button type="button" className="danger" onClick={deleteSelected}>
+                      delete
+                    </button>
+                  </div>
                 </div>
-              ) : (
-                <p className="paths-readonly">
-                  Read-only — {selected.kind} entries are managed by their own tool.
-                </p>
-              )}
-              {selected.kind === "document" && (
-                <p className="paths-note">
-                  Chunk viewing &amp; editing arrives with the Document viewer (Phase 2).
-                </p>
-              )}
-            </div>
+                <DocumentViewer
+                  documentId={(selected.resourceRef as { document_id?: string })?.document_id ?? ""}
+                  scope={scope === "agent" ? "agent" : "user"}
+                  titleHint={selected.name}
+                />
+              </div>
+            ) : (
+              <div className="paths-detail">
+                <h2>
+                  <span className="paths-detail-kind">{selected.kind}</span>
+                  <code>{selected.fullPath}</code>
+                </h2>
+                <dl className="paths-detail-meta">
+                  <dt>scope</dt>
+                  <dd>{scope}</dd>
+                  <dt>stored</dt>
+                  <dd>{selected.explicit ? "yes" : "implicit (no entry)"}</dd>
+                </dl>
+                {mutable ? (
+                  <div className="paths-detail-actions">
+                    <button type="button" onClick={renameSelected}>
+                      rename / move
+                    </button>
+                    <button type="button" className="danger" onClick={deleteSelected}>
+                      delete
+                    </button>
+                  </div>
+                ) : (
+                  <p className="paths-readonly">
+                    Read-only — {selected.kind} entries are managed by their own tool.
+                  </p>
+                )}
+              </div>
+            )
           ) : (
             <div className="empty">
               <p>Select a path on the left, or create a folder / document.</p>
