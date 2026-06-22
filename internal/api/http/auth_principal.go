@@ -281,26 +281,20 @@ func (s *Server) legacyFallbackDisabled(ctx context.Context) bool {
 // and a caller must not be able to spoof another subject.
 func (s *Server) applyPrincipal(ctx context.Context, wireTenant, wireUser string) (tenant, subject string) {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok {
-		return wireTenant, wireUser
-	}
-	if p.Legacy {
-		subject = p.Subject
-		if wireUser != "" {
-			subject = wireUser
+	tenant, subject = auth.ResolveWireIdentity(p, ok, wireTenant, wireUser)
+	// Log a disagreement only for a REAL principal (legacy honors the wire
+	// user_id by design; no-principal is the open-mode passthrough). Triage
+	// only — the override itself is the security property and lives in
+	// auth.ResolveWireIdentity, the rule shared with the MCP transport.
+	if ok && !p.Legacy {
+		if wireTenant != "" && wireTenant != p.TenantID {
+			log.Printf("auth: identity_overridden kind=tenant wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
 		}
-		// Tenant stays the legacy default ("default"): the shared token is
-		// single-tenant by construction, and tenant routing is a real
-		// isolation axis we don't let the wire steer here.
-		return p.TenantID, subject
+		if wireUser != "" && wireUser != p.Subject {
+			log.Printf("auth: identity_overridden kind=subject wire=%q principal=%q token_def=%q", wireUser, p.Subject, p.TokenDefID)
+		}
 	}
-	if wireTenant != "" && wireTenant != p.TenantID {
-		log.Printf("auth: identity_overridden kind=tenant wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
-	}
-	if wireUser != "" && wireUser != p.Subject {
-		log.Printf("auth: identity_overridden kind=subject wire=%q principal=%q token_def=%q", wireUser, p.Subject, p.TokenDefID)
-	}
-	return p.TenantID, p.Subject
+	return tenant, subject
 }
 
 // sessionOwnershipOK reports whether the ctx principal may continue or read
