@@ -566,6 +566,91 @@ func TestServer_SpawnRun_BlockingPath(t *testing.T) {
 // TestServer_SpawnRun_CarriesCompaction verifies a per-run compaction block on
 // a spawn_run call decodes into SpawnRunRequest.Compaction (the new per-run
 // config surface; the connector then carries it to runner.RunInput).
+// TestServer_SpawnRun_AppliesPrincipalOverWireIdentity is the RFC AG §3.2
+// enforcement: a non-legacy principal is authoritative over the wire
+// tenant_id/user_id, so a forged tenant_id in the spawn_run body cannot place
+// the run in another tenant. Fail-before: drop applyPrincipalToSpawn in
+// handleSpawnRun and the connector sees the forged "evil"/"mallory".
+func TestServer_SpawnRun_AppliesPrincipalOverWireIdentity(t *testing.T) {
+	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	ctx := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "alice"}) // real (non-legacy) principal
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[],"tenant_id":"evil","user_id":"mallory"}}}` + "\n"
+	driveServerCtx(t, srv, ctx, in)
+	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
+	if stored.TenantID != "acme" || stored.UserID != "alice" {
+		t.Errorf("connector saw (tenant=%q,user=%q), want (acme,alice) — wire claims must be overridden", stored.TenantID, stored.UserID)
+	}
+}
+
+// TestServer_SpawnRun_LegacyHonorsWireUserID: under the legacy token the wire
+// user_id is honored (single-operator, no-boundary; F18) but the tenant stays
+// the legacy default. Mirrors HTTP's applyPrincipal via the shared rule.
+func TestServer_SpawnRun_LegacyHonorsWireUserID(t *testing.T) {
+	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	ctx := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "default", Subject: "default", Scopes: []string{auth.ScopeAdmin}, Legacy: true})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[],"tenant_id":"ignored","user_id":"exp1"}}}` + "\n"
+	driveServerCtx(t, srv, ctx, in)
+	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
+	if stored.TenantID != "default" || stored.UserID != "exp1" {
+		t.Errorf("legacy spawn saw (tenant=%q,user=%q), want (default,exp1)", stored.TenantID, stored.UserID)
+	}
+}
+
+// TestServer_SpawnRun_NoPrincipalPassesWireThrough: on the stdio / open path
+// (no principal) the caller-supplied identity passes through unchanged.
+func TestServer_SpawnRun_NoPrincipalPassesWireThrough(t *testing.T) {
+	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[],"tenant_id":"wire-t","user_id":"wire-u"}}}` + "\n"
+	driveServer(t, srv, in)
+	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
+	if stored.TenantID != "wire-t" || stored.UserID != "wire-u" {
+		t.Errorf("no-principal spawn saw (tenant=%q,user=%q), want the wire values", stored.TenantID, stored.UserID)
+	}
+}
+
+// TestServer_SpawnRun_ContinuationSkipsOverride: a continuation (session_id set)
+// must NOT have its identity rewritten — the session's stored identity is
+// authoritative downstream, and the connector ignores these fields for a
+// session_id call. So applyPrincipalToSpawn is a deliberate no-op here.
+func TestServer_SpawnRun_ContinuationSkipsOverride(t *testing.T) {
+	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	ctx := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "alice"})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"session_id":"s_prior","segments":[],"tenant_id":"wire-t"}}}` + "\n"
+	driveServerCtx(t, srv, ctx, in)
+	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
+	if stored.TenantID != "wire-t" {
+		t.Errorf("continuation tenant = %q, want it left untouched (wire-t) — override must skip continuations", stored.TenantID)
+	}
+}
+
+// TestServer_SpawnRuns_AppliesPrincipalToEachChild: the RFC Y batch fan-out
+// stamps the caller's authoritative identity on EVERY child, so a forged
+// tenant_id in any child spec can't cross the tenant boundary (RFC AG §3.2).
+func TestServer_SpawnRuns_AppliesPrincipalToEachChild(t *testing.T) {
+	mc := &mockConnector{batchResult: connector.BatchSpawnResult{}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	ctx := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "alice"})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":"a","segments":[],"tenant_id":"evil"},{"agent":"b","segments":[],"tenant_id":"evil2","user_id":"mallory"}]}}}` + "\n"
+	driveServerCtx(t, srv, ctx, in)
+	stored, _ := mc.batchReq.Load().(connector.BatchSpawnRequest)
+	if len(stored.Spawns) != 2 {
+		t.Fatalf("connector saw %d spawns, want 2", len(stored.Spawns))
+	}
+	for i, sp := range stored.Spawns {
+		if sp.TenantID != "acme" || sp.UserID != "alice" {
+			t.Errorf("child[%d] = (tenant=%q,user=%q), want (acme,alice)", i, sp.TenantID, sp.UserID)
+		}
+	}
+}
+
 func TestServer_SpawnRun_CarriesCompaction(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{AgentID: "a", RunID: "r", Status: "completed"}}
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})

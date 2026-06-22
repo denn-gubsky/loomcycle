@@ -7,11 +7,30 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
+
+// applyPrincipalToSpawn makes the authenticated principal authoritative over a
+// FRESH run's wire tenant_id/user_id (RFC AG §3.2 — the MCP analogue of HTTP's
+// applyPrincipal). Without it a tenant could spawn a run in another tenant by
+// putting tenant_id in the JSON body. The rule is the shared
+// auth.ResolveWireIdentity (one source of truth across HTTP + MCP).
+//
+// Continuations (session_id set) are skipped: the session's identity is
+// authoritative and the connector ignores these fields for a session_id call —
+// the cross-tenant-continuation guard is a separate concern (sessionOwnership),
+// out of scope for this wire-identity override.
+func applyPrincipalToSpawn(ctx context.Context, req *connector.SpawnRunRequest) {
+	if req.SessionID != "" {
+		return
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	req.TenantID, req.UserID = auth.ResolveWireIdentity(p, ok, req.TenantID, req.UserID)
+}
 
 // toolHandler is the uniform signature every dispatch entry follows.
 // Returns the MCP CallToolResult directly (not raw JSON) so the server
@@ -198,6 +217,10 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		req.ParentContext = nil
 	}
 
+	// RFC AG §3.2: the authenticated principal is authoritative over the wire
+	// tenant_id/user_id (a tenant can't forge another tenant's id in the body).
+	applyPrincipalToSpawn(ctx, &req)
+
 	// RFC P — transport timeout. A per-call timeout_ms (caller, narrowing)
 	// over the operator default bounds how long this spawn_run CALL blocks
 	// the MCP transport; on expiry we cancel the run (it honors ctx) and
@@ -274,6 +297,10 @@ func handleSpawnRuns(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		if sp.ParentContext.IsZero() {
 			sp.ParentContext = nil
 		}
+		// RFC AG §3.2: stamp the caller's authoritative identity on every child
+		// (batch children are fresh runs — Agent required above, no session_id),
+		// so a forged tenant_id in any child spec can't cross the tenant boundary.
+		applyPrincipalToSpawn(ctx, sp)
 	}
 	res, err := env.connector.SpawnRunBatch(ctx, req)
 	if err != nil {
