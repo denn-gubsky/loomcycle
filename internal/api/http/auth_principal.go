@@ -444,12 +444,22 @@ func requiredScopeFor(method, path string) string {
 	// also satisfies it). The handlers stamp the principal's authoritative tenant
 	// (dispatchSubstrate → RunIdentity) and 404 cross-tenant reads, so a tenant
 	// operator authors ONLY its own surface. DELIBERATELY EXCLUDES
-	// /v1/_operatortokendef (token minting) and /v1/_mcp (the loomcycle-as-MCP-
-	// server transport — operatorCtx grants it global-operator authority with no
-	// per-principal tenant/scope confinement, so it MUST stay ScopeAdmin); the
-	// catch-all below keeps minting, the MCP transport, and runtime-admin at
-	// ScopeAdmin.
+	// /v1/_operatortokendef (token minting — no tenant dimension, stays ScopeAdmin
+	// via the catch-all below). /v1/_mcp (the loomcycle-as-MCP-server transport)
+	// now has its OWN ScopeTenant case below: RFC AG made it per-principal
+	// (mcpPrincipalCtx stamps the tenant + a per-tool gate withholds the admin
+	// meta-tools), so it no longer needs to be operator-only.
 	case isTenantConfinedDefPath(path):
+		return auth.ScopeTenant
+	// RFC AG Phase 2: the loomcycle-as-MCP-server HTTP transport. With Phase 0
+	// (mcpPrincipalCtx tenant/user stamp + the per-tool tools/call gate +
+	// tools/list filter) and Phase 1 (applyPrincipal on spawn) in place, the
+	// transport is per-principal and tenant-confined — a substrate:tenant token
+	// may OPEN an MCP session, and the per-tool gate INSIDE still withholds the
+	// admin-only meta-tools (mint / runtime-admin / snapshots). The route gate
+	// only decides "may open a session at all". ScopeAdmin also satisfies
+	// ScopeTenant (auth.HasScope), so admin sessions are unchanged.
+	case path == "/v1/_mcp":
 		return auth.ScopeTenant
 	// RFC AH Phase 4: the two read-only volume views (GET /v1/_volumes +
 	// /v1/_volumes/ephemeral). Same tenant-confined posture as the def plane —
@@ -551,13 +561,13 @@ func requiredScopeFor(method, path string) string {
 // only the POST route (its `list` op dispatches via the body, not a GET
 // /names route). It DELIBERATELY EXCLUDES:
 //   - /v1/_operatortokendef — token minting stays operator-only.
-//   - /v1/_mcp — the loomcycle-as-MCP-server HTTP transport. That surface runs
-//     under operatorCtx (mcp/context.go), which grants global-operator authority
-//     (Admin token-minting + "any"-scope cross-tenant def authoring + runtime
-//     admin) with NO per-principal tenant/scope confinement, so it MUST keep
-//     ScopeAdmin. Note /v1/_mcpserverdef (a def family, in the loop below) IS
-//     the tenant-confined "dynamic MCP tools ingestion" surface — it mounts an
-//     external MCP server's tools for the tenant, and is tenant-stamped.
+//   - /v1/_mcp — handled by its OWN ScopeTenant case in requiredScopeFor (RFC AG
+//     Phase 2 made the MCP transport per-principal: mcpPrincipalCtx stamps the
+//     tenant, a per-tool gate withholds the admin meta-tools). It is NOT in this
+//     def-family helper because it is a transport, not a def family. Note
+//     /v1/_mcpserverdef (a def family, in the loop below) IS the tenant-confined
+//     "dynamic MCP tools ingestion" surface — it mounts an external MCP server's
+//     tools for the tenant, and is tenant-stamped.
 //   - runtime-admin / resolver / audit — keep ScopeAdmin via the /v1/_* catch-all.
 //
 // The def handlers confine a non-admin principal to its own tenant (write-stamp

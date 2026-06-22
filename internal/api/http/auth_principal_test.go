@@ -217,14 +217,13 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"GET", "/v1/_resolver", auth.ScopeAdmin},
 		{"POST", "/v1/_pause", auth.ScopeAdmin},
 		{"GET", "/metrics", auth.ScopeAdmin},
-		// RFC AF: /v1/_mcp (the loomcycle-as-MCP-server HTTP transport) STAYS
-		// operator-only. It runs under operatorCtx — global-operator authority with
-		// NO per-principal tenant/scope confinement — so a tenant token must NOT
-		// reach it (it could mint tokens / author cross-tenant defs). The
-		// tenant-confined "dynamic MCP tools ingestion" surface is the
-		// /v1/_mcpserverdef def family below, which IS tenant-stamped.
-		{"POST", "/v1/_mcp", auth.ScopeAdmin},
-		{"DELETE", "/v1/_mcp", auth.ScopeAdmin},
+		// RFC AG Phase 2: /v1/_mcp (the loomcycle-as-MCP-server HTTP transport) is
+		// now substrate:tenant — the transport is per-principal (mcpPrincipalCtx
+		// stamps the tenant + a per-tool gate withholds the admin meta-tools), so
+		// the route gate only decides "may open a session". substrate:admin still
+		// satisfies it (admin sessions unchanged).
+		{"POST", "/v1/_mcp", auth.ScopeTenant},
+		{"DELETE", "/v1/_mcp", auth.ScopeTenant},
 		// RFC AF: def-authoring (8 families, incl. _mcpserverdef) + hooks are
 		// tenant-confined (substrate:tenant; substrate:admin still satisfies). The
 		// handlers confine a non-admin principal to its own tenant.
@@ -294,8 +293,10 @@ func TestAuthMiddleware_403InsufficientScope(t *testing.T) {
 
 // TestAuthMiddleware_RFCAFTenantToken drives the full RFC AF posture through
 // the real middleware: a substrate:tenant token is ADMITTED on the
-// tenant-confined def + hook plane but REFUSED (403) on the operator plane
-// (token minting, the MCP-server transport, runtime admin).
+// tenant-confined def + hook plane and (RFC AG Phase 2) may OPEN an MCP session
+// on /v1/_mcp, but is REFUSED (403) on the operator plane (token minting,
+// runtime admin). Inside an MCP session the per-tool gate still withholds the
+// admin-only meta-tools — covered by the internal/api/mcp tool-gate tests.
 func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 	s, st := tokenAuthServer(t, "legacy")
 	seedToken(t, st, "lct_tenant", "jobember", "svc", []string{auth.ScopeTenant}, time.Time{})
@@ -305,6 +306,7 @@ func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 		{"GET", "/v1/_agentdef/names"},
 		{"POST", "/v1/_mcpserverdef"}, // dynamic MCP ingestion — confined
 		{"POST", "/v1/hooks"},         // tenant-isolated hooks
+		{"POST", "/v1/_mcp"},          // RFC AG Phase 2: may OPEN an MCP session
 	}
 	for _, c := range admitted {
 		var reached bool
@@ -320,7 +322,6 @@ func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 
 	refused := []struct{ method, path string }{
 		{"POST", "/v1/_operatortokendef"}, // token minting — operator-only
-		{"POST", "/v1/_mcp"},              // MCP-server transport — global operator
 		{"POST", "/v1/_pause"},            // runtime admin
 	}
 	for _, c := range refused {
