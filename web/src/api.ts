@@ -774,6 +774,69 @@ export function documentDelete(
   return substratePost("/v1/_document", { op: "delete_document", id, scope });
 }
 
+// ChunkRow is the structural record returned by query_chunks (no body — kept
+// light; fetch the body with documentGetChunk).
+export interface ChunkRow {
+  id: string;
+  document_id: string;
+  parent_id?: string;
+  position: number;
+  title: string;
+  type?: string;
+  status?: string;
+  revision: number;
+}
+// ChunkDetail adds the Markdown body + typed fields (from get_chunk).
+export interface ChunkDetail extends ChunkRow {
+  body: string;
+  fields?: unknown;
+}
+
+// documentQueryChunks lists a document's chunks (structure only). limit caps at
+// 1000 server-side — adequate for the viewer's per-document trees.
+export function documentQueryChunks(
+  documentId: string,
+  scope: DocScope,
+): Promise<{ chunks: ChunkRow[] }> {
+  return substratePost("/v1/_document", {
+    op: "query_chunks",
+    document_id: documentId,
+    scope,
+    limit: 1000,
+  });
+}
+
+export function documentGetChunk(id: string, scope: DocScope): Promise<ChunkDetail> {
+  return substratePost("/v1/_document", { op: "get_chunk", id, scope });
+}
+
+// documentUpdateChunk applies an optimistic-concurrency update — pass the
+// chunk's current `revision`; a stale revision rejects with a "revision
+// conflict" error (surfaced by substratePost) the editor reloads on.
+export function documentUpdateChunk(
+  id: string,
+  revision: number,
+  patch: { body?: string; fields?: unknown; title?: string; status?: string; type?: string },
+  scope: DocScope,
+): Promise<ChunkDetail> {
+  return substratePost("/v1/_document", { op: "update_chunk", id, revision, scope, ...patch });
+}
+
+// documentExportMd renders the document to Markdown. includeMetadata=true is
+// round-trippable (HTML-comment metadata + edges); false is clean human MD.
+export function documentExportMd(
+  documentId: string,
+  scope: DocScope,
+  includeMetadata: boolean,
+): Promise<{ markdown: string; title: string; document_id: string }> {
+  return substratePost("/v1/_document", {
+    op: "export_md",
+    document_id: documentId,
+    scope,
+    include_metadata: includeMetadata,
+  });
+}
+
 // AuditEvent mirrors wireEvent in internal/api/http/events_audit.go.
 // Payload is left as `unknown` because event payloads vary by type
 // (text / tool_call / tool_result / usage / done / …); the audit
