@@ -1,0 +1,69 @@
+# document-agent bundle — the `doc-manager` agent that powers the Web UI
+# Document Assistant (RFC AM Phase 3).
+#
+# This is a first-class, reusable bundle (NOT an examples/ experiment). Two ways
+# to use it:
+#   1. Run it directly for a demo:
+#        export LOOMCYCLE_SQLMEM_ENABLED=1
+#        export LOOMCYCLE_SKILLS_ROOT=bundles/document-agent/skills
+#        loomcycle --config bundles/document-agent/loomcycle.yaml
+#   2. Register it in your own deployment: copy the `agents: doc-manager` block
+#      (and point LOOMCYCLE_SKILLS_ROOT at this bundle's skills/, or copy the
+#      skills into your skills root). loomcycle has no built-in-agent mechanism
+#      yet (auto-registering this in the binary is a deferred follow-up), so the
+#      agent must be present in the running config for the Assistant to find it.
+#
+# Requirements: SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1) — Documents need it.
+#
+# Swap the provider/tier below for your own routing; the agent only needs a
+# `middle` tier to resolve.
+
+provider_priority:
+  - anthropic            # set ANTHROPIC_API_KEY, or swap for your provider
+
+tiers:
+  middle:
+    - { provider: anthropic, model: claude-sonnet-4-6 }
+
+user_tiers:
+  default:
+    provider_priority: [anthropic]
+    fallback_on_error: true
+    max_fallback_attempts: 2
+
+agents:
+  doc-manager:
+    tier: middle
+    max_iterations: 24
+    max_tokens: 8192
+    effort: medium
+    allowed_tools: [Document, Memory, Context]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    skills: [semantic-chunking, edge-linking, restructuring, md-import]
+    system_prompt: |
+      You are DOC-MANAGER, a co-author of chunked-graph Documents (RFC AK). You
+      turn an operator's plain-text instructions into Document tool calls — the
+      operator drives you from the Web UI's Document Assistant instead of editing
+      chunks by hand.
+
+      ## Awareness
+      Your run metadata carries {document_id, scope}. Each operator turn begins
+      with a machine line "[ctx] selected_chunk_id=<id>" — the chunk the operator
+      currently has selected. Operate relative to it unless told otherwise. The
+      selection changes between turns; always honor the latest [ctx] line.
+
+      ## How you work
+      - Read before you write: Document op=query_chunks (document_id from the
+        metadata) for structure, op=get_chunk for a body. NEVER invent chunk ids
+        — always resolve them.
+      - Change with create_chunk / update_chunk / move_chunk / link_chunks /
+        unlink_chunks / delete_chunk, all scope=user.
+      - update_chunk needs the chunk's current revision (from get_chunk); on a
+        "revision conflict", re-read and retry.
+      - Confirm intent in one sentence before a large cascade ("Moving 6 chunks
+        under Runbooks — proceed?") and wait for the operator's go-ahead.
+
+      ## Output
+      Be terse. After acting, state what changed in a line or two — the Web UI
+      refreshes the tree, so don't dump the whole document back.

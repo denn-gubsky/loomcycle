@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -37,7 +38,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown). Scope is agent or user; documents can be named in the Path tree (path:)."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents can be named in the Path tree (path:)."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -47,7 +48,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types","export_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types","export_md","import_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (e.g. /docs/launch). get/delete_document: address by path instead of id."},
@@ -68,7 +69,8 @@ const documentInputSchema = `{
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer"},
 		"name":        {"type": "string", "description": "define/list_types: the type name."},
-		"include_metadata": {"type": "boolean", "description": "export_md: embed round-trippable chunk metadata + edges as HTML comments (default true). false = clean human-facing Markdown."}
+		"include_metadata": {"type": "boolean", "description": "export_md: embed round-trippable chunk metadata + edges as HTML comments (default true). false = clean human-facing Markdown."},
+		"markdown":    {"type": "string", "description": "import_md: an export_md-shaped Markdown document (headings = hierarchy; <!-- loom: ... --> metadata; <!-- loom-edges: ... --> trailer). Omit document_id to create a new document; pass document_id (+ optional parent_id) to import under an existing chunk."}
 	},
 	"required": ["op"]
 }`
@@ -100,6 +102,8 @@ type docInput struct {
 	// IncludeMetadata gates export_md's round-trip comments (default true when
 	// omitted; a pointer so an explicit `false` is distinguishable from unset).
 	IncludeMetadata *bool `json:"include_metadata"`
+	// Markdown is the import_md source (an export_md-shaped document).
+	Markdown string `json:"markdown"`
 }
 
 // docSchemaDDL is portable across SQL Memory's sqlite + postgres tiers: BIGINT
@@ -181,6 +185,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.listTypes(ctx, key, in)
 	case "export_md":
 		return d.exportMD(ctx, key, mscope, in)
+	case "import_md":
+		return d.importMD(ctx, key, mscope, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
@@ -1071,6 +1077,203 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 
 	return jsonResult(map[string]any{"markdown": b.String(), "document_id": docID, "title": title})
+}
+
+// --- ops: Markdown import ---
+
+// mdChunk is one parsed chunk from an export_md-shaped document.
+type mdChunk struct {
+	level  int
+	title  string
+	oldID  string // the id in the `<!-- loom: ... -->` comment (for edge remap)
+	typ    string
+	status string
+	fields json.RawMessage
+	body   string
+}
+
+type mdEdge struct{ from, to, kind string }
+
+var (
+	mdHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.*)$`)
+	mdEdgeRe    = regexp.MustCompile(`^\s*(\S+)\s*->\s*(\S+)\s*\[(.*)\]\s*$`)
+)
+
+// parseLoomMarkdown parses an export_md output: heading lines define the chunk
+// hierarchy (level = heading depth), an optional `<!-- loom: {…} -->` line
+// right after a heading carries id/type/status/fields, and a trailing
+// `<!-- loom-edges: … -->` block carries the graph edges. Lines between
+// headings (minus the loom comment) are the chunk body.
+func parseLoomMarkdown(md string) ([]mdChunk, []mdEdge) {
+	lines := strings.Split(strings.ReplaceAll(md, "\r\n", "\n"), "\n")
+	var chunks []mdChunk
+	var edges []mdEdge
+	var cur *mdChunk
+	var bodyLines []string
+	flush := func() {
+		if cur != nil {
+			cur.body = strings.Trim(strings.Join(bodyLines, "\n"), "\n")
+			chunks = append(chunks, *cur)
+		}
+		cur = nil
+		bodyLines = nil
+	}
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		// Edges trailer — consume to its closing "-->".
+		if strings.HasPrefix(trimmed, "<!-- loom-edges:") {
+			for i++; i < len(lines) && !strings.Contains(lines[i], "-->"); i++ {
+				if m := mdEdgeRe.FindStringSubmatch(lines[i]); m != nil {
+					edges = append(edges, mdEdge{from: m[1], to: m[2], kind: m[3]})
+				}
+			}
+			continue
+		}
+		if m := mdHeadingRe.FindStringSubmatch(line); m != nil {
+			flush()
+			cur = &mdChunk{level: len(m[1]), title: strings.TrimSpace(m[2])}
+			continue
+		}
+		// Per-chunk metadata comment (single line directly under a heading).
+		if cur != nil && strings.HasPrefix(trimmed, "<!-- loom:") && strings.HasSuffix(trimmed, "-->") {
+			payload := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "<!-- loom:"), "-->"))
+			var meta struct {
+				ID     string          `json:"id"`
+				Type   string          `json:"type"`
+				Status string          `json:"status"`
+				Fields json.RawMessage `json:"fields"`
+			}
+			if json.Unmarshal([]byte(payload), &meta) == nil {
+				cur.oldID, cur.typ, cur.status, cur.fields = meta.ID, meta.Type, meta.Status, meta.Fields
+			}
+			continue
+		}
+		if cur != nil {
+			bodyLines = append(bodyLines, line)
+		}
+	}
+	flush()
+	return chunks, edges
+}
+
+// resultField pulls a string field out of a sub-op's JSON result (used to chain
+// importMD onto the existing create_document / create_chunk ops).
+func resultField(r tools.Result, field string) string {
+	var m map[string]any
+	_ = json.Unmarshal([]byte(r.Text), &m)
+	return asStr(m[field])
+}
+
+// importMD builds a document from export_md-shaped Markdown (RFC AK §4.5 / RFC
+// AM Phase 3). With no document_id it creates a NEW document (the first heading
+// becomes the root); with a document_id (+ optional parent_id) it imports the
+// parsed subtree under an existing chunk. Chunks get fresh ids; the
+// `<!-- loom-edges -->` graph is recreated by remapping the old ids → new ones
+// (an edge whose endpoint wasn't imported is skipped). Not atomic — it composes
+// the existing create_document / create_chunk / link_chunks ops, so a mid-import
+// failure leaves a partial document the caller can delete and retry.
+func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if strings.TrimSpace(in.Markdown) == "" {
+		return errResult("import_md: missing required field: markdown"), nil
+	}
+	chunks, edges := parseLoomMarkdown(in.Markdown)
+	if len(chunks) == 0 {
+		return errResult("import_md: no headings found — a document needs at least one '# Heading'"), nil
+	}
+	oldToNew := map[string]string{}
+	type frame struct {
+		level int
+		id    string
+	}
+	var stack []frame
+	var docID, rootID string
+	created := 0
+	start := 0
+
+	if in.DocumentID == "" {
+		// New document: the first heading is the root chunk.
+		first := chunks[0]
+		cd, _ := d.createDocument(ctx, key, mscope, docInput{Title: titleOrUntitled(first.title), Path: in.Path})
+		if cd.IsError {
+			return cd, nil
+		}
+		docID = resultField(cd, "document_id")
+		rootID = resultField(cd, "root_chunk_id")
+		if err := d.writeBody(ctx, mscope, key.ScopeID, rootID, first.body, first.fields); err != nil {
+			return errResult("import_md: root body: " + err.Error()), nil
+		}
+		if first.typ != "" || first.status != "" {
+			if err := d.exec(ctx, key, `UPDATE chunks SET type = ?, status = ? WHERE id = ?`, nullIfEmpty(first.typ), nullIfEmpty(first.status), rootID); err != nil {
+				return errResult("import_md: " + err.Error()), nil
+			}
+		}
+		if first.oldID != "" {
+			oldToNew[first.oldID] = rootID
+		}
+		stack = []frame{{level: first.level, id: rootID}}
+		created, start = 1, 1
+	} else {
+		docID = in.DocumentID
+		base := in.ParentID
+		if base == "" {
+			dres, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID)
+			if err != nil {
+				return errResult("import_md: " + err.Error()), nil
+			}
+			if len(dres.Rows) == 0 {
+				return errResult("import_md: no such document: " + docID), nil
+			}
+			base = asStr(dres.Rows[0][0])
+		} else if _, ok, err := d.getChunkRow(ctx, key, base); err != nil {
+			return errResult("import_md: " + err.Error()), nil
+		} else if !ok {
+			return errResult("import_md: no such parent chunk: " + base), nil
+		}
+		rootID = base
+		stack = []frame{{level: 0, id: base}}
+	}
+
+	for _, c := range chunks[start:] {
+		// Pop to the nearest ancestor whose heading level is shallower.
+		for len(stack) > 1 && stack[len(stack)-1].level >= c.level {
+			stack = stack[:len(stack)-1]
+		}
+		parent := stack[len(stack)-1].id
+		cc, _ := d.createChunk(ctx, key, mscope, docInput{
+			DocumentID: docID, ParentID: parent, Title: titleOrUntitled(c.title),
+			Type: c.typ, Status: c.status, Body: c.body, Fields: c.fields,
+		})
+		if cc.IsError {
+			return cc, nil
+		}
+		newID := resultField(cc, "id")
+		if c.oldID != "" {
+			oldToNew[c.oldID] = newID
+		}
+		stack = append(stack, frame{level: c.level, id: newID})
+		created++
+	}
+
+	// Recreate edges by remapping old → new ids; skip any whose endpoints
+	// weren't both imported (e.g. a cross-document edge).
+	for _, e := range edges {
+		nf, ok1 := oldToNew[e.from]
+		nt, ok2 := oldToNew[e.to]
+		if !ok1 || !ok2 {
+			continue
+		}
+		_, _ = d.linkChunks(ctx, key, docInput{FromID: nf, ToID: nt, Kind: e.kind})
+	}
+
+	return jsonResult(map[string]any{"document_id": docID, "root_chunk_id": rootID, "chunks_created": created})
+}
+
+func titleOrUntitled(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "Untitled"
+	}
+	return s
 }
 
 // --- ops: type definitions ---

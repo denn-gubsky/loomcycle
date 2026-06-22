@@ -32,7 +32,7 @@ enabled** (`LOOMCYCLE_SQLMEM_ENABLED=1`); without it the tool refuses.
 
 ## Surface
 
-One tool, `Document`, gated by per-agent `allowed_tools: [Document]`. 14 ops:
+One tool, `Document`, gated by per-agent `allowed_tools: [Document]`. 15 ops:
 
 | group | ops |
 |-------|-----|
@@ -41,7 +41,7 @@ One tool, `Document`, gated by per-agent `allowed_tools: [Document]`. 14 ops:
 | Edges | `link_chunks`, `unlink_chunks` |
 | Query | `query_chunks` |
 | Types | `define_type`, `list_types` |
-| Markdown | `export_md` (render the document to Markdown; `include_metadata:false` for clean human MD, default `true` embeds round-trippable chunk metadata + edges as HTML comments) |
+| Markdown | `export_md` (render to Markdown; `include_metadata:false` for clean human MD, default `true` embeds round-trippable metadata + edges as HTML comments), `import_md` (build a document from export_md-shaped Markdown — omit `document_id` for a new document; pass `document_id`/`parent_id` to import under an existing chunk) |
 
 `scope` is `agent` (this agent, the default) or `user` (this end-user — needs a
 `user_id` on the run). **Tenant scope is deferred** — SQL Memory has
@@ -132,10 +132,22 @@ const open = await client.document({
 - **Tenant scope deferred** — `agent`/`user` only in v1.
 - **Orphaned bodies are best-effort on delete** — see the integrity note above
   (invisible dead K/V; the row side is atomic).
-- **`export_md` + the Web UI Document viewer** shipped in RFC AM Phase 2 (a
-  `paths` tab document node, or `/documents/:id`): chunk sub-tree, Markdown
-  view, MD download, and a single-chunk content editor. **Deterministic
-  `import_md` + the document-management agent** are RFC AM Phase 3.
+- **`import_md` chunk boundaries are heading lines** — a chunk body containing
+  ATX headings (`## …`) re-chunks on import. For loomcycle exports this is
+  faithful; for arbitrary prose use the Document Assistant's semantic chunking.
+
+## The Web UI + the Document Assistant
+
+The Web UI exposes Documents through the **`paths`** tab (open a `document`
+node) and the `/documents/:id` deep link: a chunk sub-tree, a Markdown view, MD
+download, and a single-chunk content editor (body/fields, optimistic revision).
+Structural editing — restructuring, semantic import, linking — is done by the
+**Document Assistant** (the viewer's `assistant` toggle): you type instructions
+and the **`doc-manager`** agent performs the `Document` ops. That agent +
+skills ship as the **[`bundles/document-agent/`](../bundles/document-agent/)**
+bundle; register it (see its README) for the Assistant to work — it degrades to
+a hint if absent. (RFC AM: Phase 1 = Path console, Phase 2 = viewer + `export_md`,
+Phase 3 = `import_md` + the agent.)
 
 ## Where it lives
 

@@ -374,6 +374,15 @@ func TestDocument_Postgres(t *testing.T) {
 	if res.IsError || !strings.Contains(out["markdown"].(string), "## c1") {
 		t.Errorf("pg export_md = %s", res.Text)
 	}
+	// import_md (Markdown round-trip) on pg — exercises createDocument/createChunk
+	// + the `UPDATE chunks SET type, status` and root_chunk_id SELECT rebind.
+	{
+		mdReq, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": out["markdown"]})
+		io, ir := docExec(t, d, ctx, string(mdReq))
+		if ir.IsError || io["document_id"] == "" || io["document_id"] == docID {
+			t.Errorf("pg import_md = %s", ir.Text)
+		}
+	}
 	// update revision (atomic bump + RowsAffected gate on pg).
 	out, res = docExec(t, d, ctx, `{"op":"update_chunk","scope":"user","id":"`+c1+`","revision":1,"status":"published"}`)
 	if res.IsError || int(out["revision"].(float64)) != 2 {
@@ -481,6 +490,57 @@ func TestDocument_ExportMD_HeadingAndOrder(t *testing.T) {
 	iB := strings.Index(md, "## B")
 	if !(iA >= 0 && iA < iA1 && iA1 < iA2 && iA2 < iB) {
 		t.Errorf("sibling/nesting order wrong (A=%d A1=%d A2=%d B=%d):\n%s", iA, iA1, iA2, iB, md)
+	}
+}
+
+// RFC AM Phase 3: import_md is the deterministic inverse of export_md —
+// export → import (new doc) → re-export must be structurally identical, and the
+// graph edge must survive (remapped to the new chunk ids).
+func TestDocument_ImportMD_RoundTrip(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Plan"}`)
+	docID := out["document_id"].(string)
+	root := out["root_chunk_id"].(string)
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"A","type":"section","status":"draft","body":"alpha **body**"}`)
+	a := out["id"].(string)
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+a+`","title":"A1","body":"nested"}`)
+	a1 := out["id"].(string)
+	docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"B","body":""}`)
+	docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+a+`","to_id":"`+a1+`","kind":"references"}`)
+
+	// Metadata-rich export → import into a NEW document.
+	out, res := docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`"}`)
+	if res.IsError {
+		t.Fatalf("export_md: %q", res.Text)
+	}
+	md1 := out["markdown"].(string)
+	reqB, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": md1})
+	out, res = docExec(t, d, ctx, string(reqB))
+	if res.IsError {
+		t.Fatalf("import_md: %q", res.Text)
+	}
+	newDoc := out["document_id"].(string)
+	if newDoc == "" || newDoc == docID {
+		t.Fatalf("import_md (no document_id) must create a NEW document: %s", res.Text)
+	}
+	if int(out["chunks_created"].(float64)) != 4 {
+		t.Errorf("chunks_created = %v, want 4 (root + A + A1 + B): %s", out["chunks_created"], res.Text)
+	}
+
+	// Clean re-export of the new doc must equal a clean export of the original.
+	out, _ = docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`","include_metadata":false}`)
+	md0 := out["markdown"].(string)
+	out, res = docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+newDoc+`","include_metadata":false}`)
+	if res.IsError {
+		t.Fatalf("re-export: %q", res.Text)
+	}
+	if md2 := out["markdown"].(string); md2 != md0 {
+		t.Errorf("round-trip structural mismatch:\n--- original ---\n%s\n--- reimported ---\n%s", md0, md2)
+	}
+	// The graph edge was recreated (remapped) — the metadata-rich re-export has it.
+	out, _ = docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+newDoc+`"}`)
+	if !strings.Contains(out["markdown"].(string), "[references]") {
+		t.Errorf("edge not recreated on import:\n%s", out["markdown"])
 	}
 }
 
