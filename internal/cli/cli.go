@@ -42,7 +42,7 @@ func PrintHelp(w io.Writer, metaToolCount int) {
 	fmt.Fprintln(w, "USAGE")
 	fmt.Fprintln(w, "  loomcycle [--config <yaml>]      start the HTTP+SSE server (default)")
 	fmt.Fprintln(w, "  loomcycle <subcommand> [args]    run a one-shot operator subcommand")
-	fmt.Fprintln(w, "  loomcycle --version              print build identifier")
+	fmt.Fprintln(w, "  loomcycle version | --version    print build identifier (version/commit/built)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "FIRST-RUN (v0.11.1)")
 	fmt.Fprintln(w, "  init [--path <dir>]              write loomcycle.yaml + CONFIGURATION.md")

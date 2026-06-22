@@ -1,12 +1,62 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
+
+// TestVersionSubcommand_DoesNotBootRuntime is the regression guard for the
+// footgun where `loomcycle version` (an unknown subcommand) fell through the
+// dispatch switch and BOOTED the runtime, silently binding the listen port.
+// It builds the binary and asserts: `version`/`-v` print + exit 0; an unknown
+// subcommand exits 2 with a clear error — neither hangs (which booting would).
+func TestVersionSubcommand_DoesNotBootRuntime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the binary; skipped in -short")
+	}
+	bin := filepath.Join(t.TempDir(), "loomcycle-test")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+
+	run := func(arg string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, bin, arg).CombinedOutput()
+		if ctx.Err() != nil {
+			t.Fatalf("`loomcycle %s` did not exit (booted the runtime?):\n%s", arg, out)
+		}
+		return string(out), err
+	}
+
+	for _, arg := range []string{"version", "-v"} {
+		out, err := run(arg)
+		if err != nil {
+			t.Errorf("`loomcycle %s` exit error %v\n%s", arg, err, out)
+		}
+		if !strings.Contains(out, "loomcycle version=") {
+			t.Errorf("`loomcycle %s` output = %q, want a version line", arg, out)
+		}
+	}
+
+	// An unknown subcommand must error (exit 2), not boot.
+	out, err := run("definitely-not-a-subcommand")
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 2 {
+		t.Errorf("unknown subcommand exit = %v, want exit 2\n%s", err, out)
+	}
+	if !strings.Contains(out, "unknown subcommand") {
+		t.Errorf("unknown subcommand output = %q", out)
+	}
+}
 
 func TestApplyAllowedToolsFilter(t *testing.T) {
 	descs := []mcp.ToolDescriptor{
