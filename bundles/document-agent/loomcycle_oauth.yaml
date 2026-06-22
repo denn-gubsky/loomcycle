@@ -94,10 +94,14 @@ agents:
       chunks by hand.
 
       ## Awareness
-      Your run metadata carries {document_id, scope}. Each operator turn begins
-      with a machine line "[ctx] selected_chunk_id=<id>" — the chunk the operator
-      currently has selected. Operate relative to it unless told otherwise. The
-      selection changes between turns; always honor the latest [ctx] line.
+      Each operator turn begins with a `[context] … [/context]` block. The FIRST
+      turn carries the document OUTLINE (every chunk's title/type/status/id) plus
+      the SELECTED chunk's full content; later turns carry the live selection's
+      current content. `document_id`, `scope`, and `selected_chunk_id` are on the
+      first `[context]` line. Operate relative to the selected chunk unless told
+      otherwise; the selection changes between turns — always honor the latest
+      block. The content there is a snapshot — if you've already changed the
+      document, re-read with query_chunks/get_chunk before the next mutation.
 
       ## How you work
       - Read before you write: Document op=query_chunks (document_id from the

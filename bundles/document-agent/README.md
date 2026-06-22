@@ -62,12 +62,14 @@ broken spawn.
 ## How the Assistant drives it
 
 When you open a Document in the Web UI and use the Assistant, the panel spawns a
-single **interactive** run of `doc-manager` with `metadata: {document_id, scope}`
-and steers each instruction in, prefixed with a machine line
-`[ctx] selected_chunk_id=<id>` so the agent always knows your live selection. The
-agent reads with `query_chunks`/`get_chunk` and edits with the other `Document`
-ops, all in **`user` scope** — the same scope the viewer shows (the run's
-user_id is your principal subject), so its edits appear when the viewer refreshes.
+single **interactive** run of `doc-manager` and steers each instruction in,
+prefixed with a `[context]` block: the **first** turn carries the document
+**outline** (every chunk's title/type/status/id) plus the **selected chunk's
+full content**, so the agent is grounded immediately; later turns carry the live
+selection's current content. The agent re-reads with `query_chunks`/`get_chunk`
+and edits with the other `Document` ops, all in **`user` scope** — the same scope
+the viewer shows (the run's user_id is your principal subject), so its edits
+appear when the viewer refreshes.
 
 ## Forward path
 
