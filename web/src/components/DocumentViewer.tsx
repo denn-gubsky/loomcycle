@@ -13,6 +13,7 @@ import DocumentChunkTree, {
   type ChunkNode,
 } from "./DocumentChunkTree";
 import ChunkEditorModal from "./ChunkEditorModal";
+import DocumentAssistantPanel from "./DocumentAssistantPanel";
 import Markdown from "./Markdown";
 
 // DocumentViewer is the RFC AM Phase 2 read-mostly surface for one chunked-
@@ -43,6 +44,11 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+
+  // Stable refresh for the assistant panel (avoids re-firing its turn-boundary
+  // effect every render).
+  const refresh = useCallback(() => setReload((n) => n + 1), []);
 
   const tree = useMemo(() => buildChunkTree(chunks), [chunks]);
   const rootTitle = useMemo(() => {
@@ -183,7 +189,15 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
           <button type="button" onClick={() => void download()} title="Download as Markdown (.md)">
             ↓ .md
           </button>
-          <button type="button" onClick={() => setReload((n) => n + 1)} title="Reload">
+          <button
+            type="button"
+            className={assistantOpen ? "active" : ""}
+            onClick={() => setAssistantOpen((o) => !o)}
+            title="Document Assistant — instruct an agent to restructure/import/link chunks"
+          >
+            assistant
+          </button>
+          <button type="button" onClick={refresh} title="Reload">
             ↻
           </button>
         </div>
@@ -248,12 +262,20 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
           </div>
         </div>
       )}
+      {assistantOpen && (
+        <DocumentAssistantPanel
+          documentId={documentId}
+          scope={scope}
+          selectedChunkId={selectedId}
+          onChanged={refresh}
+        />
+      )}
       {editing && (
         <ChunkEditorModal
           chunk={editing}
           scope={scope}
           onClose={() => setEditing(null)}
-          onSaved={() => setReload((n) => n + 1)}
+          onSaved={refresh}
         />
       )}
     </div>

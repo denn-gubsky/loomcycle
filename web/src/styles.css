@@ -5324,3 +5324,57 @@ button.primary:disabled {
 .md a {
   color: var(--accent);
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * RFC AM Phase 3 — Document Assistant panel (a steered doc-manager run).
+ * ─────────────────────────────────────────────────────────────────────────── */
+.doc-toolbar-actions button.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.doc-assistant {
+  flex: 0 0 auto;
+  max-height: 45%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+.doc-assistant-hint {
+  padding: 12px 14px;
+  font-size: var(--lc-text-sm, 13px);
+  color: var(--fg-soft);
+}
+.doc-assistant-start {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  align-items: flex-end;
+}
+.doc-assistant-input {
+  flex: 1;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.doc-assistant-start button.primary {
+  background: var(--accent);
+  color: white;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.doc-assistant-start button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
