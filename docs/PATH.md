@@ -32,7 +32,7 @@ One tool, `Path`, gated by per-agent `allowed_tools: [Path]`. Six ops:
 | `resolve` | path → the dirent + its `resource_ref` (the backing id). |
 | `ls`      | list a directory's entries (`recursive:true` walks descendants; `kind_filter` narrows by kind). |
 | `stat`    | one entry's metadata (name, kind, resource_ref). |
-| `mkdir`   | **no-op in v1** — directories are implicit (S3-style); kept for forward-compat + shell ergonomics. |
+| `mkdir`   | materialize an empty `directory` dirent so an empty branch persists and lists. Idempotent (ok if the directory already exists, explicitly or implied by descendants); refuses to clobber a non-directory. Intermediate directories under a created resource stay implicit (S3-style) — `mkdir` is only needed for an *empty* folder. |
 | `mv`      | re-parent / rename a dirent (a move into the path's own subtree is refused — it would orphan the tree). |
 | `rm`      | remove a dirent (`recursive:true` is **required** to remove a path that has descendants). |
 
@@ -45,8 +45,8 @@ is the shared `""`.
 segments match `[a-zA-Z0-9._-]+`; **no `..`** (rejected, not resolved — this is
 what makes the tree tenant-safe); at most 64 segments / 1024 chars.
 
-**Resource kinds** a dirent can point at: `directory` (implicit), `document`,
-`volume_mount`, `memory_entry`.
+**Resource kinds** a dirent can point at: `directory` (implicit, or materialized
+by `mkdir`), `document`, `volume_mount`, `memory_entry`.
 
 ## How resources get a name
 
