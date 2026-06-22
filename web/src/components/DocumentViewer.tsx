@@ -267,6 +267,8 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
           documentId={documentId}
           scope={scope}
           selectedChunkId={selectedId}
+          chunks={chunks}
+          selectedChunk={selectedDetail}
           onChanged={refresh}
         />
       )}

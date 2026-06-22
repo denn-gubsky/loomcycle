@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { type DocScope, type LibraryEntry, listLibraryAgents } from "../api";
+import { type ChunkDetail, type ChunkRow, type DocScope, type LibraryEntry, listLibraryAgents } from "../api";
 import { usePrincipal } from "./Layout";
 import { useRunStream } from "../hooks/useRunStream";
+import { buildChunkTree, type ChunkNode } from "./DocumentChunkTree";
 import LiveRunPane from "./LiveRunPane";
 
 // DocumentAssistantPanel is the RFC AM Phase 3 Document Assistant: instead of a
@@ -10,26 +11,68 @@ import LiveRunPane from "./LiveRunPane";
 // delete). It reuses useRunStream + LiveRunPane wholesale.
 //
 // Lifecycle: lazy — the interactive run is spawned on the FIRST instruction
-// (token-responsible: opening a document doesn't start a run). Each instruction
-// is prefixed with a machine line "[ctx] selected_chunk_id=<id>" so the agent
-// always knows the live selection; the first one starts the run (metadata
-// {document_id, scope}), the rest steer it. The run's user_id is the principal's
-// subject, so the agent's Document tool (scope=user) operates on the same
-// documents the viewer shows. onChanged fires at each turn boundary to refresh.
+// (token-responsible: opening a document doesn't start a run). The first
+// instruction is prefixed with a `[context]` block carrying the document
+// OUTLINE (every chunk's title/type/status/id) + the SELECTED chunk's full
+// content (title/fields/body), so the agent is grounded from turn one instead
+// of having to blind-probe. Each steer keeps a lighter preamble with the live
+// selection's current content. The run's user_id is the principal's subject, so
+// the agent's Document tool (scope=user) operates on the same documents the
+// viewer shows. onChanged fires at each turn boundary to refresh.
 
 const ASSISTANT_AGENT = "doc-manager";
+// Cap the injected outline so a huge document can't blow up the first prompt.
+const MAX_OUTLINE_CHUNKS = 200;
 
 export interface DocumentAssistantPanelProps {
   documentId: string;
   scope: DocScope;
   selectedChunkId?: string;
+  // The viewer's already-loaded structure + selected-chunk content, injected as
+  // start context so the agent reads the document + selected chunk on turn one.
+  chunks: ChunkRow[];
+  selectedChunk: ChunkDetail | null;
   onChanged: () => void;
+}
+
+// outlineText renders the chunk hierarchy as an indented, body-less list
+// (title + id + type/status), marking the selected chunk. Bounded by
+// MAX_OUTLINE_CHUNKS so a large document degrades to "… use query_chunks".
+function outlineText(chunks: ChunkRow[], selectedId?: string): string {
+  const roots = buildChunkTree(chunks);
+  const lines: string[] = [];
+  let truncated = false;
+  const walk = (n: ChunkNode, depth: number) => {
+    if (lines.length >= MAX_OUTLINE_CHUNKS) {
+      truncated = true;
+      return;
+    }
+    const r = n.row;
+    const meta = [r.type, r.status].filter(Boolean).join("/");
+    const sel = r.id === selectedId ? "  ← selected" : "";
+    lines.push(`${"  ".repeat(depth)}- ${r.title || "(untitled)"} [${r.id}${meta ? " " + meta : ""}]${sel}`);
+    n.children.forEach((c) => walk(c, depth + 1));
+  };
+  roots.forEach((n) => walk(n, 0));
+  if (truncated) lines.push(`  … (${chunks.length} chunks total — use Document op=query_chunks for the rest)`);
+  return lines.join("\n");
+}
+
+// selectedBlock renders one chunk's full content for the agent to act on.
+function selectedBlock(c: ChunkDetail): string {
+  const meta = [c.type && `type=${c.type}`, c.status && `status=${c.status}`, `rev=${c.revision}`]
+    .filter(Boolean)
+    .join(" ");
+  const fields = c.fields ? `\nfields: ${JSON.stringify(c.fields)}` : "";
+  return `selected chunk [${c.id}] ${meta}\ntitle: ${c.title}${fields}\nbody:\n${c.body || "(empty)"}`;
 }
 
 export default function DocumentAssistantPanel({
   documentId,
   scope,
   selectedChunkId,
+  chunks,
+  selectedChunk,
   onChanged,
 }: DocumentAssistantPanelProps) {
   const principal = usePrincipal();
@@ -38,11 +81,16 @@ export default function DocumentAssistantPanel({
   const [started, setStarted] = useState(false);
   const [draft, setDraft] = useState("");
 
-  // Read the live selection through a ref so the send closures aren't stale.
+  // Read the live selection + loaded content through refs so the send closures
+  // always reflect the current viewer state (selection changes between turns).
   const chunkRef = useRef<string | undefined>(selectedChunkId);
+  const chunksRef = useRef<ChunkRow[]>(chunks);
+  const selectedRef = useRef<ChunkDetail | null>(selectedChunk);
   useEffect(() => {
     chunkRef.current = selectedChunkId;
-  }, [selectedChunkId]);
+    chunksRef.current = chunks;
+    selectedRef.current = selectedChunk;
+  }, [selectedChunkId, chunks, selectedChunk]);
 
   // Graceful degrade: confirm the assistant agent is registered.
   useEffect(() => {
@@ -61,10 +109,22 @@ export default function DocumentAssistantPanel({
     };
   }, []);
 
-  const withCtx = useCallback((text: string) => {
+  // contextPreamble grounds the agent in the live document state. On the FIRST
+  // turn it includes the full outline + selected-chunk content; later turns keep
+  // a lighter block (the selected chunk's current content) — the agent already
+  // has the outline and re-reads via query_chunks as it works.
+  const contextPreamble = useCallback((first: boolean) => {
     const id = chunkRef.current;
-    return id ? `[ctx] selected_chunk_id=${id}\n\n${text}` : text;
-  }, []);
+    const lines = [`[context] document_id=${documentId} scope=${scope}${id ? ` selected_chunk_id=${id}` : ""}`];
+    if (first && chunksRef.current.length > 0) {
+      lines.push("", "document outline (titles only — get_chunk for any body):", outlineText(chunksRef.current, id));
+    }
+    if (selectedRef.current && selectedRef.current.id === id) {
+      lines.push("", selectedBlock(selectedRef.current));
+    }
+    lines.push("[/context]");
+    return lines.join("\n");
+  }, [documentId, scope]);
 
   const send = useCallback(
     (text: string) => {
@@ -73,17 +133,17 @@ export default function DocumentAssistantPanel({
       if (!started) {
         run.start({
           agent: ASSISTANT_AGENT,
-          prompt: withCtx(t),
+          prompt: `${contextPreamble(true)}\n\n${t}`,
           user_id: principal?.subject || undefined,
           interactive: true,
-          metadata: { document_id: documentId, scope },
+          metadata: { document_id: documentId, scope, selected_chunk_id: chunkRef.current || "" },
         });
         setStarted(true);
       } else {
-        run.send(withCtx(t));
+        run.send(`${contextPreamble(false)}\n\n${t}`);
       }
     },
-    [started, run, withCtx, principal, documentId, scope],
+    [started, run, contextPreamble, principal, documentId, scope],
   );
 
   // Refresh the viewer at each turn boundary: when the agent parks awaiting
