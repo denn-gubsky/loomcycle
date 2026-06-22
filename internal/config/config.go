@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
@@ -189,6 +190,20 @@ type Config struct {
 	// vector ops on the Memory tool refuse with
 	// embedder_not_configured. K/V Memory is unaffected.
 	Memory MemoryConfig `yaml:"memory"`
+
+	// Principals declares static (tenant, subject, scopes) logins, each bound
+	// to a bearer secret held in an env var (RFC AO). The map key is an
+	// informational handle. Lets an operator declare a stable service identity
+	// in config and hand the same token to the Web UI and an MCP thin client so
+	// both authenticate as the same (tenant, subject). The secret never appears
+	// in yaml — only `token_env` (the env-var name) does.
+	Principals map[string]PrincipalDef `yaml:"principals,omitempty"`
+
+	// ResolvedPrincipals is the boot-resolved token→Principal table built from
+	// Principals during validate (each token_env read from the environment).
+	// The auth-layer bearer resolver matches a presented token against it.
+	// Not in YAML; carries the resolved secrets, so it is never serialized.
+	ResolvedPrincipals []auth.DeclaredPrincipal `yaml:"-"`
 
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
@@ -4526,6 +4541,12 @@ func validate(c *Config) error {
 	// Paths are resolved to absolute IN PLACE so the run-start binding
 	// resolution gets a stable absolute Root regardless of process cwd.
 	if err := validateVolumes(c); err != nil {
+		return err
+	}
+	// RFC AO: validate the principals: block + build the resolved token→Principal
+	// table (reads each token_env from the environment). A bad scope/env-name
+	// fails load; an empty token_env makes that principal inert + warns.
+	if err := resolvePrincipals(c); err != nil {
 		return err
 	}
 	for name, agent := range c.Agents {
