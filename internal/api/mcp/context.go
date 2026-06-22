@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -19,8 +20,8 @@ import (
 // This is intentionally distinct from sub-agent runs spawned via
 // `spawn_run` — those carry the requested agent's real policies because
 // they go through RunOnce, which builds ctx from cfg.Agents. The
-// operatorCtx path applies ONLY to direct builtin-tool dispatch from
-// the MCP wire.
+// operatorCtx / mcpPrincipalCtx path applies ONLY to direct builtin-tool
+// dispatch from the MCP wire.
 const (
 	// operatorAgentName is the synthetic agent name attached to ctx
 	// for MCP-direct builtin invocations. Memory ops with scope=agent
@@ -30,144 +31,109 @@ const (
 	operatorAgentName = "mcp-operator"
 
 	// operatorUserID + operatorAgentID populate the synthetic
-	// RunIdentityValue. memory scope=user resolves to this; the
-	// AgentDefPolicy's SelfName matches operatorAgentName.
+	// RunIdentityValue for the no-principal (stdio / open-mode) path.
+	// AUTHENTICATED MCP calls use principal.Subject as the UserID
+	// instead — see mcpPrincipalCtx (RFC AG §3.1a).
 	operatorUserID  = "mcp-operator"
 	operatorAgentID = "a_mcp-operator"
 )
 
-// operatorCtx enriches the supplied ctx with the policy values required
-// for MCP-direct builtin-tool invocations. Without these, every call to
-// Memory / Channel / AgentDef / Evaluation / Context fails with
-// default-deny refusals because the underlying tools check per-agent
-// policy from ctx and find zero values.
+// mcpPrincipalCtx enriches ctx for an MCP-direct builtin invocation, keyed off
+// the AUTHENTICATED principal (RFC AG). It is the per-principal replacement for
+// operatorCtx in wrapBuiltin:
 //
-// Use this for the 6 builtin-wrapper handlers ONLY. Do NOT use it for
-// run-lifecycle handlers (spawn_run / cancel_run / etc.) — those go
-// through RunOnce which builds the right ctx for each agent from
-// cfg.Agents.
+//   - No principal (stdio / open mode): process-local operator, nothing to
+//     align with → operatorCtx, byte-identical to the historical behavior.
+//   - Authenticated principal (legacy / minted / config-declared): identity is
+//     the principal's OWN (UserID = principal.Subject, TenantID =
+//     principal.TenantID), so USER-SCOPED tools (document / memory / path) key
+//     on the same id the off-run HTTP path (substrateAdminUserCtx) uses
+//     (§3.1a — the fix for the RFC AM Document-Assistant mismatch, where an
+//     MCP-created document landed under the synthetic "mcp-operator" user and
+//     was invisible in the Web UI). The agent-scope scope_id stays the
+//     synthetic operatorAgentName, so agent-scoped Memory/defs keep their
+//     determinism. The operator plane (mint / cross-tenant) is admin-only.
+//
+// Today /v1/_mcp is still gated at substrate:admin, so only admin/legacy
+// principals reach here; the non-admin branch is the floor for when the route
+// opens to tenant tokens (RFC AG Phase 2).
+func mcpPrincipalCtx(ctx context.Context) context.Context {
+	p, ok := auth.PrincipalFromContext(ctx)
+	// No principal (stdio / open mode), or a zero-Subject principal we can't
+	// key on: fall back to the synthetic operator identity. Mirrors the HTTP
+	// off-run path's substrateAdminUserCtx guard so the two stay in lockstep.
+	if !ok || p.Subject == "" {
+		return operatorCtx(ctx)
+	}
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
+		UserID:   p.Subject,
+		AgentID:  operatorAgentID,
+		TenantID: p.TenantID,
+	})
+	ctx = tools.WithAgentName(ctx, operatorAgentName)
+	return grantOperatorPolicies(ctx, operatorAgentName, auth.HasScope(p.Scopes, auth.ScopeAdmin))
+}
+
+// operatorCtx is the no-principal (stdio / open-mode) path: a full-operator
+// context with the synthetic identity. Authenticated MCP calls go through
+// mcpPrincipalCtx instead. Without these policies every call to Memory /
+// Channel / AgentDef / Evaluation / Context fails default-deny (the underlying
+// tools read per-agent policy from ctx and find zero values).
 func operatorCtx(ctx context.Context) context.Context {
-	// Identity. Synthetic but consistent — repeated MCP calls share
-	// the same scope_id for scope=agent memory and the same UserID
-	// for scope=user. Operators can audit by querying memory rows
-	// where scope_id = "mcp-operator".
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
 		UserID:  operatorUserID,
 		AgentID: operatorAgentID,
 	})
 	ctx = tools.WithAgentName(ctx, operatorAgentName)
+	return grantOperatorPolicies(ctx, operatorAgentName, true)
+}
 
-	// AgentTools wildcard ceiling (F11). Without it, `agentdef`/`skilldef`
-	// create with a non-empty allowed_tools overlay refuse with "caller's
-	// effective allowed_tools not on ctx (runtime misconfiguration)" — the
-	// create-time subset check treats a nil ceiling as "unknown → refuse". The
-	// MCP server is operator-trust (single-operator by construction), so attach
-	// the same wildcard the HTTP /v1/_agentdef admin path uses (see
-	// substrateAdminCtx), making MCP agentdef-create symmetric with HTTP/gRPC.
-	// Per-RUN contexts still set WithAgentTools to the agent's actual list, so
-	// the in-loop AgentDef capability-escalation guard is unchanged.
+// grantOperatorPolicies attaches the builtin-tool capability policies for an
+// MCP-direct caller (identity must already be stamped). Def-family scopes are
+// "any" for BOTH admin and tenant — tenant confinement is the TenantID stamp +
+// the lookup's tenant filter, not a def-scope narrowing (RFC AG §3.1). The
+// OPERATOR PLANE (OperatorTokenDef mint, cross-agent Evaluation, cross-tenant
+// history) is granted ONLY when isAdmin; a non-admin (tenant) principal leaves
+// those zero (default-deny) — so even if such a tool were reached it refuses.
+func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) context.Context {
+	// AgentTools wildcard ceiling (F11): without it, agentdef/skilldef create
+	// with a non-empty allowed_tools overlay refuses ("caller's effective
+	// allowed_tools not on ctx"). Operator-trust → the same wildcard the HTTP
+	// /v1/_agentdef admin path uses (substrateAdminCtx).
 	ctx = tools.WithAgentTools(ctx, []string{"*"})
 
-	// Memory: full scope access. QuotaBytes=0 falls back to the
-	// global default (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES) — operators
-	// who want a tighter cap on MCP-direct writes can set the env.
+	// Memory: full scope access (QuotaBytes=0 → global default cap).
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user", "global"},
 	})
-
-	// Channel: open ACL. "*" wildcard matches every channel name.
-	// Channels map is left nil — the tool falls back to defaults
-	// (TTL=0, max_messages=0=unbounded, scope=agent) for channels
-	// not in operator yaml. Operators wanting fine-grained MCP
-	// channel control should declare the channels in `channels:`
-	// (which populates ChannelPolicy.Channels per-run, but for
-	// MCP-direct we synthesise — see channel.go for the resolve).
+	// Channel: open ACL ("*" matches every channel name).
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
 		Publish:   []string{"*"},
 		Subscribe: []string{"*"},
 	})
 
-	// AgentDef: "any" scope — operators may mutate any def. SelfName
-	// matches the synthetic agent name so the (rarely used) "self"
-	// scope check still resolves correctly if an operator later
-	// narrows the policy in code.
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: operatorAgentName,
-	})
+	// Def families: "any" name within the stamped tenant (same for admin +
+	// tenant; the tenant filter at the lookup confines a tenant principal).
+	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
+	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
+	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
+	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
+	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
+	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
+	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
 
-	// SkillDef (v0.8.22): "any" scope, same operator-trust grant as
-	// AgentDef. Skills have no agent identity, so no SelfName field.
-	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
-		Scopes: []string{"any"},
-	})
-
-	// ScheduleDef (v1.x RFC E): "any" scope so the MCP `scheduledef`
-	// meta-tool's calls reach the in-process tool instead of being
-	// default-denied at the scope gate. SelfName matches the agent
-	// name we already stamped above so `self` checks work too.
-	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: operatorAgentName,
-	})
-
-	// A2AServerCardDef + A2AAgentDef (v1.x RFC G): "any" scope so the
-	// MCP `a2aservercarddef` / `a2aagentdef` meta-tools reach the
-	// in-process tools instead of being default-denied at the scope gate.
-	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: operatorAgentName,
-	})
-	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: operatorAgentName,
-	})
-
-	// WebhookDef (v1.x RFC H): "any" scope so the MCP `webhookdef`
-	// meta-tool reaches the in-process tool instead of being
-	// default-denied at the scope gate. (RFC H WH-3 / mirrors A2AAgentDef.)
-	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: operatorAgentName,
-	})
-
-	// MemoryBackendDef (RFC I MR-3a): "any" scope so the MCP
-	// `memorybackenddef` meta-tool reaches the in-process tool instead
-	// of being default-denied at the scope gate. (Mirrors WebhookDef.)
-	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: operatorAgentName,
-	})
-
-	// OperatorTokenDef: the MCP server is single-operator by
-	// construction (stdio = the operator running it), so grant admin
-	// (RFC L).
-	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
-
-	// VolumeDef (RFC AH): "any" scope so the MCP `volumedef` meta-tool
-	// reaches the in-process tool instead of being default-denied at the
-	// scope gate (gates create/delete/purge). The MCP RunIdentity carries no
-	// TenantID, so the tool operates in the shared "" tenant — correct for the
-	// single-operator MCP stdio path, same as every sibling Def here.
-	// (Mirrors MemoryBackendDef.)
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{
-		Scopes: []string{"any"},
-	})
-
-	// Evaluation: all 4 valid scope values. submit_any + read_any
-	// are the load-bearing ones; submit_self + submit_descendants
-	// are included for completeness in case an operator wants the
-	// "self" path explicitly.
-	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
-		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
-	})
-
-	// Context.history: "any" — read every agent's transcript. This
-	// is the operator-trust grant the policy comment describes as
-	// "admin/debug only" — exactly the MCP operator's role.
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{
-		Scopes: []string{"any"},
-	})
-
+	if isAdmin {
+		// Operator plane.
+		ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
+			Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
+		})
+		ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
+		ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
+	} else {
+		// Tenant principal: own-only evaluation; cross-tenant history + the
+		// mint plane stay default-deny (zero).
+		ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: []string{"submit_self"}})
+	}
 	return ctx
 }
