@@ -844,6 +844,28 @@ Routes enforce a scope from a closed catalog; an under-scoped token gets `403` +
 
 On the **loomcycle-as-MCP-server transport** (`/v1/_mcp`, RFC AG) a `substrate:tenant` bearer may now OPEN a session — but the route scope decides only that. Inside the session a per-tool gate still withholds the admin-only meta-tools (token minting, runtime admin, snapshot capture/restore, cross-scope channel listing): they are hidden from the tenant's `tools/list` and refused on `tools/call`. The tools a tenant *can* call (def authoring, run lifecycle, memory/channel/path/document, hooks) are tenant-confined exactly like their HTTP twins. `substrate:admin` sees + may call the full meta-tool set. The thin client (`loomcycle mcp --upstream`) forwards the caller's bearer verbatim, so a tenant bearer there drives a tenant-confined session — see `docs/MCP_SERVER.md`.
 
+### Declared principals — static `(tenant, user)` logins (RFC AO)
+
+Beyond the legacy `LOOMCYCLE_AUTH_TOKEN` (one identity, subject `default`) and runtime-minted `OperatorTokenDef` tokens, you can **declare** stable service identities in the YAML:
+
+```yaml
+principals:
+  marketing:                                   # informational handle (the map key)
+    tenant: acme                               # authoritative tenant ("" = the shared/operator tenant)
+    subject: marketing                         # authoritative user id (= scope_id for user-scoped tools)
+    scopes: [runs:create, runs:read, substrate:tenant]
+    token_env: LOOMCYCLE_TOKEN_MARKETING       # env var holding the SECRET (in .env.local)
+  ops-admin:
+    subject: ops
+    scopes: [substrate:admin]                  # admin is EXPLICIT — declared principals aren't admin by default
+    token_env: LOOMCYCLE_TOKEN_OPS
+```
+
+- **The yaml carries only `token_env` (a name), never the secret.** The bearer value lives in `.env.local` (e.g. `LOOMCYCLE_TOKEN_MARKETING=lct_…`). `token_env` must be `LOOMCYCLE_*`-prefixed (or an allowlisted third-party name) and may **not** name one of loomcycle's own infra secrets (the DSN / pepper / `LOOMCYCLE_AUTH_TOKEN` / upstream MCP token).
+- **`tenant` / `subject` / `scopes`** become the resolved `Principal` — authoritative, server-side, never from the wire. `scopes` is validated against the closed catalog above; an empty/missing `scopes` authenticates but is gated out of everything.
+- **Resolution order:** minted `OperatorTokenDef` → **declared principal** → legacy token. A token value shared by two declared principals is a config-load error; an empty `token_env` at boot makes that principal **inert** (a startup warning, not an open door).
+- **The payoff — alignment by construction.** Use one declared token for **both** the Web UI login (`/ui/login`) and an MCP thin client (`LOOMCYCLE_MCP_UPSTREAM_TOKEN`); both resolve to the same `(tenant, subject)`. Combined with the per-principal `/v1/_mcp` transport (RFC AG), an MCP agent's user-scoped Documents/Memory land under the same user the UI reads — no synthetic-operator mismatch.
+
 **Trigger-spawned runs choose their tenant in the def (RFC N).** An interactive run inherits its tenant from the caller's token, but a scheduler- or webhook-spawned run has no inbound bearer — so the run-execution tenant is declared in the def via `tenant_id:` on a `scheduled_runs:` entry or a `webhooks:` entry. The spawned run then resolves that tenant's agents/skills/MCP and isolates its memory/runs. It is operator-authored def-content (`""` = shared/default). **Security: for webhooks the tenant comes from the static def ONLY — never from the inbound `payload_mapping`** (the attacker-influenceable body must not be able to select another tenant). See `Context.help scheduled-runs` / `Context.help input-webhooks`.
 
 **The webhook def itself is tenant-isolated too (RFC N completion).** Beyond the run-execution `tenant_id` above, every substrate Def's *active pointer* is keyed on `(tenant_id, name)` — a webhook authored by a tenant principal is owned by that tenant and addressed on its own inbound route: `POST /v1/_webhooks/{tenant}/{name}`. The bare-root `POST /v1/_webhooks/{name}` resolves under the shared `""` tenant, so an existing single-tenant deployment (everything `tenant_id=""`) keeps using the unprefixed URL unchanged. A multi-tenant downstream that authors webhooks under a non-empty tenant **must register its delivery URL with the `/{tenant}/` prefix** for inbound deliveries to resolve. (The admin dry-run `POST /v1/_webhooks/{name}/test` resolves under the bearer's own principal tenant.)

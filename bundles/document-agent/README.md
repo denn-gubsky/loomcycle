@@ -71,6 +71,32 @@ and edits with the other `Document` ops, all in **`user` scope** — the same sc
 the viewer shows (the run's user_id is your principal subject), so its edits
 appear when the viewer refreshes.
 
+## Driving documents from an EXTERNAL MCP agent (RFC AG + AO)
+
+The in-process Web UI Assistant above already aligns — the run's `user_id` is your
+principal subject, so its edits show in the viewer. If instead you drive the same
+documents from a **separate agent over an MCP thin client** (`loomcycle mcp
+--upstream`, e.g. a marketing agent in another repo), make that client and the Web
+UI authenticate as the **same** identity, or the agent's user-scoped Documents land
+under a different user and are invisible in the UI.
+
+Declare one principal and use its token for both (see
+`docs/CONFIGURATION.md` "Declared principals"):
+
+```yaml
+# loomcycle.yaml
+principals:
+  marketing: { tenant: acme, subject: marketing, scopes: [runs:create, runs:read, substrate:tenant], token_env: LOOMCYCLE_TOKEN_MARKETING }
+```
+```sh
+# .env.local:  LOOMCYCLE_TOKEN_MARKETING=lct_…
+# Web UI:      /ui/login with that token
+# MCP client:  LOOMCYCLE_MCP_UPSTREAM_TOKEN=$LOOMCYCLE_TOKEN_MARKETING  → loomcycle mcp --upstream <url>
+```
+
+Both resolve to `(acme, marketing)`; the external agent's `Document`/`Memory` writes
+(user scope) and the UI's Document tab read the same per-scope store.
+
 ## Forward path
 
 The intent is for `doc-manager` to eventually be a **built-in-by-default** agent
