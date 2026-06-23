@@ -23,9 +23,16 @@ import (
 
 // Config is the top-level YAML structure plus env-derived fields.
 type Config struct {
-	Defaults    Defaults             `yaml:"defaults"`
-	Models      map[string]ModelRef  `yaml:"models"`
-	Agents      map[string]AgentDef  `yaml:"agents"`
+	Defaults Defaults            `yaml:"defaults"`
+	Models   map[string]ModelRef `yaml:"models"`
+	Agents   map[string]AgentDef `yaml:"agents"`
+	// Skills defines skills INLINE, at the same level as `agents:` — a
+	// name→SkillSpec map whose bodies an agent's `skills: [name]` field
+	// references, with no LOOMCYCLE_SKILLS_ROOT directory of SKILL.md files
+	// required. Inline skills merge by key across config layers (RFC AN)
+	// like `agents`/`models`, and OVERLAY the root directory on a name
+	// collision (resolveSkills); the root stays supported as a fallback.
+	Skills      map[string]SkillSpec `yaml:"skills,omitempty"`
 	MCPServers  map[string]MCPServer `yaml:"mcp_servers"`
 	Concurrency Concurrency          `yaml:"concurrency"`
 	Cache       CacheConfig          `yaml:"cache"`
@@ -4056,17 +4063,33 @@ func resolveSystemPromptFiles(cfg *Config, configPath string) error {
 	return nil
 }
 
+// SkillSpec is an INLINE skill definition — the value type of the top-level
+// `skills:` map. It mirrors a SKILL.md loaded from LOOMCYCLE_SKILLS_ROOT but is
+// defined in YAML: the map key is the skill name an agent's `skills: [name]`
+// references; Body is the markdown bundled onto the agent's system_prompt at
+// config-load; AllowedTools is the skill's tool requirement, which resolveSkills
+// enforces is a SUBSET of the bundling agent's allowed_tools (a skill may never
+// widen the agent's tool set). Uses the underscore `allowed_tools` key to match
+// the rest of the loomcycle YAML (the SKILL.md frontmatter uses hyphenated
+// `allowed-tools`).
+type SkillSpec struct {
+	Description  string   `yaml:"description"`
+	AllowedTools []string `yaml:"allowed_tools"`
+	Body         string   `yaml:"body"`
+}
+
 // resolveSkills bundles skill bodies into agent system prompts and
 // validates each skill's allowed-tools is a subset of the bundling
 // agent's allowed_tools. Static bundling — see Approach A in
 // doc-internal/skills-design.md.
 //
 // Errors:
-//   - SkillsRoot unset but an agent lists `skills:` (silent drop would
-//     produce agents whose prompts reference skills the runtime never
-//     loaded; loud failure forces the operator to fix the config)
-//   - skills root unreadable / not a directory
-//   - agent references an unknown skill name
+//   - an agent references a skill defined in NEITHER the top-level `skills:`
+//     map NOR LOOMCYCLE_SKILLS_ROOT (silent drop would produce agents whose
+//     prompts reference skills the runtime never loaded; loud failure forces
+//     the operator to fix the config). An unset/empty skills root is NOT an
+//     error on its own — inline `skills:` can satisfy an agent entirely.
+//   - skills root set but unreadable / not a directory
 //   - skill demands a tool the agent doesn't grant (security invariant)
 //
 // SECURITY: the subset check uses internal/tools/policy.matches so
@@ -4078,21 +4101,23 @@ func resolveSystemPromptFiles(cfg *Config, configPath string) error {
 //     (skill demands broader access than agent grants)
 //   - skill `[Edit]`, agent `[Read]` → ERROR (skill widens)
 func resolveSkills(cfg *Config) error {
-	// Fast-fail when skills root is unset but agents list skills. We
-	// could no-op silently, but that produces agents whose prompts
-	// reference skills the runtime never bundled — exactly the failure
-	// mode this whole feature was added to fix.
-	if cfg.Env.SkillsRoot == "" {
-		for name, def := range cfg.Agents {
-			if len(def.Skills) > 0 {
-				return fmt.Errorf("agent %q: lists skills %v but LOOMCYCLE_SKILLS_ROOT is not set", name, def.Skills)
-			}
-		}
-		return nil
-	}
+	// Build the skill registry from two sources: the LOOMCYCLE_SKILLS_ROOT
+	// directory (file-backed SKILL.md; an empty root yields an empty set, no
+	// error) and the top-level `skills:` map (inline, merged across config
+	// layers by key like `agents:`). Inline definitions OVERLAY the root on a
+	// name collision — config is authoritative. An agent's skills may thus be
+	// satisfied entirely from inline defs with no skills root set.
 	set, err := skills.LoadSet(cfg.Env.SkillsRoot)
 	if err != nil {
 		return fmt.Errorf("load skills: %w", err)
+	}
+	for skillName, spec := range cfg.Skills {
+		set.Add(&skills.Skill{
+			Name:         skillName,
+			Description:  spec.Description,
+			AllowedTools: spec.AllowedTools,
+			Body:         spec.Body,
+		})
 	}
 	for name, def := range cfg.Agents {
 		if len(def.Skills) == 0 {
@@ -4110,7 +4135,7 @@ func resolveSkills(cfg *Config) error {
 		for _, skillName := range def.Skills {
 			sk, ok := set.Get(skillName)
 			if !ok {
-				return fmt.Errorf("agent %q: unknown skill %q (skills root: %s)", name, skillName, cfg.Env.SkillsRoot)
+				return fmt.Errorf("agent %q: unknown skill %q — define it under the top-level `skills:` map or as a SKILL.md under LOOMCYCLE_SKILLS_ROOT (%q)", name, skillName, cfg.Env.SkillsRoot)
 			}
 			// SECURITY: enforce skill.allowed-tools ⊆ agent.allowed_tools.
 			var widening []string

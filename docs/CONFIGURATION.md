@@ -682,6 +682,24 @@ model: sonnet
 
 No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(anthropic, claude-sonnet-4-6)`. This agent never falls through to a non-Anthropic provider.
 
+**Defining skills inline (the top-level `skills:` map)** — instead of a `LOOMCYCLE_SKILLS_ROOT` directory of `SKILL.md` files, you can define skills directly in YAML, at the same level as `agents:` and `models:`:
+
+```yaml
+skills:
+  voice-applier:
+    description: Apply the house voice to drafted copy.   # informational
+    allowed_tools: [Read]     # must be a SUBSET of the bundling agent's allowed_tools
+    body: |
+      When rewriting, prefer active voice and short sentences …
+agents:
+  cv-rewriter:
+    allowed_tools: [Read, Skill]
+    skills: [voice-applier]   # references the inline skill by name (same field as before)
+    model: sonnet
+```
+
+An agent's `skills: [name]` resolves against the inline `skills:` map **first**, then `LOOMCYCLE_SKILLS_ROOT` (inline wins on a name collision); either source alone is fine — **no skills root is required** when every referenced skill is defined inline. Inline skills **merge by key across config layers** (§9e), exactly like `agents:` — so a bundled config layer can ship an agent *and* its skills together, and a later layer can override a skill by re-declaring its key. The same security invariant holds: a skill's `allowed_tools` must be ⊆ the bundling agent's, or config-load fails. (`SKILL.md` frontmatter uses the hyphenated `allowed-tools`; the inline map uses `allowed_tools` to match the rest of the loomcycle YAML.)
+
 **Multi-tool research agent**:
 
 ```yaml
