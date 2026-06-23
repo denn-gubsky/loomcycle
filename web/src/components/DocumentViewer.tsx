@@ -17,11 +17,14 @@ import DocumentAssistantPanel from "./DocumentAssistantPanel";
 import Markdown from "./Markdown";
 
 // DocumentViewer is the RFC AM Phase 2 read-mostly surface for one chunked-
-// graph document: a chunk sub-tree, a selected-chunk view (rendered Markdown +
-// an optional "with sub-chunks" assembly), a whole-document Markdown view, MD
-// download, and a single-chunk content editor. Structural editing (move / link
-// / delete chunks) is deliberately NOT here — it is the document-management
-// agent's job (Phase 3).
+// graph document. The chunk tree stays on the left for navigation; the right
+// pane renders the SELECTED chunk in one of two views, toggled per selection:
+//   - chunks   — the selected chunk's own body (structured, per-chunk).
+//   - markdown — the selected chunk + its sub-chunks assembled into one Markdown
+//                document. Selecting the ROOT chunk therefore renders the whole
+//                document; selecting a section renders just that part.
+// Structural editing (move / link / delete chunks) is deliberately NOT here —
+// it is the document-management agent's job (Phase 3).
 export interface DocumentViewerProps {
   documentId: string;
   scope: DocScope;
@@ -30,15 +33,14 @@ export interface DocumentViewerProps {
   titleHint?: string;
 }
 
-type Mode = "tree" | "markdown";
+// View mode for the selected-chunk pane (not the whole document).
+type Mode = "chunks" | "markdown";
 
 export default function DocumentViewer({ documentId, scope, titleHint }: DocumentViewerProps) {
   const [chunks, setChunks] = useState<ChunkRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [selectedDetail, setSelectedDetail] = useState<ChunkDetail | null>(null);
-  const [mode, setMode] = useState<Mode>("tree");
-  const [mdSource, setMdSource] = useState<string>("");
-  const [includeSub, setIncludeSub] = useState(false);
+  const [mode, setMode] = useState<Mode>("chunks");
   const [subtreeMd, setSubtreeMd] = useState<string | null>(null);
   const [editing, setEditing] = useState<ChunkDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -55,6 +57,10 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
     const root = chunks.find((c) => !c.parent_id);
     return root?.title || titleHint || "document";
   }, [chunks, titleHint]);
+  const selectedIsRoot = useMemo(
+    () => !!selectedDetail && !selectedDetail.parent_id,
+    [selectedDetail],
+  );
 
   // Load the chunk list when the document / scope / reload changes. Default the
   // selection to the root chunk.
@@ -76,13 +82,12 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
     };
   }, [documentId, scope, reload]);
 
-  // Reset selection + caches when the document changes.
+  // Reset selection + view when the document changes.
   useEffect(() => {
     setSelectedId(undefined);
     setSelectedDetail(null);
-    setIncludeSub(false);
     setSubtreeMd(null);
-    setMode("tree");
+    setMode("chunks");
   }, [documentId, scope]);
 
   // Fetch the selected chunk's body.
@@ -100,22 +105,12 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
     };
   }, [selectedId, scope, reload]);
 
-  // Whole-document Markdown (clean, no metadata comments) for the MD mode.
+  // Assemble the selected chunk + its sub-chunks into one Markdown string for the
+  // markdown view (fetches each descendant's body; heading depth is relative to
+  // the selected chunk, so it reads as a standalone part — or the whole document
+  // when the root is selected). Only runs while the markdown view is active.
   useEffect(() => {
-    if (mode !== "markdown") return;
-    let cancelled = false;
-    documentExportMd(documentId, scope, false)
-      .then((r) => !cancelled && setMdSource(r.markdown))
-      .catch((e) => !cancelled && setErr(e instanceof Error ? e.message : String(e)));
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, documentId, scope, reload]);
-
-  // Assemble the selected chunk + its sub-chunks into one Markdown string when
-  // "with sub-chunks" is on (fetches each descendant's body).
-  useEffect(() => {
-    if (!includeSub || !selectedId) {
+    if (mode !== "markdown" || !selectedId) {
       setSubtreeMd(null);
       return;
     }
@@ -144,10 +139,12 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
     return () => {
       cancelled = true;
     };
-  }, [includeSub, selectedId, tree, scope, reload]);
+  }, [mode, selectedId, tree, scope, reload]);
 
   const onSelect = useCallback((n: ChunkNode) => setSelectedId(n.row.id), []);
 
+  // Download the WHOLE document as canonical, round-trippable Markdown (with the
+  // metadata comments), independent of the selected-chunk view above.
   const download = useCallback(async () => {
     try {
       const r = await documentExportMd(documentId, scope, true);
@@ -170,23 +167,7 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
           {rootTitle}
         </strong>
         <div className="doc-toolbar-actions">
-          <div className="doc-mode-toggle">
-            <button
-              type="button"
-              className={mode === "tree" ? "active" : ""}
-              onClick={() => setMode("tree")}
-            >
-              chunks
-            </button>
-            <button
-              type="button"
-              className={mode === "markdown" ? "active" : ""}
-              onClick={() => setMode("markdown")}
-            >
-              markdown
-            </button>
-          </div>
-          <button type="button" onClick={() => void download()} title="Download as Markdown (.md)">
+          <button type="button" onClick={() => void download()} title="Download the whole document as Markdown (.md)">
             ↓ .md
           </button>
           <button
@@ -203,65 +184,80 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
         </div>
       </div>
       {err && <div className="paths-err">{err}</div>}
-      {mode === "markdown" ? (
-        <div className="doc-md-pane">
-          <Markdown source={mdSource} />
+      <div className="doc-split">
+        <div className="doc-chunktree">
+          {loading && chunks.length === 0 ? (
+            <div className="empty">
+              <p>Loading…</p>
+            </div>
+          ) : (
+            <DocumentChunkTree tree={tree} selectedId={selectedId} onSelect={onSelect} />
+          )}
         </div>
-      ) : (
-        <div className="doc-split">
-          <div className="doc-chunktree">
-            {loading && chunks.length === 0 ? (
-              <div className="empty">
-                <p>Loading…</p>
-              </div>
-            ) : (
-              <DocumentChunkTree tree={tree} selectedId={selectedId} onSelect={onSelect} />
-            )}
-          </div>
-          <div className="doc-content">
-            {selectedDetail ? (
-              <>
-                <div className="doc-content-head">
-                  <h3>{selectedDetail.title || "(untitled)"}</h3>
-                  <div className="doc-content-meta">
-                    {selectedDetail.type && <span className="chunk-badge">{selectedDetail.type}</span>}
-                    {selectedDetail.status && (
-                      <span className="chunk-badge chunk-status">{selectedDetail.status}</span>
-                    )}
-                    <span className="chunk-rev">rev {selectedDetail.revision}</span>
-                  </div>
-                  <div className="doc-content-controls">
-                    <label className="doc-subchunks">
-                      <input
-                        type="checkbox"
-                        checked={includeSub}
-                        onChange={(e) => setIncludeSub(e.target.checked)}
-                      />
-                      with sub-chunks
-                    </label>
-                    <button type="button" onClick={() => setEditing(selectedDetail)}>
-                      edit
+        <div className="doc-content">
+          {selectedDetail ? (
+            <>
+              <div className="doc-content-head">
+                <h3>{selectedDetail.title || "(untitled)"}</h3>
+                <div className="doc-content-meta">
+                  {selectedDetail.type && <span className="chunk-badge">{selectedDetail.type}</span>}
+                  {selectedDetail.status && (
+                    <span className="chunk-badge chunk-status">{selectedDetail.status}</span>
+                  )}
+                  <span className="chunk-rev">rev {selectedDetail.revision}</span>
+                </div>
+                <div className="doc-content-controls">
+                  {/* The chunks/markdown switch is per-selected-chunk: markdown
+                      assembles this chunk + its sub-chunks (the root → the whole
+                      document). */}
+                  <div className="doc-mode-toggle">
+                    <button
+                      type="button"
+                      className={mode === "chunks" ? "active" : ""}
+                      onClick={() => setMode("chunks")}
+                      title="This chunk's own content"
+                    >
+                      chunk
+                    </button>
+                    <button
+                      type="button"
+                      className={mode === "markdown" ? "active" : ""}
+                      onClick={() => setMode("markdown")}
+                      title={
+                        selectedIsRoot
+                          ? "Whole document as Markdown"
+                          : "This chunk + its sub-chunks as Markdown"
+                      }
+                    >
+                      markdown
                     </button>
                   </div>
+                  <button type="button" onClick={() => setEditing(selectedDetail)}>
+                    edit
+                  </button>
                 </div>
-                <div className="doc-content-body">
-                  {includeSub && subtreeMd !== null ? (
-                    <Markdown source={subtreeMd} />
-                  ) : selectedDetail.body ? (
-                    <Markdown source={selectedDetail.body} />
-                  ) : (
-                    <p className="doc-empty-body">(empty chunk)</p>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="empty">
-                <p>Select a chunk on the left.</p>
               </div>
-            )}
-          </div>
+              <div className="doc-content-body">
+                {mode === "markdown" ? (
+                  subtreeMd !== null ? (
+                    <Markdown source={subtreeMd} />
+                  ) : (
+                    <p className="doc-empty-body">Assembling Markdown…</p>
+                  )
+                ) : selectedDetail.body ? (
+                  <Markdown source={selectedDetail.body} />
+                ) : (
+                  <p className="doc-empty-body">(empty chunk)</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="empty">
+              <p>Select a chunk on the left.</p>
+            </div>
+          )}
         </div>
-      )}
+      </div>
       {assistantOpen && (
         <DocumentAssistantPanel
           documentId={documentId}

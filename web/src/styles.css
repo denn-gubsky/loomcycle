@@ -5181,7 +5181,8 @@ button.primary:disabled {
   align-items: center;
   gap: 12px;
 }
-.doc-content-controls button {
+/* Direct-child only, so the nested .doc-mode-toggle keeps its segmented look. */
+.doc-content-controls > button {
   padding: 4px 12px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -5189,20 +5190,7 @@ button.primary:disabled {
   border-radius: 4px;
   cursor: pointer;
 }
-.doc-subchunks {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--lc-text-sm, 13px);
-  color: var(--fg-soft);
-}
 .doc-content-body,
-.doc-md-pane {
-  flex: 1;
-  overflow: auto;
-  padding: 14px;
-  min-height: 0;
-}
 .doc-empty-body {
   color: var(--fg-soft);
   font-style: italic;
