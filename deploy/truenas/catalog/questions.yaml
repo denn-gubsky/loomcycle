@@ -1,0 +1,335 @@
+# loomcycle install/edit dialog (RFC AR). The provider/tier matrix comes from the
+# binary's EMBEDDED presets (RFC AQ) — this form only collects the thin,
+# deployment-specific overlay: which presets, the secrets, the Postgres DSNs, a
+# few runtime knobs, the port, and the dataset mounts.
+groups:
+  - name: Providers & Presets
+    description: Pick the embedded provider/tier presets and built-in agents.
+  - name: Secrets
+    description: Bearer token, pepper, and provider API keys (masked, env-only).
+  - name: Storage (Postgres)
+    description: Your existing Postgres 16 — loomcycle bundles no database.
+  - name: Runtime Options
+    description: Non-secret operational config.
+  - name: Network
+    description: The HTTP+SSE / Web UI port.
+  - name: Storage (Datasets)
+    description: ZFS datasets for loomcycle's data, the config overlay, and agent Volumes.
+
+questions:
+  # ── Providers & Presets ───────────────────────────────────────────────────
+  - variable: presets
+    label: Config presets
+    description: |
+      Embedded presets/bundles layered as the config base (LOOMCYCLE_PRESETS).
+      `base` is the full provider matrix; `oauth`/`local` prepend a provider on
+      top; `document-agent` registers the Document Assistant (needs SQL Memory).
+    group: Providers & Presets
+    schema:
+      type: list
+      default:
+        - base
+      items:
+        - variable: preset
+          label: Preset
+          schema:
+            type: string
+            required: true
+            enum:
+              - value: base
+                description: base — all providers + tiers (the base matrix)
+              - value: oauth
+                description: oauth — Anthropic OAuth-dev on top (needs base)
+              - value: local
+                description: local — Ollama-local on top (needs base)
+              - value: document-agent
+                description: document-agent — the Document Assistant (needs SQL Memory)
+
+  # ── Secrets (private: UI-masked; written to container env, never a yaml layer) ─
+  - variable: auth_token
+    label: Auth token (LOOMCYCLE_AUTH_TOKEN)
+    description: The bearer for every /v1/* endpoint + the Web UI login. Generate with `openssl rand -hex 32`.
+    group: Secrets
+    schema:
+      type: string
+      required: true
+      private: true
+  - variable: token_pepper
+    label: Operator-token pepper
+    description: Hardens minted operator-token hashes (LOOMCYCLE_OPERATOR_TOKEN_PEPPER). Optional but recommended.
+    group: Secrets
+    schema:
+      type: string
+      private: true
+  - variable: anthropic_api_key
+    label: ANTHROPIC_API_KEY
+    group: Secrets
+    schema:
+      type: string
+      private: true
+  - variable: openai_api_key
+    label: OPENAI_API_KEY
+    group: Secrets
+    schema:
+      type: string
+      private: true
+  - variable: deepseek_api_key
+    label: DEEPSEEK_API_KEY
+    group: Secrets
+    schema:
+      type: string
+      private: true
+  - variable: gemini_api_key
+    label: GEMINI_API_KEY
+    group: Secrets
+    schema:
+      type: string
+      private: true
+
+  # ── Storage (Postgres) ────────────────────────────────────────────────────
+  - variable: pg_dsn
+    label: Postgres DSN (LOOMCYCLE_PG_DSN)
+    description: 'e.g. postgres://loomcycle:PASSWORD@10.0.0.5:5432/loomcycle?sslmode=disable'
+    group: Storage (Postgres)
+    schema:
+      type: string
+      required: true
+      private: true
+  - variable: sqlmem_pg_dsn
+    label: SQL Memory DSN (LOOMCYCLE_SQLMEM_PG_DSN)
+    description: Optional — the SQL-Memory aux database (a separate DB / least-privilege role). Required if SQL Memory is enabled.
+    group: Storage (Postgres)
+    schema:
+      type: string
+      private: true
+  - variable: sqlmem_enabled
+    label: Enable SQL Memory
+    description: Required by the document-agent bundle. Needs the DSN above.
+    group: Storage (Postgres)
+    schema:
+      type: boolean
+      default: false
+  - variable: automigrate
+    label: Auto-migrate on boot
+    description: Apply pending schema migrations on start (LOOMCYCLE_PG_AUTOMIGRATE=1). Simplest for a single operator. Disable to run `loomcycle migrate up` yourself before deploy.
+    group: Storage (Postgres)
+    schema:
+      type: boolean
+      default: true
+
+  # ── Runtime Options ───────────────────────────────────────────────────────
+  - variable: additional_envs
+    label: Additional environment variables
+    description: |
+      Any other non-secret knob from the env catalogue — see `loomcycle env-template`
+      (or the Settings → Presets panel in the Web UI). e.g. LOOMCYCLE_BASH_ENABLED,
+      LOOMCYCLE_HTTP_HOST_ALLOWLIST, OLLAMA_BASE_URL.
+    group: Runtime Options
+    schema:
+      type: list
+      default: []
+      items:
+        - variable: env
+          label: Environment Variable
+          schema:
+            type: dict
+            attrs:
+              - variable: name
+                label: Name
+                schema:
+                  type: string
+                  required: true
+              - variable: value
+                label: Value
+                schema:
+                  type: string
+
+  # ── Network ───────────────────────────────────────────────────────────────
+  - variable: network
+    label: ""
+    group: Network
+    schema:
+      type: dict
+      attrs:
+        - variable: web_port
+          label: Web port
+          schema:
+            type: dict
+            attrs:
+              - variable: bind_mode
+                label: Port bind mode
+                schema:
+                  type: string
+                  default: published
+                  enum:
+                    - value: published
+                      description: Publish on the host (front with your tunnel/proxy)
+                    - value: exposed
+                      description: Expose for inter-container access only
+                    - value: ""
+                      description: None
+              - variable: port_number
+                label: Port number
+                schema:
+                  type: int
+                  default: 8787
+                  min: 1
+                  max: 65535
+                  required: true
+
+  # ── Storage (Datasets) ────────────────────────────────────────────────────
+  # All mapped datasets must be owned by uid:gid 65532:65532 (the distroless user).
+  - variable: data
+    label: Data storage (LOOMCYCLE_DATA_DIR → /data)
+    description: loomcycle's own local state — SQL-Memory cache + snapshots.
+    group: Storage (Datasets)
+    schema:
+      type: dict
+      attrs:
+        - variable: type
+          label: Type
+          schema:
+            type: string
+            required: true
+            default: ix_volume
+            enum:
+              - value: host_path
+                description: Host Path (an existing dataset)
+              - value: ix_volume
+                description: ixVolume (dataset created by the system)
+        - variable: ix_volume_config
+          label: ixVolume configuration
+          schema:
+            type: dict
+            show_if: [["type", "=", "ix_volume"]]
+            $ref:
+              - normalize/ix_volume
+            attrs:
+              - variable: dataset_name
+                label: Dataset name
+                schema:
+                  type: string
+                  required: true
+                  hidden: true
+                  default: data
+        - variable: host_path_config
+          label: Host path configuration
+          schema:
+            type: dict
+            show_if: [["type", "=", "host_path"]]
+            attrs:
+              - variable: path
+                label: Host path
+                schema:
+                  type: hostpath
+                  required: true
+
+  - variable: config
+    label: Config overlay (read-only → /config)
+    description: |
+      A dataset holding loomcycle.yaml — the thin overlay (your agent `volumes:`
+      block). Copy deploy/truenas/loomcycle.overlay.example.yaml into it.
+    group: Storage (Datasets)
+    schema:
+      type: dict
+      attrs:
+        - variable: type
+          label: Type
+          schema:
+            type: string
+            required: true
+            default: host_path
+            enum:
+              - value: host_path
+                description: Host Path (an existing dataset)
+              - value: ix_volume
+                description: ixVolume (dataset created by the system)
+        - variable: ix_volume_config
+          label: ixVolume configuration
+          schema:
+            type: dict
+            show_if: [["type", "=", "ix_volume"]]
+            $ref:
+              - normalize/ix_volume
+            attrs:
+              - variable: dataset_name
+                label: Dataset name
+                schema:
+                  type: string
+                  required: true
+                  hidden: true
+                  default: config
+        - variable: host_path_config
+          label: Host path configuration
+          schema:
+            type: dict
+            show_if: [["type", "=", "host_path"]]
+            attrs:
+              - variable: path
+                label: Host path
+                schema:
+                  type: hostpath
+                  required: true
+
+  - variable: additional_storage
+    label: Agent Volumes (RFC AH)
+    description: |
+      ZFS datasets agents may read/write, each mounted at an in-container path that
+      your config overlay's `volumes:` block maps a name to (e.g. mount_path
+      /mnt/work ↔ overlay `work: { path: /mnt/work }`).
+    group: Storage (Datasets)
+    schema:
+      type: list
+      default: []
+      items:
+        - variable: store
+          label: Volume
+          schema:
+            type: dict
+            attrs:
+              - variable: type
+                label: Type
+                schema:
+                  type: string
+                  required: true
+                  default: host_path
+                  enum:
+                    - value: host_path
+                      description: Host Path (an existing dataset)
+                    - value: ix_volume
+                      description: ixVolume (dataset created by the system)
+              - variable: read_only
+                label: Read-only
+                schema:
+                  type: boolean
+                  default: false
+              - variable: mount_path
+                label: Mount path (in container)
+                description: Must match the `path` of a `volumes:` entry in your overlay.
+                schema:
+                  type: path
+                  required: true
+              - variable: host_path_config
+                label: Host path configuration
+                schema:
+                  type: dict
+                  show_if: [["type", "=", "host_path"]]
+                  attrs:
+                    - variable: path
+                      label: Host path
+                      schema:
+                        type: hostpath
+                        required: true
+              - variable: ix_volume_config
+                label: ixVolume configuration
+                schema:
+                  type: dict
+                  show_if: [["type", "=", "ix_volume"]]
+                  $ref:
+                    - normalize/ix_volume
+                  attrs:
+                    - variable: dataset_name
+                      label: Dataset name
+                      schema:
+                        type: string
+                        required: true

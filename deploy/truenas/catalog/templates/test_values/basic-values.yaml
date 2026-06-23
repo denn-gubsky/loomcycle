@@ -1,0 +1,33 @@
+# CI render-test input (a fully-answered `values`). Mirrors questions.yaml +
+# the system-injected ix_volumes map. Used by the TrueNAS catalog render harness.
+presets:
+  - base
+auth_token: test-token-do-not-use
+token_pepper: ""
+anthropic_api_key: ""
+openai_api_key: ""
+deepseek_api_key: ""
+gemini_api_key: ""
+pg_dsn: postgres://loomcycle:pw@10.0.0.5:5432/loomcycle?sslmode=disable
+sqlmem_pg_dsn: ""
+sqlmem_enabled: false
+automigrate: true
+additional_envs: []
+network:
+  web_port:
+    bind_mode: published
+    port_number: 8787
+data:
+  type: ix_volume
+  ix_volume_config:
+    dataset_name: data
+    create_host_path: true
+config:
+  type: ix_volume
+  ix_volume_config:
+    dataset_name: config
+    create_host_path: true
+additional_storage: []
+ix_volumes:
+  data: /opt/tests/mnt/data
+  config: /opt/tests/mnt/config

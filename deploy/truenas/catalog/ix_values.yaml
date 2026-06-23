@@ -1,0 +1,16 @@
+# Static defaults — images + template constants (not user-editable). RFC AR.
+images:
+  image:
+    repository: denngubsky/loomcycle
+    # PIN to a tag that includes the embedded presets (RFC AQ) — the dialog's
+    # preset selector renders from the binary. Bump app_version in app.yaml in
+    # lockstep on an image bump.
+    tag: latest
+consts:
+  app_container_name: loomcycle
+  # distroless nonroot — the image is fixed at uid/gid 65532 (no arbitrary-uid
+  # support), so this is a constant, not a user question.
+  uid: 65532
+  gid: 65532
+  data_path: /data
+  config_path: /config

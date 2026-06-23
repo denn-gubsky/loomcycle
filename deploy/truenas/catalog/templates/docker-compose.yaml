@@ -1,0 +1,61 @@
+{#
+  loomcycle catalog template (RFC AR) — Jinja2 + the TrueNAS ix-lib render library.
+
+  ⚠️  SCAFFOLD — render-validate on your TrueNAS version before publishing.
+  The ix-lib (ix_lib.base.render) is vendored into templates/library/ by TrueNAS's
+  catalog CI from app.yaml:lib_version; it is NOT committed here. Method signatures
+  (esp. the healthcheck EXEC form — distroless has no shell, so the test must be
+  ["CMD", "/usr/local/bin/loomcycle", "health"], not a CMD-SHELL string) and the
+  storage/perms model must be verified against the pinned lib version. The
+  VALIDATED, working route is the custom-app ../docker-compose.yaml.
+
+  Dataset ownership: the image is fixed at uid/gid 65532 — chown the mapped
+  datasets to 65532:65532 (see ../../docs/TRUENAS.md). Migrations run in-process
+  when "Auto-migrate on boot" is on (LOOMCYCLE_PG_AUTOMIGRATE); otherwise run
+  `loomcycle migrate up` before deploy.
+#}
+{% set tpl = ix_lib.base.render.Render(values) %}
+
+{% set c1 = tpl.add_container(values.consts.app_container_name, "image") %}
+{% do c1.set_user(values.consts.uid, values.consts.gid) %}
+{% do c1.healthcheck.set_custom_test("/usr/local/bin/loomcycle health") %}
+
+{# ── Runtime + presets ── #}
+{% do c1.environment.add_env("LOOMCYCLE_LISTEN_ADDR", "0.0.0.0:8787") %}
+{% do c1.environment.add_env("LOOMCYCLE_PRESETS", values.presets | join(",")) %}
+{% do c1.environment.add_env("LOOMCYCLE_CONFIG_DIR", values.consts.config_path) %}
+{% do c1.environment.add_env("LOOMCYCLE_DATA_DIR", values.consts.data_path) %}
+
+{# ── Storage (Postgres) ── #}
+{% do c1.environment.add_env("LOOMCYCLE_STORAGE_BACKEND", "postgres") %}
+{% do c1.environment.add_env("LOOMCYCLE_PG_DSN", values.pg_dsn) %}
+{% if values.sqlmem_pg_dsn %}
+{% do c1.environment.add_env("LOOMCYCLE_SQLMEM_PG_DSN", values.sqlmem_pg_dsn) %}
+{% endif %}
+{% do c1.environment.add_env("LOOMCYCLE_SQLMEM_ENABLED", "1" if values.sqlmem_enabled else "0") %}
+{% do c1.environment.add_env("LOOMCYCLE_PG_AUTOMIGRATE", "1" if values.automigrate else "0") %}
+
+{# ── Secrets ── #}
+{% do c1.environment.add_env("LOOMCYCLE_AUTH_TOKEN", values.auth_token) %}
+{% if values.token_pepper %}
+{% do c1.environment.add_env("LOOMCYCLE_OPERATOR_TOKEN_PEPPER", values.token_pepper) %}
+{% endif %}
+{% if values.anthropic_api_key %}{% do c1.environment.add_env("ANTHROPIC_API_KEY", values.anthropic_api_key) %}{% endif %}
+{% if values.openai_api_key %}{% do c1.environment.add_env("OPENAI_API_KEY", values.openai_api_key) %}{% endif %}
+{% if values.deepseek_api_key %}{% do c1.environment.add_env("DEEPSEEK_API_KEY", values.deepseek_api_key) %}{% endif %}
+{% if values.gemini_api_key %}{% do c1.environment.add_env("GEMINI_API_KEY", values.gemini_api_key) %}{% endif %}
+
+{# ── Any other non-secret knob (env catalogue) ── #}
+{% do c1.environment.add_user_envs(values.additional_envs) %}
+
+{# ── Network + storage ── #}
+{% do c1.add_port(values.network.web_port) %}
+{% do c1.add_storage(values.consts.data_path, values.data) %}
+{% do c1.add_storage(values.consts.config_path, values.config) %}
+{% for store in values.additional_storage %}
+{% do c1.add_storage(store.mount_path, store) %}
+{% endfor %}
+
+{% do tpl.portals.add(values.network.web_port) %}
+
+{{ tpl.render() | tojson }}
