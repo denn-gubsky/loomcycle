@@ -370,6 +370,14 @@ func main() {
 			os.Exit(cli.RunInit(os.Args[2:], os.Stdout, os.Stderr))
 		case "doctor":
 			os.Exit(cli.RunDoctor(os.Args[2:], os.Stdout, os.Stderr))
+		case "presets":
+			// RFC AQ — list the embedded presets/bundles, or `presets show <name>`
+			// to print one's YAML. Read-only introspection of the embedded base.
+			os.Exit(cli.RunPresets(os.Args[2:], os.Stdout, os.Stderr))
+		case "env-template":
+			// RFC AQ — print the embedded .env.insecure.example (non-secret env
+			// catalogue) so it's reachable without a source checkout.
+			os.Exit(cli.RunEnvTemplate(os.Args[2:], os.Stdout, os.Stderr))
 		case "mcp-registry":
 			// v1.x RFC C1: curated MCP server recipe library.
 			// Seven verbs (list / show / append-to-config / add /
