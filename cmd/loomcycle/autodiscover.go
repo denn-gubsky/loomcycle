@@ -4,6 +4,8 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // autodiscover.go — v0.11.1 config auto-discovery.
@@ -74,4 +76,27 @@ func userOverrodeConfigFlag() bool {
 		}
 	})
 	return overrode
+}
+
+// configDirLayers returns the *.yaml / *.yml files directly under dir, sorted
+// lexically — the LOOMCYCLE_CONFIG_DIR layer group (RFC AQ §4). The directory
+// must exist and be readable (a set-but-missing dir is the operator's typo →
+// surfaced); an empty dir (no matching files) is fine, returning nil. Files in
+// subdirectories are ignored — a flat drop-in dir.
+func configDirLayers(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if name := e.Name(); strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml") {
+			files = append(files, filepath.Join(dir, name))
+		}
+	}
+	sort.Strings(files)
+	return files, nil
 }

@@ -503,12 +503,29 @@ func main() {
 		log.Printf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(presetNames), strings.Join(presetNames, ", "))
 	}
 
-	// Assemble the ordered config-FILE list (RFC AN). LOOMCYCLE_CONFIG_FILES
-	// (`:`-separated, for containers/systemd) layers as the base; explicit
-	// --config flags layer AFTER it, so an explicit flag always wins. With
-	// neither, fall back to the lone XDG-discovered default (today's behavior) —
-	// unless embedded presets are active, in which case a presets-only stack
-	// (no operator file) is allowed (RFC AQ bare-start).
+	// Assemble the operator's config-FILE layers (RFC AN/AQ). The precedence
+	// chain, base → top, last wins:
+	//   embedded presets → LOOMCYCLE_CONFIG_DIR/*.yaml → LOOMCYCLE_CONFIG_FILES → --config
+	// With none of these, fall back to the lone XDG-discovered default (today's
+	// behavior) — unless embedded presets are active, in which case a presets-only
+	// stack (no operator file) is allowed (RFC AQ bare-start).
+
+	// LOOMCYCLE_CONFIG_DIR (RFC AQ §4) — a directory whose *.yaml/*.yml files layer
+	// as a group, lexically, between the presets and CONFIG_FILES. For a mounted
+	// overlay dir or an image-baked drop-in set. Unset → skipped.
+	var configDirFiles []string
+	if dir := strings.TrimSpace(os.Getenv("LOOMCYCLE_CONFIG_DIR")); dir != "" {
+		files, err := configDirLayers(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "loomcycle: LOOMCYCLE_CONFIG_DIR: %v\n", err)
+			os.Exit(1)
+		}
+		configDirFiles = files
+		if len(files) > 0 {
+			log.Printf("config: layering %d file(s) from LOOMCYCLE_CONFIG_DIR=%s (lexical order)", len(files), dir)
+		}
+	}
+
 	var cfgFiles []string
 	for _, f := range strings.Split(os.Getenv("LOOMCYCLE_CONFIG_FILES"), ":") {
 		if f = strings.TrimSpace(f); f != "" {
@@ -517,10 +534,9 @@ func main() {
 	}
 	cfgFiles = append(cfgFiles, cfgPaths...)
 
-	if len(cfgFiles) == 0 {
-		// v0.11.1 auto-discovery: no --config / env → walk the XDG paths. The
-		// search list is the same one `loomcycle doctor` uses, so the two stay
-		// in lockstep.
+	if len(cfgFiles) == 0 && len(configDirFiles) == 0 {
+		// No explicit operator config (dir or files) → v0.11.1 XDG auto-discovery.
+		// The search list is the same one `loomcycle doctor` uses (lockstep).
 		resolvedCfg, found := resolveConfigPath("loomcycle.yaml")
 		switch {
 		case found:
@@ -534,39 +550,43 @@ func main() {
 				fmt.Fprintf(os.Stderr, "    %s\n", p)
 			}
 			fmt.Fprintln(os.Stderr)
-			fmt.Fprintln(os.Stderr, "Run `loomcycle init` to create one, pass --config <path>, or select an embedded base with LOOMCYCLE_PRESETS=base.")
+			fmt.Fprintln(os.Stderr, "Run `loomcycle init` to create one, pass --config <path>, set LOOMCYCLE_CONFIG_DIR, or select an embedded base with LOOMCYCLE_PRESETS=base.")
 			os.Exit(1)
 		}
 	} else {
-		// Explicit layers must each exist (no per-file XDG fallback — explicit
-		// means literal). Fail fast with the offending path.
+		// Explicit --config / CONFIG_FILES layers must each exist (no per-file XDG
+		// fallback — explicit means literal). The CONFIG_DIR files were already
+		// validated by configDirLayers. Fail fast with the offending path.
 		for _, f := range cfgFiles {
 			if _, err := os.Stat(f); err != nil {
 				fmt.Fprintf(os.Stderr, "loomcycle: config file not found: %s\n", f)
 				os.Exit(1)
 			}
 		}
-		if len(cfgFiles) > 1 {
-			log.Printf("config: layering %d files (last wins): %s", len(cfgFiles), strings.Join(cfgFiles, " ◁ "))
-		}
+	}
+
+	// The ordered disk-file layers: CONFIG_DIR first, then CONFIG_FILES/--config.
+	diskFiles := append(append([]string{}, configDirFiles...), cfgFiles...)
+	if len(diskFiles) > 1 {
+		log.Printf("config: layering %d files (last wins): %s", len(diskFiles), strings.Join(diskFiles, " ◁ "))
 	}
 	// Auto-load <configdir>/auth.env (companion to `loomcycle init
 	// --with-token`) BEFORE config.Load reads os.Getenv, so a persisted
 	// LOOMCYCLE_AUTH_TOKEN is in scope without a shell-rc edit. Set-if-unset
 	// (real env wins), so an explicit shell export still overrides it. Keyed on
-	// the LAST (authoritative) FILE layer — that's where an init-written auth.env
-	// lives. A presets-only stack has no config dir, so there's nothing to load.
-	if len(cfgFiles) > 0 {
-		if authEnvPath, n, err := cli.LoadAuthEnv(cfgFiles[len(cfgFiles)-1]); err != nil {
+	// the LAST (authoritative) disk-file layer — that's where an init-written
+	// auth.env lives. A presets-only stack has no file, so there's nothing to load.
+	if len(diskFiles) > 0 {
+		if authEnvPath, n, err := cli.LoadAuthEnv(diskFiles[len(diskFiles)-1]); err != nil {
 			log.Printf("auth.env: %v (continuing without it)", err)
 		} else if n > 0 {
 			log.Printf("auth.env: loaded %d var(s) from %s (a shell export overrides them)", n, authEnvPath)
 		}
 	}
 	// Build the full ordered layer list: embedded presets (base) ++ disk files.
-	layers := make([]config.Layer, 0, len(presetLayers)+len(cfgFiles))
+	layers := make([]config.Layer, 0, len(presetLayers)+len(diskFiles))
 	layers = append(layers, presetLayers...)
-	for _, f := range cfgFiles {
+	for _, f := range diskFiles {
 		layers = append(layers, config.Layer{Name: f})
 	}
 	cfg, err := config.LoadLayers(layers...)
