@@ -8,6 +8,52 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.6.0
+
+Config is now bundled INTO the binary and deployable as a TrueNAS app — an
+embedded-presets + operability line on v1.5.0.
+
+**📦 Embedded config presets + the document-agent bundle (RFC AQ).** The binary
+now `go:embed`s a set of config layers: provider/tier **presets** (`base`, `oauth`,
+`local`) and **agent bundles** (`document-agent` — the Document Assistant agent +
+its four skills, carried inline via the top-level `skills:` map). Select them with
+`LOOMCYCLE_PRESETS=base,document-agent` (or `--preset`), layered as the base of the
+config stack under the operator's thin overlay — so a deployment no longer restates
+the full provider matrix or wires a skills root. `loomcycle presets` /
+`presets show` / `env-template` introspect them; the `.env.insecure.example` env
+catalogue is embedded too. Opt-in (unset → today's behavior).
+
+**🪢 Inline `skills:` in YAML + the `!prepend`/`!append` merge.** Skills can be
+defined inline (a top-level `skills:` map, same level as `agents:`) — no
+`LOOMCYCLE_SKILLS_ROOT` required — which is what lets a bundle ship its agent AND
+skills as one config layer. Config layering (RFC AN) gains opt-in sequence-merge
+tags: an overlay sequence tagged `!prepend`/`!append` composes with the accumulated
+value instead of replacing it (dedup keep-first), so the `oauth`/`local` presets are
+one-provider-per-file — "OAuth on top of base" with no restatement. Plus
+`LOOMCYCLE_CONFIG_DIR` — a directory of `*.yaml` layers merged lexically
+(precedence: presets → CONFIG_DIR → CONFIG_FILES → --config).
+
+**⚙️ Web UI Settings hub + sign-out.** A top-right gear (admin-only) opens
+`/settings` — the operator hub that web-reaches the critical CLI surfaces for
+no-shell deployments: **tenant/operator token generation** (RFC L — generate, list,
+rotate, retire; the secret shown once), an embedded-**presets** viewer, **runtime**
+pause/resume + state, and **health**. New read endpoints `GET /v1/_presets`,
+`/v1/_presets/{name}`, `/v1/_env_template` (admin-gated). Plus a topbar **sign-out**
+(clears the HttpOnly session cookie via `/ui/logout`).
+
+**🟦 loomcycle on TrueNAS SCALE (RFC AR).** Package loomcycle as a TrueNAS SCALE
+application (Electric Eel 24.10+ Docker-Compose engine) under `deploy/truenas/`: a
+validated custom-app paste compose (`docker-compose.yaml` + an install walkthrough
+in `INSTALL.md`), a catalog-app source (`catalog/` — `app.yaml`/`questions.yaml`/
+`ix_values.yaml`/ix-lib template) with an install wizard, and `docs/TRUENAS.md`. The
+install form's full env coverage is generated from the embedded env catalogue by
+`loomcycle truenas-questions` (lockstep, no drift). The provider matrix comes from
+the embedded presets; secrets are TrueNAS-managed env; storage is the operator's
+existing Postgres 16. (The catalog ix-lib template wants on-instance render
+validation before publishing to a train — see `deploy/truenas/README.md`.)
+
+Additive — no breaking changes, no new wire RPCs; adapters unchanged since v1.5.0.
+
 ## What's in v1.5.0
 
 The loomcycle-as-MCP-server transport becomes per-tenant, static config-declared
