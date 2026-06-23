@@ -121,6 +121,60 @@ func TestSelectPresetNames(t *testing.T) {
 	}
 }
 
+// TestEmbedded_OAuthPrependsWithoutRestatement is the RFC AQ §3 headline: the
+// one-provider-per-file oauth preset composes onto base via !prepend — OAuth on
+// top of provider_priority AND each tier, with base's providers retained as
+// fallback and NO restatement.
+func TestEmbedded_OAuthPrependsWithoutRestatement(t *testing.T) {
+	cfg, err := config.LoadLayers(layersFor(t, "base", "oauth")...)
+	if err != nil {
+		t.Fatalf("LoadLayers(base, oauth): %v", err)
+	}
+	if len(cfg.ProviderPriority) == 0 || cfg.ProviderPriority[0] != "anthropic-oauth-dev" {
+		t.Errorf("provider_priority[0] = %v, want anthropic-oauth-dev on top", cfg.ProviderPriority)
+	}
+	// base's matrix is retained (fallback) — the prepend didn't restate/replace it.
+	for _, want := range []string{"deepseek", "openai", "anthropic"} {
+		if !sliceHas(cfg.ProviderPriority, want) {
+			t.Errorf("base provider %q dropped from provider_priority: %v", want, cfg.ProviderPriority)
+		}
+	}
+	// Each tier has the OAuth alias on top (a bare alias parses to {Model: alias}).
+	if len(cfg.Tiers["middle"]) == 0 || cfg.Tiers["middle"][0].Model != "oauth-sonnet" {
+		t.Errorf("tiers.middle = %+v, want oauth-sonnet first", cfg.Tiers["middle"])
+	}
+	if len(cfg.Tiers["high"]) == 0 || cfg.Tiers["high"][0].Model != "oauth-opus" {
+		t.Errorf("tiers.high = %+v, want oauth-opus first", cfg.Tiers["high"])
+	}
+}
+
+// TestEmbedded_LocalPrepends: base + local puts ollama-local + the local tier
+// candidates on top while keeping base's cloud providers as fallback.
+func TestEmbedded_LocalPrepends(t *testing.T) {
+	cfg, err := config.LoadLayers(layersFor(t, "base", "local")...)
+	if err != nil {
+		t.Fatalf("LoadLayers(base, local): %v", err)
+	}
+	if len(cfg.ProviderPriority) == 0 || cfg.ProviderPriority[0] != "ollama-local" {
+		t.Errorf("provider_priority[0] = %v, want ollama-local on top", cfg.ProviderPriority)
+	}
+	if !sliceHas(cfg.ProviderPriority, "anthropic") {
+		t.Errorf("base cloud fallback dropped from provider_priority: %v", cfg.ProviderPriority)
+	}
+	if len(cfg.Tiers["low"]) == 0 || cfg.Tiers["low"][0].Model != "local-fast" {
+		t.Errorf("tiers.low = %+v, want local-fast first", cfg.Tiers["low"])
+	}
+}
+
+func sliceHas(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func agentNames(cfg *config.Config) []string {
 	out := make([]string, 0, len(cfg.Agents))
 	for n := range cfg.Agents {

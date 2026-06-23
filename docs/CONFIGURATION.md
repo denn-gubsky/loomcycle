@@ -1058,10 +1058,26 @@ level *before* typed unmarshal, so a key's presence is explicit:
 | Section | Merge result |
 |---|---|
 | `agents`, `models`, `mcp_servers`, `channels`, `volumes`, `user_tiers`, `webhooks`, `a2a_*`, `memory_backends`, `scheduled_runs`, `principals` | **by key** — a new entry is added; a same-named entry **field-merges** (last wins per field, matching the `LOOMCYCLE_AGENTS_ROOT` / `mergeAgentDef` precedent) |
-| `tiers` | per-tier **by key**; each tier's candidate list **replaces** wholesale |
-| `provider_priority`, `context_plugins` | **replaced** wholesale (no implicit append — restate the full list) |
+| `tiers` | per-tier **by key**; each tier's candidate list **replaces** wholesale (or composes when the overlay tags it `!prepend` / `!append` — see below) |
+| `provider_priority`, `context_plugins` | **replaced** wholesale by default; an overlay can **compose** instead by tagging the sequence `!prepend` / `!append` (RFC AQ — see below) |
 | `defaults`, `concurrency`, `cache`, `storage`, `interruption`, `hooks`, `memory` | **field-by-field** (a layer may override one field) |
 | top-level scalars | last layer wins |
+
+**Composing sequences — `!prepend` / `!append` (RFC AQ).** An overlay sequence
+tagged `!prepend` merges its items in FRONT of the accumulated sequence;
+`!append` merges them AFTER; an **untagged** sequence still replaces wholesale.
+Duplicates (deep-equal) are dropped keeping the **first** occurrence — so
+`!prepend`-ing a re-listed provider promotes it. A tagged merge is a deliberate
+compose, so it is **not** a cross-layer conflict (no override warning, never trips
+`LOOMCYCLE_CONFIG_STRICT`). This is what lets the embedded `oauth` / `local`
+presets (§9f) be one-provider-per-file:
+
+```yaml
+# an overlay that puts OAuth on top WITHOUT restating the base matrix:
+provider_priority: !prepend [anthropic-oauth-dev]
+tiers:
+  middle: !prepend [oauth-sonnet]
+```
 
 **Conflicts are explicit.** Every leaf a later layer *replaces* (a key set
 differently in an earlier layer) is logged at startup
@@ -1089,8 +1105,10 @@ base — and built-in agents — **without a source checkout**. Two kinds:
 
 - **Presets** — pure provider/tier/model config (no agents, no secrets — only
   `token_env` *names*). `base` is the full provider matrix (mirrors the provider
-  half of `loomcycle.example.yaml`); `local` is a self-contained Ollama-first
-  matrix.
+  half of `loomcycle.example.yaml`); `oauth` and `local` are one-provider-per-file
+  overlays that `!prepend` their provider onto `base` (§9e) — `oauth` puts
+  Anthropic OAuth-dev on top, `local` puts Ollama on top, each keeping base's
+  matrix as fallback.
 - **Bundles** — a preset that *also* defines an agent and its skills **inline**
   (the top-level `skills:` map, §7). `document-agent` ships the `doc-manager`
   Document Assistant agent + its four skills — no skills directory, no
@@ -1113,8 +1131,12 @@ ordered) — or the repeatable `--preset` flag (flags override the env list) —
 layers the named units as the **base** of the config stack, under your files:
 
 ```sh
-LOOMCYCLE_PRESETS=base,document-agent loomcycle --config ~/.config/loomcycle/loomcycle.yaml
+# OAuth-first base + the Document Assistant, under your thin overlay:
+LOOMCYCLE_PRESETS=base,oauth,document-agent loomcycle --config ~/.config/loomcycle/loomcycle.yaml
 ```
+
+Because `oauth` / `local` `!prepend` (§9e), `base,oauth` resolves to OAuth on top
+with base's providers retained as fallback — no restatement of the matrix.
 
 The **full precedence chain** (base → top, last wins, RFC AN merge):
 
@@ -1136,9 +1158,7 @@ before (no presets) — embedded presets are a deliberate opt-in, not a silent n
 base. `document-agent` needs SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`) + a
 `middle` tier to actually run; absent those it's a registered-but-idle def.
 
-*(Deferred: a provider prepend-merge — `!prepend`/`!append` tags so a preset can
-be one-provider-per-file — and a `LOOMCYCLE_CONFIG_DIR` dir-of-layers — RFC AQ
-Phases 2–3.)*
+*(Deferred: a `LOOMCYCLE_CONFIG_DIR` dir-of-layers convention — RFC AQ Phase 3.)*
 
 ---
 

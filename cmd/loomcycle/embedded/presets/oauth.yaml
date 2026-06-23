@@ -1,0 +1,25 @@
+# RFC AQ embedded preset: oauth
+#
+# OAuth-first (Anthropic OAuth-dev on top). ONE PROVIDER PER FILE — it adds only
+# the OAuth provider and PREPENDS it (RFC AQ §3 !prepend), so it composes onto
+# `base` without restating the provider matrix. Select it AFTER base:
+#   LOOMCYCLE_PRESETS=base,oauth
+# yields provider_priority = [anthropic-oauth-dev, <base order…>] and each tier
+# with the OAuth alias on top — OAuth-first with full fallback, no restatement.
+#
+# Requires the OAuth-dev provider (LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 + a
+# `loomcycle anthropic login`). NO secrets here. Selected alone (no base) it
+# resolves an OAuth-only matrix.
+
+models:
+  oauth-haiku:  { provider: anthropic-oauth-dev, model: claude-haiku-4-5 }
+  oauth-sonnet: { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+  oauth-opus:   { provider: anthropic-oauth-dev, model: claude-opus-4-7 }
+
+# !prepend → merge in front of the accumulated provider_priority (not replace).
+provider_priority: !prepend [anthropic-oauth-dev]
+
+tiers:
+  low:    !prepend [oauth-haiku]
+  middle: !prepend [oauth-sonnet]
+  high:   !prepend [oauth-opus]
