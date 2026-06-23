@@ -67,6 +67,24 @@ func Handler(prefix string, secureCookie bool) http.Handler {
 		serveFile(w, "index.html")
 	})
 
+	// Logout — clears the session cookie and bounces to the login page. The
+	// cookie is HttpOnly, so JS can't clear it; this server route is the only
+	// way to end a Web UI session. A full navigation to <prefix>/logout (not a
+	// router push) runs this handler before React Router sees the path. More
+	// specific than the catch-all below, so Go 1.22 ServeMux routes here first.
+	mux.HandleFunc(fmt.Sprintf("GET %s/logout", prefix), func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{
+			Name:     SessionCookie,
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			Secure:   secureCookie || r.TLS != nil,
+			MaxAge:   -1, // delete now
+		})
+		http.Redirect(w, r, prefix+"/login", http.StatusFound)
+	})
+
 	mux.HandleFunc(fmt.Sprintf("GET %s/", prefix), func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, prefix+"/")
 		if rel == "" {

@@ -5398,6 +5398,24 @@ button.primary:disabled {
   border-color: var(--lc-accent);
 }
 
+.logout-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  background: transparent;
+  color: var(--lc-text-muted);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  cursor: pointer;
+  padding: 0;
+}
+.logout-btn:hover {
+  color: var(--lc-failed);
+  border-color: var(--lc-failed);
+}
+
 .settings-view {
   padding: var(--lc-space-3);
   max-width: 980px;

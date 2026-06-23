@@ -10,6 +10,7 @@ import {
   HardDrive,
   Library,
   ListTree,
+  LogOut,
   type LucideIcon,
   Moon,
   PanelLeftClose,
@@ -357,6 +358,13 @@ export default function Layout() {
               <Settings size={16} />
             </NavLink>
           )}
+          {/* Sign out — clears the HttpOnly session cookie via the server's
+              /ui/logout route (JS can't clear it) and bounces to /login. A
+              full-page anchor (not a router push) so the Go handler runs.
+              Available to every authenticated role, not just admin. */}
+          <a href="/ui/logout" className="logout-btn" title="Sign out" aria-label="Sign out">
+            <LogOut size={16} />
+          </a>
         </header>
         <main className="content">
           <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />

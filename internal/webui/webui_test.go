@@ -43,6 +43,33 @@ func TestHandler_TokenQueryRedirectsAndSetsCookie(t *testing.T) {
 	}
 }
 
+func TestHandler_LogoutClearsCookieAndRedirects(t *testing.T) {
+	h := Handler("/ui", false)
+	req := httptest.NewRequest("GET", "/ui/logout", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 (logout redirect)", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/ui/login" {
+		t.Errorf("Location = %q, want /ui/login", loc)
+	}
+	var found *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == SessionCookie {
+			found = c
+		}
+	}
+	if found == nil {
+		t.Fatalf("no %s cookie in response — logout must emit a clearing Set-Cookie", SessionCookie)
+	}
+	// A deletion cookie: empty value + MaxAge<0 (the browser drops it).
+	if found.Value != "" || found.MaxAge >= 0 {
+		t.Errorf("logout cookie not a deletion: value=%q MaxAge=%d (want \"\" and <0)", found.Value, found.MaxAge)
+	}
+}
+
 func TestHandler_SecureCookieFlag(t *testing.T) {
 	// secureCookie=true forces the Secure attribute even when r.TLS is
 	// nil — covers the operator behind a TLS terminator.
