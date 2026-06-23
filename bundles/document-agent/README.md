@@ -36,12 +36,19 @@ loomcycle --config bundles/document-agent/loomcycle.yaml
 ```
 
 **Register in your own deployment:**
-1. Copy the `agents: doc-manager` block from `loomcycle.yaml` into your config.
+1. **Layer this bundle onto your config — no copy-paste** (RFC AN config
+   layering): pass both files, your authoritative one **last** so your
+   providers/tiers/volumes win while the bundle contributes `doc-manager`:
+   ```sh
+   loomcycle --config bundles/document-agent/loomcycle.yaml --config your.yaml
+   ```
+   (Or copy the `agents: doc-manager` block into your config by hand if you'd
+   rather keep one file.)
 2. Point `LOOMCYCLE_SKILLS_ROOT` at this bundle's `skills/` (or copy them into
    your skills root) so the four skills resolve.
 3. Ensure `LOOMCYCLE_SQLMEM_ENABLED=1`.
-4. Swap the provider/tier for your routing — the agent only needs a `middle`
-   tier to resolve.
+4. The agent only needs a `middle` tier to resolve — when layered, it uses your
+   config's routing (last wins).
 
 **Anthropic OAuth (subscription) variant:** `loomcycle_oauth.yaml` is the same
 agent with `anthropic-oauth-dev` first in every tier and the API-key/cloud

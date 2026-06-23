@@ -2573,7 +2573,16 @@ type Env struct {
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
 // env only. Returns error on YAML parse failure or missing-required-field.
-func Load(path string) (*Config, error) {
+// Load reads, env-expands, merges, and validates one or more config files.
+// With a single path it is byte-identical to the historical single-file load.
+// With multiple paths (RFC AN config layering) the files are deep-merged at the
+// YAML-tree level left→right, last-layer-wins (so the operator's authoritative
+// file goes LAST); every replaced leaf is reported (a startup Warning, or a fatal
+// load error under LOOMCYCLE_CONFIG_STRICT=1). An empty/"" path is ignored
+// (the MDs-only / no-yaml deployment). Downstream — AGENTS_ROOT discovery,
+// system_prompt_file resolution, the env block, validate() — runs once over the
+// assembled whole, unchanged.
+func Load(paths ...string) (*Config, error) {
 	cfg := &Config{
 		Concurrency: Concurrency{
 			MaxConcurrentRuns: 8,
@@ -2586,18 +2595,58 @@ func Load(path string) (*Config, error) {
 		},
 	}
 
-	if path != "" {
-		raw, err := os.ReadFile(path)
+	// Drop empty paths (a "" arg = the no-yaml / MDs-only path).
+	files := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p != "" {
+			files = append(files, p)
+		}
+	}
+	// primaryPath is the LAST (authoritative) file — used for configDir +
+	// relative system_prompt_file resolution. With multiple layers, a relative
+	// system_prompt_file therefore resolves against the last file's directory;
+	// bundles should inline the prompt or use an absolute path (RFC AN P1 caveat).
+	primaryPath := ""
+	if len(files) > 0 {
+		primaryPath = files[len(files)-1]
+	}
+
+	switch {
+	case len(files) == 1:
+		// Single file — the historical path, byte-identical (no merge round-trip).
+		raw, err := os.ReadFile(files[0])
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
+			return nil, fmt.Errorf("read %s: %w", files[0], err)
 		}
 		expanded := expandEnv(string(raw))
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
+			return nil, fmt.Errorf("parse %s: %w", files[0], err)
 		}
-		// Stash the config directory so callers (e.g. localapi.Build)
-		// can resolve relative paths declared inside the YAML.
-		if abs, err := filepath.Abs(filepath.Dir(path)); err == nil {
+		if abs, err := filepath.Abs(filepath.Dir(files[0])); err == nil {
+			cfg.configDir = abs
+		}
+	case len(files) > 1:
+		// RFC AN: deep-merge the YAML trees, then unmarshal the merged whole.
+		merged, overrides, err := mergeConfigFiles(files)
+		if err != nil {
+			return nil, err
+		}
+		if len(overrides) > 0 {
+			if os.Getenv("LOOMCYCLE_CONFIG_STRICT") == "1" {
+				return nil, fmt.Errorf("config: %d cross-layer override(s) with LOOMCYCLE_CONFIG_STRICT=1: %s", len(overrides), strings.Join(overrides, "; "))
+			}
+			for _, o := range overrides {
+				cfg.Warnings = append(cfg.Warnings, "config layer override: "+o)
+			}
+		}
+		out, err := yaml.Marshal(merged)
+		if err != nil {
+			return nil, fmt.Errorf("re-marshal merged config: %w", err)
+		}
+		if err := yaml.Unmarshal(out, cfg); err != nil {
+			return nil, fmt.Errorf("parse merged config: %w", err)
+		}
+		if abs, err := filepath.Abs(filepath.Dir(primaryPath)); err == nil {
 			cfg.configDir = abs
 		}
 	}
@@ -2624,7 +2673,7 @@ func Load(path string) (*Config, error) {
 	// paths still work; this matches the documented semantic ("relative
 	// paths resolve against the YAML config file's directory" reduces
 	// to "the process's cwd" when there is no YAML).
-	if err := resolveSystemPromptFiles(cfg, path); err != nil {
+	if err := resolveSystemPromptFiles(cfg, primaryPath); err != nil {
 		return nil, err
 	}
 
