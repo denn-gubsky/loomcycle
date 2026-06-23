@@ -78,6 +78,21 @@ func (s *Set) Get(name string) (*Skill, bool) {
 	return sk, ok
 }
 
+// Add inserts or replaces a skill by its Name. Used to OVERLAY inline
+// config-defined skills (the top-level `skills:` map) onto a file-loaded
+// Set — an inline definition wins on a name collision with the
+// LOOMCYCLE_SKILLS_ROOT directory (config is authoritative). No-op on a
+// nil receiver or a nameless skill.
+func (s *Set) Add(sk *Skill) {
+	if s == nil || sk == nil || sk.Name == "" {
+		return
+	}
+	if s.skills == nil {
+		s.skills = map[string]*Skill{}
+	}
+	s.skills[sk.Name] = sk
+}
+
 // Names returns all loaded skill names sorted lexicographically. Used
 // by the diagnostic startup log.
 func (s *Set) Names() []string {
