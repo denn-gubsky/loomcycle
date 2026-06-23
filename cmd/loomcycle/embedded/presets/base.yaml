@@ -1,0 +1,87 @@
+# RFC AQ embedded preset: base
+#
+# The provider/tier scaffold every deployment starts from — all providers wired
+# as `models:` aliases, a cost-floor `provider_priority`, the three task `tiers`,
+# and the six `user_tiers`. NO agents (those come from an operator config or an
+# agent bundle) and NO secrets (only provider/model wiring; keys come from the
+# environment per provider). Selected via `LOOMCYCLE_PRESETS=base` and layered as
+# the base of the config stack, under the operator's thin overlay.
+#
+# This mirrors the provider half of `loomcycle.example.yaml`; keep them in sync.
+
+models:
+  # — Anthropic (key: ANTHROPIC_API_KEY) —
+  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
+  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  # — OpenAI (OPENAI_API_KEY) —
+  gpt-mini: { provider: openai, model: gpt-5.4-mini }
+  gpt:      { provider: openai, model: gpt-5.4 }
+  gpt-max:  { provider: openai, model: gpt-5.5 }
+  # — DeepSeek — the cost floor (DEEPSEEK_API_KEY) —
+  deepseek-flash: { provider: deepseek, model: deepseek-v4-flash }
+  deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
+  # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
+  cloud-kimi: { provider: ollama, model: kimi-k2.6 }
+  # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
+  local-small:  { provider: ollama-local, model: gemma4:9b }        # low tier
+  local-medium: { provider: ollama-local, model: qwen3.6:27b }      # middle tier
+  local-coder:  { provider: ollama-local, model: qwen3-coder-next } # high tier (coding)
+
+# Cost-floor-first: try the workstation GPU, then DeepSeek, then OpenAI, then
+# Anthropic; hosted ollama.com last (opt-in via OLLAMA_API_KEY).
+provider_priority:
+  - ollama-local
+  - deepseek
+  - openai
+  - anthropic
+  - ollama
+
+tiers:
+  low:
+    - deepseek-flash   # cost floor first
+    - local-small      # workstation GPU
+    - gpt-mini
+    - haiku            # cloud-frontier fallback
+  middle:
+    - deepseek-pro
+    - local-medium
+    - gpt
+    - sonnet
+  high:
+    - cloud-kimi
+    - gpt-max
+    - opus
+
+user_tiers:
+  # REQUIRED — used when a run's `user_tier:` is unset or unknown.
+  default:
+    provider_priority: [ollama-local, deepseek, openai, anthropic, ollama]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # Free tier: cost cap — only the no-paid-key providers, no climb on 429.
+  free:
+    provider_priority: [ollama-local]
+    tiers:
+      low:    [local-small]
+      middle: [local-medium]
+      high:   [local-medium]
+    fallback_on_error: false
+
+  # Low tier: cost-floor-first with one paid backstop.
+  low:
+    provider_priority: [deepseek, anthropic]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # Medium tier: paid providers preferred, DeepSeek as the cost backstop.
+  medium:
+    provider_priority: [openai, anthropic, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # High tier: Anthropic-only, no fallback (best model or error).
+  high:
+    provider_priority: [anthropic]
+    fallback_on_error: false

@@ -2578,18 +2578,32 @@ type Env struct {
 	A2APublicBaseURL string
 }
 
-// Load reads a YAML file and the process env. Empty path returns defaults +
-// env only. Returns error on YAML parse failure or missing-required-field.
-// Load reads, env-expands, merges, and validates one or more config files.
+// Load reads, env-expands, merges, and validates one or more config FILES.
 // With a single path it is byte-identical to the historical single-file load.
 // With multiple paths (RFC AN config layering) the files are deep-merged at the
 // YAML-tree level left→right, last-layer-wins (so the operator's authoritative
 // file goes LAST); every replaced leaf is reported (a startup Warning, or a fatal
 // load error under LOOMCYCLE_CONFIG_STRICT=1). An empty/"" path is ignored
-// (the MDs-only / no-yaml deployment). Downstream — AGENTS_ROOT discovery,
-// system_prompt_file resolution, the env block, validate() — runs once over the
-// assembled whole, unchanged.
+// (the MDs-only / no-yaml deployment). It is a thin wrapper over LoadLayers —
+// the embedded-preset path (RFC AQ) calls LoadLayers directly with in-memory
+// layers prepended as the base.
 func Load(paths ...string) (*Config, error) {
+	layers := make([]Layer, len(paths))
+	for i, p := range paths {
+		layers[i] = Layer{Name: p}
+	}
+	return LoadLayers(layers...)
+}
+
+// LoadLayers is Load generalised to in-memory layers (RFC AQ embedded presets +
+// bundles). A Layer is either a disk file (Data == nil → read Name) or
+// pre-resolved bytes (Data != nil — an embedded preset/bundle). Layers deep-merge
+// left→right, last wins, so embedded presets go FIRST (the base) and the
+// operator's authoritative file LAST. A single disk-file layer takes the
+// historical byte-identical fast path; everything else goes through the RFC AN
+// merge. Downstream — AGENTS_ROOT discovery, system_prompt_file resolution, the
+// env block, validate() — runs once over the assembled whole, unchanged.
+func LoadLayers(layers ...Layer) (*Config, error) {
 	cfg := &Config{
 		Concurrency: Concurrency{
 			MaxConcurrentRuns: 8,
@@ -2602,39 +2616,46 @@ func Load(paths ...string) (*Config, error) {
 		},
 	}
 
-	// Drop empty paths (a "" arg = the no-yaml / MDs-only path).
-	files := make([]string, 0, len(paths))
-	for _, p := range paths {
-		if p != "" {
-			files = append(files, p)
+	// Drop the no-yaml sentinel (a "" path / empty in-memory layer = the
+	// MDs-only path).
+	src := make([]Layer, 0, len(layers))
+	for _, l := range layers {
+		if l.Data == nil && l.Name == "" {
+			continue
 		}
+		src = append(src, l)
 	}
-	// primaryPath is the LAST (authoritative) file — used for configDir +
-	// relative system_prompt_file resolution. With multiple layers, a relative
-	// system_prompt_file therefore resolves against the last file's directory;
-	// bundles should inline the prompt or use an absolute path (RFC AN P1 caveat).
+	// primaryPath is the LAST disk-file layer — used for configDir + relative
+	// system_prompt_file resolution. Embedded layers (Data != nil) have no
+	// directory and never set it; a presets-only stack leaves it "" (relative
+	// prompts then resolve against cwd, matching the no-yaml path). A relative
+	// system_prompt_file in an operator layer resolves against the LAST file's
+	// directory; bundles inline the prompt (RFC AN P1 caveat).
 	primaryPath := ""
-	if len(files) > 0 {
-		primaryPath = files[len(files)-1]
+	for _, l := range src {
+		if l.Data == nil {
+			primaryPath = l.Name
+		}
 	}
 
 	switch {
-	case len(files) == 1:
-		// Single file — the historical path, byte-identical (no merge round-trip).
-		raw, err := os.ReadFile(files[0])
+	case len(src) == 1 && src[0].Data == nil:
+		// Single disk file — the historical path, byte-identical (no merge round-trip).
+		raw, err := os.ReadFile(src[0].Name)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", files[0], err)
+			return nil, fmt.Errorf("read %s: %w", src[0].Name, err)
 		}
 		expanded := expandEnv(string(raw))
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", files[0], err)
+			return nil, fmt.Errorf("parse %s: %w", src[0].Name, err)
 		}
-		if abs, err := filepath.Abs(filepath.Dir(files[0])); err == nil {
+		if abs, err := filepath.Abs(filepath.Dir(src[0].Name)); err == nil {
 			cfg.configDir = abs
 		}
-	case len(files) > 1:
-		// RFC AN: deep-merge the YAML trees, then unmarshal the merged whole.
-		merged, overrides, err := mergeConfigFiles(files)
+	case len(src) >= 1:
+		// RFC AN/AQ: deep-merge the YAML trees (≥2 layers, or a single in-memory
+		// preset/bundle), then unmarshal the merged whole.
+		merged, overrides, err := mergeLayers(src)
 		if err != nil {
 			return nil, err
 		}
@@ -2653,8 +2674,10 @@ func Load(paths ...string) (*Config, error) {
 		if err := yaml.Unmarshal(out, cfg); err != nil {
 			return nil, fmt.Errorf("parse merged config: %w", err)
 		}
-		if abs, err := filepath.Abs(filepath.Dir(primaryPath)); err == nil {
-			cfg.configDir = abs
+		if primaryPath != "" {
+			if abs, err := filepath.Abs(filepath.Dir(primaryPath)); err == nil {
+				cfg.configDir = abs
+			}
 		}
 	}
 	// Discover MD-defined agents BEFORE resolveSystemPromptFiles so
