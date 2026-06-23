@@ -2374,6 +2374,12 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_webhookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListWebhookDefNames))))
 	mux.Handle("GET /v1/_memorybackenddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryBackendDefNames))))
 	mux.Handle("GET /v1/_operatortokendef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListOperatorTokenDefNames))))
+	// RFC AQ — read-only embedded preset/bundle + env-template introspection
+	// (the `loomcycle presets` / `env-template` CLI, web-reachable for the
+	// Settings hub). Admin-gated via the /v1/_* default in requiredScopeFor.
+	mux.Handle("GET /v1/_presets", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListPresets))))
+	mux.Handle("GET /v1/_presets/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleShowPreset))))
+	mux.Handle("GET /v1/_env_template", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleEnvTemplate))))
 	// v0.9.x Library v2 — unified enumeration that merges static cfg
 	// + substrate views into one envelope per entry. The names/* sister
 	// endpoints above stay as-is for backwards compat with external

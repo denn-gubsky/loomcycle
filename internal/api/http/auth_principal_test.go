@@ -244,6 +244,11 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/hooks", auth.ScopeTenant},
 		{"GET", "/v1/hooks", auth.ScopeTenant},
 		{"DELETE", "/v1/hooks/h_1", auth.ScopeTenant},
+		// RFC AQ: the embedded preset/env-template read endpoints fall under the
+		// /v1/_* operator-admin default (the Settings hub is admin-only).
+		{"GET", "/v1/_presets", auth.ScopeAdmin},
+		{"GET", "/v1/_presets/base", auth.ScopeAdmin},
+		{"GET", "/v1/_env_template", auth.ScopeAdmin},
 		// Consumer gateway endpoints are NOT admin.
 		{"POST", "/v1/_llm/chat", ""},
 		{"POST", "/v1/chat/completions", ""},
