@@ -79,7 +79,21 @@ not source `.env.local` in a container — only real env + the mounted overlay.
 The catalog source is [`deploy/truenas/catalog/`](../deploy/truenas/catalog/)
 (`app.yaml`, `questions.yaml`, `ix_values.yaml`, `templates/`). The install form
 groups: **Providers & Presets** (multiselect), **Secrets**, **Storage (Postgres)**,
-**Runtime Options**, **Network**, **Storage (Datasets)**.
+**Runtime Options**, **Network**, **Storage (Datasets)**, and **Advanced
+configuration**.
+
+The **Advanced configuration** group exposes every non-secret knob from the env
+catalogue as a documented field (blank = the binary default). It is **generated**
+from the embedded `.env.insecure.example`, so it never drifts — regenerate it after
+changing the env catalogue:
+
+```sh
+loomcycle truenas-questions   # emits the env_options block; splice under `questions:`
+```
+
+The template wires it with one generic loop (`for key, val in values.env_options`),
+so adding a knob to `.env.insecure.example` + regenerating is all it takes — no
+per-knob template edit.
 
 > **⚠️ Validate before publishing.** `templates/docker-compose.yaml` uses the TrueNAS
 > Jinja2 + `ix-lib` render library, which the catalog CI vendors at build time (it is

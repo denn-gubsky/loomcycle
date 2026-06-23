@@ -13,6 +13,9 @@ sqlmem_pg_dsn: ""
 sqlmem_enabled: false
 automigrate: true
 additional_envs: []
+env_options:
+  LOOMCYCLE_BASH_ENABLED: ""
+  OLLAMA_BASE_URL: ""
 network:
   web_port:
     bind_mode: published
