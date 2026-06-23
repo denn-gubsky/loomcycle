@@ -1,0 +1,90 @@
+package embedded
+
+import (
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+// TestUnits_RegistryShape: the embedded registry exposes the base/local presets
+// and the document-agent bundle, each with a non-empty description and the right
+// kind. Guards against a renamed/dropped embedded file.
+func TestUnits_RegistryShape(t *testing.T) {
+	byName := map[string]Unit{}
+	for _, u := range Units() {
+		byName[u.Name] = u
+	}
+	want := map[string]string{
+		"base":           "preset",
+		"local":          "preset",
+		"document-agent": "bundle",
+	}
+	for name, kind := range want {
+		u, ok := byName[name]
+		if !ok {
+			t.Fatalf("embedded unit %q missing (have: %v)", name, unitNames())
+		}
+		if u.Kind != kind {
+			t.Errorf("unit %q kind = %q, want %q", name, u.Kind, kind)
+		}
+		if strings.TrimSpace(u.Description) == "" {
+			t.Errorf("unit %q has an empty description", name)
+		}
+		if len(u.Data) == 0 {
+			t.Errorf("unit %q has empty Data", name)
+		}
+	}
+}
+
+// TestUnits_ParseAsYAML: every embedded unit must be valid YAML (a malformed
+// preset/bundle is a build-time content bug we want caught by tests, not at boot).
+func TestUnits_ParseAsYAML(t *testing.T) {
+	for _, u := range Units() {
+		var tree map[string]any
+		if err := yaml.Unmarshal(u.Data, &tree); err != nil {
+			t.Errorf("unit %q is not valid YAML: %v", u.Name, err)
+		}
+	}
+}
+
+// TestResolveUnits_OrderAndUnknown: selection order is preserved (it becomes the
+// layer order), and an unknown name is a fatal error listing the available names.
+func TestResolveUnits_OrderAndUnknown(t *testing.T) {
+	got, err := ResolveUnits([]string{"document-agent", "base"})
+	if err != nil {
+		t.Fatalf("ResolveUnits: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "document-agent" || got[1].Name != "base" {
+		t.Fatalf("ResolveUnits order not preserved: %v", got)
+	}
+	if _, err := ResolveUnits([]string{"base", "nope"}); err == nil {
+		t.Errorf("ResolveUnits with an unknown name should error")
+	} else if !strings.Contains(err.Error(), "available:") {
+		t.Errorf("unknown-name error should list available units, got: %v", err)
+	}
+}
+
+// TestShow: returns a unit's bytes; errors with the available list on a miss.
+func TestShow(t *testing.T) {
+	data, err := Show("base")
+	if err != nil {
+		t.Fatalf("Show(base): %v", err)
+	}
+	if !strings.Contains(string(data), "provider_priority") {
+		t.Errorf("base preset should contain provider_priority")
+	}
+	if _, err := Show("does-not-exist"); err == nil {
+		t.Errorf("Show with an unknown name should error")
+	}
+}
+
+// TestEnvTemplate_NonEmpty: the embedded env.insecure.example is present.
+func TestEnvTemplate_NonEmpty(t *testing.T) {
+	if len(EnvTemplate()) == 0 {
+		t.Fatal("EnvTemplate() is empty — env.insecure.example not embedded")
+	}
+	if !strings.Contains(string(EnvTemplate()), "LOOMCYCLE_") {
+		t.Errorf("env template should mention LOOMCYCLE_ vars")
+	}
+}
