@@ -2082,3 +2082,109 @@ export function userEchoTranscript(seq: number, text: string): TranscriptEvent {
     event: { type: "user_echo", text },
   };
 }
+
+// ─── RFC AQ / RFC L — Settings hub: embedded presets + operator tokens ───────
+
+export interface PresetUnit {
+  name: string;
+  kind: string; // "preset" | "bundle"
+  description: string;
+}
+
+// listPresets / showPreset / getEnvTemplate mirror the `loomcycle presets` /
+// `env-template` CLI over HTTP (admin-gated) — the embedded config base, viewable
+// on a no-shell deployment.
+export function listPresets(): Promise<{ units: PresetUnit[] }> {
+  return jsonFetch<{ units: PresetUnit[] }>("/v1/_presets");
+}
+
+export function showPreset(name: string): Promise<{ name: string; yaml: string }> {
+  return jsonFetch<{ name: string; yaml: string }>(`/v1/_presets/${encodeURIComponent(name)}`);
+}
+
+export function getEnvTemplate(): Promise<{ env: string }> {
+  return jsonFetch<{ env: string }>("/v1/_env_template");
+}
+
+// Operator/tenant token management (RFC L). POST /v1/_operatortokendef dispatches
+// by `op`. A refused op returns 422 {code:"tool_refused", error, tool}; the
+// helper surfaces the human-readable `error`.
+export interface OperatorTokenNameSummary {
+  name: string;
+  tenant_id: string;
+  subject: string;
+  token_count: number;
+  has_current: boolean;
+  last_updated: string;
+}
+
+export interface OperatorTokenCreateResult {
+  def_id: string;
+  name: string;
+  tenant_id: string;
+  subject: string;
+  allowed_scopes: string[];
+  created_at: string;
+  token: string; // plaintext — shown ONCE, never retrievable again
+  token_suffix: string;
+  warning: string;
+  retired: boolean;
+}
+
+async function postOperatorToken<T>(input: Record<string, unknown>): Promise<T> {
+  const resp = await fetch(baseURL + "/v1/_operatortokendef", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) return new Promise<T>(() => {});
+    const raw = await resp.text();
+    let msg = `${resp.status} ${resp.statusText}: ${raw.slice(0, 200)}`;
+    try {
+      const env = JSON.parse(raw);
+      if (env && typeof env.error === "string") msg = env.error;
+    } catch {
+      // non-JSON body — keep the status-line message
+    }
+    throw new Error(msg);
+  }
+  return resp.json() as Promise<T>;
+}
+
+// listOperatorTokens returns one summary per token NAME (no secrets).
+export function listOperatorTokens(): Promise<{ names: OperatorTokenNameSummary[] }> {
+  return jsonFetch<{ names: OperatorTokenNameSummary[] }>("/v1/_operatortokendef/names");
+}
+
+export function mintOperatorToken(req: {
+  name: string;
+  tenant_id: string;
+  subject?: string;
+  scopes?: string[];
+}): Promise<OperatorTokenCreateResult> {
+  return postOperatorToken<OperatorTokenCreateResult>({ op: "create", ...req });
+}
+
+export function rotateOperatorToken(name: string, graceSeconds?: number): Promise<OperatorTokenCreateResult> {
+  const input: Record<string, unknown> = { op: "rotate", name };
+  if (graceSeconds && graceSeconds > 0) input.grace_seconds = graceSeconds;
+  return postOperatorToken<OperatorTokenCreateResult>(input);
+}
+
+export function retireOperatorToken(
+  name: string,
+): Promise<{ def_id: string; name: string; retired: boolean }> {
+  return postOperatorToken<{ def_id: string; name: string; retired: boolean }>({ op: "retire", name });
+}
+
+// The RFC L closed scope catalog — the token-mint form's scope choices.
+export const TOKEN_SCOPES = [
+  "substrate:tenant",
+  "substrate:admin",
+  "runs:create",
+  "runs:read",
+  "channel:publish",
+  "channel:read",
+] as const;

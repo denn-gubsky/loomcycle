@@ -5373,3 +5373,378 @@ button.primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ======================================================
+ * Settings hub — the top-bar gear → /settings.
+ * Tokens / presets / runtime / health, web-reaching the
+ * critical CLI surfaces for no-shell deployments (TrueNAS).
+ * ====================================================== */
+.settings-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  background: transparent;
+  color: var(--lc-text-muted);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  cursor: pointer;
+  padding: 0;
+}
+.settings-gear:hover,
+.settings-gear.active {
+  color: var(--lc-text);
+  border-color: var(--lc-accent);
+}
+
+.logout-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  background: transparent;
+  color: var(--lc-text-muted);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  cursor: pointer;
+  padding: 0;
+}
+.logout-btn:hover {
+  color: var(--lc-failed);
+  border-color: var(--lc-failed);
+}
+
+.settings-view {
+  padding: var(--lc-space-3);
+  max-width: 980px;
+  margin: 0 auto;
+  width: 100%;
+}
+.settings-tabs {
+  display: flex;
+  gap: var(--lc-space-1);
+  border-bottom: 1px solid var(--lc-rule);
+  margin-bottom: var(--lc-space-3);
+}
+.settings-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--lc-text-muted);
+  font-size: var(--lc-text-base);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.settings-tab:hover {
+  color: var(--lc-text);
+}
+.settings-tab.active {
+  color: var(--lc-text);
+  border-bottom-color: var(--lc-accent);
+  font-weight: 600;
+}
+
+.settings-panel {
+  background: var(--lc-surface);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius);
+  padding: var(--lc-space-3);
+}
+.settings-panel h2 {
+  margin: 0 0 var(--lc-space-1);
+  font-size: var(--lc-text-lg);
+}
+.settings-subhead {
+  margin: var(--lc-space-3) 0 var(--lc-space-1);
+  font-size: var(--lc-text-md);
+}
+.settings-help {
+  color: var(--lc-text-muted);
+  font-size: var(--lc-text-sm);
+  line-height: 1.5;
+  margin: 0 0 var(--lc-space-2);
+}
+.settings-help code,
+.settings-panel code {
+  font-family: var(--lc-font-mono);
+  font-size: 0.92em;
+  background: var(--lc-surface-2);
+  padding: 1px 5px;
+  border-radius: var(--lc-radius-sm);
+}
+.settings-muted {
+  color: var(--lc-text-faint);
+  font-size: var(--lc-text-sm);
+}
+.settings-error {
+  color: var(--lc-failed);
+  background: rgba(255, 93, 104, 0.1);
+  border: 1px solid rgba(255, 93, 104, 0.3);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  font-size: var(--lc-text-sm);
+  margin: var(--lc-space-1) 0;
+}
+.settings-flash {
+  color: var(--lc-completed);
+  font-size: var(--lc-text-sm);
+  margin-top: var(--lc-space-1);
+}
+
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--lc-text-sm);
+}
+.settings-table th {
+  text-align: left;
+  color: var(--lc-text-muted);
+  font-weight: 600;
+  padding: var(--lc-space-1);
+  border-bottom: 1px solid var(--lc-rule);
+}
+.settings-table td {
+  padding: var(--lc-space-1);
+  border-bottom: 1px solid var(--lc-rule);
+  vertical-align: middle;
+}
+.settings-row-actions {
+  display: flex;
+  gap: var(--lc-space-1);
+  align-items: center;
+}
+
+/* Buttons */
+.primary-btn,
+.ghost-btn {
+  font-size: var(--lc-text-sm);
+  padding: 6px 12px;
+  border-radius: var(--lc-radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--lc-rule);
+}
+.primary-btn {
+  background: var(--lc-accent);
+  color: var(--lc-text-inverse);
+  border-color: var(--lc-accent);
+  font-weight: 600;
+}
+.primary-btn:hover:not(:disabled) {
+  background: var(--lc-accent-hover);
+}
+.ghost-btn {
+  background: transparent;
+  color: var(--lc-text);
+}
+.ghost-btn:hover:not(:disabled) {
+  border-color: var(--lc-accent);
+}
+.ghost-btn.danger {
+  color: var(--lc-failed);
+}
+.ghost-btn.danger:hover:not(:disabled) {
+  border-color: var(--lc-failed);
+}
+.primary-btn:disabled,
+.ghost-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Status pills */
+.status-pill {
+  display: inline-block;
+  font-size: var(--lc-text-xs);
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+.status-ok {
+  background: rgba(78, 201, 176, 0.16);
+  color: var(--lc-completed);
+}
+.status-warn {
+  background: rgba(240, 160, 64, 0.16);
+  color: var(--lc-running);
+}
+.status-retired {
+  background: var(--lc-surface-2);
+  color: var(--lc-text-faint);
+}
+
+/* Token reveal (shown once) */
+.token-reveal {
+  background: var(--lc-accent-soft);
+  border: 1px solid var(--lc-accent);
+  border-radius: var(--lc-radius);
+  padding: var(--lc-space-2);
+  margin-bottom: var(--lc-space-3);
+}
+.token-reveal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--lc-space-2);
+  margin-bottom: var(--lc-space-1);
+  flex-wrap: wrap;
+}
+.token-reveal-warn {
+  color: var(--lc-running);
+  font-size: var(--lc-text-xs);
+}
+.token-reveal-row {
+  display: flex;
+  gap: var(--lc-space-1);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.token-secret {
+  flex: 1;
+  min-width: 220px;
+  font-family: var(--lc-font-mono);
+  font-size: var(--lc-text-sm);
+  background: var(--lc-bg);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: 6px 10px;
+  word-break: break-all;
+}
+.token-reveal-meta {
+  margin-top: var(--lc-space-1);
+  color: var(--lc-text-muted);
+  font-size: var(--lc-text-xs);
+}
+
+/* Token mint form */
+.token-form {
+  margin-bottom: var(--lc-space-3);
+}
+.token-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--lc-space-2);
+  margin-bottom: var(--lc-space-2);
+}
+.token-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text-muted);
+}
+.token-form input[type="text"] {
+  background: var(--lc-input-bg);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  color: var(--lc-text);
+  padding: 6px 10px;
+  font-size: var(--lc-text-sm);
+}
+.token-form .optional {
+  color: var(--lc-text-faint);
+  font-weight: 400;
+}
+.token-scopes {
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  margin-bottom: var(--lc-space-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--lc-space-2);
+}
+.token-scopes legend {
+  color: var(--lc-text-muted);
+  font-size: var(--lc-text-sm);
+  padding: 0 4px;
+}
+.scope-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--lc-text-sm);
+}
+
+/* Presets viewer */
+.presets-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) 1fr;
+  gap: var(--lc-space-2);
+}
+@media (max-width: 720px) {
+  .presets-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.presets-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lc-space-1);
+}
+.presets-item {
+  text-align: left;
+  background: var(--lc-surface-2);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  cursor: pointer;
+  color: var(--lc-text);
+}
+.presets-item:hover {
+  border-color: var(--lc-accent);
+}
+.presets-item.active {
+  border-color: var(--lc-accent);
+  background: var(--lc-accent-soft);
+}
+.presets-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--lc-space-1);
+}
+.presets-item-desc {
+  color: var(--lc-text-muted);
+  font-size: var(--lc-text-xs);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+.kind-pill {
+  font-size: var(--lc-text-xs);
+  padding: 0 7px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.kind-preset {
+  background: rgba(80, 140, 220, 0.16);
+  color: #6fa8e8;
+}
+.kind-bundle {
+  background: var(--lc-accent-soft);
+  color: var(--lc-accent);
+}
+.kind-env {
+  background: rgba(176, 139, 208, 0.16);
+  color: var(--lc-cancelled);
+}
+.presets-viewer {
+  min-width: 0;
+}
+.settings-code {
+  background: var(--lc-bg);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-2);
+  font-family: var(--lc-font-mono);
+  font-size: var(--lc-text-xs);
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 60vh;
+  white-space: pre;
+}
+.runtime-state {
+  font-size: var(--lc-text-sm);
+  margin-bottom: var(--lc-space-2);
+}

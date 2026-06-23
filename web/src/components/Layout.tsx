@@ -10,6 +10,7 @@ import {
   HardDrive,
   Library,
   ListTree,
+  LogOut,
   type LucideIcon,
   Moon,
   PanelLeftClose,
@@ -18,6 +19,7 @@ import {
   Plug,
   Radio,
   ScrollText,
+  Settings,
   Sun,
 } from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
@@ -347,6 +349,22 @@ export default function Layout() {
               </form>
             )}
           </div>
+          {/* Settings hub — operator/admin-only gear, rightmost. Web-reaches the
+              critical CLI surfaces (tokens, presets, runtime, health) for no-shell
+              deployments (the TrueNAS RFC AR prerequisite). Hidden for tenants; the
+              page re-guards, and the backend gates each surface server-side. */}
+          {isAdmin && (
+            <NavLink to="/settings" className="settings-gear" title="Settings" aria-label="Settings">
+              <Settings size={16} />
+            </NavLink>
+          )}
+          {/* Sign out — clears the HttpOnly session cookie via the server's
+              /ui/logout route (JS can't clear it) and bounces to /login. A
+              full-page anchor (not a router push) so the Go handler runs.
+              Available to every authenticated role, not just admin. */}
+          <a href="/ui/logout" className="logout-btn" title="Sign out" aria-label="Sign out">
+            <LogOut size={16} />
+          </a>
         </header>
         <main className="content">
           <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />

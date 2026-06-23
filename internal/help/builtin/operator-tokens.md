@@ -82,6 +82,17 @@ token is rotated, not recovered. The same operations are available over
 HTTP (`POST /v1/_operatortokendef`), gRPC, the MCP `operatortokendef`
 meta-tool, and the TS client's `operatorTokenDef()`.
 
+### From the Web UI (no shell)
+
+When the binary's CLI isn't reachable — a packaged deployment such as the
+TrueNAS app — the same lifecycle is in the **Settings hub**: sign in with an
+admin (root) token, click the **gear** (top-right), and open **Tokens**.
+Generate (the secret is revealed once with a copy button), list, rotate, and
+retire — backed by the same `POST /v1/_operatortokendef`. The gear and the
+Tokens panel are **admin-only** (a `substrate:tenant` session never sees them);
+the Settings hub also surfaces the embedded **Presets** (RFC AQ), **Runtime**
+(pause/resume), and **Health**.
+
 ## Rotation grace
 
 `rotate` mints a new token for the same principal and marks the prior
