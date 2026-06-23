@@ -378,6 +378,10 @@ func main() {
 			// RFC AQ — print the embedded .env.insecure.example (non-secret env
 			// catalogue) so it's reachable without a source checkout.
 			os.Exit(cli.RunEnvTemplate(os.Args[2:], os.Stdout, os.Stderr))
+		case "truenas-questions":
+			// RFC AR Phase 2 — generate the catalog form's env-options block from
+			// the embedded env catalogue (keeps the form in lockstep, no drift).
+			os.Exit(cli.RunTrueNASQuestions(os.Args[2:], os.Stdout, os.Stderr))
 		case "mcp-registry":
 			// v1.x RFC C1: curated MCP server recipe library.
 			// Seven verbs (list / show / append-to-config / add /

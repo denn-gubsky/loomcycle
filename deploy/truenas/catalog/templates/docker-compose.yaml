@@ -45,7 +45,17 @@
 {% if values.deepseek_api_key %}{% do c1.environment.add_env("DEEPSEEK_API_KEY", values.deepseek_api_key) %}{% endif %}
 {% if values.gemini_api_key %}{% do c1.environment.add_env("GEMINI_API_KEY", values.gemini_api_key) %}{% endif %}
 
-{# ── Any other non-secret knob (env catalogue) ── #}
+{# ── Catalogue knobs (generated env_options, RFC AR Phase 2) ── #}
+{# One generic loop over the generated dict — add only the knobs the operator set
+   (blank = fall through to the binary default). No per-knob template wiring, so
+   the form stays in lockstep with `loomcycle truenas-questions`. #}
+{% for key, val in values.env_options.items() %}
+{% if val is not none and val != "" %}
+{% do c1.environment.add_env(key, val) %}
+{% endif %}
+{% endfor %}
+
+{# ── Any knob NOT yet in the catalogue (free-form) ── #}
 {% do c1.environment.add_user_envs(values.additional_envs) %}
 
 {# ── Network + storage ── #}
