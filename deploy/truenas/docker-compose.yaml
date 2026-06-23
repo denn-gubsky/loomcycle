@@ -1,0 +1,95 @@
+# loomcycle on TrueNAS SCALE — custom-app (paste-compose) deployment.
+#
+# RFC AR Phase 1. This is the FAST route: TrueNAS SCALE (Electric Eel 24.10+) →
+# Apps → Discover → ⋮ → "Install via YAML" → paste this file. (The formal catalog
+# app with an install wizard lives in ./catalog/ — see ../docs/TRUENAS.md.)
+#
+# Before you install — on the TrueNAS host:
+#   1. Create datasets and chown them to the distroless uid (65532):
+#        mkdir -p /mnt/tank/loomcycle/{data,config,work}
+#        chown -R 65532:65532 /mnt/tank/loomcycle
+#   2. Create the loomcycle databases in your existing Postgres 16 (DB-per-service):
+#        CREATE DATABASE loomcycle;  CREATE DATABASE loomcycle_sqlmem;
+#      and a least-privilege role (see ../docs/TRUENAS.md §Postgres).
+#   3. Drop a thin overlay at /mnt/tank/loomcycle/config/loomcycle.yaml that maps
+#      your agent Volumes to the mounted host paths — copy loomcycle.overlay.example.yaml.
+#   4. Edit the env values + host paths below, then paste.
+#
+# loomcycle's provider/tier matrix comes from the EMBEDDED presets (RFC AQ) via
+# LOOMCYCLE_PRESETS — you don't write provider yaml. Secrets are TrueNAS-managed
+# env here, never a yaml layer. Ingress (TLS) is out of scope: the container binds
+# 0.0.0.0:8787 on the app network; front it with your existing tunnel/proxy.
+
+name: loomcycle
+
+services:
+  # One-shot schema migration. Runs `loomcycle migrate up` against Postgres, then
+  # exits; the runtime waits for it to complete. Decoupled from the image deploy
+  # (LOOMCYCLE_PG_AUTOMIGRATE=0 on the runtime) so a schema bump is explicit.
+  loomcycle-migrate:
+    image: denngubsky/loomcycle:latest # PIN a tag that includes RFC AQ (≥ the next release); :latest is for testing only
+    user: "65532:65532"
+    restart: "no"
+    command: ["migrate", "up"]
+    environment:
+      LOOMCYCLE_STORAGE_BACKEND: postgres
+      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN}
+      LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:-}
+
+  loomcycle:
+    image: denngubsky/loomcycle:latest # PIN a tag that includes RFC AQ (≥ the next release); :latest is for testing only
+    user: "65532:65532"
+    restart: unless-stopped
+    depends_on:
+      loomcycle-migrate:
+        condition: service_completed_successfully
+    ports:
+      # The app network port. Front with your tunnel/proxy — no public bind here.
+      - "8787:8787"
+    environment:
+      # Bind all interfaces inside the container (the port mapping above reaches it).
+      LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
+
+      # Provider/tier base from the embedded presets (RFC AQ). Add bundles/overlays:
+      #   base,oauth          → OAuth on top of the base matrix
+      #   base,document-agent → also register the Document Assistant agent
+      LOOMCYCLE_PRESETS: ${LOOMCYCLE_PRESETS:-base}
+      # The thin overlay (your volumes: block etc.) layered over the presets.
+      LOOMCYCLE_CONFIG_DIR: /config
+
+      # Storage — your existing Postgres 16 (the app does NOT bundle a DB).
+      LOOMCYCLE_STORAGE_BACKEND: postgres
+      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN}
+      LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:-}
+      LOOMCYCLE_SQLMEM_ENABLED: ${LOOMCYCLE_SQLMEM_ENABLED:-0}
+      # Migrations run in the init service above; the runtime must NOT auto-migrate.
+      LOOMCYCLE_PG_AUTOMIGRATE: "0"
+      # Local state (sqlmem cache, snapshots) on the data dataset.
+      LOOMCYCLE_DATA_DIR: /data
+
+      # Secrets — TrueNAS-managed env, never a yaml layer. Generate the token with
+      # `openssl rand -hex 32`; the pepper hardens minted operator-token hashes.
+      LOOMCYCLE_AUTH_TOKEN: ${LOOMCYCLE_AUTH_TOKEN:?set LOOMCYCLE_AUTH_TOKEN}
+      LOOMCYCLE_OPERATOR_TOKEN_PEPPER: ${LOOMCYCLE_OPERATOR_TOKEN_PEPPER:-}
+      # Provider keys — set whichever the selected presets route to.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      # loomcycle's own data (sqlmem cache, snapshots). chown 65532:65532.
+      - /mnt/tank/loomcycle/data:/data
+      # The thin overlay dir (read-only) — drop loomcycle.yaml here (volumes: block).
+      - /mnt/tank/loomcycle/config:/config:ro
+      # Agent filesystem Volume(s) (RFC AH) → ZFS datasets. The overlay's volumes:
+      # block maps a name to the IN-CONTAINER path (e.g. work → /mnt/work). Add a
+      # mount + an overlay entry per agent volume. (The catalog app turns this into
+      # repeating form rows — RFC AR Phase 2.)
+      - /mnt/tank/loomcycle/work:/mnt/work
+    healthcheck:
+      # distroless has no curl — the binary's own probe GETs /healthz.
+      test: ["CMD", "/usr/local/bin/loomcycle", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

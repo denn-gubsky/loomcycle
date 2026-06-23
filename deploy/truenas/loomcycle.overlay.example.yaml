@@ -1,0 +1,36 @@
+# loomcycle TrueNAS overlay — the thin, deployment-specific layer.
+#
+# Copy to your config dataset as loomcycle.yaml (the compose mounts that dataset
+# at /config and selects it via LOOMCYCLE_CONFIG_DIR). It is layered OVER the
+# embedded presets (RFC AQ): the presets supply the provider/tier matrix, this
+# file supplies only what's specific to this box — chiefly the agent Volumes
+# (RFC AH) mapped to the host datasets the compose mounted.
+#
+# Keep secrets OUT of this file — they're TrueNAS-managed env (the compose). This
+# overlay is non-secret config only.
+
+# Agent filesystem Volumes (RFC AH). Each `path` is the IN-CONTAINER mount point
+# (the right-hand side of the compose volume mount), which must already exist —
+# the bind mount creates it. Bind an agent to a volume with a per-agent
+# `volumes: [name]`; an agent with none, plus a `default: true` volume, binds to
+# default. With NO default and no binding, an agent has no filesystem access.
+volumes:
+  work:
+    path: /mnt/work        # ← matches the compose mount: /mnt/tank/loomcycle/work:/mnt/work
+    mode: rw
+    default: true
+  # Add a row here AND a compose mount per additional dataset, e.g.:
+  # reference:
+  #   path: /mnt/reference
+  #   mode: ro
+
+# You can also override anything the presets set (last layer wins) or add agents,
+# e.g. retarget the built-in document-agent's tier, or define your own agent:
+#
+# agents:
+#   my-agent:
+#     tier: middle
+#     allowed_tools: [Read, Write, Edit, Grep, Glob]
+#     volumes: [work]
+#     system_prompt: |
+#       …

@@ -1,0 +1,39 @@
+annotations:
+  min_scale_version: 24.10.2.2
+app_version: "1.6.0"
+capabilities: []
+categories:
+- productivity
+changelog_url: https://github.com/denn-gubsky/loomcycle/blob/main/REVISIONS.md
+date_added: '2026-06-23'
+description: loomcycle is a high-load agentic runtime — one Go binary that owns the
+  LLM tool-use loop end-to-end, runs as a sidecar, and is consumed over HTTP+SSE /
+  gRPC / MCP. Multi-provider, multi-tenant, multi-agent.
+home: https://github.com/denn-gubsky/loomcycle
+host_mounts: []
+icon: https://raw.githubusercontent.com/denn-gubsky/loomcycle/main/web/public/loomcycle-logo.svg
+keywords:
+- ai
+- agents
+- llm
+- mcp
+lib_version: 2.3.4
+lib_version_hash: ""
+maintainers:
+- email: dgubsky@waverleysoftware.com
+  name: denn-gubsky
+  url: https://github.com/denn-gubsky/loomcycle
+name: loomcycle
+run_as_context:
+- description: loomcycle runs as the distroless nonroot user (uid 65532). The mapped
+    datasets must be owned by 65532:65532.
+  gid: 65532
+  group_name: nonroot
+  uid: 65532
+  user_name: nonroot
+sources:
+- https://github.com/denn-gubsky/loomcycle
+- https://hub.docker.com/r/denngubsky/loomcycle
+title: loomcycle
+train: community
+version: 0.1.0
