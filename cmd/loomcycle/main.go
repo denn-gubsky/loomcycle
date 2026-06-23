@@ -395,7 +395,13 @@ func main() {
 		}
 	}
 
-	cfgPath := flag.String("config", "loomcycle.yaml", "path to config YAML")
+	// --config is repeatable (RFC AN config layering): each flag adds a layer,
+	// merged left→right with last-wins. No flag → the XDG default below.
+	var cfgPaths []string
+	flag.Func("config", "path to config YAML (repeatable; layers deep-merge left→right, last wins)", func(v string) error {
+		cfgPaths = append(cfgPaths, v)
+		return nil
+	})
 	showVersion := flag.Bool("version", false, "print build identifier and exit")
 	// RFC R thin-client mode: `loomcycle mcp --upstream <url>` runs as a
 	// stdio↔/v1/_mcp proxy to an authoritative runtime, with NO local
@@ -445,30 +451,57 @@ func main() {
 		return
 	}
 
-	// v0.11.1 auto-discovery: when --config wasn't overridden AND
-	// the default file doesn't exist, walk the XDG paths. The
-	// search list is the same one `loomcycle doctor` uses, so the
-	// two stay in lockstep. Explicit --config /path is unchanged.
-	resolvedCfg, found := resolveConfigPath(*cfgPath)
-	if !found {
-		fmt.Fprintln(os.Stderr, "loomcycle: no config found at any of:")
-		for _, p := range configAutoDiscoveryPaths() {
-			fmt.Fprintf(os.Stderr, "    %s\n", p)
+	// Assemble the ordered config-layer list (RFC AN). LOOMCYCLE_CONFIG_FILES
+	// (`:`-separated, for containers/systemd) layers as the BASE; explicit
+	// --config flags layer AFTER it, so an explicit flag always wins. With
+	// neither, fall back to the lone XDG-discovered default (today's behavior).
+	var cfgFiles []string
+	for _, f := range strings.Split(os.Getenv("LOOMCYCLE_CONFIG_FILES"), ":") {
+		if f = strings.TrimSpace(f); f != "" {
+			cfgFiles = append(cfgFiles, f)
 		}
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "Run `loomcycle init` to create one, or pass --config <path> to use an existing file.")
-		os.Exit(1)
+	}
+	cfgFiles = append(cfgFiles, cfgPaths...)
+
+	if len(cfgFiles) == 0 {
+		// v0.11.1 auto-discovery: no --config / env → walk the XDG paths. The
+		// search list is the same one `loomcycle doctor` uses, so the two stay
+		// in lockstep.
+		resolvedCfg, found := resolveConfigPath("loomcycle.yaml")
+		if !found {
+			fmt.Fprintln(os.Stderr, "loomcycle: no config found at any of:")
+			for _, p := range configAutoDiscoveryPaths() {
+				fmt.Fprintf(os.Stderr, "    %s\n", p)
+			}
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "Run `loomcycle init` to create one, or pass --config <path> to use an existing file.")
+			os.Exit(1)
+		}
+		cfgFiles = []string{resolvedCfg}
+	} else {
+		// Explicit layers must each exist (no per-file XDG fallback — explicit
+		// means literal). Fail fast with the offending path.
+		for _, f := range cfgFiles {
+			if _, err := os.Stat(f); err != nil {
+				fmt.Fprintf(os.Stderr, "loomcycle: config file not found: %s\n", f)
+				os.Exit(1)
+			}
+		}
+		if len(cfgFiles) > 1 {
+			log.Printf("config: layering %d files (last wins): %s", len(cfgFiles), strings.Join(cfgFiles, " ◁ "))
+		}
 	}
 	// Auto-load <configdir>/auth.env (companion to `loomcycle init
 	// --with-token`) BEFORE config.Load reads os.Getenv, so a persisted
 	// LOOMCYCLE_AUTH_TOKEN is in scope without a shell-rc edit. Set-if-unset
-	// (real env wins), so an explicit shell export still overrides it.
-	if authEnvPath, n, err := cli.LoadAuthEnv(resolvedCfg); err != nil {
+	// (real env wins), so an explicit shell export still overrides it. Keyed on
+	// the LAST (authoritative) layer — that's where an init-written auth.env lives.
+	if authEnvPath, n, err := cli.LoadAuthEnv(cfgFiles[len(cfgFiles)-1]); err != nil {
 		log.Printf("auth.env: %v (continuing without it)", err)
 	} else if n > 0 {
 		log.Printf("auth.env: loaded %d var(s) from %s (a shell export overrides them)", n, authEnvPath)
 	}
-	cfg, err := config.Load(resolvedCfg)
+	cfg, err := config.Load(cfgFiles...)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}

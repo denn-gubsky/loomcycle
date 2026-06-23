@@ -1013,6 +1013,57 @@ The embedded Web UI (`/ui`) has a dedicated **Volumes** tab (admin-gated, alongs
 
 ---
 
+## 9e. Config layering — stacking multiple config files (RFC AN)
+
+`--config` is **repeatable**, and the files are **deep-merged left→right, last
+wins** — so you can compose a bundled config with your own without copy-paste:
+
+```sh
+loomcycle --config bundles/document-agent/loomcycle.yaml \
+          --config ~/.config/loomcycle/loomcycle.yaml
+```
+
+Put your authoritative file **LAST**: the bundle contributes its `agents:` (e.g.
+`doc-manager`), and your file wins on `provider_priority` / `tiers` / `volumes` /
+`defaults` — so the bundle's agent runs on *your* routing and reads *your*
+`default` Volume. Containers/systemd can use the env form instead:
+`LOOMCYCLE_CONFIG_FILES=base.yaml:override.yaml` (`:`-separated). When both are
+set, `LOOMCYCLE_CONFIG_FILES` files layer as the **base** and explicit `--config`
+flags layer **after** them (an explicit flag always wins).
+
+**The merge rule (one rule, all sections).** Files are merged at the YAML-tree
+level *before* typed unmarshal, so a key's presence is explicit:
+
+> **mapping ⊕ mapping → merge keys recursively. Otherwise (scalar, sequence, or
+> type mismatch) → the later layer replaces.**
+
+| Section | Merge result |
+|---|---|
+| `agents`, `models`, `mcp_servers`, `channels`, `volumes`, `user_tiers`, `webhooks`, `a2a_*`, `memory_backends`, `scheduled_runs`, `principals` | **by key** — a new entry is added; a same-named entry **field-merges** (last wins per field, matching the `LOOMCYCLE_AGENTS_ROOT` / `mergeAgentDef` precedent) |
+| `tiers` | per-tier **by key**; each tier's candidate list **replaces** wholesale |
+| `provider_priority`, `context_plugins` | **replaced** wholesale (no implicit append — restate the full list) |
+| `defaults`, `concurrency`, `cache`, `storage`, `interruption`, `hooks`, `memory` | **field-by-field** (a layer may override one field) |
+| top-level scalars | last layer wins |
+
+**Conflicts are explicit.** Every leaf a later layer *replaces* (a key set
+differently in an earlier layer) is logged at startup
+(`config layer override: <dotted.path> (set by <file>, …)`). Set
+**`LOOMCYCLE_CONFIG_STRICT=1`** to make any cross-layer conflict a **fatal load
+error** (recommended for production — an accidental clobber of `provider_priority`
+or a host allowlist can't slip through silently). Adding a new key or re-setting a
+key to the *same* value is not a conflict.
+
+**Notes.** Each file keeps its own `${ENV}` expansion (a later layer can't inject
+into an earlier layer's text). The merged whole runs the **same `validate()`** as a
+single file — layering only *assembles* a config, it can't produce one a single
+file couldn't. A single `--config` is byte-identical to before. This is orthogonal
+to the `.env.local` / `.env.insecure` split (§9c) — that's env vars; this is YAML.
+Relative `system_prompt_file` paths resolve against the **last** file's directory
+(bundles should inline the prompt or use an absolute path). *(Deferred: an in-YAML
+`include:` directive and `loomcycle config render` — RFC AN Phases 2–3.)*
+
+---
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
