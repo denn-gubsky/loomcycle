@@ -1142,9 +1142,15 @@ The **full precedence chain** (base → top, last wins, RFC AN merge):
 
 ```
 embedded presets (LOOMCYCLE_PRESETS, in order)
-  → LOOMCYCLE_CONFIG_FILES   (':'-separated)
-  → --config flags           (your authoritative overlay, wins)
+  → LOOMCYCLE_CONFIG_DIR/*.yaml   (a dir of layers, lexical order)
+  → LOOMCYCLE_CONFIG_FILES        (':'-separated)
+  → --config flags                (your authoritative overlay, wins)
 ```
+
+`LOOMCYCLE_CONFIG_DIR` (RFC AQ) is a directory whose `*.yaml` / `*.yml` files
+layer as a group in lexical filename order (so prefix them `10-`, `20-`, …) —
+handy for a mounted overlay dir or an image-baked drop-in set. A set-but-missing
+dir is a fatal error; an empty dir is fine.
 
 So `base` supplies the provider matrix, `document-agent` registers `doc-manager`
 with its skills, and your `--config` wins on anything it sets (e.g. retarget the
@@ -1157,8 +1163,6 @@ case). An unknown unit name is a **fatal** error listing the available names.
 before (no presets) — embedded presets are a deliberate opt-in, not a silent new
 base. `document-agent` needs SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`) + a
 `middle` tier to actually run; absent those it's a registered-but-idle def.
-
-*(Deferred: a `LOOMCYCLE_CONFIG_DIR` dir-of-layers convention — RFC AQ Phase 3.)*
 
 ---
 
