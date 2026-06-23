@@ -18,6 +18,7 @@ import {
   Plug,
   Radio,
   ScrollText,
+  Settings,
   Sun,
 } from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
@@ -347,6 +348,15 @@ export default function Layout() {
               </form>
             )}
           </div>
+          {/* Settings hub — operator/admin-only gear, rightmost. Web-reaches the
+              critical CLI surfaces (tokens, presets, runtime, health) for no-shell
+              deployments (the TrueNAS RFC AR prerequisite). Hidden for tenants; the
+              page re-guards, and the backend gates each surface server-side. */}
+          {isAdmin && (
+            <NavLink to="/settings" className="settings-gear" title="Settings" aria-label="Settings">
+              <Settings size={16} />
+            </NavLink>
+          )}
         </header>
         <main className="content">
           <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />

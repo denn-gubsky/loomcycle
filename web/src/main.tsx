@@ -23,6 +23,7 @@ import PathTreeView from "./pages/PathTreeView";
 import DocumentsView from "./pages/DocumentsView";
 import ChannelsView from "./pages/ChannelsView";
 import SchedulesView from "./pages/SchedulesView";
+import SettingsView from "./pages/SettingsView";
 import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
 import LoginView from "./pages/LoginView";
@@ -82,6 +83,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="snapshots" element={<SnapshotsView />} />
           <Route path="audit" element={<AuditView />} />
           <Route path="activity" element={<ActivityMonitor />} />
+          <Route path="settings" element={<SettingsView />} />
           <Route path="*" element={<Navigate to="/agents" replace />} />
         </Route>
       </Routes>
