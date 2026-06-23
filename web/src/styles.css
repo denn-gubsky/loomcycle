@@ -5190,7 +5190,14 @@ button.primary:disabled {
   border-radius: 4px;
   cursor: pointer;
 }
-.doc-content-body,
+/* The selected-chunk view (chunk body OR assembled markdown) scrolls
+   independently of the fixed head — both modes can be long. */
+.doc-content-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 14px;
+}
 .doc-empty-body {
   color: var(--fg-soft);
   font-style: italic;
