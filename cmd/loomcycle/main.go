@@ -34,6 +34,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	a2aapi "github.com/denn-gubsky/loomcycle/internal/api/a2a"
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
@@ -240,6 +241,23 @@ func printVersion() {
 		buildVersion, buildCommit, buildTime, runtime.Version())
 }
 
+// selectPresetNames resolves the RFC AQ embedded-preset selection: --preset
+// flags, if any, override LOOMCYCLE_PRESETS (comma-separated, ordered). Empty /
+// unset → no presets (opt-in default — exactly today's behaviour). Order is
+// preserved; it becomes the base layer order of the config stack.
+func selectPresetNames(flags []string, env string) []string {
+	if len(flags) > 0 {
+		return flags
+	}
+	var out []string
+	for _, n := range strings.Split(env, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func main() {
 	// Resolve build identifiers FIRST so subcommands (validate / agents
 	// / health / migrate) and --version see the same auto-resolved
@@ -402,6 +420,14 @@ func main() {
 		cfgPaths = append(cfgPaths, v)
 		return nil
 	})
+	// --preset is the repeatable flag equivalent of LOOMCYCLE_PRESETS (RFC AQ):
+	// each names an embedded preset/bundle layered as the BASE of the stack, in
+	// order. Flags, if any, override the env selection.
+	var presetFlags []string
+	flag.Func("preset", "embedded preset/bundle to layer as a base (repeatable; e.g. base, document-agent)", func(v string) error {
+		presetFlags = append(presetFlags, v)
+		return nil
+	})
 	showVersion := flag.Bool("version", false, "print build identifier and exit")
 	// RFC R thin-client mode: `loomcycle mcp --upstream <url>` runs as a
 	// stdio↔/v1/_mcp proxy to an authoritative runtime, with NO local
@@ -451,10 +477,30 @@ func main() {
 		return
 	}
 
-	// Assemble the ordered config-layer list (RFC AN). LOOMCYCLE_CONFIG_FILES
-	// (`:`-separated, for containers/systemd) layers as the BASE; explicit
+	// RFC AQ — resolve the embedded-preset selection (base of the config stack).
+	// --preset flags, if any, override the LOOMCYCLE_PRESETS env list; OPT-IN by
+	// default (neither set → no presets → exactly today's behaviour). A bad name
+	// is fatal (typo protection) and lists the available units.
+	presetNames := selectPresetNames(presetFlags, os.Getenv("LOOMCYCLE_PRESETS"))
+	var presetLayers []config.Layer
+	if len(presetNames) > 0 {
+		units, err := embedded.ResolveUnits(presetNames)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "loomcycle: %v\n", err)
+			os.Exit(1)
+		}
+		for _, u := range units {
+			presetLayers = append(presetLayers, config.Layer{Name: u.Name, Data: u.Data})
+		}
+		log.Printf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(presetNames), strings.Join(presetNames, ", "))
+	}
+
+	// Assemble the ordered config-FILE list (RFC AN). LOOMCYCLE_CONFIG_FILES
+	// (`:`-separated, for containers/systemd) layers as the base; explicit
 	// --config flags layer AFTER it, so an explicit flag always wins. With
-	// neither, fall back to the lone XDG-discovered default (today's behavior).
+	// neither, fall back to the lone XDG-discovered default (today's behavior) —
+	// unless embedded presets are active, in which case a presets-only stack
+	// (no operator file) is allowed (RFC AQ bare-start).
 	var cfgFiles []string
 	for _, f := range strings.Split(os.Getenv("LOOMCYCLE_CONFIG_FILES"), ":") {
 		if f = strings.TrimSpace(f); f != "" {
@@ -468,16 +514,21 @@ func main() {
 		// search list is the same one `loomcycle doctor` uses, so the two stay
 		// in lockstep.
 		resolvedCfg, found := resolveConfigPath("loomcycle.yaml")
-		if !found {
+		switch {
+		case found:
+			cfgFiles = []string{resolvedCfg}
+		case len(presetLayers) > 0:
+			// Presets-only: the embedded base IS the config (RFC AQ §2.2).
+			log.Printf("config: no operator config file — running from embedded presets only")
+		default:
 			fmt.Fprintln(os.Stderr, "loomcycle: no config found at any of:")
 			for _, p := range configAutoDiscoveryPaths() {
 				fmt.Fprintf(os.Stderr, "    %s\n", p)
 			}
 			fmt.Fprintln(os.Stderr)
-			fmt.Fprintln(os.Stderr, "Run `loomcycle init` to create one, or pass --config <path> to use an existing file.")
+			fmt.Fprintln(os.Stderr, "Run `loomcycle init` to create one, pass --config <path>, or select an embedded base with LOOMCYCLE_PRESETS=base.")
 			os.Exit(1)
 		}
-		cfgFiles = []string{resolvedCfg}
 	} else {
 		// Explicit layers must each exist (no per-file XDG fallback — explicit
 		// means literal). Fail fast with the offending path.
@@ -495,13 +546,22 @@ func main() {
 	// --with-token`) BEFORE config.Load reads os.Getenv, so a persisted
 	// LOOMCYCLE_AUTH_TOKEN is in scope without a shell-rc edit. Set-if-unset
 	// (real env wins), so an explicit shell export still overrides it. Keyed on
-	// the LAST (authoritative) layer — that's where an init-written auth.env lives.
-	if authEnvPath, n, err := cli.LoadAuthEnv(cfgFiles[len(cfgFiles)-1]); err != nil {
-		log.Printf("auth.env: %v (continuing without it)", err)
-	} else if n > 0 {
-		log.Printf("auth.env: loaded %d var(s) from %s (a shell export overrides them)", n, authEnvPath)
+	// the LAST (authoritative) FILE layer — that's where an init-written auth.env
+	// lives. A presets-only stack has no config dir, so there's nothing to load.
+	if len(cfgFiles) > 0 {
+		if authEnvPath, n, err := cli.LoadAuthEnv(cfgFiles[len(cfgFiles)-1]); err != nil {
+			log.Printf("auth.env: %v (continuing without it)", err)
+		} else if n > 0 {
+			log.Printf("auth.env: loaded %d var(s) from %s (a shell export overrides them)", n, authEnvPath)
+		}
 	}
-	cfg, err := config.Load(cfgFiles...)
+	// Build the full ordered layer list: embedded presets (base) ++ disk files.
+	layers := make([]config.Layer, 0, len(presetLayers)+len(cfgFiles))
+	layers = append(layers, presetLayers...)
+	for _, f := range cfgFiles {
+		layers = append(layers, config.Layer{Name: f})
+	}
+	cfg, err := config.LoadLayers(layers...)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
