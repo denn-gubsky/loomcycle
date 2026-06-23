@@ -1082,6 +1082,62 @@ Relative `system_prompt_file` paths resolve against the **last** file's director
 
 ---
 
+## 9f. Embedded presets & bundles (RFC AQ)
+
+The binary ships a curated set of config layers so an install resolves a sane
+base — and built-in agents — **without a source checkout**. Two kinds:
+
+- **Presets** — pure provider/tier/model config (no agents, no secrets — only
+  `token_env` *names*). `base` is the full provider matrix (mirrors the provider
+  half of `loomcycle.example.yaml`); `local` is a self-contained Ollama-first
+  matrix.
+- **Bundles** — a preset that *also* defines an agent and its skills **inline**
+  (the top-level `skills:` map, §7). `document-agent` ships the `doc-manager`
+  Document Assistant agent + its four skills — no skills directory, no
+  `LOOMCYCLE_SKILLS_ROOT`.
+
+List + read them (works on any install, no source tree):
+
+```sh
+loomcycle presets                  # name / kind / description table
+loomcycle presets show base        # print a unit's YAML (read or fork it)
+loomcycle env-template             # print the embedded .env.insecure.example
+```
+
+**Selecting them.** `LOOMCYCLE_PRESETS=base,document-agent` (comma-separated,
+ordered) — or the repeatable `--preset` flag (flags override the env list) —
+layers the named units as the **base** of the config stack, under your files:
+
+```sh
+LOOMCYCLE_PRESETS=base,document-agent loomcycle --config ~/.config/loomcycle/loomcycle.yaml
+```
+
+The **full precedence chain** (base → top, last wins, RFC AN merge):
+
+```
+embedded presets (LOOMCYCLE_PRESETS, in order)
+  → LOOMCYCLE_CONFIG_FILES   (':'-separated)
+  → --config flags           (your authoritative overlay, wins)
+```
+
+So `base` supplies the provider matrix, `document-agent` registers `doc-manager`
+with its skills, and your `--config` wins on anything it sets (e.g. retarget the
+agent's tier, narrow its `allowed_tools` — you can't *widen* it past the def's
+ceiling, or swap a skill body by re-declaring its key). Selecting presets with
+**no config file at all** boots from the embedded base alone (the bare-start
+case). An unknown unit name is a **fatal** error listing the available names.
+
+**Opt-in.** With `LOOMCYCLE_PRESETS` unset and no `--preset`, boot is exactly as
+before (no presets) — embedded presets are a deliberate opt-in, not a silent new
+base. `document-agent` needs SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`) + a
+`middle` tier to actually run; absent those it's a registered-but-idle def.
+
+*(Deferred: a provider prepend-merge — `!prepend`/`!append` tags so a preset can
+be one-provider-per-file — and a `LOOMCYCLE_CONFIG_DIR` dir-of-layers — RFC AQ
+Phases 2–3.)*
+
+---
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
