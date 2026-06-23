@@ -8,6 +8,76 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.5.0
+
+The loomcycle-as-MCP-server transport becomes per-tenant, static config-declared
+logins land, and config files stack — a multi-tenant + ergonomics line on v1.4.0.
+
+**🔑 Per-principal `/v1/_mcp` — the MCP-server transport is now tenant-confined (RFC AG).**
+loomcycle's own MCP-server HTTP transport ran every request as a global operator
+regardless of the bearer, so it had to stay `substrate:admin`-only. v1.5.0 makes
+it per-principal. `mcpPrincipalCtx` stamps the authenticated principal's
+`UserID = subject` + `TenantID` on every builtin-tool dispatch — so user-scoped
+tools (`document` / `memory` / `path`) key on the same id the off-run HTTP path
+uses (the fix for the cross-transport mismatch where an MCP-created document was
+invisible in the Web UI). `applyPrincipal` overrides the wire tenant/user on
+`spawn_run` / `spawn_runs`. A per-operation gate hides + refuses the admin-only
+meta-tools (token minting, runtime admin, snapshots) for a non-admin session.
+And the route moves `substrate:admin → substrate:tenant`, promoting the
+(already tenant-isolated) hook meta-tools to tenant-confinable. **Net:** a
+`substrate:tenant` token now drives a fully tenant-confined MCP session — author
+/ run / manage its own defs, runs, memory, channels, documents, paths, hooks, but
+mint nothing and touch no other tenant. `substrate:admin` still satisfies the
+route, so admin sessions are unchanged. See `docs/MCP_SERVER.md`.
+
+**👤 Config-declared principals — static `(tenant, subject)` logins (RFC AO).**
+A new top-level `principals:` block declares stable service identities —
+`name → {tenant, subject, scopes, token_env}` — each bound to a bearer secret in
+an env var (`.env.local`, never the yaml). The bearer resolver tries minted
+`OperatorTokenDef` → declared principal → legacy token (constant-time match;
+`token_env` may not name a loomcycle infra secret; a duplicate secret is a
+config-load error; an empty `token_env` makes the principal inert + warns). The
+payoff, with RFC AG: use ONE declared token for both the Web UI login and an MCP
+thin client (`LOOMCYCLE_MCP_UPSTREAM_TOKEN`) — both resolve to the same
+`(tenant, subject)`, so a plugin/agent's user-scoped work lands where the Web UI
+reads it, by construction. Server-resolved from the token, never the wire. See
+`docs/CONFIGURATION.md` ("Declared principals").
+
+**🧩 Config layering — stack multiple config files (RFC AN).** `--config` is now
+repeatable (+ `LOOMCYCLE_CONFIG_FILES` for containers), deep-merged left→right,
+last wins — so a bundle (e.g. `bundles/document-agent/`) stacks onto an
+operator's local config without copy-paste. One recursive rule: mapping ⊕ mapping
+→ merge keys (a same-named entry field-merges, matching the `LOOMCYCLE_AGENTS_ROOT`
+precedent); scalar / sequence → later replaces. Every replaced leaf is logged at
+startup; `LOOMCYCLE_CONFIG_STRICT=1` makes a cross-layer conflict fatal. Each
+file keeps its own `${ENV}` expansion; the merged whole runs the existing
+`validate()`. A single `--config` is byte-identical to before. (`config render`
+and an in-YAML `include:` directive are deferred follow-ups.) See
+`docs/CONFIGURATION.md` §9e.
+
+**🖥️ Web UI — per-chunk Document view.** The Document viewer's chunks/markdown
+toggle now operates on the selected chunk: "markdown" assembles the selected
+chunk + its sub-chunks into one rendered document (select the root → the whole
+document; select a section → just that part), and the selected-chunk pane
+scrolls independently.
+
+### Compatibility
+
+**Additive — no breaking changes, no new wire RPCs.** RFC AG is an auth/route
+change on an existing endpoint (`substrate:admin → substrate:tenant`, with the
+in-session per-tool gate preserving the admin-only boundary); RFC AO + AN are
+config-only; the Web UI change is the embedded SPA. The TS + Python adapters are
+**unchanged since v1.4.0** — no new adapter surface, so intentionally no
+`@loomcycle/client@1.5.0` and no `python-v1.5.0` (their publish jobs skip-clean).
+The matching **Claude Code plugin is v1.5.0** — a tenant or config-declared
+`auth_token` now drives the plugin, with `/loomcycle:operator-token` +
+`/loomcycle:snapshot` flagged admin-only.
+
+Docs: `docs/MCP_SERVER.md`, `docs/CONFIGURATION.md` (Declared principals + §9e
+config layering).
+
+---
+
 ## What's in v1.4.0
 
 Two new substrate primitives — a filesystem-like naming layer and chunked-graph
