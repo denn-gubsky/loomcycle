@@ -18,6 +18,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 	want := map[string]string{
 		"base":           "preset",
 		"local":          "preset",
+		"oauth":          "preset",
 		"document-agent": "bundle",
 	}
 	for name, kind := range want {

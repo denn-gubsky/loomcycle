@@ -1,32 +1,25 @@
 # RFC AQ embedded preset: local
 #
-# Local-first (Ollama on your workstation / LAN), with a single cloud entry to
-# catch outages and oversized prefills. SELF-CONTAINED — selecting it alone
-# (`LOOMCYCLE_PRESETS=local`) resolves a complete provider matrix without `base`.
-# NO agents, NO secrets. Mirrors the provider half of
-# `loomcycle.local-interactive.example.yaml`.
+# Local-first (Ollama on your workstation / LAN). ONE PROVIDER PER FILE — it adds
+# the local models and PREPENDS ollama-local (RFC AQ §3 !prepend), so it composes
+# onto `base` without restating the matrix. The two intended uses:
+#   LOOMCYCLE_PRESETS=base,local   → local on top of base's full matrix, so cloud
+#                                    providers remain as fallback (recommended).
+#   LOOMCYCLE_PRESETS=local        → pure local: ollama-local only, no cloud.
 #
-# Set OLLAMA_BASE_URL to your Ollama host (default http://localhost:11434) and
-# ANTHROPIC_API_KEY for the cloud fallback (swap for whichever you have a key for).
+# Set OLLAMA_BASE_URL to your Ollama host (default http://localhost:11434). NO
+# secrets here.
 
 models:
   local-fast:  { provider: ollama-local, model: gemma4:9b }        # quick / low-context
   local-chat:  { provider: ollama-local, model: qwen3.6:27b }      # general reasoning
   local-coder: { provider: ollama-local, model: qwen3-coder-next } # coding / review
-  cloud-sonnet: { provider: anthropic, model: claude-sonnet-4-6 }  # cloud fallback
 
-# Local first; the cloud entry catches outages and oversized prefills.
-provider_priority:
-  - ollama-local
-  - anthropic
+# !prepend → ollama-local goes on top; with `base` its cloud providers follow as
+# fallback (dedup keeps ollama-local's promoted position).
+provider_priority: !prepend [ollama-local]
 
 tiers:
-  low:    [local-fast,  cloud-sonnet]
-  middle: [local-chat,  cloud-sonnet]
-  high:   [local-coder, cloud-sonnet]
-
-user_tiers:
-  default:
-    provider_priority: [ollama-local, anthropic]
-    fallback_on_error: true
-    max_fallback_attempts: 2
+  low:    !prepend [local-fast]
+  middle: !prepend [local-chat]
+  high:   !prepend [local-coder]
