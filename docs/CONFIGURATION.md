@@ -1104,6 +1104,10 @@ loomcycle presets show base        # print a unit's YAML (read or fork it)
 loomcycle env-template             # print the embedded .env.insecure.example
 ```
 
+On a no-shell deployment the same three are read-only in the **Web UI Settings
+hub** (the top-right gear → **Presets**, admin-only) — backed by
+`GET /v1/_presets`, `/v1/_presets/{name}`, `/v1/_env_template`.
+
 **Selecting them.** `LOOMCYCLE_PRESETS=base,document-agent` (comma-separated,
 ordered) — or the repeatable `--preset` flag (flags override the env list) —
 layers the named units as the **base** of the config stack, under your files:
