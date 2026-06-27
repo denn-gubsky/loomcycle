@@ -290,3 +290,75 @@ func TestProxy_DeadUpstreamRepliesError(t *testing.T) {
 		t.Fatal("dead upstream should surface a JSON-RPC error")
 	}
 }
+
+// TestProxy_ReinitializesOnSessionExpiry: when the upstream invalidates the
+// session (its 30-min inactivity TTL, or a restart) and returns 404 / -32001,
+// the proxy transparently re-runs the initialize handshake and retries the
+// frame — so the client sees a normal result, no /exit-relaunch. Fails on the
+// pre-fix proxy (which surfaced the 404 as a JSON-RPC error and never refreshed
+// the dead session id).
+func TestProxy_ReinitializesOnSessionExpiry(t *testing.T) {
+	var mu sync.Mutex
+	initCount := 0
+	valid := "" // the session id the upstream currently accepts
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/_mcp", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var p struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &p)
+
+		if p.Method == "initialize" {
+			mu.Lock()
+			initCount++
+			sid := "sess-" + itoa(int64(initCount))
+			if initCount >= 2 {
+				valid = sid // the re-handshake session is accepted; sess-1 stays "expired"
+			}
+			mu.Unlock()
+			w.Header().Set("Mcp-Session-Id", sid)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`))
+			return
+		}
+		if p.ID == nil { // notification (notifications/initialized) — no body
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		ok := valid != "" && r.Header.Get("Mcp-Session-Id") == valid
+		mu.Unlock()
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + itoa(*p.ID) + `,"error":{"code":-32001,"message":"session not found or expired"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + itoa(*p.ID) + `,"result":{"ok":true}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	pc := NewProxyClient(ProxyConfig{Upstream: srv.URL, Logf: func(string, ...any) {}})
+	h := newProxyHarness(t, pc)
+	defer h.close()
+
+	h.send(initFrame())
+	h.waitResp(1, 2*time.Second)
+	// This call goes out on the (now-expired) sess-1 → 404/-32001 → the proxy
+	// must re-handshake and retry, returning a clean result.
+	h.send(callFrame(2, "memory"))
+	got := h.waitResp(2, 3*time.Second)
+	if got.Error != nil {
+		t.Fatalf("expected transparent recovery, got JSON-RPC error: %+v", got.Error)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if initCount < 2 {
+		t.Errorf("expected a transparent re-initialize (initCount>=2), got %d", initCount)
+	}
+}
