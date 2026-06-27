@@ -64,7 +64,25 @@ type ProxyClient struct {
 	// initialize; echoed on every subsequent request.
 	sessMu  sync.RWMutex
 	session string
+
+	// initFrame caches the client's initialize request so the proxy can
+	// transparently RE-HANDSHAKE when the upstream invalidates the session
+	// (its 30-min inactivity TTL, or a restart): replaying it mints a fresh
+	// Mcp-Session-Id without the client (e.g. Claude Code) noticing — no
+	// /exit-relaunch. reinitMu single-flights concurrent re-handshakes.
+	initMu    sync.RWMutex
+	initFrame []byte
+	reinitMu  sync.Mutex
 }
+
+// mcpSessionExpiredCode is the JSON-RPC error code the upstream HTTP transport
+// returns (with HTTP 404) for an unknown/expired Mcp-Session-Id — the signal to
+// re-handshake. Mirrors internal/api/mcp/http_transport.go.
+const mcpSessionExpiredCode = -32001
+
+// initializedNotification is the parameterless post-initialize notification,
+// replayed after a re-handshake to mark the fresh session initialized.
+var initializedNotification = []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 
 // NewProxyClient builds a thin-client proxy targeting Upstream.
 func NewProxyClient(cfg ProxyConfig) *ProxyClient {
@@ -112,17 +130,19 @@ func (p *ProxyClient) Serve(ctx context.Context, stdin io.Reader, stdout io.Writ
 		_ = json.Unmarshal(line, &probe)
 
 		if probe.Method == "initialize" {
-			// Inline: capture the session before forwarding anything that
-			// will need it (the upstream requires Mcp-Session-Id on every
-			// non-initialize request).
-			p.forward(reqCtx, line, stdout)
+			// Cache the handshake so we can replay it on a server-side session
+			// expiry (re-handshake). Inline: capture the session before
+			// forwarding anything that will need it (the upstream requires
+			// Mcp-Session-Id on every non-initialize request).
+			p.setInitFrame(line)
+			p.forward(reqCtx, line, stdout, true)
 			continue
 		}
 
 		p.wg.Add(1)
 		go func(fr []byte) {
 			defer p.wg.Done()
-			p.forward(reqCtx, fr, stdout)
+			p.forward(reqCtx, fr, stdout, true)
 		}(line)
 	}
 
@@ -136,7 +156,11 @@ func (p *ProxyClient) Serve(ctx context.Context, stdin io.Reader, stdout io.Writ
 
 // forward POSTs one JSON-RPC frame to the upstream /v1/_mcp and relays
 // the response (single JSON frame, or each SSE data frame) to stdout.
-func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Writer) {
+// allowReinit gates the transparent re-handshake on a session-expiry: it is
+// true for client-originated frames and false for the single retry after a
+// re-handshake (so a still-failing upstream can't loop).
+func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Writer, allowReinit bool) {
+	sentSID := p.sessionID()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.mcpURL, bytes.NewReader(frame))
 	if err != nil {
 		p.replyError(stdout, frame, "build request: "+err.Error())
@@ -149,8 +173,8 @@ func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Write
 	if p.cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
 	}
-	if sid := p.sessionID(); sid != "" {
-		req.Header.Set("Mcp-Session-Id", sid)
+	if sentSID != "" {
+		req.Header.Set("Mcp-Session-Id", sentSID)
 	}
 
 	resp, err := p.client.Do(req)
@@ -172,6 +196,19 @@ func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Write
 	// addressed to this frame so the client gets a usable response.
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		// Self-heal: the upstream invalidated our session (its 30-min
+		// inactivity TTL, or a restart). Re-run the initialize handshake to
+		// mint a fresh session, then retry this frame ONCE — so the client
+		// never sees the expiry (no /exit-relaunch). Only on the real
+		// session-expiry signal, never for initialize itself, at most one retry.
+		if allowReinit && sessionExpired(resp.StatusCode, body) && frameMethod(frame) != "initialize" {
+			if rerr := p.reinitialize(ctx, sentSID); rerr != nil {
+				p.cfg.Logf("mcp proxy: re-initialize after session expiry failed: %v", rerr)
+			} else {
+				p.forward(ctx, frame, stdout, false)
+				return
+			}
+		}
 		p.replyError(stdout, frame, fmt.Sprintf("upstream HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
 		return
 	}
@@ -277,4 +314,103 @@ func (p *ProxyClient) setSessionID(id string) {
 	p.sessMu.Lock()
 	defer p.sessMu.Unlock()
 	p.session = id
+}
+
+func (p *ProxyClient) setInitFrame(frame []byte) {
+	cp := append([]byte(nil), frame...) // own the bytes; the scanner buffer is reused
+	p.initMu.Lock()
+	p.initFrame = cp
+	p.initMu.Unlock()
+}
+
+func (p *ProxyClient) getInitFrame() []byte {
+	p.initMu.RLock()
+	defer p.initMu.RUnlock()
+	return p.initFrame
+}
+
+// reinitialize re-runs the cached initialize handshake against the upstream to
+// obtain a fresh Mcp-Session-Id after a server-side session expiry. staleSID is
+// the session the failed request was sent with; if the live session already
+// differs, another goroutine re-handshook concurrently and we reuse it
+// (single-flight). The handshake POSTs are silent — their responses are NOT
+// relayed to the client, which already completed its one initialize.
+func (p *ProxyClient) reinitialize(ctx context.Context, staleSID string) error {
+	p.reinitMu.Lock()
+	defer p.reinitMu.Unlock()
+	if cur := p.sessionID(); cur != "" && cur != staleSID {
+		return nil // already refreshed by a concurrent forward
+	}
+	init := p.getInitFrame()
+	if len(init) == 0 {
+		return fmt.Errorf("no cached initialize to replay")
+	}
+	newSID, err := p.silentPost(ctx, init, "") // initialize ignores any session id; mints a fresh one
+	if err != nil {
+		return err
+	}
+	if newSID == "" {
+		return fmt.Errorf("upstream returned no Mcp-Session-Id on re-initialize")
+	}
+	p.setSessionID(newSID)
+	p.cfg.Logf("mcp proxy: upstream session expired — re-initialized (fresh session, client uninterrupted)")
+	// Mark the new session initialized (a notification; no response). The
+	// upstream doesn't currently gate tools/call on it, but this keeps the
+	// handshake spec-correct + future-proof.
+	if _, nerr := p.silentPost(ctx, initializedNotification, newSID); nerr != nil {
+		p.cfg.Logf("mcp proxy: notifications/initialized after re-init: %v", nerr)
+	}
+	return nil
+}
+
+// silentPost POSTs a frame to the upstream WITHOUT relaying the response to
+// stdout — used for the re-handshake (replaying initialize + initialized). It
+// returns the Mcp-Session-Id the upstream set, if any.
+func (p *ProxyClient) silentPost(ctx context.Context, frame []byte, sid string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.mcpURL, bytes.NewReader(frame))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if p.cfg.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
+	}
+	if sid != "" {
+		req.Header.Set("Mcp-Session-Id", sid)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("upstream HTTP %d", resp.StatusCode)
+	}
+	return resp.Header.Get("Mcp-Session-Id"), nil
+}
+
+// sessionExpired reports whether an upstream response is the "session not found
+// or expired" signal: HTTP 404 carrying JSON-RPC error code -32001. Keying on
+// the code (not any 404) avoids re-handshaking on unrelated errors.
+func sessionExpired(status int, body []byte) bool {
+	if status != http.StatusNotFound {
+		return false
+	}
+	var e struct {
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &e) == nil && e.Error != nil && e.Error.Code == mcpSessionExpiredCode
+}
+
+// frameMethod extracts the JSON-RPC method from a frame (best-effort).
+func frameMethod(frame []byte) string {
+	var probe struct {
+		Method string `json:"method"`
+	}
+	_ = json.Unmarshal(frame, &probe)
+	return probe.Method
 }
