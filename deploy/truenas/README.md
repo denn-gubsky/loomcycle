@@ -13,7 +13,7 @@ Compose app engine). **RFC AR.** Two routes — both documented in
 Both routes share the same shape: the binary's **embedded presets** (RFC AQ)
 supply the provider/tier matrix (`LOOMCYCLE_PRESETS`); a thin overlay supplies the
 agent **Volumes** (RFC AH) mapped to ZFS datasets; **secrets** are TrueNAS-managed
-env (never a yaml layer); storage is your **existing Postgres 16** (the app bundles
+env (never a yaml layer); storage is your **existing Postgres ≥ 14** (the app bundles
 no DB). Ingress/TLS is out of scope — the container binds `0.0.0.0:8787`; front it
 with your existing tunnel/proxy.
 

@@ -8,7 +8,7 @@
 #   1. Create datasets and chown them to the distroless uid (65532):
 #        mkdir -p /mnt/tank/loomcycle/{data,config,work}
 #        chown -R 65532:65532 /mnt/tank/loomcycle
-#   2. Create the loomcycle databases in your existing Postgres 16 (DB-per-service):
+#   2. Create the loomcycle databases in your existing Postgres ≥ 14 (DB-per-service):
 #        CREATE DATABASE loomcycle;  CREATE DATABASE loomcycle_sqlmem;
 #      and a least-privilege role (see ../docs/TRUENAS.md §Postgres).
 #   3. Drop a thin overlay at /mnt/tank/loomcycle/config/loomcycle.yaml that maps
@@ -57,7 +57,7 @@ services:
       # The thin overlay (your volumes: block etc.) layered over the presets.
       LOOMCYCLE_CONFIG_DIR: /config
 
-      # Storage — your existing Postgres 16 (the app does NOT bundle a DB).
+      # Storage — your existing Postgres ≥ 14 (the app does NOT bundle a DB).
       LOOMCYCLE_STORAGE_BACKEND: postgres
       LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN}
       LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:-}

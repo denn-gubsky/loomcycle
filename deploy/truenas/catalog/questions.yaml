@@ -8,7 +8,7 @@ groups:
   - name: Secrets
     description: Bearer token, pepper, and provider API keys (masked, env-only).
   - name: Storage (Postgres)
-    description: Your existing Postgres 16 — loomcycle bundles no database.
+    description: Your existing Postgres (v14 or newer) — loomcycle bundles no database.
   - name: Runtime Options
     description: Non-secret operational config.
   - name: Network
