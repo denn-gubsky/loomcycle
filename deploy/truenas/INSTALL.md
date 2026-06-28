@@ -167,7 +167,7 @@ services:
       LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
       LOOMCYCLE_WEBHOOKS_ENABLED: "1"
       LOOMCYCLE_SCHEDULER_ENABLED: "1"
-      LOOMCYCLE_AUDIT_LOG_PATH: /data
+      LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log   # a FILE, not the /data dir
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
       OLLAMA_BASE_URL: http://TRUENAS_SCALE_HOST:11434
@@ -226,5 +226,6 @@ Bump the image tag → new binary → refreshed embedded presets automatically; 
 | migrate `connection refused` | DSN host/port unreachable from the apps network, or the role/DB doesn't exist (Phase 1). |
 | App healthy but auth fails / no providers wired | The `env_file` didn't load — confirm the **absolute path** in `env_file:` is exact and the file is `chmod 600` (root-readable). Remember an `environment:` key overrides the same key in `env_file`, so don't re-add a secret inline. |
 | migrate `LOOMCYCLE_PG_DSN ... required` | The `env_file:` line is missing from the `loomcycle-migrate` service (it needs the DSNs too), or the path is wrong. |
+| Crash-loop ending `sqlmem audit: ... open /data: is a directory` | `LOOMCYCLE_AUDIT_LOG_PATH` must be a **file**, not the `/data` mount — set `/data/audit.log` (or remove the line; the audit log is optional). |
 | `doc-manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
