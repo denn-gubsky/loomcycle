@@ -53,6 +53,7 @@ services:
       LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
 
   # --- Postgres backend (uncomment for v0.10.x+ Vector Memory / HA) ---
+  # Any Postgres ≥ 14 works; 16 here is just a tested default.
   # postgres:
   #   image: postgres:16
   #   container_name: loomcycle-pg

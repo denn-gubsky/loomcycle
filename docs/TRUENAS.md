@@ -21,7 +21,7 @@ also 25.04 Fangtooth). The pre-24.10 Helm/k8s app format does not apply.
 |---|---|
 | All providers + tiers (`LOOMCYCLE_PRESETS=base`), OAuth/local overlays, the `document-agent` Document Assistant | Which presets to enable |
 | The runtime, Web UI, MCP server, all tools | The bearer token + provider API key(s) |
-| Migrations (`loomcycle migrate up`) | A Postgres 16 connection (the app bundles **no** DB) |
+| Migrations (`loomcycle migrate up`) | A Postgres ≥ 14 connection (the app bundles **no** DB) |
 | — | The ZFS datasets agents may read/write (RFC AH Volumes) |
 
 Secrets are **TrueNAS-managed env**, never written to a YAML layer. loomcycle does
@@ -31,7 +31,7 @@ not source `.env.local` in a container — only real env + the mounted overlay.
 
 ## Prerequisites (on the TrueNAS host)
 
-1. **Postgres 16** reachable from the apps network (your existing instance,
+1. **Postgres ≥ 14** reachable from the apps network (your existing instance,
    DB-per-service — see [`POSTGRES.md`](POSTGRES.md)). Create the databases:
    ```sql
    CREATE DATABASE loomcycle;

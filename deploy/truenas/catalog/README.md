@@ -9,7 +9,7 @@ This is the TrueNAS SCALE **catalog app** source (Electric Eel 24.10+). The
 provider/tier matrix is supplied by the binary's embedded presets (RFC AQ) — the
 install form picks presets, the secrets, your Postgres DSN, the port, and the
 dataset mounts. Secrets are TrueNAS-managed env; the app bundles no database
-(point it at your existing Postgres 16). Ingress/TLS is the operator's existing
+(point it at your existing Postgres ≥ 14). Ingress/TLS is the operator's existing
 tunnel/proxy.
 
 See [`../../../docs/TRUENAS.md`](../../../docs/TRUENAS.md) for the install/edit/
