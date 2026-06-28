@@ -29,35 +29,59 @@ import PauseControls from "./PauseControls";
 const USER_ID_KEY = "loomcycle.userId";
 const SIDEBAR_KEY = "loomcycle.sidebar.collapsed";
 
-// Left-sidebar navigation model. `adminOnly` reproduces the pre-sidebar
-// gating exactly: run + runs are every role's workspace; the rest are
-// operator-global / admin surfaces (hidden for a tenant, 403 server-side).
+// Left-sidebar navigation model (RFC AS §4 — per-surface visibility class,
+// replacing the old binary `adminOnly`):
+//   "all"    — every authenticated role (run/runs: the principal-scoped workspace).
+//   "tenant" — admin OR a substrate:tenant operator. The surface's reads are
+//              tenant-scoped server-side (the operator sees only its own tenant)
+//              and its writes are already reachable by substrate:tenant (RFC AF),
+//              so the item lights up once it's visible.
+//   "admin"  — super-admin only (operator plane / no per-tenant axis).
+//
+// A "tenant" item is ONLY assigned where the backing route gate actually admits
+// substrate:tenant (requiredScopeFor → ScopeTenant or a tenantImplied scope):
+// library (#575/#577), integrations + schedules (the *def/names + scheduledef
+// def plane, #576 / isTenantConfinedDefPath), volumes (/v1/_volumes), paths
+// (/v1/_path), interrupts (/v1/users/{id}/interrupts — runs:read, tenantImplied).
+// channels (/v1/_channels) and memory (/v1/_memory/*) DELIBERATELY stay "admin":
+// their store rows carry no tenant column, so the routes are pinned to ScopeAdmin
+// (the /v1/_* catch-all) — a tenant token would 403. This narrows RFC AS §4's
+// channels+memory="tenant" to match the shipped backend; revisit if those
+// primitives gain a tenant axis (a schema migration, its own RFC).
+type Visibility = "all" | "tenant" | "admin";
 interface NavItem {
   to: string;
   label: string;
   Icon: LucideIcon;
-  adminOnly: boolean;
+  vis: Visibility;
 }
 const NAV_ITEMS: NavItem[] = [
-  { to: "/run", label: "run", Icon: Play, adminOnly: false },
-  { to: "/agents", label: "runs", Icon: ListTree, adminOnly: false },
-  { to: "/library/agents", label: "library", Icon: Library, adminOnly: true },
-  { to: "/integrations/webhooks", label: "integrations", Icon: Plug, adminOnly: true },
-  // RFC AH Phase 4. adminOnly mirrors the Library/Integrations def-management
-  // gating; broadening to tenant-operator UI access is a separate concern.
-  { to: "/volumes/persistent", label: "volumes", Icon: HardDrive, adminOnly: true },
-  // RFC AM Phase 1 — the Path VFS tree console. adminOnly mirrors the
-  // volumes/library def-management gating; broadening to tenant-operator UI
-  // access is a separate concern (the data is per-principal scoped regardless).
-  { to: "/paths", label: "paths", Icon: FolderTree, adminOnly: true },
-  { to: "/channels", label: "channels", Icon: Radio, adminOnly: true },
-  { to: "/schedules", label: "schedules", Icon: CalendarClock, adminOnly: true },
-  { to: "/interrupts", label: "interrupts", Icon: Bell, adminOnly: true },
-  { to: "/memory", label: "memory", Icon: Brain, adminOnly: true },
-  { to: "/snapshots", label: "snapshots", Icon: Camera, adminOnly: true },
-  { to: "/audit", label: "audit", Icon: ScrollText, adminOnly: true },
-  { to: "/activity", label: "activity", Icon: Activity, adminOnly: true },
+  { to: "/run", label: "run", Icon: Play, vis: "all" },
+  { to: "/agents", label: "runs", Icon: ListTree, vis: "all" },
+  { to: "/library/agents", label: "library", Icon: Library, vis: "tenant" },
+  { to: "/integrations/webhooks", label: "integrations", Icon: Plug, vis: "tenant" },
+  { to: "/volumes/persistent", label: "volumes", Icon: HardDrive, vis: "tenant" },
+  { to: "/paths", label: "paths", Icon: FolderTree, vis: "tenant" },
+  { to: "/channels", label: "channels", Icon: Radio, vis: "admin" },
+  { to: "/schedules", label: "schedules", Icon: CalendarClock, vis: "tenant" },
+  { to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },
+  { to: "/memory", label: "memory", Icon: Brain, vis: "admin" },
+  { to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },
+  { to: "/audit", label: "audit", Icon: ScrollText, vis: "admin" },
+  { to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
 ];
+
+// canSeeNav gates a nav item by the principal's role (RFC AS §4).
+function canSeeNav(vis: Visibility, isAdmin: boolean, hasTenantScope: boolean): boolean {
+  switch (vis) {
+    case "all":
+      return true;
+    case "tenant":
+      return isAdmin || hasTenantScope;
+    case "admin":
+      return isAdmin;
+  }
+}
 // Refresh the user picker every 30 s. Activity stats (running counts)
 // drift fast on busy deployments; the dropdown is rendered with the
 // most recent counts each time it opens.
@@ -84,6 +108,11 @@ export default function Layout() {
   const [principal, setPrincipal] = useState<Principal | null | undefined>(undefined);
   const [principalErr, setPrincipalErr] = useState<string | null>(null);
   const isAdmin = principal?.is_admin === true;
+  // RFC AS §4: a substrate:tenant operator additionally sees the tenant-scoped
+  // surfaces. Admin, legacy, and open-mode principals all report is_admin:true
+  // (handleWhoami), so they already see every item via canSeeNav's admin branch
+  // — no open-mode special case needed here.
+  const hasTenantScope = principal?.scopes?.includes("substrate:tenant") === true;
 
   // Super-admin tenant-focus (?tenant=): "" = all tenants (admin's default
   // global view). A tenant principal can't set this — the backend forces
@@ -195,12 +224,12 @@ export default function Layout() {
   return (
     <div className="layout">
       <aside className={"sidebar" + (navCollapsed ? " sidebar-collapsed" : "")}>
-        {/* run + runs are every role's workspace (running is tenant-level,
-            scoped by principal server-side); the rest are operator-global /
-            admin surfaces, hidden for a tenant (and 403 server-side). The
-            NAV_ITEMS.adminOnly filter reproduces the old isAdmin gating. */}
+        {/* Per-surface visibility (RFC AS §4): run/runs for every role; the
+            tenant-scoped surfaces for admin OR a substrate:tenant operator;
+            the operator-plane surfaces for admin only. canSeeNav encodes the
+            class → role gate; the server still enforces it (defence in depth). */}
         <nav className="sidebar-nav">
-          {NAV_ITEMS.filter((it) => !it.adminOnly || isAdmin).map(({ to, label, Icon }) => (
+          {NAV_ITEMS.filter((it) => canSeeNav(it.vis, isAdmin, hasTenantScope)).map(({ to, label, Icon }) => (
             <NavLink key={to} to={to} title={label}>
               <Icon size={18} className="sidebar-icon" />
               <span className="sidebar-label">{label}</span>
