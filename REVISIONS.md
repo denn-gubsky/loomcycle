@@ -8,6 +8,24 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.6.1
+
+**Patch — the MCP thin client self-heals on upstream session expiry.** A
+long-running `loomcycle mcp --upstream` thin-client session would wedge after an
+idle gap: the upstream's HTTP MCP session store reaps sessions after a 30-minute
+inactivity TTL (and on restart), after which the proxy's cached `Mcp-Session-Id`
+is dead — the upstream returns `404 / JSON-RPC -32001 "session not found or
+expired"`. The proxy surfaced that as an error but never refreshed the session,
+so every later call failed identically; only respawning the subprocess (Claude
+Code `/exit` + relaunch) recovered. The proxy is now **self-healing**: it caches
+the client's `initialize` frame and, on the `-32001` signal, transparently
+re-runs the handshake (silent re-`initialize` → fresh `Mcp-Session-Id` → replay
+`notifications/initialized`) and retries the original frame ONCE — so the client
+never sees the expiry. Single-flighted, one-retry-bounded, gated on the exact
+`-32001` code (not any 404), never for `initialize` itself, stderr-logged per
+heal. Runtime-only; no wire/protocol/client-surface change; binaries otherwise
+identical to v1.6.0. Adapters unchanged.
+
 ## What's in v1.6.0
 
 Config is now bundled INTO the binary and deployable as a TrueNAS app — an
