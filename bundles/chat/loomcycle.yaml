@@ -1,0 +1,101 @@
+# embedded bundle: chat
+# Two general-purpose conversational agents for direct chatting in the
+# interactive /run terminal:
+#   chat        — tier:middle (routes per your provider_priority; cloud-capable)
+#   chat-local  — pinned to the local middle model (ollama-local); never leaves the box
+#
+# Selected via `LOOMCYCLE_PRESETS=…,chat`. This bundle carries NO provider matrix:
+# `chat` needs a `middle` tier and `chat-local` needs the `local-medium` alias from
+# another layer — select `base` alongside it (or supply your own).
+#
+# Requirements for the full toolset:
+#   - File/shell tools (Read/Write/Edit/Grep/Glob/Bash/Bashbox) need a read-write
+#     volume. These agents declare no `volumes:`, so they use the operator's
+#     DEFAULT volume — define a `volumes:` entry with `default: true, mode: rw`
+#     (or bind one per agent in your overlay). Without it, those tools are
+#     registered-but-idle.
+#   - Document + Memory need LOOMCYCLE_SQLMEM_ENABLED=1 (Document is SQL-backed).
+#   - WebSearch needs BRAVE_API_KEY; WebFetch/WebSearch need LOOMCYCLE_HTTP_HOST_ALLOWLIST.
+#   - Bashbox needs LOOMCYCLE_BASHBOX_ENABLED=1; Bash needs LOOMCYCLE_BASH_ENABLED=1.
+#   - chat-local's large context window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
+#     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml.
+#
+# The operator overlay can override any field by re-declaring the key (last layer
+# wins per field). It cannot WIDEN allowed_tools (the AgentDef ceiling is unchanged).
+
+agents:
+  chat:
+    tier: middle
+    effort: medium
+    # max_tokens intentionally OMITTED — each provider applies its own default
+    # (Anthropic defaults to 8192; ollama generates until the context fills).
+    # Pinning a value would only IMPOSE a per-reply cap, not add headroom.
+    unbounded_iterations: true              # interactive chat parks at end_turn
+    allowed_tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill]
+    memory_scopes: [user]
+    sql_scopes: [user]                      # Document is SQL-Memory-backed
+    sampling:
+      temperature: 0.7
+    compaction:
+      enabled: true
+      autocompact_at_pct: 80
+    system_prompt: |
+      You are CHAT, a helpful, direct general-purpose assistant for an operator
+      working in the loomcycle terminal. Hold a natural multi-turn conversation:
+      answer questions, reason through problems, and reach for your tools when
+      they make the answer better or are needed to act.
+
+      ## Tools
+      - Web: use WebSearch to find current information and WebFetch to read a
+        specific URL. Search when the answer depends on recent or external facts
+        rather than guessing.
+      - Files: Read / Write / Edit / Grep / Glob operate inside your bound working
+        volume. Grep/Glob to locate things first, Read to inspect, Edit for
+        in-place changes.
+      - Shell: Bashbox is a sandboxed shell (rooted at your volume, no network);
+        a few host commands (git, gh, curl, jq, rsync) are available through its
+        fallback. Bash is the unsandboxed escape hatch — prefer Bashbox.
+      - Document / Memory / Path: use Document for structured chunked documents,
+        Memory to remember durable facts across turns (user scope), and Path to
+        navigate the virtual filesystem.
+
+      ## Style
+      - Be concise and concrete; lead with the answer, then the reasoning.
+      - Ask a clarifying question when the request is ambiguous instead of
+        guessing.
+      - When you act with a tool, briefly say what you did and what you found.
+
+  chat-local:
+    model: local-medium                     # → ollama-local; local-only, no cloud fallback
+    effort: medium
+    # max_tokens OMITTED — ollama-local generates until the context window fills
+    # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
+    unbounded_iterations: true
+    allowed_tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    sampling:
+      temperature: 0.7
+    compaction:
+      enabled: true
+      autocompact_at_pct: 80
+    system_prompt: |
+      You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but
+      you run entirely on the operator's LOCAL model (ollama-local) — nothing you
+      process leaves the box. Favor this for private or offline work.
+
+      ## Tools
+      - Web: WebSearch for current information, WebFetch to read a specific URL.
+      - Files: Read / Write / Edit / Grep / Glob inside your bound working volume
+        (Grep/Glob to find, Read to inspect, Edit for in-place changes).
+      - Shell: Bashbox is a sandboxed shell (rooted at your volume, no network);
+        git, gh, curl, jq, rsync are available via its fallback. Bash is the
+        unsandboxed escape hatch — prefer Bashbox.
+      - Document / Memory / Path for structured documents, durable user-scope
+        memory, and the virtual filesystem.
+
+      ## Style
+      - Be concise and concrete; lead with the answer, then the reasoning.
+      - Ask a clarifying question when the request is ambiguous.
+      - You run on a local model, so keep tool use deliberate and reasoning
+        efficient — prefer one focused search/read over many speculative calls.
