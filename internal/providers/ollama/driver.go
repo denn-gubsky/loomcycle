@@ -52,6 +52,7 @@ type Driver struct {
 	http        *http.Client
 	idleTimeout time.Duration
 	numCtx      int // 0 = omit (Ollama server default applies)
+	numGpu      int // 0 = omit (Ollama auto-detects GPU layers); >0 forces offload
 	// ctxCache memoises each model's loaded context window read from
 	// /api/ps (model name → ctxCacheEntry), so the gauge lookup costs one
 	// cheap request per model, not per turn. Concurrent-safe (the Driver is
@@ -115,6 +116,28 @@ func New(providerID, apiKey, baseURL string, streamOpts streamhttp.Options, http
 func (d *Driver) WithNumCtx(n int) *Driver {
 	if n > 0 {
 		d.numCtx = n
+	}
+	return d
+}
+
+// WithNumGpu sets the Ollama options.num_gpu that the driver includes on
+// every chat request — the number of model layers offloaded to the GPU.
+// Returns the same Driver for chaining at registration time:
+//
+//	pr.ollamaLocal = ollama.New(...).WithNumGpu(99)
+//
+// Default 0 = don't set, letting Ollama auto-detect how many layers fit on
+// the GPU. The knob exists because that auto-detection underestimates VRAM
+// on some setups (notably integrated/APU GPUs), silently running inference
+// on the CPU. Forcing a high value (99 = "all layers") makes Ollama offload
+// the whole model; Ollama clamps to the model's actual layer count, so an
+// over-large value is safe. A literal 0 must NOT be sent — that would force
+// CPU-only — which is why both this setter and the omitempty tag guard it.
+//
+// Not safe to call concurrently with Call(); intended for registration.
+func (d *Driver) WithNumGpu(n int) *Driver {
+	if n > 0 {
+		d.numGpu = n
 	}
 	return d
 }
@@ -325,6 +348,7 @@ type wireOptions struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	NumPredict  int      `json:"num_predict,omitempty"` // Ollama's name for max_tokens
 	NumCtx      int      `json:"num_ctx,omitempty"`     // input-window size; 0 = Ollama server default
+	NumGpu      int      `json:"num_gpu,omitempty"`     // GPU layers to offload; 0 = omit (a literal 0 forces CPU)
 	// Ollama options sampling knobs. frequency/presence_penalty exist on some
 	// models but vary; we plumb the broadly-supported set.
 	TopP *float64 `json:"top_p,omitempty"`
@@ -365,12 +389,13 @@ func (d *Driver) buildRequestBody(req providers.Request) ([]byte, error) {
 		Stream: true,
 	}
 
-	if req.Temperature != nil || req.MaxTokens > 0 || d.numCtx > 0 ||
+	if req.Temperature != nil || req.MaxTokens > 0 || d.numCtx > 0 || d.numGpu > 0 ||
 		req.TopP != nil || req.TopK != nil || req.Seed != nil || len(req.Stop) > 0 {
 		w.Options = &wireOptions{
 			Temperature: req.Temperature,
 			NumPredict:  req.MaxTokens,
 			NumCtx:      d.numCtx,
+			NumGpu:      d.numGpu,
 			TopP:        req.TopP,
 			TopK:        req.TopK,
 			Seed:        req.Seed,

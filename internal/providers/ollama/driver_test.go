@@ -308,6 +308,75 @@ func TestRequestBody_NumCtxPropagated(t *testing.T) {
 	}
 }
 
+// TestRequestBody_NumGpuOmittedByDefault pins that no num_gpu field is sent
+// when the driver was built without WithNumGpu. The omitempty tag is
+// load-bearing: a literal "num_gpu":0 would force Ollama to run CPU-only.
+func TestRequestBody_NumGpuOmittedByDefault(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
+	}))
+	defer srv.Close()
+
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "llama3.1",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+
+	if strings.Contains(string(captured), `"num_gpu"`) {
+		t.Errorf("num_gpu appeared in body without WithNumGpu; body:\n%s", string(captured))
+	}
+}
+
+// TestRequestBody_NumGpuPropagated pins the headline path: after
+// WithNumGpu(99), every chat request carries options.num_gpu=99 — the
+// knob that forces GPU offload on boxes (e.g. APUs) where Ollama's
+// auto-detection otherwise falls back to CPU.
+func TestRequestBody_NumGpuPropagated(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
+	}))
+	defer srv.Close()
+
+	d := New("", "", srv.URL, streamhttp.Options{}, nil).WithNumGpu(99)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "qwen3.6:27b",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+
+	if !strings.Contains(string(captured), `"num_gpu":99`) {
+		t.Errorf("num_gpu=99 missing from body; body:\n%s", string(captured))
+	}
+	// A bare WithNumGpu must not leak unrelated options (omitempty).
+	if strings.Contains(string(captured), `"temperature"`) || strings.Contains(string(captured), `"num_predict"`) {
+		t.Errorf("WithNumGpu leaked unrelated options fields; body:\n%s", string(captured))
+	}
+}
+
 // TestRequestBody_NumCtxCombinesWithTemperatureAndMaxTokens: when the
 // caller passes Temperature + MaxTokens AND the driver was configured
 // with WithNumCtx, all three end up in the single options object. Pins

@@ -46,6 +46,8 @@ questions:
                 description: local — Ollama-local on top (needs base)
               - value: document-agent
                 description: document-agent — the Document Assistant (needs SQL Memory)
+              - value: chat
+                description: chat — general chat agents (chat + chat-local; needs base)
 
   # ── Secrets (private: UI-masked; written to container env, never a yaml layer) ─
   - variable: auth_token
@@ -366,6 +368,12 @@ questions:
           - variable: LOOMCYCLE_OLLAMA_NUM_CTX
             label: LOOMCYCLE_OLLAMA_NUM_CTX
             description: '(example: 32768)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
+            label: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
+            description: 'num_gpu forces how many model layers Ollama offloads to the GPU on every ollama-local request. Leave unset to let Ollama auto-detect; set it (99 = "all layers") when Ollama otherwise runs on CPU — common on integrated/APU GPUs whose VRAM auto-detection is conservative. Global to ollama-local. (example: 99)'
             schema:
               type: string
               default: ""

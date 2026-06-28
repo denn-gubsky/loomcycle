@@ -2680,7 +2680,8 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 			IdleTimeout:   cfg.Env.OllamaLocalIdleTimeout,
 		}
 		pr.ollamaLocal = ollama.New("ollama-local", "", cfg.Env.OllamaBaseURL, localStreamOpts, nil).
-			WithNumCtx(cfg.Env.OllamaLocalNumCtx)
+			WithNumCtx(cfg.Env.OllamaLocalNumCtx).
+			WithNumGpu(cfg.Env.OllamaLocalNumGpu)
 	}
 	// DeepSeek opts in via DEEPSEEK_API_KEY. Optional DEEPSEEK_BASE_URL
 	// overrides the public endpoint for self-hosted OpenAI-compatible
