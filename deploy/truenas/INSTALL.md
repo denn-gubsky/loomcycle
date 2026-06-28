@@ -87,6 +87,8 @@ From the TrueNAS shell:
 cat > /mnt/APPS2/loomcycle/config/loomcycle.secrets.env <<'EOF'
 # Runtime secrets — read by the Docker engine via compose `env_file:`.
 # Format: raw KEY=value, one per line, NO quotes, NO `export`. `#` comments OK.
+# Values are LITERAL — no ${VAR} expansion, and no referencing another line.
+# Write the host + password out in full (e.g. @truenas.local, not @${PG_HOST}).
 LOOMCYCLE_AUTH_TOKEN=PASTE_TOKEN_FROM_ABOVE
 LOOMCYCLE_OPERATOR_TOKEN_PEPPER=PASTE_PEPPER_FROM_ABOVE
 LOOMCYCLE_PG_DSN=postgres://loomcycle:CHANGE_ME_STRONG@PG_HOST:5432/loomcycle?sslmode=disable
@@ -102,6 +104,15 @@ chmod 600 /mnt/APPS2/loomcycle/config/loomcycle.secrets.env
 
 Notes:
 
+- **Values are literal — no `${VAR}` expansion.** An `env_file` is not a shell
+  script: each line is a verbatim `KEY=value`, and `${PG_HOST}` / `${PG_PASSWORD}`
+  would be passed through as that literal text (a broken DSN), not substituted —
+  including references to another line in the same file. Write the host and
+  password out in full. (`TRUENAS_SCALE_HOST` / `PG_HOST` in this guide are
+  find-and-replace placeholders you fill in when authoring the file, not runtime
+  variables.) If you want a single source of truth, expand it once at authoring
+  time into literals — e.g. `TRUENAS_SCALE_HOST=truenas.local PG_PASSWORD=… \
+  envsubst < template > loomcycle.secrets.env`.
 - **Only the keys you use.** Delete any provider line you have no key for — an
   absent key just means that provider isn't wired.
 - **Permissions:** the file is read by the host Docker engine (root), not by the
