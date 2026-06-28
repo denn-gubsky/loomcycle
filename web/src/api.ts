@@ -2180,9 +2180,15 @@ export function retireOperatorToken(
 }
 
 // The RFC L closed scope catalog — the token-mint form's scope choices.
+// Scopes the Web UI is allowed to MINT. `substrate:admin` is deliberately
+// EXCLUDED: minting a global admin token trips the runtime's no-lockout
+// migration gate (legacyFallbackDisabled), which disables the
+// LOOMCYCLE_AUTH_TOKEN login — and the UI mint loses the show-once secret in
+// the resulting logout, locking the operator out entirely. Admin tokens must
+// be created from the CLI (`loomcycle operator-token create --scopes
+// substrate:admin …`), which prints the new token so access is never lost.
 export const TOKEN_SCOPES = [
   "substrate:tenant",
-  "substrate:admin",
   "runs:create",
   "runs:read",
   "channel:publish",

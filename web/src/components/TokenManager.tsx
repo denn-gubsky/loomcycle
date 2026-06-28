@@ -144,9 +144,17 @@ export default function TokenManager() {
         Mint per-principal bearer tokens (RFC L). Each binds an authoritative{" "}
         <code>tenant</code> + <code>subject</code> + scopes. A{" "}
         <code>substrate:tenant</code> token gives a downstream service full power
-        within its own tenant; <code>substrate:admin</code> is full operator
-        power. The secret is shown <strong>once</strong> and never retrievable
-        again.
+        within its own tenant. The secret is shown <strong>once</strong> and
+        never retrievable again.
+      </p>
+      <p className="settings-help">
+        <strong>Admin tokens are CLI-only.</strong> The UI cannot mint a{" "}
+        <code>substrate:admin</code> token on purpose: doing so disables the{" "}
+        <code>LOOMCYCLE_AUTH_TOKEN</code> login (the no-lockout migration gate)
+        and the show-once secret is lost in the logout — a guaranteed lockout.
+        Create admin tokens from the CLI, which prints the new token so you keep
+        access: <code>loomcycle operator-token create --tenant default --scopes
+        substrate:admin --name &lt;name&gt;</code>.
       </p>
 
       {minted && (
