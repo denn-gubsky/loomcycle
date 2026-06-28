@@ -69,6 +69,13 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 	// Substrate side — keyed by name for the merge below. Nil-safe:
 	// when store is unset (tests), the substrate map stays empty and
 	// only static cfg entries surface.
+	// RFC AS: tenant-scope the listing by the authenticated principal. Admin /
+	// legacy / open see all (with the optional ?tenant= focus); a
+	// substrate:tenant principal sees ONLY its tenant's substrate rows. The
+	// list store methods are tenant-blind, so this filter is the gate that
+	// closes the cross-tenant name leak.
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+
 	subRows := map[string]store.AgentDefNameSummary{}
 	if s.store != nil {
 		rows, err := s.store.AgentDefListNames(r.Context())
@@ -77,6 +84,9 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		for _, row := range rows {
+			if !all && row.TenantID != tenantID {
+				continue
+			}
 			subRows[row.Name] = row
 		}
 	}
@@ -84,7 +94,13 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 	entries := make([]LibraryEntry, 0, len(s.cfg.Agents)+len(subRows))
 	seen := map[string]struct{}{}
 
+	// Operator-global static cfg agents belong to the shared operator scope —
+	// surfaced only in the all-tenants (admin/open) view, never to a
+	// tenant-scoped principal (RFC AS §2.2).
 	for name, def := range s.cfg.Agents {
+		if !all {
+			continue
+		}
 		entry := LibraryEntry{
 			Name:             name,
 			InStatic:         true,
@@ -125,6 +141,8 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 
 // handleListLibrarySkills serves GET /v1/_library/skills.
 func (s *Server) handleListLibrarySkills(w http.ResponseWriter, r *http.Request) {
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+
 	subRows := map[string]store.SkillDefNameSummary{}
 	if s.store != nil {
 		rows, err := s.store.SkillDefListNames(r.Context())
@@ -133,6 +151,9 @@ func (s *Server) handleListLibrarySkills(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		for _, row := range rows {
+			if !all && row.TenantID != tenantID {
+				continue
+			}
 			subRows[row.Name] = row
 		}
 	}
@@ -141,7 +162,11 @@ func (s *Server) handleListLibrarySkills(w http.ResponseWriter, r *http.Request)
 	entries := make([]LibraryEntry, 0, len(staticNames)+len(subRows))
 	seen := map[string]struct{}{}
 
+	// Operator-global static skills — admin/open view only (RFC AS §2.2).
 	for _, name := range staticNames {
+		if !all {
+			continue
+		}
 		sk, _ := s.skillSet.Get(name)
 		entry := LibraryEntry{
 			Name:             name,
@@ -185,6 +210,8 @@ func (s *Server) handleListLibrarySkills(w http.ResponseWriter, r *http.Request)
 // the entry omits `discovered_tools` — the operator can re-check
 // after the pool finishes init.
 func (s *Server) handleListLibraryMcpServers(w http.ResponseWriter, r *http.Request) {
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+
 	subRows := map[string]store.MCPServerDefNameSummary{}
 	if s.store != nil {
 		rows, err := s.store.MCPServerDefListNames(r.Context())
@@ -193,6 +220,9 @@ func (s *Server) handleListLibraryMcpServers(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		for _, row := range rows {
+			if !all && row.TenantID != tenantID {
+				continue
+			}
 			subRows[row.Name] = row
 		}
 	}
@@ -200,7 +230,11 @@ func (s *Server) handleListLibraryMcpServers(w http.ResponseWriter, r *http.Requ
 	entries := make([]LibraryEntry, 0, len(s.cfg.MCPServers)+len(subRows))
 	seen := map[string]struct{}{}
 
+	// Operator-global static MCP servers — admin/open view only (RFC AS §2.2).
 	for name, srv := range s.cfg.MCPServers {
+		if !all {
+			continue
+		}
 		var discoveredTools json.RawMessage
 		if s.mcpPoolInspector != nil {
 			discoveredTools = s.mcpPoolInspector(name)

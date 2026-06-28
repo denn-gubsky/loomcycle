@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -356,5 +357,106 @@ func TestUnifiedLibrary_OldEndpoints_StillWork(t *testing.T) {
 	}
 	if len(resp.Names) != 1 || resp.Names[0].Name != "x" {
 		t.Errorf("old endpoint shape changed: %+v", resp.Names)
+	}
+}
+
+// callLibraryAgents invokes the handler directly with an injected principal
+// (bypassing authMiddleware, which would re-resolve from the bearer) so each
+// case exercises a specific principal's tenant scope.
+func callLibraryAgents(t *testing.T, srv *Server, p auth.Principal) []string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/_library/agents", nil)
+	req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+	srv.handleListLibraryAgents(rec, req)
+	es := decodeLibraryEntries(t, rec)
+	out := make([]string, len(es))
+	for i, e := range es {
+		out[i] = e.Name
+	}
+	return out
+}
+
+// TestUnifiedLibrary_Agents_TenantIsolation (RFC AS Phase 1) pins that the
+// library listing is tenant-scoped: a substrate:tenant principal sees ONLY its
+// own tenant's substrate agents — not other tenants', not the operator-global
+// static cfg agents — while a substrate:admin principal sees all. Fail-before:
+// the pre-RFC-AS handler called the tenant-blind AgentDefListNames and merged
+// cfg.Agents unconditionally, so any authenticated principal could enumerate
+// every tenant's agent names.
+func TestUnifiedLibrary_Agents_TenantIsolation(t *testing.T) {
+	srv, s, cleanup := libraryUnifiedFixture(t, map[string]config.AgentDef{
+		"global-static": {Model: "x", SystemPrompt: "operator-global"},
+	}, nil)
+	defer cleanup()
+
+	ctx := t.Context()
+	mustDef := func(defID, name, tenant string) {
+		if _, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+			DefID: defID, Name: name, Version: 1, TenantID: tenant,
+			Definition: []byte(`{}`), CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("AgentDefCreate(%s): %v", name, err)
+		}
+		if err := s.AgentDefSetActive(ctx, tenant, name, defID, ""); err != nil {
+			t.Fatalf("AgentDefSetActive(%s): %v", name, err)
+		}
+	}
+	mustDef("def_acme", "acme-agent", "acme")
+	mustDef("def_globex", "globex-agent", "globex")
+
+	// A substrate:tenant principal sees only its own tenant — no cross-tenant
+	// rows, no operator-global static.
+	if got := callLibraryAgents(t, srv, auth.Principal{TenantID: "acme", Subject: "acme-op", Scopes: []string{auth.ScopeTenant}}); len(got) != 1 || got[0] != "acme-agent" {
+		t.Fatalf("acme tenant sees %v, want [acme-agent] only", got)
+	}
+	if got := callLibraryAgents(t, srv, auth.Principal{TenantID: "globex", Subject: "globex-op", Scopes: []string{auth.ScopeTenant}}); len(got) != 1 || got[0] != "globex-agent" {
+		t.Fatalf("globex tenant sees %v, want [globex-agent] only", got)
+	}
+
+	// A substrate:admin principal sees everything: both tenants' substrate rows
+	// plus the operator-global static agent.
+	got := callLibraryAgents(t, srv, auth.Principal{TenantID: "default", Subject: "ops", Scopes: []string{auth.ScopeAdmin}})
+	if len(got) != 3 {
+		t.Fatalf("admin sees %v, want all 3 (acme-agent, globex-agent, global-static)", got)
+	}
+}
+
+// TestUnifiedLibrary_Agents_AdminTenantFocus (RFC AS Phase 1) pins the admin
+// ?tenant= focus: a substrate:admin with ?tenant=acme sees only acme's
+// substrate rows (acting as a view of that tenant), and the operator-global
+// static agent is excluded from a focused view.
+func TestUnifiedLibrary_Agents_AdminTenantFocus(t *testing.T) {
+	srv, s, cleanup := libraryUnifiedFixture(t, map[string]config.AgentDef{
+		"global-static": {Model: "x"},
+	}, nil)
+	defer cleanup()
+	ctx := t.Context()
+	for _, d := range []struct{ id, name, tenant string }{
+		{"def_acme", "acme-agent", "acme"},
+		{"def_globex", "globex-agent", "globex"},
+	} {
+		if _, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+			DefID: d.id, Name: d.name, Version: 1, TenantID: d.tenant,
+			Definition: []byte(`{}`), CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_ = s.AgentDefSetActive(ctx, d.tenant, d.name, d.id, "")
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/_library/agents?tenant=acme", nil)
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{
+		TenantID: "default", Subject: "ops", Scopes: []string{auth.ScopeAdmin},
+	}))
+	srv.handleListLibraryAgents(rec, req)
+	es := decodeLibraryEntries(t, rec)
+	if len(es) != 1 || es[0].Name != "acme-agent" {
+		names := make([]string, len(es))
+		for i, e := range es {
+			names[i] = e.Name
+		}
+		t.Fatalf("admin ?tenant=acme sees %v, want [acme-agent] only", names)
 	}
 }
