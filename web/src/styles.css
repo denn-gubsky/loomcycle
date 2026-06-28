@@ -342,13 +342,25 @@ textarea::placeholder {
 }
 .node .row {
   display: grid;
-  grid-template-columns: 14px 80px 1fr 200px 120px auto;
+  /* col 2 is `auto` (not a fixed pill width) so the status + interactive
+   * badges share one cell sized to their content — otherwise the extra
+   * interactive pill takes its own grid track and shoves the agent name
+   * (the 1fr column) far to the right. See .row-badges below. */
+  grid-template-columns: 14px auto 1fr 200px 120px auto;
   gap: 12px;
   align-items: center;
   padding: 6px 8px;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+/* Status pill + the optional `interactive` pill live in a single grid cell
+ * so the agent name stays in the 1fr column directly after the badges. */
+.row-badges {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
 }
 .tree-caret {
   background: transparent;
