@@ -477,6 +477,20 @@ func requiredScopeFor(method, path string) string {
 	// not the /v1/_volumedef def-authoring route.
 	case path == "/v1/_volumes" || path == "/v1/_volumes/ephemeral":
 		return auth.ScopeTenant
+	// RFC AS Phase 1: the unified Library list views (agents / skills /
+	// mcp-servers). #575 tenant-scoped the HANDLERS (a substrate:tenant
+	// principal sees only its own tenant's substrate rows; operator-global
+	// statics excluded), but the routes stayed at the /v1/_* ScopeAdmin
+	// catch-all below — so a tenant token was 403'd at the gate before the
+	// scoped handler could run, leaving #575's tenant branch unreachable
+	// (and the Library invisible to a tenant operator). Grant ScopeTenant
+	// here so the reads are actually reachable; the handler still confines
+	// the result to the caller's tenant (ScopeAdmin also satisfies, so admin
+	// + ?tenant= focus is unchanged). GET-only views — the def-AUTHORING
+	// writes live at /v1/_agentdef etc. (isTenantConfinedDefPath, already
+	// ScopeTenant), not at this path. Mirrors the /v1/_*def/names posture.
+	case path == "/v1/_library/agents" || path == "/v1/_library/skills" || path == "/v1/_library/mcp-servers":
+		return auth.ScopeTenant
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, audit, cross-tenant user focus.
