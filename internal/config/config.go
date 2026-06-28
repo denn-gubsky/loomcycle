@@ -1888,6 +1888,15 @@ type Env struct {
 	// what runs on a local box, so the right value almost certainly
 	// differs too.
 	OllamaNumCtx int
+	// OllamaLocalNumGpu sets options.num_gpu on every chat request the
+	// `ollama-local` driver sends — the number of model layers Ollama
+	// offloads to the GPU. Default 0 = omit (Ollama auto-detects). Set
+	// it (e.g. 99 = "all layers") to force GPU offload on a box where
+	// Ollama otherwise falls back to CPU — common on integrated/APU
+	// GPUs that auto-detection underestimates. Global to ollama-local,
+	// like num_ctx: num_gpu is a model-LOAD parameter, not a per-request
+	// knob. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU.
+	OllamaLocalNumGpu int
 	// DeepSeekAPIKey enables the `provider: deepseek` driver. Empty
 	// = provider not registered (agents that ask for it fail at
 	// resolve time, mirroring OpenAI / Anthropic behaviour).
@@ -2950,6 +2959,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_OLLAMA_NUM_CTX"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.OllamaNumCtx = n
+		}
+	}
+	// LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU forces the number of model layers
+	// Ollama offloads to the GPU on every ollama-local request — see the
+	// field doc on Env.OllamaLocalNumGpu. 0/unset = omit (Ollama
+	// auto-detects); a literal 0 must NOT be sent (it would force CPU).
+	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.OllamaLocalNumGpu = n
 		}
 	}
 	// LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS overrides the default 15-min
