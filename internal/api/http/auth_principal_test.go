@@ -238,6 +238,13 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/_a2aagentdef", auth.ScopeTenant},
 		{"POST", "/v1/_a2aservercarddef", auth.ScopeTenant},
 		{"GET", "/v1/_a2aservercarddef/names", auth.ScopeTenant},
+		// RFC AS Phase 1: the unified Library list views are tenant-reachable
+		// (the handler tenant-scopes the result, #575). Without this, the
+		// /v1/_* catch-all below 403'd a tenant token before the scoped
+		// handler ran — so #575's tenant branch was unreachable.
+		{"GET", "/v1/_library/agents", auth.ScopeTenant},
+		{"GET", "/v1/_library/skills", auth.ScopeTenant},
+		{"GET", "/v1/_library/mcp-servers", auth.ScopeTenant},
 		// RFC AF: hooks are tenant-confined now that the registry is
 		// tenant-isolated (stamp on register, tenant-filtered Match, scoped
 		// List/Delete). substrate:admin still satisfies.
