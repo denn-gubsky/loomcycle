@@ -171,6 +171,23 @@ services:
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
       OLLAMA_BASE_URL: http://TRUENAS_SCALE_HOST:11434
+
+      # --- shell tools (opt-in; grant per agent via allowed_tools) ---
+      # Bashbox: in-process gbash sandbox (no OS process, rooted at the agent's
+      # rw volume, no network). The safe default.
+      LOOMCYCLE_BASHBOX_ENABLED: "1"
+      # Bash: NOT a sandbox — reaches arbitrary files via absolute paths and the
+      # network. Enabled here per request; only grant it to trusted agents.
+      LOOMCYCLE_BASH_ENABLED: "1"
+      # Host-command fallback: these named commands ESCAPE the gbash sandbox and
+      # run on the real host (rw volume required). Keep the list tight.
+      LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS: git,gh,curl,jq,rsync
+
+      # --- HTTP / WebFetch host policy ---
+      # No wildcard exists; this suffix-list allows whole TLDs (e.g. "com" ⇒ any
+      # *.com). Broadly open to public hosts; private IPs stay hard-blocked.
+      # CALLER_AUTHORITATIVE lets a run further narrow this per-call.
+      LOOMCYCLE_HTTP_HOST_ALLOWLIST: com,org,net,io,ai,dev,gov,edu,co,me,app,xyz,uk,de
     volumes:
       - /mnt/APPS2/loomcycle/data:/data
       - /mnt/APPS2/loomcycle/config:/config:ro
