@@ -45,7 +45,14 @@ Env wins over yaml when both are set. Defaults (omit to use these):
 | `pg_min_idle_conns` | 4 |
 | `pg_automigrate` | false |
 
-Postgres ≥ 14 required.
+**Postgres ≥ 14 required** — that's the floor, not a pin. loomcycle uses no
+version-locked SQL features, so any newer major (15, 16, 17, 18, …) works
+unchanged; pick whatever your platform ships. The `postgres:16` images in the
+example composes are a tested default, not a requirement. The one version-gated
+piece is **pgvector** (only needed for Vector Memory / `recall`): it supports
+PostgreSQL 13–18, so install the extension package matching your server's major
+(e.g. `postgresql-18-pgvector`, or a `pgvector/pgvector:pg18` image). Without
+pgvector, the embeddings table is skipped gracefully and everything else runs.
 
 ## Schema migrations
 
