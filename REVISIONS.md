@@ -8,6 +8,54 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.6.3
+
+**The tenant-operator Web UI — a `substrate:tenant` operator now sees and
+manages its own tenant (RFC AS Phases 1+2), plus a token-minting lockout fix.**
+
+**🔑 Tenant-scoped management reads (RFC AS Phase 1).** The Web UI's
+def-management list endpoints were tenant-BLIND: the Library lists
+(`GET /v1/_library/{agents,skills,mcp-servers}`) and every def-plane name
+endpoint (`GET /v1/_*def/names`) returned *every* tenant's def names + version
+metadata to any authenticated principal — a latent cross-tenant leak, and the
+blocker to ever showing the Library to a tenant operator. Each list is now
+scoped to the authenticated principal via `principalTenantScope`: admin / legacy
+/ open mode see all (honoring the admin `?tenant=` focus); a `substrate:tenant`
+operator sees ONLY its own tenant's rows, and operator-global static-config defs
+are excluded from a tenant-scoped view. The Library routes' gate was also opened
+to `substrate:tenant` — they were pinned to `substrate:admin` by the `/v1/_*`
+catch-all, so a tenant token was 403'd at the gate *before* the scoped handler
+ran (the handler scoping was unreachable). PRs #575 / #576 / #577.
+
+**🧭 Per-surface nav visibility (RFC AS Phase 2).** The Web UI left-nav replaced
+its binary `adminOnly` flag with a three-way visibility class. **run / runs** for
+every role; **library, integrations, volumes, paths, schedules, interrupts** for
+an admin OR a `substrate:tenant` operator; **channels, memory, snapshots, audit,
+activity** for super-admin only. A tenant operator now logs in to its own
+workspace — not just run/runs — and the write affordances (create / fork /
+retire, the editors) light up automatically since they were already
+`substrate:tenant`-reachable (RFC AF). A surface is marked tenant-visible only
+where its route gate actually admits `substrate:tenant`; **channels + memory
+stay admin-only** because their store rows carry no `tenant_id` column (so the
+routes stay `substrate:admin` and a tenant token would 403 — visible-but-broken
+is worse than hidden), pending a tenant-axis migration. Admin / legacy / open
+principals all report `is_admin: true`, so their nav is unchanged. PR #578.
+
+**🔒 No accidental `substrate:admin` mint from the Web UI (lockout fix).** The
+Settings → Tokens minting UI could mint a `substrate:admin` token; doing so
+disables the legacy `LOOMCYCLE_AUTH_TOKEN` login (the no-lockout migration gate),
+which is a footgun for a single-operator deployment that hasn't minted any other
+admin token. The UI no longer offers `substrate:admin` as a mintable scope
+(`substrate:tenant` is the default), removing the path to an accidental
+self-lockout. PR #574.
+
+Additive — no new wire RPCs and byte-identical for admin / legacy / open
+principals; a `substrate:tenant` token now correctly sees only its own tenant's
+rows. Adapters unchanged since v1.5.0. The TrueNAS deploy artifacts now pin
+`denngubsky/loomcycle:1.6.3`.
+
+---
+
 ## What's in v1.6.2
 
 **Two bundled chat agents + a GPU-offload knob for local Ollama, plus a Web-UI
