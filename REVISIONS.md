@@ -8,6 +8,49 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.6.2
+
+**Two bundled chat agents + a GPU-offload knob for local Ollama, plus a Web-UI
+and docs pass.**
+
+**💬 The `chat` bundle (chat + chat-local).** A new embedded agent bundle for
+direct chatting in the interactive `/run` terminal — shipped like
+`document-agent` and selected with `LOOMCYCLE_PRESETS=base,chat`. **`chat`**
+routes via `tier: middle` (cloud-capable; follows your `provider_priority`);
+**`chat-local`** pins `model: local-medium` (ollama-local — local-only, no cloud
+fallback). Both carry a broad working toolset — Read / Write / Edit / Grep /
+Glob, WebSearch / WebFetch, Bashbox + Bash, Document, Memory, Path, Skill (+ the
+auto-added Context) — with `max_tokens` left UNSET (each provider applies its own
+default rather than an imposed per-reply cap), context compaction on, and
+`unbounded_iterations` for interactive use. The bundle carries no provider matrix
+(pair it with `base`) and no hardcoded `volumes:` (it uses the operator's default
+volume). Embedded at `cmd/loomcycle/embedded/bundles/chat.yaml`; source mirror +
+README under `bundles/chat/`.
+
+**🎛️ `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` — force GPU offload.** Ollama's VRAM
+auto-detection underestimates some boxes (notably integrated / APU GPUs) and
+silently runs inference on the CPU. The new env knob — a sibling of
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX`, global to the `ollama-local` driver because
+`num_gpu` is a model-LOAD parameter, not a per-request one — sets
+`options.num_gpu` on every ollama-local request (e.g. `99` = "all layers";
+Ollama clamps to the model's real layer count, so an over-large value is safe).
+`0` / unset stays auto-detect; a literal `0` is never sent (it would force
+CPU-only — guarded by both the setter and the `omitempty` tag).
+
+**🖥️ Web UI: agent name beside the status badges.** In the runs list an
+`interactive` run pushed the agent name far to the right — the extra `interactive`
+pill took its own grid track. The status + interactive pills now share one cell so
+the agent name sits directly after them.
+
+**📄 Docs.** Postgres version wording softened across the deploy + storage docs
+(`Postgres ≥ 14` is a floor, not a `16` pin — any newer major works, pgvector
+13–18); the TrueNAS install walkthrough now keeps **all secrets in an external
+`env_file`** instead of inline YAML (with a note that `env_file` values are
+literal — no `${VAR}` expansion).
+
+Additive — no breaking changes, no new wire RPCs. Adapters unchanged since
+v1.5.0. The TrueNAS deploy artifacts now pin `denngubsky/loomcycle:1.6.2`.
+
 ## What's in v1.6.1
 
 **Patch — the MCP thin client self-heals on upstream session expiry.** A
