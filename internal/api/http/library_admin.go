@@ -1,13 +1,20 @@
 // library_admin.go — v0.9.x Introspection: bearer-authed read-only
 // enumeration of every name declared in each substrate (AgentDef,
-// SkillDef, MCPServerDef). Drives the Web UI's `/ui/library` tab.
+// SkillDef, MCPServerDef, …). Drives the Web UI's `/ui/library` tab.
 //
-// These three handlers are the missing complement to the existing
+// These handlers are the missing complement to the existing
 // `POST /v1/_*` op-dispatched substrate endpoints. The op-dispatch
 // endpoints can list VERSIONS of a single name (`{op:"list", name:X}`),
 // but they cannot enumerate the set of declared names. The store
 // already exposes `*ListNames` helpers for snapshot + admin code
 // paths; these handlers wire those to bearer-authed GET endpoints.
+//
+// RFC AS Phase 1: the `*ListNames` store methods are tenant-BLIND (they
+// return every tenant's rows), so each handler scopes the result to the
+// authenticated principal via scopeNames — admin / legacy / open see all
+// (honoring the ?tenant= focus), a substrate:tenant principal sees only its
+// own tenant's rows. This closes the cross-tenant name leak (any authenticated
+// token could previously enumerate every tenant's def names).
 //
 // Read-only + bearer-authed. The same `authMiddleware` guards every
 // `/v1/_*` route — operator trust posture is identical to the
@@ -21,19 +28,38 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
+// scopeNames filters a tenant-blind *DefListNames result to the caller's tenant
+// scope (RFC AS Phase 1). `all` (admin / legacy / open) returns the rows
+// unchanged (never nil — adapter consumers `.length` without a null-check). A
+// substrate:tenant principal keeps only rows whose owning tenant matches;
+// tenantOf extracts that tenant from a row.
+func scopeNames[T any](rows []T, all bool, tenantID string, tenantOf func(T) string) []T {
+	if all {
+		if rows == nil {
+			return []T{}
+		}
+		return rows
+	}
+	out := make([]T, 0, len(rows))
+	for _, row := range rows {
+		if tenantOf(row) == tenantID {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
 // handleListAgentDefNames serves GET /v1/_agentdef/names.
-// Returns `{names: [AgentDefNameSummary, ...]}` ordered by name ASC.
-// Empty store returns `{names: []}` — never `null` — so adapter
-// consumers can `.length` without a null-check.
+// Returns `{names: [AgentDefNameSummary, ...]}` ordered by name ASC,
+// scoped to the caller's tenant (RFC AS Phase 1).
 func (s *Server) handleListAgentDefNames(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.AgentDefListNames(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.AgentDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.AgentDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
@@ -44,9 +70,8 @@ func (s *Server) handleListSkillDefNames(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.SkillDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.SkillDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
@@ -57,9 +82,8 @@ func (s *Server) handleListMCPServerDefNames(w http.ResponseWriter, r *http.Requ
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.MCPServerDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.MCPServerDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
@@ -70,9 +94,8 @@ func (s *Server) handleListScheduleDefNames(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.ScheduleDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.ScheduleDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
@@ -83,9 +106,8 @@ func (s *Server) handleListA2AServerCardDefNames(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.A2AServerCardDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.A2AServerCardDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
@@ -96,9 +118,8 @@ func (s *Server) handleListA2AAgentDefNames(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.A2AAgentDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.A2AAgentDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
@@ -109,9 +130,8 @@ func (s *Server) handleListWebhookDefNames(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.WebhookDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.WebhookDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
@@ -123,23 +143,23 @@ func (s *Server) handleListMemoryBackendDefNames(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.MemoryBackendDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.MemoryBackendDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
 // handleListOperatorTokenDefNames serves GET /v1/_operatortokendef/names.
-// RFC L. Returns one summary per token name — NO secret material.
+// RFC L. Returns one summary per token name — NO secret material. Tenant-scoped
+// (RFC AS Phase 1): a substrate:tenant principal sees only its own tenant's
+// token names, never another tenant's; admin sees all.
 func (s *Server) handleListOperatorTokenDefNames(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.OperatorTokenDefListNames(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.OperatorTokenDefNameSummary{}
-	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.OperatorTokenDefNameSummary) string { return x.TenantID })
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 

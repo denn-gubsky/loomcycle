@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -279,6 +280,88 @@ func TestAgentChannels_HappyPath(t *testing.T) {
 		if c.ScopeID != "alice" || string(c.Scope) != "agent" {
 			t.Errorf("channel %q has wrong scope: %+v", c.Channel, c)
 		}
+	}
+}
+
+// TestScopeNames (RFC AS Phase 1) unit-tests the shared tenant filter that
+// every /v1/_*def/names handler applies. Covers: all → passthrough (non-nil
+// even for a nil input); !all → keep only the caller's tenant; unknown tenant
+// → empty.
+func TestScopeNames(t *testing.T) {
+	type row struct{ tenant string }
+	tenantOf := func(r row) string { return r.tenant }
+	rows := []row{{"acme"}, {"globex"}, {"acme"}}
+
+	if got := scopeNames(rows, true, "", tenantOf); len(got) != 3 {
+		t.Errorf("all: got %d rows, want 3 (passthrough)", len(got))
+	}
+	if got := scopeNames[row](nil, true, "", tenantOf); got == nil || len(got) != 0 {
+		t.Errorf("all+nil: got %v, want non-nil empty", got)
+	}
+	if got := scopeNames(rows, false, "acme", tenantOf); len(got) != 2 {
+		t.Errorf("tenant=acme: got %d rows, want 2", len(got))
+	}
+	if got := scopeNames(rows, false, "nope", tenantOf); len(got) != 0 {
+		t.Errorf("tenant=nope: got %d rows, want 0", len(got))
+	}
+}
+
+// callAgentDefNames invokes the /v1/_agentdef/names handler directly with an
+// injected principal (bypassing authMiddleware, which would re-resolve from the
+// bearer), returning the def names in the response.
+func callAgentDefNames(t *testing.T, srv *Server, p auth.Principal, query string) []string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/_agentdef/names"+query, nil)
+	req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+	srv.handleListAgentDefNames(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Names []store.AgentDefNameSummary `json:"names"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	out := make([]string, len(resp.Names))
+	for i, n := range resp.Names {
+		out[i] = n.Name
+	}
+	return out
+}
+
+// TestLibraryAdmin_AgentDefNames_TenantIsolation (RFC AS Phase 1) pins the
+// wiring of principalTenantScope + scopeNames in a real /names handler: a
+// substrate:tenant principal sees only its own tenant; admin sees all; admin
+// ?tenant= focuses one. Fail-before: the handler returned the tenant-blind
+// AgentDefListNames result, leaking every tenant's names.
+func TestLibraryAdmin_AgentDefNames_TenantIsolation(t *testing.T) {
+	srv, s, cleanup := libraryFixture(t)
+	defer cleanup()
+	ctx := t.Context()
+	for _, d := range []struct{ id, name, tenant string }{
+		{"def_a", "acme-agent", "acme"},
+		{"def_g", "globex-agent", "globex"},
+	} {
+		if _, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+			DefID: d.id, Name: d.name, Version: 1, TenantID: d.tenant,
+			Definition: []byte(`{}`), CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tenant := auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}}
+	if got := callAgentDefNames(t, srv, tenant, ""); len(got) != 1 || got[0] != "acme-agent" {
+		t.Fatalf("acme tenant sees %v, want [acme-agent] only", got)
+	}
+	admin := auth.Principal{TenantID: "default", Subject: "ops", Scopes: []string{auth.ScopeAdmin}}
+	if got := callAgentDefNames(t, srv, admin, ""); len(got) != 2 {
+		t.Fatalf("admin sees %v, want both", got)
+	}
+	if got := callAgentDefNames(t, srv, admin, "?tenant=globex"); len(got) != 1 || got[0] != "globex-agent" {
+		t.Fatalf("admin ?tenant=globex sees %v, want [globex-agent] only", got)
 	}
 }
 
