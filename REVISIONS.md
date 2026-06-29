@@ -8,6 +8,49 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.7.0
+
+**🖼️ Image / vision input across every provider and every transport (RFC AT).**
+loomcycle was text-only — there was no way to send an image to a model. v1.7.0
+adds **one** new `image` prompt content block, carried end to end and serialized
+natively by each vision-capable provider, reachable over every wire surface.
+Additive + backward-compatible: text-only callers are unchanged; no new endpoint.
+
+The block — valid only in a `user` segment — carries a whitelisted `media_type`
+(`image/png` · `image/jpeg` · `image/gif` · `image/webp`) and the image bytes.
+There is deliberately **no URL form** (accepting a URL would make loomcycle fetch
+arbitrary hosts — SSRF); callers always send inline bytes.
+
+- **All providers serialize it natively.** Anthropic `image`/base64 `source`
+  block; OpenAI (+ the data-URI `image_url` content-array form) — DeepSeek's text
+  models are gated `SupportsVision=false`; Gemini `inlineData`; Ollama message
+  `images: []` (vision depends on the pulled model — llava, llama3.2-vision, …).
+- **Capability gate.** A provider/model advertises `SupportsVision`; the loop
+  validates the block (user-role, whitelisted media type, decodable bytes) and
+  **refuses an image to a text-only model before the call** with a clear error,
+  so a fallback onto a non-vision model fails loudly instead of silently dropping
+  the image. Per-model nuance (legacy `claude-2`/`claude-instant`, `gpt-3.5*`,
+  the original `gpt-4`/`gpt-4-32k` snapshots) is refined inside the driver;
+  unknown models default to supported (a wrong guess errors, never drops).
+- **Every transport.** HTTP (`POST /v1/runs`, `/v1/sessions/{id}/messages`);
+  the **MCP** server (`spawn_run`/`spawn_runs` — the `segments` schema now
+  advertises the block); **gRPC** (`PromptContentBlock.media_type` + `data`
+  **bytes** — carried natively, no base64 inflation, encoded at the boundary);
+  the **TS** adapter `@loomcycle/client` (the `PromptContent` `image` variant +
+  `ImageMediaType`); and the **Python** adapter (a raw-bytes segment dict).
+- **Body cap raised + configurable.** The run-ingest cap (`/v1/runs`,
+  `/v1/sessions/{id}/messages`) is now **`LOOMCYCLE_MAX_REQUEST_BYTES`** (default
+  **16 MiB**, was a hardcoded 1 MiB) so a request can carry inline image bytes;
+  over-cap requests return **413**. `MaxBytesReader` still hard-stops at the cap.
+
+Representation per transport: HTTP/MCP/TS carry base64 strings (JSON has no byte
+type); gRPC/Python carry raw bytes (proto-native). All converge on the same
+internal form. Out of scope: image *output* (generation), audio/video, image
+URLs, and the gRPC `kind` (untrusted-block) field. The TrueNAS deploy artifacts
+now pin `denngubsky/loomcycle:1.7.0`.
+
+---
+
 ## What's in v1.6.7
 
 **Patch — an agent can identify its tenant, credential, and server via
