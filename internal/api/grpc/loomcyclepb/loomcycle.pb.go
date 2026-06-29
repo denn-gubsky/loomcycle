@@ -1204,10 +1204,18 @@ func (x *PromptSegment) GetContent() []*PromptContentBlock {
 // Cacheable=true marks this block for native provider caching
 // (Anthropic cache_control). Ignored on providers that don't support it.
 type PromptContentBlock struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
-	Cacheable     bool                   `protobuf:"varint,3,opt,name=cacheable,proto3" json:"cacheable,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Type      string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Text      string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	Cacheable bool                   `protobuf:"varint,3,opt,name=cacheable,proto3" json:"cacheable,omitempty"`
+	// Image input (type == "image", RFC AT). media_type is a whitelisted
+	// image media type (image/png|jpeg|gif|webp); data is the RAW image bytes.
+	// Unlike the HTTP/JSON wire (which carries base64 in a string, since JSON
+	// has no byte type), gRPC carries the bytes natively here — the server
+	// base64-encodes them into the loop's internal representation. There is
+	// deliberately no URL form (SSRF — RFC AT §6).
+	MediaType     string `protobuf:"bytes,4,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
+	Data          []byte `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1261,6 +1269,20 @@ func (x *PromptContentBlock) GetCacheable() bool {
 		return x.Cacheable
 	}
 	return false
+}
+
+func (x *PromptContentBlock) GetMediaType() string {
+	if x != nil {
+		return x.MediaType
+	}
+	return ""
+}
+
+func (x *PromptContentBlock) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
 }
 
 // Event is one frame on the Run/Continue server stream. Mirrors
@@ -5995,11 +6017,14 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x04list\x18\x01 \x03(\tR\x04list\"_\n" +
 	"\rPromptSegment\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12:\n" +
-	"\acontent\x18\x02 \x03(\v2 .loomcycle.v1.PromptContentBlockR\acontent\"Z\n" +
+	"\acontent\x18\x02 \x03(\v2 .loomcycle.v1.PromptContentBlockR\acontent\"\x8d\x01\n" +
 	"\x12PromptContentBlock\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1c\n" +
-	"\tcacheable\x18\x03 \x01(\bR\tcacheable\"\xc6\x03\n" +
+	"\tcacheable\x18\x03 \x01(\bR\tcacheable\x12\x1d\n" +
+	"\n" +
+	"media_type\x18\x04 \x01(\tR\tmediaType\x12\x12\n" +
+	"\x04data\x18\x05 \x01(\fR\x04data\"\xc6\x03\n" +
 	"\x05Event\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x120\n" +

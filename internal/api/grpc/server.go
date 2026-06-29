@@ -17,6 +17,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
@@ -993,11 +994,19 @@ func segmentsFromProto(segs []*loomcyclepb.PromptSegment) []loop.PromptSegment {
 	for _, s := range segs {
 		blocks := make([]loop.PromptContentBlock, 0, len(s.GetContent()))
 		for _, b := range s.GetContent() {
-			blocks = append(blocks, loop.PromptContentBlock{
+			blk := loop.PromptContentBlock{
 				Type:      b.GetType(),
 				Text:      b.GetText(),
 				Cacheable: b.GetCacheable(),
-			})
+				MediaType: b.GetMediaType(),
+			}
+			// gRPC carries raw image bytes (RFC AT); the loop works in base64
+			// internally — uniform with the HTTP/JSON wire and what every
+			// driver emits. Encode at the boundary. Empty for non-image blocks.
+			if d := b.GetData(); len(d) > 0 {
+				blk.Data = base64.StdEncoding.EncodeToString(d)
+			}
+			blocks = append(blocks, blk)
 		}
 		out = append(out, loop.PromptSegment{
 			Role:    s.GetRole(),
