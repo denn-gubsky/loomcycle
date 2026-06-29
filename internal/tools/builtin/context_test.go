@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -52,6 +53,7 @@ func contextFixture(t *testing.T) (*Context, context.Context) {
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
 		AgentID:    "a_test",
 		UserID:     "alice",
+		TenantID:   "acme",
 		UserTier:   "medium",
 		AgentDefID: "def_abc",
 	})
@@ -81,6 +83,11 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	}
 	if out["user_id"] != "alice" {
 		t.Errorf("user_id = %v, want alice", out["user_id"])
+	}
+	// tenant_id: the RFC L isolation boundary, surfaced so an agent can identify
+	// which tenant it acts within.
+	if out["tenant_id"] != "acme" {
+		t.Errorf("tenant_id = %v, want acme", out["tenant_id"])
 	}
 	if out["user_tier"] != "medium" {
 		t.Errorf("user_tier = %v, want medium", out["user_tier"])
@@ -1173,5 +1180,92 @@ func TestContextTool_HelpUnknownTopic(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "available:") {
 		t.Errorf("error should list available topics: %q", res.Text)
+	}
+}
+
+// TestContextTool_SelfPrincipalAndServer pins the identity additions to op=self:
+// the `principal` block (the authenticated credential — subject/tenant/scopes/
+// token id + suffix, NEVER the bearer) and the `server` block (listen_addr +
+// the advertised public url), so an MCP agent can identify its credentials and
+// the server it's connected to.
+func TestContextTool_SelfPrincipalAndServer(t *testing.T) {
+	tool := &Context{
+		Cfg: &config.Config{Env: config.Env{
+			ListenAddr: "0.0.0.0:8787",
+			PublicURL:  "https://loomcycle.example.com",
+		}},
+	}
+	ctx := tools.WithAgentName(context.Background(), "worker")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a1", UserID: "tok-acme-svc", TenantID: "acme"})
+	ctx = auth.WithPrincipal(ctx, auth.Principal{
+		TenantID:    "acme",
+		Subject:     "tok-acme-svc",
+		Scopes:      []string{auth.ScopeTenant, auth.ScopeRunsCreate},
+		TokenDefID:  "def_marketing",
+		TokenSuffix: "ab12cd",
+	})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if res.IsError {
+		t.Fatalf("self: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+
+	if out["tenant_id"] != "acme" {
+		t.Errorf("tenant_id = %v, want acme", out["tenant_id"])
+	}
+
+	p, ok := out["principal"].(map[string]any)
+	if !ok {
+		t.Fatalf("principal block missing/wrong type: %v (%T)", out["principal"], out["principal"])
+	}
+	if p["subject"] != "tok-acme-svc" || p["tenant_id"] != "acme" {
+		t.Errorf("principal identity wrong: %+v", p)
+	}
+	if p["token_def_id"] != "def_marketing" || p["token_suffix"] != "ab12cd" {
+		t.Errorf("principal token id/suffix wrong: %+v", p)
+	}
+	if p["is_admin"] != false || p["legacy"] != false {
+		t.Errorf("principal flags wrong: is_admin=%v legacy=%v", p["is_admin"], p["legacy"])
+	}
+	scopes, _ := p["scopes"].([]any)
+	if len(scopes) != 2 {
+		t.Errorf("principal scopes = %v, want 2", p["scopes"])
+	}
+	// The bearer must NEVER appear.
+	if strings.Contains(res.Text, "Bearer") || strings.Contains(strings.ToLower(res.Text), "secret") {
+		t.Errorf("self leaked a secret-looking field:\n%s", res.Text)
+	}
+
+	srv, ok := out["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("server block missing/wrong type: %v", out["server"])
+	}
+	if srv["listen_addr"] != "0.0.0.0:8787" {
+		t.Errorf("server.listen_addr = %v, want 0.0.0.0:8787", srv["listen_addr"])
+	}
+	if srv["url"] != "https://loomcycle.example.com" {
+		t.Errorf("server.url = %v, want the public url", srv["url"])
+	}
+}
+
+// TestContextTool_SelfServerFallsBackToA2AURL pins that when LOOMCYCLE_PUBLIC_URL
+// is unset, server.url falls back to the A2A advertise URL (and listen_addr is
+// always present).
+func TestContextTool_SelfServerFallsBackToA2AURL(t *testing.T) {
+	tool := &Context{Cfg: &config.Config{Env: config.Env{
+		ListenAddr:       "127.0.0.1:8787",
+		A2APublicBaseURL: "https://a2a.example.com",
+	}}}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1"})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	srv, _ := out["server"].(map[string]any)
+	if srv == nil || srv["url"] != "https://a2a.example.com" || srv["listen_addr"] != "127.0.0.1:8787" {
+		t.Errorf("server fallback wrong: %+v", out["server"])
+	}
+	// Open mode (no principal) → no principal block, but identity still present.
+	if _, hasP := out["principal"]; hasP {
+		t.Errorf("principal block should be omitted in open mode (no auth principal)")
 	}
 }

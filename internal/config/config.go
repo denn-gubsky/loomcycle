@@ -1919,7 +1919,14 @@ type Env struct {
 	// rather than the public AI Studio API. Empty = public endpoint.
 	GeminiBaseURL string
 	ListenAddr    string
-	AuthToken     string
+	// PublicURL is the operator's externally-reachable base URL for THIS
+	// loomcycle instance (e.g. behind a tunnel/proxy). Advertised to agents via
+	// `Context op=self` (server.url) so an agent — especially one connected over
+	// the MCP transport — can identify the server it's talking to. Empty = unset;
+	// self then reports only the bind ListenAddr (and the A2A advertise URL if
+	// that's configured). LOOMCYCLE_PUBLIC_URL.
+	PublicURL string
+	AuthToken string
 	// OperatorTokenPepper is prepended to a bearer before SHA-256 when
 	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
 	// the pepper yields no usable token lookup. Secret — never logged.
@@ -2728,6 +2735,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		GeminiAPIKey:              os.Getenv("GEMINI_API_KEY"),
 		GeminiBaseURL:             os.Getenv("GEMINI_BASE_URL"),
 		ListenAddr:                getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
+		PublicURL:                 strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
 		AuthToken:                 os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		OperatorTokenPepper:       os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
 		AuditLogPath:              os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),

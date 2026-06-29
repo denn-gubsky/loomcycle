@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -28,8 +29,10 @@ import (
 //
 // Nine ops total — PR 1 ships four of them:
 //
-//	self        — identity bundle (agent name, run/agent ids, user, tier,
-//	              resolved provider + model + sampling)
+//	self        — identity bundle (agent name, run/agent ids, user, tenant,
+//	              tier, resolved provider + model + sampling; the `principal`
+//	              credential block — subject/tenant/scopes/token id, never the
+//	              bearer; and the `server` it's connected to — listen_addr + url)
 //	tools       — post-filter tool catalog
 //	doc         — detailed schema/docstring for one tool by name
 //	permissions — gates that apply to the caller (tool ACL, host policy, scopes)
@@ -189,9 +192,15 @@ func (c *Context) execCompact(ctx context.Context) (tools.Result, error) {
 func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	ident := tools.RunIdentity(ctx)
 	out := map[string]any{
-		"agent_name":   tools.AgentName(ctx),
-		"agent_id":     ident.AgentID,
-		"user_id":      ident.UserID,
+		"agent_name": tools.AgentName(ctx),
+		"agent_id":   ident.AgentID,
+		"user_id":    ident.UserID,
+		// tenant_id is the RFC L data-isolation boundary this run acts within
+		// (paired with user_id). Non-secret; always stamped on the run identity
+		// ("" / "default" for the single-tenant/legacy case). Surfaced so an
+		// agent — especially one over the MCP transport — can tell which tenant
+		// it's operating as.
+		"tenant_id":    ident.TenantID,
 		"user_tier":    ident.UserTier,
 		"agent_def_id": ident.AgentDefID,
 		// run_id is the store row id (r_<hex>). Surfacing it lets
@@ -284,6 +293,42 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		out["network"] = map[string]any{
 			"allowed_hosts": nonNilStrings(c.Cfg.Env.HTTPHostAllowlist),
 			"source":        "operator_default",
+		}
+	}
+	// principal: the resolved auth identity (RFC L) — WHO this run acts as and
+	// what its credential may do. Non-secret: subject + tenant + scopes + the
+	// token DEF id and the 6-char log-correlation suffix; NEVER the bearer
+	// itself. Present when the run carries an authenticated principal (every MCP
+	// / authed-HTTP path — the case where an agent needs to identify its own
+	// credentials); omitted in open mode (no auth configured), where the flat
+	// tenant_id / user_id above are still the identity.
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		out["principal"] = map[string]any{
+			"tenant_id":    p.TenantID,
+			"subject":      p.Subject,
+			"scopes":       nonNilStrings(p.Scopes),
+			"is_admin":     auth.HasScope(p.Scopes, auth.ScopeAdmin),
+			"legacy":       p.Legacy,
+			"token_def_id": p.TokenDefID,
+			"token_suffix": p.TokenSuffix,
+		}
+	}
+	// server: which loomcycle instance this run is on, so an agent (especially an
+	// MCP client) can identify the server it's connected to. listen_addr is the
+	// bind address; url is the operator's advertised public base URL
+	// (LOOMCYCLE_PUBLIC_URL, falling back to the A2A advertise URL) when set.
+	if c.Cfg != nil {
+		server := map[string]any{}
+		if c.Cfg.Env.ListenAddr != "" {
+			server["listen_addr"] = c.Cfg.Env.ListenAddr
+		}
+		if u := c.Cfg.Env.PublicURL; u != "" {
+			server["url"] = u
+		} else if u := c.Cfg.Env.A2APublicBaseURL; u != "" {
+			server["url"] = u
+		}
+		if len(server) > 0 {
+			out["server"] = server
 		}
 	}
 	return okJSON(out)
