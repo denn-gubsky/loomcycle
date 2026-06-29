@@ -1138,13 +1138,14 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	}
 
 	// Vision gate (RFC AT). If this run carries an image content block — fresh
-	// or replayed from a prior turn — validate it and refuse before the call
-	// when the resolved provider/model can't accept image input. This is what
-	// makes a fallback onto a text-only model (or DeepSeek's text endpoint)
-	// fail loudly here instead of the image being silently dropped or the
-	// provider returning an opaque 400. Once per Run: the (provider, model) is
-	// fixed across iterations, and PriorMessages were validated when first sent
-	// so only the fresh segments need re-validating.
+	// or replayed from a prior turn — validate it and refuse before the first
+	// call when the resolved provider can't accept image input (e.g. an agent
+	// whose tier resolved to DeepSeek's text endpoint). This fails loudly here
+	// instead of the image being silently dropped. Checked once at the resolved
+	// provider: a mid-run fallback to a non-vision provider is caught by the
+	// driver's own per-model gate (a clear error) / surfaces as a provider
+	// error, never a silent drop. PriorMessages were validated when first sent,
+	// so only the fresh segments need re-validating here.
 	if messagesHaveImage(messages) {
 		if err := validateImageSegments(opts.Segments); err != nil {
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
