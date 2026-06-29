@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  type BrowseScope,
   type ChunkDetail,
   type ChunkRow,
   type DocScope,
@@ -31,12 +32,16 @@ export interface DocumentViewerProps {
   // titleHint shows immediately (e.g. the Path-tree name) until the root chunk
   // title loads.
   titleHint?: string;
+  // browse (RFC AS) selects whose subject's document to read — threaded into the
+  // off-run /v1/_document calls as ?scope_id= / ?tenant=. Unset → the caller's
+  // own subject (default). The server re-authorizes it.
+  browse?: BrowseScope;
 }
 
 // View mode for the selected-chunk pane (not the whole document).
 type Mode = "chunks" | "markdown";
 
-export default function DocumentViewer({ documentId, scope, titleHint }: DocumentViewerProps) {
+export default function DocumentViewer({ documentId, scope, titleHint, browse }: DocumentViewerProps) {
   const [chunks, setChunks] = useState<ChunkRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [selectedDetail, setSelectedDetail] = useState<ChunkDetail | null>(null);
@@ -68,7 +73,7 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    documentQueryChunks(documentId, scope)
+    documentQueryChunks(documentId, scope, browse)
       .then((resp) => {
         if (cancelled) return;
         const rows = resp.chunks ?? [];
@@ -80,7 +85,7 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
     return () => {
       cancelled = true;
     };
-  }, [documentId, scope, reload]);
+  }, [documentId, scope, reload, browse]);
 
   // Reset selection + view when the document changes.
   useEffect(() => {
@@ -97,13 +102,13 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
       return;
     }
     let cancelled = false;
-    documentGetChunk(selectedId, scope)
+    documentGetChunk(selectedId, scope, browse)
       .then((d) => !cancelled && setSelectedDetail(d))
       .catch((e) => !cancelled && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       cancelled = true;
     };
-  }, [selectedId, scope, reload]);
+  }, [selectedId, scope, reload, browse]);
 
   // Assemble the selected chunk + its sub-chunks into one Markdown string for the
   // markdown view (fetches each descendant's body; heading depth is relative to
@@ -123,7 +128,7 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
       n.children.forEach((c) => walk(c, depth + 1));
     };
     walk(node, 0);
-    Promise.all(items.map((it) => documentGetChunk(it.node.row.id, scope)))
+    Promise.all(items.map((it) => documentGetChunk(it.node.row.id, scope, browse)))
       .then((details) => {
         if (cancelled) return;
         const md = items
@@ -139,7 +144,7 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
     return () => {
       cancelled = true;
     };
-  }, [mode, selectedId, tree, scope, reload]);
+  }, [mode, selectedId, tree, scope, reload, browse]);
 
   const onSelect = useCallback((n: ChunkNode) => setSelectedId(n.row.id), []);
 
@@ -147,7 +152,7 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
   // metadata comments), independent of the selected-chunk view above.
   const download = useCallback(async () => {
     try {
-      const r = await documentExportMd(documentId, scope, true);
+      const r = await documentExportMd(documentId, scope, true, browse);
       const blob = new Blob([r.markdown], { type: "text/markdown" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -158,7 +163,7 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
-  }, [documentId, scope]);
+  }, [documentId, scope, browse]);
 
   return (
     <div className="doc-viewer">
@@ -276,6 +281,7 @@ export default function DocumentViewer({ documentId, scope, titleHint }: Documen
         <ChunkEditorModal
           chunk={editing}
           scope={scope}
+          browse={browse}
           onClose={() => setEditing(null)}
           onSaved={refresh}
         />

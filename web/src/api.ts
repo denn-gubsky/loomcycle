@@ -690,6 +690,18 @@ async function postJSON<T>(path: string, body: string | undefined): Promise<T> {
 export type PathScope = "agent" | "user" | "tenant";
 export type DocScope = "agent" | "user";
 
+// BrowseScope is an optional override for the off-run Path/Document endpoints
+// (RFC AS): which subject's tree (scopeId → ?scope_id=) and, for an admin, which
+// tenant (tenant → ?tenant=). Both are CALLER-AUTHORITATIVE only in the sense
+// that the SERVER re-checks them — a substrate:tenant principal's ?tenant= is
+// ignored (confined to its own tenant); scope_id picks any subject it may see.
+// Unset fields are omitted, so the server falls back to the caller's own
+// subject (byte-identical to the pre-RFC-AS behaviour).
+export interface BrowseScope {
+  scopeId?: string;
+  tenant?: string;
+}
+
 // PathEntry is one dirent in an `ls` listing.
 export interface PathEntry {
   name: string;
@@ -701,8 +713,15 @@ export interface PathEntry {
 // substratePost POSTs a tool op to an off-run substrate endpoint. A 200 returns
 // the tool's JSON result verbatim; a 422 tool refusal carries {code,error,tool}
 // — surface the human-readable `error` (e.g. "Documents require SQL Memory").
-async function substratePost<T>(path: string, body: unknown): Promise<T> {
-  const resp = await fetch(baseURL + path, {
+async function substratePost<T>(path: string, body: unknown, browse?: BrowseScope): Promise<T> {
+  let url = baseURL + path;
+  if (browse && (browse.scopeId || browse.tenant)) {
+    const q = new URLSearchParams();
+    if (browse.scopeId) q.set("scope_id", browse.scopeId);
+    if (browse.tenant) q.set("tenant", browse.tenant);
+    url += `?${q.toString()}`;
+  }
+  const resp = await fetch(url, {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -727,21 +746,28 @@ export function pathLs(
   path: string,
   scope: PathScope,
   recursive = false,
+  browse?: BrowseScope,
 ): Promise<{ path: string; entries: PathEntry[] }> {
-  return substratePost("/v1/_path", { op: "ls", path, scope, recursive });
+  return substratePost("/v1/_path", { op: "ls", path, scope, recursive }, browse);
 }
 
 // pathMkdir materializes an empty `directory` dirent (RFC AM); idempotent.
 export function pathMkdir(
   path: string,
   scope: PathScope,
+  browse?: BrowseScope,
 ): Promise<{ ok: boolean; created: boolean; path: string }> {
-  return substratePost("/v1/_path", { op: "mkdir", path, scope });
+  return substratePost("/v1/_path", { op: "mkdir", path, scope }, browse);
 }
 
 // pathMv renames/relocates a dirent (atomic; cascades a subtree; no-clobber).
-export function pathMv(from: string, to: string, scope: PathScope): Promise<{ ok: boolean }> {
-  return substratePost("/v1/_path", { op: "mv", path: from, to, scope });
+export function pathMv(
+  from: string,
+  to: string,
+  scope: PathScope,
+  browse?: BrowseScope,
+): Promise<{ ok: boolean }> {
+  return substratePost("/v1/_path", { op: "mv", path: from, to, scope }, browse);
 }
 
 // pathRm removes a dirent (recursive required for a non-empty branch). Removes
@@ -750,8 +776,9 @@ export function pathRm(
   path: string,
   scope: PathScope,
   recursive = false,
+  browse?: BrowseScope,
 ): Promise<{ ok: boolean; n_removed: number }> {
-  return substratePost("/v1/_path", { op: "rm", path, scope, recursive });
+  return substratePost("/v1/_path", { op: "rm", path, scope, recursive }, browse);
 }
 
 // documentCreate makes a new chunked-graph Document and names it in the Path
@@ -761,8 +788,9 @@ export function documentCreate(
   title: string,
   path: string,
   scope: DocScope,
+  browse?: BrowseScope,
 ): Promise<{ document_id: string; root_chunk_id: string; title: string; path?: string }> {
-  return substratePost("/v1/_document", { op: "create_document", title, path, scope });
+  return substratePost("/v1/_document", { op: "create_document", title, path, scope }, browse);
 }
 
 // documentDelete removes a Document by id: SQL rows + Memory bodies + the Path
@@ -770,8 +798,9 @@ export function documentCreate(
 export function documentDelete(
   id: string,
   scope: DocScope,
+  browse?: BrowseScope,
 ): Promise<{ deleted: boolean; document_id: string; n_chunks_deleted: number }> {
-  return substratePost("/v1/_document", { op: "delete_document", id, scope });
+  return substratePost("/v1/_document", { op: "delete_document", id, scope }, browse);
 }
 
 // ChunkRow is the structural record returned by query_chunks (no body — kept
@@ -797,17 +826,22 @@ export interface ChunkDetail extends ChunkRow {
 export function documentQueryChunks(
   documentId: string,
   scope: DocScope,
+  browse?: BrowseScope,
 ): Promise<{ chunks: ChunkRow[] }> {
-  return substratePost("/v1/_document", {
-    op: "query_chunks",
-    document_id: documentId,
-    scope,
-    limit: 1000,
-  });
+  return substratePost(
+    "/v1/_document",
+    {
+      op: "query_chunks",
+      document_id: documentId,
+      scope,
+      limit: 1000,
+    },
+    browse,
+  );
 }
 
-export function documentGetChunk(id: string, scope: DocScope): Promise<ChunkDetail> {
-  return substratePost("/v1/_document", { op: "get_chunk", id, scope });
+export function documentGetChunk(id: string, scope: DocScope, browse?: BrowseScope): Promise<ChunkDetail> {
+  return substratePost("/v1/_document", { op: "get_chunk", id, scope }, browse);
 }
 
 // documentUpdateChunk applies an optimistic-concurrency update — pass the
@@ -818,8 +852,9 @@ export function documentUpdateChunk(
   revision: number,
   patch: { body?: string; fields?: unknown; title?: string; status?: string; type?: string },
   scope: DocScope,
+  browse?: BrowseScope,
 ): Promise<ChunkDetail> {
-  return substratePost("/v1/_document", { op: "update_chunk", id, revision, scope, ...patch });
+  return substratePost("/v1/_document", { op: "update_chunk", id, revision, scope, ...patch }, browse);
 }
 
 // documentExportMd renders the document to Markdown. includeMetadata=true is
@@ -828,13 +863,18 @@ export function documentExportMd(
   documentId: string,
   scope: DocScope,
   includeMetadata: boolean,
+  browse?: BrowseScope,
 ): Promise<{ markdown: string; title: string; document_id: string }> {
-  return substratePost("/v1/_document", {
-    op: "export_md",
-    document_id: documentId,
-    scope,
-    include_metadata: includeMetadata,
-  });
+  return substratePost(
+    "/v1/_document",
+    {
+      op: "export_md",
+      document_id: documentId,
+      scope,
+      include_metadata: includeMetadata,
+    },
+    browse,
+  );
 }
 
 // AuditEvent mirrors wireEvent in internal/api/http/events_audit.go.

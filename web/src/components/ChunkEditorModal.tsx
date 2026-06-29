@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { type ChunkDetail, type DocScope, documentUpdateChunk } from "../api";
+import { type BrowseScope, type ChunkDetail, type DocScope, documentUpdateChunk } from "../api";
 
 // ChunkEditorModal edits one chunk's content — title, type, status, Markdown
 // body, and (optional) typed fields as JSON. Save is an optimistic-concurrency
@@ -10,11 +10,14 @@ import { type ChunkDetail, type DocScope, documentUpdateChunk } from "../api";
 export interface ChunkEditorModalProps {
   chunk: ChunkDetail;
   scope: DocScope;
+  // browse (RFC AS) — edit a chunk under the browsed subject's document, not
+  // necessarily the caller's own (server re-authorizes). Unset → own subject.
+  browse?: BrowseScope;
   onClose: () => void;
   onSaved: (updated: ChunkDetail) => void;
 }
 
-export default function ChunkEditorModal({ chunk, scope, onClose, onSaved }: ChunkEditorModalProps) {
+export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSaved }: ChunkEditorModalProps) {
   const [title, setTitle] = useState(chunk.title);
   const [type, setType] = useState(chunk.type ?? "");
   const [status, setStatus] = useState(chunk.status ?? "");
@@ -48,7 +51,7 @@ export default function ChunkEditorModal({ chunk, scope, onClose, onSaved }: Chu
     }
     setBusy(true);
     try {
-      const updated = await documentUpdateChunk(chunk.id, chunk.revision, patch, scope);
+      const updated = await documentUpdateChunk(chunk.id, chunk.revision, patch, scope, browse);
       onSaved(updated);
       onClose();
     } catch (ex) {

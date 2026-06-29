@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
+  type BrowseScope,
   type DocScope,
   type PathEntry,
   type PathScope,
@@ -10,6 +11,7 @@ import {
   pathMv,
   pathRm,
 } from "../api";
+import { useFocusTenant, useUserId } from "../components/Layout";
 import Splitter from "../components/Splitter";
 import DocumentViewer from "../components/DocumentViewer";
 import PathTree, {
@@ -64,11 +66,25 @@ export default function PathTreeView() {
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState<ModalState | null>(null);
 
+  // RFC AS: the active subject + tenant focus from the topbar drive WHICH
+  // subject's tree this console browses (?scope_id= / ?tenant=). The server
+  // authorizes: an admin may target any subject/tenant; a substrate:tenant
+  // operator is confined to its own tenant but may browse any subject in it.
+  // Empty fields are omitted → the caller's own subject (default). Memoized on
+  // the primitives so changing the picked subject re-fetches without an
+  // identity-churn render loop.
+  const userId = useUserId();
+  const focusTenant = useFocusTenant();
+  const browse = useMemo<BrowseScope>(
+    () => ({ scopeId: userId || undefined, tenant: focusTenant || undefined }),
+    [userId, focusTenant],
+  );
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      const resp = await pathLs("/", scope, true);
+      const resp = await pathLs("/", scope, true, browse);
       setEntries(resp.entries ?? []);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -76,7 +92,7 @@ export default function PathTreeView() {
     } finally {
       setLoading(false);
     }
-  }, [scope]);
+  }, [scope, browse]);
 
   // Reload whenever the scope changes (and on mount). Clear the selection so a
   // stale path from the previous scope doesn't drive the detail pane.
@@ -110,12 +126,12 @@ export default function PathTreeView() {
         const name = v.name.trim();
         if (!NAME_RE.test(name)) throw new Error("name may contain only [A-Za-z0-9._-]");
         const p = joinPath(currentDir, name);
-        await pathMkdir(p, scope);
+        await pathMkdir(p, scope, browse);
         await refresh();
         setSelectedPath(p);
       },
     });
-  }, [currentDir, currentDirLabel, scope, refresh]);
+  }, [currentDir, currentDirLabel, scope, browse, refresh]);
 
   const newDocument = useCallback(() => {
     setModal({
@@ -130,12 +146,12 @@ export default function PathTreeView() {
         if (!NAME_RE.test(name)) throw new Error("name may contain only [A-Za-z0-9._-]");
         const title = v.title.trim() || name;
         const p = joinPath(currentDir, name);
-        await documentCreate(title, p, scope as DocScope);
+        await documentCreate(title, p, scope as DocScope, browse);
         await refresh();
         setSelectedPath(p);
       },
     });
-  }, [currentDir, currentDirLabel, scope, refresh]);
+  }, [currentDir, currentDirLabel, scope, browse, refresh]);
 
   const renameSelected = useCallback(() => {
     if (!selected) return;
@@ -146,12 +162,12 @@ export default function PathTreeView() {
       onSubmit: async (v) => {
         const to = v.to.trim();
         if (!to.startsWith("/")) throw new Error("path must start with /");
-        await pathMv(selected.fullPath, to, scope);
+        await pathMv(selected.fullPath, to, scope, browse);
         await refresh();
         setSelectedPath(to);
       },
     });
-  }, [selected, scope, refresh]);
+  }, [selected, scope, browse, refresh]);
 
   const deleteSelected = useCallback(() => {
     if (!selected) return;
@@ -166,7 +182,7 @@ export default function PathTreeView() {
         danger: true,
         onSubmit: async () => {
           if (!id) throw new Error("this document dirent has no document_id");
-          await documentDelete(id, scope as DocScope);
+          await documentDelete(id, scope as DocScope, browse);
           await refresh();
           setSelectedPath(undefined);
         },
@@ -191,14 +207,14 @@ export default function PathTreeView() {
       danger: true,
       onSubmit: async () => {
         for (const id of docIds) {
-          await documentDelete(id, scope as DocScope);
+          await documentDelete(id, scope as DocScope, browse);
         }
-        await pathRm(selected.fullPath, scope, true);
+        await pathRm(selected.fullPath, scope, true, browse);
         await refresh();
         setSelectedPath(undefined);
       },
     });
-  }, [selected, scope, refresh]);
+  }, [selected, scope, browse, refresh]);
 
   const mutable = selected && (selected.kind === "directory" || selected.kind === "document");
 
@@ -244,6 +260,16 @@ export default function PathTreeView() {
           </div>
           <p className="paths-context">
             new items → <code>{currentDirLabel}</code>
+            {browse.scopeId && (
+              <>
+                {" · "}subject <code>{browse.scopeId}</code>
+              </>
+            )}
+            {browse.tenant && (
+              <>
+                {" · "}tenant <code>{browse.tenant}</code>
+              </>
+            )}
           </p>
           {err && <div className="paths-err">{err}</div>}
           {loading && entries.length === 0 ? (
@@ -273,6 +299,7 @@ export default function PathTreeView() {
                   documentId={(selected.resourceRef as { document_id?: string })?.document_id ?? ""}
                   scope={scope === "agent" ? "agent" : "user"}
                   titleHint={selected.name}
+                  browse={browse}
                 />
               </div>
             ) : (
