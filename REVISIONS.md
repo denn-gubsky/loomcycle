@@ -8,6 +8,28 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.6.6
+
+**Patch — a sub-agent's session inherits the parent's tenant.** A sub-agent
+spawned via `Agent.spawn` / `parallel_spawn` got a run row under the parent's
+tenant but a SESSION row with an EMPTY `tenant_id` — `runSubAgent` passed `""`
+as the tenant arg to `openOrCreateSessionAndRun`. Latent since RFC L; it
+surfaced once the transcript / continuation reads moved onto the tenant-gated
+accessor (`s.tenantStore(...).GetSession`): an empty-tenant session is invisible
+to a `substrate:tenant` viewer, so the Web UI 404'd ("session not found") when a
+tenant operator opened a sub-agent run — while the run row stayed visible, and
+admin / legacy / open (who see all tenants) were unaffected. It was also a latent
+isolation gap (an empty-tenant session was cross-tenant-visible before the gate).
+
+Fix: `runSubAgent` passes `parentIdentity.TenantID` so the sub-agent's session
+and run share the parent's authoritative tenant — matching the `POST /v1/runs`
+path. Existing in-flight sub-agent sessions created before the fix keep their
+empty tenant (transient running rows); new spawns are correct. Additive — no new
+wire RPCs, no schema change. Adapters unchanged since v1.5.0. The TrueNAS deploy
+artifacts now pin `denngubsky/loomcycle:1.6.6`.
+
+---
+
 ## What's in v1.6.5
 
 **Patch — bundled skills now show in the Library, and a document is never orphaned
