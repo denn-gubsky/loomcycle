@@ -94,13 +94,14 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 	entries := make([]LibraryEntry, 0, len(s.cfg.Agents)+len(subRows))
 	seen := map[string]struct{}{}
 
-	// Operator-global static cfg agents belong to the shared operator scope —
-	// surfaced only in the all-tenants (admin/open) view, never to a
-	// tenant-scoped principal (RFC AS §2.2).
+	// Operator-global static cfg agents are the shared agent catalog (no tenant
+	// axis) — surfaced to EVERY principal, including a substrate:tenant operator.
+	// This mirrors the static-volume "bind floor" (volumes_read.go shows static
+	// volumes to all tenants): a static def is operator-global, not another
+	// tenant's private substrate row, so showing it read-only to a tenant
+	// operator is not a cross-tenant leak — it lets the tenant see (and run/fork)
+	// the bundled/preset agents. Only the substrate rows above are tenant-scoped.
 	for name, def := range s.cfg.Agents {
-		if !all {
-			continue
-		}
 		entry := LibraryEntry{
 			Name:             name,
 			InStatic:         true,
@@ -162,11 +163,9 @@ func (s *Server) handleListLibrarySkills(w http.ResponseWriter, r *http.Request)
 	entries := make([]LibraryEntry, 0, len(staticNames)+len(subRows))
 	seen := map[string]struct{}{}
 
-	// Operator-global static skills — admin/open view only (RFC AS §2.2).
+	// Operator-global static skills — the shared catalog floor, shown to every
+	// principal incl. a tenant operator (see handleListLibraryAgents).
 	for _, name := range staticNames {
-		if !all {
-			continue
-		}
 		sk, _ := s.skillSet.Get(name)
 		entry := LibraryEntry{
 			Name:             name,
@@ -230,11 +229,9 @@ func (s *Server) handleListLibraryMcpServers(w http.ResponseWriter, r *http.Requ
 	entries := make([]LibraryEntry, 0, len(s.cfg.MCPServers)+len(subRows))
 	seen := map[string]struct{}{}
 
-	// Operator-global static MCP servers — admin/open view only (RFC AS §2.2).
+	// Operator-global static MCP servers — the shared catalog floor, shown to
+	// every principal incl. a tenant operator (see handleListLibraryAgents).
 	for name, srv := range s.cfg.MCPServers {
-		if !all {
-			continue
-		}
 		var discoveredTools json.RawMessage
 		if s.mcpPoolInspector != nil {
 			discoveredTools = s.mcpPoolInspector(name)
