@@ -228,6 +228,22 @@ type ContentBlock struct {
 	Data      string `json:"data,omitempty"`
 }
 
+// RequestHasImage reports whether any message in the request carries an image
+// content block (RFC AT). Drivers whose vision support is per-model (Anthropic,
+// OpenAI) use it to refuse an image to a known text-only model with a clear
+// error before the HTTP call, rather than letting the provider return an opaque
+// 400.
+func RequestHasImage(req Request) bool {
+	for _, m := range req.Messages {
+		for _, c := range m.Content {
+			if c.Type == "image" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ToolSpec describes one tool to the model.
 type ToolSpec struct {
 	Name        string          `json:"name"`
