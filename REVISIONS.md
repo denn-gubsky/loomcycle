@@ -8,6 +8,40 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.6.5
+
+**Patch — bundled skills now show in the Library, and a document is never orphaned
+from the Path tree.** Two fixes surfaced by the live v1.6.4 tenant-operator UI.
+
+**📚 Inline bundled skills visible in the Library (#587).** RFC AQ bundles (e.g.
+`document-agent`'s four skills) define their skills INLINE under the top-level
+`skills:` map (`cfg.Skills`); `resolveSkills` bakes those bodies into agent
+prompts and discards its set, and the server's `skillSet` loads only from
+`LOOMCYCLE_SKILLS_ROOT` — so a bundled skill never entered the enumerated set and
+showed `0` in the Library for EVERY principal (admin included). The skills
+handler now merges `cfg.Skills` (inline overlays root on a name collision,
+matching `resolveSkills`), so bundled skills appear for admin and tenant
+operators alike. (MCP servers needed no change — bundles ship none, and that
+handler already reads `cfg.MCPServers`.)
+
+**📄 A document is never orphaned from the Path tree (#588).** `create_document`
+registered a dirent only when given an explicit `path`, so a document created
+without one (e.g. an MCP agent's create) had NO Path-tree entry and was reachable
+only by `document_id` — invisible to every human login in the Library/Path
+browser (which lists dirents). Two parts:
+- `create_document` now ALWAYS registers a dirent, defaulting to
+  `/documents/<title-slug>` when no `path` is given (slugified to the path
+  charset; falls back to the unique doc id on an empty slug).
+- A new `Document op=set_path` (`id` + `path`) attaches/re-homes a Path-tree name
+  for an EXISTING document — the cure for an already-orphaned doc. Idempotent,
+  runs in the document's own scope, opaque-404 on an unknown/cross-scope id. It
+  flows through every transport (a new `op` on the existing Document dispatch).
+
+Additive — no new wire RPCs; no schema change. Adapters unchanged since v1.5.0.
+The TrueNAS deploy artifacts now pin `denngubsky/loomcycle:1.6.5`.
+
+---
+
 ## What's in v1.6.4
 
 **The tenant-operator Web UI, completed — every tenant-scopeable management
