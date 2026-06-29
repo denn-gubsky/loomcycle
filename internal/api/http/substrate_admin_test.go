@@ -559,3 +559,36 @@ func postAdmin(t *testing.T, ts *httptest.Server, path, body string) *http.Respo
 	}
 	return resp
 }
+
+// TestSubstrateBrowseCtxFn_Authz (RFC AS) pins the off-run Path/Document browse
+// scope override: ?scope_id= picks a subject other than the caller's own, and
+// ?tenant= an other tenant — but a substrate:tenant principal may NEVER cross
+// its own tenant (the cross-tenant read boundary), while admin may target any
+// (tenant, subject). With no params the caller's own identity is preserved.
+func TestSubstrateBrowseCtxFn_Authz(t *testing.T) {
+	s := &Server{}
+	build := func(query string, p auth.Principal) (tools.RunIdentityValue, string) {
+		req := httptest.NewRequest("POST", "/v1/_path"+query, nil)
+		ctx := auth.WithPrincipal(req.Context(), p)
+		out := s.substrateBrowseCtxFn(req)(ctx)
+		return tools.RunIdentity(out), tools.AgentName(out)
+	}
+	admin := auth.Principal{TenantID: "default", Subject: "ops", Scopes: []string{auth.ScopeAdmin}}
+	tenant := auth.Principal{TenantID: "loomcycle-dev", Subject: "tok-ld2", Scopes: []string{auth.ScopeTenant}}
+
+	// Admin may target any tenant + subject (sees every primitive).
+	if ri, an := build("?scope_id=marketing&tenant=acme", admin); ri.UserID != "marketing" || ri.TenantID != "acme" || an != "marketing" {
+		t.Errorf("admin override: ri=%+v agent=%q, want user=marketing tenant=acme agent=marketing", ri, an)
+	}
+	// SECURITY: a tenant principal's ?tenant= is IGNORED — tenant stays its own;
+	// scope_id is honored (any subject within its tenant).
+	if ri, an := build("?scope_id=marketing&tenant=acme", tenant); ri.TenantID != "loomcycle-dev" {
+		t.Errorf("tenant must NOT cross tenant via ?tenant=: got tenant=%q, want loomcycle-dev (ri=%+v agent=%q)", ri.TenantID, ri, an)
+	} else if ri.UserID != "marketing" || an != "marketing" {
+		t.Errorf("tenant scope_id override: ri=%+v agent=%q, want user/agent=marketing", ri, an)
+	}
+	// No params → caller's own subject preserved (back-compat with substrateAdminUserCtx).
+	if ri, _ := build("", tenant); ri.UserID != "tok-ld2" || ri.TenantID != "loomcycle-dev" {
+		t.Errorf("no-override must keep own identity: ri=%+v", ri)
+	}
+}
