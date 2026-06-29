@@ -315,25 +315,30 @@ const (
 	EventCacheInvalidated EventType = "cache_invalidated"
 
 	// EventFallbackSuppressed signals that a retryable error would
-	// have triggered a provider fallback, but the run was already
-	// past its first successful turn AND the operator opted into
-	// "pin provider after first successful turn" semantics
-	// (`LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS=1`). The cause error
-	// propagates to the caller; the run fails. Purely informational.
+	// have triggered a provider fallback, but the loop refused the
+	// switch. The cause error propagates to the caller; the run
+	// fails. Purely informational. Two refusal reasons emit it:
 	//
-	// Why: cross-provider mid-conversation fallback exposes a
-	// growing surface of provider-specific transcript translation
-	// bugs (Anthropic cache_control, DeepSeek reasoning_content,
-	// gemini thoughtSignature, tool_call shape differences). Each
-	// requires its own translation layer. Pinning after first
-	// success closes the entire class of bug in exchange for
-	// dropping resilience to mid-conversation provider issues —
-	// existing same-provider rate-limit retry (internal/providers/
-	// ratelimit/) still covers transient errors within one provider.
+	//  1. Pin-after-success: the run was already past its first
+	//     successful turn AND the operator opted into "pin provider
+	//     after first successful turn" (`LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS=1`).
+	//     Cross-provider mid-conversation fallback exposes a growing
+	//     surface of provider-specific transcript translation bugs
+	//     (Anthropic cache_control, DeepSeek reasoning_content, gemini
+	//     thoughtSignature, tool_call shape differences); pinning after
+	//     first success closes that class of bug in exchange for dropping
+	//     resilience to mid-conversation provider issues (same-provider
+	//     rate-limit retry in internal/providers/ratelimit/ still covers
+	//     transient errors within one provider).
+	//  2. Vision mismatch (RFC AT §4.4): the run carries an image content
+	//     block but the re-resolved fallback target does not support
+	//     vision (e.g. DeepSeek's text endpoint). Switching would let the
+	//     image part reach a provider that 400s on it ("unknown variant
+	//     'image_url'"), which RFC AT §4.4 says must not happen — so the
+	//     swap is refused before the call.
 	//
-	// The Text field carries a human-readable summary:
-	// "fallback to <new> suppressed: provider <old> pinned after
-	// first successful turn".
+	// The Text field carries a human-readable summary naming the failed
+	// and (for reason 2) the refused target provider/model.
 	EventFallbackSuppressed EventType = "fallback_suppressed"
 
 	// EventReasoningInvalidated signals that a v0.8.x runtime

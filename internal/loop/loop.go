@@ -563,6 +563,25 @@ func tryProviderFallback(
 		return fallbackOutcomeReResolveFailed
 	}
 
+	// RFC AT §4.4: if this run carries an image content block, the fallback
+	// target must also accept image input. The initial-call gate before the
+	// main loop only checks the FIRST resolved provider; without this re-check,
+	// a mid-run swap to a text-only provider (e.g. DeepSeek, which wraps the
+	// OpenAI driver and overrides SupportsVision=false) would let the image
+	// part reach the upstream and the provider would 400 with a raw
+	// "unknown variant 'image_url'" — exactly what RFC AT §4.4 says must NOT
+	// happen. Fail loudly here instead of leaking a request that's structurally
+	// invalid for the target. Skip *attempts++ + EventProviderFallback because
+	// no switch actually happens; emit EventFallbackSuppressed so the operator
+	// sees the refused candidate.
+	if messagesHaveImage(messages) && !newProvider.Capabilities().SupportsVision {
+		emit(providers.Event{
+			Type: providers.EventFallbackSuppressed,
+			Text: fmt.Sprintf("fallback from %s/%s to %s/%s suppressed: run carries an image but the fallback target does not support vision (RFC AT §4.4); run will fail with cause: %s", failedProvider, failedModel, newProvider.ID(), newModel, truncateError(cause)),
+		})
+		return fallbackOutcomeNotEligible
+	}
+
 	*attempts++
 
 	emit(providers.Event{
@@ -1142,10 +1161,11 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// call when the resolved provider can't accept image input (e.g. an agent
 	// whose tier resolved to DeepSeek's text endpoint). This fails loudly here
 	// instead of the image being silently dropped. Checked once at the resolved
-	// provider: a mid-run fallback to a non-vision provider is caught by the
-	// driver's own per-model gate (a clear error) / surfaces as a provider
-	// error, never a silent drop. PriorMessages were validated when first sent,
-	// so only the fresh segments need re-validating here.
+	// provider AND inside tryProviderFallback against the fallback target — a
+	// mid-run swap to a non-vision provider is refused with a clear
+	// EventFallbackSuppressed event (RFC AT §4.4), never a silent leak to a
+	// raw 400. PriorMessages were validated when first sent, so only the fresh
+	// segments need re-validating here.
 	if messagesHaveImage(messages) {
 		if err := validateImageSegments(opts.Segments); err != nil {
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})

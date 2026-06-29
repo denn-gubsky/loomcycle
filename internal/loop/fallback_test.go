@@ -16,20 +16,24 @@ import (
 // tieredProvider is a fakeProvider variant whose ID is configurable.
 // The fallback tests need two distinct providers with different IDs
 // so we can assert the EventProviderFallback payload carries the
-// correct new_provider name.
+// correct new_provider name. `supportsVision` overrides the default
+// Capabilities for the vision-mismatch fallback case (RFC AT §4.4) —
+// existing tests get the zero value (false), which matches the
+// pre-RFC-AT default and preserves their behaviour.
 type tieredProvider struct {
-	id        string
-	mu        sync.Mutex
-	responses [][]providers.Event
-	errors    []error // returned by Call() at the same index; nil → use responses[idx]
-	calls     int
+	id             string
+	mu             sync.Mutex
+	responses      [][]providers.Event
+	errors         []error // returned by Call() at the same index; nil → use responses[idx]
+	calls          int
+	supportsVision bool
 }
 
 func (p *tieredProvider) ID() string                                     { return p.id }
 func (p *tieredProvider) Probe(_ context.Context) error                  { return nil }
 func (p *tieredProvider) ListModels(_ context.Context) ([]string, error) { return []string{"m"}, nil }
 func (p *tieredProvider) Capabilities() providers.Capabilities {
-	return providers.Capabilities{Streaming: true}
+	return providers.Capabilities{Streaming: true, SupportsVision: p.supportsVision}
 }
 func (p *tieredProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
 	p.mu.Lock()
@@ -865,6 +869,104 @@ func (d *downgradingRecorder) NonThinkingSibling(model string) (string, bool) {
 		return "deepseek-v4-flash", true
 	default:
 		return "", false
+	}
+}
+
+// TestFallback_NonVisionTarget_SuppressesFallback is the RFC AT §4.4
+// regression: a mid-run fallback whose target lacks SupportsVision MUST be
+// refused with a clear EventFallbackSuppressed (and the original error
+// propagated), never silently swap so the image_url part can leak to a
+// text-only provider that 400s with "unknown variant 'image_url'". The
+// initial-call gate only checks the FIRST resolved provider; without
+// re-checking in tryProviderFallback, a swap from anthropic →
+// deepseek-text on a vision-bearing run would slip past both gates.
+// FAIL-BEFORE: pre-fix, EventProviderFallback fires + opts.Provider is
+// mutated to the non-vision target.
+func TestFallback_NonVisionTarget_SuppressesFallback(t *testing.T) {
+	failing := &tieredProvider{
+		id:             "anthropic",
+		supportsVision: true, // passes the initial-call gate
+		errors:         []error{fmt.Errorf("anthropic 503: service unavailable")},
+	}
+	textOnly := &tieredProvider{
+		id:             "deepseek",
+		supportsVision: false, // the bug-shaped target
+		// No scripted responses — the test asserts we NEVER reach Call().
+	}
+
+	var events []providers.Event
+	var mu sync.Mutex
+
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "claude-sonnet-4-6",
+		MaxIterations: 5,
+		// Image-bearing user segment is what makes the vision gate apply.
+		Segments: []PromptSegment{{
+			Role: "user",
+			Content: []PromptContentBlock{
+				{Type: "trusted-text", Text: "what's in this image?"},
+				{Type: "image", MediaType: "image/png", Data: testPNGB64},
+			},
+		}},
+		OnEvent: func(ev providers.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+		FallbackPolicy: FallbackPolicy{
+			Enabled:      true,
+			MaxAttempts:  3,
+			UserTierName: "medium",
+		},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return textOnly, "deepseek-v4-pro", "", nil
+		},
+	}
+	_, err := Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("Run: nil error, want the failing-provider's original error to propagate after refused fallback")
+	}
+	// Caller sees the ORIGINAL provider error, not a vision-specific one — the
+	// reason for the refusal goes via EventFallbackSuppressed below.
+	if !strings.Contains(err.Error(), "anthropic 503") {
+		t.Errorf("Run err = %q, want substring 'anthropic 503' (original error propagated)", err.Error())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// EventFallbackSuppressed must be present, carrying the RFC AT §4.4 cite
+	// and the failed/target pair so an operator can audit.
+	var suppressed *providers.Event
+	for i := range events {
+		if events[i].Type == providers.EventFallbackSuppressed {
+			suppressed = &events[i]
+			break
+		}
+	}
+	if suppressed == nil {
+		t.Fatal("no EventFallbackSuppressed emitted; the refusal is invisible to the operator")
+	}
+	for _, want := range []string{"RFC AT §4.4", "image", "does not support vision", "anthropic", "deepseek"} {
+		if !strings.Contains(suppressed.Text, want) {
+			t.Errorf("suppressed.Text = %q\n  missing substring: %q", suppressed.Text, want)
+		}
+	}
+
+	// EventProviderFallback must NOT fire — no switch actually happened, so
+	// emitting it would lie to the operator about which provider ran.
+	for _, ev := range events {
+		if ev.Type == providers.EventProviderFallback {
+			t.Errorf("EventProviderFallback emitted: %+v — but the switch was refused, so this event should not fire", ev)
+		}
+	}
+
+	// The non-vision target must NEVER have been called.
+	textOnly.mu.Lock()
+	defer textOnly.mu.Unlock()
+	if textOnly.calls != 0 {
+		t.Errorf("textOnly.calls = %d, want 0 (the fallback target should not be reached)", textOnly.calls)
 	}
 }
 
