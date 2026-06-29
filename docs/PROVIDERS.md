@@ -180,3 +180,76 @@ The OAuth-dev provider is single-operator, single-machine. There's no token-sync
 - Pi (`earendil-works/pi`, 51K stars): the source of the OAuth client_id + flow shape.
 - The internal RFC at `~/work/loomcycle-internal/doc-internal/rfcs/anthropic-oauth-dev.md` (locked 2026-05-19) documents the full design + decisions.
 - `Context.help(topic="loomcycle")` from inside an agent prompt for the in-substrate description.
+
+## Image / vision input (RFC AT)
+
+loomcycle accepts image input as a content block on a `user`-role segment. It is
+additive and backward-compatible — text-only callers are unchanged, and there is
+no new endpoint.
+
+### Sending an image
+
+A caller adds an `image` block alongside text blocks in a `user` segment of
+`POST /v1/runs` (or `POST /v1/sessions/{id}/messages` for a continuation turn):
+
+```json
+{
+  "agent": "vision-agent",
+  "segments": [{
+    "role": "user",
+    "content": [
+      {"type": "trusted-text", "text": "What's in this picture?"},
+      {"type": "image", "media_type": "image/png", "data": "<base64 bytes, no data: prefix>"}
+    ]
+  }]
+}
+```
+
+- **`media_type`** must be one of `image/png`, `image/jpeg`, `image/gif`,
+  `image/webp` (the common denominator across all vision providers).
+- **`data`** is the raw base64 of the image bytes — **no `data:` prefix**. There
+  is deliberately **no URL form**: accepting a URL would make loomcycle fetch
+  arbitrary hosts (SSRF). The OpenAI driver builds the `data:` URI internally.
+- Images are valid only in `user`-role segments.
+
+### Per-provider serialization
+
+Each driver serializes the block natively — no conversion to text:
+
+| Provider | Wire form |
+|---|---|
+| `anthropic` (+ `anthropic-oauth-dev`) | `{"type":"image","source":{"type":"base64","media_type","data"}}` |
+| `openai` | user message `content` becomes the array form with an `image_url` part holding a `data:` URI |
+| `gemini` | a part with `inlineData: {mimeType, data}` |
+| `ollama` / `ollama-local` | the user message's `images: [base64]` field |
+| `deepseek` | **not supported** — DeepSeek text models reject images |
+
+### The capability gate
+
+A provider advertises `SupportsVision`; the loop refuses an image sent to a
+text-only provider/model **before** the call, emitting a clear error event
+("model X on provider Y does not support image input") rather than letting the
+image be silently dropped or the provider return an opaque 400. This makes a
+provider-fallback onto a text-only model fail loudly. Per-model nuance (a legacy
+text-only model on an otherwise vision-capable provider — `claude-2`/
+`claude-instant`, `gpt-3.5*`, the original `gpt-4`/`gpt-4-32k` snapshots) is
+refined inside the driver; unknown models default to supported (a wrong guess
+surfaces as a provider error, never a silent drop). For Ollama the model must be
+a vision model (llava, llama3.2-vision, …) — that's the operator's choice.
+
+### Request body cap
+
+Inline base64 makes requests larger, so the run-ingest body cap (`POST /v1/runs`
+and `POST /v1/sessions/{id}/messages`) defaults to **16 MiB** and is tunable via
+`LOOMCYCLE_MAX_REQUEST_BYTES` (bytes). An over-cap request returns
+`413 Request Entity Too Large`. Consumers should resample images to a sane max
+edge (~1568px) before sending to keep them small and bound token cost.
+
+### Caveats
+
+- **gRPC/proto parity is deferred** — HTTP is the consumer path. gRPC callers
+  cannot send images yet.
+- **No image output** (generation), no audio/video.
+- A vision model can be influenced by text rendered *inside* an image
+  (prompt-injection-via-image) — inherent to any vision system, not defended at
+  the wire.
