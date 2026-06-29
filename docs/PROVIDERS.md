@@ -183,9 +183,10 @@ The OAuth-dev provider is single-operator, single-machine. There's no token-sync
 
 ## Image / vision input (RFC AT)
 
-loomcycle accepts image input as a content block on a `user`-role segment. It is
-additive and backward-compatible — text-only callers are unchanged, and there is
-no new endpoint.
+loomcycle accepts image input as a content block on a `user`-role segment, over
+**every transport** (HTTP, gRPC, MCP, the TS + Python adapters). It is additive
+and backward-compatible — text-only callers are unchanged, and there is no new
+endpoint.
 
 ### Sending an image
 
@@ -211,6 +212,22 @@ A caller adds an `image` block alongside text blocks in a `user` segment of
   is deliberately **no URL form**: accepting a URL would make loomcycle fetch
   arbitrary hosts (SSRF). The OpenAI driver builds the `data:` URI internally.
 - Images are valid only in `user`-role segments.
+
+### Per-transport
+
+The same `image` block is accepted on every transport; only the representation
+of the bytes differs (JSON has no byte type, proto does):
+
+| Transport | How to send an image |
+|---|---|
+| **HTTP** (`POST /v1/runs`, `/v1/sessions/{id}/messages`) | `data` = base64 string (as above) |
+| **MCP server** (`spawn_run` / `spawn_runs`) | a `segments` arg with the same JSON block — `data` = base64 string |
+| **TS** (`@loomcycle/client`) | `PromptContent` `image` variant: `{ type:"image", media_type, data }` (base64 string) on `runStreaming` / `continueSession` |
+| **gRPC** (`Run` / `Continue`) | `PromptContentBlock.media_type` (string) + **`data` (bytes)** — raw image bytes, NOT base64; the server encodes at the boundary |
+| **Python** (`pip install loomcycle`, gRPC) | a segment dict `{"type":"image","media_type":...,"data": b"...raw bytes..."}` |
+
+gRPC/Python carry the raw bytes natively (no ~33% base64 inflation); HTTP/MCP/TS
+carry base64 strings. All converge on the same internal representation.
 
 ### Per-provider serialization
 
@@ -247,8 +264,9 @@ edge (~1568px) before sending to keep them small and bound token cost.
 
 ### Caveats
 
-- **gRPC/proto parity is deferred** — HTTP is the consumer path. gRPC callers
-  cannot send images yet.
+- The gRPC `PromptContentBlock` carries `media_type` + `data` (bytes) but still
+  omits `kind` (the untrusted-block source label) — gRPC callers can send images
+  and trusted/untrusted text, but not a custom untrusted `kind`.
 - **No image output** (generation), no audio/video.
 - A vision model can be influenced by text rendered *inside* an image
   (prompt-injection-via-image) — inherent to any vision system, not defended at

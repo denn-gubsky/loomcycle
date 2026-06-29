@@ -1198,7 +1198,14 @@ class LoomcycleClient:
 
 
 def _segments_to_proto(segments: Iterable[PromptSegment]) -> List[pb.PromptSegment]:
-    """Convert the public dict-shape segments to proto messages."""
+    """Convert the public dict-shape segments to proto messages.
+
+    An image content block (type="image", RFC AT) carries media_type plus raw
+    image bytes: ``{"type": "image", "media_type": "image/png", "data": b"..."}``.
+    Over gRPC ``data`` is the RAW bytes (the proto field is ``bytes``) — read a
+    file with ``open(path, "rb").read()``. The server base64-encodes it for the
+    model. Media types: image/png, image/jpeg, image/gif, image/webp.
+    """
     out: List[pb.PromptSegment] = []
     for s in segments:
         blocks = []
@@ -1208,6 +1215,8 @@ def _segments_to_proto(segments: Iterable[PromptSegment]) -> List[pb.PromptSegme
                     type=b.get("type", "trusted-text"),
                     text=b.get("text", ""),
                     cacheable=bool(b.get("cacheable", False)),
+                    media_type=b.get("media_type", ""),
+                    data=b.get("data", b""),
                 )
             )
         out.append(pb.PromptSegment(role=s.get("role", "user"), content=blocks))

@@ -563,6 +563,32 @@ func TestServer_SpawnRun_BlockingPath(t *testing.T) {
 	}
 }
 
+// TestServer_SpawnRun_CarriesImageSegment verifies an image content block
+// (RFC AT) in a spawn_run call relays through to the connector intact — the MCP
+// path carries it as base64 JSON (like HTTP), so no transform is needed.
+// Fail-before: this would already pass on the handler (segments relay through
+// unchanged); the test pins the contract so a future schema/handler change that
+// drops image fields is caught.
+func TestServer_SpawnRun_CarriesImageSegment(t *testing.T) {
+	const b64 = "iVBORw0KGgo="
+	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"vision","segments":[{"role":"user","content":[{"type":"trusted-text","text":"what is this"},{"type":"image","media_type":"image/png","data":"` + b64 + `"}]}]}}}`,
+	}, "\n") + "\n"
+	driveServer(t, srv, in)
+
+	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
+	if len(stored.Segments) != 1 || len(stored.Segments[0].Content) != 2 {
+		t.Fatalf("connector saw segments %+v, want 1 segment with 2 blocks", stored.Segments)
+	}
+	img := stored.Segments[0].Content[1]
+	if img.Type != "image" || img.MediaType != "image/png" || img.Data != b64 {
+		t.Errorf("image block not relayed intact: %+v", img)
+	}
+}
+
 // TestServer_SpawnRun_CarriesCompaction verifies a per-run compaction block on
 // a spawn_run call decodes into SpawnRunRequest.Compaction (the new per-run
 // config surface; the connector then carries it to runner.RunInput).

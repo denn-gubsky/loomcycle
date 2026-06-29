@@ -31,7 +31,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"type": "object",
 				"properties": {
 					"agent":            {"type": "string", "description": "Registered agent name. Required for fresh runs; ignored for continuations (session's stored agent is authoritative)."},
-					"segments":         {"type": "array",  "description": "Prompt segments. Typically required for fresh runs; continuations may omit when the caller has nothing new to add."},
+					"segments":         {"type": "array",  "description": "Prompt segments — each {role, content:[blocks]}. Typically required for fresh runs; continuations may omit when the caller has nothing new to add.", "items": {"type": "object", "required": ["role", "content"], "properties": {"role": {"type": "string", "enum": ["system", "user"]}, "content": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string", "enum": ["trusted-text", "untrusted-block", "image"]}, "text": {"type": "string"}, "cacheable": {"type": "boolean"}, "kind": {"type": "string", "description": "untrusted-block source label (e.g. web_content)"}, "media_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"], "description": "image blocks only (RFC AT); valid only in a user segment"}, "data": {"type": "string", "description": "image blocks only: base64-encoded image bytes, NO data: prefix"}}}}}}},
 					"session_id":       {"type": "string", "description": "Set to continue an existing session. When set, agent is ignored."},
 					"tenant_id":        {"type": "string"},
 					"user_id":          {"type": "string"},
@@ -69,7 +69,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 							"required": ["agent"],
 							"properties": {
 								"agent":            {"type": "string", "description": "Registered agent name."},
-								"segments":         {"type": "array"},
+								"segments":         {"type": "array", "description": "Prompt segments — each {role, content:[blocks]}.", "items": {"type": "object", "required": ["role", "content"], "properties": {"role": {"type": "string", "enum": ["system", "user"]}, "content": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string", "enum": ["trusted-text", "untrusted-block", "image"]}, "text": {"type": "string"}, "cacheable": {"type": "boolean"}, "kind": {"type": "string", "description": "untrusted-block source label"}, "media_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"], "description": "image blocks only (RFC AT)"}, "data": {"type": "string", "description": "image blocks only: base64 image bytes, NO data: prefix"}}}}}}},
 								"tenant_id":        {"type": "string"},
 								"user_id":          {"type": "string"},
 								"agent_id":         {"type": "string", "description": "Optional caller-supplied tracking handle."},

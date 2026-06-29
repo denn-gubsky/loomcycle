@@ -51,6 +51,29 @@ def test_segments_to_proto_handles_empty_iterable():
     assert segs == []
 
 
+def test_segments_to_proto_maps_image_block():
+    # RFC AT: an image block carries media_type + raw bytes (proto `bytes`).
+    raw = b"\x89PNG\r\n\x1a\n"
+    segs = _segments_to_proto([
+        {
+            "role": "user",
+            "content": [
+                {"type": "trusted-text", "text": "describe"},
+                {"type": "image", "media_type": "image/png", "data": raw},
+            ],
+        }
+    ])
+    blocks = segs[0].content
+    assert len(blocks) == 2
+    # Text block carries no image fields.
+    assert blocks[0].media_type == ""
+    assert blocks[0].data == b""
+    # Image block carries media_type + the raw bytes verbatim.
+    assert blocks[1].type == "image"
+    assert blocks[1].media_type == "image/png"
+    assert blocks[1].data == raw
+
+
 def test_ts_to_iso_returns_empty_for_zero_value():
     ts = Timestamp()  # all-zero → "no timestamp"
     assert _ts_to_iso(ts) == ""

@@ -138,7 +138,19 @@ export interface AgentEvent {
 
 export type PromptContent =
   | { type: "trusted-text"; text: string; cacheable?: boolean }
-  | { type: "untrusted-block"; kind: string; text: string };
+  | { type: "untrusted-block"; kind: string; text: string }
+  // Image input (RFC AT), valid only in a user segment. `data` is the
+  // base64-encoded image bytes with NO "data:" prefix; there is deliberately
+  // no URL form (SSRF). The model must be vision-capable or the run errors
+  // before the call.
+  | { type: "image"; media_type: ImageMediaType; data: string };
+
+/** Whitelisted image media types accepted on an `image` content block (RFC AT). */
+export type ImageMediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp";
 
 export interface PromptSegment {
   role: "system" | "user";
