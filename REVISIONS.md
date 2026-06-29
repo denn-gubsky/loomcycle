@@ -8,6 +8,30 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.6.7
+
+**Patch — an agent can identify its tenant, credential, and server via
+`Context op=self`.** An agent (especially one connected over the MCP transport)
+couldn't tell which tenant it acts as, what its credential is, or which loomcycle
+instance it's talking to. `Context op=self` now additionally returns:
+
+- **`tenant_id`** — the RFC L isolation boundary (always present, paired with
+  `user_id`).
+- **`principal`** — the resolved auth identity when the run carries one (every
+  MCP / authed-HTTP path): `subject`, `tenant_id`, `scopes`, `is_admin`,
+  `legacy`, `token_def_id`, and the 6-char `token_suffix` log handle. Non-secret
+  — NEVER the bearer. Omitted in open mode.
+- **`server`** — `{ listen_addr, url }` so the agent can identify the instance.
+  `url` comes from a new **`LOOMCYCLE_PUBLIC_URL`** (the operator's advertised
+  external base URL), falling back to the A2A advertise URL; `listen_addr` is the
+  bind address. The TrueNAS deploy compose + `INSTALL.md` surface the new knob.
+
+All additive tool output — flows through every transport (MCP / HTTP / in-band)
+with no wire change, no schema change. Adapters unchanged since v1.5.0. The
+TrueNAS deploy artifacts now pin `denngubsky/loomcycle:1.6.7`.
+
+---
+
 ## What's in v1.6.6
 
 **Patch — a sub-agent's session inherits the parent's tenant.** A sub-agent
