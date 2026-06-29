@@ -8,6 +8,61 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.6.4
+
+**The tenant-operator Web UI, completed — every tenant-scopeable management
+surface now answers to a `substrate:tenant` operator, plus a TrueNAS SQL-Memory
+deploy fix.**
+
+v1.6.3 opened the tenant-operator Web UI (the def plane + Library + nav
+visibility); v1.6.4 extends it to the remaining surfaces. Same posture
+throughout: admin / legacy / open see all (honoring the `?tenant=` focus), a
+`substrate:tenant` operator is confined to its own tenant.
+
+**📚 Bundled agents visible to tenant operators (#580).** After v1.6.3 a tenant
+operator saw ZERO agents in the Library unless it had authored its own — the list
+skipped every operator-global static cfg entry. Static defs (the bundled/preset
+agents: `chat`, `document-agent`, …) are the shared catalog floor, not another
+tenant's private rows, so they're now shown read-only to every principal
+(mirroring static Volumes); the substrate rows stay tenant-scoped.
+
+**📅 Schedules tenant-scoped (#581).** The `/v1/_schedules/*` surface (list-all +
+per-def state / run-now / pause / resume) was pinned to `substrate:admin`, so a
+tenant operator got a blanket 403. It's now `ScopeTenant`: list-all filters
+substrate schedules to the caller's tenant (static yaml crons stay admin-only),
+and the per-def ops opaque-404 a cross-tenant (or static) def via
+`ScheduleDefGet(def_id)`.
+
+**📄 Browse Paths & Documents by subject (#582 + #583).** The off-run Path /
+Document console only ever showed the caller's OWN subject's tree — so a document
+an MCP agent created under its own subject was invisible to every human login.
+`substrateBrowseCtxFn` adds an optional `?scope_id=` (+ admin `?tenant=`) to the
+browse endpoints, authorized like `principalTenantScope` (admin → any
+subject/tenant; `substrate:tenant` → any subject within its own tenant). The Web
+UI drives it from the topbar user-picker (manual subject entry), so an operator
+types a subject to switch the browsed tree; a toolbar hint shows the active
+subject/tenant. (The DocumentAssistant agent-spawn stays in the caller's own
+scope.)
+
+**🔍 Tenant-scoped audit (#585).** `GET /v1/_events` returned every tenant's
+events. The `events` table has no tenant column, but `events.session_id` is NOT
+NULL and `sessions.tenant_id` is the event's tenant, so `ListEvents` now JOINs
+`sessions` when a tenant filter is set (no schema migration). The handler scopes
+by the principal (admin sees all + `?tenant=` focus); the `audit` nav item moves
+to the `tenant` visibility class.
+
+**🔑 TrueNAS SQL-Memory deploy fix (#584).** SQL Memory's Postgres tier isolates
+each scope in its own login role, so the SQL-Memory DSN's role must have
+`CREATEROLE` — without it every Document op fails `permission denied to create
+role`. `deploy/truenas/INSTALL.md` + `docs/TRUENAS.md` now create the role with
+it (and document the `ALTER ROLE … CREATEROLE` remediation for existing installs).
+
+Additive — byte-identical for admin / legacy / open principals; no new wire RPCs.
+Adapters unchanged since v1.5.0. The TrueNAS deploy artifacts now pin
+`denngubsky/loomcycle:1.6.4`.
+
+---
+
 ## What's in v1.6.3
 
 **The tenant-operator Web UI — a `substrate:tenant` operator now sees and
