@@ -102,6 +102,7 @@ export type {
   ContinueOptions,
   EventType,
   HostWidening,
+  ImageMediaType,
   ParentContext,
   PromptContent,
   PromptSegment,

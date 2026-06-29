@@ -55,6 +55,35 @@ describe("runStreaming", () => {
     });
   });
 
+  it("serializes an image content block (RFC AT) through to the request body", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+    ]);
+
+    const b64 = "iVBORw0KGgo=";
+    for await (const _ of client.runStreaming({
+      agent: "vision-agent",
+      segments: [
+        {
+          role: "user",
+          content: [
+            { type: "trusted-text", text: "what is this" },
+            { type: "image", media_type: "image/png", data: b64 },
+          ],
+        },
+      ],
+    })) {
+      // drain
+    }
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.segments[0].content[1]).toEqual({
+      type: "image",
+      media_type: "image/png",
+      data: b64,
+    });
+  });
+
   it("throws AuthError on 401 before yielding any events", async () => {
     const { AuthError } = await import("../src/errors.js");
     const { client } = makeClient([errorResponse(401, "invalid token")]);
