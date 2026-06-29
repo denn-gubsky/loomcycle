@@ -644,3 +644,48 @@ func TestDocument_DeleteChunkRefusesTruncatedSubtree(t *testing.T) {
 		t.Errorf("parent must survive the refused delete; got %q", r.Text)
 	}
 }
+
+// TestDocument_DefaultPathWhenOmitted pins fix A (RFC AK): create_document
+// WITHOUT a path now defaults to /documents/<title-slug> and registers a dirent,
+// so the document is never orphaned from the Path tree (was reachable only by id
+// → invisible to every human login). Fail-before: the old handler skipped the
+// dirent entirely when path was empty.
+func TestDocument_DefaultPathWhenOmitted(t *testing.T) {
+	d, ctx, s := documentFixture(t)
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"Launch Plan: Q3!"}`)
+	if res.IsError {
+		t.Fatalf("create_document: %q", res.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	if docID == "" {
+		t.Fatalf("no document_id: %s", res.Text)
+	}
+	if out["path"] != "/documents/Launch-Plan-Q3" {
+		t.Fatalf("default path = %v, want /documents/Launch-Plan-Q3", out["path"])
+	}
+	// The dirent exists (agent scope) — the doc is now in the Path tree.
+	if _, derr := s.DirentGet(context.Background(), "tnt", "agent", "doc-agent", "/documents/", "Launch-Plan-Q3"); derr != nil {
+		t.Errorf("default-path dirent not registered: %v", derr)
+	}
+	// Reachable by the defaulted path.
+	out, res = docExec(t, d, ctx, `{"op":"get_document","scope":"agent","path":"/documents/Launch-Plan-Q3"}`)
+	if res.IsError || out["document_id"] != docID {
+		t.Errorf("get_document by default path = %s", res.Text)
+	}
+}
+
+func TestDocDefaultPathSegment(t *testing.T) {
+	cases := []struct{ title, id, want string }{
+		{"Launch Plan: Q3!", "d1", "Launch-Plan-Q3"},
+		{"simple", "d2", "simple"},
+		{"with.dots_and-dashes", "d3", "with.dots_and-dashes"},
+		{"!!!", "d_fallback", "d_fallback"}, // no usable chars → doc id
+		{"", "d_empty", "d_empty"},          // empty title → doc id
+		{"   ", "d_spaces", "d_spaces"},     // only spaces → doc id
+	}
+	for _, c := range cases {
+		if got := docDefaultPathSegment(c.title, c.id); got != c.want {
+			t.Errorf("docDefaultPathSegment(%q,%q) = %q, want %q", c.title, c.id, got, c.want)
+		}
+	}
+}

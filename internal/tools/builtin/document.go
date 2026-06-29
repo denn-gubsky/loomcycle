@@ -405,15 +405,55 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		return errResult("create_document: root body: " + err.Error()), nil
 	}
 	resp := map[string]any{"document_id": docID, "root_chunk_id": rootID, "title": in.Title}
-	// Optional Path-tree name.
-	if in.Path != "" {
-		if p, perr := d.registerDocDirent(ctx, key, docID, in.Path); perr != nil {
-			resp["path_warning"] = "document created but path registration failed: " + perr.Error()
-		} else {
-			resp["path"] = p
-		}
+	// Path-tree name (RFC AK). An explicit `path` wins; otherwise default to
+	// /documents/<title> so a document is NEVER orphaned from the Path tree — the
+	// dirent is what the Library / Path browser lists, so a path-less document was
+	// reachable only by id (invisible to every human login). DirentCreate upserts
+	// by the full (tenant, scope, scope_id, parent, name) key, so two same-titled
+	// documents in ONE scope would share that slot; the default segment falls back
+	// to the (unique) doc id when the title slugifies to empty, and a caller that
+	// needs collision-proof naming should pass an explicit `path`.
+	docPath := in.Path
+	if docPath == "" {
+		docPath = "/documents/" + docDefaultPathSegment(in.Title, docID)
+	}
+	if p, perr := d.registerDocDirent(ctx, key, docID, docPath); perr != nil {
+		resp["path_warning"] = "document created but path registration failed: " + perr.Error()
+	} else {
+		resp["path"] = p
 	}
 	return jsonResult(resp)
+}
+
+// docDefaultPathSegment slugifies a document title into a single Path-tree name
+// segment (pathSegmentRe charset: letters, digits, . _ -) for the default
+// /documents/<title> dirent of a path-less create_document. Runs of other
+// characters collapse to a single '-'; a title that slugs to empty falls back to
+// the document id (always a valid segment).
+func docDefaultPathSegment(title, docID string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range title {
+		switch {
+		case r == '.' || r == '_' || r == '-' ||
+			(r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'):
+			b.WriteRune(r)
+			dash = false
+		default:
+			if b.Len() > 0 && !dash {
+				b.WriteByte('-')
+				dash = true
+			}
+		}
+	}
+	seg := strings.Trim(b.String(), "-._")
+	if len(seg) > maxSegmentLen {
+		seg = strings.Trim(seg[:maxSegmentLen], "-._")
+	}
+	if seg == "" {
+		return docID
+	}
+	return seg
 }
 
 // registerDocDirent names a document in the Path tree (a `document` dirent).
