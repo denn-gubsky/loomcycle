@@ -8,6 +8,31 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.7.1
+
+**🩹 Patch — the vision capability gate now also covers the provider-fallback
+target (RFC AT §4.4).** The v1.7.0 gate validated only the *initially-resolved*
+provider. When a vision-bearing run failed over mid-flight to a text-only
+provider, the gate never re-ran — so the image part reached the fallback target
+and the provider returned a raw 400 (DeepSeek: `unknown variant 'image_url'`),
+exactly what RFC AT §4.4 says must not happen. (The driver-level per-model gate
+didn't catch DeepSeek either: it delegates `Call` to the OpenAI driver, where
+`openaiSupportsVision("deepseek-*")` defaults to supported, so the `image_url`
+was built and leaked.)
+
+`tryProviderFallback` now re-checks `SupportsVision` against the re-resolved
+`(provider, model)`. If the run carries an image and the target isn't
+vision-capable, the swap is refused — no attempt is consumed, no
+`EventProviderFallback` fires (no switch happened), an `EventFallbackSuppressed`
+is emitted with the RFC AT §4.4 cite + the failed/refused provider pair, and the
+original provider error propagates: the run fails loudly, never leaking a request
+that's structurally invalid for the target. Refusing a candidate terminates the
+fallback cascade rather than skipping to a later vision-capable one (safe + fails
+fast). Additive; no wire/schema change; adapters unchanged since v1.7.0. The
+TrueNAS deploy artifacts now pin `denngubsky/loomcycle:1.7.1`.
+
+---
+
 ## What's in v1.7.0
 
 **🖼️ Image / vision input across every provider and every transport (RFC AT).**
