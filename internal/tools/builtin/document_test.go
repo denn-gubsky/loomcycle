@@ -689,3 +689,43 @@ func TestDocDefaultPathSegment(t *testing.T) {
 		}
 	}
 }
+
+// TestDocument_SetPath pins op=set_path (b): attach a Path-tree name to an
+// existing (path-less) document so it becomes browsable, then it's reachable by
+// that path. Also: set_path on an unknown id opaquely fails.
+func TestDocument_SetPath(t *testing.T) {
+	d, ctx, s := documentFixture(t)
+
+	// A document created the OLD way — no path → no dirent (orphaned). We force
+	// the path-less case by creating then confirming get_document by id works
+	// but the tree has no entry yet at /loomcycle/marketing.
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"Launch publications plan"}`)
+	if res.IsError {
+		t.Fatalf("create_document: %q", res.Text)
+	}
+	docID, _ := out["document_id"].(string)
+
+	// set_path re-homes it under /loomcycle/marketing.
+	out, res = docExec(t, d, ctx, `{"op":"set_path","scope":"agent","id":"`+docID+`","path":"/loomcycle/marketing"}`)
+	if res.IsError {
+		t.Fatalf("set_path: %q", res.Text)
+	}
+	if out["path"] != "/loomcycle/marketing" || out["document_id"] != docID {
+		t.Fatalf("set_path out = %s", res.Text)
+	}
+	// The dirent now exists at that path (agent scope).
+	if _, derr := s.DirentGet(context.Background(), "tnt", "agent", "doc-agent", "/loomcycle/", "marketing"); derr != nil {
+		t.Errorf("set_path dirent not registered: %v", derr)
+	}
+	// And the document resolves by the new path.
+	out, res = docExec(t, d, ctx, `{"op":"get_document","scope":"agent","path":"/loomcycle/marketing"}`)
+	if res.IsError || out["document_id"] != docID {
+		t.Errorf("get_document by re-homed path = %s", res.Text)
+	}
+
+	// set_path on an unknown id fails (no phantom dirent).
+	_, res = docExec(t, d, ctx, `{"op":"set_path","scope":"agent","id":"doc_nope","path":"/x/y"}`)
+	if !res.IsError {
+		t.Errorf("set_path on unknown id should fail")
+	}
+}

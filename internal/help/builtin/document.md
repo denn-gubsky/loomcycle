@@ -20,8 +20,11 @@ documents aren't supported yet). Requires SQL Memory enabled on the server.
 
 ## Ops
 
-**Documents:** `create_document` (`title`, optional `path:` to name it in the
-Path tree), `get_document` (`id` or `path`), `delete_document`.
+**Documents:** `create_document` (`title`; optional `path:` to name it in the
+Path tree — defaults to `/documents/<title>` if omitted, so a document is always
+reachable from the tree, not just by id), `get_document` (`id` or `path`),
+`delete_document`, `set_path` (`id` + `path` — attach/re-home a Path-tree name
+for an existing document; idempotent, runs in the document's own scope).
 
 **Chunks:** `create_chunk` (`document_id`, optional `parent_id`/`type`/`status`/
 `fields`/`position`, required `title`+`body`), `get_chunk`, `update_chunk`,
