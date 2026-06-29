@@ -500,9 +500,16 @@ func requiredScopeFor(method, path string) string {
 	// live at /v1/_scheduledef (isTenantConfinedDefPath, already ScopeTenant).
 	case strings.HasPrefix(path, "/v1/_schedules/"):
 		return auth.ScopeTenant
+	// RFC AS: the audit/event log. events carry no tenant column, but each is
+	// tied to a session (events.session_id NOT NULL) whose tenant_id is the
+	// event's tenant — so handleListEvents tenant-scopes the result (a tenant
+	// sees only its own tenant's events; admin sees all + the ?tenant= focus).
+	// ScopeAdmin also satisfies. Read-only GET.
+	case path == "/v1/_events":
+		return auth.ScopeTenant
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
-	// resolver, audit, cross-tenant user focus.
+	// resolver, cross-tenant user focus.
 	case strings.HasPrefix(path, "/v1/_"):
 		return auth.ScopeAdmin
 	// Hook registration / list / delete — RFC AF: tenant-confined. The hook

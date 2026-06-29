@@ -525,19 +525,31 @@ func (s *Store) ListEvents(ctx context.Context, filter store.EventFilter, limit,
 		args  []any
 		i     = 1
 	)
+	// Columns are qualified with the `events.` table name so the optional
+	// sessions JOIN below stays unambiguous (valid with or without the JOIN).
 	if filter.Type != "" {
-		conds = append(conds, fmt.Sprintf("type = $%d", i))
+		conds = append(conds, fmt.Sprintf("events.type = $%d", i))
 		args = append(args, filter.Type)
 		i++
 	}
 	if !filter.From.IsZero() {
-		conds = append(conds, fmt.Sprintf("ts >= $%d", i))
+		conds = append(conds, fmt.Sprintf("events.ts >= $%d", i))
 		args = append(args, filter.From)
 		i++
 	}
 	if !filter.To.IsZero() {
-		conds = append(conds, fmt.Sprintf("ts <= $%d", i))
+		conds = append(conds, fmt.Sprintf("events.ts <= $%d", i))
 		args = append(args, filter.To)
+		i++
+	}
+	// RFC AS: tenant-scope via the owning session. events has no tenant column,
+	// but events.session_id is NOT NULL → sessions.tenant_id is the event's
+	// tenant. Empty TenantID = no filter (all tenants — the admin view).
+	from := "events"
+	if filter.TenantID != "" {
+		from = "events JOIN sessions ON sessions.id = events.session_id"
+		conds = append(conds, fmt.Sprintf("sessions.tenant_id = $%d", i))
+		args = append(args, filter.TenantID)
 		i++
 	}
 	where := ""
@@ -546,14 +558,14 @@ func (s *Store) ListEvents(ctx context.Context, filter store.EventFilter, limit,
 	}
 
 	var total int64
-	if err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM events "+where, args...).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+from+" "+where, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count events: %w", err)
 	}
 
 	args = append(args, limit, offset)
 	rows, err := s.pool.Query(ctx,
-		"SELECT seq, session_id, run_id, ts, type, payload FROM events "+where+
-			fmt.Sprintf(" ORDER BY ts DESC, seq DESC LIMIT $%d OFFSET $%d", i, i+1),
+		"SELECT events.seq, events.session_id, events.run_id, events.ts, events.type, events.payload FROM "+from+" "+where+
+			fmt.Sprintf(" ORDER BY events.ts DESC, events.seq DESC LIMIT $%d OFFSET $%d", i, i+1),
 		args...,
 	)
 	if err != nil {

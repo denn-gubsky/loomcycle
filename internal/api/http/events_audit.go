@@ -98,6 +98,13 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		offset = n
 	}
 
+	// RFC AS: tenant-scope the audit. admin / legacy / open see all (honoring an
+	// optional ?tenant= focus); a substrate:tenant principal sees only its own
+	// tenant's events (ListEvents filters via the owning session's tenant).
+	if tenantID, all := s.principalTenantScope(r.Context(), q.Get("tenant")); !all {
+		filter.TenantID = tenantID
+	}
+
 	events, total, err := s.store.ListEvents(r.Context(), filter, limit, offset)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())

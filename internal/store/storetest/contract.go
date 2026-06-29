@@ -324,6 +324,7 @@ func Run(t *testing.T, factory Factory) {
 		{"InterruptIDIsMonotonicByTime", testInterruptIDIsMonotonicByTime},
 		// v0.8.21 audit-view cross-session event listing.
 		{"ListEventsFilterByTypeAndRange", testListEventsFilterByTypeAndRange},
+		{"ListEventsFilterByTenant", testListEventsFilterByTenant},
 		{"ListEventsPaginationAndTotal", testListEventsPaginationAndTotal},
 		// v0.8.21 awaited-state derivation needs last-event-per-run.
 		{"GetLastEventForRunEmpty", testGetLastEventForRunEmpty},
@@ -6770,6 +6771,54 @@ func testListEventsFilterByTypeAndRange(t *testing.T, s store.Store) {
 	}
 	if total3 != 1 || len(got3) != 1 || got3[0].Type != "tool_call" {
 		t.Errorf("type+to mismatch: total=%d got=%v", total3, got3)
+	}
+}
+
+// testListEventsFilterByTenant pins the RFC AS tenant-scoped audit: EventFilter
+// .TenantID restricts the result to events whose owning session belongs to that
+// tenant (events carry no tenant column — the filter JOINs sessions). Empty
+// TenantID returns every tenant's events.
+func testListEventsFilterByTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	acme, _ := s.CreateSession(ctx, "acme", "default", "alice")
+	acmeRun, _ := s.CreateRun(ctx, acme.ID, store.RunIdentity{AgentID: "a_acme"})
+	globex, _ := s.CreateSession(ctx, "globex", "default", "bob")
+	globexRun, _ := s.CreateRun(ctx, globex.ID, store.RunIdentity{AgentID: "a_globex"})
+	for i := 0; i < 3; i++ {
+		if err := s.AppendEvent(ctx, acmeRun.ID, "text", []byte(`{"t":"acme"}`)); err != nil {
+			t.Fatalf("AppendEvent acme: %v", err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.AppendEvent(ctx, globexRun.ID, "text", []byte(`{"t":"globex"}`)); err != nil {
+			t.Fatalf("AppendEvent globex: %v", err)
+		}
+	}
+
+	// Tenant filter → only that tenant's events (via the owning session).
+	got, total, err := s.ListEvents(ctx, store.EventFilter{TenantID: "acme"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(got) != 3 {
+		t.Fatalf("tenant=acme total=%d len=%d, want 3/3", total, len(got))
+	}
+	for _, ev := range got {
+		if ev.SessionID != acme.ID {
+			t.Errorf("tenant=acme leaked event from session %q (want %q)", ev.SessionID, acme.ID)
+		}
+	}
+	// No tenant filter → both tenants (5 total).
+	if _, totalAll, err := s.ListEvents(ctx, store.EventFilter{}, 50, 0); err != nil {
+		t.Fatal(err)
+	} else if totalAll != 5 {
+		t.Errorf("no tenant filter total = %d, want 5 (both tenants)", totalAll)
+	}
+	// Tenant + type compose (still tenant-scoped).
+	if _, totalCombo, err := s.ListEvents(ctx, store.EventFilter{TenantID: "globex", Type: "text"}, 50, 0); err != nil {
+		t.Fatal(err)
+	} else if totalCombo != 2 {
+		t.Errorf("tenant=globex type=text total = %d, want 2", totalCombo)
 	}
 }
 

@@ -1268,17 +1268,28 @@ func (s *Store) ListEvents(ctx context.Context, filter store.EventFilter, limit,
 		conds []string
 		args  []any
 	)
+	// Columns are qualified with the `events.` table name so the optional
+	// sessions JOIN below stays unambiguous (valid with or without the JOIN).
 	if filter.Type != "" {
-		conds = append(conds, "type = ?")
+		conds = append(conds, "events.type = ?")
 		args = append(args, filter.Type)
 	}
 	if !filter.From.IsZero() {
-		conds = append(conds, "ts >= ?")
+		conds = append(conds, "events.ts >= ?")
 		args = append(args, filter.From.UnixNano())
 	}
 	if !filter.To.IsZero() {
-		conds = append(conds, "ts <= ?")
+		conds = append(conds, "events.ts <= ?")
 		args = append(args, filter.To.UnixNano())
+	}
+	// RFC AS: tenant-scope via the owning session. events has no tenant column,
+	// but events.session_id is NOT NULL → sessions.tenant_id is the event's
+	// tenant. Empty TenantID = no filter (all tenants — the admin view).
+	from := "events"
+	if filter.TenantID != "" {
+		from = "events JOIN sessions ON sessions.id = events.session_id"
+		conds = append(conds, "sessions.tenant_id = ?")
+		args = append(args, filter.TenantID)
 	}
 	where := ""
 	if len(conds) > 0 {
@@ -1289,14 +1300,14 @@ func (s *Store) ListEvents(ctx context.Context, filter store.EventFilter, limit,
 	// complexity on SQLite. Cheap because the WHERE narrows via the
 	// new indexes.
 	var total int64
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events "+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+from+" "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT seq, session_id, run_id, ts, type, payload FROM events "+where+
-			" ORDER BY ts DESC, seq DESC LIMIT ? OFFSET ?",
+		"SELECT events.seq, events.session_id, events.run_id, events.ts, events.type, events.payload FROM "+from+" "+where+
+			" ORDER BY events.ts DESC, events.seq DESC LIMIT ? OFFSET ?",
 		args...,
 	)
 	if err != nil {

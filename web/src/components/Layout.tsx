@@ -67,7 +67,9 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },
   { to: "/memory", label: "memory", Icon: Brain, vis: "admin" },
   { to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },
-  { to: "/audit", label: "audit", Icon: ScrollText, vis: "admin" },
+  // audit is tenant-visible (RFC AS): handleListEvents tenant-scopes the result
+  // via the event's owning session, so a tenant sees only its own events.
+  { to: "/audit", label: "audit", Icon: ScrollText, vis: "tenant" },
   { to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
 ];
 

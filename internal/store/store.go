@@ -279,6 +279,12 @@ type EventFilter struct {
 	Type string
 	From time.Time
 	To   time.Time
+	// TenantID, when non-empty, restricts the result to events whose owning
+	// session belongs to that tenant (RFC AS — tenant-scoped audit). The events
+	// table carries no tenant column, but events.session_id is NOT NULL and
+	// sessions.tenant_id is the event's tenant, so ListEvents JOINs sessions
+	// when this is set. Empty = no tenant filter (every tenant — the admin view).
+	TenantID string
 }
 
 // Event is one streamed datum, persisted append-only. Payload is the JSON
