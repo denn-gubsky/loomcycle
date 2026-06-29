@@ -377,12 +377,32 @@ func callLibraryAgents(t *testing.T, srv *Server, p auth.Principal) []string {
 	return out
 }
 
+// sameNameSet reports whether got and want contain the same names (order-
+// independent). Library entries are sorted by name, but the tenant tests assert
+// on membership, so compare as sets.
+func sameNameSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	set := make(map[string]struct{}, len(got))
+	for _, g := range got {
+		set[g] = struct{}{}
+	}
+	for _, w := range want {
+		if _, ok := set[w]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // TestUnifiedLibrary_Agents_TenantIsolation (RFC AS Phase 1) pins that the
-// library listing is tenant-scoped: a substrate:tenant principal sees ONLY its
-// own tenant's substrate agents — not other tenants', not the operator-global
-// static cfg agents — while a substrate:admin principal sees all. Fail-before:
-// the pre-RFC-AS handler called the tenant-blind AgentDefListNames and merged
-// cfg.Agents unconditionally, so any authenticated principal could enumerate
+// library listing is tenant-scoped for SUBSTRATE rows: a substrate:tenant
+// principal sees its own tenant's substrate agents PLUS the operator-global
+// static cfg agents (the shared catalog floor, shown to every principal like
+// the static-volume bind floor) — but NEVER another tenant's substrate rows.
+// A substrate:admin principal sees all. Fail-before: the pre-RFC-AS handler
+// called the tenant-blind AgentDefListNames, so any principal could enumerate
 // every tenant's agent names.
 func TestUnifiedLibrary_Agents_TenantIsolation(t *testing.T) {
 	srv, s, cleanup := libraryUnifiedFixture(t, map[string]config.AgentDef{
@@ -405,27 +425,28 @@ func TestUnifiedLibrary_Agents_TenantIsolation(t *testing.T) {
 	mustDef("def_acme", "acme-agent", "acme")
 	mustDef("def_globex", "globex-agent", "globex")
 
-	// A substrate:tenant principal sees only its own tenant — no cross-tenant
-	// rows, no operator-global static.
-	if got := callLibraryAgents(t, srv, auth.Principal{TenantID: "acme", Subject: "acme-op", Scopes: []string{auth.ScopeTenant}}); len(got) != 1 || got[0] != "acme-agent" {
-		t.Fatalf("acme tenant sees %v, want [acme-agent] only", got)
+	// A substrate:tenant principal sees its own tenant's substrate row PLUS the
+	// operator-global static — but NOT another tenant's substrate row.
+	if got := callLibraryAgents(t, srv, auth.Principal{TenantID: "acme", Subject: "acme-op", Scopes: []string{auth.ScopeTenant}}); !sameNameSet(got, []string{"acme-agent", "global-static"}) {
+		t.Fatalf("acme tenant sees %v, want [acme-agent global-static] (own substrate + shared static, no globex)", got)
 	}
-	if got := callLibraryAgents(t, srv, auth.Principal{TenantID: "globex", Subject: "globex-op", Scopes: []string{auth.ScopeTenant}}); len(got) != 1 || got[0] != "globex-agent" {
-		t.Fatalf("globex tenant sees %v, want [globex-agent] only", got)
+	if got := callLibraryAgents(t, srv, auth.Principal{TenantID: "globex", Subject: "globex-op", Scopes: []string{auth.ScopeTenant}}); !sameNameSet(got, []string{"globex-agent", "global-static"}) {
+		t.Fatalf("globex tenant sees %v, want [globex-agent global-static] (own substrate + shared static, no acme)", got)
 	}
 
 	// A substrate:admin principal sees everything: both tenants' substrate rows
 	// plus the operator-global static agent.
 	got := callLibraryAgents(t, srv, auth.Principal{TenantID: "default", Subject: "ops", Scopes: []string{auth.ScopeAdmin}})
-	if len(got) != 3 {
+	if !sameNameSet(got, []string{"acme-agent", "globex-agent", "global-static"}) {
 		t.Fatalf("admin sees %v, want all 3 (acme-agent, globex-agent, global-static)", got)
 	}
 }
 
 // TestUnifiedLibrary_Agents_AdminTenantFocus (RFC AS Phase 1) pins the admin
-// ?tenant= focus: a substrate:admin with ?tenant=acme sees only acme's
-// substrate rows (acting as a view of that tenant), and the operator-global
-// static agent is excluded from a focused view.
+// ?tenant= focus: a substrate:admin with ?tenant=acme sees acme's substrate
+// rows + the shared operator-global static (acting as a view of that tenant,
+// which now includes the shared catalog floor) — but NOT another tenant's
+// substrate rows.
 func TestUnifiedLibrary_Agents_AdminTenantFocus(t *testing.T) {
 	srv, s, cleanup := libraryUnifiedFixture(t, map[string]config.AgentDef{
 		"global-static": {Model: "x"},
@@ -452,11 +473,13 @@ func TestUnifiedLibrary_Agents_AdminTenantFocus(t *testing.T) {
 	}))
 	srv.handleListLibraryAgents(rec, req)
 	es := decodeLibraryEntries(t, rec)
-	if len(es) != 1 || es[0].Name != "acme-agent" {
-		names := make([]string, len(es))
-		for i, e := range es {
-			names[i] = e.Name
-		}
-		t.Fatalf("admin ?tenant=acme sees %v, want [acme-agent] only", names)
+	names := make([]string, len(es))
+	for i, e := range es {
+		names[i] = e.Name
+	}
+	// The focused view is "as tenant acme": acme's substrate row + the shared
+	// static, but NOT globex's substrate row.
+	if !sameNameSet(names, []string{"acme-agent", "global-static"}) {
+		t.Fatalf("admin ?tenant=acme sees %v, want [acme-agent global-static] (focused tenant + shared static, no globex)", names)
 	}
 }
