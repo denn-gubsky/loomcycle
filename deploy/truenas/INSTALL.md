@@ -22,10 +22,20 @@ never in the YAML you paste into the TrueNAS UI.**
 loomcycle bundles no database. On your Postgres:
 
 ```sql
-CREATE ROLE loomcycle LOGIN PASSWORD 'CHANGE_ME_STRONG';
+-- CREATEROLE is REQUIRED if you enable SQL Memory (and therefore Documents):
+-- the SQL-Memory Postgres tier isolates each scope in its own login role, so the
+-- role behind LOOMCYCLE_SQLMEM_PG_DSN provisions per-scope roles at runtime.
+-- Without it, every Document/SQL-Memory op fails with
+-- "permission denied to create role (SQLSTATE 42501)". Harmless if you don't use
+-- SQL Memory. See docs/SQL_MEMORY.md for the full provisioning model.
+CREATE ROLE loomcycle LOGIN PASSWORD 'CHANGE_ME_STRONG' CREATEROLE;
 CREATE DATABASE loomcycle        OWNER loomcycle;
 CREATE DATABASE loomcycle_sqlmem OWNER loomcycle;   -- only if you enable SQL Memory
 ```
+
+> Already installed without `CREATEROLE` and hitting "permission denied to create
+> role"? Grant it in place (as a Postgres superuser), no reinstall needed:
+> `ALTER ROLE loomcycle CREATEROLE;`
 
 Your DSNs (used below):
 `postgres://loomcycle:CHANGE_ME_STRONG@PG_HOST:5432/loomcycle?sslmode=disable`
@@ -244,5 +254,6 @@ Bump the image tag → new binary → refreshed embedded presets automatically; 
 | App healthy but auth fails / no providers wired | The `env_file` didn't load — confirm the **absolute path** in `env_file:` is exact and the file is `chmod 600` (root-readable). Remember an `environment:` key overrides the same key in `env_file`, so don't re-add a secret inline. |
 | migrate `LOOMCYCLE_PG_DSN ... required` | The `env_file:` line is missing from the `loomcycle-migrate` service (it needs the DSNs too), or the path is wrong. |
 | Crash-loop ending `sqlmem audit: ... open /data: is a directory` | `LOOMCYCLE_AUDIT_LOG_PATH` must be a **file**, not the `/data` mount — set `/data/audit.log` (or remove the line; the audit log is optional). |
+| Documents fail with `sqlmem: provision scope: ... permission denied to create role` | The SQL-Memory DSN's role lacks `CREATEROLE` (it provisions a per-scope login role). Grant it: `ALTER ROLE loomcycle CREATEROLE;` (Phase 1 now creates the role with it). |
 | `doc-manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |

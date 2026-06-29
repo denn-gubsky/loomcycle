@@ -36,7 +36,10 @@ not source `.env.local` in a container — only real env + the mounted overlay.
    ```sql
    CREATE DATABASE loomcycle;
    CREATE DATABASE loomcycle_sqlmem;   -- only if you enable SQL Memory
-   CREATE ROLE loomcycle LOGIN PASSWORD '…';
+   -- CREATEROLE is required for SQL Memory: each scope gets its own login role,
+   -- provisioned at runtime by the SQL-Memory DSN's role. Without it Documents
+   -- fail with "permission denied to create role". Omit if you don't use SQL Memory.
+   CREATE ROLE loomcycle LOGIN PASSWORD '…' CREATEROLE;
    GRANT ALL PRIVILEGES ON DATABASE loomcycle TO loomcycle;
    GRANT ALL PRIVILEGES ON DATABASE loomcycle_sqlmem TO loomcycle;
    ```
