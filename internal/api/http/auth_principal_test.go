@@ -245,6 +245,13 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"GET", "/v1/_library/agents", auth.ScopeTenant},
 		{"GET", "/v1/_library/skills", auth.ScopeTenant},
 		{"GET", "/v1/_library/mcp-servers", auth.ScopeTenant},
+		// RFC AS: the schedules surface (list-all + per-def ops) is tenant-
+		// reachable; the handlers confine a tenant to its own schedule defs.
+		{"GET", "/v1/_schedules/list-all", auth.ScopeTenant},
+		{"GET", "/v1/_schedules/sd_1/state", auth.ScopeTenant},
+		{"POST", "/v1/_schedules/sd_1/run-now", auth.ScopeTenant},
+		{"POST", "/v1/_schedules/sd_1/pause", auth.ScopeTenant},
+		{"POST", "/v1/_schedules/sd_1/resume", auth.ScopeTenant},
 		// RFC AF: hooks are tenant-confined now that the registry is
 		// tenant-isolated (stamp on register, tenant-filtered Match, scoped
 		// List/Delete). substrate:admin still satisfies.

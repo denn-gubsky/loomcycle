@@ -491,6 +491,15 @@ func requiredScopeFor(method, path string) string {
 	// ScopeTenant), not at this path. Mirrors the /v1/_*def/names posture.
 	case path == "/v1/_library/agents" || path == "/v1/_library/skills" || path == "/v1/_library/mcp-servers":
 		return auth.ScopeTenant
+	// RFC AS: the Web UI schedules surface (list-all + per-def state / run-now /
+	// pause / resume). list-all is tenant-scoped (the handler filters substrate
+	// schedules to the caller's tenant; operator-global static crons stay
+	// admin-only); the per-def ops confine a substrate:tenant principal to its
+	// OWN tenant's schedule defs (opaque-404 cross-tenant + statics, which have
+	// no ScheduleDef row). ScopeAdmin also satisfies. The def-AUTHORING writes
+	// live at /v1/_scheduledef (isTenantConfinedDefPath, already ScopeTenant).
+	case strings.HasPrefix(path, "/v1/_schedules/"):
+		return auth.ScopeTenant
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, audit, cross-tenant user focus.
