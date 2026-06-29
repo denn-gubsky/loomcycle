@@ -164,6 +164,7 @@ services:
     environment:
       # --- non-secret ("insecure") operational config — safe to keep inline ---
       LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
+      LOOMCYCLE_PUBLIC_URL: "http://TRUENAS_SCALE_HOST:8787"   # externally-reachable base URL (your tunnel/proxy host, or this for direct LAN); agents read it via `Context op=self` (≥ v1.6.7)
       LOOMCYCLE_PRESETS: "base,document-agent"   # base matrix + the Document Assistant
       LOOMCYCLE_CONFIG_DIR: /config
       LOOMCYCLE_STORAGE_BACKEND: postgres

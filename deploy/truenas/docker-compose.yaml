@@ -49,6 +49,11 @@ services:
     environment:
       # Bind all interfaces inside the container (the port mapping above reaches it).
       LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
+      # The externally-reachable base URL agents see via `Context op=self`
+      # (server.url) so an agent — especially over MCP — can identify the server
+      # it's talking to. Set it to however you front this app (your tunnel/proxy
+      # hostname). Optional (≥ v1.6.7; older tags ignore it).
+      LOOMCYCLE_PUBLIC_URL: ${LOOMCYCLE_PUBLIC_URL:-}
 
       # Provider/tier base from the embedded presets (RFC AQ). Add bundles/overlays:
       #   base,oauth          → OAuth on top of the base matrix
