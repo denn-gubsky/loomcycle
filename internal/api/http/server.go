@@ -4491,9 +4491,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// callers can't override (the sub is loomcycle-controlled).
 	subAgentID := newAgentID()
 
-	// Sub-run gets its OWN session. Tenant inherited as empty for v0.4.0
-	// MVP — multi-tenant agent inheritance lands when per-tenant
-	// fairness does (later in v0.4 / v0.5).
+	// Sub-run gets its OWN session, under the PARENT's tenant (RFC L). The
+	// session row's tenant_id must match the run's (subIdentity.TenantID below) —
+	// they're created together in openOrCreateSessionAndRun — or the tenant-gated
+	// reads (transcript / continuation via s.tenantStore) 404 the sub-agent
+	// session for its own tenant operator while the run is still visible.
 	subIdentity := store.RunIdentity{
 		AgentID:       subAgentID,
 		ParentAgentID: parentIdentity.AgentID,
@@ -4514,7 +4516,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// link back to the user-initiated request.
 		ParentContext: parentIdentity.ParentContext.Clone(),
 	}
-	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "", parentIdentity.UserID, subIdentity)
+	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, parentIdentity.TenantID, parentIdentity.UserID, subIdentity)
 	if err != nil {
 		return "", "", fmt.Errorf("create sub-session for %q: %w", name, err)
 	}

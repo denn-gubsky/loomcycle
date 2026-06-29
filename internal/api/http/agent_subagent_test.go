@@ -771,3 +771,96 @@ func TestSubAgent_InheritsParentContext(t *testing.T) {
 		}
 	}
 }
+
+// TestSubAgent_SessionInheritsParentTenant is the regression for the production
+// "404 session not found" on a sub-agent run: runSubAgent created the sub-run
+// under the parent's tenant (subIdentity.TenantID) but created its SESSION with
+// an EMPTY tenant (passed "" to openOrCreateSessionAndRun). The tenant-gated
+// transcript read (s.tenantStore(...).GetSession) then 404'd the sub-agent
+// session for its own tenant operator, while the run row stayed visible.
+//
+// Fail-before: the child SESSION's tenant_id is "" (≠ the parent's "acme").
+func TestSubAgent_SessionInheritsParentTenant(t *testing.T) {
+	cfg := makeBaseConfig()
+	cfg.Agents = map[string]config.AgentDef{
+		"parent": {Model: "stub-model", AllowedTools: []string{"Agent"}, SystemPrompt: "you are the parent"},
+		"child":  {Model: "stub-model", AllowedTools: []string{}, SystemPrompt: "you are the child"},
+	}
+
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{
+			{ // parent: spawn the child
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+					ID: "tu1", Name: "Agent", Input: json.RawMessage(`{"name":"child","prompt":"go"}`),
+				}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 10, OutputTokens: 2}},
+			},
+			{ // child
+				{Type: providers.EventText, Text: "child done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 3, OutputTokens: 2}},
+			},
+			{ // parent: final
+				{Type: providers.EventText, Text: "parent done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 12, OutputTokens: 3}},
+			},
+		},
+	}
+
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "subagent_tenant.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Open mode (makeBaseConfig has no AuthToken) → the wire tenant_id is honored.
+	body := `{"agent":"parent","agent_id":"parent-1","tenant_id":"acme",` +
+		`"segments":[{"role":"user","content":[{"type":"trusted-text","text":"start"}]}]}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		slurp, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, slurp)
+	}
+	_, _ = io.ReadAll(resp.Body) // drain so the run + sub-run finish
+
+	// Sanity: the parent's session is under "acme".
+	parentRun, err := st.GetRunByAgentID(context.Background(), "parent-1")
+	if err != nil {
+		t.Fatalf("GetRunByAgentID(parent-1): %v", err)
+	}
+	parentSess, err := st.GetSession(context.Background(), parentRun.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession(parent): %v", err)
+	}
+	if parentSess.TenantID != "acme" {
+		t.Fatalf("parent session tenant = %q, want acme (wire tenant not honored?)", parentSess.TenantID)
+	}
+
+	// The child run AND its session must both be under "acme". The run was
+	// already correct; the SESSION is the bug.
+	childRuns, err := st.ListRunsByParentAgentID(context.Background(), "parent-1")
+	if err != nil {
+		t.Fatalf("ListRunsByParentAgentID: %v", err)
+	}
+	if len(childRuns) == 0 {
+		t.Fatal("expected a child run; none found (did the spawn happen?)")
+	}
+	for _, cr := range childRuns {
+		if cr.TenantID != "acme" {
+			t.Errorf("child run %s tenant = %q, want acme", cr.ID, cr.TenantID)
+		}
+		childSess, err := st.GetSession(context.Background(), cr.SessionID)
+		if err != nil {
+			t.Fatalf("GetSession(child %s): %v", cr.SessionID, err)
+		}
+		if childSess.TenantID != "acme" {
+			t.Errorf("child SESSION %s tenant = %q, want acme — the bug: the sub-agent session's tenant disagrees with its run, so the tenant-gated transcript read 404s it", cr.SessionID, childSess.TenantID)
+		}
+	}
+}
