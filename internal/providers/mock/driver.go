@@ -139,6 +139,9 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		NativePromptCache: false,
 		SupportsThinking:  false,
 		SupportsEffort:    false,
+		// The mock is a test double — accept image content so loop-level
+		// vision tests (RFC AT) can route an image through to a provider.
+		SupportsVision: true,
 	}
 }
 
