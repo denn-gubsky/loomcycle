@@ -38,7 +38,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents can be named in the Path tree (path:)."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -48,10 +48,10 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types","export_md","import_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types","export_md","import_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
-		"id":          {"type": "string", "description": "Document id (get/delete_document) or chunk id (get/update/delete/move_chunk)."},
-		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (e.g. /docs/launch). get/delete_document: address by path instead of id."},
+		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
+		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
 		"title":       {"type": "string"},
 		"document_id": {"type": "string"},
 		"parent_id":   {"type": "string", "description": "create_chunk: parent chunk (omit for a child of the root)."},
@@ -163,6 +163,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.getDocument(ctx, key, in)
 	case "delete_document":
 		return d.deleteDocument(ctx, key, mscope, in)
+	case "set_path":
+		return d.setPath(ctx, key, in)
 	case "create_chunk":
 		return d.createChunk(ctx, key, mscope, in)
 	case "get_chunk":
@@ -405,15 +407,92 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		return errResult("create_document: root body: " + err.Error()), nil
 	}
 	resp := map[string]any{"document_id": docID, "root_chunk_id": rootID, "title": in.Title}
-	// Optional Path-tree name.
-	if in.Path != "" {
-		if p, perr := d.registerDocDirent(ctx, key, docID, in.Path); perr != nil {
-			resp["path_warning"] = "document created but path registration failed: " + perr.Error()
-		} else {
-			resp["path"] = p
-		}
+	// Path-tree name (RFC AK). An explicit `path` wins; otherwise default to
+	// /documents/<title> so a document is NEVER orphaned from the Path tree — the
+	// dirent is what the Library / Path browser lists, so a path-less document was
+	// reachable only by id (invisible to every human login). DirentCreate upserts
+	// by the full (tenant, scope, scope_id, parent, name) key, so two same-titled
+	// documents in ONE scope would share that slot; the default segment falls back
+	// to the (unique) doc id when the title slugifies to empty, and a caller that
+	// needs collision-proof naming should pass an explicit `path`.
+	docPath := in.Path
+	if docPath == "" {
+		docPath = "/documents/" + docDefaultPathSegment(in.Title, docID)
+	}
+	if p, perr := d.registerDocDirent(ctx, key, docID, docPath); perr != nil {
+		resp["path_warning"] = "document created but path registration failed: " + perr.Error()
+	} else {
+		resp["path"] = p
 	}
 	return jsonResult(resp)
+}
+
+// docDefaultPathSegment slugifies a document title into a single Path-tree name
+// segment (pathSegmentRe charset: letters, digits, . _ -) for the default
+// /documents/<title> dirent of a path-less create_document. Runs of other
+// characters collapse to a single '-'; a title that slugs to empty falls back to
+// the document id (always a valid segment).
+func docDefaultPathSegment(title, docID string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range title {
+		switch {
+		case r == '.' || r == '_' || r == '-' ||
+			(r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'):
+			b.WriteRune(r)
+			dash = false
+		default:
+			if b.Len() > 0 && !dash {
+				b.WriteByte('-')
+				dash = true
+			}
+		}
+	}
+	seg := strings.Trim(b.String(), "-._")
+	if len(seg) > maxSegmentLen {
+		seg = strings.Trim(seg[:maxSegmentLen], "-._")
+	}
+	if seg == "" {
+		return docID
+	}
+	return seg
+}
+
+// setPath (op=set_path) registers a Path-tree name for an EXISTING document at
+// `path` — the re-home / "give this document a path" operation. It's the cure
+// for a path-less document (created without a path before the auto-default, or
+// via a client that omitted one): the document is reachable only by id until it
+// has a dirent, and the Library/Path browser lists dirents. Idempotent
+// (DirentCreate upserts by the full coordinate). It ADDS the name at `path`; it
+// does not remove any other name the document may already have elsewhere (a
+// document may be named at more than one path), so it is an attach, not a move.
+// Runs in the document's own scope (resolveScope), so the dirent and the
+// document body align for the viewer.
+func (d *Document) setPath(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	docID := in.ID
+	if docID == "" {
+		docID = in.DocumentID
+	}
+	if docID == "" {
+		return errResult("set_path: missing required field: id (the document_id)"), nil
+	}
+	if in.Path == "" {
+		return errResult("set_path: missing required field: path"), nil
+	}
+	// Verify the document exists in THIS scope — never name a phantom (and so a
+	// cross-scope id opaquely 404s rather than creating a dangling dirent).
+	res, err := d.query(ctx, key, `SELECT id FROM documents WHERE id = ? LIMIT 1`, docID)
+	if err != nil {
+		return errResult("set_path: " + err.Error()), nil
+	}
+	if len(res.Rows) == 0 {
+		return errResult("set_path: no such document: " + docID), nil
+	}
+	p, perr := d.registerDocDirent(ctx, key, docID, in.Path)
+	if perr != nil {
+		return errResult("set_path: " + perr.Error()), nil
+	}
+	return jsonResult(map[string]any{"document_id": docID, "path": p})
 }
 
 // registerDocDirent names a document in the Path tree (a `document` dirent).
