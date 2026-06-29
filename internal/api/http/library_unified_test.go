@@ -483,3 +483,41 @@ func TestUnifiedLibrary_Agents_AdminTenantFocus(t *testing.T) {
 		t.Fatalf("admin ?tenant=acme sees %v, want [acme-agent global-static] (focused tenant + shared static, no globex)", names)
 	}
 }
+
+// TestUnifiedLibrary_Skills_InlineCfgSurfaced pins that inline top-level
+// `skills:` (cfg.Skills — how RFC AQ bundles define their skills) are surfaced
+// in the Library, to BOTH admin and a tenant operator. Fail-before: the handler
+// read only the SkillsRoot-loaded skillSet, so a bundled inline skill (not in
+// the root) was invisible to everyone (the deployed document-agent's four skills
+// showed 0).
+func TestUnifiedLibrary_Skills_InlineCfgSurfaced(t *testing.T) {
+	srv, _, cleanup := libraryUnifiedFixture(t, nil, nil)
+	defer cleanup()
+	srv.cfg.Skills = map[string]config.SkillSpec{
+		"semantic-chunking": {
+			Description:  "split prose into a chunk hierarchy",
+			AllowedTools: []string{"Document"},
+			Body:         "# Semantic chunking\n\nMethod…",
+		},
+	}
+	call := func(p auth.Principal) []LibraryEntry {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/_library/skills", nil)
+		req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+		srv.handleListLibrarySkills(rec, req)
+		return decodeLibraryEntries(t, rec)
+	}
+	// Admin sees the inline skill (was invisible — only the root set was read).
+	admin := call(auth.Principal{TenantID: "default", Subject: "ops", Scopes: []string{auth.ScopeAdmin}})
+	if len(admin) != 1 || admin[0].Name != "semantic-chunking" || !admin[0].InStatic {
+		t.Fatalf("admin sees %+v, want 1 in_static [semantic-chunking]", admin)
+	}
+	if len(admin[0].StaticDefinition) == 0 {
+		t.Errorf("inline skill should carry static_definition (body/description)")
+	}
+	// A tenant operator sees it too (shared catalog floor, #580).
+	tenant := call(auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}})
+	if len(tenant) != 1 || tenant[0].Name != "semantic-chunking" {
+		t.Fatalf("tenant sees %+v, want [semantic-chunking]", tenant)
+	}
+}

@@ -159,14 +159,33 @@ func (s *Server) handleListLibrarySkills(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	staticNames := s.skillSet.Names() // nil-safe — Set.Names handles nil receiver
-	entries := make([]LibraryEntry, 0, len(staticNames)+len(subRows))
-	seen := map[string]struct{}{}
+	// Static skills come from TWO sources, merged (inline OVERLAYS root on a name
+	// collision, matching resolveSkills): the SkillsRoot-loaded skillSet AND the
+	// inline top-level `skills:` map (cfg.Skills). RFC AQ bundles define their
+	// skills inline via cfg.Skills — resolveSkills bakes those bodies into agent
+	// prompts but they never enter the root-loaded skillSet, so without this
+	// merge a bundled skill was invisible in the Library for EVERY principal
+	// (the agents handler reads cfg.Agents; this one only read the root set).
+	// Operator-global catalog floor — shown to every principal incl. a tenant
+	// operator (see handleListLibraryAgents).
+	staticSkills := map[string]*skills.Skill{}
+	for _, name := range s.skillSet.Names() { // nil-safe — Set.Names handles nil receiver
+		if sk, ok := s.skillSet.Get(name); ok {
+			staticSkills[name] = sk
+		}
+	}
+	for name, spec := range s.cfg.Skills {
+		staticSkills[name] = &skills.Skill{
+			Name:         name,
+			Description:  spec.Description,
+			AllowedTools: spec.AllowedTools,
+			Body:         spec.Body,
+		}
+	}
 
-	// Operator-global static skills — the shared catalog floor, shown to every
-	// principal incl. a tenant operator (see handleListLibraryAgents).
-	for _, name := range staticNames {
-		sk, _ := s.skillSet.Get(name)
+	entries := make([]LibraryEntry, 0, len(staticSkills)+len(subRows))
+	seen := map[string]struct{}{}
+	for name, sk := range staticSkills {
 		entry := LibraryEntry{
 			Name:             name,
 			InStatic:         true,
