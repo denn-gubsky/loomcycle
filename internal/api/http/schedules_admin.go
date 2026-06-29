@@ -15,6 +15,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -24,6 +25,28 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
+
+// scheduleDefTenantVisible reports whether the caller may act on the schedule
+// def_id (RFC AS). Admin / legacy / open → always. A substrate:tenant principal
+// → only if the def belongs to its tenant. A static yaml schedule has no
+// ScheduleDef row, so ScheduleDefGet returns ErrNotFound → a tenant gets false
+// (operator-global crons stay admin-managed). The per-def handlers surface a
+// false as an opaque 404, indistinguishable from an unknown or cross-tenant
+// def_id (no existence oracle).
+func (s *Server) scheduleDefTenantVisible(ctx context.Context, defID string) bool {
+	tenantID, all := s.principalTenantScope(ctx, "")
+	if all {
+		return true
+	}
+	if s.store == nil {
+		return false
+	}
+	row, err := s.store.ScheduleDefGet(ctx, defID)
+	if err != nil {
+		return false
+	}
+	return row.TenantID == tenantID
+}
 
 // ScheduleListEntry is one row in the /ui/schedules list. Mirrors
 // LibraryEntry's shape so the UI can reuse rendering logic. Static
@@ -48,7 +71,16 @@ type schedulesListResponse struct {
 }
 
 // handleListSchedules serves GET /v1/_schedules/list-all.
+//
+// RFC AS: tenant-scoped. A substrate:tenant principal sees only the schedules
+// IT authored (its own tenant's substrate rows); admin / legacy / open see all
+// (honoring the ?tenant= focus). Operator-global static yaml schedules are
+// operator automation (global crons), NOT a tenant's primitives, so they stay
+// in the all-tenants (admin) view only — a tenant can't manage them anyway (the
+// per-def ops below opaque-404 a static for a tenant).
 func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+
 	subRows := map[string]store.ScheduleDefNameSummary{}
 	if s.store != nil {
 		rows, err := s.store.ScheduleDefListNames(r.Context())
@@ -57,6 +89,9 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, row := range rows {
+			if !all && row.TenantID != tenantID {
+				continue
+			}
 			subRows[row.Name] = row
 		}
 	}
@@ -65,6 +100,9 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]struct{}{}
 
 	for name, sr := range s.cfg.ScheduledRuns {
+		if !all {
+			continue
+		}
 		entry := ScheduleListEntry{
 			Name:             name,
 			InStatic:         true,
@@ -122,6 +160,10 @@ func (s *Server) handleGetScheduleState(w http.ResponseWriter, r *http.Request) 
 	}
 	if s.store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable", "no store configured")
+		return
+	}
+	if !s.scheduleDefTenantVisible(r.Context(), defID) {
+		writeJSONError(w, http.StatusNotFound, "not_found", "no run-state row for def_id")
 		return
 	}
 	row, err := s.store.ScheduleRunStateGet(r.Context(), defID)
@@ -182,6 +224,10 @@ func (s *Server) handleScheduleRunNow(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable", "no store configured")
 		return
 	}
+	if !s.scheduleDefTenantVisible(r.Context(), defID) {
+		writeJSONError(w, http.StatusNotFound, "not_found", "no run-state row for def_id (def may not be promoted, or has been retired)")
+		return
+	}
 	// Pre-flight existence check so unknown def_ids return 404 instead
 	// of the FK-constraint-violation 500 the bare upsert would produce.
 	// Matches the 404 shape of pause/resume. The state-row check is
@@ -221,6 +267,10 @@ func (s *Server) handleSchedulePause(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable", "no store configured")
 		return
 	}
+	if !s.scheduleDefTenantVisible(r.Context(), defID) {
+		writeJSONError(w, http.StatusNotFound, "not_found", "no run-state row for def_id")
+		return
+	}
 	// "Indefinite pause" — 100 years from now. Year 9999 would
 	// overflow SQLite's int64-nanosecond timestamp storage; 100 years
 	// is safely under int64.MaxInt64 nanos (~2262-04-11) and matches
@@ -250,6 +300,10 @@ func (s *Server) handleScheduleResume(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable", "no store configured")
+		return
+	}
+	if !s.scheduleDefTenantVisible(r.Context(), defID) {
+		writeJSONError(w, http.StatusNotFound, "not_found", "no run-state row for def_id")
 		return
 	}
 	if err := s.store.ScheduleRunStatePause(r.Context(), defID, time.Time{}); err != nil {

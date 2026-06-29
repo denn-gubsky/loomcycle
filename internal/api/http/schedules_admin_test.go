@@ -8,12 +8,119 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// schedulesTenantFixture builds a Server with one operator-global static yaml
+// schedule + two substrate schedules owned by different tenants (acme, globex),
+// each with a seeded run-state row. Handlers are called directly with an
+// injected principal so each case exercises a specific tenant scope (RFC AS).
+func schedulesTenantFixture(t *testing.T) (srv *Server, acmeDef, globexDef string) {
+	t.Helper()
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	cfg := &config.Config{
+		ScheduledRuns: map[string]config.ScheduledRun{
+			"yaml-sched": {Agent: "researcher", Schedule: "0 6 * * *", Enabled: true},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	cfg.Env.AuthToken = "test-token"
+
+	ctx := t.Context()
+	defJSON, _ := json.Marshal(map[string]any{"agent": "researcher", "schedule": "0 9 * * 1", "enabled": true})
+	mk := func(defID, name, tenant string) {
+		if _, err := st.ScheduleDefCreate(ctx, store.ScheduleDefRow{
+			DefID: defID, Name: name, TenantID: tenant, Definition: defJSON,
+		}); err != nil {
+			t.Fatalf("ScheduleDefCreate(%s): %v", name, err)
+		}
+		if err := st.ScheduleDefSetActive(ctx, tenant, name, defID, "test"); err != nil {
+			t.Fatalf("ScheduleDefSetActive(%s): %v", name, err)
+		}
+		if err := st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("ScheduleRunStateSeed(%s): %v", name, err)
+		}
+	}
+	acmeDef, globexDef = "sd_acme", "sd_globex"
+	mk(acmeDef, "acme-sched", "acme")
+	mk(globexDef, "globex-sched", "globex")
+
+	srv = New(cfg, &stubResolver{}, []tools.Tool{}, concurrency.New(1, 1, time.Second), st)
+	return srv, acmeDef, globexDef
+}
+
+// TestSchedulesList_TenantScoped (RFC AS) — a substrate:tenant principal sees
+// only the schedules IT authored (its own tenant's substrate rows), not another
+// tenant's and not the operator-global static yaml cron; admin sees all. Fails
+// on the pre-RFC-AS handler (which listed every tenant's defs + the static).
+func TestSchedulesList_TenantScoped(t *testing.T) {
+	srv, _, _ := schedulesTenantFixture(t)
+	call := func(p auth.Principal) []string {
+		req := httptest.NewRequest("GET", "/v1/_schedules/list-all", nil)
+		req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+		rec := httptest.NewRecorder()
+		srv.handleListSchedules(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+		var env schedulesListResponse
+		if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		names := make([]string, len(env.Entries))
+		for i, e := range env.Entries {
+			names[i] = e.Name
+		}
+		return names
+	}
+	if got := call(auth.Principal{TenantID: "acme", Subject: "acme-op", Scopes: []string{auth.ScopeTenant}}); len(got) != 1 || got[0] != "acme-sched" {
+		t.Fatalf("acme tenant sees %v, want [acme-sched] only (no globex, no static)", got)
+	}
+	if got := call(auth.Principal{TenantID: "default", Subject: "ops", Scopes: []string{auth.ScopeAdmin}}); len(got) != 3 {
+		t.Fatalf("admin sees %v, want all 3 (acme-sched, globex-sched, yaml-sched)", got)
+	}
+}
+
+// TestSchedulePause_TenantConfined (RFC AS) — a substrate:tenant principal may
+// pause only its OWN tenant's schedule def; another tenant's def (and a static /
+// unknown def) opaque-404s. Admin acts on any. Fails on the pre-RFC-AS handler
+// (which paused any def_id for any authenticated caller).
+func TestSchedulePause_TenantConfined(t *testing.T) {
+	srv, acmeDef, globexDef := schedulesTenantFixture(t)
+	pause := func(p auth.Principal, defID string) int {
+		req := httptest.NewRequest("POST", "/v1/_schedules/"+defID+"/pause", nil)
+		req.SetPathValue("def_id", defID)
+		req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+		rec := httptest.NewRecorder()
+		srv.handleSchedulePause(rec, req)
+		return rec.Code
+	}
+	acme := auth.Principal{TenantID: "acme", Subject: "acme-op", Scopes: []string{auth.ScopeTenant}}
+	admin := auth.Principal{TenantID: "default", Subject: "ops", Scopes: []string{auth.ScopeAdmin}}
+
+	if c := pause(acme, acmeDef); c != http.StatusOK {
+		t.Errorf("acme pausing its own schedule = %d, want 200", c)
+	}
+	if c := pause(acme, globexDef); c != http.StatusNotFound {
+		t.Errorf("acme pausing globex's schedule = %d, want 404 (cross-tenant opaque)", c)
+	}
+	if c := pause(acme, "sd_nope"); c != http.StatusNotFound {
+		t.Errorf("acme pausing unknown/static def = %d, want 404", c)
+	}
+	if c := pause(admin, globexDef); c != http.StatusOK {
+		t.Errorf("admin pausing any schedule = %d, want 200", c)
+	}
+}
 
 // schedulesAdminFixture spins up an HTTP server with one yaml-defined
 // schedule + one substrate-defined schedule, ready for the list +
