@@ -5,7 +5,7 @@ images:
     # First release with the embedded presets (RFC AQ) — the dialog's preset
     # selector renders from the binary. Bump this + app_version in app.yaml in
     # lockstep on an image bump.
-    tag: "1.6.7"
+    tag: "1.7.0"
 consts:
   app_container_name: loomcycle
   # distroless nonroot — the image is fixed at uid/gid 65532 (no arbitrary-uid
