@@ -356,6 +356,22 @@ type Server struct {
 // The cancel registry is also constructed here. It's always present
 // (empty if no run has started) so handler code can call its methods
 // unconditionally without nil-checking.
+// defaultMaxRequestBytes is the run-ingest body cap used when the operator
+// hasn't set one (and the fallback for tests that build a bare config). 16 MiB
+// fits inline base64 image content (RFC AT); LOOMCYCLE_MAX_REQUEST_BYTES tunes
+// the configured value.
+const defaultMaxRequestBytes = 16 << 20
+
+// maxRequestBytes returns the configured run-ingest body cap, falling back to
+// defaultMaxRequestBytes when unset (<=0) so a bare-config Server never caps at
+// zero bytes (which MaxBytesReader would treat as "reject every body").
+func (s *Server) maxRequestBytes() int64 {
+	if n := s.cfg.Env.MaxRequestBytes; n > 0 {
+		return n
+	}
+	return defaultMaxRequestBytes
+}
+
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
 	// Hook registry is constructed with the operator-yaml host-widen
 	// permit list (cfg.Hooks.PermitHostWiden.Owners). Without an entry
@@ -2963,11 +2979,17 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
-	// Cap body at 1 MiB so a malicious caller can't exhaust memory by
-	// streaming a huge body. ReadHeaderTimeout doesn't cover the body.
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// Cap the body so a malicious caller can't exhaust memory by streaming a
+	// huge body (ReadHeaderTimeout doesn't cover the body). Default 16 MiB to
+	// fit inline base64 image content (RFC AT); LOOMCYCLE_MAX_REQUEST_BYTES.
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxRequestBytes())
 	var req runRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, fmt.Sprintf("request body exceeds the %d-byte limit", maxErr.Limit), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -3579,7 +3601,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// Default 16 MiB to fit inline base64 image content on a continuation turn
+	// (RFC AT); LOOMCYCLE_MAX_REQUEST_BYTES. MaxBytesReader still hard-stops.
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxRequestBytes())
 
 	id := r.PathValue("id")
 	if id == "" {
@@ -3589,6 +3613,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	var body messagesRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, fmt.Sprintf("request body exceeds the %d-byte limit", maxErr.Limit), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}

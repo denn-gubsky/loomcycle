@@ -1926,7 +1926,14 @@ type Env struct {
 	// self then reports only the bind ListenAddr (and the A2A advertise URL if
 	// that's configured). LOOMCYCLE_PUBLIC_URL.
 	PublicURL string
-	AuthToken string
+	// MaxRequestBytes caps the JSON body the run-ingest paths accept
+	// (POST /v1/runs and POST /v1/sessions/{id}/messages). Default 16 MiB —
+	// raised from the historical 1 MiB so a request can carry inline base64
+	// image content (RFC AT). MaxBytesReader still hard-stops at this bound;
+	// operators tune it down to shrink the per-request memory ceiling.
+	// LOOMCYCLE_MAX_REQUEST_BYTES (bytes; <=0 ignored, default kept).
+	MaxRequestBytes int64
+	AuthToken       string
 	// OperatorTokenPepper is prepended to a bearer before SHA-256 when
 	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
 	// the pepper yields no usable token lookup. Secret — never logged.
@@ -3141,6 +3148,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			} else {
 				cfg.Env.ChannelsMaxValueBytes = n
 			}
+		}
+	}
+	// Run-ingest body cap (RFC AT). Default 16 MiB so a request can carry an
+	// inline base64 image; a positive override tunes it, a non-positive value
+	// is ignored (keep the default — the cap is a security floor).
+	cfg.Env.MaxRequestBytes = 16 << 20
+	if v := os.Getenv("LOOMCYCLE_MAX_REQUEST_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.Env.MaxRequestBytes = n
 		}
 	}
 	cfg.Env.ChannelsSweepInterval = 15 * time.Minute

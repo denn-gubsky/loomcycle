@@ -70,6 +70,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// passes through; operators using effort with non-reasoning
 		// models will see the API's 400 surface clearly.
 		SupportsEffort: true,
+		SupportsVision: true, // per-model refined by openaiSupportsVision
 	}
 }
 
@@ -207,8 +208,14 @@ type wireStreamOptions struct {
 }
 
 type wireMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content is `any` so a user message can carry EITHER the flat string form
+	// (text-only — byte-identical to the pre-vision path) OR the content-array
+	// form []wireContentPart when an image block is present (RFC AT). omitempty
+	// drops only a nil interface — assistant/user paths therefore leave Content
+	// nil (not "") to keep the empty-content omission (RFC Q); tool messages
+	// force content present via MarshalJSON below.
+	Content    any            `json:"content,omitempty"`
 	Name       string         `json:"name,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
@@ -234,13 +241,31 @@ func (m wireMessage) MarshalJSON() ([]byte, error) {
 		// The outer Content (no omitempty, depth 0) overrides the
 		// embedded alias's omitempty content (depth 1) — encoding/json
 		// resolves the same-name conflict in favour of the shallower
-		// field, so `content` is always emitted for tool messages.
+		// field, so `content` is always emitted for tool messages. A
+		// tool message's content is always the flat string form, so the
+		// `any` coerces cleanly (zero value "" when no output).
+		txt, _ := m.Content.(string)
 		return json.Marshal(struct {
 			alias
 			Content string `json:"content"`
-		}{alias: alias(m), Content: m.Content})
+		}{alias: alias(m), Content: txt})
 	}
 	return json.Marshal(alias(m))
+}
+
+// wireContentPart is one element of the OpenAI content-array form, used only
+// when a user message carries an image (RFC AT). A part is either a text part
+// or an image_url part holding an inline data-URI.
+type wireContentPart struct {
+	Type     string        `json:"type"` // "text" | "image_url"
+	Text     string        `json:"text,omitempty"`
+	ImageURL *wireImageURL `json:"image_url,omitempty"`
+}
+
+// wireImageURL carries the data-URI the driver builds internally from the image
+// block's media_type + base64. Callers never send URLs (SSRF — RFC AT §6).
+type wireImageURL struct {
+	URL string `json:"url"` // "data:<media_type>;base64,<data>"
 }
 
 type wireToolCall struct {
@@ -266,6 +291,14 @@ type wireFunction struct {
 }
 
 func buildRequestBody(req providers.Request) ([]byte, error) {
+	// Refuse an image to a text-only OpenAI model before the call — a clear
+	// error beats an opaque provider 400 (RFC AT §5.2). DeepSeek (which
+	// delegates Call here) never reaches this: its Capabilities advertises
+	// SupportsVision=false, so the loop gates an image to DeepSeek upstream.
+	if providers.RequestHasImage(req) && !openaiSupportsVision(req.Model) {
+		return nil, fmt.Errorf("openai model %q does not support image input", req.Model)
+	}
+
 	w := wireRequest{
 		Model:            req.Model,
 		MaxTokens:        req.MaxTokens,
@@ -348,17 +381,25 @@ func flattenMessage(m providers.Message) []wireMessage {
 		// in the thinking mode must be passed back"). omitempty keeps
 		// the field off the wire for non-thinking models / non-DeepSeek
 		// endpoints; vanilla OpenAI ignores unknown fields anyway.
-		return []wireMessage{{
-			Role:             "assistant",
-			Content:          text.String(),
-			ToolCalls:        calls,
-			ReasoningContent: m.Reasoning,
-		}}
+		wm := wireMessage{Role: "assistant", ToolCalls: calls, ReasoningContent: m.Reasoning}
+		// Leave Content nil (omitted) for a tool_calls-only assistant turn —
+		// both OpenAI and DeepSeek require that (RFC Q). Now that Content is
+		// `any`, an empty string "" would be EMITTED by omitempty, so only set
+		// it when there is text.
+		if text.Len() > 0 {
+			wm.Content = text.String()
+		}
+		return []wireMessage{wm}
 	}
 
-	// user role: split tool_result blocks into their own messages.
+	// user role: tool_result blocks become their own role:"tool" messages; text
+	// + image blocks form one user message. An image forces the OpenAI
+	// content-array form (text + image_url parts, original order); a text-only
+	// turn keeps the flat string content (byte-identical to the pre-vision path).
 	var out []wireMessage
 	var userText strings.Builder
+	var parts []wireContentPart
+	hasImage := false
 	for _, c := range m.Content {
 		switch c.Type {
 		case "tool_result":
@@ -372,13 +413,51 @@ func flattenMessage(m providers.Message) []wireMessage {
 				userText.WriteString("\n")
 			}
 			userText.WriteString(c.Text)
+			parts = append(parts, wireContentPart{Type: "text", Text: c.Text})
+		case "image":
+			hasImage = true
+			parts = append(parts, wireContentPart{
+				Type:     "image_url",
+				ImageURL: &wireImageURL{URL: "data:" + c.MediaType + ";base64," + c.Data},
+			})
 		}
 	}
-	if userText.Len() > 0 {
-		// Plain user text comes first; tool messages follow.
+	switch {
+	case hasImage:
+		// Plain user content (array form) comes first; tool messages follow.
+		out = append([]wireMessage{{Role: "user", Content: parts}}, out...)
+	case userText.Len() > 0:
 		out = append([]wireMessage{{Role: "user", Content: userText.String()}}, out...)
 	}
 	return out
+}
+
+// openaiSupportsVision reports whether the named OpenAI model accepts image
+// input. The modern multimodal families (gpt-4o, gpt-4.1, gpt-4-turbo, the
+// gpt-5 line, the o-series) support it; the legacy text-only families
+// (gpt-3.5-turbo and the original gpt-4 / gpt-4-32k snapshots) do not. An
+// unknown model defaults to supported — a wrong guess surfaces as a provider
+// 400, never a silent drop, and never wrongly BLOCKS a valid request (RFC AT
+// §7). Capabilities() takes no model arg, so this is the per-model affordance.
+func openaiSupportsVision(model string) bool {
+	m := strings.ToLower(model)
+	if strings.HasPrefix(m, "gpt-3.5") {
+		return false
+	}
+	return !openaiTextOnlyModels[m]
+}
+
+// openaiTextOnlyModels are the exact original gpt-4 snapshots that predate
+// vision (gpt-4-turbo and later are multimodal). Matched exactly — NOT by
+// prefix — so a turbo/preview snapshot like gpt-4-0125-preview is not wrongly
+// gated.
+var openaiTextOnlyModels = map[string]bool{
+	"gpt-4":          true,
+	"gpt-4-0314":     true,
+	"gpt-4-0613":     true,
+	"gpt-4-32k":      true,
+	"gpt-4-32k-0314": true,
+	"gpt-4-32k-0613": true,
 }
 
 // --- streaming response parsing ---

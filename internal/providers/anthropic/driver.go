@@ -60,6 +60,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		MaxContextTokens:  200_000,
 		SupportsThinking:  true,
 		SupportsEffort:    true,
+		SupportsVision:    true, // per-model refined by anthropicSupportsVision
 	}
 }
 
@@ -196,14 +197,23 @@ type wireMessage struct {
 }
 
 type wireContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	Type      string           `json:"type"`
+	Text      string           `json:"text,omitempty"`
+	ID        string           `json:"id,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Input     json.RawMessage  `json:"input,omitempty"`
+	ToolUseID string           `json:"tool_use_id,omitempty"`
+	Content   string           `json:"content,omitempty"`
+	IsError   bool             `json:"is_error,omitempty"`
+	Source    *wireImageSource `json:"source,omitempty"` // type == "image" (RFC AT)
+}
+
+// wireImageSource is Anthropic's inline base64 image source block:
+// {"type":"base64","media_type":"image/png","data":"<base64>"}.
+type wireImageSource struct {
+	Type      string `json:"type"` // always "base64" (no URL form — RFC AT §6)
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 func buildRequestBody(req providers.Request) ([]byte, error) {
@@ -289,6 +299,13 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		w.System = append(w.System, out)
 	}
 
+	// Refuse an image to a text-only Claude model before the call — a clear
+	// error beats Anthropic's opaque 400 (RFC AT §4.4/§5.1). The loop's coarse
+	// gate only knows the provider supports vision; per-model nuance lives here.
+	if providers.RequestHasImage(req) && !anthropicSupportsVision(req.Model) {
+		return nil, fmt.Errorf("anthropic model %q does not support image input", req.Model)
+	}
+
 	for _, m := range req.Messages {
 		wm := wireMessage{Role: m.Role}
 		for _, c := range m.Content {
@@ -316,8 +333,30 @@ func toWireBlock(c providers.ContentBlock) wireContentBlock {
 			Content:   c.Text,
 			IsError:   c.IsError,
 		}
+	case "image":
+		return wireContentBlock{Type: "image", Source: &wireImageSource{
+			Type:      "base64",
+			MediaType: c.MediaType,
+			Data:      c.Data,
+		}}
 	default: // "text"
 		return wireContentBlock{Type: "text", Text: c.Text}
+	}
+}
+
+// anthropicSupportsVision reports whether the named Claude model accepts image
+// input. Every modern Claude family (3 / 3.5 / 3.7 / 4.x) is multimodal; the
+// genuinely text-only legacy families are claude-2 and claude-instant. An
+// unknown model defaults to supported — a wrong guess surfaces as a provider
+// 400, not a silent drop (RFC AT §7). Capabilities() takes no model arg, so
+// this is the per-model affordance (mirrors anthropicEffortBudget).
+func anthropicSupportsVision(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case strings.Contains(m, "claude-2"), strings.Contains(m, "claude-instant"):
+		return false
+	default:
+		return true
 	}
 }
 

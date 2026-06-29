@@ -345,10 +345,10 @@ func TestAuthRequired(t *testing.T) {
 	}
 }
 
-// Regression: bodies larger than the cap are rejected, not silently read into
-// memory. We send valid JSON whose `text` field is large enough to cross the
-// 1 MiB cap — without MaxBytesReader, the decoder happily reads it all and
-// returns 200. With MaxBytesReader, the decoder fails mid-parse.
+// Regression: bodies larger than the cap (LOOMCYCLE_MAX_REQUEST_BYTES) are
+// rejected, not silently read into memory. We send valid JSON whose `text`
+// field is large enough to cross the configured cap — without MaxBytesReader
+// the decoder reads it all and returns 200; with it, the request is rejected.
 func TestRunsRejectsOversizedBody(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
@@ -357,6 +357,9 @@ func TestRunsRejectsOversizedBody(t *testing.T) {
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
 	}
+	// Pin a small cap (the default is now 16 MiB, RFC AT) so the rejection is
+	// exercised without posting 16+ MiB.
+	cfg.Env.MaxRequestBytes = 1 << 20
 	provider := &stubProvider{events: []providers.Event{
 		{Type: providers.EventDone, StopReason: "end_turn"},
 	}}
@@ -364,7 +367,7 @@ func TestRunsRejectsOversizedBody(t *testing.T) {
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
-	// 2 MiB of "x" inside a valid JSON string — guaranteed to cross 1 MiB cap.
+	// 2 MiB of "x" inside a valid JSON string — guaranteed to cross the 1 MiB cap.
 	huge := strings.Repeat("x", 2<<20)
 	body := `{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"` + huge + `"}]}]}`
 
@@ -373,8 +376,8 @@ func TestRunsRejectsOversizedBody(t *testing.T) {
 		t.Fatalf("post: %v", err)
 	}
 	defer resp.Body.Close()
-	// MaxBytesReader returns 400 (decoder sees a "http: request body too large"
-	// error mid-parse) or 413. Anything 2xx means the cap was bypassed.
+	// Over-cap bodies return 413 (RFC AT; previously 400). Anything 2xx means
+	// the cap was bypassed.
 	if resp.StatusCode == http.StatusOK {
 		t.Errorf("status = 200 — oversized body was accepted (MaxBytesReader missing)")
 	}

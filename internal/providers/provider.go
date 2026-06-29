@@ -78,6 +78,17 @@ type Capabilities struct {
 	MaxContextTokens  int
 	SupportsThinking  bool
 
+	// SupportsVision signals that this provider can accept image content
+	// blocks (RFC AT) on at least some of its models. The loop uses it as a
+	// coarse pre-call gate: an image sent to a SupportsVision=false provider
+	// (or a fallback that routed there) fails loudly with an EventError
+	// instead of the image being silently dropped or the provider returning
+	// an opaque 400. Per-model nuance (a legacy non-vision model on an
+	// otherwise vision-capable provider) is enforced inside the driver via a
+	// helper (e.g. anthropicSupportsVision(model)), mirroring how
+	// SupportsEffort is coarse here but refined per-call in the driver.
+	SupportsVision bool
+
 	// SupportsEffort signals that the driver translates Request.Effort
 	// into a native wire parameter when set. Anthropic maps it to a
 	// `thinking.budget_tokens` block; OpenAI to `reasoning_effort`;
@@ -206,6 +217,31 @@ type ContentBlock struct {
 	ToolName  string          `json:"name,omitempty"`
 	ToolInput json.RawMessage `json:"input,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+
+	// Image fields (Type == "image", RFC AT). MediaType is a whitelisted
+	// image media type (image/png|jpeg|gif|webp); Data is the raw base64 of
+	// the image bytes with NO "data:" prefix. Each driver serializes these
+	// into its own wire form (Anthropic source block / OpenAI image_url
+	// data-URI / Gemini inlineData / Ollama images[]). Empty for every
+	// non-image block.
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+}
+
+// RequestHasImage reports whether any message in the request carries an image
+// content block (RFC AT). Drivers whose vision support is per-model (Anthropic,
+// OpenAI) use it to refuse an image to a known text-only model with a clear
+// error before the HTTP call, rather than letting the provider return an opaque
+// 400.
+func RequestHasImage(req Request) bool {
+	for _, m := range req.Messages {
+		for _, c := range m.Content {
+			if c.Type == "image" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ToolSpec describes one tool to the model.

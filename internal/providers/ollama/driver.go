@@ -243,6 +243,11 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// loop that an Ollama-routed agent's effort hint is dropped, so
 		// the loop logs once per Run for operator visibility.
 		SupportsEffort: false,
+		// Vision depends on the pulled model (llava, llama3.2-vision, …).
+		// Report true and treat model choice as the operator's responsibility
+		// (RFC AT §5.4); a non-vision model's failure surfaces via the existing
+		// provider-fallback error rather than a silent drop.
+		SupportsVision: true,
 	}
 }
 
@@ -361,6 +366,10 @@ type wireMessage struct {
 	Role      string         `json:"role"`
 	Content   string         `json:"content"`
 	ToolCalls []wireToolCall `json:"tool_calls,omitempty"`
+	// Images carries inline base64 image data on a user message (RFC AT).
+	// Ollama's /api/chat takes images: [base64] alongside content; vision
+	// depends on the pulled model (llava, llama3.2-vision, …).
+	Images []string `json:"images,omitempty"`
 }
 
 type wireToolCall struct {
@@ -456,9 +465,11 @@ func flattenMessage(m providers.Message) []wireMessage {
 		return []wireMessage{{Role: "assistant", Content: text.String(), ToolCalls: calls}}
 	}
 
-	// user role: split tool_result into role:"tool" entries.
+	// user role: split tool_result into role:"tool" entries; text + image
+	// blocks form one user message (images attach to it as images: [base64]).
 	var out []wireMessage
 	var userText strings.Builder
+	var images []string
 	for _, c := range m.Content {
 		switch c.Type {
 		case "tool_result":
@@ -468,10 +479,12 @@ func flattenMessage(m providers.Message) []wireMessage {
 				userText.WriteString("\n")
 			}
 			userText.WriteString(c.Text)
+		case "image":
+			images = append(images, c.Data)
 		}
 	}
-	if userText.Len() > 0 {
-		out = append([]wireMessage{{Role: "user", Content: userText.String()}}, out...)
+	if userText.Len() > 0 || len(images) > 0 {
+		out = append([]wireMessage{{Role: "user", Content: userText.String(), Images: images}}, out...)
 	}
 	return out
 }

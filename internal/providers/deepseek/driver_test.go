@@ -134,6 +134,13 @@ func TestDriver_CapabilitiesMostlyMatchOpenAI(t *testing.T) {
 	if !caps.SupportsThinking {
 		t.Errorf("SupportsThinking = false, want true (deepseek-v4-pro / deepseek-reasoner are thinking-class)")
 	}
+	// DeepSeek text models don't accept images. The inner OpenAI driver reports
+	// SupportsVision=true (RFC AT); DeepSeek must override to false so the loop
+	// gates an image to DeepSeek upstream instead of the inner OpenAI wire
+	// builder producing an image_url DeepSeek 400s on.
+	if caps.SupportsVision {
+		t.Errorf("SupportsVision = true, want false (DeepSeek text models reject image input)")
+	}
 }
 
 // TestIsThinkingModel covers the per-model affordance the driver

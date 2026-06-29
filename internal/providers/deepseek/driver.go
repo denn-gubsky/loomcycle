@@ -82,6 +82,11 @@ func (d *Driver) ID() string { return "deepseek" }
 func (d *Driver) Capabilities() providers.Capabilities {
 	caps := d.inner.Capabilities()
 	caps.SupportsThinking = true
+	// DeepSeek's text models don't accept image input. The inner OpenAI driver
+	// reports SupportsVision=true (RFC AT), so override to false here — the
+	// loop then gates an image to DeepSeek upstream with a clear error rather
+	// than the inner OpenAI wire builder producing an image_url DeepSeek 400s on.
+	caps.SupportsVision = false
 	return caps
 }
 

@@ -97,6 +97,10 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// request (see Call).
 		SupportsThinking: true,
 		SupportsEffort:   true,
+		// All current Gemini models (2.5 flash / pro) are multimodal.
+		// No per-model gate — operator-trust per RFC AT §5.3; a non-vision
+		// model surfaces via the existing provider-fallback error.
+		SupportsVision: true,
 	}
 }
 
@@ -189,6 +193,16 @@ type wirePart struct {
 	Text             string                `json:"text,omitempty"`
 	FunctionCall     *wireFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *wireFunctionResponse `json:"functionResponse,omitempty"`
+	InlineData       *wireInlineData       `json:"inlineData,omitempty"` // type == "image" (RFC AT)
+}
+
+// wireInlineData is Gemini's inline binary part: {"mimeType","data"} with the
+// data being raw base64 (no "data:" prefix). camelCase keys match the rest of
+// this driver (functionCall/functionResponse); the Gemini API also accepts the
+// snake_case form.
+type wireInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 type wireFunctionCall struct {
@@ -313,6 +327,8 @@ func flattenMessageContent(msg providers.Message) ([]wirePart, error) {
 			if c.Text != "" {
 				out = append(out, wirePart{Text: c.Text})
 			}
+		case "image":
+			out = append(out, wirePart{InlineData: &wireInlineData{MimeType: c.MediaType, Data: c.Data}})
 		case "tool_use":
 			out = append(out, wirePart{FunctionCall: &wireFunctionCall{
 				Name: c.ToolName,

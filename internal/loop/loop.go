@@ -8,6 +8,7 @@ package loop
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,11 +40,21 @@ type PromptSegment struct {
 //   - "trusted-text"     : text the loop trusts; goes through verbatim.
 //   - "untrusted-block"  : text from an external source; wrapped in <untrusted>
 //     tags before being sent to the model.
+//   - "image"            : inline image input (RFC AT); valid only in a
+//     user-role segment, capability-gated per provider/model.
 type PromptContentBlock struct {
 	Type      string `json:"type"`
 	Text      string `json:"text"`
 	Cacheable bool   `json:"cacheable,omitempty"`
 	Kind      string `json:"kind,omitempty"` // for untrusted-block: e.g. "web_content", "uploaded_cv"
+
+	// Image fields (Type == "image", RFC AT). MediaType is one of the
+	// whitelisted image media types (image/png|jpeg|gif|webp); Data is the
+	// base64 of the image bytes with NO "data:" prefix (the driver builds any
+	// data-URI form internally). There is deliberately no URL form — accepting
+	// a URL would make loomcycle fetch arbitrary hosts (SSRF); see RFC AT §6.
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
 }
 
 // codeJSProviderID is the synthetic replay provider's ID — must match
@@ -1126,6 +1137,27 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}
 	}
 
+	// Vision gate (RFC AT). If this run carries an image content block — fresh
+	// or replayed from a prior turn — validate it and refuse before the first
+	// call when the resolved provider can't accept image input (e.g. an agent
+	// whose tier resolved to DeepSeek's text endpoint). This fails loudly here
+	// instead of the image being silently dropped. Checked once at the resolved
+	// provider: a mid-run fallback to a non-vision provider is caught by the
+	// driver's own per-model gate (a clear error) / surfaces as a provider
+	// error, never a silent drop. PriorMessages were validated when first sent,
+	// so only the fresh segments need re-validating here.
+	if messagesHaveImage(messages) {
+		if err := validateImageSegments(opts.Segments); err != nil {
+			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+			return RunResult{}, err
+		}
+		if !opts.Provider.Capabilities().SupportsVision {
+			msg := fmt.Sprintf("model %q on provider %q does not support image input", opts.Model, opts.Provider.ID())
+			emit(providers.Event{Type: providers.EventError, Error: msg})
+			return RunResult{}, errors.New(msg)
+		}
+	}
+
 	emit(providers.Event{Type: providers.EventStarted})
 
 	// Context compaction (v2): a self-request flag the Context op=compact tool
@@ -1965,6 +1997,61 @@ var allowedUntrustedKinds = map[string]bool{
 	"run_metadata":  true, // non-secret metadata projected from an external trigger body
 }
 
+// validImageMediaTypes is the whitelist of media types an "image" content
+// block may declare (RFC AT). It is the common denominator across all four
+// vision providers (Anthropic's set); anything else is rejected before the
+// call rather than letting a provider 400 on an unsupported type.
+var validImageMediaTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// validateImageSegments validates every "image" block in the inbound segments
+// (RFC AT §4.3): an image is valid only in a user-role segment, must carry a
+// whitelisted media_type, and its Data must decode as base64. It returns a
+// descriptive error — surfaced to the caller as an EventError before any
+// provider call — so a malformed image fails fast and clearly instead of
+// reaching a provider as an opaque 400. flattenContent itself has no error
+// channel, so this is the single validation choke point.
+func validateImageSegments(segs []PromptSegment) error {
+	for _, s := range segs {
+		for _, c := range s.Content {
+			if c.Type != "image" {
+				continue
+			}
+			if s.Role != "user" {
+				return fmt.Errorf("image content is only allowed in user-role segments (got role %q)", s.Role)
+			}
+			if !validImageMediaTypes[c.MediaType] {
+				return fmt.Errorf("unsupported image media_type %q (allowed: image/png, image/jpeg, image/gif, image/webp)", c.MediaType)
+			}
+			if c.Data == "" {
+				return errors.New("image content block has empty data")
+			}
+			if _, err := base64.StdEncoding.DecodeString(c.Data); err != nil {
+				return fmt.Errorf("image content block data is not valid base64: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// messagesHaveImage reports whether any assembled message (prior-turn or
+// fresh) carries an image content block — the signal the loop uses to decide
+// whether the vision capability gate applies for this run.
+func messagesHaveImage(messages []providers.Message) bool {
+	for _, m := range messages {
+		for _, c := range m.Content {
+			if c.Type == "image" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // FlattenContent is the public version of flattenContent for callers that
 // need to apply the same trust-escaping rules during transcript replay
 // (continuation endpoint). External callers should not depend on this for
@@ -1997,6 +2084,13 @@ func flattenContent(c PromptContentBlock) providers.ContentBlock {
 			Type: "text",
 			Text: fmt.Sprintf("<%s>\n%s\n</%s>", kind, safe, kind),
 		}
+	case "image":
+		// Images are NOT tag-fenced: untrusted-block fencing defends against
+		// text that reads as instructions, but an image is opaque bytes to the
+		// wire. Media-type/base64 validity is enforced upstream in
+		// validateImageSegments (before any provider call), not here — this
+		// function has no error channel. See RFC AT §4.3/§6.
+		return providers.ContentBlock{Type: "image", MediaType: c.MediaType, Data: c.Data}
 	default: // "trusted-text"
 		return providers.ContentBlock{Type: "text", Text: c.Text, Cacheable: c.Cacheable}
 	}
