@@ -233,16 +233,15 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// LOOMCYCLE_OLLAMA*_NUM_CTX) that is the exact window; else 0 here
 		// ("unknown") and the per-call /api/ps value fills it in once loaded.
 		MaxContextTokens: d.numCtx,
-		SupportsThinking: false,
-		// Ollama has no operator-controlled thinking-budget knob today.
-		// Reasoning models (qwen3, deepseek-r1, hermes3) decide whether
-		// to think based on their own defaults; the message.thinking
-		// field is now surfaced as EventThinking so adapters can render
-		// or hide the trace, but loomcycle has no input-side hint that
-		// would dial it up or down. SupportsEffort=false signals to the
-		// loop that an Ollama-routed agent's effort hint is dropped, so
-		// the loop logs once per Run for operator visibility.
-		SupportsEffort: false,
+		SupportsThinking: true,
+		// The effort hint drives Ollama's top-level `think` flag (see
+		// buildRequestBody): medium/high enable a reasoning model's
+		// thinking trace, low disables it, empty leaves the model default.
+		// Ollama populates message.thinking only when think=true, which is
+		// then surfaced as EventThinking. SupportsEffort=true so the loop
+		// forwards the hint rather than logging it as dropped. The model
+		// must be thinking-capable (qwen3, gemma4, deepseek-r1, …).
+		SupportsEffort: true,
 		// Vision depends on the pulled model (llava, llama3.2-vision, …).
 		// Report true and treat model choice as the operator's responsibility
 		// (RFC AT §5.4); a non-vision model's failure surfaces via the existing
@@ -347,6 +346,11 @@ type wireRequest struct {
 	Messages []wireMessage `json:"messages"`
 	Tools    []wireTool    `json:"tools,omitempty"`
 	Options  *wireOptions  `json:"options,omitempty"`
+	// Think toggles a reasoning model's thinking trace via Ollama's /api/chat
+	// `think` field. nil omits it (model default); set from the agent's effort
+	// hint. Ollama populates message.thinking only when this is true, and
+	// errors if the resolved model isn't thinking-capable.
+	Think *bool `json:"think,omitempty"`
 }
 
 type wireOptions struct {
@@ -396,6 +400,20 @@ func (d *Driver) buildRequestBody(req providers.Request) ([]byte, error) {
 	w := wireRequest{
 		Model:  req.Model,
 		Stream: true,
+	}
+
+	// Map the effort hint to Ollama's `think` flag: medium/high enable the
+	// reasoning trace, low disables it, empty leaves the model default. The
+	// model must be thinking-capable (qwen3, gemma4, deepseek-r1, …); Ollama
+	// errors on `think` for models that can't reason, so this is operator
+	// opt-in via effort.
+	switch req.Effort {
+	case "medium", "high":
+		think := true
+		w.Think = &think
+	case "low":
+		think := false
+		w.Think = &think
 	}
 
 	if req.Temperature != nil || req.MaxTokens > 0 || d.numCtx > 0 || d.numGpu > 0 ||
