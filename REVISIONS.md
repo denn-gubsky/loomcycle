@@ -8,6 +8,36 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.8.0
+
+**🧠 Ollama thinking traces — the `effort` hint now drives Ollama's `think`
+flag.** loomcycle had no way to turn on a *local* reasoning model's thinking
+trace. Ollama's `/api/chat` accepts a top-level **`think`** boolean (qwen3,
+deepseek-r1, gemma-thinking, …) that toggles the trace and routes it to the
+`message.thinking` field — but loomcycle never sent it, so a thinking-capable
+Ollama model ran on its own default and an `effort` hint on an Ollama agent was
+logged as "dropped". This closes the last gap in loomcycle's thinking surface:
+the cloud drivers already enable thinking from `effort` (Anthropic
+`thinking.budget_tokens`, OpenAI `reasoning_effort`, Gemini `thinkingConfig`);
+Ollama now does too.
+
+`buildRequestBody` translates the per-agent `effort` hint into `think`:
+`medium`/`high` → `think:true` (enable the trace), `low` → `think:false`
+(suppress it), unset → omitted (model default). The trace returns as
+`EventThinking` (already parsed from `message.thinking`). `Capabilities()` now
+reports `SupportsThinking=true` + `SupportsEffort=true`, so the loop forwards the
+hint instead of logging it as dropped. Applies to both the hosted `ollama` and
+`ollama-local` providers.
+
+**Behavior change** (intentional, and consistent with Anthropic/OpenAI/Gemini):
+setting `effort` on an Ollama agent whose model is *not* thinking-capable now
+sends `think:true` and Ollama errors clearly, where before the hint was a silent
+no-op — pick a thinking-capable model when you set effort on Ollama. Additive
+otherwise; no wire/schema change; adapters unchanged since v1.7.0. The TrueNAS
+deploy artifacts now pin `denngubsky/loomcycle:1.8.0`.
+
+---
+
 ## What's in v1.7.1
 
 **🩹 Patch — the vision capability gate now also covers the provider-fallback
