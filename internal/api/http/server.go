@@ -2244,6 +2244,12 @@ func (s *Server) Mux() http.Handler {
 	// after adding a model to the upstream console without waiting
 	// 15 min for the next periodic probe.
 	mux.Handle("GET /v1/_providers/{id}/models", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleProviderModels))))
+	// Configured model aliases (the top-level `models:` map). Tenant-readable
+	// so a UI can offer aliases in a model picker and store the alias on an
+	// agent/fork (which then tracks the operator's local override) instead of a
+	// concrete model. Non-secret global config; scope-gated to substrate:tenant
+	// in requiredScopeFor.
+	mux.Handle("GET /v1/_models", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListModels))))
 	// v0.7.3+ user picker — admin-style endpoint surfacing distinct
 	// user_ids that have runs in the store. Bearer-authed; drives
 	// the Web UI's run-list user dropdown.

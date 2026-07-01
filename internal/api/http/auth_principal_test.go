@@ -258,6 +258,9 @@ func TestRequiredScopeFor(t *testing.T) {
 		// The routing view is tenant-reachable; the handler strips infra detail
 		// for a non-admin caller.
 		{"GET", "/v1/_routing", auth.ScopeTenant},
+		// Configured model aliases — tenant-readable so a tenant operator's UI
+		// can offer aliases in a model picker (non-secret global config).
+		{"GET", "/v1/_models", auth.ScopeTenant},
 		// RFC AF: hooks are tenant-confined now that the registry is
 		// tenant-isolated (stamp on register, tenant-filtered Match, scoped
 		// List/Delete). substrate:admin still satisfies.
