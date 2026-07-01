@@ -2230,6 +2230,11 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("DELETE /v1/hooks/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteHook))))
 	// v0.7.x resolver introspection — operator-only debug surface.
 	mux.Handle("GET /v1/_resolver", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolverSnapshot))))
+	// Routing view: per user_tier × tier, the resolved provider/model cascade
+	// (top → fallbacks). Tenant-readable (config cascade only); admin also gets
+	// live availability + the active-providers header. Scope-gated in
+	// requiredScopeFor.
+	mux.Handle("GET /v1/_routing", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRouting))))
 	// Operator-triggered immediate re-probe (issue #88) — unsticks the
 	// availability matrix after a transient outage without a restart,
 	// instead of waiting up to a full probe interval for the next tick.
