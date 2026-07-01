@@ -22,7 +22,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -414,6 +416,15 @@ func (d *Driver) buildRequestBody(req providers.Request) ([]byte, error) {
 	case "low":
 		think := false
 		w.Think = &think
+	}
+	// Opt-in diagnostic (LOOMCYCLE_OLLAMA_DEBUG_THINK=1): log exactly what
+	// reaches the driver, so an operator debugging "no thinking trace" can
+	// confirm whether the effort hint arrived and whether `think` was set on
+	// the wire. Off by default (a per-request log line would otherwise be
+	// noise). Non-secret — model name + effort only.
+	if os.Getenv("LOOMCYCLE_OLLAMA_DEBUG_THINK") == "1" {
+		log.Printf("ollama think-diag: provider=%s model=%q effort=%q think_set=%v",
+			d.providerID, req.Model, req.Effort, w.Think != nil)
 	}
 
 	if req.Temperature != nil || req.MaxTokens > 0 || d.numCtx > 0 || d.numGpu > 0 ||
