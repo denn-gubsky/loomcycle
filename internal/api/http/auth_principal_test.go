@@ -255,6 +255,9 @@ func TestRequiredScopeFor(t *testing.T) {
 		// RFC AS: the audit/event log is tenant-reachable (handleListEvents
 		// scopes the result via the event's owning session's tenant).
 		{"GET", "/v1/_events", auth.ScopeTenant},
+		// Configured model aliases — tenant-readable so a tenant operator's UI
+		// can offer aliases in a model picker (non-secret global config).
+		{"GET", "/v1/_models", auth.ScopeTenant},
 		// RFC AF: hooks are tenant-confined now that the registry is
 		// tenant-isolated (stamp on register, tenant-filtered Match, scoped
 		// List/Delete). substrate:admin still satisfies.
