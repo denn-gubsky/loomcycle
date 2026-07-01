@@ -8,6 +8,67 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.9.0
+
+**✨ A routing view + a model-alias API, plus a fallback-downgrade fix.** Two
+operator-facing surfaces and one production bug fix, all on top of v1.8.2.
+
+- **`GET /v1/_routing` + a Web UI "routing" page — see the live provider/model
+  cascade per tier (#607).** Operators had no way to see which provider + model
+  a consumer's run resolves to *right now* short of triggering a run and reading
+  logs — a real gap when a deployment leans on per-user-tier `provider_priority`
+  overlays (a `public` tier confined to DeepSeek, a `sensitive` tier preferring
+  Anthropic). The endpoint returns, for each **user_tier × tier**, the ordered
+  cascade the resolver would walk (top → fallbacks), from a new
+  `resolve.Resolver.Cascade` that reuses `candidatesFor`/`priorityFor` so it
+  visits candidates in the **same order** as `Resolve`'s inner loop (can't drift)
+  and is lock-free (reads immutable config, not the availability matrix). Two
+  views by principal, mirroring the RFC AS tenant-operator posture: an **admin**
+  gets live availability per candidate (reachable / stalled / rate-limited),
+  which entry is currently **selected** (first available = what runs now), plus
+  an active-providers header; a **`substrate:tenant`** operator gets the config
+  cascade only (the handler strips the availability / infra detail). Scope-gated
+  to `ScopeTenant` (admin also satisfies). The Web UI adds a `routing` left-nav
+  item (tenant-visible); the page is **data-driven, not role-driven** — dots /
+  badges / the providers header render only when those fields are present, so a
+  stripped tenant payload naturally renders a plain cascade.
+
+- **`GET /v1/_models` — expose the configured model aliases (#606).** A
+  tenant-readable, non-secret list of the global `models:` alias map (provider +
+  model names), so a Web UI model picker can offer aliases and a fork can store
+  an alias on itself (tracking the operator's local override rather than pinning
+  a concrete model). Not tenant-scoped data (the alias map is global); every
+  authed caller sees the same set.
+
+- **🩹 Fix — drop the effort hint when downgrading a thinking model on fallback
+  (#608).** Production 2026-07-01: a `company-researcher` sub-run on
+  **ollama-local** (`qwen3.6`, `effort=high`) hit `llama-server process no longer
+  running` and fell back to **deepseek**. The loop's R2 thinking-model downgrade
+  fired correctly — `deepseek-v4-pro` → the "non-thinking" `deepseek-v4-flash`,
+  because the fallback history's assistant turns are reasoning-less — yet the
+  call **still 400'd** with *"The `reasoning_content` in the thinking mode must be
+  passed back to the API."* Cause: the downgrade swapped the **model** but not
+  the **effort** hint. `opts.Effort` (`high`, inherited from the qwen3.6 thinking
+  run) survived the switch, and the openai/deepseek driver maps `Request.Effort`
+  → `reasoning_effort`; DeepSeek's V4 line is **hybrid** — `reasoning_effort`
+  re-enables thinking mode **regardless of the -flash/-pro model name** — so the
+  "non-thinking" flash request ran in thinking mode and rejected the
+  just-stripped, reasoning-less history, silently defeating the downgrade. Fix:
+  when the `ThinkingDowngrader` swaps in the non-thinking sibling, also clear the
+  effort hint (`newEffort = ""`) so the driver omits `reasoning_effort`
+  (`omitempty`) and the sibling actually stays out of thinking mode.
+  Provider-agnostic; scoped to the downgrade branch (a fresh-history thinking
+  fallback keeps its effort + model). Regression test
+  `TestFallback_DowngradeDropsEffortHint` reproduces the incident and fails on
+  the pre-fix code.
+
+Server-side + Web UI; the `@loomcycle/client` and Python adapters are unchanged
+since v1.7.0 (the new endpoints are admin/operator surfaces on the Web UI's own
+client, not the published adapter). The TrueNAS deploy artifacts now pin
+`denngubsky/loomcycle:1.9.0`.
+
+---
+
 ## What's in v1.8.2
 
 **🩹 Patch — the loop now forwards `EventThinking` to consumers (reasoning
