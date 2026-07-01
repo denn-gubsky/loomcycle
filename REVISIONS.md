@@ -8,6 +8,31 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.8.2
+
+**🩹 Patch — the loop now forwards `EventThinking` to consumers (reasoning
+traces finally reach clients).** The loop's per-iteration event switch handled
+`EventText` / `EventToolCall` / `EventDone` / `EventError` but had **no case for
+`EventThinking` and no default** — so a driver's streamed reasoning trace was
+silently dropped at the loop and never reached `OnEvent`. No client (SSE / gRPC /
+adapters) could render "thinking…" for **any** provider: the Ollama / Anthropic /
+OpenAI-DeepSeek drivers all emit `EventThinking` on the event channel, and the
+loop ate every one. (This is the root cause behind "no thinking trace in the chat
+UI" — loomcycle *was* sending Ollama `think:true` and Ollama *was* generating the
+trace; the loop just never forwarded it.)
+
+Fix: `case providers.EventThinking: emit(ev)`. The trace is forwarded live to the
+consumer but — unchanged — is **not** accumulated into the assistant message
+content and **not** echoed into the next request; the full concatenated trace
+still rides on `EventDone.Reasoning`. Provider-agnostic (fixes Ollama, Anthropic,
+OpenAI, DeepSeek, Gemini at once). Safe downstream: `replayTranscript` skips
+`thinking` rows; `eventToProto` maps it to `{type:"thinking", text}` so **gRPC**
+clients now receive it too. Server-side only; no wire/schema change; adapters
+unchanged since v1.7.0. The TrueNAS deploy artifacts now pin
+`denngubsky/loomcycle:1.8.2`.
+
+---
+
 ## What's in v1.8.1
 
 **🩹 Patch — CLI config-layering fix + an opt-in Ollama thinking diagnostic.**
