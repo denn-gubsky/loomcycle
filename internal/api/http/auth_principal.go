@@ -507,6 +507,14 @@ func requiredScopeFor(method, path string) string {
 	// ScopeAdmin also satisfies. Read-only GET.
 	case path == "/v1/_events":
 		return auth.ScopeTenant
+	// Configured model aliases (GET /v1/_models) — non-secret global config
+	// (provider + model names). Tenant-readable so a tenant operator's UI can
+	// offer aliases in a model picker + store the alias on a fork (so it tracks
+	// the operator's local override). Not tenant-scoped data (the alias map is
+	// global), so every authed caller sees the same set; ScopeAdmin also
+	// satisfies. Read-only GET.
+	case path == "/v1/_models":
+		return auth.ScopeTenant
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, cross-tenant user focus.
