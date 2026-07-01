@@ -8,6 +8,32 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.8.1
+
+**🩹 Patch — CLI config-layering fix + an opt-in Ollama thinking diagnostic.**
+
+- **`validate` / `agents list` / `doctor` now honor config layering.** These
+  tools loaded a single file via `config.Load(path)` and ignored
+  `LOOMCYCLE_PRESETS` / `LOOMCYCLE_CONFIG_DIR` / `LOOMCYCLE_CONFIG_FILES` — so an
+  agent whose `model:` is a **preset-defined alias** (e.g. `deepseek-pro` from
+  the `base` preset) reported a false `no provider resolved`, even though the
+  running server (which builds the full layered stack) resolves it fine. A
+  shared `loadLayeredConfig` now assembles the same stack the server does
+  (presets base → `CONFIG_DIR` → `CONFIG_FILES` → explicit `--config`, last
+  wins). With none of those set, behaviour is byte-identical to before. (The
+  `migrate` / `hash` subcommands still use the single-file load — a noted
+  follow-up; they don't manifest the alias-resolution symptom.)
+
+- **`LOOMCYCLE_OLLAMA_DEBUG_THINK=1`** logs each Ollama request's
+  `provider/model/effort/think_set` — the wire-level probe for debugging a
+  missing thinking trace on a local reasoning model (does the effort hint reach
+  the driver, and is `think:true` on the wire?). Off by default.
+
+Server-side only; no wire/schema change; adapters unchanged since v1.7.0. The
+TrueNAS deploy artifacts now pin `denngubsky/loomcycle:1.8.1`.
+
+---
+
 ## What's in v1.8.0
 
 **🧠 Ollama thinking traces — the `effort` hint now drives Ollama's `think`
