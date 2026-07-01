@@ -662,9 +662,23 @@ func tryProviderFallback(
 		if sibling, downgraded := dg.NonThinkingSibling(newModel); downgraded {
 			emit(providers.Event{
 				Type: providers.EventModelDowngraded,
-				Text: fmt.Sprintf("downgraded %s to non-thinking %s on switch to %s: the fallback history carries assistant turns without reasoning_content, which the thinking model would reject", newModel, sibling, newProvider.ID()),
+				Text: fmt.Sprintf("downgraded %s to non-thinking %s on switch to %s (dropped the effort hint): the fallback history carries assistant turns without reasoning_content, which the thinking model would reject", newModel, sibling, newProvider.ID()),
 			})
 			newModel = sibling
+			_ = 0 // FIX DISABLED FOR TEST
+			// Also drop the effort hint. A "non-thinking sibling" is only actually
+			// non-thinking if the request doesn't ALSO carry a reasoning_effort
+			// that turns thinking back ON. DeepSeek's V4 line is hybrid: the driver
+			// maps Request.Effort → reasoning_effort (openai driver), and
+			// reasoning_effort re-enables thinking mode REGARDLESS of the
+			// -flash/-pro model name. Without this, the downgraded flash request
+			// still runs in thinking mode and 400s on the (reasoning-less,
+			// just-stripped) history with "reasoning_content ... must be passed
+			// back" — silently defeating the downgrade. Production 2026-07-01: an
+			// ollama-local qwen3.6 crash fell back to deepseek-v4-pro, the loop
+			// downgraded it to deepseek-v4-flash, and the call STILL 400'd because
+			// effort=high (inherited from the qwen3.6 thinking run) kept thinking on.
+			newEffort = ""
 		}
 	}
 

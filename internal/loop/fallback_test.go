@@ -1043,6 +1043,70 @@ func TestFallback_DowngradesThinkingModelOnForeignHistory(t *testing.T) {
 	}
 }
 
+// TestFallback_DowngradeDropsEffortHint is the regression for the 2026-07-01
+// production bug: an ollama-local qwen3.6 crash fell back to deepseek-v4-pro; the
+// loop downgraded it to the "non-thinking" deepseek-v4-flash, yet the call still
+// 400'd with "reasoning_content ... must be passed back". Cause: the effort hint
+// (high, inherited from the qwen3.6 thinking run) survived the downgrade and the
+// driver maps Request.Effort → reasoning_effort, which re-enables thinking mode on
+// the flash model — so the just-stripped, reasoning-less history was rejected. The
+// downgrade must ALSO clear the effort hint, else the non-thinking sibling is
+// silently put back into thinking mode.
+func TestFallback_DowngradeDropsEffortHint(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "ollama-local",
+		errors: []error{fmt.Errorf("ollama-local 500: llama-server process no longer running")},
+	}
+	healthy := &downgradingRecorder{
+		recordingProvider: &recordingProvider{
+			tieredProvider: &tieredProvider{
+				id:        "deepseek",
+				responses: [][]providers.Event{successResponse()},
+			},
+		},
+	}
+	// Prior reasoning-less assistant turn (foreign provider produced it) → the
+	// downgrade branch fires.
+	prior := []providers.Message{
+		{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "first"}}},
+		{Role: "assistant", Content: []providers.ContentBlock{{Type: "text", Text: "ok"}}},
+	}
+
+	opts := RunOptions{
+		Provider:       failing,
+		Model:          "qwen3.6:latest",
+		Effort:         "high",
+		MaxIterations:  5,
+		Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "second"}}}},
+		PriorMessages:  prior,
+		OnEvent:        func(providers.Event) {},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "free"},
+		// Re-resolve to the deepseek thinking model, carrying the agent's effort
+		// forward (as the real resolver does) — this is the value that must be
+		// dropped when the downgrade fires.
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4-pro", "high", nil
+		},
+	}
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := healthy.snapshotRequests()
+	if len(reqs) != 1 {
+		t.Fatalf("downgrade target got %d Calls, want 1", len(reqs))
+	}
+	if reqs[0].Model != "deepseek-v4-flash" {
+		t.Errorf("fallback leg ran on model %q, want deepseek-v4-flash", reqs[0].Model)
+	}
+	// The core assertion: no effort hint reaches the downgraded (non-thinking)
+	// request, so the driver omits reasoning_effort and flash stays out of
+	// thinking mode. Fails on the pre-fix code, where Effort == "high" survives.
+	if reqs[0].Effort != "" {
+		t.Errorf("downgraded request carried Effort %q, want \"\" (effort must be dropped so reasoning_effort doesn't re-enable thinking)", reqs[0].Effort)
+	}
+}
+
 // TestFallback_NoDowngradeWithoutAssistantTurn — a fresh history (no assistant
 // turn yet) is fine for a thinking model: there's no prior turn to demand
 // reasoning_content for, so the loop must NOT downgrade.
