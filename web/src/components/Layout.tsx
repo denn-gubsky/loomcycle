@@ -18,6 +18,7 @@ import {
   Play,
   Plug,
   Radio,
+  Route,
   ScrollText,
   Settings,
   Sun,
@@ -70,6 +71,11 @@ const NAV_ITEMS: NavItem[] = [
   // audit is tenant-visible (RFC AS): handleListEvents tenant-scopes the result
   // via the event's owning session, so a tenant sees only its own events.
   { to: "/audit", label: "audit", Icon: ScrollText, vis: "tenant" },
+  // routing: the provider/model cascade a consumer resolves to right now.
+  // Tenant-visible (RFC AS): GET /v1/_routing is ScopeTenant-gated and the
+  // handler strips live availability + the infra provider-header for a
+  // non-admin principal (config cascade only).
+  { to: "/routing", label: "routing", Icon: Route, vis: "tenant" },
   { to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
 ];
 

@@ -447,6 +447,38 @@ func (r *Resolver) resolvePin(req AgentRequest) (Decision, error) {
 	}, nil
 }
 
+// Cascade returns the ordered (provider, model) candidates the resolver would
+// walk for req's TIER — priority order × tier candidates, the SAME sequence
+// Resolve's inner loop visits — WITHOUT availability filtering. It's the config
+// cascade (top → fallbacks); callers annotate each entry with Snapshot() to show
+// live availability. Used by the admin routing view so an operator can see what
+// providers/models a consumer would hit for each user_tier × tier.
+//
+// Empty when the tier has no candidates, the user_tier grants no provider, or
+// the agent's providers ∩ user_tier priority is empty (the resolver would refuse
+// the run). Reuses candidatesFor/priorityFor so it can't drift from Resolve's
+// order. Lock-free: candidatesFor/priorityFor read immutable config, not the
+// mutable availability matrix.
+func (r *Resolver) Cascade(req AgentRequest) []Candidate {
+	if req.Tier == "" {
+		return nil
+	}
+	candidates := r.candidatesFor(req)
+	priority, refused := r.priorityFor(req)
+	if refused || len(candidates) == 0 || len(priority) == 0 {
+		return nil
+	}
+	out := make([]Candidate, 0, len(candidates))
+	for _, p := range priority {
+		for _, c := range candidates {
+			if c.Provider == p {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
 // candidatesFor returns the candidate list the resolver should walk
 // for this request, applying the v0.8.2 overlay precedence:
 //

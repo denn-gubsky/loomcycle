@@ -507,6 +507,12 @@ func requiredScopeFor(method, path string) string {
 	// ScopeAdmin also satisfies. Read-only GET.
 	case path == "/v1/_events":
 		return auth.ScopeTenant
+	// Routing view (GET /v1/_routing). Tenant-readable so a tenant operator's UI
+	// can see the resolved model cascade per tier; the HANDLER strips the live
+	// provider reachability / infra detail for a non-admin caller (admin gets the
+	// full availability view). ScopeAdmin also satisfies. Read-only GET.
+	case path == "/v1/_routing":
+		return auth.ScopeTenant
 	// Configured model aliases (GET /v1/_models) — non-secret global config
 	// (provider + model names). Tenant-readable so a tenant operator's UI can
 	// offer aliases in a model picker + store the alias on a fork (so it tracks

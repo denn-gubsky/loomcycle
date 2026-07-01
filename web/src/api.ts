@@ -2234,3 +2234,49 @@ export const TOKEN_SCOPES = [
   "channel:publish",
   "channel:read",
 ] as const;
+
+// ---- Routing view (GET /v1/_routing) ----
+// For each user_tier × tier, the ordered provider/model cascade a consumer
+// resolves to right now. The admin view additionally carries live availability
+// per candidate + an active-providers header; a substrate:tenant view is the
+// config cascade only (availability/infra fields are absent — the API omits
+// them, so the UI keys rendering off their presence, not `admin`).
+export interface RoutingCandidate {
+  provider: string;
+  model: string;
+  primary: boolean; // configured top of the cascade
+  // Admin-only live-availability fields (undefined in a tenant view).
+  available?: boolean;
+  selected?: boolean; // first AVAILABLE — what runs now
+  stalled?: boolean;
+  rate_limited?: boolean;
+  reachable?: boolean;
+}
+
+export interface RoutingTier {
+  tier: string; // low / middle / high
+  cascade: RoutingCandidate[];
+}
+
+export interface RoutingUserTier {
+  name: string; // "" in library-mode (no user_tiers configured)
+  tiers: RoutingTier[];
+}
+
+export interface RoutingProvider {
+  provider: string;
+  reachable: boolean;
+  excluded: boolean;
+  last_error?: string;
+}
+
+export interface RoutingResponse {
+  generated_at: string;
+  admin: boolean;
+  providers?: RoutingProvider[]; // admin-only
+  user_tiers: RoutingUserTier[];
+}
+
+export function getRouting(): Promise<RoutingResponse> {
+  return jsonFetch<RoutingResponse>("/v1/_routing");
+}

@@ -255,6 +255,9 @@ func TestRequiredScopeFor(t *testing.T) {
 		// RFC AS: the audit/event log is tenant-reachable (handleListEvents
 		// scopes the result via the event's owning session's tenant).
 		{"GET", "/v1/_events", auth.ScopeTenant},
+		// The routing view is tenant-reachable; the handler strips infra detail
+		// for a non-admin caller.
+		{"GET", "/v1/_routing", auth.ScopeTenant},
 		// Configured model aliases — tenant-readable so a tenant operator's UI
 		// can offer aliases in a model picker (non-secret global config).
 		{"GET", "/v1/_models", auth.ScopeTenant},
