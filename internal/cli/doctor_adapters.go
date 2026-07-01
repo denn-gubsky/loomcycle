@@ -46,7 +46,7 @@ func (r *realConfig) ListenAddrValue() string { return r.cfg.Env.ListenAddr }
 // loadConfigRealAdapter is the production seam for loadConfigForDoctor.
 // Tests override the package-level var to plug in a stub.
 func loadConfigRealAdapter(path string) (configForDoctor, error) {
-	cfg, err := config.Load(path)
+	cfg, err := loadLayeredConfig(path)
 	if err != nil {
 		return nil, err
 	}
