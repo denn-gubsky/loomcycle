@@ -5760,3 +5760,192 @@ button.primary:disabled {
   font-size: var(--lc-text-sm);
   margin-bottom: var(--lc-space-2);
 }
+
+/* ---- Routing view (GET /v1/_routing) --------------------------------- */
+.routing-view {
+  padding: var(--lc-space-3);
+}
+.routing-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--lc-space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--lc-space-2);
+}
+.routing-header h1 {
+  margin: 0;
+  font-size: var(--lc-text-xl);
+}
+.routing-sub {
+  margin: var(--lc-space-1) 0 0;
+  color: var(--lc-text-muted);
+  font-size: var(--lc-text-sm);
+  max-width: 60ch;
+}
+.routing-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--lc-space-2);
+}
+.routing-generated {
+  color: var(--lc-text-faint);
+  font-size: var(--lc-text-xs);
+}
+.routing-tenant-note {
+  color: var(--lc-text-faint);
+  font-size: var(--lc-text-sm);
+  margin: 0 0 var(--lc-space-2);
+}
+
+/* Active-providers header (admin only). */
+.routing-providers {
+  display: flex;
+  align-items: center;
+  gap: var(--lc-space-1);
+  flex-wrap: wrap;
+  margin-bottom: var(--lc-space-2);
+}
+.routing-providers-label {
+  color: var(--lc-text-muted);
+  font-size: var(--lc-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: var(--lc-space-1);
+}
+.routing-provider-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--lc-text-sm);
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--lc-rule);
+  background: var(--lc-surface);
+}
+.routing-provider-chip.down {
+  color: var(--lc-text-faint);
+}
+
+/* Availability dot — reused in the header chips, the legend, and rows. */
+.routing-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--lc-text-faint);
+  flex: none;
+}
+.routing-dot.up {
+  background: var(--lc-completed);
+}
+.routing-dot.down {
+  background: var(--lc-failed);
+}
+
+.routing-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--lc-space-2);
+  flex-wrap: wrap;
+  color: var(--lc-text-muted);
+  font-size: var(--lc-text-xs);
+  margin-bottom: var(--lc-space-3);
+}
+.routing-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.routing-selected-key {
+  color: var(--lc-accent);
+  font-weight: 600;
+}
+
+.routing-usertier {
+  margin-bottom: var(--lc-space-4);
+}
+.routing-usertier h2 {
+  font-size: var(--lc-text-md);
+  margin: 0 0 var(--lc-space-2);
+  color: var(--lc-text);
+}
+.routing-usertier h2 code {
+  font-family: var(--lc-font-mono);
+  font-size: 0.9em;
+  background: var(--lc-surface-2);
+  padding: 1px 6px;
+  border-radius: var(--lc-radius-sm);
+}
+
+.routing-tier-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--lc-space-2);
+}
+.routing-tier-card {
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius);
+  background: var(--lc-surface);
+  padding: var(--lc-space-2);
+}
+.routing-tier-title {
+  font-size: var(--lc-text-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--lc-text-muted);
+  margin-bottom: var(--lc-space-1);
+}
+.routing-tier-empty {
+  color: var(--lc-text-faint);
+  font-size: var(--lc-text-sm);
+  font-style: italic;
+}
+.routing-cascade {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.routing-cand {
+  display: flex;
+  align-items: center;
+  gap: var(--lc-space-1);
+  padding: 5px 6px;
+  border-radius: var(--lc-radius-sm);
+  font-size: var(--lc-text-sm);
+}
+.routing-cand.selected {
+  background: var(--lc-accent-soft);
+}
+.routing-cand.unavail .routing-model,
+.routing-cand.unavail .routing-provider {
+  color: var(--lc-text-faint);
+}
+.routing-rank {
+  font-size: var(--lc-text-xs);
+  color: var(--lc-text-muted);
+  min-width: 4.5em;
+}
+.routing-provider {
+  font-weight: 600;
+}
+.routing-model {
+  font-family: var(--lc-font-mono);
+  font-size: 0.9em;
+  color: var(--lc-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.routing-selected-badge {
+  margin-left: auto;
+  font-size: var(--lc-text-xs);
+  font-weight: 600;
+  color: var(--lc-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
