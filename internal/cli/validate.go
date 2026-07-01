@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-
-	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // RunValidate loads a YAML config and reports on its health. Returns:
@@ -42,7 +40,7 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	}
 	cfgPath := fs.Arg(0)
 
-	cfg, err := config.Load(cfgPath)
+	cfg, err := loadLayeredConfig(cfgPath)
 	if err != nil {
 		return fail(stderr, "config: %v", err)
 	}

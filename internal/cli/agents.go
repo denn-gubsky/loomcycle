@@ -39,7 +39,7 @@ func runAgentsList(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := loadLayeredConfig(*cfgPath)
 	if err != nil {
 		return fail(stderr, "config: %v", err)
 	}
