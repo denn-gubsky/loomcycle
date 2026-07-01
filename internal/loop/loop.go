@@ -1502,6 +1502,18 @@ outerLoop:
 			case providers.EventText:
 				iterText += ev.Text
 				emit(ev)
+			case providers.EventThinking:
+				// Forward the live reasoning trace to the consumer (SSE / gRPC /
+				// adapters) so a UI can render "thinking…" as the model streams
+				// it. Deliberately NOT accumulated into the assistant message
+				// content and NOT echoed into the next request — the full trace
+				// is carried separately on EventDone.Reasoning (see
+				// providers.EventThinking). Before this case existed the switch
+				// had no branch for EventThinking (and no default), so every
+				// provider's streamed thinking was silently dropped here and
+				// never reached any client — the driver emitted it, the loop ate
+				// it. Regression: TestRun_ForwardsEventThinking.
+				emit(ev)
 			case providers.EventToolCall:
 				// Some providers (Ollama) don't issue tool_call IDs. Anthropic
 				// and OpenAI both 400 if we replay an empty-ID tool_use in the
