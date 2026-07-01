@@ -27,7 +27,7 @@ services:
   # exits; the runtime waits for it to complete. Decoupled from the image deploy
   # (LOOMCYCLE_PG_AUTOMIGRATE=0 on the runtime) so a schema bump is explicit.
   loomcycle-migrate:
-    image: denngubsky/loomcycle:1.8.0 # bump to a newer tag as you upgrade (≥1.6.0 required — embedded presets, RFC AQ)
+    image: denngubsky/loomcycle:1.8.1 # bump to a newer tag as you upgrade (≥1.6.0 required — embedded presets, RFC AQ)
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -37,7 +37,7 @@ services:
       LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:-}
 
   loomcycle:
-    image: denngubsky/loomcycle:1.8.0 # bump to a newer tag as you upgrade (≥1.6.0 required — embedded presets, RFC AQ)
+    image: denngubsky/loomcycle:1.8.1 # bump to a newer tag as you upgrade (≥1.6.0 required — embedded presets, RFC AQ)
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
