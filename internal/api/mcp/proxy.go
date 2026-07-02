@@ -24,9 +24,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
@@ -43,8 +45,28 @@ type ProxyConfig struct {
 	Logf func(format string, v ...any)
 	// Client overrides the HTTP client. nil → a default with no overall
 	// timeout (a streaming spawn_run holds the response open for the
-	// whole run; an overall timeout would truncate it).
+	// whole run; an overall timeout would truncate it) but WITH a
+	// ResponseHeaderTimeout and a sub-server-idle IdleConnTimeout (see below).
 	Client *http.Client
+	// ReconnectDelays is the backoff schedule for re-establishing a dropped
+	// upstream connection after a transport error (an idle-reaped keep-alive
+	// socket, or a brief server restart). Each entry is slept before the next
+	// reconnect attempt; the first (index 0) is normally 0 for an immediate
+	// retry. nil → a sensible default; a non-nil empty slice disables retry
+	// (one attempt only — used by tests asserting fast failure).
+	ReconnectDelays []time.Duration
+	// ResponseHeaderTimeout bounds the wait for the upstream's response
+	// HEADERS (not the streaming body — safe for a long spawn_run, whose
+	// headers arrive immediately). Applied only when Client is nil. 0 → a
+	// 60s default; use a large value to effectively disable.
+	ResponseHeaderTimeout time.Duration
+	// IdleConnTimeout closes pooled idle connections after this long. Applied
+	// only when Client is nil. 0 → a 90s default, deliberately below the
+	// runtime HTTP server's 120s IdleTimeout so the client reopens BEFORE the
+	// server closes an idle keep-alive socket (which otherwise surfaces as a
+	// transport error on the next call — the "drops a few minutes after last
+	// use" symptom).
+	IdleConnTimeout time.Duration
 }
 
 // ProxyClient is the thin-client MCP transport. Construct via
@@ -52,7 +74,18 @@ type ProxyConfig struct {
 type ProxyClient struct {
 	cfg    ProxyConfig
 	mcpURL string
-	client *http.Client
+	// client carries the ResponseHeaderTimeout — used for fast frames whose
+	// headers arrive promptly. streamClient has NO header timeout — used for
+	// agent-run / LLM tools (see longRunTools) whose response headers can
+	// legitimately arrive minutes late; a header-timeout retry there would
+	// DOUBLE-EXECUTE the run. When ProxyConfig.Client is set both point at it.
+	client       *http.Client
+	streamClient *http.Client
+
+	// reconnectDelays is the resolved transport-error backoff schedule (from
+	// cfg.ReconnectDelays or the default). Its length bounds the number of
+	// reconnect retries before a transport failure is surfaced to the client.
+	reconnectDelays []time.Duration
 
 	// writeMu serialises stdout writes so concurrent forwards (and the
 	// SSE frames of a streaming spawn_run) can't interleave bytes.
@@ -84,22 +117,83 @@ const mcpSessionExpiredCode = -32001
 // replayed after a re-handshake to mark the fresh session initialized.
 var initializedNotification = []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 
+// defaultReconnectDelays is the transport-error backoff schedule when the
+// caller supplies none: an immediate retry (handles an idle-reaped socket
+// while the server is up), then growing waits that ride out a brief server
+// restart. Capped so a truly-dead upstream still surfaces an error in ~7.5s.
+var defaultReconnectDelays = []time.Duration{0, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
+
+const (
+	defaultResponseHeaderTimeout = 60 * time.Second
+	// Below the runtime HTTP server's 120s IdleTimeout — reopen before it closes.
+	defaultIdleConnTimeout = 90 * time.Second
+)
+
+// longRunTools are MCP tools whose upstream response can legitimately take
+// minutes — an agent run or an LLM call — so the thin client MUST NOT impose a
+// ResponseHeaderTimeout on them: a spawn_run without runEvents is single-shot
+// JSON whose headers arrive only after the WHOLE run completes, and even a
+// runEvents stream's first frame waits on the model. A header-timeout error
+// triggers a reconnect retry (forward), and re-POSTing an in-flight spawn_run /
+// compaction / evaluation would DOUBLE-EXECUTE it. Extend this set when adding
+// an MCP tool that runs an agent or calls a model.
+var longRunTools = map[string]bool{
+	"spawn_run":   true,
+	"spawn_runs":  true,
+	"compact_run": true,
+	"evaluation":  true,
+}
+
+// newProxyTransport builds the thin client's HTTP transport. headerTimeout=0
+// disables the ResponseHeaderTimeout (for the long-run client). idleTimeout
+// closes pooled idle connections before the server severs them.
+func newProxyTransport(idleTimeout, headerTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       idleTimeout,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: headerTimeout, // 0 → none (long-run tools)
+	}
+}
+
 // NewProxyClient builds a thin-client proxy targeting Upstream.
 func NewProxyClient(cfg ProxyConfig) *ProxyClient {
 	if cfg.Logf == nil {
 		cfg.Logf = defaultLogf
 	}
-	client := cfg.Client
-	if client == nil {
-		// No overall timeout: streaming spawn_run holds the response
-		// open for the run's duration. Per-request cancellation rides
-		// the request context instead.
-		client = &http.Client{}
+	client, streamClient := cfg.Client, cfg.Client
+	if cfg.Client == nil {
+		hdrTimeout := cfg.ResponseHeaderTimeout
+		if hdrTimeout == 0 {
+			hdrTimeout = defaultResponseHeaderTimeout
+		}
+		idleTimeout := cfg.IdleConnTimeout
+		if idleTimeout == 0 {
+			idleTimeout = defaultIdleConnTimeout
+		}
+		// Neither client has an overall timeout: a streaming spawn_run holds
+		// the response BODY open for the whole run. ResponseHeaderTimeout (on
+		// `client` only) bounds the wait for response HEADERS on FAST frames, so
+		// a stalled upstream can't hang such a frame forever — Claude Code's own
+		// tool-idle timeout does NOT apply to stdio servers, so nothing else
+		// bounds it. Per-request cancellation rides the request context.
+		client = &http.Client{Transport: newProxyTransport(idleTimeout, hdrTimeout)}
+		streamClient = &http.Client{Transport: newProxyTransport(idleTimeout, 0)}
+	}
+	delays := cfg.ReconnectDelays
+	if delays == nil {
+		delays = defaultReconnectDelays
 	}
 	return &ProxyClient{
-		cfg:    cfg,
-		mcpURL: strings.TrimRight(cfg.Upstream, "/") + "/v1/_mcp",
-		client: client,
+		cfg:             cfg,
+		mcpURL:          strings.TrimRight(cfg.Upstream, "/") + "/v1/_mcp",
+		client:          client,
+		streamClient:    streamClient,
+		reconnectDelays: delays,
 	}
 }
 
@@ -135,14 +229,14 @@ func (p *ProxyClient) Serve(ctx context.Context, stdin io.Reader, stdout io.Writ
 			// forwarding anything that will need it (the upstream requires
 			// Mcp-Session-Id on every non-initialize request).
 			p.setInitFrame(line)
-			p.forward(reqCtx, line, stdout, true)
+			p.forward(reqCtx, line, stdout)
 			continue
 		}
 
 		p.wg.Add(1)
 		go func(fr []byte) {
 			defer p.wg.Done()
-			p.forward(reqCtx, fr, stdout, true)
+			p.forward(reqCtx, fr, stdout)
 		}(line)
 	}
 
@@ -154,17 +248,51 @@ func (p *ProxyClient) Serve(ctx context.Context, stdin io.Reader, stdout io.Writ
 	return ctx.Err()
 }
 
-// forward POSTs one JSON-RPC frame to the upstream /v1/_mcp and relays
-// the response (single JSON frame, or each SSE data frame) to stdout.
-// allowReinit gates the transparent re-handshake on a session-expiry: it is
-// true for client-originated frames and false for the single retry after a
-// re-handshake (so a still-failing upstream can't loop).
-func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Writer, allowReinit bool) {
+// forward POSTs one JSON-RPC frame to the upstream /v1/_mcp and relays the
+// response, transparently recovering from a dropped upstream connection. It
+// owns the transport-error reconnect loop: a connection refused/reset/EOF —
+// an idle-reaped keep-alive socket (the "drops a few minutes after last use"
+// symptom) or a brief server restart — is retried on a fresh connection with
+// bounded backoff, rather than dead-ending as an error the MCP client can't
+// recover from (Claude Code never auto-reconnects a stdio server, so the proxy
+// must not surface a recoverable fault). A server-side session expiry
+// (404/-32001) is handled one level down in forwardOnce via the re-handshake;
+// a restart that BOTH drops the connection and invalidates the session
+// composes: reconnect here, then re-handshake there.
+func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Writer) {
+	isInit := frameMethod(frame) == "initialize"
+	for attempt := 0; ; attempt++ {
+		transportErr := p.forwardOnce(ctx, frame, stdout, !isInit)
+		if transportErr == nil {
+			return // response relayed — success, or a definitive error already sent
+		}
+		// A transport-level failure. initialize is never retried here (it IS the
+		// handshake, driven inline by Serve). Otherwise retry on a fresh
+		// connection until the backoff schedule is exhausted.
+		if isInit || attempt >= len(p.reconnectDelays) {
+			p.replyError(stdout, frame, "upstream unreachable: "+transportErr.Error())
+			return
+		}
+		p.cfg.Logf("mcp proxy: upstream connection error (%v) — reconnect attempt %d/%d", transportErr, attempt+1, len(p.reconnectDelays))
+		if !p.backoff(ctx, p.reconnectDelays[attempt]) {
+			return // ctx cancelled during backoff — shutting down
+		}
+	}
+}
+
+// forwardOnce performs a SINGLE POST + relay attempt. It returns a non-nil
+// error ONLY for a transport-level failure (the request never got a response)
+// that the caller should retry; a nil return means the response — a success,
+// an SSE stream, or a surfaced HTTP/JSON-RPC error — was already written to
+// stdout and the frame is done. allowReinit gates the one-shot transparent
+// re-handshake on a session-expiry (404/-32001); it is false on the single
+// retry after a re-handshake so a still-broken session can't loop.
+func (p *ProxyClient) forwardOnce(ctx context.Context, frame []byte, stdout io.Writer, allowReinit bool) error {
 	sentSID := p.sessionID()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.mcpURL, bytes.NewReader(frame))
 	if err != nil {
 		p.replyError(stdout, frame, "build request: "+err.Error())
-		return
+		return nil // a malformed request won't be fixed by a retry
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// Advertise both per the Streamable HTTP spec — strict servers 406
@@ -177,11 +305,19 @@ func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Write
 		req.Header.Set("Mcp-Session-Id", sentSID)
 	}
 
-	resp, err := p.client.Do(req)
+	// Route agent-run / LLM tools through the no-header-timeout client so a slow
+	// run isn't mistaken for a stall and retried (which would double-execute it).
+	client := p.client
+	if frameIsLongRun(frame) {
+		client = p.streamClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		// Don't leave the MCP client hanging on a dead upstream.
-		p.replyError(stdout, frame, "upstream unreachable: "+err.Error())
-		return
+		// Transport-level failure (connection refused/reset, EOF on a reaped
+		// keep-alive socket, or the header timeout firing): the request got no
+		// response. Signal the caller to reconnect+retry rather than surfacing
+		// a dead-end error the MCP client can't recover from.
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -205,23 +341,25 @@ func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Write
 			if rerr := p.reinitialize(ctx, sentSID); rerr != nil {
 				p.cfg.Logf("mcp proxy: re-initialize after session expiry failed: %v", rerr)
 			} else {
-				p.forward(ctx, frame, stdout, false)
-				return
+				// Retry on the fresh session. A transport error on the retry
+				// bubbles up so the outer forward loop can reconnect+backoff.
+				return p.forwardOnce(ctx, frame, stdout, false)
 			}
 		}
 		p.replyError(stdout, frame, fmt.Sprintf("upstream HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
-		return
+		return nil
 	}
 
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		// If the stream ends without ever delivering a frame carrying the
 		// request id (the final tools/call response), the upstream dropped
 		// mid-run — surface an error so the client isn't left waiting on a
-		// spawn_run that will never answer.
+		// spawn_run that will never answer. NOT retried: a spawn_run may have
+		// already partially executed server-side.
 		if !p.relaySSE(resp.Body, stdout) {
 			p.replyError(stdout, frame, "upstream SSE stream ended before the final response")
 		}
-		return
+		return nil
 	}
 
 	// Single application/json response. An empty body (a notification has
@@ -229,12 +367,29 @@ func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Write
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		p.replyError(stdout, frame, "read upstream response: "+err.Error())
-		return
+		return nil
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return
+		return nil
 	}
 	p.writeLine(stdout, bytes.TrimRight(body, "\n"))
+	return nil
+}
+
+// backoff sleeps for d, returning false if ctx is cancelled first (the proxy
+// is shutting down) so the caller stops retrying. d<=0 sleeps not at all.
+func (p *ProxyClient) backoff(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // relaySSE reads the upstream text/event-stream and writes each JSON-RPC
@@ -413,4 +568,20 @@ func frameMethod(frame []byte) string {
 	}
 	_ = json.Unmarshal(frame, &probe)
 	return probe.Method
+}
+
+// frameIsLongRun reports whether a frame is a tools/call for a long-running
+// tool (an agent run or an LLM call — see longRunTools), which must bypass the
+// ResponseHeaderTimeout to avoid a retry double-executing it.
+func frameIsLongRun(frame []byte) bool {
+	var probe struct {
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(frame, &probe) != nil {
+		return false
+	}
+	return probe.Method == "tools/call" && longRunTools[probe.Params.Name]
 }
