@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -325,13 +326,7 @@ func hostAllowedExtras(host string, extras []string) bool {
 // link-local (169.254/16, fe80::/10) — including the AWS/GCP metadata service
 // at 169.254.169.254 — multicast, and unspecified (0.0.0.0, ::).
 // IPv6 ULAs (fc00::/7) too.
-func isPrivateIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() || ip.IsPrivate() {
-		return true
-	}
-	return false
-}
+// isPrivateIP delegates to the shared netguard classifier (single source of
+// truth used by the dial guard too). Kept as a package-local alias so its
+// callers (dialContext, a2aagentdef.requireSafeGRPCEndpoint) are unchanged.
+func isPrivateIP(ip net.IP) bool { return netguard.IsPrivateIP(ip) }
