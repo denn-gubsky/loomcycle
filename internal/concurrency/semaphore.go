@@ -171,17 +171,20 @@ func (s *Semaphore) Acquire(ctx context.Context) (release func(), err error) {
 // returns *BackpressureError (HTTP 429). On ctx cancel, returns
 // ctx.Err().
 func (s *Semaphore) AcquireForUser(ctx context.Context, userID string) (release func(), err error) {
-	perUserActive := s.maxPerUser > 0 && userID != ""
-
 	// v0.12.1: snapshot the quotaStore reference (and cap) outside the
 	// global-state mutex so the cluster-mode DB round-trip doesn't hold
 	// s.mu. Capturing here means a concurrent WithUserQuotaStore call
 	// can't swap modes mid-Acquire — the release/cancel paths use the
-	// same captured qs.
+	// same captured qs. perUserActive is derived from this LOCKED snapshot,
+	// not a second unlocked read of s.maxPerUser — WithPerUserCap writes it
+	// under s.mu, so an unlocked read here is a data race (flagged by -race;
+	// the cap setter is boot-time today but the API doc promises runtime-safe).
 	s.mu.Lock()
 	qs := s.quotaStore
 	cap := s.maxPerUser
 	s.mu.Unlock()
+
+	perUserActive := cap > 0 && userID != ""
 
 	// Cluster mode: acquire the per-user quota slot FIRST via the DB.
 	// On any later rejection (global-queue full, timeout, cancel), we
@@ -204,9 +207,12 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, userID string) (release 
 		if s.perUser == nil {
 			s.perUser = map[string]int{}
 		}
-		if s.perUser[userID] >= s.maxPerUser {
+		// Use the locked snapshot `cap` (not s.maxPerUser) — consistent with the
+		// perUserActive gate above, and the error is built AFTER Unlock so a bare
+		// s.maxPerUser read there would be a data race with WithPerUserCap.
+		if s.perUser[userID] >= cap {
 			s.mu.Unlock()
-			return nil, &ErrPerUserQuotaExhausted{UserID: userID, Cap: s.maxPerUser}
+			return nil, &ErrPerUserQuotaExhausted{UserID: userID, Cap: cap}
 		}
 	}
 

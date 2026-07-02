@@ -1627,6 +1627,13 @@ outerLoop:
 					continue outerLoop
 				}
 				emit(ev)
+				// Drain any trailing events (a driver may emit an EventDone
+				// after EventError) so the sending goroutine doesn't block on
+				// the channel until ctx-cancel / the idle timeout — mirrors the
+				// same-provider-retry + fallback drains above. Without it, the
+				// terminal error path was the one branch that abandoned ch.
+				for range ch {
+				}
 				lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
 				iterSpan.End()
 				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
