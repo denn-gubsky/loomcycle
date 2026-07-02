@@ -5073,6 +5073,26 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body)
 	}
 
+	// Tenant ownership gate (RFC L/N): a cancel keyed only by agent_id must not
+	// reach another tenant's run — ids are not secret and in cluster mode the
+	// cancel BROADCASTS to every replica. tenantStore folds a cross-tenant or
+	// missing run into an opaque 404 (mirrors the steer + compact
+	// run-mutations, which were migrated onto the accessor; cancel was the gap).
+	// admin / legacy / open see all tenants → unchanged.
+	if s.store != nil {
+		if _, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID); err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no run found for agent_id %q"}`, agentID)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	res, ok := s.cancelReg.Cancel(agentID, body.Reason)
 	if ok {
 		// v0.12.2: Cancel may now return ok=true with res.Cancelled=false
@@ -5234,6 +5254,20 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 		// row's run_id. Prevents one user's resolve from being
 		// retargeted at another run's interrupt by URL manipulation.
 		http.Error(w, "interrupt does not belong to that run", http.StatusNotFound)
+		return
+	}
+	// Tenant ownership gate (RFC L/N): the run this interrupt belongs to must be
+	// in the caller's tenant — otherwise a resolve injects the caller's answer
+	// into ANOTHER tenant's paused run, steering it (e.g. approving a gated
+	// action). run/interrupt ids are not secret; the row.RunID==runID check
+	// above only blocks URL retargeting WITHIN a tenant, it is NOT a tenant
+	// check. tenantStore folds a cross-tenant/missing run into an opaque 404.
+	if _, err := s.tenantStore(r.Context()).GetRun(r.Context(), row.RunID); err != nil {
+		if errors.As(err, &nf) {
+			http.Error(w, "interrupt not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if row.Status != store.InterruptStatusPending {

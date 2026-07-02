@@ -207,6 +207,17 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 	if agentID == "" {
 		return connector.CancelRunResult{}, fmt.Errorf("agent_id required")
 	}
+	// Tenant ownership gate (RFC L/N): this method backs gRPC CancelAgent + the
+	// MCP cancel_run tool, both of which dispatch with a principal-bearing ctx.
+	// A cancel keyed only by agent_id must not reach another tenant's run (ids
+	// are not secret; cluster cancel broadcasts). tenantStore folds a
+	// cross-tenant/missing run into an opaque ErrNotFound; open/legacy/admin see
+	// all tenants so behaviour is unchanged for them.
+	if s.store != nil {
+		if _, err := s.tenantStore(ctx).GetRunByAgentID(ctx, agentID); err != nil {
+			return connector.CancelRunResult{}, err
+		}
+	}
 	res, ok := s.cancelReg.Cancel(agentID, reason)
 	if !ok {
 		// Run may already have completed. Check the store to
@@ -984,6 +995,14 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 	}
 	if row.RunID != req.RunID {
 		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: interrupt %q does not belong to run %q", req.InterruptID, req.RunID)
+	}
+	// Tenant ownership gate (RFC L/N): the run this interrupt belongs to must be
+	// in the caller's tenant, else resolving it steers ANOTHER tenant's paused
+	// run. Backs the MCP interruption_resolve tool (principal-bearing ctx). The
+	// row.RunID==req.RunID check above only blocks retargeting within a tenant.
+	// tenantStore folds a cross-tenant/missing run into an opaque ErrNotFound.
+	if _, err := s.tenantStore(ctx).GetRun(ctx, row.RunID); err != nil {
+		return connector.InterruptionResolveResult{}, err
 	}
 	if row.Status != store.InterruptStatusPending {
 		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: already %s", row.Status)
