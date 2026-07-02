@@ -1690,9 +1690,17 @@ type A2AExpectedSkill struct {
 // parity. on_complete reuses ScheduledRunHook — the same hook shape
 // ScheduleDef uses — rather than a parallel type.
 type Webhook struct {
-	Enabled                bool              `json:"enabled,omitempty" yaml:"enabled"`
-	Delivery               string            `json:"delivery,omitempty" yaml:"delivery"`
-	Agent                  string            `json:"agent,omitempty" yaml:"agent"`
+	Enabled  bool   `json:"enabled,omitempty" yaml:"enabled"`
+	Delivery string `json:"delivery,omitempty" yaml:"delivery"`
+	Agent    string `json:"agent,omitempty" yaml:"agent"`
+	// UserTier PINS the spawned run's user_tier (provider/model routing +
+	// cost). SECURITY: it comes from this STATIC operator-authored def ONLY —
+	// the inbound payload can NOT select it (a signed sender must not be able
+	// to pick the most expensive tier). "" = the resolver's default tier. A
+	// payload_mapping that targets user_tier is ignored (a load-time warning
+	// flags it). To route different senders to different tiers, declare
+	// separate webhooks.
+	UserTier               string            `json:"user_tier,omitempty" yaml:"user_tier"`
 	Channel                string            `json:"channel,omitempty" yaml:"channel"`
 	Auth                   WebhookAuth       `json:"auth,omitempty" yaml:"auth"`
 	RateLimit              WebhookRateLimit  `json:"rate_limit,omitempty" yaml:"rate_limit"`
@@ -4669,6 +4677,14 @@ func validate(c *Config) error {
 	for wname, wh := range c.Webhooks {
 		if err := validateStaticWebhook(wname, wh); err != nil {
 			return err
+		}
+		// user_tier is Def-pinned (webhooks.<name>.user_tier). A payload_mapping
+		// targeting "user_tier" is now silently ineffective (the payload can't
+		// select the cost tier) — warn so the operator moves it to the def.
+		if _, mapped := wh.PayloadMapping["user_tier"]; mapped {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"webhooks.%s: payload_mapping targets \"user_tier\", but user_tier is pinned from the def (set webhooks.%s.user_tier) and the payload value is IGNORED",
+				wname, wname))
 		}
 	}
 	// RFC AH: validate the top-level `volumes:` map. Each path must

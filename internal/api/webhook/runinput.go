@@ -153,16 +153,16 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 	return runner.RunInput{
 		Agent:    w.Agent,
 		Segments: []loop.PromptSegment{seg},
-		// UserID + UserTier are projected from the EXTERNAL, attacker-
-		// influenceable payload when the operator maps them. UserTier
-		// selects the provider/model policy and UserID keys on_complete
-		// scope / quota — so a payload value steers routing/scope. The
-		// caller (deliverSpawn) rejects an unknown UserTier (parity with the
-		// HTTP path); constraining WHICH valid tier a payload may select, or
-		// pinning these from the Def, is an operator-config decision (the
-		// values are only as trustworthy as the per-Def signing secret).
+		// UserID is projected from the EXTERNAL, attacker-influenceable payload
+		// when the operator maps it (attribution / on_complete scope).
+		//
+		// UserTier is PINNED from the STATIC def `w` — NEVER from the payload:
+		// it selects the provider/model policy (cost), so a signed sender must
+		// not be able to pick the most expensive tier. A payload-mapped
+		// user_tier is deliberately ignored here (load-time warning flags it).
+		// deliverSpawn still rejects an unknown w.UserTier (typo guard).
 		UserID:          proj.Fields["user_id"],
-		UserTier:        proj.Fields["user_tier"],
+		UserTier:        w.UserTier,
 		UserCredentials: creds,
 		// Metadata is the static, operator-authored def blob → TRUSTED.
 		// PayloadMetadata is projected from the inbound body → UNTRUSTED.
