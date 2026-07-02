@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -242,57 +241,13 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 // The Control hook is a belt-and-braces re-check at the syscall layer
 // in case the kernel ends up dialing a different address than the IP
 // we passed (rare but possible if the address gets transformed).
+// dialContext is the HTTP/WebFetch tool's SSRF-blocking dialer. It delegates to
+// the shared guardedDialContext (see ssrf.go) so the identical dial-time
+// private-IP guard backs the mem9 backend client too — one implementation, no
+// weak-copy drift. AllowPrivateIPs is the tests-only global lift;
+// PrivateHostAllowlist is the operator's per-host opt-in.
 func (h *HTTP) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	// PrivateHostAllowlist: hostname-side opt-in to the private-IP
-	// block. If host is on the list, dial-layer private-IP rejection
-	// is skipped for THIS dial. Distinct from AllowPrivateIPs (which
-	// is the global tests-only flag); this one is operator-opt-in
-	// scoped to specific hostnames so e.g. localhost can be reached
-	// without disabling the SSRF block for the rest of the universe.
-	hostExempt := hostAllowed(host, h.PrivateHostAllowlist)
-
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	candidates := ips
-	if !h.AllowPrivateIPs && !hostExempt {
-		candidates = candidates[:0]
-		for _, ip := range ips {
-			if !isPrivateIP(ip.IP) {
-				candidates = append(candidates, ip)
-			}
-		}
-		if len(candidates) == 0 {
-			return nil, fmt.Errorf("blocked: %s has no public addresses (got %d private)", host, len(ips))
-		}
-	}
-	d := net.Dialer{
-		Timeout: 10 * time.Second,
-		Control: func(network, address string, c syscall.RawConn) error {
-			if h.AllowPrivateIPs || hostExempt {
-				return nil
-			}
-			ip, _, _ := net.SplitHostPort(address)
-			if parsed := net.ParseIP(ip); parsed != nil && isPrivateIP(parsed) {
-				return fmt.Errorf("blocked: socket-level address %s is private", ip)
-			}
-			return nil
-		},
-	}
-	var lastErr error
-	for _, ip := range candidates {
-		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		if err == nil {
-			return conn, nil
-		}
-		lastErr = err
-	}
-	return nil, lastErr
+	return guardedDialContext(h.AllowPrivateIPs, h.PrivateHostAllowlist)(ctx, network, addr)
 }
 
 // hostAllowed reports whether host is permitted by the allowlist.

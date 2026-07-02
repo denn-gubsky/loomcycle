@@ -108,6 +108,14 @@ type Memory struct {
 	// unauthenticated call).
 	EnvAllowlist map[string]bool
 
+	// PrivateHostAllowlist exempts specific hosts from the mem9 client's
+	// dial-time private-IP SSRF block (set in main.go from
+	// cfg.Env.HTTPPrivateHostAllowlist — the same operator vouch list the HTTP
+	// tool uses). Empty = every private/loopback/metadata IP is refused for
+	// mem9 dials, so a model-authored base_url can't reach an internal host.
+	// An operator running an internal mem9 backend adds its host here.
+	PrivateHostAllowlist []string
+
 	// SqlMem is the RFC AA SQL Memory manager backing sql_query / sql_exec.
 	// Nil = the SQL ops refuse with "SQL Memory is not enabled on this
 	// server" (the subsystem is off by default; main.go sets it only when
@@ -209,6 +217,11 @@ func (m *Memory) memoryLayer(ctx context.Context) (memrank.MemoryLayer, bool) {
 //
 // Credentials are resolved PER OP by the injected CredentialResolver, not
 // here; this only validates that the Def is structurally constructible.
+// mem9RequestTimeout is the per-op HTTP timeout for the guarded mem9 client.
+// Matches mem9.New's own default (used when Config.HTTPClient is nil), so
+// swapping in the SSRF-guarded client keeps the timeout behaviour unchanged.
+const mem9RequestTimeout = 10 * time.Second
+
 func (m *Memory) buildMem9(ctx context.Context, name string, def config.MemoryBackend) memrank.Backend {
 	tenancy, prefix, err := resolveTenancy(ctx, def.TenancyStrategy)
 	if err != nil {
@@ -218,12 +231,18 @@ func (m *Memory) buildMem9(ctx context.Context, name string, def config.MemoryBa
 
 	resolver := m.mem9CredentialResolver(def, def.TenancyStrategy, prefix)
 
+	// SSRF guard: dial through the shared private-IP-blocking client so a
+	// model-authored base_url cannot reach an internal/loopback/metadata host
+	// and exfiltrate the operator-allowlisted X-API-Key. Blocks at DIAL time
+	// (rebinding/redirect-safe); the operator's HTTP private-host allowlist
+	// (m.PrivateHostAllowlist) exempts a legitimately-private mem9 host.
 	b := mem9.New(mem9.Config{
 		BaseURL:            def.Config.BaseURL,
 		APIVersion:         def.Config.APIVersion,
 		Tenancy:            tenancy,
 		CredentialResolver: resolver,
 		BackendName:        name,
+		HTTPClient:         newSSRFGuardedClient(mem9RequestTimeout, m.PrivateHostAllowlist),
 	})
 
 	// fallback_on_error=inprocess wraps the remote backend so a Mem9
