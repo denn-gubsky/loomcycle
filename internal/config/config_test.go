@@ -916,10 +916,11 @@ agents:
 	}
 }
 
-// ollama-local gets a generous 300s/300s default timeout pair (cold local
-// model load + large-context eval is slow), distinct from the cloud-shaped
-// 60s/90s global default; the LOOMCYCLE_OLLAMA_LOCAL_* env vars override it
-// and the global Provider*Timeout is untouched.
+// ollama-local gets a generous 600s/600s default timeout pair (cold local
+// model load + large-context eval is slow — a 128K-ctx model can exceed 5 min
+// just to load), distinct from the cloud-shaped 60s/90s global default; the
+// LOOMCYCLE_OLLAMA_LOCAL_* env vars override it and the global Provider*Timeout
+// is untouched.
 func TestOllamaLocalTimeouts_DefaultsAndOverrides(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
@@ -933,25 +934,27 @@ agents:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Env.OllamaLocalHeaderTimeout != 300*time.Second {
-		t.Errorf("default header = %v, want 300s", cfg.Env.OllamaLocalHeaderTimeout)
+	if cfg.Env.OllamaLocalHeaderTimeout != 600*time.Second {
+		t.Errorf("default header = %v, want 600s (raised from 300s — cold 128K-ctx local models exceed 5 min to load)", cfg.Env.OllamaLocalHeaderTimeout)
 	}
-	if cfg.Env.OllamaLocalIdleTimeout != 300*time.Second {
-		t.Errorf("default idle = %v, want 300s", cfg.Env.OllamaLocalIdleTimeout)
+	if cfg.Env.OllamaLocalIdleTimeout != 600*time.Second {
+		t.Errorf("default idle = %v, want 600s", cfg.Env.OllamaLocalIdleTimeout)
 	}
 	// The local timeouts must NOT perturb the global cloud defaults.
 	if cfg.Env.ProviderHeaderTimeout != 60*time.Second {
 		t.Errorf("global header default perturbed: %v, want 60s", cfg.Env.ProviderHeaderTimeout)
 	}
 
-	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", "600000")
+	// Override with values distinct from the 600s default so the test proves
+	// the env actually takes effect (a slow box raising past the default).
+	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", "900000")
 	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS", "450000")
 	cfg, err = Load(yamlPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Env.OllamaLocalHeaderTimeout != 600*time.Second {
-		t.Errorf("override header = %v, want 600s", cfg.Env.OllamaLocalHeaderTimeout)
+	if cfg.Env.OllamaLocalHeaderTimeout != 900*time.Second {
+		t.Errorf("override header = %v, want 900s", cfg.Env.OllamaLocalHeaderTimeout)
 	}
 	if cfg.Env.OllamaLocalIdleTimeout != 450*time.Second {
 		t.Errorf("override idle = %v, want 450s", cfg.Env.OllamaLocalIdleTimeout)
