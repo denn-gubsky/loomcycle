@@ -530,10 +530,15 @@ func flattenMessage(m providers.Message) []wireMessage {
 // final or near-final line. So no accumulator is needed.
 
 type chunk struct {
-	Model      string  `json:"model"`
-	Message    message `json:"message"`
-	Done       bool    `json:"done"`
-	DoneReason string  `json:"done_reason"`
+	Model   string  `json:"model"`
+	Message message `json:"message"`
+	Done    bool    `json:"done"`
+	// Error is Ollama's in-stream fault. /api/chat commits a 200 and then, on
+	// a mid-generation failure (OOM, model unload, late context-overflow),
+	// writes a final NDJSON line {"error":"..."} with no done:true. Captured so
+	// streamEvents can surface it instead of ending as a silent clean stop.
+	Error      string `json:"error"`
+	DoneReason string `json:"done_reason"`
 
 	// Usage fields (only present on the final "done":true frame).
 	PromptEvalCount int `json:"prompt_eval_count"`
@@ -631,6 +636,16 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		var c chunk
 		if err := json.Unmarshal(line, &c); err != nil {
 			continue
+		}
+		// In-stream error frame ({"error":"..."} with no done:true). Flush any
+		// text already delivered (like the scanner-error path), then surface an
+		// EventError and stop — WITHOUT this the loop sees only a clean
+		// EventDone{StopReason:""} and treats a failed generation as success
+		// with truncated/empty output (no error, no fallback).
+		if c.Error != "" {
+			_ = flushText()
+			send(providers.Event{Type: providers.EventError, Error: "ollama: " + c.Error})
+			return
 		}
 		if model == "" && c.Model != "" {
 			model = c.Model
