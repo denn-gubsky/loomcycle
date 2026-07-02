@@ -665,7 +665,6 @@ func tryProviderFallback(
 				Text: fmt.Sprintf("downgraded %s to non-thinking %s on switch to %s (dropped the effort hint): the fallback history carries assistant turns without reasoning_content, which the thinking model would reject", newModel, sibling, newProvider.ID()),
 			})
 			newModel = sibling
-			_ = 0 // FIX DISABLED FOR TEST
 			// Also drop the effort hint. A "non-thinking sibling" is only actually
 			// non-thinking if the request doesn't ALSO carry a reasoning_effort
 			// that turns thinking back ON. DeepSeek's V4 line is hybrid: the driver
