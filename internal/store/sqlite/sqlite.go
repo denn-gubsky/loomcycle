@@ -543,6 +543,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at  INTEGER NOT NULL,
 			PRIMARY KEY (tenant_id, name)
 		)`,
+		// RFC AR CredentialDef — the secure per-tenant credential store. Flat
+		// (tenant_id, scope, scope_id, name) key; definition holds ONLY sealed
+		// ciphertext (inline backend, see internal/credential) or an external
+		// pointer — never a plaintext secret. scope/scope_id isolate user A's
+		// token from user B's. Excluded from snapshots.
+		`CREATE TABLE IF NOT EXISTS credential_defs (
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			scope       TEXT NOT NULL,
+			scope_id    TEXT NOT NULL DEFAULT '',
+			name        TEXT NOT NULL,
+			backend     TEXT NOT NULL,
+			definition  TEXT NOT NULL,
+			expires_at  INTEGER,
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, scope, scope_id, name)
+		)`,
 		// RFC AL Path primitive — the dirent (path tree) substrate. Maps a
 		// (tenant_id, scope, scope_id, parent_path, name) coordinate to a
 		// backing resource (kind + resource_ref json). PK is the full
