@@ -240,6 +240,47 @@ func printVersion() {
 		buildVersion, buildCommit, buildTime, runtime.Version())
 }
 
+// mcpProxyHeaderTimeout reads LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS (the
+// thin-client's time-to-response-headers bound; a stalled upstream must not
+// hang a frame forever, and Claude Code's tool-idle timeout doesn't cover stdio
+// servers). Unset / invalid → 0, letting NewProxyClient apply its default.
+func mcpProxyHeaderTimeout() time.Duration {
+	v := os.Getenv("LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Millisecond
+}
+
+// mcpProxyReconnectDelays reads LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS and
+// builds the thin-client's transport-error backoff schedule: an immediate first
+// retry, then geometric waits (500ms doubling) capped at 4s. Unset → nil, so
+// NewProxyClient applies its default schedule; 0 → an empty schedule (retry
+// disabled — one attempt only).
+func mcpProxyReconnectDelays() []time.Duration {
+	v := os.Getenv("LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS")
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return nil
+	}
+	delays := make([]time.Duration, n)
+	for i := 1; i < n; i++ {
+		d := 500 * time.Millisecond * (1 << (i - 1))
+		if d > 4*time.Second {
+			d = 4 * time.Second
+		}
+		delays[i] = d
+	}
+	return delays
+}
+
 // selectPresetNames resolves the RFC AQ embedded-preset selection: --preset
 // flags, if any, override LOOMCYCLE_PRESETS (comma-separated, ordered). Empty /
 // unset → no presets (opt-in default — exactly today's behaviour). Order is
@@ -472,6 +513,11 @@ func main() {
 			Upstream: *upstream,
 			Token:    os.Getenv("LOOMCYCLE_MCP_UPSTREAM_TOKEN"),
 			Logf:     log.Printf, // stderr; never stdout (stdout is the JSON-RPC wire)
+			// Self-recovery knobs (defaults applied by NewProxyClient when unset).
+			// The thin client boots with NO config load, so these are read straight
+			// from the environment.
+			ResponseHeaderTimeout: mcpProxyHeaderTimeout(),
+			ReconnectDelays:       mcpProxyReconnectDelays(),
 		})
 		log.Printf("mcp: thin-client mode → upstream %s (no local runtime)", *upstream)
 		err := pc.Serve(proxyCtx, os.Stdin, os.Stdout)

@@ -21,9 +21,24 @@ The most common consumer is Claude Code: you can ask Claude to "spawn a `qa-agen
 So there's exactly **one** authoritative runtime per state, and `loomcycle mcp` runs one of two ways:
 
 - **embedded** — `loomcycle mcp --config loomcycle.yaml`. One process that is *both* the runtime and the MCP server. A single process → a single bus → the cross-process problem can't arise. Use this when the MCP server *is* your loomcycle (a laptop, a dev box).
-- **thin client** — `loomcycle mcp --upstream http://127.0.0.1:8788` (bearer via `LOOMCYCLE_MCP_UPSTREAM_TOKEN`). Runs as a stdio↔`/v1/_mcp` proxy to an **already-running** runtime and boots **no runtime of its own**. Every call — including `interruption_resolve` — lands on the runtime that owns the run, so it wakes correctly. This is the supported way to add an MCP surface next to a running server or a multi-replica cluster (point `--upstream` at any replica or the load balancer). The proxy returns a clean JSON-RPC error (never hangs) if the upstream is unreachable or drops a stream.
+- **thin client** — `loomcycle mcp --upstream http://127.0.0.1:8788` (bearer via `LOOMCYCLE_MCP_UPSTREAM_TOKEN`). Runs as a stdio↔`/v1/_mcp` proxy to an **already-running** runtime and boots **no runtime of its own**. Every call — including `interruption_resolve` — lands on the runtime that owns the run, so it wakes correctly. This is the supported way to add an MCP surface next to a running server or a multi-replica cluster (point `--upstream` at any replica or the load balancer). The proxy returns a clean JSON-RPC error (never hangs) only after self-recovery is exhausted.
 
 > **`--no-http` was removed (v0.23.0).** It only muted the listener while still booting a *full second runtime* — the anti-pattern this whole section replaces. Use `--upstream` (thin client) to add an MCP surface next to a runtime, or plain `loomcycle mcp` for a standalone single-host runtime.
+
+### Connection self-recovery
+
+Claude Code (and MCP hosts generally) **never auto-reconnect a stdio server** — if the proxy surfaces a recoverable fault, you'd have to reload plugins / relaunch. So the proxy owns 100% of recovery and transparently heals the connection so tools keep working across:
+
+- **an idle-reaped keep-alive socket** (the "connection lost a few minutes after the last tool call" symptom — the runtime's HTTP server closes idle connections after 120s). The proxy uses a sub-120s `IdleConnTimeout` so it reopens *before* the server closes, and retries on a fresh connection if one still goes stale.
+- **an upstream restart** — a connection refused/reset during the restart window is retried with bounded backoff, and the invalidated session is re-handshaked (replay `initialize` → fresh `Mcp-Session-Id`) then the frame is retried. All single-flighted; the client never sees it.
+- **a stalled upstream** — a `ResponseHeaderTimeout` bounds the wait for response *headers* (a streaming `spawn_run` still holds its body open for the whole run) so a hung upstream can't wedge a frame forever.
+
+Tunable via env (sensible defaults; unset = default):
+
+| Env var | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS` | `60000` | Max wait for the upstream's response headers before treating the frame as a transport error. |
+| `LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS` | `5` | Number of reconnect attempts after a transport error (immediate, then 500ms → 1s → 2s → 4s backoff). `0` disables retry. |
 
 `loomcycle doctor` WARNs (it doesn't FAIL) when the configured listen address is already in use — that usually means a runtime already owns this state; add an MCP surface with `--upstream`, don't start a second runtime.
 
