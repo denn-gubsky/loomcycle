@@ -47,6 +47,9 @@ func (s *Server) PublishChannel(ctx context.Context, req *loomcyclepb.PublishCha
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
 	}
+	if err := principalMayUseChannelScope(ctx, req.GetScope(), req.GetScopeId()); err != nil {
+		return nil, err
+	}
 	resp, err := s.connector.PublishChannel(ctx, connector.ChannelPublishRequest{
 		Channel:   req.GetChannel(),
 		Scope:     req.GetScope(),
@@ -73,6 +76,9 @@ func (s *Server) PublishChannel(ctx context.Context, req *loomcyclepb.PublishCha
 func (s *Server) SubscribeChannel(ctx context.Context, req *loomcyclepb.SubscribeChannelRequest) (*loomcyclepb.SubscribeChannelResponse, error) {
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	if err := principalMayUseChannelScope(ctx, req.GetScope(), req.GetScopeId()); err != nil {
+		return nil, err
 	}
 	resp, err := s.connector.SubscribeChannel(ctx, connector.ChannelSubscribeRequest{
 		Channel:     req.GetChannel(),
@@ -105,6 +111,9 @@ func (s *Server) PeekChannel(ctx context.Context, req *loomcyclepb.PeekChannelRe
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
 	}
+	if err := principalMayUseChannelScope(ctx, req.GetScope(), req.GetScopeId()); err != nil {
+		return nil, err
+	}
 	resp, err := s.connector.PeekChannel(ctx, connector.ChannelPeekRequest{
 		Channel:     req.GetChannel(),
 		Scope:       req.GetScope(),
@@ -134,6 +143,9 @@ func (s *Server) AckChannel(ctx context.Context, req *loomcyclepb.AckChannelRequ
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
 	}
+	if err := principalMayUseChannelScope(ctx, req.GetScope(), req.GetScopeId()); err != nil {
+		return nil, err
+	}
 	resp, err := s.connector.AckChannel(ctx, connector.ChannelAckRequest{
 		Channel: req.GetChannel(),
 		Scope:   req.GetScope(),
@@ -152,6 +164,9 @@ func (s *Server) AckChannel(ctx context.Context, req *loomcyclepb.AckChannelRequ
 func (s *Server) AwaitChannels(ctx context.Context, req *loomcyclepb.AwaitChannelsRequest) (*loomcyclepb.AwaitChannelsResponse, error) {
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	if err := principalMayUseChannelScope(ctx, req.GetScope(), req.GetScopeId()); err != nil {
+		return nil, err
 	}
 	resp, err := s.connector.AwaitChannels(ctx, connector.ChannelAwaitRequest{
 		Channels:    req.GetChannels(),
@@ -194,6 +209,9 @@ func (s *Server) AwaitChannels(ctx context.Context, req *loomcyclepb.AwaitChanne
 func (s *Server) BroadcastChannels(ctx context.Context, req *loomcyclepb.BroadcastChannelsRequest) (*loomcyclepb.BroadcastChannelsResponse, error) {
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	if err := principalMayUseChannelScope(ctx, req.GetScope(), req.GetScopeId()); err != nil {
+		return nil, err
 	}
 	resp, err := s.connector.BroadcastChannels(ctx, connector.ChannelBroadcastRequest{
 		Channels:  req.GetChannels(),

@@ -54,10 +54,18 @@ func (s *Server) StreamUserRunStates(req *loomcyclepb.StreamUserRunStatesRequest
 		return status.Error(codes.InvalidArgument, "user_id is required")
 	}
 
+	// Tenant isolation (RFC L/N): confine the stream to the caller's tenant,
+	// mirroring the HTTP handleStreamUserAgents which sets TenantID/TenantScoped
+	// from principalTenantScope. Without this a scoped principal streamed every
+	// tenant's live run-state transitions (the connector filter is gated on
+	// TenantScoped, which the gRPC path previously left false).
+	tenantID, allTenants := grpcTenantScope(stream.Context())
 	cReq := connector.StreamUserRunStatesRequest{
-		UserID:   req.GetUserId(),
-		Statuses: req.GetStatuses(),
-		Agent:    req.GetAgent(),
+		UserID:       req.GetUserId(),
+		Statuses:     req.GetStatuses(),
+		Agent:        req.GetAgent(),
+		TenantID:     tenantID,
+		TenantScoped: !allTenants,
 	}
 
 	visit := func(evt connector.RunStateEvent) error {
