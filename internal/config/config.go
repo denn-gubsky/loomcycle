@@ -3485,17 +3485,25 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 
-	// Local Ollama gets a more generous default than the cloud providers:
-	// a cold model load + large-context prompt eval can take minutes to
-	// first token. Scoped to the ollama-local registration; see the field
-	// docs on Env.OllamaLocalHeaderTimeout.
-	cfg.Env.OllamaLocalHeaderTimeout = 300 * time.Second
+	// Local Ollama gets a MUCH more generous default than the cloud providers:
+	// a cold model load + large-context prompt eval genuinely takes minutes to
+	// first token — a 27B-class model at a 128K num_ctx on non-datacenter
+	// hardware routinely exceeds 5 min just to LOAD (Ollama sends no response
+	// headers until the model is resident + generation starts, so the header
+	// timeout covers LOAD time). The old 300s default surfaced as "net/http:
+	// timeout awaiting response headers" on exactly that setup — loomcycle
+	// giving up before a healthy local model had answered. 600s (10 min) is a
+	// realistic patient default; still bounded so a genuinely dead server fails
+	// over. A very large model / slow box raises
+	// LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS further. Scoped to the
+	// ollama-local registration; see the field docs on Env.OllamaLocalHeaderTimeout.
+	cfg.Env.OllamaLocalHeaderTimeout = 600 * time.Second
 	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.OllamaLocalHeaderTimeout = time.Duration(n) * time.Millisecond
 		}
 	}
-	cfg.Env.OllamaLocalIdleTimeout = 300 * time.Second
+	cfg.Env.OllamaLocalIdleTimeout = 600 * time.Second
 	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.OllamaLocalIdleTimeout = time.Duration(n) * time.Millisecond
