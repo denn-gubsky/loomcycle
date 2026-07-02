@@ -4013,6 +4013,12 @@ func replayTranscript(events []store.Event) []providers.Message {
 	// with "reasoning_content in the thinking mode must be passed
 	// back". Empty for non-thinking models.
 	var asstReasoning string
+	// asstReasoningSignature is the Anthropic thinking-block seal paired with
+	// asstReasoning — restored so a RESUMED thinking+tool-use run replays the
+	// block with its signature and doesn't 400 on the continuation ("a final
+	// assistant message must start with a thinking block"). Empty for
+	// non-Anthropic / non-thinking runs.
+	var asstReasoningSignature string
 
 	flushAssistant := func() {
 		if asstText.Len() == 0 && len(asstTools) == 0 {
@@ -4024,13 +4030,15 @@ func replayTranscript(events []store.Event) []providers.Message {
 		}
 		content = append(content, asstTools...)
 		messages = append(messages, providers.Message{
-			Role:      "assistant",
-			Content:   content,
-			Reasoning: asstReasoning,
+			Role:               "assistant",
+			Content:            content,
+			Reasoning:          asstReasoning,
+			ReasoningSignature: asstReasoningSignature,
 		})
 		asstText.Reset()
 		asstTools = nil
 		asstReasoning = ""
+		asstReasoningSignature = ""
 	}
 	flushPendingTools := func() {
 		if len(pendingToolResults) == 0 {
@@ -4110,6 +4118,7 @@ func replayTranscript(events []store.Event) []providers.Message {
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil {
 				asstReasoning = pe.Reasoning
+				asstReasoningSignature = pe.ReasoningSignature
 			}
 			// End-of-run boundary — used both mid-conversation (the
 			// per-iteration assistant turn closes here) and at the
@@ -4155,6 +4164,7 @@ func replayTranscript(events []store.Event) []providers.Message {
 			asstTools = nil
 			pendingToolResults = nil
 			asstReasoning = ""
+			asstReasoningSignature = ""
 		}
 	}
 	flushAssistant()

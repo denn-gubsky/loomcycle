@@ -637,6 +637,11 @@ func tryProviderFallback(
 	for i := range messages {
 		if messages[i].Role == "assistant" && messages[i].Reasoning != "" {
 			messages[i].Reasoning = ""
+			// Zero the Anthropic thinking-block signature too — it is only
+			// valid for the model that produced it, so it must never ride to a
+			// different provider (the new provider ignores the field, but the
+			// deepseek→other→anthropic bounce must not replay a stale seal).
+			messages[i].ReasoningSignature = ""
 			stripped++
 		}
 	}
@@ -1510,6 +1515,12 @@ outerLoop:
 		// per DeepSeek's roundtrip contract. Empty for non-thinking
 		// providers.
 		var iterReasoning string
+		// iterReasoningSignature holds the Anthropic extended-thinking block's
+		// signature (paired with iterReasoning); stamped onto the assistant
+		// Message so the Anthropic driver replays the thinking block, seal
+		// included, on the tool-use continuation (else Anthropic 400s). Empty
+		// for non-Anthropic / non-thinking turns.
+		var iterReasoningSignature string
 
 		for ev := range ch {
 			switch ev.Type {
@@ -1550,6 +1561,7 @@ outerLoop:
 				iterStop = ev.StopReason
 				iterUsage = ev.Usage
 				iterReasoning = ev.Reasoning
+				iterReasoningSignature = ev.ReasoningSignature
 			case providers.EventError:
 				// v0.8.2 classification: build the RAW error string so
 				// the status-prefix regex sees the bare "<name>
@@ -1630,9 +1642,10 @@ outerLoop:
 			)
 		}
 		messages = append(messages, providers.Message{
-			Role:      "assistant",
-			Content:   assistantBlocks,
-			Reasoning: iterReasoning,
+			Role:               "assistant",
+			Content:            assistantBlocks,
+			Reasoning:          iterReasoning,
+			ReasoningSignature: iterReasoningSignature,
 		})
 		// Mark the run "past turn one." Any subsequent retryable
 		// error that would have triggered cross-provider fallback
