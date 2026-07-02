@@ -146,8 +146,8 @@ func TestDriver_CapabilitiesMostlyMatchOpenAI(t *testing.T) {
 // TestIsThinkingModel covers the per-model affordance the driver
 // uses internally for thinking-class decisions. Naming convention:
 //
-//	thinking-class: deepseek-v4-pro, deepseek-reasoner, deepseek-r1
-//	non-thinking:   deepseek-chat, deepseek-v4-flash, deepseek-v3.2
+//	thinking-class: the v4 family (incl. -flash), *-pro, deepseek-reasoner, -r1
+//	non-thinking:   deepseek-chat, deepseek-v3.2, deepseek-coder
 func TestIsThinkingModel(t *testing.T) {
 	cases := []struct {
 		model string
@@ -159,10 +159,11 @@ func TestIsThinkingModel(t *testing.T) {
 		{"deepseek-r1", true},
 		{"deepseek-r1-distill", true},
 		{"deepseek-chat", false},
-		{"deepseek-v4-flash", false},
+		{"deepseek-v4-flash", true}, // v4 family IS thinking-mode (prod 2026-07-02)
 		{"deepseek-v3.2", false},
 		{"deepseek-coder", false},
-		{"DeepSeek-V4-Pro", true}, // case-insensitive
+		{"DeepSeek-V4-Pro", true},   // case-insensitive
+		{"DeepSeek-V4-Flash", true}, // case-insensitive v4
 		{"", false},
 		{"unknown-model", false},
 	}
@@ -174,9 +175,9 @@ func TestIsThinkingModel(t *testing.T) {
 	}
 }
 
-// TestNonThinkingSibling pins the exp7 R2 downgrade mapping: a thinking-class
-// model maps to a non-thinking sibling (same-generation *-flash for *-pro, else
-// deepseek-chat); a non-thinking model yields ("", false).
+// TestNonThinkingSibling pins the exp7 R2 downgrade mapping: EVERY thinking-class
+// model maps to deepseek-chat (the -flash sibling is itself thinking-mode, so it
+// is never a safe target); a non-thinking model yields ("", false).
 func TestNonThinkingSibling(t *testing.T) {
 	d := &Driver{}
 	cases := []struct {
@@ -184,14 +185,17 @@ func TestNonThinkingSibling(t *testing.T) {
 		wantSibling   string
 		wantDowngrade bool
 	}{
-		{"deepseek-v4-pro", "deepseek-v4-flash", true},
-		{"deepseek-v3-pro", "deepseek-v3-flash", true},
+		// ALL thinking models downgrade to deepseek-chat — the same-generation
+		// -flash is NOT safe (v4-flash is itself thinking-mode; prod 2026-07-02).
+		{"deepseek-v4-pro", "deepseek-chat", true},
+		{"deepseek-v4-flash", "deepseek-chat", true},
+		{"deepseek-v3-pro", "deepseek-chat", true},
 		{"deepseek-reasoner", "deepseek-chat", true},
 		{"deepseek-r1", "deepseek-chat", true},
 		{"deepseek-r1-distill", "deepseek-chat", true},
-		// Non-thinking models need no downgrade.
+		// Non-thinking models need no downgrade (incl. deepseek-chat itself →
+		// no infinite downgrade).
 		{"deepseek-chat", "", false},
-		{"deepseek-v4-flash", "", false},
 		{"deepseek-v3.2", "", false},
 		{"", "", false},
 		{"unknown-model", "", false},
