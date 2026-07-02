@@ -777,6 +777,10 @@ func main() {
 		// its X-API-Key. Reuses the scheduler/webhook env allowlist — no
 		// new credential surface (Decision 10).
 		EnvAllowlist: memoryEnvAllowlist,
+		// SSRF: the mem9 client blocks private/loopback/metadata IPs at dial
+		// time; this reuses the HTTP tool's private-host vouch list so an
+		// operator with an internal mem9 host exempts it the same way.
+		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 	}
 	allTools = append(allTools, memoryTool)
 
