@@ -16,6 +16,8 @@ import LibraryEditModal, {
   type ModalKind,
   type ModalMode,
 } from "../components/LibraryEditModal";
+import ImportModal, { type LocalAgentSeed } from "../components/ImportModal";
+import { usePrincipal } from "../components/Layout";
 
 // LibraryView is the v0.9.x Introspection surface — three sub-tabs
 // over the AgentDef / SkillDef / MCPServerDef substrates. Each
@@ -52,6 +54,16 @@ export default function LibraryView() {
     mode: ModalMode;
     forkSource?: DefRow;
   } | null>(null);
+  // RFC AU — the Claude Code import flow (skills + mcp tabs).
+  const [importOpen, setImportOpen] = useState(false);
+
+  const principal = usePrincipal();
+  const capabilities = principal?.capabilities;
+  const stdioAllowed = capabilities?.mcp_allow_dynamic_stdio === true;
+  // A non-admin principal is a tenant operator (tenant_id≠"") — it may create a
+  // per-tenant override of a static-named MCP server; admin/open-mode can't at
+  // the shared "" tenant, so the preview treats a static collision as a fork.
+  const isTenant = principal ? !principal.is_admin : false;
 
   useEffect(() => {
     let cancelled = false;
@@ -93,12 +105,33 @@ export default function LibraryView() {
     sub === "skills" ? "skill" : sub === "mcp-servers" ? "mcp-server" : "agent";
   const tabSubstrate: SubstrateKind =
     sub === "skills" ? "skilldef" : sub === "mcp-servers" ? "mcpserverdef" : "agentdef";
-  const tabEntries: LibraryEntry[] =
-    sub === "skills" ? skills : sub === "mcp-servers" ? mcps : agents;
 
   const handleCreate = () => setModal({ kind: tabKind, mode: "create" });
   const handleEdit = (row: DefRow) =>
     setModal({ kind: tabKind, mode: "fork", forkSource: row });
+
+  // After an import, "Use with a local LLM" opens the agent-create modal
+  // prefilled with the imported skills + mcp tools on a local model. A synthetic
+  // create-mode forkSource seeds the fields (create ignores forkSource for the
+  // write — it only prefills), so no new modal prop is needed.
+  const handleWireLocalAgent = (seed: LocalAgentSeed) => {
+    const definition: Record<string, unknown> = { model: "local-medium" };
+    if (seed.skills.length > 0) definition.skills = seed.skills;
+    const allowed = seed.mcpServers.map((s) => `mcp__${s}__*`);
+    if (allowed.length > 0) definition.allowed_tools = allowed;
+    setImportOpen(false);
+    setModal({
+      kind: "agent",
+      mode: "create",
+      forkSource: {
+        def_id: "prefill:local-agent",
+        name: "",
+        version: 0,
+        created_at: "",
+        definition,
+      },
+    });
+  };
   const handlePromote = async (row: DefRow) => {
     try {
       await promoteDef(tabSubstrate, row.def_id);
@@ -173,6 +206,7 @@ export default function LibraryView() {
             onEditRow={handleEdit}
             onRetireRow={handleRetire}
             onPromoteRow={handlePromote}
+            onImport={() => setImportOpen(true)}
           />
         )}
         {sub === "mcp-servers" && (
@@ -187,6 +221,7 @@ export default function LibraryView() {
             onRetireRow={handleRetire}
             onPromoteRow={handlePromote}
             onRediscover={handleRediscover}
+            onImport={() => setImportOpen(true)}
           />
         )}
       </div>
@@ -195,12 +230,26 @@ export default function LibraryView() {
           kind={modal.kind}
           mode={modal.mode}
           forkSource={modal.forkSource}
-          existingNames={tabEntries}
+          existingNames={
+            modal.kind === "agent" ? agents : modal.kind === "skill" ? skills : mcps
+          }
+          stdioAllowed={stdioAllowed}
           onClose={() => setModal(null)}
           onSaved={() => {
             setModal(null);
             refreshNow();
           }}
+        />
+      )}
+      {importOpen && (
+        <ImportModal
+          skills={skills}
+          mcp={mcps}
+          capabilities={capabilities}
+          isTenant={isTenant}
+          onClose={() => setImportOpen(false)}
+          onImported={refreshNow}
+          onWireLocalAgent={handleWireLocalAgent}
         />
       )}
       <Outlet />

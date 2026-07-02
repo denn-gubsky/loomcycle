@@ -59,6 +59,11 @@ export interface LibraryEditModalProps {
   // name collisions before round-tripping the server. Optional —
   // server-side check is authoritative.
   existingNames?: LibraryEntry[];
+  // RFC AU: whether the runtime permits dynamic stdio MCP servers
+  // (LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO). When false, the stdio transport
+  // option is hidden — a stdio server would 422 anyway. From
+  // principal.capabilities.mcp_allow_dynamic_stdio.
+  stdioAllowed?: boolean;
   onClose: () => void;
   onSaved: (row: DefRow) => void;
 }
@@ -85,6 +90,7 @@ export default function LibraryEditModal({
   mode,
   forkSource,
   existingNames,
+  stdioAllowed,
   onClose,
   onSaved,
 }: LibraryEditModalProps) {
@@ -222,7 +228,7 @@ export default function LibraryEditModal({
   );
 
   // --- MCP-flavor specific
-  type Transport = "http" | "streamable-http";
+  type Transport = "http" | "streamable-http" | "stdio";
   const [mcpTransport, setMcpTransport] = useState<Transport>(
     (pickString(forkSource?.definition, "transport") as Transport) ||
       "streamable-http",
@@ -239,6 +245,21 @@ export default function LibraryEditModal({
         : entries.map(([key, value]) => ({ key, value }));
     },
   );
+  // stdio transport (RFC AU / F31). Command runs on the loomcycle host — the
+  // transport option is only shown when stdioAllowed.
+  const [mcpCommand, setMcpCommand] = useState<string>(
+    pickString(forkSource?.definition, "command"),
+  );
+  const [mcpArgs, setMcpArgs] = useState<string>(
+    pickStringArray(forkSource?.definition, "args").join(", "),
+  );
+  const [mcpEnv, setMcpEnv] = useState<{ key: string; value: string }[]>(() => {
+    const e = pickStringMap(forkSource?.definition, "env");
+    const entries = Object.entries(e);
+    return entries.length === 0
+      ? [{ key: "", value: "" }]
+      : entries.map(([key, value]) => ({ key, value }));
+  });
 
   const titlePrefix = mode === "create" ? "Create" : "Edit (fork)";
   const titleLabel =
@@ -341,14 +362,18 @@ export default function LibraryEditModal({
       if (!skillBody.trim()) return "Skill body is required (substrate refuses empty bodies).";
     }
     if (kind === "mcp-server") {
-      if (!mcpUrl.trim()) return "URL is required.";
-      try {
-        const u = new URL(mcpUrl.trim());
-        if (u.protocol !== "http:" && u.protocol !== "https:") {
-          return "URL protocol must be http or https.";
+      if (mcpTransport === "stdio") {
+        if (!mcpCommand.trim()) return "Command is required for a stdio server.";
+      } else {
+        if (!mcpUrl.trim()) return "URL is required.";
+        try {
+          const u = new URL(mcpUrl.trim());
+          if (u.protocol !== "http:" && u.protocol !== "https:") {
+            return "URL protocol must be http or https.";
+          }
+        } catch {
+          return "URL is not a valid http(s) URI.";
         }
-      } catch {
-        return "URL is not a valid http(s) URI.";
       }
     }
     return null;
@@ -450,6 +475,22 @@ export default function LibraryEditModal({
       return ov;
     }
     // mcp-server
+    if (mcpTransport === "stdio") {
+      const env: Record<string, string> = {};
+      mcpEnv.forEach(({ key, value }) => {
+        const k = key.trim();
+        if (k) env[k] = value;
+      });
+      const ov: Record<string, unknown> = {
+        transport: "stdio",
+        command: mcpCommand.trim(),
+      };
+      const args = parseCommaList(mcpArgs);
+      if (args.length > 0) ov.args = args;
+      if (Object.keys(env).length > 0) ov.env = env;
+      if (description.trim()) ov.description = description.trim();
+      return ov;
+    }
     const headers: Record<string, string> = {};
     mcpHeaders.forEach(({ key, value }) => {
       const k = key.trim();
@@ -650,6 +691,13 @@ export default function LibraryEditModal({
             setUrl={setMcpUrl}
             headers={mcpHeaders}
             setHeaders={setMcpHeaders}
+            command={mcpCommand}
+            setCommand={setMcpCommand}
+            args={mcpArgs}
+            setArgs={setMcpArgs}
+            env={mcpEnv}
+            setEnv={setMcpEnv}
+            stdioAllowed={stdioAllowed === true}
             submitting={submitting}
           />
         )}
@@ -1303,30 +1351,91 @@ function SkillFields(props: {
   );
 }
 
+// KVGrid renders an editable key/value grid (used for both MCP http headers
+// and stdio env). Empty rows are dropped at buildOverlay time.
+function KVGrid(props: {
+  label: string;
+  rows: { key: string; value: string }[];
+  setRows: (v: { key: string; value: string }[]) => void;
+  keyPlaceholder: string;
+  valuePlaceholder: string;
+  submitting: boolean;
+}) {
+  const update = (i: number, patch: Partial<{ key: string; value: string }>) => {
+    const next = [...props.rows];
+    next[i] = { ...next[i]!, ...patch };
+    props.setRows(next);
+  };
+  const add = () => props.setRows([...props.rows, { key: "", value: "" }]);
+  const remove = (i: number) => {
+    if (props.rows.length === 1) {
+      props.setRows([{ key: "", value: "" }]);
+      return;
+    }
+    props.setRows(props.rows.filter((_, idx) => idx !== i));
+  };
+  return (
+    <div className="library-form-row">
+      <label>
+        {props.label}
+        <button
+          type="button"
+          className="library-schema-hint-toggle"
+          onClick={add}
+          disabled={props.submitting}
+        >
+          + add row
+        </button>
+      </label>
+      <div className="library-headers-grid">
+        {props.rows.map((h, i) => (
+          <div key={i} className="library-header-row">
+            <input
+              type="text"
+              placeholder={props.keyPlaceholder}
+              value={h.key}
+              onChange={(e) => update(i, { key: e.target.value })}
+              disabled={props.submitting}
+            />
+            <input
+              type="text"
+              placeholder={props.valuePlaceholder}
+              value={h.value}
+              onChange={(e) => update(i, { value: e.target.value })}
+              disabled={props.submitting}
+            />
+            <button
+              type="button"
+              onClick={() => remove(i)}
+              disabled={props.submitting}
+              title="remove"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function McpFields(props: {
-  transport: "http" | "streamable-http";
-  setTransport: (v: "http" | "streamable-http") => void;
+  transport: "http" | "streamable-http" | "stdio";
+  setTransport: (v: "http" | "streamable-http" | "stdio") => void;
   url: string;
   setUrl: (v: string) => void;
   headers: { key: string; value: string }[];
   setHeaders: (v: { key: string; value: string }[]) => void;
+  command: string;
+  setCommand: (v: string) => void;
+  args: string;
+  setArgs: (v: string) => void;
+  env: { key: string; value: string }[];
+  setEnv: (v: { key: string; value: string }[]) => void;
+  stdioAllowed: boolean;
   submitting: boolean;
 }) {
-  const updateHeader = (i: number, patch: Partial<{ key: string; value: string }>) => {
-    const next = [...props.headers];
-    next[i] = { ...next[i]!, ...patch };
-    props.setHeaders(next);
-  };
-  const addHeader = () =>
-    props.setHeaders([...props.headers, { key: "", value: "" }]);
-  const removeHeader = (i: number) => {
-    if (props.headers.length === 1) {
-      props.setHeaders([{ key: "", value: "" }]);
-      return;
-    }
-    props.setHeaders(props.headers.filter((_, idx) => idx !== i));
-  };
-
+  const isStdio = props.transport === "stdio";
   return (
     <>
       <div className="library-form-row">
@@ -1354,63 +1463,89 @@ function McpFields(props: {
             />{" "}
             http
           </label>
-          <span className="library-radio-note">
-            stdio servers stay yaml-only
-          </span>
+          {props.stdioAllowed ? (
+            <label>
+              <input
+                type="radio"
+                name="lib-mcp-transport"
+                value="stdio"
+                checked={isStdio}
+                onChange={() => props.setTransport("stdio")}
+                disabled={props.submitting}
+              />{" "}
+              stdio
+            </label>
+          ) : (
+            <span className="library-radio-note">
+              stdio disabled (operator sets LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO=1)
+            </span>
+          )}
         </div>
       </div>
-      <div className="library-form-row">
-        <label htmlFor="lib-mcp-url">url</label>
-        <input
-          id="lib-mcp-url"
-          type="text"
-          value={props.url}
-          onChange={(e) => props.setUrl(e.target.value)}
-          disabled={props.submitting}
-          placeholder="https://n8n.example.com/mcp"
-        />
-      </div>
-      <div className="library-form-row">
-        <label>
-          headers
-          <button
-            type="button"
-            className="library-schema-hint-toggle"
-            onClick={addHeader}
-            disabled={props.submitting}
-          >
-            + add row
-          </button>
-        </label>
-        <div className="library-headers-grid">
-          {props.headers.map((h, i) => (
-            <div key={i} className="library-header-row">
-              <input
-                type="text"
-                placeholder="header-name"
-                value={h.key}
-                onChange={(e) => updateHeader(i, { key: e.target.value })}
-                disabled={props.submitting}
-              />
-              <input
-                type="text"
-                placeholder="value (e.g. Bearer ${LOOMCYCLE_X_TOKEN})"
-                value={h.value}
-                onChange={(e) => updateHeader(i, { value: e.target.value })}
-                disabled={props.submitting}
-              />
-              <button
-                type="button"
-                onClick={() => removeHeader(i)}
-                disabled={props.submitting}
-                title="remove"
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
+      {isStdio ? (
+        <>
+          <div className="library-form-row">
+            <label htmlFor="lib-mcp-command">
+              command
+              <span className="library-modal-field-hint">
+                {" "}— runs on the loomcycle host (arbitrary command, RCE-class trust)
+              </span>
+            </label>
+            <input
+              id="lib-mcp-command"
+              type="text"
+              value={props.command}
+              onChange={(e) => props.setCommand(e.target.value)}
+              disabled={props.submitting}
+              placeholder="npx"
+            />
+          </div>
+          <div className="library-form-row">
+            <label htmlFor="lib-mcp-args">
+              args
+              <span className="library-modal-field-hint"> — comma-separated</span>
+            </label>
+            <input
+              id="lib-mcp-args"
+              type="text"
+              value={props.args}
+              onChange={(e) => props.setArgs(e.target.value)}
+              disabled={props.submitting}
+              placeholder="-y, @scope/server, ${LOOMCYCLE_ROOT}"
+            />
+          </div>
+          <KVGrid
+            label="env"
+            rows={props.env}
+            setRows={props.setEnv}
+            keyPlaceholder="ENV_NAME"
+            valuePlaceholder="value (e.g. ${LOOMCYCLE_X_TOKEN})"
+            submitting={props.submitting}
+          />
+        </>
+      ) : (
+        <>
+          <div className="library-form-row">
+            <label htmlFor="lib-mcp-url">url</label>
+            <input
+              id="lib-mcp-url"
+              type="text"
+              value={props.url}
+              onChange={(e) => props.setUrl(e.target.value)}
+              disabled={props.submitting}
+              placeholder="https://n8n.example.com/mcp"
+            />
+          </div>
+          <KVGrid
+            label="headers"
+            rows={props.headers}
+            setRows={props.setHeaders}
+            keyPlaceholder="header-name"
+            valuePlaceholder="value (e.g. Bearer ${LOOMCYCLE_X_TOKEN})"
+            submitting={props.submitting}
+          />
+        </>
+      )}
     </>
   );
 }
@@ -1705,7 +1840,7 @@ function parseCommaList(s: string): string[] {
 // matching on stable substrings ("matches a static cfg.", "not allowed",
 // etc.) keeps the UI useful without forcing a substrate-side error-code
 // taxonomy redesign.
-function explainServerError(e: unknown): string {
+export function explainServerError(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
   // jsonFetch throws "<status> <statusText>: <body>"; pull the JSON body
   const jsonIdx = raw.indexOf("{");
@@ -1747,7 +1882,7 @@ function explainServerError(e: unknown): string {
     return "Substrate is not configured. Operator's root config is missing.";
   }
   if (innerText.includes("not allowed for dynamic registration")) {
-    return "MCP server transport must be http or streamable-http. Use yaml for stdio servers.";
+    return "stdio MCP servers require the operator to set LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO=1 (host RCE opt-in), or declare the server in yaml mcp_servers:.";
   }
   if (innerText.includes("allowed_tools") && innerText.includes("widen")) {
     return "Fork can't add tools beyond the calling agent's ceiling. Trim allowed_tools.";
