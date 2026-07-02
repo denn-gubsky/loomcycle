@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 )
 
@@ -102,12 +103,22 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// maskDSN replaces the password component of a libpq URL DSN with
-// "***" so an operator running validate in a shared terminal doesn't
-// accidentally leak the secret to scrollback. Keyword=value DSNs are
-// returned unchanged (parsing them safely is more code than it's
-// worth here; the operator is on their own for those).
+// maskDSN replaces the password component of a libpq DSN with "***" so an
+// operator running validate in a shared terminal doesn't leak the secret to
+// scrollback. Handles BOTH the URL form (postgres://user:pass@host) and the
+// keyword form (host=… password=SECRET) — the keyword form was previously
+// printed verbatim.
+//
+// dsnKeywordPassword matches a libpq keyword-form password (`password=SECRET`,
+// optionally single-quoted) so maskDSN can redact the value while keeping the
+// key. Case-insensitive; captures the value (quoted-with-escapes or unquoted).
+var dsnKeywordPassword = regexp.MustCompile(`(?i)(password\s*=\s*)('(?:[^']|'')*'|\S+)`)
+
 func maskDSN(dsn string) string {
+	// libpq keyword form: `host=db user=lc password=SECRET dbname=x`. The
+	// URL-form logic below only handles `user:pass@host`, so a keyword DSN
+	// (a fully valid LOOMCYCLE_PG_DSN) would print its password verbatim.
+	dsn = dsnKeywordPassword.ReplaceAllString(dsn, "${1}***")
 	// postgres://user:pass@host/...  →  postgres://user:***@host/...
 	at := -1
 	for i := 0; i < len(dsn); i++ {

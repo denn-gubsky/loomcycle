@@ -52,7 +52,7 @@ func RunPause(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("pause", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL (default: $LOOMCYCLE_BASE_URL or http://127.0.0.1:8787)")
-	token := fs.String("token", defaultAuthToken(), "bearer token (default: $LOOMCYCLE_AUTH_TOKEN)")
+	token := registerTokenFlag(fs)
 	timeoutMs := fs.Int64("timeout-ms", 0, "per-call wait-for-non-idempotent-tools cap; 0 ⇒ server default")
 	httpTimeout := fs.Duration("http-timeout", 60*time.Second, "client-side HTTP request timeout (must exceed the server's pause timeout so we don't time out before pause finishes)")
 	if err := fs.Parse(args); err != nil {
@@ -87,7 +87,7 @@ func RunResume(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL")
-	token := fs.String("token", defaultAuthToken(), "bearer token")
+	token := registerTokenFlag(fs)
 	httpTimeout := fs.Duration("http-timeout", 30*time.Second, "client-side HTTP request timeout")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -116,7 +116,7 @@ func RunState(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("state", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL")
-	token := fs.String("token", defaultAuthToken(), "bearer token")
+	token := registerTokenFlag(fs)
 	httpTimeout := fs.Duration("http-timeout", 10*time.Second, "client-side HTTP request timeout")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -215,4 +215,20 @@ func defaultBaseURL() string {
 
 func defaultAuthToken() string {
 	return getenvDefault("LOOMCYCLE_AUTH_TOKEN", "")
+}
+
+// registerTokenFlag registers the shared --token flag WITHOUT leaking the
+// resolved secret in usage output. The flag still defaults to
+// $LOOMCYCLE_AUTH_TOKEN (an unset flag resolves to the env value), but its
+// DISPLAYED default is blanked — otherwise flag.PrintDefaults (triggered by -h
+// or any parse error under flag.ContinueOnError) prints the real admin bearer
+// as `-token string … (default "lct_…")` into terminal scrollback / CI logs.
+// Blanking DefValue to "" makes PrintDefaults omit the default entirely while
+// the flag's runtime value is unchanged.
+func registerTokenFlag(fs *flag.FlagSet) *string {
+	p := fs.String("token", defaultAuthToken(), "bearer token (defaults to $LOOMCYCLE_AUTH_TOKEN)")
+	if f := fs.Lookup("token"); f != nil {
+		f.DefValue = ""
+	}
+	return p
 }

@@ -70,6 +70,16 @@ func resolvePrincipals(c *Config) error {
 		if expandDenyNames[def.TokenEnv] {
 			return fmt.Errorf("principals.%s: token_env %q is one of loomcycle's own infrastructure secrets and cannot be reused as a principal bearer", name, def.TokenEnv)
 		}
+		// Deny ${...}-interpolation of this principal's bearer. It passed
+		// ExpandEnvAllowed (LOOMCYCLE_*) and isn't a built-in infra secret, so
+		// without this it stayed interpolatable — a runtime-authored MCPServerDef
+		// header/url/env referencing ${LOOMCYCLE_ALICE_TOKEN} would exfiltrate
+		// the bearer to the server host (the same S1 exfil class the denylist
+		// closes for the built-in infra secrets, never extended to the newer
+		// per-principal tokens). Written once at config-load, before any runtime
+		// ExpandEnv reader (the MCPServerDef path); denied even for an inert
+		// (empty-at-boot) principal so the name is permanently non-interpolatable.
+		expandDenyNames[def.TokenEnv] = true
 		if bad := auth.UnknownScopes(def.Scopes); len(bad) > 0 {
 			return fmt.Errorf("principals.%s: unknown scope(s) %v (not in the closed catalog)", name, bad)
 		}
