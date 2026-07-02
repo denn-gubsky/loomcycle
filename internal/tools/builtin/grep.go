@@ -160,7 +160,7 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		before, after = args.Context, args.Context
 	}
 
-	res, err := grepWalk(searchRoot, re, args.Glob, mode, headLimit, maxBytes, before, after)
+	res, err := grepWalk(root, searchRoot, re, args.Glob, mode, headLimit, maxBytes, before, after)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -168,8 +168,19 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 }
 
 // grepWalk does the file iteration. Pulled out so tests can drive
-// it with a synthetic root.
-func grepWalk(searchRoot string, re *regexp.Regexp, glob, mode string, headLimit, maxBytes, before, after int) (string, error) {
+// it with a synthetic root. `root` is the sandbox volume root; every
+// walked entry is re-checked against it (symlink-resolved) before being
+// opened, so an in-volume symlink pointing outside the volume can't leak
+// out-of-volume file contents.
+func grepWalk(root, searchRoot string, re *regexp.Regexp, glob, mode string, headLimit, maxBytes, before, after int) (string, error) {
+	// Resolve the sandbox root ONCE; each walked file is checked against it
+	// below. A root that can't be resolved is a misconfiguration, not a
+	// per-file skip, so fail the walk.
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("sandbox root: %w", err)
+	}
+
 	var (
 		out      bytes.Buffer
 		results  int
@@ -185,7 +196,7 @@ func grepWalk(searchRoot string, re *regexp.Regexp, glob, mode string, headLimit
 	}
 	var perFile []fileMatch
 
-	err := filepath.WalkDir(searchRoot, func(path string, d os.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(searchRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			// Skip dirs we can't enter; don't fail the whole walk.
 			return nil
@@ -199,7 +210,23 @@ func grepWalk(searchRoot string, re *regexp.Regexp, glob, mode string, headLimit
 				return nil
 			}
 		}
-		matches, perr := grepFile(path, re, mode == "content", before, after)
+		// Symlink containment: WalkDir does NOT descend symlinked DIRS, but it
+		// still yields a symlinked FILE entry (IsDir()==false) whose target
+		// grepFile's os.Open would FOLLOW — so an in-volume symlink to
+		// /etc/passwd (plantable via a rw Bash/Bashbox, or pre-existing in a
+		// mounted dir) leaks out-of-volume file CONTENTS. Read/Edit gate every
+		// open on resolveInsideRoot; Grep did not. Resolve the entry and
+		// re-assert it is inside the volume: an in-volume symlink resolves to
+		// its real in-volume path (still grepped); one that escapes is skipped,
+		// never opened.
+		resolved, rerr := filepath.EvalSymlinks(path)
+		if rerr != nil {
+			return nil // dangling / unreadable symlink → skip
+		}
+		if relInsideRoot(rootResolved, path, resolved) != nil {
+			return nil // escapes the volume → skip, never open
+		}
+		matches, perr := grepFile(resolved, re, mode == "content", before, after)
 		if perr != nil || len(matches) == 0 {
 			return nil
 		}
