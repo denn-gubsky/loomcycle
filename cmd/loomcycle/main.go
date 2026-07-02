@@ -40,7 +40,6 @@ import (
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
-	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
@@ -1655,23 +1654,15 @@ func main() {
 	// registration happens on the shared grpc.Server further down.
 	var a2aServer *a2aapi.Server
 	if cfg.Env.A2AServerEnabled {
-		authToken := cfg.Env.AuthToken
-		var a2aAuth a2aapi.Authenticator
-		if authToken != "" {
-			// Reuse the same constant-time bearer check as the HTTP
-			// authMiddleware. The peer's bearer authenticates it as the
-			// principal; the name is opaque here (run attribution only).
-			a2aAuth = func(h http.Header) (string, bool) {
-				got := h.Get("Authorization")
-				if got == "" {
-					return "", false
-				}
-				if auth.CompareBearer(got, "Bearer "+authToken) {
-					return "a2a-peer", true
-				}
-				return "", false
-			}
-		}
+		// Authenticate A2A peers through the SAME operator-token substrate the
+		// HTTP/gRPC planes use — NOT just the legacy LOOMCYCLE_AUTH_TOKEN.
+		// srv.ResolvePrincipal handles both operator tokens and the legacy
+		// fallback (and correctly rejects a legacy secret HTTP has retired once
+		// an admin token exists); srv.AuthConfigured is the shared open-mode
+		// decision, evaluated per request. Previously this was gated on the
+		// legacy token alone, so an operator-token-only deployment left A2A
+		// unauthenticated (deps.Auth nil → anonymous-but-authenticated).
+		a2aAuth := a2aapi.FrontierAuthenticator(srv.AuthConfigured, srv.ResolvePrincipal)
 		a2aServer, err = a2aapi.New(context.Background(), a2aapi.Deps{
 			Cfg:   cfg,
 			Store: storeIface,
