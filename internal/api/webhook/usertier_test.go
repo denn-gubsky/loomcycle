@@ -26,21 +26,20 @@ func receiverWithTiers(t *testing.T, wh config.Webhook, tiers map[string]config.
 	})
 }
 
-// TestReceiver_RejectsUnknownUserTierFromPayload pins the spawn-path tier
-// guard: a payload-projected user_tier not in cfg.UserTiers is rejected with
-// 400 (parity with the HTTP handler) instead of being silently dropped to the
-// agent default. Regression-grade: pre-fix deliverSpawn never validated it,
-// so the run was spawned (202) under the agent default.
-func TestReceiver_RejectsUnknownUserTierFromPayload(t *testing.T) {
+// TestReceiver_RejectsUnknownDefUserTier: an unknown tier PINNED in the def (an
+// operator typo) is rejected with 400 (the spawn-path typo guard), not silently
+// dropped to the agent default.
+func TestReceiver_RejectsUnknownDefUserTier(t *testing.T) {
 	secret := "shhh"
 	now := time.Unix(1_700_000_000, 0)
-	body := []byte(`{"goal":"x","tier":"nonexistent"}`)
+	body := []byte(`{"goal":"x"}`)
 	wh := config.Webhook{
 		Enabled:        true,
 		Delivery:       "spawn",
 		Agent:          "responder",
+		UserTier:       "nonexistent", // Def-pinned bad tier
 		Auth:           config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"},
-		PayloadMapping: map[string]string{"goal": "$.goal", "user_tier": "$.tier"},
+		PayloadMapping: map[string]string{"goal": "$.goal"},
 	}
 	fr := &fakeRunner{runID: "run-1", agentID: "agent-1"}
 	rec := receiverWithTiers(t, wh, map[string]config.UserTier{"premium": {}}, fr, map[string]string{"WH_SECRET": secret}, now)
@@ -48,42 +47,69 @@ func TestReceiver_RejectsUnknownUserTierFromPayload(t *testing.T) {
 	h := http.Header{}
 	h.Set("X-Hub-Signature-256", githubSig(secret, body))
 	w := doPost(rec, "gh", body, h)
-
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for unknown user_tier; body=%s", w.Code, w.Body.String())
+		t.Fatalf("status = %d, want 400 for an unknown def user_tier; body=%s", w.Code, w.Body.String())
 	}
 	if fr.called {
-		t.Error("runner was invoked for a delivery with an unknown user_tier; must be rejected before spawn")
+		t.Error("runner invoked despite an unknown def user_tier")
 	}
 }
 
-// TestReceiver_AcceptsKnownUserTierFromPayload confirms a configured tier
-// still spawns and flows through to the run input.
-func TestReceiver_AcceptsKnownUserTierFromPayload(t *testing.T) {
+// TestReceiver_AcceptsDefPinnedUserTier: a tier pinned in the def flows through
+// to the run input and spawns.
+func TestReceiver_AcceptsDefPinnedUserTier(t *testing.T) {
+	secret := "shhh"
+	now := time.Unix(1_700_000_000, 0)
+	body := []byte(`{"goal":"x"}`)
+	wh := config.Webhook{
+		Enabled:        true,
+		Delivery:       "spawn",
+		Agent:          "responder",
+		UserTier:       "premium",
+		Auth:           config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"},
+		PayloadMapping: map[string]string{"goal": "$.goal"},
+	}
+	fr := &fakeRunner{runID: "run-1", agentID: "agent-1"}
+	rec := receiverWithTiers(t, wh, map[string]config.UserTier{"premium": {}}, fr, map[string]string{"WH_SECRET": secret}, now)
+
+	h := http.Header{}
+	h.Set("X-Hub-Signature-256", githubSig(secret, body))
+	w := doPost(rec, "gh", body, h)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", w.Code, w.Body.String())
+	}
+	if got := fr.input().UserTier; got != "premium" {
+		t.Errorf("UserTier = %q, want premium (from the def pin)", got)
+	}
+}
+
+// TestReceiver_PayloadCannotSelectUserTier is the regression: a signed sender
+// must NOT be able to pick the (cost) tier via the payload. The def pins "basic";
+// the payload maps user_tier→"premium"; the run must execute as "basic". Pre-fix,
+// buildRunInput took UserTier from proj.Fields → the sender got "premium".
+func TestReceiver_PayloadCannotSelectUserTier(t *testing.T) {
 	secret := "shhh"
 	now := time.Unix(1_700_000_000, 0)
 	body := []byte(`{"goal":"x","tier":"premium"}`)
 	wh := config.Webhook{
-		Enabled:        true,
-		Delivery:       "spawn",
-		Agent:          "responder",
-		Auth:           config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"},
+		Enabled:  true,
+		Delivery: "spawn",
+		Agent:    "responder",
+		UserTier: "basic", // operator pin
+		Auth:     config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"},
+		// A malicious/over-reaching mapping that tries to select the premium tier.
 		PayloadMapping: map[string]string{"goal": "$.goal", "user_tier": "$.tier"},
 	}
 	fr := &fakeRunner{runID: "run-1", agentID: "agent-1"}
-	rec := receiverWithTiers(t, wh, map[string]config.UserTier{"premium": {}}, fr, map[string]string{"WH_SECRET": secret}, now)
+	rec := receiverWithTiers(t, wh, map[string]config.UserTier{"basic": {}, "premium": {}}, fr, map[string]string{"WH_SECRET": secret}, now)
 
 	h := http.Header{}
 	h.Set("X-Hub-Signature-256", githubSig(secret, body))
 	w := doPost(rec, "gh", body, h)
-
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", w.Code, w.Body.String())
 	}
-	if !fr.called {
-		t.Fatal("runner was not invoked for a valid tier")
-	}
-	if got := fr.input().UserTier; got != "premium" {
-		t.Errorf("UserTier = %q, want premium", got)
+	if got := fr.input().UserTier; got != "basic" {
+		t.Errorf("UserTier = %q, want basic — the payload must NOT override the def-pinned tier", got)
 	}
 }
