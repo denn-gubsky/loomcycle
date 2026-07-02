@@ -81,6 +81,84 @@ func TestPath_LsOneLevel(t *testing.T) {
 	}
 }
 
+// lsEntryKinds flattens an ls result to name→kind for assertions.
+func lsEntryKinds(out map[string]any) map[string]string {
+	m := map[string]string{}
+	entries, _ := out["entries"].([]any)
+	for _, e := range entries {
+		em, _ := e.(map[string]any)
+		name, _ := em["name"].(string)
+		kind, _ := em["kind"].(string)
+		m[name] = kind
+	}
+	return m
+}
+
+// TestPath_LsSynthesizesImplicitDirs: directories are implicit (S3-style), so a
+// document at /loomcycle/rfcs/<name> creates no dirent row for /loomcycle/rfcs.
+// One-level `ls /loomcycle` must still surface `rfcs/` as a synthesized
+// directory alongside the explicit leaf `marketing`. Fails on the pre-fix code,
+// which listed only exact-parent rows (just `marketing`).
+func TestPath_LsSynthesizesImplicitDirs(t *testing.T) {
+	p, ctx, s := pathFixture(t)
+	seedAgent(t, s, "/loomcycle/", "marketing", "document")
+	seedAgent(t, s, "/loomcycle/rfcs/", "agent-teams", "document")
+	seedAgent(t, s, "/loomcycle/rfcs/", "policies", "document")
+
+	out, res := pathExec(t, p, ctx, `{"op":"ls","path":"/loomcycle"}`)
+	if res.IsError {
+		t.Fatalf("ls: %q", res.Text)
+	}
+	got := lsEntryKinds(out)
+	if len(got) != 2 {
+		t.Fatalf("ls /loomcycle = %d entries, want 2 (marketing + implicit rfcs/): %s", len(got), res.Text)
+	}
+	if got["marketing"] != "document" {
+		t.Errorf("marketing kind = %q, want document", got["marketing"])
+	}
+	if got["rfcs"] != "directory" {
+		t.Errorf("rfcs should be synthesized as an implicit directory; entries=%s", res.Text)
+	}
+
+	// `ls /` synthesizes the top-level implicit directory.
+	out, res = pathExec(t, p, ctx, `{"op":"ls","path":"/"}`)
+	if lsEntryKinds(out)["loomcycle"] != "directory" {
+		t.Errorf("ls / should synthesize /loomcycle as a directory; entries=%s", res.Text)
+	}
+
+	// kind_filter=document hides the synthesized directory; =directory shows only it.
+	out, res = pathExec(t, p, ctx, `{"op":"ls","path":"/loomcycle","kind_filter":"document"}`)
+	docs := lsEntryKinds(out)
+	if _, ok := docs["rfcs"]; ok {
+		t.Errorf("kind_filter=document must exclude the implicit dir rfcs; entries=%s", res.Text)
+	}
+	if docs["marketing"] != "document" {
+		t.Errorf("kind_filter=document should still include marketing; entries=%s", res.Text)
+	}
+	out, res = pathExec(t, p, ctx, `{"op":"ls","path":"/loomcycle","kind_filter":"directory"}`)
+	dirs := lsEntryKinds(out)
+	if dirs["rfcs"] != "directory" || len(dirs) != 1 {
+		t.Errorf("kind_filter=directory should show only the implicit rfcs; entries=%s", res.Text)
+	}
+}
+
+// TestPath_LsExplicitDirShadowsImplicit: a mkdir'd directory and descendants of
+// the same name collapse to a single entry (no duplicate), and the explicit
+// row's identity wins.
+func TestPath_LsExplicitDirShadowsImplicit(t *testing.T) {
+	p, ctx, s := pathFixture(t)
+	seedAgent(t, s, "/", "rfcs", "directory")    // explicit mkdir'd dir
+	seedAgent(t, s, "/rfcs/", "one", "document") // descendant → also implies /rfcs
+	out, res := pathExec(t, p, ctx, `{"op":"ls","path":"/"}`)
+	if res.IsError {
+		t.Fatalf("ls: %q", res.Text)
+	}
+	got := lsEntryKinds(out)
+	if len(got) != 1 || got["rfcs"] != "directory" {
+		t.Errorf("ls / should show exactly one `rfcs` directory (no implicit duplicate); entries=%s", res.Text)
+	}
+}
+
 func TestPath_ResolveAndStat(t *testing.T) {
 	p, ctx, s := pathFixture(t)
 	seedAgent(t, s, "/notes/", "x", "memory_entry")
