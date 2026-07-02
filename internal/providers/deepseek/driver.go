@@ -112,6 +112,14 @@ func IsThinkingModel(model string) bool {
 		"-pro",
 		"reasoner",
 		"-r1",
+		// The whole DeepSeek V4 family enforces the thinking-mode
+		// reasoning_content round-trip — INCLUDING deepseek-v4-flash. Production
+		// (2026-07-02) proved a cross-provider fallback landing on
+		// deepseek-v4-flash still 400s ("reasoning_content ... must be passed
+		// back") on a reasoning-less history, even with the effort hint dropped
+		// (#608). So "flash" is NOT a safe non-thinking sibling — classify the
+		// v4 family as thinking so the downgrader routes it to deepseek-chat.
+		"v4",
 	}
 	for _, m := range thinkingMarkers {
 		if strings.Contains(lower, m) {
@@ -122,21 +130,21 @@ func IsThinkingModel(model string) bool {
 }
 
 // NonThinkingSibling implements providers.ThinkingDowngrader. A DeepSeek
-// thinking model (deepseek-reasoner / *-pro / *-r1) requires reasoning_content
-// echoed on every assistant turn and 400s on a turn lacking it. When a
-// cross-provider fallback lands on such a model with a reasoning-less history,
-// the loop swaps it for the non-thinking sibling returned here.
+// thinking model (deepseek-reasoner / *-pro / *-r1 / the v4 family) requires
+// reasoning_content echoed on every assistant turn and 400s on a turn lacking
+// it. When a cross-provider fallback lands on such a model with a reasoning-less
+// history, the loop swaps it for the non-thinking model returned here.
 //
-// Mapping: a *-pro variant pairs with the same-generation *-flash non-thinking
-// model (deepseek-v4-pro → deepseek-v4-flash); reasoner / r1 have no flash
-// sibling, so fall back to deepseek-chat — the canonical, always-available
-// non-thinking model (V3 chat). Returns ("", false) for a non-thinking model.
+// Target: ALWAYS deepseek-chat (the V3 non-thinking model). The same-generation
+// *-flash is NOT a safe target — production (2026-07-02) proved deepseek-v4-flash
+// ALSO runs in thinking mode and 400s ("reasoning_content ... must be passed
+// back") on the reasoning-less, cross-provider-stripped history, even after the
+// effort hint is dropped (#608). deepseek-chat is the canonical, always-available
+// model that never requires reasoning_content. Returns ("", false) for a
+// non-thinking model (incl. deepseek-chat itself → no infinite downgrade).
 func (d *Driver) NonThinkingSibling(model string) (string, bool) {
 	if !IsThinkingModel(model) {
 		return "", false
-	}
-	if strings.Contains(model, "-pro") {
-		return strings.Replace(model, "-pro", "-flash", 1), true
 	}
 	return "deepseek-chat", true
 }
