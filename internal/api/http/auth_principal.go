@@ -342,16 +342,37 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			"tenant_id": "default", "subject": "default",
 			"scopes": []string{auth.ScopeAdmin}, "is_admin": true,
 			"legacy": false, "open_mode": true,
+			"capabilities": s.serverCapabilities(),
 		})
 		return
 	}
 	writeJSONOK(w, map[string]any{
-		"tenant_id": p.TenantID,
-		"subject":   p.Subject,
-		"scopes":    p.Scopes,
-		"is_admin":  auth.HasScope(p.Scopes, auth.ScopeAdmin),
-		"legacy":    p.Legacy,
+		"tenant_id":    p.TenantID,
+		"subject":      p.Subject,
+		"scopes":       p.Scopes,
+		"is_admin":     auth.HasScope(p.Scopes, auth.ScopeAdmin),
+		"legacy":       p.Legacy,
+		"capabilities": s.serverCapabilities(),
 	})
+}
+
+// serverCapabilities is a NON-SECRET, booleans-only advertisement of runtime
+// posture the Web UI needs to gate its affordances (RFC AU) — notably whether a
+// tenant may import a stdio MCP server (host RCE, off by default). It is exposed
+// on the auth-only /v1/_me boot call to every principal, so it must never leak
+// operator infra detail: report only booleans/presence, NEVER the allowlist
+// CONTENTS (internal hostnames) or any secret.
+func (s *Server) serverCapabilities() map[string]any {
+	return map[string]any{
+		// Whether the MCPServerDef substrate accepts a dynamically-registered
+		// stdio server (LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO). The UI enables the
+		// stdio import path only when true, with a loud RCE warning.
+		"mcp_allow_dynamic_stdio": s.cfg.Env.MCPAllowDynamicStdio,
+		// Whether ANY http host allowlist is configured — so the UI can warn
+		// that an imported http MCP server will 422 unless its host is listed.
+		// Presence only; never the entries themselves.
+		"http_host_allowlist_configured": len(s.cfg.Env.HTTPHostAllowlist)+len(s.cfg.Env.HTTPPrivateHostAllowlist) > 0,
+	}
 }
 
 // principalTenantScope resolves the tenant a list read should be scoped

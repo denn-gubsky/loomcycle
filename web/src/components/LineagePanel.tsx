@@ -51,6 +51,9 @@ export interface LineagePanelProps {
   // The callback receives the currently-selected entry's name so the
   // caller doesn't have to re-derive it.
   onRediscover?: (name: string) => void;
+  // RFC AU — "Import" CTA beside "+ New" (skills + mcp-servers tabs).
+  // Opens the Claude Code import flow. Optional.
+  onImport?: () => void;
 }
 
 export default function LineagePanel({
@@ -64,6 +67,7 @@ export default function LineagePanel({
   onRetireRow,
   onPromoteRow,
   onRediscover,
+  onImport,
 }: LineagePanelProps) {
   const [selectedName, setSelectedName] = useState<string>(() =>
     entries.length > 0 ? entries[0]!.name : "",
@@ -182,6 +186,16 @@ export default function LineagePanel({
             + New {newCtaLabel(kind)}
           </button>
         )}
+        {onImport && (
+          <button
+            type="button"
+            className="lineage-row-action"
+            onClick={onImport}
+            style={{ marginTop: 12, marginLeft: 8 }}
+          >
+            Import…
+          </button>
+        )}
       </div>
     );
   }
@@ -211,6 +225,16 @@ export default function LineagePanel({
                 title={`Re-run ${selectedName}'s tools/list handshake and refresh cached tools`}
               >
                 Rediscover tools 🔄
+              </button>
+            )}
+            {onImport && (
+              <button
+                type="button"
+                className="lineage-row-action"
+                onClick={onImport}
+                title="Import Claude Code skills / MCP servers"
+              >
+                Import…
               </button>
             )}
             {onCreateNew && (
