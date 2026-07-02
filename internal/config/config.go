@@ -1960,6 +1960,13 @@ type Env struct {
 	// callbacks to a localhost-bound application API. Default empty
 	// (no exception). Example: "localhost,127.0.0.1".
 	HTTPPrivateHostAllowlist []string
+	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
+	// private/loopback/metadata IPs. DEFAULT true (MCP servers are commonly
+	// operator-run on localhost / a private network — incl. loomcycle's own
+	// jobs-search-agent /api/mcp consumer). Set LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0
+	// to enable a dial-time DNS-rebinding block; HTTPPrivateHostAllowlist then
+	// exempts specific internal MCP hosts.
+	MCPAllowPrivateIPs bool
 	// HTTPCallerAuthoritative flips the per-request allowed_hosts
 	// trust model: when true, caller's list is the sole policy
 	// (operator's HTTPHostAllowlist becomes a fallback for runs that
@@ -2750,6 +2757,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		DataDir:                   getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
 		HTTPHostAllowlist:         splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist:  splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
+		MCPAllowPrivateIPs:        getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", true),
 		HTTPCallerAuthoritative:   os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
 		ResumeFanout:              os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		BraveAPIKey:               os.Getenv("BRAVE_API_KEY"),
@@ -3873,6 +3881,21 @@ func getenvDefault(name, dflt string) string {
 		return v
 	}
 	return dflt
+}
+
+// getenvBool reads a boolean env var with an explicit default. Unset → dflt;
+// "1"/"true"/"yes"/"on" → true; "0"/"false"/"no"/"off" → false (case-
+// insensitive). An unrecognised non-empty value → dflt (fail-safe to the
+// documented default rather than silently flipping).
+func getenvBool(name string, dflt bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return dflt
+	}
 }
 
 // discoverAgents walks LOOMCYCLE_AGENTS_ROOT, parses each `<name>.md`

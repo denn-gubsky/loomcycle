@@ -1007,6 +1007,12 @@ func main() {
 				return mcphttp.New(mcphttp.Config{
 					URL:     config.ExpandEnv(spec.URL),
 					Headers: hdrs,
+					// DNS-rebinding guard: OFF by default (MCP servers are commonly
+					// on localhost/private-net), opt in via
+					// LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0. HTTPPrivateHostAllowlist
+					// exempts specific internal MCP hosts when the block is on.
+					BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs,
+					PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 				})
 			case "stdio":
 				// F31: a runtime-registered stdio server. The substrate only

@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
@@ -45,6 +46,16 @@ type Config struct {
 	// HTTPClient overrides the default. Tests pass an httptest-driven
 	// client; production passes nil to use the package default.
 	HTTPClient *http.Client
+	// BlockPrivateIPs, when true, makes the default client refuse to dial
+	// private / loopback / metadata IPs at connect time (DNS-rebinding
+	// protection). DEFAULT false: MCP servers are commonly operator-run on
+	// localhost / a private network — including loomcycle's own jobs-search-agent
+	// /api/mcp consumer — so blocking by default would break them. Operators opt
+	// in via LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0. Ignored when HTTPClient is set.
+	BlockPrivateIPs bool
+	// PrivateHostAllowlist exempts specific hosts from BlockPrivateIPs (the
+	// operator's vouch list, reusing LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST).
+	PrivateHostAllowlist []string
 }
 
 // Client speaks MCP over HTTP. Implements mcp.Caller.
@@ -67,7 +78,14 @@ func New(cfg Config) (*Client, error) {
 	}
 	hc := cfg.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: defaultTimeout}
+		if cfg.BlockPrivateIPs {
+			// Opt-in DNS-rebinding guard: an allowlisted MCP host that rebinds to
+			// a private/metadata IP is refused at dial time. Default path stays a
+			// plain client (unchanged) so internal/localhost MCP servers work.
+			hc = netguard.NewGuardedClient(defaultTimeout, cfg.PrivateHostAllowlist)
+		} else {
+			hc = &http.Client{Timeout: defaultTimeout}
+		}
 	}
 	return &Client{
 		url:     cfg.URL,
