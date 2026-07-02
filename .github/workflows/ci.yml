@@ -188,6 +188,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run test
       - run: npm run build
 
   python-adapter:
