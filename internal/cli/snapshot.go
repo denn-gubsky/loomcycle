@@ -78,7 +78,7 @@ func RunSnapshot(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL")
-	token := fs.String("token", defaultAuthToken(), "bearer token")
+	token := registerTokenFlag(fs)
 	description := fs.String("description", "", "free-text label stored on snapshots.label (operator's marker)")
 	includeHistory := fs.Bool("include-history", false, "also capture interaction_history (large; opt-in)")
 	since := fs.String("since", "", "RFC3339 timestamp; only honoured with --include-history")
@@ -121,7 +121,7 @@ func RunSnapshotsList(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("snapshots list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL")
-	token := fs.String("token", defaultAuthToken(), "bearer token")
+	token := registerTokenFlag(fs)
 	limit := fs.Int("limit", 200, "max rows returned (server cap also applies)")
 	labelContains := fs.String("label-contains", "", "filter by label substring")
 	httpTimeout := fs.Duration("http-timeout", 30*time.Second, "client-side HTTP timeout")
@@ -166,7 +166,7 @@ func RunSnapshotsExport(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("snapshots export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL")
-	token := fs.String("token", defaultAuthToken(), "bearer token")
+	token := registerTokenFlag(fs)
 	out := fs.String("out", "", "write envelope to this file instead of stdout")
 	httpTimeout := fs.Duration("http-timeout", 5*time.Minute, "client-side HTTP timeout")
 	if err := fs.Parse(args); err != nil {
@@ -202,7 +202,7 @@ func RunSnapshotsDelete(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("snapshots delete", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL")
-	token := fs.String("token", defaultAuthToken(), "bearer token")
+	token := registerTokenFlag(fs)
 	httpTimeout := fs.Duration("http-timeout", 30*time.Second, "client-side HTTP timeout")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -232,7 +232,7 @@ func RunRestore(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL")
-	token := fs.String("token", defaultAuthToken(), "bearer token")
+	token := registerTokenFlag(fs)
 	includeHistory := fs.Bool("include-history", false, "also restore interaction_history events")
 	httpTimeout := fs.Duration("http-timeout", 10*time.Minute, "client-side HTTP timeout (per-section idempotent inserts, large envelopes take time)")
 	if err := fs.Parse(args); err != nil {

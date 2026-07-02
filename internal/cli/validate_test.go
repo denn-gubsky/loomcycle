@@ -94,7 +94,11 @@ func TestMaskDSN(t *testing.T) {
 		{"postgres://alice@host:5432/db", "postgres://alice@host:5432/db"},
 		{"postgres://host:5432/db", "postgres://host:5432/db"},
 		{"postgres://alice:@host/db", "postgres://alice:@host/db"}, // empty pw stays
-		{"host=localhost user=alice password=secret", "host=localhost user=alice password=secret"},
+		// libpq keyword form: the password value is now masked (was printed
+		// verbatim before the fix).
+		{"host=localhost user=alice password=secret", "host=localhost user=alice password=***"},
+		{"host=db user=lc password='pw with spaces' dbname=x", "host=db user=lc password=*** dbname=x"},
+		{"host=db user=alice dbname=loomcycle", "host=db user=alice dbname=loomcycle"}, // no pw → unchanged
 	}
 	for _, c := range cases {
 		got := maskDSN(c.in)

@@ -3842,6 +3842,12 @@ var expandDenyNames = map[string]bool{
 // credential whose VALUE must be kept out of persisted transcripts (F32).
 var secretEnvSuffixes = []string{
 	"_KEY", "_TOKEN", "_SECRET", "_AUTH", "_PASSWORD", "_CREDENTIAL", "_CREDENTIALS",
+	// _DSN: a database DSN embeds the DB password (postgres://user:pass@host or
+	// the keyword-form password=…), so its VALUE must be redacted out of
+	// persisted transcripts / snapshots / the /v1/_events audit surface. This
+	// classifies the NAME for the redactor only — it does NOT gate env
+	// expansion (that's the separate expandDenyNames named set).
+	"_DSN",
 }
 
 // IsSecretEnvName reports whether an env-var name denotes a secret VALUE, by the
