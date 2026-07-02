@@ -188,19 +188,32 @@ func (b *Bus) publishLocal(evt RunStateEvent) {
 	if evt.TS.IsZero() {
 		evt.TS = time.Now().UTC()
 	}
+	// Deliver UNDER b.mu — the SAME lock unsubscribe() closes sub.ch under.
+	// Previously publishLocal snapshotted the subscribers, released the lock,
+	// then sent — so unsubscribe()'s close() could interleave between the
+	// snapshot and the send and panic with "send on closed channel". The
+	// non-blocking select does NOT save it: a send on a closed channel is a
+	// "ready" case, so the runtime chooses it (and panics) rather than taking
+	// default. That panic fires on the backplane fan-out goroutine (no recover)
+	// → process crash. A non-blocking select can't stall the critical section
+	// (a full buffer takes default instantly), so holding the lock through
+	// delivery is cheap and makes send-vs-close mutually exclusive.
 	b.mu.Lock()
-	matches := make([]*subscription, 0, len(b.byUser[evt.UserID])+len(b.byUser[""]))
-	matches = append(matches, b.byUser[evt.UserID]...)
-	if evt.UserID != "" {
-		matches = append(matches, b.byUser[""]...)
-	}
-	b.mu.Unlock()
-
-	for _, sub := range matches {
+	defer b.mu.Unlock()
+	deliver := func(sub *subscription) {
 		select {
 		case sub.ch <- evt:
 		default:
 			atomic.AddInt64(&sub.dropped, 1)
+		}
+	}
+	for _, sub := range b.byUser[evt.UserID] {
+		deliver(sub)
+	}
+	if evt.UserID != "" {
+		// Global (user="") subscribers also see every user-scoped event.
+		for _, sub := range b.byUser[""] {
+			deliver(sub)
 		}
 	}
 }
@@ -258,11 +271,12 @@ func (b *Bus) unsubscribe(sub *subscription) {
 	} else {
 		b.byUser[sub.userID] = subs
 	}
-	// Close exactly once. Buffered sends from a concurrent Publish
-	// can race with this close; we accept losing the very last in-
-	// flight event on a closing subscription as the cost of a clean
-	// close. The drain is fine — the SSE handler is the only reader
-	// and it cancels its ctx before calling Close.
+	// Close under b.mu — publishLocal now delivers under the same lock, so a
+	// concurrent Publish can no longer interleave a send between the
+	// subscriber snapshot and the close (which panicked "send on closed
+	// channel"). The removal above + this close are one atomic critical
+	// section: once removed from b.byUser, no publishLocal can observe this
+	// sub, so the close is safe.
 	close(sub.ch)
 }
 
