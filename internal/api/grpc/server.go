@@ -200,6 +200,12 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 		}
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
+	// Tenant isolation (RFC L/N): fold a cross-tenant run into the same opaque
+	// NotFound the HTTP handleGetAgent returns via tenantStore.GetRunByAgentID —
+	// agent ids are not secret, so the gate must not be an existence oracle.
+	if !grpcTenantVisible(ctx, run.TenantID) {
+		return nil, status.Errorf(codes.NotFound, "no run found for agent_id %q", agentID)
+	}
 	_, live := s.cancelReg.Get(agentID)
 	return runToProto(run, live), nil
 }
@@ -273,6 +279,11 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	}
 	out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs))}
 	for _, r := range runs {
+		// Tenant isolation (RFC L/N): drop cross-tenant rows, mirroring the HTTP
+		// handleListUserAgents post-filter driven by principalTenantScope.
+		if !grpcTenantVisible(ctx, r.TenantID) {
+			continue
+		}
 		_, live := s.cancelReg.Get(r.AgentID)
 		out.Agents = append(out.Agents, runToProto(r, live))
 	}
@@ -295,12 +306,20 @@ func (s *Server) GetTranscript(ctx context.Context, req *loomcyclepb.GetTranscri
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "transcript requires persistence (Store not configured)")
 	}
-	if _, err := s.store.GetSession(ctx, sessionID); err != nil {
+	sess, err := s.store.GetSession(ctx, sessionID)
+	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
 			return nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
 		}
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
+	}
+	// Tenant isolation (RFC L/N): a transcript exposes the session's full
+	// history, so gate it on the session's tenant exactly as the HTTP
+	// handleTranscript does via tenantStore.GetSession — a cross-tenant session
+	// folds into the same opaque NotFound (session ids are not secret).
+	if !grpcTenantVisible(ctx, sess.TenantID) {
+		return nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
 	}
 	events, err := s.store.GetTranscript(ctx, sessionID)
 	if err != nil {
