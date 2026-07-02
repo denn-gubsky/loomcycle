@@ -248,6 +248,20 @@ export interface Principal {
   is_admin: boolean;
   legacy: boolean;
   open_mode?: boolean;
+  /**
+   * Non-secret, booleans-only runtime posture (RFC AU) the UI uses to gate
+   * affordances — notably whether a tenant may import a stdio MCP server (host
+   * RCE, off by default). Absent on older servers → treat every capability as
+   * false (safe default). NEVER carries allowlist contents or any secret.
+   */
+  capabilities?: ServerCapabilities;
+}
+
+export interface ServerCapabilities {
+  /** LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO — gates the stdio MCP import path. */
+  mcp_allow_dynamic_stdio?: boolean;
+  /** Whether any http host allowlist is configured (presence only). */
+  http_host_allowlist_configured?: boolean;
 }
 
 // getWhoami resolves the current principal. A 401 redirects to /login via
