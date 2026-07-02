@@ -171,12 +171,18 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 //     into separate role:"tool" messages.
 
 type wireRequest struct {
-	Model       string        `json:"model"`
-	Messages    []wireMessage `json:"messages"`
-	Tools       []wireTool    `json:"tools,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	Stream      bool          `json:"stream"`
+	Model     string        `json:"model"`
+	Messages  []wireMessage `json:"messages"`
+	Tools     []wireTool    `json:"tools,omitempty"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
+	// MaxCompletionTokens is the reasoning-model spelling of the output cap.
+	// OpenAI's o-series / GPT-5 reasoning models REJECT max_tokens with a 400
+	// ("Unsupported parameter: max_tokens … use max_completion_tokens instead")
+	// — buildRequestBody sends exactly one of the two based on the model. Chat
+	// models (gpt-4o, DeepSeek's OpenAI-compat surface) keep max_tokens.
+	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	Stream              bool     `json:"stream"`
 
 	// Sampling knobs OpenAI's /v1/chat/completions accepts (DeepSeek's
 	// OpenAI-compat surface inherits the same field names). top_k is NOT an
@@ -301,7 +307,6 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 
 	w := wireRequest{
 		Model:            req.Model,
-		MaxTokens:        req.MaxTokens,
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,
 		FrequencyPenalty: req.FrequencyPenalty,
@@ -317,6 +322,16 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		// receive values from the validated Effort enum at the config
 		// layer.
 		ReasoningEffort: req.Effort,
+	}
+
+	// Reasoning models (o-series / GPT-5) reject max_tokens and require
+	// max_completion_tokens; chat models (gpt-4o) and DeepSeek's OpenAI-compat
+	// surface keep max_tokens. Send exactly one, by model — omitempty drops a
+	// zero cap either way.
+	if openaiIsReasoningModel(req.Model) {
+		w.MaxCompletionTokens = req.MaxTokens
+	} else {
+		w.MaxTokens = req.MaxTokens
 	}
 
 	// System blocks become a single role:"system" message at the top.
@@ -430,6 +445,28 @@ func flattenMessage(m providers.Message) []wireMessage {
 		out = append([]wireMessage{{Role: "user", Content: userText.String()}}, out...)
 	}
 	return out
+}
+
+// openaiIsReasoningModel reports whether the named model is an OpenAI reasoning
+// model (o-series or GPT-5 line) that requires max_completion_tokens and rejects
+// max_tokens. Match is by name so the shared driver serves DeepSeek safely:
+// deepseek-* never matches, so DeepSeek keeps max_tokens (its OpenAI-compat
+// surface accepts it). gpt-4o is NOT a reasoning model — the "gpt-5" substring
+// won't match it, and the o-series prefixes are anchored so "gpt-4o" is excluded.
+// An unknown model is treated as a chat model (keeps max_tokens); a wrong guess
+// surfaces as a provider 400, never a silent drop.
+func openaiIsReasoningModel(model string) bool {
+	m := strings.ToLower(model)
+	if strings.Contains(m, "gpt-5") {
+		return true
+	}
+	// o-series: o1 / o3 / o4 (+ future o5), optionally suffixed (-mini, dates).
+	for _, p := range []string{"o1", "o3", "o4", "o5"} {
+		if m == p || strings.HasPrefix(m, p+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 // openaiSupportsVision reports whether the named OpenAI model accepts image
