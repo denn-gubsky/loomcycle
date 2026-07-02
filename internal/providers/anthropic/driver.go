@@ -206,6 +206,12 @@ type wireContentBlock struct {
 	Content   string           `json:"content,omitempty"`
 	IsError   bool             `json:"is_error,omitempty"`
 	Source    *wireImageSource `json:"source,omitempty"` // type == "image" (RFC AT)
+	// Thinking + Signature carry an extended-thinking block replayed on a
+	// tool-use continuation (type == "thinking"). Anthropic verifies Signature
+	// against Thinking and 400s on a mismatch or a missing block, so both are
+	// sent together and only when both are present.
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // wireImageSource is Anthropic's inline base64 image source block:
@@ -308,6 +314,21 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 
 	for _, m := range req.Messages {
 		wm := wireMessage{Role: m.Role}
+		// Replay the assistant turn's extended-thinking block FIRST. When
+		// extended thinking is enabled and the turn used tools, Anthropic
+		// requires the prior assistant message to start with its thinking
+		// block, seal included — else the tool-use continuation 400s with "a
+		// final assistant message must start with a thinking block". The loop
+		// stamps Reasoning (thinking text) + ReasoningSignature onto the
+		// Message from EventDone; both must be present to reconstruct a block
+		// the API will accept (a bare/unsigned block 400s differently).
+		if m.Role == "assistant" && m.Reasoning != "" && m.ReasoningSignature != "" {
+			wm.Content = append(wm.Content, wireContentBlock{
+				Type:      "thinking",
+				Thinking:  m.Reasoning,
+				Signature: m.ReasoningSignature,
+			})
+		}
 		for _, c := range m.Content {
 			wm.Content = append(wm.Content, toWireBlock(c))
 		}
@@ -403,6 +424,12 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	var current pendingBlock
 	var stopReason string
 	var usage *providers.Usage
+	// Accumulate the extended-thinking block (text + its signature_delta seal)
+	// so EventDone can carry them for the next-turn replay Anthropic requires
+	// on tool-use continuations. Standard (non-interleaved) thinking emits one
+	// block per assistant turn, so a single text buffer + signature suffices.
+	var reasoning strings.Builder
+	var signature string
 	// Resolved model alias from message_start. Anthropic sometimes
 	// returns a date-suffixed alias (`claude-haiku-4-5-20251001`)
 	// distinct from the request alias (`claude-haiku-4-5`); capture
@@ -415,7 +442,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		if len(line) == 0 {
 			// dispatch frame
 			if frame.event != "" || len(frame.data) > 0 {
-				if !processFrame(frame, &current, &stopReason, &model, &usage, send) {
+				if !processFrame(frame, &current, &stopReason, &model, &usage, &reasoning, &signature, send) {
 					return
 				}
 			}
@@ -432,8 +459,16 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		send(providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()})
 		return
 	}
-	// Final done event with stop_reason + usage.
-	send(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: usage})
+	// Final done event with stop_reason + usage + the accumulated thinking
+	// block (Reasoning text + Signature) for the loop to stamp onto the
+	// assistant Message — Anthropic replays it on the tool-use continuation.
+	send(providers.Event{
+		Type:               providers.EventDone,
+		StopReason:         stopReason,
+		Usage:              usage,
+		Reasoning:          reasoning.String(),
+		ReasoningSignature: signature,
+	})
 }
 
 type pendingBlock struct {
@@ -451,6 +486,8 @@ func processFrame(
 	stopReason *string,
 	model *string,
 	usage **providers.Usage,
+	reasoning *strings.Builder,
+	signature *string,
 	send func(providers.Event) bool,
 ) bool {
 	switch f.event {
@@ -499,6 +536,7 @@ func processFrame(
 				Type        string `json:"type"`
 				Text        string `json:"text"`
 				Thinking    string `json:"thinking"`
+				Signature   string `json:"signature"`
 				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
 		}
@@ -512,14 +550,18 @@ func processFrame(
 			}
 		case "thinking_delta":
 			// Anthropic extended-thinking chunks. Surfaced live as
-			// EventThinking so consumers can render the trace
-			// independently of EventText. The signature_delta type
-			// (carrying the cryptographic seal of the thinking block)
-			// is intentionally not surfaced — it's metadata for the
-			// next-turn echo, not user-visible content.
+			// EventThinking so consumers can render the trace independently of
+			// EventText, AND accumulated so EventDone can carry the full
+			// thinking text for the next-turn replay (below).
+			reasoning.WriteString(ev.Delta.Thinking)
 			if !send(providers.Event{Type: providers.EventThinking, Text: ev.Delta.Thinking}) {
 				return false
 			}
+		case "signature_delta":
+			// The cryptographic seal of the thinking block. Not user-visible
+			// content, but REQUIRED to replay the block on a tool-use
+			// continuation — Anthropic 400s without it. Captured for EventDone.
+			*signature = ev.Delta.Signature
 		case "input_json_delta":
 			current.toolInput.WriteString(ev.Delta.PartialJSON)
 		}

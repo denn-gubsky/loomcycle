@@ -198,6 +198,18 @@ type Message struct {
 	// (vanilla OpenAI ignores unknown fields anyway, but no point
 	// sending bytes that mean nothing).
 	Reasoning string `json:"reasoning_content,omitempty"`
+
+	// ReasoningSignature is the cryptographic seal Anthropic returns for an
+	// extended-thinking block (the signature_delta). When extended thinking is
+	// enabled AND the turn uses tools, Anthropic requires the previous
+	// assistant turn to be replayed with its thinking block INCLUDING this
+	// signature, verbatim — otherwise the continuation 400s ("a final
+	// assistant message must start with a thinking block"). The Anthropic
+	// driver pairs it with Reasoning (the thinking text) to reconstruct that
+	// block in buildRequestBody. Empty for non-Anthropic / non-thinking turns;
+	// zeroed alongside Reasoning on a cross-provider fallback (a signature is
+	// only valid for the model that produced it).
+	ReasoningSignature string `json:"reasoning_signature,omitempty"`
 }
 
 // ContentBlock is one piece of message content. Type discriminates the union.
@@ -561,6 +573,13 @@ type Event struct {
 	// echoes it back to the API per DeepSeek's contract. Empty for
 	// non-thinking models.
 	Reasoning string `json:"reasoning,omitempty"`
+
+	// ReasoningSignature is Anthropic's extended-thinking block signature
+	// (signature_delta), set on EventDone alongside Reasoning. The loop stamps
+	// it onto the assistant Message so the Anthropic driver can replay the
+	// thinking block with its seal on the next (tool-use continuation) request.
+	// Empty for non-Anthropic / non-thinking turns.
+	ReasoningSignature string `json:"reasoning_signature,omitempty"`
 }
 
 // RetryInfo accompanies an EventRetry. Each field is set every time.
