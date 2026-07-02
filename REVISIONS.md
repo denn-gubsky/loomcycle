@@ -8,6 +8,81 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.9.1
+
+**🔒 Security + robustness hardening patch.** A whole-repo security review plus a
+batch of provider-driver and MCP-resilience fixes, all on top of v1.9.0. No new
+primitives, no wire/schema change; adapters unchanged since v1.7.0.
+
+**Security review (whole-repo audit):**
+
+- **gRPC tenant/subject isolation on read + channel RPCs (#611).** Read and
+  channel RPCs weren't enforcing the caller's authoritative `(tenant, subject)`,
+  a cross-tenant visibility gap on the gRPC transport (the HTTP twins were
+  already gated).
+- **A2A peers authenticated via the operator-token substrate (#612).** Inbound
+  A2A authenticated only against the legacy `LOOMCYCLE_AUTH_TOKEN`, so an
+  operator-token-only (multi-tenant) deployment left A2A effectively open.
+- **mem9 SSRF + API-key exfil blocked (#613).** A model-authored MemoryBackend
+  `base_url` could point at a private address (SSRF) or an attacker host that
+  harvests the forwarded embedder API key; now guarded by the shared
+  `internal/netguard` dial-time check + never forwarding infra secrets.
+- **Run cancel + interrupt-resolve tenant-gated on every transport (#614).** A
+  caller could cancel or resolve interruptions on another tenant's run.
+- **`runstate` send-on-closed-channel panic (#615).** Events are now delivered
+  under the lock so a concurrent close can't cause a send-on-closed panic.
+- **`Grep` symlink-escape (#616).** A symlink discovered mid-walk is re-checked
+  for containment before the file is opened.
+- **Four secret-exposure gaps closed (#620)** and a **per-user-cap read locked +
+  the terminal-error channel drained (#621).**
+- **Opt-in DNS-rebinding guard on the MCP-HTTP client (#622),** default-allow so
+  internal MCP peers (e.g. a consumer's `/api/mcp`) keep working; operators who
+  want the guard flip one env var.
+- Plus **#610**, removing a `_ = 0 // FIX DISABLED FOR TEST` debug artifact that
+  slipped into v1.9.0.
+
+**Provider drivers:**
+
+- **Anthropic replays the thinking block on tool-use continuations (#617)** —
+  extended-thinking runs 400'd on the follow-up turn without the original
+  thinking block + signature echoed back.
+- **OpenAI reasoning models use `max_completion_tokens`, not `max_tokens` (#618).**
+- **Ollama surfaces in-stream error frames (#619)** instead of ending a run as a
+  silent success when the server streams an error object mid-response.
+- **DeepSeek thinking-model fallback downgrades to `deepseek-chat` (#624).** The
+  v1.9.0 fix cleared the effort hint, but `deepseek-v4-flash` is *itself* a
+  hybrid thinking model, so `-pro`→`-flash` never escaped thinking mode and the
+  reasoning-less fallback history still 400'd; downgrading to the always
+  non-thinking V3 `deepseek-chat` is the real fix.
+
+**Robustness:**
+
+- **Webhook `user_tier` pinned to the def (#623)** — the inbound payload can no
+  longer select the cost tier.
+- **`ollama-local` default header/idle timeout raised 300s → 600s (#625)** — a
+  cold 128K-context local model load exceeded the old 300s header timeout
+  ("loomcycle is not patient enough with local models").
+- **The `loomcycle mcp --upstream` thin client self-recovers from dropped
+  upstream connections (#626).** It previously self-healed only a `404/-32001`
+  session expiry; a transport error (connection refused/reset, or an EOF on a
+  keep-alive socket reaped by the runtime server's 120s `IdleTimeout`)
+  dead-ended with no retry. Because Claude Code never auto-reconnects a **stdio**
+  server, every later tool call then failed until the operator reloaded plugins
+  / relaunched — the "loses the MCP connection a few minutes after last use" and
+  "doesn't recover when the server restarts" reports. `forward()` now owns a
+  bounded-backoff reconnect loop (immediate → 500ms → 1s → 2s → 4s) that
+  composes with the existing re-handshake, the default client closes idle
+  connections at 90s (below the server's 120s) so it reopens first, and a 60s
+  `ResponseHeaderTimeout` guards a stall on fast frames — but agent-run / LLM
+  tools (`spawn_run`, `spawn_runs`, `compact_run`, `evaluation`) route through a
+  separate no-header-timeout client so a slow run can't be mistaken for a stall
+  and retried into a **double-execution**. Tunable via
+  `LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS` (60000) and
+  `LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS` (5; 0 disables). Thin-client
+  binary — reinstall the Homebrew `loomcycle` to pick it up.
+
+---
+
 ## What's in v1.9.0
 
 **✨ A routing view + a model-alias API, plus a fallback-downgrade fix.** Two
