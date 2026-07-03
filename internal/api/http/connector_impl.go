@@ -72,6 +72,7 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		finalUsage                         *providers.Usage
 		finalStopReason                    string
 		lastErrorMsg                       string
+		limitCrossings                     []providers.LimitInfo
 	)
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, sessionID, _ string) {
@@ -85,6 +86,14 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 				if ev.Usage != nil {
 					u := *ev.Usage
 					finalUsage = &u
+				}
+			case providers.EventLimit:
+				// RFC AW: surface any token-budget crossing on the BLOCKING
+				// spawn result too — this path serves the non-streaming caller
+				// (spawn_run/spawn_runs without run-event notifications), the
+				// exact consumer SpawnRunResult.Limits exists for.
+				if ev.Limit != nil {
+					limitCrossings = append(limitCrossings, *ev.Limit)
 				}
 			case providers.EventDone:
 				finalStopReason = ev.StopReason
@@ -110,6 +119,7 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		StopReason:    finalStopReason,
 		FinalText:     finalText,
 		Usage:         finalUsage,
+		Limits:        limitCrossings,    // RFC AW: budget crossings, omitempty
 		ParentContext: req.ParentContext, // v0.12.x: echo the lineage back to the caller
 	}
 	switch {

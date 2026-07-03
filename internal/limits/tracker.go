@@ -126,19 +126,34 @@ func (t *Tracker) Seed(ctx context.Context) error {
 	return nil
 }
 
-// ReloadLimits refreshes only the cached ceilings (after a limits CRUD change).
-func (t *Tracker) ReloadLimits(ctx context.Context) error {
+// PutLimit updates the ONE cached ceiling for a scope after a successful store
+// write, so the new budget is enforced immediately. This deliberately avoids a
+// full re-read of every row (loadLimits): a re-read can fail on a transient
+// store fault, which would leave the row persisted-on-disk but the in-memory
+// ceiling stale — a budget silently unenforced until the next reload/reboot.
+// A single-key map write under the lock can't fail. Nil-safe (store-less no-op).
+func (t *Tracker) PutLimit(row store.TokenLimitRow) {
 	if t == nil || t.store == nil {
-		return nil
-	}
-	lm, err := t.loadLimits(ctx)
-	if err != nil {
-		return err
+		return
 	}
 	t.mu.Lock()
-	t.limits = lm
-	t.mu.Unlock()
-	return nil
+	defer t.mu.Unlock()
+	if t.limits == nil {
+		t.limits = map[string]tierPair{}
+	}
+	t.limits[limitKey(row.Scope, row.TenantID, row.ScopeID)] = tierPair{soft: row.SoftLimit, hard: row.HardLimit}
+}
+
+// DeleteLimit drops the cached ceiling for a scope after a successful store
+// delete (→ unlimited again). Same rationale as PutLimit: an in-memory delete
+// can't fail, so the cache never lags the persisted state. Nil-safe.
+func (t *Tracker) DeleteLimit(scope, tenantID, scopeID string) {
+	if t == nil || t.store == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.limits, limitKey(scope, tenantID, scopeID))
 }
 
 func (t *Tracker) loadLimits(ctx context.Context) (map[string]tierPair, error) {
@@ -283,6 +298,24 @@ func limitKey(scope, tenantID, scopeID string) string {
 }
 
 func makeLimitInfo(scope, scopeID, severity string, used, limit int64) providers.LimitInfo {
+	// The operator scope's used/limit are PLATFORM-WIDE aggregates summed across
+	// every tenant. This LimitInfo is delivered over a RUN channel — the 429
+	// refusal body, the SSE/transcript limit event, the gRPC event, the MCP
+	// spawn_run result — all visible to the run's own tenant+user. Exposing the
+	// operator figures to a tenant is therefore a cross-tenant oracle (a tenant
+	// could subtract its own spend to infer other tenants' aggregate activity),
+	// which is exactly what writeTokenLimitError promises NOT to do. Redact the
+	// numbers here and carry only severity + a generic message; an operator still
+	// reads the real operator figures from the admin console (/v1/_limits →
+	// Tracker.UsedFor), which never routes through this constructor.
+	if scope == "operator" {
+		return providers.LimitInfo{
+			Scope:    scope,
+			Severity: severity,
+			Window:   "month",
+			Message:  fmt.Sprintf("service %s token budget reached; please retry later", severity),
+		}
+	}
 	label := scope
 	if scopeID != "" {
 		label = scope + " " + scopeID

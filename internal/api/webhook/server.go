@@ -494,6 +494,12 @@ func (rec *Receiver) spawnSetupErrorResponse(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, runner.ErrUnknownAgent), errors.Is(err, runner.ErrUnknownProvider), errors.Is(err, runner.ErrInvalidArgument):
 		writeError(w, http.StatusBadRequest, "invalid_run", "")
+	case errors.Is(err, runner.ErrTokenLimitExceeded):
+		// RFC AW: a per-scope hard token budget refused the run at admission.
+		// Mirror the HTTP run endpoint's 429 so a webhook client branches the
+		// same way (retry-next-window / raise-limit) rather than treating it as
+		// a transient 503 and retry-storming a budget-exhausted scope.
+		writeError(w, http.StatusTooManyRequests, "token_limit_exceeded", "")
 	case errors.Is(err, runner.ErrBackpressure), errors.Is(err, runner.ErrPerUserQuotaExhausted):
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "")
 	default:

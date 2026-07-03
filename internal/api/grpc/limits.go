@@ -24,7 +24,8 @@ import (
 // doesn't hard-depend on the tracker's construction and tests can stub it.
 type tokenLimitTracker interface {
 	UsedFor(scope, tenantID, scopeID string) int64
-	ReloadLimits(ctx context.Context) error
+	PutLimit(row store.TokenLimitRow)
+	DeleteLimit(scope, tenantID, scopeID string)
 }
 
 // TokenLimit manages per-scope token budgets (RFC AW), the gRPC twin of
@@ -93,10 +94,9 @@ func (s *Server) tokenLimitSet(ctx context.Context, req *loomcyclepb.TokenLimitR
 	if err := s.store.TokenLimitPut(ctx, row); err != nil {
 		return nil, status.Errorf(codes.Internal, "put token limit: %v", err)
 	}
-	if err := s.reloadLimits(ctx); err != nil {
-		// The row is persisted; a reload fault just lags the cached ceiling.
-		return nil, status.Errorf(codes.Internal, "limit stored but reload failed: %v", err)
-	}
+	// Reflect the persisted row into the live ceiling cache (O(1), can't fail),
+	// so the budget is enforced immediately — never stored-but-unenforced.
+	s.putLimit(row)
 	return &loomcyclepb.TokenLimitResponse{Limits: []*loomcyclepb.TokenLimitEntry{s.tokenLimitEntry(row)}}, nil
 }
 
@@ -110,9 +110,8 @@ func (s *Server) tokenLimitDelete(ctx context.Context, req *loomcyclepb.TokenLim
 	if err := s.store.TokenLimitDelete(ctx, tenantID, req.GetScope(), scopeID); err != nil {
 		return nil, status.Errorf(codes.Internal, "delete token limit: %v", err)
 	}
-	if err := s.reloadLimits(ctx); err != nil {
-		return nil, status.Errorf(codes.Internal, "limit deleted but reload failed: %v", err)
-	}
+	// Drop the ceiling from the live cache immediately (O(1), can't fail).
+	s.deleteLimit(req.GetScope(), tenantID, scopeID)
 	return &loomcyclepb.TokenLimitResponse{}, nil
 }
 
@@ -159,11 +158,20 @@ func (s *Server) usedFor(scope, tenantID, scopeID string) int64 {
 	return s.limits.UsedFor(scope, tenantID, scopeID)
 }
 
-// reloadLimits refreshes the shared tracker's cached ceilings after a write;
-// a no-op when no tracker is wired.
-func (s *Server) reloadLimits(ctx context.Context) error {
+// putLimit reflects a persisted budget row into the shared tracker's live
+// ceiling cache after a write; a no-op when no tracker is wired.
+func (s *Server) putLimit(row store.TokenLimitRow) {
 	if s.limits == nil {
-		return nil
+		return
 	}
-	return s.limits.ReloadLimits(ctx)
+	s.limits.PutLimit(row)
+}
+
+// deleteLimit drops a budget from the shared tracker's live ceiling cache after
+// a delete; a no-op when no tracker is wired.
+func (s *Server) deleteLimit(scope, tenantID, scopeID string) {
+	if s.limits == nil {
+		return
+	}
+	s.limits.DeleteLimit(scope, tenantID, scopeID)
 }
