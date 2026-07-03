@@ -78,6 +78,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/usage"
 
 	googlegrpc "google.golang.org/grpc"
 
@@ -2073,6 +2074,30 @@ func main() {
 		go sweeper.Run(bgCtx)
 	} else {
 		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
+	}
+
+	// Usage rollup-and-prune sweeper (RFC AV Phase 2b) — same placement
+	// rationale as the heartbeat sweeper above: runs AFTER the cluster
+	// block so it can pick up the advisoryLock. In single-replica mode
+	// advisoryLock stays nil and the sweeper's lock-gating branch is
+	// bypassed. Pruning is a compaction to daily usage_archive buckets,
+	// not data loss — billing totals are preserved.
+	if cfg.Env.UsageSweeperEnabled && storeIface != nil {
+		uCfg := usage.Config{
+			Interval:        cfg.Env.UsageSweepInterval,
+			DetailRetention: cfg.Env.UsageDetailRetention,
+		}
+		// Same typed-nil guard as the heartbeat block: only assign the
+		// interface field from a non-nil pointer, or the sweeper's
+		// nil-check would see a non-nil interface wrapping a nil pointer.
+		if advisoryLock != nil {
+			uCfg.AdvisoryLock = advisoryLock
+			uCfg.AdvisoryLockKey = coord.LockKeyUsageSweeper
+		}
+		usageSweeper := usage.New(storeIface, uCfg)
+		go usageSweeper.Run(bgCtx)
+	} else {
+		log.Printf("usage: sweeper disabled (LOOMCYCLE_USAGE_SWEEPER=0 or no Store)")
 	}
 
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.

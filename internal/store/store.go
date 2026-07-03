@@ -654,8 +654,17 @@ type Store interface {
 	// UsageReport aggregates the token_usage ledger for a report (RFC AV Phase 2):
 	// summed tokens + cost grouped by the requested dimensions, over an optional
 	// tenant + time window. The operator bill (source=operator) and per-tenant
-	// consumption fall out of the group-by + a source dimension.
+	// consumption fall out of the group-by + a source dimension. Reads recent
+	// per-call rows UNION the compact usage_archive rollup, so old (pruned)
+	// windows still report.
 	UsageReport(ctx context.Context, q UsageQuery) ([]UsageAggregate, error)
+
+	// RollupAndPruneUsage folds every token_usage row older than olderThan into
+	// usage_archive (day-bucketed, summed per dimension tuple) and deletes the
+	// rolled-up raw rows, in one transaction. Idempotent — re-running a window
+	// folds via the archive PK (ON CONFLICT adds). Returns the count of raw rows
+	// pruned. The rollup-and-prune sweeper calls this on a timer (RFC AV Phase 2b).
+	RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (pruned int, err error)
 
 	// GetTranscript returns all events for a session, ordered by Seq.
 	// Returns an empty slice (not error) for a session with no runs yet.

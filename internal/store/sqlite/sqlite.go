@@ -151,6 +151,29 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS token_usage_by_run ON token_usage(run_id)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_tenant_ts ON token_usage(tenant_id, ts)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_source_ts ON token_usage(credential_source, ts)`,
+		// RFC AV Phase 2b — the compact usage rollup. The sweeper folds
+		// token_usage rows older than the detail-retention window into one row per
+		// (period × dimension tuple) then deletes the raw rows. period_start is the
+		// day-truncated ts (unix-nano). PK = the full dimension tuple so a re-run
+		// folds idempotently. Reports UNION this with recent token_usage.
+		`CREATE TABLE IF NOT EXISTS usage_archive (
+			period_start          INTEGER NOT NULL,
+			tenant_id             TEXT NOT NULL DEFAULT '',
+			user_id               TEXT NOT NULL DEFAULT '',
+			provider              TEXT NOT NULL,
+			model                 TEXT NOT NULL,
+			credential_source     TEXT NOT NULL,
+			input_tokens          INTEGER NOT NULL DEFAULT 0,
+			output_tokens         INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+			cost                  REAL NOT NULL DEFAULT 0,
+			cost_currency         TEXT NOT NULL DEFAULT '',
+			call_count            INTEGER NOT NULL DEFAULT 0,
+			unpriced_calls        INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source)
+		)`,
+		`CREATE INDEX IF NOT EXISTS usage_archive_tenant_period ON usage_archive(tenant_id, period_start)`,
 		`CREATE TABLE IF NOT EXISTS events (
 			seq        INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -1298,10 +1321,15 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 	return out, rows.Err()
 }
 
-// UsageReport aggregates token_usage for a report (RFC AV Phase 2). The five
-// dimension columns are SELECTed in UsageCanonicalDims order — the column when
-// grouped, else the literal ” — so the result is a fixed 13-column shape. ts is
-// stored as unix-nano here, so the window bounds are compared as nanos.
+// nanosPerDay is the day bucket for the usage rollup's period_start (ts is
+// stored as unix-nano in sqlite).
+const nanosPerDay = int64(86400) * int64(1e9)
+
+// UsageReport aggregates recent per-call token_usage UNION the compact
+// usage_archive rollup (RFC AV Phase 2b), so a window that has been pruned to
+// the archive still reports. The five dimension columns are SELECTed in
+// UsageCanonicalDims order — the column when grouped, else ” — a fixed
+// 13-column shape. ts / period_start are unix-nano, so window bounds are nanos.
 func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error) {
 	grouped := map[store.UsageDimension]bool{}
 	for _, d := range q.GroupBy {
@@ -1319,35 +1347,54 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 			dimExprs = append(dimExprs, "''")
 		}
 	}
+	// Per-source WHERE (tenant + window). token_usage windows on ts; usage_archive
+	// on period_start. Args are appended in placeholder order (token_usage first).
+	where := func(tsCol string) (string, []any) {
+		var conds []string
+		var args []any
+		if q.TenantID != "" {
+			conds = append(conds, "tenant_id = ?")
+			args = append(args, q.TenantID)
+		}
+		if !q.From.IsZero() {
+			conds = append(conds, tsCol+" >= ?")
+			args = append(args, q.From.UnixNano())
+		}
+		if !q.To.IsZero() {
+			conds = append(conds, tsCol+" <= ?")
+			args = append(args, q.To.UnixNano())
+		}
+		if len(conds) == 0 {
+			return "", nil
+		}
+		return " WHERE " + strings.Join(conds, " AND "), args
+	}
+	tuWhere, tuArgs := where("ts")
+	uaWhere, uaArgs := where("period_start")
+
+	inner := `SELECT tenant_id, COALESCE(user_id,'') AS user_id, provider, model, credential_source,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			COALESCE(cost,0) AS cost, COALESCE(cost_currency,'') AS cost_currency,
+			1 AS call_count, CASE WHEN cost IS NULL THEN 1 ELSE 0 END AS unpriced_calls
+		FROM token_usage` + tuWhere + `
+		UNION ALL
+		SELECT tenant_id, user_id, provider, model, credential_source,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			cost, cost_currency, call_count, unpriced_calls
+		FROM usage_archive` + uaWhere
+
 	query := `SELECT ` + strings.Join(dimExprs, ", ") + `,
 		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 		COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(cache_read_tokens),0),
-		COALESCE(SUM(cost),0), COUNT(*),
-		COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(cost),0), COALESCE(SUM(call_count),0), COALESCE(SUM(unpriced_calls),0),
 		COALESCE(MAX(cost_currency),'')
-		FROM token_usage`
-	var conds []string
-	var args []any
-	if q.TenantID != "" {
-		conds = append(conds, "tenant_id = ?")
-		args = append(args, q.TenantID)
-	}
-	if !q.From.IsZero() {
-		conds = append(conds, "ts >= ?")
-		args = append(args, q.From.UnixNano())
-	}
-	if !q.To.IsZero() {
-		conds = append(conds, "ts <= ?")
-		args = append(args, q.To.UnixNano())
-	}
-	if len(conds) > 0 {
-		query += " WHERE " + strings.Join(conds, " AND ")
-	}
+		FROM (` + inner + `)`
 	if len(groupCols) > 0 {
 		query += " GROUP BY " + strings.Join(groupCols, ", ")
 	}
 	query += " ORDER BY COALESCE(SUM(cost),0) DESC"
 
+	args := append(append([]any{}, tuArgs...), uaArgs...)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1366,6 +1413,51 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// RollupAndPruneUsage folds token_usage rows older than olderThan into
+// usage_archive (day-bucketed) and deletes them, in one transaction (RFC AV
+// Phase 2b). Idempotent via the archive PK. Returns the raw rows pruned.
+func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (int, error) {
+	cutoff := olderThan.UnixNano()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			cost, cost_currency, call_count, unpriced_calls)
+		SELECT (ts/?)*? AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source,
+			SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
+			SUM(COALESCE(cost,0)), COALESCE(MAX(cost_currency),''),
+			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END)
+		FROM token_usage WHERE ts < ?
+		GROUP BY period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source
+		ON CONFLICT(period_start, tenant_id, user_id, provider, model, credential_source) DO UPDATE SET
+			input_tokens          = input_tokens + excluded.input_tokens,
+			output_tokens         = output_tokens + excluded.output_tokens,
+			cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+			cache_read_tokens     = cache_read_tokens + excluded.cache_read_tokens,
+			cost                  = cost + excluded.cost,
+			cost_currency         = CASE WHEN usage_archive.cost_currency = '' THEN excluded.cost_currency ELSE usage_archive.cost_currency END,
+			call_count            = call_count + excluded.call_count,
+			unpriced_calls        = unpriced_calls + excluded.unpriced_calls`,
+		nanosPerDay, nanosPerDay, cutoff,
+	); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM token_usage WHERE ts < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 // GetTranscript returns all events for a session, ordered by seq ascending.

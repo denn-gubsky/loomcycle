@@ -26,8 +26,9 @@ func TestFnvKey_Stable(t *testing.T) {
 		"metrics_sweeper":       fnvKey("metrics_sweeper"),
 		"dynamic_agent_sweeper": fnvKey("dynamic_agent_sweeper"),
 		"replicas_sweeper":      fnvKey("replicas_sweeper"),
+		"usage_sweeper":         fnvKey("usage_sweeper"),
 	}
-	// All seven must be distinct.
+	// All eight must be distinct.
 	seen := map[int64]string{}
 	for name, key := range cases {
 		if other, dup := seen[key]; dup {
