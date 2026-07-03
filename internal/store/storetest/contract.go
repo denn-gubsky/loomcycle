@@ -339,6 +339,7 @@ func Run(t *testing.T, factory Factory) {
 		{"TokenUsageLedger", testTokenUsageLedger},
 		{"FinishRunPersistsCostAndSource", testFinishRunPersistsCostAndSource},
 		{"UsageReport", testUsageReport},
+		{"UsageRollupAndPrune", testUsageRollupAndPrune},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
 		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
@@ -746,6 +747,60 @@ func testUsageReport(t *testing.T, s store.Store) {
 	}
 	if opCost != 5.0 {
 		t.Errorf("operator bill = %v, want 5.0", opCost)
+	}
+}
+
+// testUsageRollupAndPrune exercises RFC AV Phase 2b retention: old token_usage
+// rows fold into usage_archive (same day+dims merge) and are deleted, the report
+// unions archive + recent, and a re-run is a no-op (idempotent).
+func testUsageRollupAndPrune(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	old := time.Now().Add(-10 * 24 * time.Hour)
+	recent := time.Now()
+	mk := func(in int, cost float64, ts time.Time) store.TokenUsageRow {
+		return store.TokenUsageRow{
+			RunID: "r", TenantID: "A", Provider: "anthropic", Model: "m",
+			CredentialSource: "operator", InputTokens: in, Cost: cost, CostCurrency: "USD", TS: ts,
+		}
+	}
+	// Two OLD rows (same day + dims → merge in archive) + one RECENT row.
+	for _, r := range []store.TokenUsageRow{mk(100, 1.0, old), mk(200, 2.0, old), mk(50, 0.5, recent)} {
+		if err := s.RecordCallUsage(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cutoff := time.Now().Add(-5 * 24 * time.Hour)
+	pruned, err := s.RollupAndPruneUsage(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("RollupAndPruneUsage: %v", err)
+	}
+	if pruned != 2 {
+		t.Errorf("pruned = %d, want 2 (the two old rows)", pruned)
+	}
+	// Recent detail survives; old detail is gone.
+	if rows, _ := s.TokenUsageForRun(ctx, "r"); len(rows) != 1 || rows[0].InputTokens != 50 {
+		t.Errorf("token_usage after prune = %+v, want the single recent row", rows)
+	}
+	// Report unions archive (300 tok / 3.0 cost, 2 calls) + recent (50 / 0.5, 1):
+	// 350 tokens, 3.5 cost, 3 calls.
+	rep, _ := s.UsageReport(ctx, store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageBySource}})
+	if len(rep) != 1 {
+		t.Fatalf("report rows = %d, want 1: %+v", len(rep), rep)
+	}
+	a := rep[0]
+	if a.InputTokens != 350 || a.Cost != 3.5 || a.CallCount != 3 {
+		t.Errorf("unioned report = (in=%d cost=%v calls=%d), want (350,3.5,3)", a.InputTokens, a.Cost, a.CallCount)
+	}
+
+	// Idempotent: a second prune of the same window moves nothing (old rows gone).
+	if pruned2, _ := s.RollupAndPruneUsage(ctx, cutoff); pruned2 != 0 {
+		t.Errorf("second prune = %d, want 0 (idempotent)", pruned2)
+	}
+	// And the archive didn't double-count.
+	rep2, _ := s.UsageReport(ctx, store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageBySource}})
+	if len(rep2) != 1 || rep2[0].InputTokens != 350 {
+		t.Errorf("report after idempotent re-run = %+v, want unchanged 350", rep2)
 	}
 }
 

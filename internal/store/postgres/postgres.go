@@ -507,10 +507,11 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 	return out, rows.Err()
 }
 
-// UsageReport aggregates token_usage for a report (RFC AV Phase 2). Mirrors the
-// sqlite implementation: the five dimension columns SELECTed in
-// UsageCanonicalDims order (column when grouped, else literal ”), a fixed
-// 13-column result. ts is TIMESTAMPTZ here, so window bounds pass as time.Time.
+// UsageReport aggregates recent per-call token_usage UNION the compact
+// usage_archive rollup (RFC AV Phase 2b), so a pruned window still reports.
+// Mirrors the sqlite implementation: five dimension columns in
+// UsageCanonicalDims order (column when grouped, else ”), a fixed 13-column
+// result. ts / period_start are TIMESTAMPTZ, so window bounds pass as time.Time.
 func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error) {
 	grouped := map[store.UsageDimension]bool{}
 	for _, d := range q.GroupBy {
@@ -528,29 +529,47 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 			dimExprs = append(dimExprs, "''")
 		}
 	}
-	query := `SELECT ` + strings.Join(dimExprs, ", ") + `,
-		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-		COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(cache_read_tokens),0),
-		COALESCE(SUM(cost),0), COUNT(*),
-		COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END),0),
-		COALESCE(MAX(cost_currency),'')
-		FROM token_usage`
-	var conds []string
 	var args []any
 	n := 0
 	ph := func(v any) string { n++; args = append(args, v); return fmt.Sprintf("$%d", n) }
-	if q.TenantID != "" {
-		conds = append(conds, "tenant_id = "+ph(q.TenantID))
+	// Build a per-source WHERE (tenant + window). Called token_usage first so the
+	// placeholder order in args matches the SQL text order.
+	where := func(tsCol string) string {
+		var conds []string
+		if q.TenantID != "" {
+			conds = append(conds, "tenant_id = "+ph(q.TenantID))
+		}
+		if !q.From.IsZero() {
+			conds = append(conds, tsCol+" >= "+ph(q.From))
+		}
+		if !q.To.IsZero() {
+			conds = append(conds, tsCol+" <= "+ph(q.To))
+		}
+		if len(conds) == 0 {
+			return ""
+		}
+		return " WHERE " + strings.Join(conds, " AND ")
 	}
-	if !q.From.IsZero() {
-		conds = append(conds, "ts >= "+ph(q.From))
-	}
-	if !q.To.IsZero() {
-		conds = append(conds, "ts <= "+ph(q.To))
-	}
-	if len(conds) > 0 {
-		query += " WHERE " + strings.Join(conds, " AND ")
-	}
+	tuWhere := where("ts")
+	uaWhere := where("period_start")
+
+	inner := `SELECT tenant_id, COALESCE(user_id,'') AS user_id, provider, model, credential_source,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			COALESCE(cost,0) AS cost, COALESCE(cost_currency,'') AS cost_currency,
+			1 AS call_count, CASE WHEN cost IS NULL THEN 1 ELSE 0 END AS unpriced_calls
+		FROM token_usage` + tuWhere + `
+		UNION ALL
+		SELECT tenant_id, user_id, provider, model, credential_source,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			cost, cost_currency, call_count, unpriced_calls
+		FROM usage_archive` + uaWhere
+
+	query := `SELECT ` + strings.Join(dimExprs, ", ") + `,
+		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+		COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(cache_read_tokens),0),
+		COALESCE(SUM(cost),0), COALESCE(SUM(call_count),0), COALESCE(SUM(unpriced_calls),0),
+		COALESCE(MAX(cost_currency),'')
+		FROM (` + inner + `) u`
 	if len(groupCols) > 0 {
 		query += " GROUP BY " + strings.Join(groupCols, ", ")
 	}
@@ -574,6 +593,51 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// RollupAndPruneUsage folds token_usage rows older than olderThan into
+// usage_archive (day-bucketed via date_trunc) and deletes them, in one
+// transaction (RFC AV Phase 2b). Idempotent via the archive PK. Returns the raw
+// rows pruned.
+func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin rollup tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			cost, cost_currency, call_count, unpriced_calls)
+		SELECT date_trunc('day', ts) AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source,
+			SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
+			SUM(COALESCE(cost,0)), COALESCE(MAX(cost_currency),''),
+			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END)
+		FROM token_usage WHERE ts < $1
+		GROUP BY date_trunc('day', ts), tenant_id, COALESCE(user_id,''), provider, model, credential_source
+		ON CONFLICT (period_start, tenant_id, user_id, provider, model, credential_source) DO UPDATE SET
+			input_tokens          = usage_archive.input_tokens + excluded.input_tokens,
+			output_tokens         = usage_archive.output_tokens + excluded.output_tokens,
+			cache_creation_tokens = usage_archive.cache_creation_tokens + excluded.cache_creation_tokens,
+			cache_read_tokens     = usage_archive.cache_read_tokens + excluded.cache_read_tokens,
+			cost                  = usage_archive.cost + excluded.cost,
+			cost_currency         = CASE WHEN usage_archive.cost_currency = '' THEN excluded.cost_currency ELSE usage_archive.cost_currency END,
+			call_count            = usage_archive.call_count + excluded.call_count,
+			unpriced_calls        = usage_archive.unpriced_calls + excluded.unpriced_calls`,
+		olderThan,
+	); err != nil {
+		return 0, fmt.Errorf("rollup usage: %w", err)
+	}
+	res, err := tx.Exec(ctx, `DELETE FROM token_usage WHERE ts < $1`, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("prune usage: %w", err)
+	}
+	pruned := int(res.RowsAffected())
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit rollup tx: %w", err)
+	}
+	return pruned, nil
 }
 
 // GetTranscript returns every event for the session, ordered by seq.

@@ -2087,6 +2087,23 @@ type Env struct {
 	// expected per-iteration time so live runs in long tool calls
 	// aren't sweeped. Env: LOOMCYCLE_HEARTBEAT_STALE_MS.
 	HeartbeatStaleAfter time.Duration
+
+	// UsageSweeperEnabled controls the RFC AV Phase 2b usage
+	// rollup-and-prune sweeper. When true (default), a goroutine
+	// periodically folds token_usage rows older than
+	// UsageDetailRetention into the day-bucketed usage_archive and
+	// deletes them — bounding the per-call detail table without losing
+	// billing totals (the archive preserves exact per-dimension sums).
+	// Disable with LOOMCYCLE_USAGE_SWEEPER=0 (e.g. when an external job
+	// owns retention in a multi-replica deployment).
+	UsageSweeperEnabled bool
+	// UsageSweepInterval is the sweep tick rate. Default 1h.
+	// Env: LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS.
+	UsageSweepInterval time.Duration
+	// UsageDetailRetention is the cutoff: token_usage rows older than
+	// this are rolled up into usage_archive and pruned. Default 720h
+	// (30 days). Env: LOOMCYCLE_USAGE_DETAIL_RETENTION_MS.
+	UsageDetailRetention time.Duration
 	// ReplicasSweepInterval is the dead-replica reaper's tick rate.
 	// Default 60s. Tunable mostly for tests / crash-recovery load
 	// experiments — leave at default in production.
@@ -2798,6 +2815,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		// env var below was set. The fallbacks are applied in
 		// cmd/loomcycle/main.go where the goroutines are started.
 		HeartbeatSweeperEnabled: true,
+		UsageSweeperEnabled:     true,
 	}
 
 	// RFC AH Phase 3 — the legacy filesystem jail is retired. The three env
@@ -2961,6 +2979,19 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_STALE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.HeartbeatStaleAfter = time.Duration(n) * time.Millisecond
+		}
+	}
+	// Usage rollup-and-prune sweeper (RFC AV Phase 2b). Optional; the
+	// New() constructor applies the 1h/720h fallbacks when these stay 0.
+	cfg.Env.UsageSweeperEnabled = os.Getenv("LOOMCYCLE_USAGE_SWEEPER") != "0"
+	if v := os.Getenv("LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.UsageSweepInterval = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_USAGE_DETAIL_RETENTION_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.UsageDetailRetention = time.Duration(n) * time.Millisecond
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {

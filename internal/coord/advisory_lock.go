@@ -125,6 +125,10 @@ var (
 	// sweep of ephemeral volumes whose owning run is terminal (not paused), so
 	// only one replica per tick runs the fenced os.RemoveAll.
 	LockKeyEphemeralVolumeSweeper int64
+	// LockKeyUsageSweeper gates the RFC AV Phase 2b token-usage
+	// rollup-and-prune, so only one replica per tick folds old
+	// token_usage rows into usage_archive and deletes them.
+	LockKeyUsageSweeper int64
 )
 
 func init() {
@@ -137,6 +141,7 @@ func init() {
 	LockKeyReplicasSweeper = fnvKey("replicas_sweeper")
 	LockKeyResumePausedRuns = fnvKey("resume_paused_runs")
 	LockKeyEphemeralVolumeSweeper = fnvKey("ephemeral_volume_sweeper")
+	LockKeyUsageSweeper = fnvKey("usage_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.
