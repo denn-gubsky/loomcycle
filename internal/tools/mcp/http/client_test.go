@@ -112,6 +112,81 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// TestCredSubstitute_PerRequestAndDrop pins the RFC AR $cred: header binding on
+// the pooled http client: the SAME client resolves a per-USER credential from
+// each request's run identity (so user A and user B get their own token), and an
+// unresolved $cred: ref drops the header rather than sending a literal token.
+func TestCredSubstitute_PerRequestAndDrop(t *testing.T) {
+	var mu sync.Mutex
+	var authSeen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var probe struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &probe)
+		if probe.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "s1")
+		}
+		if probe.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		switch probe.Method {
+		case "initialize":
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": *probe.ID, "result": map[string]any{
+				"protocolVersion": mcp.ProtocolVersion, "capabilities": map[string]any{},
+				"serverInfo": map[string]any{"name": "f", "version": "1"}}})
+		case "tools/call":
+			mu.Lock()
+			authSeen = append(authSeen, r.Header.Get("Authorization"))
+			mu.Unlock()
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": *probe.ID, "result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+		}
+	}))
+	defer srv.Close()
+
+	c, _ := New(Config{
+		URL:     srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer $cred:telegram"},
+		// Mock resolver: per-user token from the request ctx; unresolved when no
+		// user id (mirrors the engine's found=false → unresolved contract).
+		CredSubstitute: func(ctx context.Context, s string) (string, []string, error) {
+			uid := tools.RunIdentity(ctx).UserID
+			if uid == "" {
+				return s, []string{"telegram"}, nil
+			}
+			return strings.ReplaceAll(s, "$cred:telegram", "TOK-"+uid), nil, nil
+		},
+	})
+
+	ctxA := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", UserID: "uA"})
+	if _, err := mcp.Initialize(ctxA, c, "t", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mcp.CallTool(ctxA, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	ctxB := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", UserID: "uB"})
+	if _, err := mcp.CallTool(ctxB, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	// No user id → the mock reports the ref unresolved → the header is dropped.
+	ctxNone := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t"})
+	if _, err := mcp.CallTool(ctxNone, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"Bearer TOK-uA", "Bearer TOK-uB", ""}
+	if len(authSeen) != 3 || authSeen[0] != want[0] || authSeen[1] != want[1] || authSeen[2] != want[2] {
+		t.Errorf("per-request auth headers = %q, want %q (per-user binding + unresolved drop)", authSeen, want)
+	}
+}
+
 func TestHandshakeAndCall(t *testing.T) {
 	srv := newFakeServer(t, "ok")
 	defer srv.Close()

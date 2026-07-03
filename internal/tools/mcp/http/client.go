@@ -56,6 +56,13 @@ type Config struct {
 	// PrivateHostAllowlist exempts specific hosts from BlockPrivateIPs (the
 	// operator's vouch list, reusing LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST).
 	PrivateHostAllowlist []string
+	// CredSubstitute, when set, resolves RFC AR $cred:<name> tokens in a header
+	// value against the tenant credential store using the request ctx's run
+	// identity (so per-USER tokens bind per-request — the pooled client serves
+	// many users, each getting their own credential). Returns (substituted,
+	// unresolvedNames, error). nil = $cred: binding disabled. A func-typed field
+	// keeps this package free of an internal/credential import.
+	CredSubstitute func(ctx context.Context, s string) (string, []string, error)
 }
 
 // Client speaks MCP over HTTP. Implements mcp.Caller.
@@ -69,6 +76,9 @@ type Client struct {
 
 	sessMu    sync.Mutex
 	sessionID string // populated after first response that carries one
+
+	// credSubstitute resolves $cred:<name> header tokens per-request (RFC AR).
+	credSubstitute func(ctx context.Context, s string) (string, []string, error)
 }
 
 // New constructs a Client. URL must be absolute.
@@ -88,9 +98,10 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 	return &Client{
-		url:     cfg.URL,
-		headers: cfg.Headers,
-		http:    hc,
+		url:            cfg.URL,
+		headers:        cfg.Headers,
+		http:           hc,
+		credSubstitute: cfg.CredSubstitute,
 	}, nil
 }
 
@@ -260,6 +271,24 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); dropping header",
 				k, c.url, runIdent.AgentID, missingCreds)
 			continue
+		}
+		// RFC AR $cred:<name> — durable tenant/user credential store, resolved
+		// per-request from the run identity (so per-user tokens bind correctly on
+		// this pooled client). Drop the header on an unresolved ref or a resolve
+		// error rather than sending a literal "$cred:foo" downstream.
+		if c.credSubstitute != nil {
+			resolvedV, unresolved, cerr := c.credSubstitute(ctx, subV)
+			if cerr != nil {
+				log.Printf("mcp http: $cred resolve failed for header %q on %q (agent_id=%s): %v; dropping header",
+					k, c.url, runIdent.AgentID, cerr)
+				continue
+			}
+			if len(unresolved) > 0 {
+				log.Printf("mcp http: $cred:%v unresolved for header %q on %q (agent_id=%s); dropping header",
+					unresolved, k, c.url, runIdent.AgentID)
+				continue
+			}
+			subV = resolvedV
 		}
 		req.Header.Set(k, subV)
 	}

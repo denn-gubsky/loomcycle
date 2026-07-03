@@ -1020,6 +1020,13 @@ func main() {
 	// restart.
 	dynamicMCPRegistry := mcp.NewDynamicRegistry()
 
+	// RFC AR — resolves $cred:<name> tokens in an http MCP server's headers
+	// against the tenant credential store, per-request from the run identity.
+	// Declared here so the pool's build callback (below) captures it by reference;
+	// assigned once the credential engine exists (after the store opens). Dials
+	// are post-boot, so it's non-nil by the time any header is substituted.
+	var credSubstitute func(ctx context.Context, s string) (string, []string, error)
+
 	// RFC N: the pool's build callback resolves through lookup.MCPServer
 	// with the run's tenant so a per-tenant dynamic registration dials its
 	// OWN URL — not a shared one of the same name. A tenant-scoped dynamic
@@ -1068,6 +1075,11 @@ func main() {
 					// exempts specific internal MCP hosts when the block is on.
 					BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs,
 					PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
+					// RFC AR — resolve $cred:<name> header tokens per-request from
+					// the tenant credential store (per-user tokens bind correctly on
+					// this pooled client). credSubstitute is set below once the
+					// credential engine exists (captured by ref; dials are post-boot).
+					CredSubstitute: credSubstitute,
 				})
 			case "stdio":
 				// F31: a runtime-registered stdio server. The substrate only
@@ -1283,6 +1295,13 @@ func main() {
 	}
 	credEngine := credential.NewEngine(storeIface, credSealer)
 	credentialDefTool.Engine = credEngine
+	// Wire the $cred: header resolver the MCP http pool captured by reference
+	// above. Identity comes from the per-request ctx (tenant + user + agent), so
+	// a pooled client binds each request's own user-scoped token.
+	credSubstitute = func(ctx context.Context, s string) (string, []string, error) {
+		ri := tools.RunIdentity(ctx)
+		return credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, nil)
+	}
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface
 	skillTool.Store = storeIface
