@@ -1296,12 +1296,34 @@ func main() {
 	}
 	credEngine := credential.NewEngine(storeIface, credSealer)
 	credentialDefTool.Engine = credEngine
+	// srv is assigned below at lchttp.New; the credential closures capture it by
+	// reference so a resolved value can be registered in the server's redactor.
+	// registerSecret is only CALLED during a run (long after srv exists), so the
+	// forward capture is safe (mirrors credSubstitute's own by-reference wiring).
+	var srv *lchttp.Server
+	// registerSecret masks a resolved credential value against a downstream echo:
+	// a $cred: value or a tenant/user provider-key that a tool later prints would
+	// otherwise land in the persisted transcript unredacted (RFC AV/AR). The
+	// server-global redactor dedups by value, so re-registering is cheap.
+	registerSecret := func(v string) {
+		if srv != nil {
+			if rd := srv.Redactor(); rd != nil {
+				rd.Register(v)
+			}
+		}
+	}
 	// Wire the $cred: header resolver the MCP http pool captured by reference
 	// above. Identity comes from the per-request ctx (tenant + user + agent), so
 	// a pooled client binds each request's own user-scoped token.
 	credSubstitute = func(ctx context.Context, s string) (string, []string, error) {
+		// Fast-path: when nothing can resolve (no KEK / no external backend) skip
+		// the store reads. Report any $cred: refs as unresolved so the caller still
+		// drops them (never send a literal token downstream).
+		if !credEngine.CanResolve() {
+			return s, credential.RefNames(s), nil
+		}
 		ri := tools.RunIdentity(ctx)
-		return credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, nil)
+		return credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, registerSecret)
 	}
 	// RFC AR: resolve a tenant/user credential by env-var NAME (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for the run's identity, so a tenant's own key overrides
@@ -1310,11 +1332,25 @@ func main() {
 	// (a lookup error → no override → host key), never blocking a run on a KEK
 	// gap. Reused by every transport since gRPC routes through the http Server.
 	credResolver := providers.CredentialResolver(func(ctx context.Context, name string) (providers.CredentialResolution, bool) {
-		ri := tools.RunIdentity(ctx)
-		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
-		if err != nil || !found {
+		// Fast-path: no configured backend can resolve → skip the three per-call
+		// scope lookups that would only ever miss (they run on EVERY LLM call).
+		if !credEngine.CanResolve() {
 			return providers.CredentialResolution{}, false
 		}
+		ri := tools.RunIdentity(ctx)
+		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
+		if err != nil {
+			// A store/decrypt fault is NOT a legitimate miss — still fail soft to
+			// the host key (never block a run on a KEK gap), but make it observable
+			// so a silent bill-to-operator regression is diagnosable.
+			log.Printf("credential: resolve %q failed for tenant=%s: %v", name, ri.TenantID, err)
+			return providers.CredentialResolution{}, false
+		}
+		if !found {
+			return providers.CredentialResolution{}, false
+		}
+		// Mask a downstream echo of the override key in the transcript.
+		registerSecret(res.Value)
 		// RFC AV: carry the owning scope + scope_id so a driver can tag usage
 		// (operator vs tenant/user spend) from the same resolve it uses for the key.
 		return providers.CredentialResolution{Value: res.Value, Scope: res.Scope, ScopeID: res.ScopeID}, true
@@ -1419,7 +1455,7 @@ func main() {
 	// lchttp.New — it must include the Agent tool that New appends to the
 	// server's tool set, which isn't in allTools here (F45). New re-points any
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
-	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
+	srv = lchttp.New(cfg, pr, allTools, sem, storeIface)
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
 	srv.SetCredentialResolver(credResolver)

@@ -1347,9 +1347,11 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 			dimExprs = append(dimExprs, "''")
 		}
 	}
-	// Per-source WHERE (tenant + window). token_usage windows on ts; usage_archive
-	// on period_start. Args are appended in placeholder order (token_usage first).
-	where := func(tsCol string) (string, []any) {
+	// Per-source WHERE (tenant + window). token_usage windows on ts (exact);
+	// usage_archive on period_start (day-truncated UTC midnight). Args are
+	// appended in placeholder order (token_usage first). floorFromDay floors the
+	// `from` bound to its UTC day for the archive branch — see below.
+	where := func(tsCol string, floorFromDay bool) (string, []any) {
 		var conds []string
 		var args []any
 		if q.TenantID != "" {
@@ -1358,7 +1360,16 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 		}
 		if !q.From.IsZero() {
 			conds = append(conds, tsCol+" >= ?")
-			args = append(args, q.From.UnixNano())
+			from := q.From.UnixNano()
+			if floorFromDay {
+				// The archive is day-bucketed (period_start = UTC midnight), so an
+				// intra-day `from` (e.g. 12:00) compared exactly would drop the whole
+				// from-day bucket (period_start 00:00 < 12:00). Floor `from` to its
+				// UTC day so that bucket is included. This makes the boundary day
+				// over-inclusive at day granularity — never under-inclusive.
+				from = (from / nanosPerDay) * nanosPerDay
+			}
+			args = append(args, from)
 		}
 		if !q.To.IsZero() {
 			conds = append(conds, tsCol+" <= ?")
@@ -1369,8 +1380,8 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 		}
 		return " WHERE " + strings.Join(conds, " AND "), args
 	}
-	tuWhere, tuArgs := where("ts")
-	uaWhere, uaArgs := where("period_start")
+	tuWhere, tuArgs := where("ts", false)
+	uaWhere, uaArgs := where("period_start", true)
 
 	inner := `SELECT tenant_id, COALESCE(user_id,'') AS user_id, provider, model, credential_source,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
@@ -1460,18 +1471,49 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	return int(n), nil
 }
 
-// PrunableCompletedRuns lists terminal runs older than olderThan (RFC AV Phase
-// 2b2). completed_at is unix-nano here.
-func (s *Store) PrunableCompletedRuns(ctx context.Context, olderThan time.Time, limit int) ([]store.Run, error) {
+// PrunableAgedSessions lists sessions where EVERY run is terminal + old (RFC AV
+// Phase 2b2). completed_at is unix-nano here. A session qualifies only when it
+// has no run in a non-terminal state (running/paused/pausing, by status OR
+// pause_state) and its most-recent completed_at is before olderThan — so an
+// aged run inside a still-active session is never pruned out from under a
+// continuation's whole-session transcript replay.
+func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 500
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+runColumns+` FROM `+runFromTable+`
-		 WHERE r.status IN (?, ?, ?) AND r.completed_at IS NOT NULL AND r.completed_at < ?
-		 ORDER BY r.completed_at ASC LIMIT ?`,
+		`SELECT session_id FROM runs
+		 GROUP BY session_id
+		 HAVING SUM(CASE WHEN status NOT IN (?, ?, ?)
+		                   OR pause_state IN ('paused', 'pausing')
+		                 THEN 1 ELSE 0 END) = 0
+		    AND MAX(completed_at) IS NOT NULL
+		    AND MAX(completed_at) < ?
+		 ORDER BY MAX(completed_at) ASC
+		 LIMIT ?`,
 		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
 		olderThan.UnixNano(), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// RunsForSession returns every run in the session (any status), oldest first.
+func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.Run, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.session_id = ? ORDER BY r.started_at ASC`,
+		sessionID,
 	)
 	if err != nil {
 		return nil, err
@@ -1488,19 +1530,23 @@ func (s *Store) PrunableCompletedRuns(ctx context.Context, olderThan time.Time, 
 	return out, rows.Err()
 }
 
-// DeleteRunAndEvents deletes a run + its events in one tx (RFC AV Phase 2b2).
-// Events are removed explicitly (not via FK cascade) so behavior is identical
-// regardless of the foreign_keys pragma; token_usage is intentionally left.
-func (s *Store) DeleteRunAndEvents(ctx context.Context, runID string) error {
+// DeleteSessionCascade deletes a session + all its runs + events in one tx (RFC
+// AV Phase 2b2). Events + runs are removed explicitly (not via FK cascade) so
+// behavior is identical regardless of the foreign_keys pragma; token_usage is
+// intentionally left (independent retention).
+func (s *Store) DeleteSessionCascade(ctx context.Context, sessionID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE run_id = ?`, runID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE session_id = ?`, sessionID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE id = ?`, runID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE session_id = ?`, sessionID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, sessionID); err != nil {
 		return err
 	}
 	return tx.Commit()

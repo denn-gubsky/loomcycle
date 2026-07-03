@@ -88,16 +88,20 @@ func TestSweeperOnce_PrunesOldDetail(t *testing.T) {
 	}
 }
 
-// TestArchiveRunsOnce covers the RFC AV Phase 2b2 old-run archiver in both
-// modes: "prune" deletes an aged completed run + its events; "export+prune"
-// first writes the run JSON to the export dir, then deletes. The clock is
-// pinned into the future so a just-completed run lands past the cutoff.
-func TestArchiveRunsOnce(t *testing.T) {
+// TestArchiveSessionsOnce covers the RFC AV Phase 2b2 aged-SESSION archiver in
+// both modes: "prune" cascade-deletes an aged all-terminal session (its runs +
+// events); "export+prune" first writes the session JSON to the export dir, then
+// deletes. A session with a still-running run is NEVER pruned — the fix-4
+// regression: pruning per-run would corrupt a continued session's whole-session
+// transcript replay. The clock is pinned into the future so a just-completed
+// session lands past the cutoff.
+func TestArchiveSessionsOnce(t *testing.T) {
 	ctx := context.Background()
-	// Pin now well past the run's completed_at so cutoff = now-24h > completed_at.
+	// Pin now well past completed_at so cutoff = now-24h > completed_at.
 	future := func() time.Time { return time.Now().Add(48 * time.Hour) }
 
-	seedCompletedRun := func(st *sqlite.Store, agentID string) string {
+	// seedCompletedSession makes a session with one completed run (with events).
+	seedCompletedSession := func(st *sqlite.Store, agentID string) (sessID, runID string) {
 		sess, err := st.CreateSession(ctx, "t", "default", "")
 		if err != nil {
 			t.Fatal(err)
@@ -112,12 +116,12 @@ func TestArchiveRunsOnce(t *testing.T) {
 		if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
 			t.Fatal(err)
 		}
-		return run.ID
+		return sess.ID, run.ID
 	}
 
 	t.Run("prune", func(t *testing.T) {
 		st := newTestStore(t)
-		runID := seedCompletedRun(st, "prune-a")
+		sessID, runID := seedCompletedSession(st, "prune-a")
 		sw := New(st, Config{
 			RunRetention:     24 * time.Hour,
 			RunRetentionMode: "prune",
@@ -127,19 +131,22 @@ func TestArchiveRunsOnce(t *testing.T) {
 		if !sw.runArchivalEnabled() {
 			t.Fatal("prune mode should be enabled")
 		}
-		n, err := sw.archiveRunsOnce(ctx)
+		n, err := sw.archiveSessionsOnce(ctx)
 		if err != nil || n != 1 {
-			t.Fatalf("archiveRunsOnce = (%d, %v), want (1, nil)", n, err)
+			t.Fatalf("archiveSessionsOnce = (%d, %v), want (1, nil)", n, err)
 		}
 		if _, err := st.GetRun(ctx, runID); err == nil {
 			t.Errorf("run survived prune")
+		}
+		if _, err := st.GetSession(ctx, sessID); err == nil {
+			t.Errorf("session survived prune")
 		}
 	})
 
 	t.Run("export+prune", func(t *testing.T) {
 		st := newTestStore(t)
 		exportDir := t.TempDir()
-		runID := seedCompletedRun(st, "export-a")
+		sessID, runID := seedCompletedSession(st, "export-a")
 		sw := New(st, Config{
 			RunRetention:     24 * time.Hour,
 			RunRetentionMode: "export+prune",
@@ -147,21 +154,55 @@ func TestArchiveRunsOnce(t *testing.T) {
 			Logger:           func(string, ...any) {},
 			Now:              future,
 		})
-		n, err := sw.archiveRunsOnce(ctx)
+		n, err := sw.archiveSessionsOnce(ctx)
 		if err != nil || n != 1 {
-			t.Fatalf("archiveRunsOnce = (%d, %v), want (1, nil)", n, err)
+			t.Fatalf("archiveSessionsOnce = (%d, %v), want (1, nil)", n, err)
 		}
-		if _, err := st.GetRun(ctx, runID); err == nil {
-			t.Errorf("run survived export+prune")
+		if _, err := st.GetSession(ctx, sessID); err == nil {
+			t.Errorf("session survived export+prune")
 		}
-		// A JSON export exists under a per-day subdir and mentions the run id.
-		matches, _ := filepath.Glob(filepath.Join(exportDir, "*", runID+".json"))
+		// A JSON export exists under a per-day subdir named for the session and
+		// carries session_id + runs + events.
+		matches, _ := filepath.Glob(filepath.Join(exportDir, "*", sessID+".json"))
 		if len(matches) != 1 {
-			t.Fatalf("export file glob = %v, want exactly one %s.json", matches, runID)
+			t.Fatalf("export file glob = %v, want exactly one %s.json", matches, sessID)
 		}
 		blob, err := os.ReadFile(matches[0])
-		if err != nil || !bytes.Contains(blob, []byte(runID)) || !bytes.Contains(blob, []byte(`"events"`)) {
-			t.Errorf("export file missing run id / events: err=%v", err)
+		if err != nil ||
+			!bytes.Contains(blob, []byte(sessID)) ||
+			!bytes.Contains(blob, []byte(runID)) ||
+			!bytes.Contains(blob, []byte(`"runs"`)) ||
+			!bytes.Contains(blob, []byte(`"events"`)) {
+			t.Errorf("export file missing session_id / run id / runs / events: err=%v", err)
+		}
+	})
+
+	// fix-4 regression: a session with a still-running run must NOT be pruned,
+	// even if it also holds an aged completed run. Pruning per-run would leave
+	// the running run's continuation replay reading a broken transcript.
+	t.Run("session with running run is not pruned", func(t *testing.T) {
+		st := newTestStore(t)
+		sess, _ := st.CreateSession(ctx, "t", "default", "")
+		done, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "mixed-done"})
+		running, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "mixed-running"}) // stays running
+		if err := st.FinishRun(ctx, done.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+			t.Fatal(err)
+		}
+		sw := New(st, Config{
+			RunRetention:     24 * time.Hour,
+			RunRetentionMode: "prune",
+			Logger:           func(string, ...any) {},
+			Now:              future,
+		})
+		n, err := sw.archiveSessionsOnce(ctx)
+		if err != nil || n != 0 {
+			t.Fatalf("archiveSessionsOnce = (%d, %v), want (0, nil) — session has a running run", n, err)
+		}
+		if _, err := st.GetRun(ctx, done.ID); err != nil {
+			t.Errorf("completed run in a still-active session was pruned: %v", err)
+		}
+		if _, err := st.GetRun(ctx, running.ID); err != nil {
+			t.Errorf("running run was pruned: %v", err)
 		}
 	})
 

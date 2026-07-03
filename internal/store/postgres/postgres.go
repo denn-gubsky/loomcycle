@@ -533,14 +533,25 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 	n := 0
 	ph := func(v any) string { n++; args = append(args, v); return fmt.Sprintf("$%d", n) }
 	// Build a per-source WHERE (tenant + window). Called token_usage first so the
-	// placeholder order in args matches the SQL text order.
-	where := func(tsCol string) string {
+	// placeholder order in args matches the SQL text order. token_usage windows on
+	// ts (exact); usage_archive on period_start (day-truncated UTC midnight), so
+	// its `from` bound is floored to the UTC day — see below.
+	where := func(tsCol string, floorFromDay bool) string {
 		var conds []string
 		if q.TenantID != "" {
 			conds = append(conds, "tenant_id = "+ph(q.TenantID))
 		}
 		if !q.From.IsZero() {
-			conds = append(conds, tsCol+" >= "+ph(q.From))
+			if floorFromDay {
+				// The archive is day-bucketed (period_start = UTC midnight), so an
+				// intra-day `from` (e.g. 12:00) compared exactly would drop the whole
+				// from-day bucket (period_start 00:00 < 12:00). Floor `from` to its
+				// UTC day so that bucket is included. This makes the boundary day
+				// over-inclusive at day granularity — never under-inclusive.
+				conds = append(conds, tsCol+" >= date_trunc('day', "+ph(q.From)+"::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")
+			} else {
+				conds = append(conds, tsCol+" >= "+ph(q.From))
+			}
 		}
 		if !q.To.IsZero() {
 			conds = append(conds, tsCol+" <= "+ph(q.To))
@@ -550,8 +561,8 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 		}
 		return " WHERE " + strings.Join(conds, " AND ")
 	}
-	tuWhere := where("ts")
-	uaWhere := where("period_start")
+	tuWhere := where("ts", false)
+	uaWhere := where("period_start", true)
 
 	inner := `SELECT tenant_id, COALESCE(user_id,'') AS user_id, provider, model, credential_source,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
@@ -598,7 +609,9 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 // RollupAndPruneUsage folds token_usage rows older than olderThan into
 // usage_archive (day-bucketed via date_trunc) and deletes them, in one
 // transaction (RFC AV Phase 2b). Idempotent via the archive PK. Returns the raw
-// rows pruned.
+// rows pruned. The day bucket is computed in UTC (date_trunc over ts AT TIME
+// ZONE 'UTC', re-stamped back to timestamptz) so period_start is UTC midnight
+// regardless of the session TZ — matching sqlite's UTC (ts/nanosPerDay) bucket.
 func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (int, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -610,12 +623,12 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, call_count, unpriced_calls)
-		SELECT date_trunc('day', ts) AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source,
+		SELECT date_trunc('day', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source,
 			SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
 			SUM(COALESCE(cost,0)), COALESCE(MAX(cost_currency),''),
 			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END)
 		FROM token_usage WHERE ts < $1
-		GROUP BY date_trunc('day', ts), tenant_id, COALESCE(user_id,''), provider, model, credential_source
+		GROUP BY date_trunc('day', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC', tenant_id, COALESCE(user_id,''), provider, model, credential_source
 		ON CONFLICT (period_start, tenant_id, user_id, provider, model, credential_source) DO UPDATE SET
 			input_tokens          = usage_archive.input_tokens + excluded.input_tokens,
 			output_tokens         = usage_archive.output_tokens + excluded.output_tokens,
@@ -640,12 +653,46 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	return pruned, nil
 }
 
-// PrunableCompletedRuns lists terminal runs older than olderThan (RFC AV Phase
-// 2b2). completed_at is TIMESTAMPTZ here.
-func (s *Store) PrunableCompletedRuns(ctx context.Context, olderThan time.Time, limit int) ([]store.Run, error) {
+// PrunableAgedSessions lists sessions where EVERY run is terminal + old (RFC AV
+// Phase 2b2). completed_at is TIMESTAMPTZ here. A session qualifies only when it
+// has no run in a non-terminal state (running/paused/pausing, by status OR
+// pause_state) and its most-recent completed_at is before olderThan — so an aged
+// run inside a still-active session is never pruned out from under a
+// continuation's whole-session transcript replay.
+func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 500
 	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT session_id FROM runs
+		 GROUP BY session_id
+		 HAVING SUM(CASE WHEN status NOT IN ($1, $2, $3)
+		                   OR pause_state IN ('paused', 'pausing')
+		                 THEN 1 ELSE 0 END) = 0
+		    AND MAX(completed_at) IS NOT NULL
+		    AND MAX(completed_at) < $4
+		 ORDER BY MAX(completed_at) ASC
+		 LIMIT $5`,
+		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
+		olderThan, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list prunable sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan prunable session id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// RunsForSession returns every run in the session (any status), oldest first.
+func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.Run, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
@@ -655,31 +702,34 @@ func (s *Store) PrunableCompletedRuns(ctx context.Context, olderThan time.Time, 
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
-		 WHERE r.status IN ($1, $2, $3) AND r.completed_at IS NOT NULL AND r.completed_at < $4
-		 ORDER BY r.completed_at ASC LIMIT $5`,
-		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
-		olderThan, limit,
+		 WHERE r.session_id = $1
+		 ORDER BY r.started_at ASC`,
+		sessionID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list prunable runs: %w", err)
+		return nil, fmt.Errorf("list runs for session: %w", err)
 	}
 	defer rows.Close()
 	return scanRunRows(rows)
 }
 
-// DeleteRunAndEvents deletes a run + its events in one tx (RFC AV Phase 2b2).
-// Events removed explicitly; token_usage intentionally left (own retention).
-func (s *Store) DeleteRunAndEvents(ctx context.Context, runID string) error {
+// DeleteSessionCascade deletes a session + all its runs + events in one tx (RFC
+// AV Phase 2b2). Events + runs removed explicitly, then the session row;
+// token_usage intentionally left (own retention).
+func (s *Store) DeleteSessionCascade(ctx context.Context, sessionID string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin delete-run tx: %w", err)
+		return fmt.Errorf("begin delete-session tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `DELETE FROM events WHERE run_id = $1`, runID); err != nil {
-		return fmt.Errorf("delete run events: %w", err)
+	if _, err := tx.Exec(ctx, `DELETE FROM events WHERE session_id = $1`, sessionID); err != nil {
+		return fmt.Errorf("delete session events: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM runs WHERE id = $1`, runID); err != nil {
-		return fmt.Errorf("delete run: %w", err)
+	if _, err := tx.Exec(ctx, `DELETE FROM runs WHERE session_id = $1`, sessionID); err != nil {
+		return fmt.Errorf("delete session runs: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID); err != nil {
+		return fmt.Errorf("delete session: %w", err)
 	}
 	return tx.Commit(ctx)
 }

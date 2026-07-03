@@ -227,15 +227,9 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	}
 	s.publishRunState(meta, "running", "", "")
 
-	// Store-only emit (no live client to forward to) — the resumed turns
-	// append to the same run's transcript so a re-attaching operator tails them.
-	emit := s.makeRecordingEmit(runCtx, run.ID, func(providers.Event) {})
-	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, run.AgentID, run.SessionID, run.UserID, emit)
-
-	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
-	// RFC AR: honor a tenant/user provider-key override on the resumed run too.
-	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
-	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
+	// Hoisted above the recording emit so resumed-turn usage is attributed under
+	// the run's true identity (see makeRecordingEmit) and WithRunIdentity reuses it.
+	rid := tools.RunIdentityValue{
 		UserID:        run.UserID,
 		TenantID:      run.TenantID,
 		AgentID:       run.AgentID,
@@ -244,7 +238,16 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		ParentContext: run.ParentContext,
 		// UserBearer / UserCredentials are intentionally absent — secrets are
 		// never snapshotted, so a resumed run cannot restore them.
-	})
+	}
+	// Store-only emit (no live client to forward to) — the resumed turns
+	// append to the same run's transcript so a re-attaching operator tails them.
+	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, func(providers.Event) {})
+	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, run.AgentID, run.SessionID, run.UserID, emit)
+
+	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// RFC AR: honor a tenant/user provider-key override on the resumed run too.
+	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
+	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	loopCtx = tools.WithHostPolicy(loopCtx, tools.HostPolicyValue{}) // no caller narrowing snapshotted; operator floor applies
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{

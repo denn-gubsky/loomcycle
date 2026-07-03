@@ -1997,7 +1997,20 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Build emit chain (record + forward to caller) ----
-	emit := s.makeRecordingEmit(ctx, runID, func(ev providers.Event) {
+	// Hoisted so the recording emit attributes usage under the run's true
+	// identity (makeRecordingEmit is built before WithRunIdentity below) and
+	// both consumers stamp the SAME value.
+	rid := tools.RunIdentityValue{
+		UserID:          effectiveUserID,
+		TenantID:        effectiveTenantID, // RFC L: authoritative tenant (memory tenancy key)
+		AgentID:         agentID,
+		RootRunID:       runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
+		UserTier:        in.UserTier,
+		UserBearer:      in.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials: in.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+	}
+	emit := s.makeRecordingEmit(ctx, runID, rid, sessionID, func(ev providers.Event) {
 		if cb.OnEvent != nil {
 			cb.OnEvent(ev)
 		}
@@ -2011,16 +2024,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
-	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:          effectiveUserID,
-		TenantID:        effectiveTenantID, // RFC L: authoritative tenant (memory tenancy key)
-		AgentID:         agentID,
-		RootRunID:       runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
-		UserTier:        in.UserTier,
-		UserBearer:      in.UserBearer,      // v0.8.x: per-run MCP bearer
-		UserCredentials: in.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:   in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
-	})
+	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	// Memory tool policy: agent name + per-agent scope allowlist +
 	// per-agent quota override. The Memory tool reads these from ctx
@@ -3389,9 +3393,23 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if req.Interactive {
 		streamFwd = func(providers.Event) {}
 	}
+	// Stash the run's identity so the Agent built-in tool's SubAgentRunner can
+	// inherit user_id and set parent_agent_id on any sub-runs it spawns.
+	// Hoisted above the recording emit so usage is attributed under the run's
+	// true identity (see makeRecordingEmit) and WithRunIdentity below reuses it.
+	rid := tools.RunIdentityValue{
+		UserID:          req.UserID,
+		TenantID:        req.TenantID, // RFC L: authoritative tenant (memory tenancy key)
+		AgentID:         agentID,
+		RootRunID:       runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
+		UserTier:        req.UserTier,
+		UserBearer:      req.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+	}
 	// Persist under runCtx so events survive a client disconnect on an
 	// interactive run (runCtx tracks the request for a normal run).
-	emit := s.makeRecordingEmit(runCtx, runID, streamFwd)
+	emit := s.makeRecordingEmit(runCtx, runID, rid, sessionID, streamFwd)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, runID, agentID, sessionID, req.UserID, emit)
@@ -3410,19 +3428,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
-	// Stash the run's identity so the Agent built-in tool's
-	// SubAgentRunner can inherit user_id and set parent_agent_id on
-	// any sub-runs it spawns.
-	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:          req.UserID,
-		TenantID:        req.TenantID, // RFC L: authoritative tenant (memory tenancy key)
-		AgentID:         agentID,
-		RootRunID:       runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
-		UserTier:        req.UserTier,
-		UserBearer:      req.UserBearer,      // v0.8.x: per-run MCP bearer
-		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
-	})
+	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	// Stash the caller's host policy so any sub-agents spawned by the
 	// Agent tool inherit the same allowed_hosts / WebSearchFilter
 	// narrowing the parent received.
@@ -3907,7 +3913,19 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		"parent_context":  body.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
 	})
 
-	emit := s.makeRecordingEmit(r.Context(), run.ID, stream.send)
+	// Hoisted above the recording emit so usage is attributed under the run's
+	// true identity (see makeRecordingEmit) and WithRunIdentity below reuses it.
+	rid := tools.RunIdentityValue{
+		UserID:          sess.UserID,
+		TenantID:        sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
+		AgentID:         agentID,
+		RootRunID:       run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
+		UserTier:        body.UserTier,
+		UserBearer:      body.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials: body.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+	}
+	emit := s.makeRecordingEmit(r.Context(), run.ID, rid, id, stream.send)
 
 	// PR 2: operator steering queue for this continuation run.
 	steerQ, onSteer, deregSteer := s.makeSteer(r.Context(), run.ID, agentID, id, sess.UserID, emit)
@@ -3918,16 +3936,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
-	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:          sess.UserID,
-		TenantID:        sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
-		AgentID:         agentID,
-		RootRunID:       run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
-		UserTier:        body.UserTier,
-		UserBearer:      body.UserBearer,      // v0.8.x: per-run MCP bearer
-		UserCredentials: body.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:   body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
-	})
+	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	// Sub-agents spawned by this continuation must inherit the
 	// caller-authoritative host narrowing, same as runRequest +
 	// handleRuns. Without this, a sub-agent runs against the
@@ -4380,7 +4389,13 @@ func (s *Server) makeSteer(ctx context.Context, runID, agentID, sessionID, userI
 	return q, onSteer, dereg
 }
 
-func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(providers.Event)) func(providers.Event) {
+// rid + sessionID are passed EXPLICITLY (not read from ctx) because this
+// closure is built BEFORE tools.WithRunIdentity is stamped on the loop ctx —
+// reading tools.RunIdentity(ctx) here returned the zero value, so every
+// directly-invoked run's token_usage rows were attributed to tenant/user/
+// agent "" (and a sub-agent's rows got the parent's identity). recordCallUsage
+// uses these captured values so attribution matches the run's true identity.
+func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, fwd func(providers.Event)) func(providers.Event) {
 	if s.store == nil || runID == "" {
 		// Even on the store-less path, multiple concurrent callers
 		// could write to fwd in parallel. fwd itself (stream.send)
@@ -4434,7 +4449,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 		// Additive side-effect — the event still persists + forwards through the
 		// general path below (it is also stored as a "usage" event, unchanged).
 		if ev.Type == providers.EventUsage && ev.Usage != nil {
-			s.recordCallUsage(ctx, runID, usageCallIdx, ev.Usage)
+			s.recordCallUsage(ctx, runID, rid, sessionID, usageCallIdx, ev.Usage)
 			usageCallIdx++
 		}
 		// F32: redact secrets out of the PERSISTED copy only — the tool_call
@@ -4474,14 +4489,15 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 
 // recordCallUsage appends one per-call token_usage row (RFC AV): who paid
 // (credential source from the driver-stamped Usage), what served it
-// (provider/model), the token buckets, and the priced cost. Identity comes from
-// the run ctx (never the wire). A store error is logged, not fatal — usage
-// telemetry must never fail a run.
-func (s *Server) recordCallUsage(ctx context.Context, runID string, iteration int, u *providers.Usage) {
+// (provider/model), the token buckets, and the priced cost. Identity (rid) +
+// sessionID are passed EXPLICITLY by the caller (never read from ctx / the
+// wire) — makeRecordingEmit is constructed before WithRunIdentity stamps the
+// loop ctx, so reading it here would attribute every row to "". A store error
+// is logged, not fatal — usage telemetry must never fail a run.
+func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, iteration int, u *providers.Usage) {
 	if s.store == nil || u == nil {
 		return
 	}
-	ri := tools.RunIdentity(ctx)
 	source := u.CredentialSource
 	if source == "" {
 		source = "operator" // no override fired → operator host key paid
@@ -4489,15 +4505,16 @@ func (s *Server) recordCallUsage(ctx context.Context, runID string, iteration in
 	// Attribute a sub-agent's call to its spawn-tree root so a fan-out's cost
 	// rolls up to the originating request; empty for a top-level run.
 	parentRunID := ""
-	if ri.RootRunID != "" && ri.RootRunID != runID {
-		parentRunID = ri.RootRunID
+	if rid.RootRunID != "" && rid.RootRunID != runID {
+		parentRunID = rid.RootRunID
 	}
 	cost, currency := s.priceCall(u.Provider, u.Model, u)
 	row := store.TokenUsageRow{
 		RunID:               runID,
-		TenantID:            ri.TenantID,
-		UserID:              ri.UserID,
-		AgentID:             ri.AgentID,
+		SessionID:           sessionID,
+		TenantID:            rid.TenantID,
+		UserID:              rid.UserID,
+		AgentID:             rid.AgentID,
 		ParentRunID:         parentRunID,
 		Iteration:           iteration,
 		Provider:            u.Provider,
@@ -4864,11 +4881,25 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// event payload includes agent_def_id — unique to this path.
 	s.emitSystemPromptEvent(ctx, subRunID, def.SystemPrompt, defID, promptProv)
 
+	// The sub-run's own identity — hoisted so its recording emit attributes
+	// usage to the SUB (tenant/user/agent/session), not the parent, and
+	// WithRunIdentity below stamps the identical value onto subCtx.
+	subRID := tools.RunIdentityValue{
+		UserID:          parentIdentity.UserID,
+		TenantID:        parentIdentity.TenantID, // RFC L: sub-agents inherit the parent's authoritative tenant (same isolation boundary)
+		AgentID:         subAgentID,
+		RootRunID:       parentIdentity.RootRunID,             // RFC AH Phase 2b: INHERIT the tree's root id (do NOT overwrite)
+		UserTier:        parentIdentity.UserTier,              // v0.8.2: sub-agents inherit parent's user_tier
+		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
+		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
+		UserCredentials: parentIdentity.UserCredentials,       // v1.x RFC F: credentials map inherited identically
+		ParentContext:   parentIdentity.ParentContext.Clone(), // v0.12.x: tracking lineage flows to grandchildren too
+	}
 	// Sub-emit records to the sub's transcript only — the parent's SSE
 	// stream is fwd=no-op so sub events don't bleed into the parent's
 	// event stream. The parent observes only the wrapping
 	// tool_call/tool_result on its own stream.
-	subEmit := s.makeRecordingEmit(ctx, subRunID, func(providers.Event) {})
+	subEmit := s.makeRecordingEmit(ctx, subRunID, subRID, subSessionID, func(providers.Event) {})
 
 	// Sub-run gets ITS OWN agent tools attached to ctx — the parent's
 	// tool list does not leak to the child (and vice versa). This
@@ -4879,17 +4910,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// recursive Agent tool call from this sub picks up the right
 	// parent_agent_id (= subAgentID).
 	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
-	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
-		UserID:          parentIdentity.UserID,
-		TenantID:        parentIdentity.TenantID, // RFC L: sub-agents inherit the parent's authoritative tenant (same isolation boundary)
-		AgentID:         subAgentID,
-		RootRunID:       parentIdentity.RootRunID,             // RFC AH Phase 2b: INHERIT the tree's root id (do NOT overwrite)
-		UserTier:        parentIdentity.UserTier,              // v0.8.2: sub-agents inherit parent's user_tier
-		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
-		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
-		UserCredentials: parentIdentity.UserCredentials,       // v1.x RFC F: credentials map inherited identically
-		ParentContext:   parentIdentity.ParentContext.Clone(), // v0.12.x: tracking lineage flows to grandchildren too
-	})
+	subCtx = tools.WithRunIdentity(subCtx, subRID)
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
 	// memory_scopes do NOT cascade. This matches the existing

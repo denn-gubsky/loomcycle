@@ -15,9 +15,11 @@
 //     env, e.g. a token an agent fetched at runtime). Each rule targets a
 //     distinctive secret shape; see patternRules for the per-rule rationale.
 //
-// A Redactor is built once and is safe for concurrent String/Bytes calls (its
-// compiled state is read-only after New). The zero value / a nil *Redactor is a
-// no-op, so callers may hold a nil redactor when redaction is disabled.
+// A Redactor's static tiers are fixed at New; runtime-resolved secret values may
+// be added later via Register (RFC AV/AR). It is safe for concurrent
+// String/Bytes/Register calls — the registered set is guarded by an RWMutex. The
+// zero value / a nil *Redactor is a no-op, so callers may hold a nil redactor
+// when redaction is disabled.
 package redact
 
 import (
@@ -25,6 +27,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // minSecretLen is the shortest env value Tier A will mask. A shorter value is
@@ -32,10 +35,31 @@ import (
 // (e.g. an env var that happens to be set to "true") would be a false positive.
 const minSecretLen = 8
 
+// minDynamicSecretLen is the shortest runtime-registered (Register) value we
+// mask. Registered values are EXACT known secrets (zero false positives on the
+// exact string), so the floor only guards against masking trivially short
+// values that would appear everywhere.
+const minDynamicSecretLen = 4
+
+// dynamicMarker replaces a runtime-registered secret value. Register carries no
+// env NAME (the value is resolved at run time, e.g. an RFC AR $cred:), so unlike
+// Tier A's [redacted:NAME] the marker is generic.
+const dynamicMarker = "[redacted:credential]"
+
 // Redactor masks secret-shaped substrings.
 type Redactor struct {
 	replacer *strings.Replacer // Tier A: exact env-value → [redacted:NAME]; nil if none
 	patterns []patternRule     // Tier B: nil when patterns are disabled
+
+	// Tier A' — runtime-registered exact secret values (RFC AV/AR: resolved
+	// $cred: values + provider-key overrides). Registered as credentials resolve,
+	// so a downstream tool that echoes one is masked in the persisted transcript.
+	// dynamic is the deduped value set (bounds the inventory); dynReplacer is its
+	// compiled longest-first form, applied in String. Guarded by mu — Register
+	// takes Lock, String takes RLock.
+	mu          sync.RWMutex
+	dynamic     map[string]struct{}
+	dynReplacer *strings.Replacer
 }
 
 type patternRule struct {
@@ -103,14 +127,58 @@ func New(secrets map[string]string, withPatterns bool) *Redactor {
 	return r
 }
 
+// Register adds a runtime-resolved secret VALUE so a later tool_call/tool_result
+// that echoes it is masked in the persisted transcript (RFC AV/AR). Thread-safe
+// and safe to call concurrently with String/Bytes. Deduped by value (re-
+// registering is a no-op) so the set stays bounded by the distinct-credential
+// inventory, not per call. Values shorter than minDynamicSecretLen and a nil
+// redactor are ignored.
+func (r *Redactor) Register(value string) {
+	if r == nil || len(value) < minDynamicSecretLen {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, dup := r.dynamic[value]; dup {
+		return // already registered — keep the set bounded
+	}
+	if r.dynamic == nil {
+		r.dynamic = make(map[string]struct{})
+	}
+	r.dynamic[value] = struct{}{}
+	// Rebuild the replacer longest-value-first so a value that is a substring of
+	// another is masked as part of the longer match first (mirrors New's Tier A).
+	vals := make([]string, 0, len(r.dynamic))
+	for v := range r.dynamic {
+		vals = append(vals, v)
+	}
+	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
+	pairs := make([]string, 0, len(vals)*2)
+	for _, v := range vals {
+		pairs = append(pairs, v, dynamicMarker)
+	}
+	r.dynReplacer = strings.NewReplacer(pairs...)
+}
+
 // Enabled reports whether the redactor would mask anything. A no-op / nil
-// redactor returns false, letting callers skip the copy on the hot path.
+// redactor returns false, letting callers skip the copy on the hot path. When
+// static tiers are absent it consults the runtime-registered set under RLock;
+// the common case (patterns on) short-circuits before the lock.
 func (r *Redactor) Enabled() bool {
-	return r != nil && (r.replacer != nil || len(r.patterns) > 0)
+	if r == nil {
+		return false
+	}
+	if r.replacer != nil || len(r.patterns) > 0 {
+		return true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.dynReplacer != nil
 }
 
 // String returns s with every recognised secret masked. Tier A (exact env
-// values) runs first, then the Tier-B patterns.
+// values) runs first, then the Tier-B patterns, then the runtime-registered
+// values (Tier A').
 func (r *Redactor) String(s string) string {
 	if !r.Enabled() || s == "" {
 		return s
@@ -120,6 +188,12 @@ func (r *Redactor) String(s string) string {
 	}
 	for _, p := range r.patterns {
 		s = p.re.ReplaceAllString(s, p.repl)
+	}
+	r.mu.RLock()
+	dyn := r.dynReplacer
+	r.mu.RUnlock()
+	if dyn != nil {
+		s = dyn.Replace(s)
 	}
 	return s
 }
