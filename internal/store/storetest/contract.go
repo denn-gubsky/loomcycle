@@ -338,7 +338,9 @@ func Run(t *testing.T, factory Factory) {
 		// RFC AV — per-call usage ledger + per-run cost/source summary.
 		{"TokenUsageLedger", testTokenUsageLedger},
 		{"FinishRunPersistsCostAndSource", testFinishRunPersistsCostAndSource},
+		{"RunCostSummary", testRunCostSummary},
 		{"UsageReport", testUsageReport},
+		{"UsageReportPerCurrency", testUsageReportPerCurrency},
 		{"UsageRollupAndPrune", testUsageRollupAndPrune},
 		{"UsageReportArchiveWindowBoundary", testUsageReportArchiveWindowBoundary},
 		{"SessionArchiver", testSessionArchiver},
@@ -680,6 +682,53 @@ func testFinishRunPersistsCostAndSource(t *testing.T, s store.Store) {
 	}
 }
 
+// testRunCostSummary is the fix-9 store-contract check: RunCostSummary sums the
+// per-call ledger, reports the priced currency, and distinguishes a priced run
+// from an unpriced one (currency "" ⇒ the FinishRun caller stores a NULL cost).
+// Runs on both backends (the sqlite unit + the postgres CI job).
+func testRunCostSummary(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// Priced run: two calls at different costs → summed, currency reported, priced.
+	if err := s.RecordCallUsage(ctx, store.TokenUsageRow{RunID: "rcs1", TenantID: "t", Provider: "p", Model: "m",
+		CredentialSource: "operator", InputTokens: 10, Cost: 0.25, CostCurrency: "USD"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordCallUsage(ctx, store.TokenUsageRow{RunID: "rcs1", TenantID: "t", Provider: "p", Model: "m2",
+		Iteration: 1, CredentialSource: "operator", InputTokens: 20, Cost: 0.75, CostCurrency: "USD"}); err != nil {
+		t.Fatal(err)
+	}
+	cost, currency, priced, err := s.RunCostSummary(ctx, "rcs1")
+	if err != nil {
+		t.Fatalf("RunCostSummary(priced): %v", err)
+	}
+	if !priced || currency != "USD" || cost < 0.999 || cost > 1.001 {
+		t.Errorf("priced run = (cost=%v currency=%q priced=%v), want (1.0,USD,true)", cost, currency, priced)
+	}
+
+	// Unpriced run: a row with no currency (NULL cost) → priced=false, currency "".
+	if err := s.RecordCallUsage(ctx, store.TokenUsageRow{RunID: "rcs2", TenantID: "t", Provider: "p", Model: "x",
+		CredentialSource: "operator", InputTokens: 5, CostCurrency: ""}); err != nil {
+		t.Fatal(err)
+	}
+	cost2, currency2, priced2, err := s.RunCostSummary(ctx, "rcs2")
+	if err != nil {
+		t.Fatalf("RunCostSummary(unpriced): %v", err)
+	}
+	if priced2 || currency2 != "" || cost2 != 0 {
+		t.Errorf("unpriced run = (cost=%v currency=%q priced=%v), want (0,\"\",false)", cost2, currency2, priced2)
+	}
+
+	// A run with no ledger rows at all → unpriced (never priced).
+	_, cur3, priced3, err := s.RunCostSummary(ctx, "rcs-none")
+	if err != nil {
+		t.Fatalf("RunCostSummary(empty): %v", err)
+	}
+	if priced3 || cur3 != "" {
+		t.Errorf("no-ledger run = (currency=%q priced=%v), want (\"\",false)", cur3, priced3)
+	}
+}
+
 // testUsageReport exercises the RFC AV Phase 2 aggregation: grouping,
 // tenant/window scoping, the operator-vs-tenant split, and the unpriced-call
 // count. Rows are inserted directly (no run needed — token_usage has no FK).
@@ -705,9 +754,9 @@ func testUsageReport(t *testing.T, s store.Store) {
 		}
 	}
 
-	sum := func(aggs []store.UsageAggregate, tenant, source string) (in int64, cost float64, unpriced int64, found bool) {
+	sum := func(aggs []store.UsageAggregate, tenant, source, currency string) (in int64, cost float64, unpriced int64, found bool) {
 		for _, a := range aggs {
-			if a.TenantID == tenant && a.CredentialSource == source {
+			if a.TenantID == tenant && a.CredentialSource == source && a.Currency == currency {
 				return a.InputTokens, a.Cost, a.UnpricedCalls, true
 			}
 		}
@@ -719,14 +768,19 @@ func testUsageReport(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("UsageReport: %v", err)
 	}
-	// A/operator merges the priced + unpriced rows: 150 tokens, cost 1.0, 1 unpriced.
-	if in, cost, unpriced, ok := sum(all, "A", "operator"); !ok || in != 150 || cost != 1.0 || unpriced != 1 {
-		t.Errorf("A/operator = (in=%d cost=%v unpriced=%d ok=%v), want (150,1,1,true)", in, cost, unpriced, ok)
+	// A/operator splits by currency (fix-10 — never sum across currencies): the
+	// priced USD row (100 tok, 1.0) and the unpriced '' row (50 tok, 1 unpriced) do
+	// NOT merge into one 150-token row.
+	if in, cost, unpriced, ok := sum(all, "A", "operator", "USD"); !ok || in != 100 || cost != 1.0 || unpriced != 0 {
+		t.Errorf("A/operator/USD = (in=%d cost=%v unpriced=%d ok=%v), want (100,1,0,true)", in, cost, unpriced, ok)
 	}
-	if in, cost, _, ok := sum(all, "A", "tenant"); !ok || in != 200 || cost != 2.0 {
+	if in, cost, unpriced, ok := sum(all, "A", "operator", ""); !ok || in != 50 || cost != 0 || unpriced != 1 {
+		t.Errorf("A/operator/unpriced = (in=%d cost=%v unpriced=%d ok=%v), want (50,0,1,true)", in, cost, unpriced, ok)
+	}
+	if in, cost, _, ok := sum(all, "A", "tenant", "USD"); !ok || in != 200 || cost != 2.0 {
 		t.Errorf("A/tenant = (%d,%v,%v), want (200,2,true)", in, cost, ok)
 	}
-	if in, cost, _, ok := sum(all, "B", "operator"); !ok || in != 400 || cost != 4.0 {
+	if in, cost, _, ok := sum(all, "B", "operator", "USD"); !ok || in != 400 || cost != 4.0 {
 		t.Errorf("B/operator = (%d,%v,%v), want (400,4,true)", in, cost, ok)
 	}
 
@@ -739,16 +793,55 @@ func testUsageReport(t *testing.T, s store.Store) {
 	}
 
 	// Operator bill = group by source, filter source=operator across all tenants:
-	// cost 1.0 (A) + 4.0 (B) = 5.0.
+	// cost 1.0 (A) + 4.0 (B) = 5.0. Sum across the operator's currency rows (only
+	// the USD row carries cost; the '' unpriced row is 0).
 	bySource, _ := s.UsageReport(ctx, store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageBySource}})
 	var opCost float64
 	for _, a := range bySource {
 		if a.CredentialSource == "operator" {
-			opCost = a.Cost
+			opCost += a.Cost
 		}
 	}
 	if opCost != 5.0 {
 		t.Errorf("operator bill = %v, want 5.0", opCost)
+	}
+}
+
+// testUsageReportPerCurrency is the fix-10 regression: UsageReport must never sum
+// across currencies. Two priced calls in the SAME (tenant, source) bucket but with
+// different currencies (USD + EUR) must yield TWO rows — one per currency, each
+// with its own cost — not one row summing 1.5+2.5 under an arbitrary MAX label.
+func testUsageReportPerCurrency(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	rows := []store.TokenUsageRow{
+		{RunID: "r_usd", TenantID: "MC", Provider: "anthropic", Model: "m",
+			CredentialSource: "operator", InputTokens: 100, Cost: 1.5, CostCurrency: "USD"},
+		{RunID: "r_eur", TenantID: "MC", Provider: "anthropic", Model: "m",
+			CredentialSource: "operator", InputTokens: 200, Cost: 2.5, CostCurrency: "EUR"},
+	}
+	for _, r := range rows {
+		if err := s.RecordCallUsage(ctx, r); err != nil {
+			t.Fatalf("RecordCallUsage: %v", err)
+		}
+	}
+	rep, err := s.UsageReport(ctx, store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageBySource}})
+	if err != nil {
+		t.Fatalf("UsageReport: %v", err)
+	}
+	byCurrency := map[string]store.UsageAggregate{}
+	for _, a := range rep {
+		if a.TenantID == "MC" && a.CredentialSource == "operator" {
+			byCurrency[a.Currency] = a
+		}
+	}
+	if len(byCurrency) != 2 {
+		t.Fatalf("MC/operator rows = %d, want 2 (one per currency): %+v", len(byCurrency), rep)
+	}
+	if a := byCurrency["USD"]; a.Cost != 1.5 || a.InputTokens != 100 {
+		t.Errorf("USD row = (cost=%v in=%d), want (1.5,100)", a.Cost, a.InputTokens)
+	}
+	if a := byCurrency["EUR"]; a.Cost != 2.5 || a.InputTokens != 200 {
+		t.Errorf("EUR row = (cost=%v in=%d), want (2.5,200)", a.Cost, a.InputTokens)
 	}
 }
 

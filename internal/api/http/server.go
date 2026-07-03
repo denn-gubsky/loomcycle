@@ -6141,12 +6141,20 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		CacheReadTokens:     res.Usage.CacheReadTokens,
 		Model:               res.Usage.Model,
 		Provider:            res.Usage.Provider,
-		// RFC AV: carry the cost + credential-source summary on cancel too, so a
-		// partially-completed cancelled run still attributes its spend.
+		// RFC AV: carry the credential-source summary on cancel too, so a
+		// partially-completed cancelled run still attributes its spend. Cost is set
+		// below from the ledger (the calls that completed before cancel).
 		CredentialSource:  runSummarySource(res.Usage),
 		CredentialScopeID: res.Usage.CredentialScopeID,
 	}
-	usage.Cost, usage.CostCurrency = s.priceCall(res.Usage.Provider, res.Usage.Model, &res.Usage)
+	// runs.cost = Σ(the run's per-call ledger) — the calls that completed before the
+	// cancel. Authoritative over pricing cumulative tokens at the final model (which
+	// disagrees on a mid-run fallback). Error → leave NULL, never fail the write.
+	if cost, currency, _, err := s.store.RunCostSummary(bg, runID); err != nil {
+		log.Printf("store: RunCostSummary failed (run=%s): %v", runID, err)
+	} else {
+		usage.Cost, usage.CostCurrency = cost, currency
+	}
 	if err := s.store.FinishRun(bg, runID, store.RunCancelled, reason, usage, ""); err != nil {
 		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
 	}
@@ -6261,13 +6269,23 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		CacheReadTokens:     res.Usage.CacheReadTokens,
 		Model:               res.Usage.Model,
 		Provider:            res.Usage.Provider,
-		// RFC AV: per-run cost + credential-source summary. Cost is best-effort
-		// (priced from the run's final provider/model + summed tokens); the exact
-		// per-call split lives in token_usage. Source is the last iteration's key.
+		// RFC AV: per-run credential-source summary is the last iteration's key;
+		// the exact per-call split lives in token_usage. Cost is set below from the
+		// ledger (not priced here) so runs.cost == Σ(ledger).
 		CredentialSource:  runSummarySource(res.Usage),
 		CredentialScopeID: res.Usage.CredentialScopeID,
 	}
-	usage.Cost, usage.CostCurrency = s.priceCall(res.Usage.Provider, res.Usage.Model, &res.Usage)
+	// runs.cost is the SUM of the run's per-call ledger costs (authoritative) — NOT
+	// the final model × cumulative tokens, which disagrees with the ledger on a
+	// mid-run fallback. All EventUsage rows are written synchronously (via
+	// makeRecordingEmit) before finishRun runs, so the ledger is complete here. A
+	// summary error is logged, not fatal — leave the cost NULL rather than fail the
+	// terminal write; currency "" ⇒ unpriced (NULL), preserving NULL-vs-zero.
+	if cost, currency, _, err := s.store.RunCostSummary(bg, runID); err != nil {
+		log.Printf("store: RunCostSummary failed (run=%s): %v", runID, err)
+	} else {
+		usage.Cost, usage.CostCurrency = cost, currency
+	}
 	if err := s.store.FinishRun(bg, runID, status, res.StopReason, usage, errMsg); err != nil {
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}

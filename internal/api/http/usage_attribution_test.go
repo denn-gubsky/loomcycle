@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -213,5 +214,111 @@ func TestUsageAttribution_LedgerRowCarriesRunIdentity(t *testing.T) {
 	}
 	if r.SessionID == "" || r.SessionID != run.SessionID {
 		t.Errorf("row SessionID = %q, want run's session %q", r.SessionID, run.SessionID)
+	}
+}
+
+// noopUsageTool lets a scripted run take a SECOND model iteration (tool_use →
+// tool_result → model call) so the loop makes two priced calls in ONE run —
+// required by the fix-9 regression to exercise a mid-run model change.
+type noopUsageTool struct{}
+
+func (noopUsageTool) Name() string                 { return "Noop" }
+func (noopUsageTool) Description() string          { return "does nothing" }
+func (noopUsageTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (noopUsageTool) Execute(_ context.Context, _ json.RawMessage) (tools.Result, error) {
+	return tools.Result{Text: "ok"}, nil
+}
+
+// TestUsageAttribution_RunCostIsSumOfLedgerNotFinalModel is the fix-9 regression:
+// runs.cost must equal Σ(the run's per-call token_usage costs), NOT the final
+// model priced over cumulative tokens. finishRun used to price res.Usage (final
+// model × summed tokens); on a run that changed model mid-flight (fallback) that
+// disagreed with the ledger, which prices each call at its OWN model. Here call 0
+// runs on an expensive model and call 1 on a cheap one, so the two pricings differ
+// sharply. Fails on the pre-fix code (runs.cost ≈ 0.002, not Σ(ledger) ≈ 0.101).
+func TestUsageAttribution_RunCostIsSumOfLedgerNotFinalModel(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "scripted", Model: "model-a"},
+		Agents: map[string]config.AgentDef{
+			"solo": {Model: "model-a", AllowedTools: []string{"Noop"}, SystemPrompt: "you are solo"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		// model-a is 100× the price of model-b, so summing per-call (ledger) vs
+		// pricing the final model over cumulative tokens give very different numbers.
+		Pricing: config.PricingConfig{
+			Currency: "USD",
+			Models: map[string]config.ModelPrice{
+				"scripted/model-a": {Input: 100, Output: 100}, // expensive (served call 0)
+				"scripted/model-b": {Input: 1, Output: 1},     // cheap (served call 1, the final)
+			},
+		},
+	}
+	cfg.Env.AuthToken = ""
+
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{
+			// Call 0: model-a, 1000 input tokens, tool_call(Noop) → continue.
+			{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "tu1", Name: "Noop", Input: json.RawMessage(`{}`)}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1000, OutputTokens: 0, Model: "model-a"}},
+			},
+			// Call 1: model-b (the FINAL model), 1000 output tokens, end_turn.
+			{
+				{Type: providers.EventText, Text: "done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 0, OutputTokens: 1000, Model: "model-b"}},
+			},
+		},
+	}
+
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{noopUsageTool{}}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"solo","agent_id":"fallback-run","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`,
+	))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, b)
+	}
+	_, _ = io.ReadAll(resp.Body) // drain to completion (finishRun runs in-path)
+
+	ctx := context.Background()
+	run, err := st.GetRunByAgentID(ctx, "fallback-run")
+	if err != nil {
+		t.Fatalf("GetRunByAgentID: %v", err)
+	}
+	rows, err := st.TokenUsageForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("ledger rows = %d, want 2 (one per call)", len(rows))
+	}
+	var ledgerSum float64
+	for _, r := range rows {
+		ledgerSum += r.Cost
+	}
+	// Σ(ledger) = model-a(1000 in × 100/1e6 = 0.1) + model-b(1000 out × 1/1e6 = 0.001) = 0.101.
+	if run.Cost == nil {
+		t.Fatalf("runs.cost is NULL, want the priced Σ(ledger)")
+	}
+	if diff := *run.Cost - ledgerSum; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("runs.cost = %v, want Σ(ledger) = %v", *run.Cost, ledgerSum)
+	}
+	// Guard explicitly against the pre-fix value: pricing the final model (model-b)
+	// over cumulative tokens (2000) = 0.002 — nowhere near Σ(ledger) ≈ 0.101.
+	if *run.Cost < 0.05 {
+		t.Errorf("runs.cost = %v looks like final-model×cumulative pricing (~0.002), not Σ(ledger) (~0.101)", *run.Cost)
 	}
 }
