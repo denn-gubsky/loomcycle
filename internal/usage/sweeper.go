@@ -41,25 +41,28 @@ type Config struct {
 	// day-bucketed archive aggregates.
 	DetailRetention time.Duration
 
-	// --- RFC AV Phase 2b2: old-run archiver (OFF by default). ---
+	// --- RFC AV Phase 2b2: old-session archiver (OFF by default). ---
 	// Unlike the usage rollup above (lossless compaction to the archive), this
-	// DELETES aged completed runs + their events — the audit trail — so it is
+	// DELETES aged sessions + their runs + events — the audit trail — so it is
 	// opt-in: zero RunRetention or an "off"/"" RunRetentionMode disables it.
+	// Pruning is by SESSION (not by run): the continuation path replays the whole
+	// session transcript, so a session is only prunable once ALL its runs are
+	// terminal + old — pruning one aged run would corrupt a continued session.
 
-	// RunRetention is the cutoff for archiving completed runs: terminal runs
-	// whose completed_at is older than this are exported (if the mode says so)
-	// and deleted. Zero disables run archival entirely. token_usage is NOT
-	// touched — usage retention is DetailRetention above.
+	// RunRetention is the cutoff for archiving aged sessions: a session whose
+	// runs are all terminal and whose latest completed_at is older than this is
+	// exported (if the mode says so) and cascade-deleted. Zero disables archival
+	// entirely. token_usage is NOT touched — usage retention is DetailRetention.
 	RunRetention time.Duration
 
-	// RunRetentionMode is one of "off" (default / ""), "prune" (delete aged
-	// completed runs + events), or "export+prune" (write each run + its events
-	// to ExportDir as JSON, then delete). An unknown value is treated as off.
+	// RunRetentionMode is one of "off" (default / ""), "prune" (cascade-delete
+	// aged sessions + runs + events), or "export+prune" (write each session + its
+	// runs + events to ExportDir as JSON, then delete). Unknown → treated as off.
 	RunRetentionMode string
 
-	// ExportDir is the directory export+prune writes run JSON into (one file per
-	// run under a per-day subdir). Required for export+prune; if empty, run
-	// archival is disabled (never delete a run we were asked to export).
+	// ExportDir is the directory export+prune writes session JSON into (one file
+	// per session under a per-day subdir). Required for export+prune; if empty,
+	// archival is disabled (never delete a session we were asked to export).
 	ExportDir string
 
 	// Logger is the structured logger used for sweep results. Defaults
@@ -101,11 +104,11 @@ type AdvisoryLocker interface {
 const (
 	defaultInterval        = 1 * time.Hour
 	defaultDetailRetention = 720 * time.Hour // 30 days
-	runPruneBatch          = 500             // completed runs archived per tick
+	runPruneBatch          = 500             // aged sessions archived per tick
 )
 
 // Sweeper periodically folds old token_usage rows into usage_archive and
-// deletes them, and (opt-in) archives aged completed runs. Construct via New,
+// deletes them, and (opt-in) archives aged sessions. Construct via New,
 // then call Run(ctx) on a goroutine that owns the lifecycle.
 type Sweeper struct {
 	store           store.Store
@@ -215,7 +218,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 				n, err = s.sweepOnce(ctx)
 				if s.runArchivalEnabled() {
 					ranArchival = true
-					archived, archErr = s.archiveRunsOnce(ctx)
+					archived, archErr = s.archiveSessionsOnce(ctx)
 				}
 			}
 			if s.lock != nil {
@@ -249,12 +252,12 @@ func (s *Sweeper) Run(ctx context.Context) {
 				}
 				noOpStreak++
 			}
-			// Old-run archival result (only when enabled).
+			// Old-session archival result (only when enabled).
 			if ranArchival {
 				if archErr != nil {
-					s.logf("usage: run archival failed: %v", archErr)
+					s.logf("usage: session archival failed: %v", archErr)
 				} else if archived > 0 {
-					s.logf("usage: archived + pruned %d completed run(s) (mode=%s)", archived, s.runMode)
+					s.logf("usage: archived + pruned %d completed session(s) (mode=%s)", archived, s.runMode)
 				}
 			}
 		}
@@ -273,30 +276,33 @@ func (s *Sweeper) sweepOnce(parent context.Context) (int, error) {
 	return s.store.RollupAndPruneUsage(ctx, cutoff)
 }
 
-// archiveRunsOnce archives one batch of aged completed runs (RFC AV Phase 2b2):
-// list terminal runs older than the cutoff, export each (export+prune mode) then
-// delete it (run + events). Per-run failures are logged and skipped — a bad
-// export never deletes the run. Returns the number deleted. Given a longer
-// timeout than the usage prune because export writes files.
-func (s *Sweeper) archiveRunsOnce(parent context.Context) (int, error) {
+// archiveSessionsOnce archives one batch of aged sessions (RFC AV Phase 2b2):
+// list sessions whose runs are ALL terminal + old, export each (export+prune
+// mode) then cascade-delete it (session + runs + events). Prunes by SESSION, not
+// by run: the continuation path replays the whole-session transcript, so pruning
+// one aged run inside a still-continued session would corrupt it. Per-session
+// failures are logged and skipped — a bad export never deletes the session.
+// Returns the number deleted. Given a longer timeout than the usage prune
+// because export writes files.
+func (s *Sweeper) archiveSessionsOnce(parent context.Context) (int, error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	cutoff := s.now().Add(-s.runRetention)
-	runs, err := s.store.PrunableCompletedRuns(ctx, cutoff, runPruneBatch)
+	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, runPruneBatch)
 	if err != nil {
 		return 0, err
 	}
 	deleted := 0
-	for _, r := range runs {
+	for _, sid := range sessions {
 		if s.runMode == "export+prune" {
-			if err := s.exportRun(ctx, r); err != nil {
-				// Never delete a run we failed to export — retry next tick.
-				s.logf("usage: export run %s failed, skipping delete: %v", r.ID, err)
+			if err := s.exportSession(ctx, sid); err != nil {
+				// Never delete a session we failed to export — retry next tick.
+				s.logf("usage: export session %s failed, skipping delete: %v", sid, err)
 				continue
 			}
 		}
-		if err := s.store.DeleteRunAndEvents(ctx, r.ID); err != nil {
-			s.logf("usage: delete run %s failed: %v", r.ID, err)
+		if err := s.store.DeleteSessionCascade(ctx, sid); err != nil {
+			s.logf("usage: delete session %s failed: %v", sid, err)
 			continue
 		}
 		deleted++
@@ -304,30 +310,50 @@ func (s *Sweeper) archiveRunsOnce(parent context.Context) (int, error) {
 	return deleted, nil
 }
 
-// exportRun writes a run + its events to ExportDir as JSON, under a per-day
-// subdir (bucketing by completed date keeps any single directory bounded). The
-// export dir is operator config, never model input.
-func (s *Sweeper) exportRun(ctx context.Context, r store.Run) error {
-	events, err := s.store.GetRunEventsSince(ctx, r.ID, 0, 1_000_000)
+// exportSession writes a session (its runs + all events) to ExportDir as JSON,
+// under a per-day subdir (bucketing by the session's latest completed date keeps
+// any single directory bounded). The export dir is operator config, never model
+// input.
+func (s *Sweeper) exportSession(ctx context.Context, sessionID string) error {
+	runs, err := s.store.RunsForSession(ctx, sessionID)
 	if err != nil {
 		return err
 	}
-	day := r.CompletedAt
+	events, err := s.store.GetTranscript(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	// Bucket by the session's latest completed_at (fall back to latest start,
+	// then to now if a session somehow has no timestamps).
+	var day time.Time
+	for _, r := range runs {
+		if !r.CompletedAt.IsZero() && r.CompletedAt.After(day) {
+			day = r.CompletedAt
+		}
+	}
 	if day.IsZero() {
-		day = r.StartedAt
+		for _, r := range runs {
+			if r.StartedAt.After(day) {
+				day = r.StartedAt
+			}
+		}
+	}
+	if day.IsZero() {
+		day = s.now()
 	}
 	dir := filepath.Join(s.exportDir, day.UTC().Format("2006-01-02"))
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	payload := struct {
-		Run    store.Run     `json:"run"`
-		Events []store.Event `json:"events"`
-	}{Run: r, Events: events}
+		SessionID string        `json:"session_id"`
+		Runs      []store.Run   `json:"runs"`
+		Events    []store.Event `json:"events"`
+	}{SessionID: sessionID, Runs: runs, Events: events}
 	blob, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
 	}
 	// 0o600: run transcripts may hold sensitive tool I/O; operator-only.
-	return os.WriteFile(filepath.Join(dir, r.ID+".json"), blob, 0o600)
+	return os.WriteFile(filepath.Join(dir, sessionID+".json"), blob, 0o600)
 }

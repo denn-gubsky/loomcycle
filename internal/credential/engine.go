@@ -30,6 +30,15 @@ func NewEngine(st store.Store, sealer *Sealer) *Engine {
 // InlineEnabled reports whether inline (encrypted) credentials can be stored.
 func (e *Engine) InlineEnabled() bool { return e.sealer.Enabled() }
 
+// CanResolve reports whether ANY credential could ever resolve in this build.
+// The inline backend needs the Sealer enabled (a configured KEK); external
+// backends are unimplemented stubs (RFC AR Phase 4), so nothing can resolve
+// through them yet. When this is false, the $cred: / provider-key resolvers skip
+// the per-call store reads entirely — with no way to resolve, the three scope
+// lookups on every LLM call would only ever miss. Extend the disjunction here
+// once an external backend is wired + configured.
+func (e *Engine) CanResolve() bool { return e.sealer.Enabled() }
+
 // PutInline seals plaintext and upserts the row (create / update / rotate —
 // rotation re-seals in place with a fresh nonce). Returns row METADATA only
 // (Definition stripped). Fails with ErrNoKey when no KEK is configured.

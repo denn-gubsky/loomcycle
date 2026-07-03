@@ -137,3 +137,93 @@ func TestRedactor_NoOp(t *testing.T) {
 		t.Errorf("empty redactor mutated input: %q", got)
 	}
 }
+
+// TestRedactor_RegisterMasksDynamicValue is the fix-5 regression: a
+// runtime-resolved credential value (RFC AV/AR $cred: / provider-key override)
+// registered via Register is masked in a later transcript string — AND is left
+// intact BEFORE registration (a value the redactor doesn't hold isn't masked).
+// The pre-fix wiring passed register=nil, so a downstream echo of a resolved
+// credential persisted in cleartext.
+func TestRedactor_RegisterMasksDynamicValue(t *testing.T) {
+	// Patterns-only redactor: the raw credential doesn't match any Tier-B shape,
+	// and the surrounding text names no secret-shaped key, so it's masked ONLY
+	// because Register added it.
+	r := New(nil, true)
+	const secret = "aa11-bb22-cc33-dd44" // not a recognised secret shape
+
+	before := r.String("the value is " + secret + " today")
+	if !strings.Contains(before, secret) {
+		t.Fatalf("value should NOT be masked before Register; got %q", before)
+	}
+
+	r.Register(secret)
+	after := r.String("the value is " + secret + " today")
+	if strings.Contains(after, secret) {
+		t.Errorf("registered value survived redaction: %q", after)
+	}
+	if !strings.Contains(after, "[redacted:credential]") {
+		t.Errorf("expected the credential marker; got %q", after)
+	}
+	// Also masked inside a JSON leaf via Bytes.
+	b := r.Bytes(json.RawMessage(`{"note":"the value is ` + secret + ` here"}`))
+	if strings.Contains(string(b), secret) {
+		t.Errorf("registered value survived Bytes redaction: %s", b)
+	}
+}
+
+// TestRedactor_RegisterEnablesOtherwiseEmpty — an otherwise no-op redactor (no
+// env values, patterns off) becomes Enabled once a value is registered, so the
+// emit path (which gates on Enabled) actually applies it.
+func TestRedactor_RegisterEnablesOtherwiseEmpty(t *testing.T) {
+	r := New(nil, false)
+	if r.Enabled() {
+		t.Fatal("empty redactor should start disabled")
+	}
+	r.Register("super-secret-value")
+	if !r.Enabled() {
+		t.Error("redactor should be Enabled after Register")
+	}
+	if got := r.String("x super-secret-value y"); strings.Contains(got, "super-secret-value") {
+		t.Errorf("registered value not masked: %q", got)
+	}
+}
+
+// TestRedactor_RegisterDedupAndShortIgnored — re-registering the same value is a
+// no-op (the set stays bounded), and a too-short value is ignored (won't mask
+// noise).
+func TestRedactor_RegisterDedupAndShortIgnored(t *testing.T) {
+	r := New(nil, false)
+	r.Register("abcd-token-value")
+	r.Register("abcd-token-value") // dedup — no-op
+	if got := len(r.dynamic); got != 1 {
+		t.Errorf("dynamic set size = %d, want 1 after duplicate Register", got)
+	}
+	r.Register("xy") // below minDynamicSecretLen — ignored
+	if got := len(r.dynamic); got != 1 {
+		t.Errorf("dynamic set size = %d, want 1 (short value ignored)", got)
+	}
+}
+
+// TestRedactor_RegisterNilNoOp — Register on a nil redactor is a no-op (callers
+// hold a nil redactor when redaction is disabled).
+func TestRedactor_RegisterNilNoOp(t *testing.T) {
+	var nilR *Redactor
+	nilR.Register("whatever-value") // must not panic
+}
+
+// TestRedactor_RegisterConcurrent asserts concurrent Register + String don't
+// race (run under -race). Guards the RWMutex around the dynamic set.
+func TestRedactor_RegisterConcurrent(t *testing.T) {
+	r := New(nil, true)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 500; i++ {
+			r.Register("secret-value-" + string(rune('A'+i%26)))
+		}
+		close(done)
+	}()
+	for i := 0; i < 500; i++ {
+		_ = r.String("some text with secret-value-A embedded")
+	}
+	<-done
+}

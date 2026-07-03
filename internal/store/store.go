@@ -392,6 +392,11 @@ type UsageQuery struct {
 	// enforces this via principalTenantScope).
 	TenantID string
 	// From/To bound the window on ts (inclusive); zero = unbounded on that end.
+	// The recent (token_usage) rows are bounded EXACTLY. The archived (day-
+	// bucketed usage_archive) rows are bounded at DAY GRANULARITY: the `from`
+	// bound is floored to its UTC day so an intra-day `from` still includes that
+	// whole day's bucket (over-inclusive on the boundary day, never under). `to`
+	// naturally includes the to-day (a day-start period_start <= to).
 	From, To time.Time
 	// GroupBy is the ordered set of dimensions to group by (validated against the
 	// UsageBy* whitelist). Empty ⇒ a single grand-total row.
@@ -666,17 +671,25 @@ type Store interface {
 	// pruned. The rollup-and-prune sweeper calls this on a timer (RFC AV Phase 2b).
 	RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (pruned int, err error)
 
-	// PrunableCompletedRuns returns terminal (completed/failed/cancelled) runs
-	// whose completed_at is older than olderThan, oldest first, capped at limit.
-	// The old-run archiver (RFC AV Phase 2b2) lists these to export and/or
-	// delete. Non-terminal runs (running/paused/pausing) are never returned.
-	PrunableCompletedRuns(ctx context.Context, olderThan time.Time, limit int) ([]Run, error)
+	// PrunableAgedSessions returns session ids where EVERY run is terminal
+	// (completed/failed/cancelled) with no run running/paused/pausing, and the
+	// session's most-recent completed_at is older than olderThan. Oldest first,
+	// capped at limit. The archiver (RFC AV Phase 2b2) prunes by SESSION, not by
+	// run — the continuation path replays GetTranscript(session_id) (all runs),
+	// so pruning one aged run inside a still-continued session would corrupt the
+	// transcript. A session with any non-terminal run is never returned.
+	PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
 
-	// DeleteRunAndEvents deletes a run and its events in one transaction (events
-	// removed explicitly, not relying on FK cascade). token_usage rows are LEFT
-	// INTACT — usage has its own retention (RollupAndPruneUsage), and the usage
-	// report does not join runs. RFC AV Phase 2b2.
-	DeleteRunAndEvents(ctx context.Context, runID string) error
+	// RunsForSession returns every run in the session (any status), oldest first.
+	// The archiver uses it to export a session's runs before cascade-deleting it.
+	RunsForSession(ctx context.Context, sessionID string) ([]Run, error)
+
+	// DeleteSessionCascade deletes a session and all its runs + events in one
+	// transaction (events + runs removed explicitly, then the session row).
+	// token_usage rows are LEFT INTACT — usage has its own retention
+	// (RollupAndPruneUsage), and the usage report does not join runs/sessions.
+	// RFC AV Phase 2b2.
+	DeleteSessionCascade(ctx context.Context, sessionID string) error
 
 	// GetTranscript returns all events for a session, ordered by Seq.
 	// Returns an empty slice (not error) for a session with no runs yet.

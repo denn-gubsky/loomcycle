@@ -14,6 +14,23 @@ var credTokenRe = regexp.MustCompile(`\$cred:([A-Za-z0-9_-]{1,128})`)
 // so callers skip the resolve path entirely when there's nothing to bind).
 func HasRef(s string) bool { return credTokenRe.MatchString(s) }
 
+// RefNames returns the <name> of every $cred:<name> token in s (nil when none).
+// The resolver fast-path uses it to report refs as unresolved WITHOUT a store
+// read when the engine can't resolve anything (CanResolve()==false) — so the
+// caller still drops those headers/env entries instead of sending a literal
+// "$cred:foo" downstream.
+func RefNames(s string) []string {
+	ms := credTokenRe.FindAllStringSubmatch(s, -1)
+	if len(ms) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, m[1])
+	}
+	return out
+}
+
 // Substitute replaces every $cred:<name> token in s with the resolved plaintext
 // credential for the given run identity (scope precedence agent > user > tenant,
 // so a user's own token shadows the tenant default). This is the runtime-side

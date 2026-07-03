@@ -340,7 +340,8 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunPersistsCostAndSource", testFinishRunPersistsCostAndSource},
 		{"UsageReport", testUsageReport},
 		{"UsageRollupAndPrune", testUsageRollupAndPrune},
-		{"RunArchiver", testRunArchiver},
+		{"UsageReportArchiveWindowBoundary", testUsageReportArchiveWindowBoundary},
+		{"SessionArchiver", testSessionArchiver},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
 		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
@@ -805,67 +806,142 @@ func testUsageRollupAndPrune(t *testing.T, s store.Store) {
 	}
 }
 
-// testRunArchiver exercises RFC AV Phase 2b2: PrunableCompletedRuns lists only
-// terminal runs within the age cutoff, and DeleteRunAndEvents removes the run +
-// its events while leaving token_usage (independent retention) intact.
-func testRunArchiver(t *testing.T, s store.Store) {
+// testUsageReportArchiveWindowBoundary is the fix-3 regression: an intra-day
+// `from` must still include the from-day's archived (day-bucketed) bucket. The
+// archive stores period_start at UTC midnight, so comparing an intra-day `from`
+// (e.g. 12:00) EXACTLY dropped the whole from-day bucket (period_start 00:00 <
+// 12:00). The report floors the archive `from` bound to its UTC day. A row on an
+// EARLIER day stays excluded — the floor extends only to the from-day, never
+// under. Fails on the pre-fix code (from-day bucket dropped → 0 rows).
+func testUsageReportArchiveWindowBoundary(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	sess, _ := s.CreateSession(ctx, "t", "default", "")
+	day := func(y int, m time.Month, d, h int) time.Time {
+		return time.Date(y, m, d, h, 0, 0, 0, time.UTC)
+	}
+	// fromDay row (08:00, same UTC day as the intra-day `from` at 12:00) → its
+	// bucket must be INCLUDED. priorDay row (the day before) → EXCLUDED.
+	rows := []store.TokenUsageRow{
+		{RunID: "r_fromday", TenantID: "WB", Provider: "p", Model: "m",
+			CredentialSource: "operator", InputTokens: 100, Cost: 1.0, CostCurrency: "USD", TS: day(2026, 3, 15, 8)},
+		{RunID: "r_priorday", TenantID: "WB", Provider: "p", Model: "m",
+			CredentialSource: "operator", InputTokens: 999, Cost: 9.0, CostCurrency: "USD", TS: day(2026, 3, 14, 8)},
+	}
+	for _, r := range rows {
+		if err := s.RecordCallUsage(ctx, r); err != nil {
+			t.Fatalf("RecordCallUsage: %v", err)
+		}
+	}
+	// Roll both rows into the day-bucketed archive (cutoff after both).
+	if _, err := s.RollupAndPruneUsage(ctx, day(2026, 3, 16, 0)); err != nil {
+		t.Fatalf("RollupAndPruneUsage: %v", err)
+	}
 
-	// runA: completed, with events + a usage row. runB: completed. runC: running.
-	runA, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "arch-a"})
-	runB, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "arch-b"})
-	runC, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "arch-c"}) // stays running
+	// Query with an intra-day `from` (12:00 on the from-day) — the from-day
+	// bucket must survive; the prior day must not.
+	rep, err := s.UsageReport(ctx, store.UsageQuery{
+		From:    day(2026, 3, 15, 12),
+		GroupBy: []store.UsageDimension{store.UsageByTenant},
+	})
+	if err != nil {
+		t.Fatalf("UsageReport: %v", err)
+	}
+	if len(rep) != 1 {
+		t.Fatalf("report rows = %d, want 1 (the from-day bucket): %+v", len(rep), rep)
+	}
+	if rep[0].InputTokens != 100 {
+		t.Errorf("windowed archive report = %d tokens, want 100 (from-day bucket included, prior day excluded)", rep[0].InputTokens)
+	}
+}
+
+// testSessionArchiver is the fix-4 regression: the aged-run archiver prunes by
+// SESSION, not by run — a session is prunable only when EVERY run in it is
+// terminal and old, and DeleteSessionCascade removes the whole session (runs +
+// events + session row) while leaving token_usage (independent retention)
+// intact. Pruning one aged run inside a still-active session would corrupt the
+// continuation replay (GetTranscript reads the whole session), so a session with
+// any running run is never prunable.
+func testSessionArchiver(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// Session A: two completed runs, all terminal + old → prunable wholesale.
+	sessA, _ := s.CreateSession(ctx, "t", "default", "")
+	runA1, _ := s.CreateRun(ctx, sessA.ID, store.RunIdentity{AgentID: "arch-a1"})
+	runA2, _ := s.CreateRun(ctx, sessA.ID, store.RunIdentity{AgentID: "arch-a2"})
 	for _, e := range []string{"text", "done"} {
-		if err := s.AppendEvent(ctx, runA.ID, e, []byte(`{}`)); err != nil {
+		if err := s.AppendEvent(ctx, runA1.ID, e, []byte(`{}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.RecordCallUsage(ctx, store.TokenUsageRow{RunID: runA.ID, TenantID: "t", Provider: "p", Model: "m", CredentialSource: "operator", InputTokens: 10}); err != nil {
+	if err := s.RecordCallUsage(ctx, store.TokenUsageRow{RunID: runA1.ID, SessionID: sessA.ID, TenantID: "t", Provider: "p", Model: "m", CredentialSource: "operator", InputTokens: 10}); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{runA.ID, runB.ID} {
+	for _, id := range []string{runA1.ID, runA2.ID} {
 		if err := s.FinishRun(ctx, id, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// A future cutoff → both completed runs qualify; the running one never does.
-	got, err := s.PrunableCompletedRuns(ctx, time.Now().Add(time.Hour), 100)
+	// Session B: one completed run + one still-running run → NOT prunable (the
+	// running run would lose its session's transcript).
+	sessB, _ := s.CreateSession(ctx, "t", "default", "")
+	runB1, _ := s.CreateRun(ctx, sessB.ID, store.RunIdentity{AgentID: "arch-b1"})
+	runB2, _ := s.CreateRun(ctx, sessB.ID, store.RunIdentity{AgentID: "arch-b2"}) // stays running
+	if err := s.FinishRun(ctx, runB1.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	_ = runB2
+
+	// A future cutoff → session A qualifies (all terminal); session B does not.
+	got, err := s.PrunableAgedSessions(ctx, time.Now().Add(time.Hour), 100)
 	if err != nil {
-		t.Fatalf("PrunableCompletedRuns: %v", err)
+		t.Fatalf("PrunableAgedSessions: %v", err)
 	}
 	ids := map[string]bool{}
-	for _, r := range got {
-		ids[r.ID] = true
+	for _, id := range got {
+		ids[id] = true
 	}
-	if !ids[runA.ID] || !ids[runB.ID] {
-		t.Errorf("prunable set missing a completed run: %v", ids)
+	if !ids[sessA.ID] {
+		t.Errorf("prunable set missing the all-terminal session A: %v", got)
 	}
-	if ids[runC.ID] {
-		t.Errorf("prunable set included the RUNNING run %s", runC.ID)
+	if ids[sessB.ID] {
+		t.Errorf("prunable set included session B, which has a RUNNING run: %v", got)
 	}
-	// A past cutoff → nothing (both completed just now).
-	if old, _ := s.PrunableCompletedRuns(ctx, time.Now().Add(-time.Hour), 100); len(old) != 0 {
+	// A past cutoff → nothing (session A's runs completed just now).
+	if old, _ := s.PrunableAgedSessions(ctx, time.Now().Add(-time.Hour), 100); len(old) != 0 {
 		t.Errorf("past-cutoff prunable = %d, want 0", len(old))
 	}
 
-	// Delete runA: run + events gone, token_usage preserved.
-	if err := s.DeleteRunAndEvents(ctx, runA.ID); err != nil {
-		t.Fatalf("DeleteRunAndEvents: %v", err)
+	// RunsForSession returns every run in the session (for export).
+	runs, err := s.RunsForSession(ctx, sessA.ID)
+	if err != nil {
+		t.Fatalf("RunsForSession: %v", err)
 	}
-	if _, err := s.GetRun(ctx, runA.ID); err == nil {
-		t.Errorf("runA still present after delete")
+	if len(runs) != 2 {
+		t.Errorf("RunsForSession(A) = %d runs, want 2", len(runs))
 	}
-	if evs, _ := s.GetRunEventsSince(ctx, runA.ID, 0, 100); len(evs) != 0 {
-		t.Errorf("runA events survived delete: %d", len(evs))
+
+	// DeleteSessionCascade: runs + events + session row gone, token_usage kept.
+	if err := s.DeleteSessionCascade(ctx, sessA.ID); err != nil {
+		t.Fatalf("DeleteSessionCascade: %v", err)
 	}
-	if usage, _ := s.TokenUsageForRun(ctx, runA.ID); len(usage) != 1 {
-		t.Errorf("token_usage for deleted run = %d, want 1 (usage retention is independent)", len(usage))
+	if _, err := s.GetRun(ctx, runA1.ID); err == nil {
+		t.Errorf("runA1 still present after cascade delete")
 	}
-	// runC (running) untouched.
-	if _, err := s.GetRun(ctx, runC.ID); err != nil {
-		t.Errorf("runC (running) was affected: %v", err)
+	if _, err := s.GetRun(ctx, runA2.ID); err == nil {
+		t.Errorf("runA2 still present after cascade delete")
+	}
+	if _, err := s.GetSession(ctx, sessA.ID); err == nil {
+		t.Errorf("session A row survived cascade delete")
+	}
+	if evs, _ := s.GetRunEventsSince(ctx, runA1.ID, 0, 100); len(evs) != 0 {
+		t.Errorf("session A events survived cascade delete: %d", len(evs))
+	}
+	if usage, _ := s.TokenUsageForRun(ctx, runA1.ID); len(usage) != 1 {
+		t.Errorf("token_usage for deleted session = %d, want 1 (usage retention is independent)", len(usage))
+	}
+	// Session B untouched.
+	if _, err := s.GetRun(ctx, runB2.ID); err != nil {
+		t.Errorf("session B run was affected: %v", err)
 	}
 }
 

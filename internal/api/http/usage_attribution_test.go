@@ -133,3 +133,85 @@ func TestUsageAttribution_RecordsPerCallLedgerAndRunSummary(t *testing.T) {
 		t.Errorf("run B summary source = %q, want operator", runB.CredentialSource)
 	}
 }
+
+// TestUsageAttribution_LedgerRowCarriesRunIdentity is the fix-1 regression: a
+// top-level run's per-call token_usage row must be attributed to the run's TRUE
+// identity — tenant/user/agent + session — not the zero value. makeRecordingEmit
+// was constructed BEFORE tools.WithRunIdentity stamped the loop ctx, so
+// recordCallUsage read tools.RunIdentity(ctx) == zero and every directly-invoked
+// run's ledger rows landed with tenant_id/user_id/agent_id all "" and session_id
+// unset. Fails on the pre-fix code (all four fields empty).
+func TestUsageAttribution_LedgerRowCarriesRunIdentity(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"solo": {Model: "stub-model", SystemPrompt: "you are solo"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+		Pricing: config.PricingConfig{
+			Currency: "USD",
+			Models:   map[string]config.ModelPrice{"scripted/stub-model": {Input: 3, Output: 15}},
+		},
+	}
+	cfg.Env.AuthToken = ""
+
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{
+			{
+				{Type: providers.EventText, Text: "hi"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{
+					InputTokens: 1000, OutputTokens: 500, Model: "stub-model"}},
+			},
+		},
+	}
+
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Open mode (AuthToken=="") passes wire tenant/user/agent_id through verbatim.
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"solo","agent_id":"agent-77","user_id":"u-alice","tenant_id":"acme","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`,
+	))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, b)
+	}
+	_, _ = io.ReadAll(resp.Body) // drain to completion (recordCallUsage runs in-path)
+
+	ctx := context.Background()
+	run, err := st.GetRunByAgentID(ctx, "agent-77")
+	if err != nil {
+		t.Fatalf("GetRunByAgentID(agent-77): %v", err)
+	}
+	rows, err := st.TokenUsageForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ledger rows = %d, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.TenantID != "acme" {
+		t.Errorf("row TenantID = %q, want acme", r.TenantID)
+	}
+	if r.UserID != "u-alice" {
+		t.Errorf("row UserID = %q, want u-alice", r.UserID)
+	}
+	if r.AgentID != "agent-77" {
+		t.Errorf("row AgentID = %q, want agent-77", r.AgentID)
+	}
+	if r.SessionID == "" || r.SessionID != run.SessionID {
+		t.Errorf("row SessionID = %q, want run's session %q", r.SessionID, run.SessionID)
+	}
+}
