@@ -52,16 +52,17 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 
 func (d *Driver) ID() string { return "anthropic" }
 
-// callKey returns the API key to authenticate an inference request: a
-// tenant/user credential named ANTHROPIC_API_KEY overrides the operator's host
-// key when the run has one (RFC AR), else the host key. Only the token-consuming
-// inference path uses this — model-availability probes (fetchModels) stay on the
-// operator key, since which models are reachable is an operator concern.
-func (d *Driver) callKey(ctx context.Context) string {
-	if k, ok := providers.ResolveCredential(ctx, "ANTHROPIC_API_KEY"); ok {
-		return k
+// resolveKey returns the API key to authenticate an inference request AND which
+// credential scope it came from. A tenant/user credential named
+// ANTHROPIC_API_KEY overrides the operator's host key (RFC AR); source is
+// "operator" when none did. The source/scopeID ride the per-call Usage so the
+// server can attribute spend (RFC AV). Model-availability probes (fetchModels)
+// stay on the operator key — which models are reachable is an operator concern.
+func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string) {
+	if r, ok := providers.ResolveCredentialFull(ctx, "ANTHROPIC_API_KEY"); ok {
+		return r.Value, r.Scope, r.ScopeID
 	}
-	return d.apiKey
+	return d.apiKey, "operator", ""
 }
 
 func (d *Driver) Capabilities() providers.Capabilities {
@@ -98,6 +99,10 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	// (idempotent).
 	streamCtx, cancelStream := context.WithCancel(ctx)
 
+	// RFC AR/AV: resolve the key + its owning scope ONCE per call (not per retry
+	// attempt) so the header uses it and the source rides the per-call Usage.
+	apiKey, credSource, credScopeID := d.resolveKey(ctx)
+
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
 		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.
 		// Retries surface as separate sibling spans so operators see
@@ -117,7 +122,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		httpReq.Header.Set("x-api-key", d.callKey(spanCtx))
+		httpReq.Header.Set("x-api-key", apiKey)
 		httpReq.Header.Set("anthropic-version", apiVersion)
 		resp, err := d.http.Do(httpReq)
 		if err != nil {
@@ -154,7 +159,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	out := make(chan providers.Event, 16)
 	go func() {
 		defer cancelStream()
-		streamEvents(streamCtx, resp.Body, out)
+		streamEvents(streamCtx, resp.Body, out, credSource, credScopeID)
 	}()
 	return out, nil
 }
@@ -414,7 +419,7 @@ type sseFrame struct {
 	data  []byte
 }
 
-func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event) {
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, credSource, credScopeID string) {
 	defer body.Close()
 	defer close(out)
 
@@ -474,6 +479,11 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	// Final done event with stop_reason + usage + the accumulated thinking
 	// block (Reasoning text + Signature) for the loop to stamp onto the
 	// assistant Message — Anthropic replays it on the tool-use continuation.
+	// RFC AV: tag the per-call usage with which credential scope paid.
+	if usage != nil {
+		usage.CredentialSource = credSource
+		usage.CredentialScopeID = credScopeID
+	}
 	send(providers.Event{
 		Type:               providers.EventDone,
 		StopReason:         stopReason,

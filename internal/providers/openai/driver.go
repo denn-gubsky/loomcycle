@@ -64,15 +64,18 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 // but must resolve DEEPSEEK_API_KEY, not OPENAI_API_KEY.
 func (d *Driver) SetKeyEnvName(name string) { d.keyEnvName = name }
 
-// callKey returns the API key for an inference request: a tenant/user credential
-// named d.keyEnvName overrides the operator host key when the run has one (RFC
-// AR), else the host key. Model-availability probes (fetchModels) stay on the
-// host key.
-func (d *Driver) callKey(ctx context.Context) string {
-	if k, ok := providers.ResolveCredential(ctx, d.keyEnvName); ok {
-		return k
+// resolveKey returns the API key to authenticate an inference request AND which
+// credential scope it came from. A tenant/user credential named d.keyEnvName
+// (default "OPENAI_API_KEY"; the DeepSeek wrapper sets "DEEPSEEK_API_KEY")
+// overrides the operator's host key (RFC AR); source is "operator" when none
+// did. The source/scopeID ride the per-call Usage so the server can attribute
+// spend (RFC AV). Model-availability probes (fetchModels) stay on the host key
+// — which models are reachable is an operator concern.
+func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string) {
+	if r, ok := providers.ResolveCredentialFull(ctx, d.keyEnvName); ok {
+		return r.Value, r.Scope, r.ScopeID
 	}
-	return d.apiKey
+	return d.apiKey, "operator", ""
 }
 
 func (d *Driver) ID() string { return "openai" }
@@ -111,6 +114,10 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
 
+	// RFC AR/AV: resolve the key + its owning scope ONCE per call (not per retry
+	// attempt) so the header uses it and the source rides the per-call Usage.
+	apiKey, credSource, credScopeID := d.resolveKey(ctx)
+
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
 		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.
 		// The provider attribute defaults to "openai" but a wrapping
@@ -134,8 +141,8 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		if key := d.callKey(spanCtx); key != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+key)
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 		resp, err := d.http.Do(httpReq)
 		if err != nil {
@@ -170,7 +177,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	out := make(chan providers.Event, 16)
 	go func() {
 		defer cancelStream()
-		streamEvents(streamCtx, resp.Body, out)
+		streamEvents(streamCtx, resp.Body, out, credSource, credScopeID)
 	}()
 	return out, nil
 }
@@ -583,7 +590,7 @@ type toolAccumulator struct {
 	args strings.Builder
 }
 
-func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event) {
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, credSource, credScopeID string) {
 	defer body.Close()
 	defer close(out)
 
@@ -764,6 +771,11 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 	}
 
+	// RFC AV: tag the per-call usage with which credential scope paid.
+	if usage != nil {
+		usage.CredentialSource = credSource
+		usage.CredentialScopeID = credScopeID
+	}
 	send(providers.Event{
 		Type:       providers.EventDone,
 		StopReason: stopReason,

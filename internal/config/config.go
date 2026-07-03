@@ -198,6 +198,12 @@ type Config struct {
 	// embedder_not_configured. K/V Memory is unaffected.
 	Memory MemoryConfig `yaml:"memory"`
 
+	// Pricing is the operator-owned per-(provider, model) price table used to
+	// compute run + per-call cost (RFC AV). Non-secret; empty ⇒ costs are left
+	// unpriced (token counts still recorded). A provider-reported cost, when a
+	// driver/gateway returns one, overrides this table.
+	Pricing PricingConfig `yaml:"pricing,omitempty"`
+
 	// Principals declares static (tenant, subject, scopes) logins, each bound
 	// to a bearer secret held in an env var (RFC AO). The map key is an
 	// informational handle. Lets an operator declare a stable service identity

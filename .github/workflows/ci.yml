@@ -44,14 +44,17 @@ jobs:
         run: go build -o bin/loomcycle ./cmd/loomcycle
 
       - name: Test (race detector)
-        # 120s is per-package. As the codebase grew (A2A added four more
-        # race-instrumented test packages), `go test -race ./...` runs more
-        # package binaries concurrently, and on a CPU-constrained CI runner
-        # that contention pushed the slow internal/api/http suite (~68s on a
-        # fast local box) past the 120s deadline despite no change to that
-        # package. 300s gives headroom under load while still catching a
-        # genuine deadlock.
-        run: go test -race -timeout 300s ./...
+        # Per-package timeout. `-race` instrumentation runs several-fold slower,
+        # and `go test ./...` runs package binaries concurrently, so on a
+        # CPU-constrained CI runner the largest suites contend for cores. This
+        # was bumped 120s→300s once already as the codebase grew; the two
+        # largest suites have since crept up again — measured locally under
+        # -race on an idle box, internal/tools/builtin ~176s and
+        # internal/api/http ~161s (both PASS, no deadlock), but under CI
+        # contention they crossed the 300s deadline. 900s gives generous
+        # headroom under load while still catching a genuine deadlock (a hung
+        # test still fails, just later). No package should approach it.
+        run: go test -race -timeout 900s ./...
 
       - name: gofmt check
         run: |

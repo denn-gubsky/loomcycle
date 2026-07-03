@@ -78,15 +78,17 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 
 func (d *Driver) ID() string { return "gemini" }
 
-// callKey returns the API key for an inference request: a tenant/user credential
-// named GEMINI_API_KEY overrides the operator host key when the run has one (RFC
-// AR), else the host key. Model-availability probes (fetchModels) stay on the
-// host key.
-func (d *Driver) callKey(ctx context.Context) string {
-	if k, ok := providers.ResolveCredential(ctx, "GEMINI_API_KEY"); ok {
-		return k
+// resolveKey returns the API key to authenticate an inference request AND which
+// credential scope it came from. A tenant/user credential named GEMINI_API_KEY
+// overrides the operator's host key (RFC AR); source is "operator" when none
+// did. The source/scopeID ride the per-call Usage so the server can attribute
+// spend (RFC AV). Model-availability probes (fetchModels) stay on the host key
+// — which models are reachable is an operator concern.
+func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string) {
+	if r, ok := providers.ResolveCredentialFull(ctx, "GEMINI_API_KEY"); ok {
+		return r.Value, r.Scope, r.ScopeID
 	}
-	return d.apiKey
+	return d.apiKey, "operator", ""
 }
 
 func (d *Driver) Capabilities() providers.Capabilities {
@@ -127,6 +129,10 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
 
+	// RFC AR/AV: resolve the key + its owning scope ONCE per call (not per retry
+	// attempt) so the header uses it and the source rides the per-call Usage.
+	apiKey, credSource, credScopeID := d.resolveKey(ctx)
+
 	url := d.baseURL + "/models/" + req.Model + ":streamGenerateContent?alt=sse"
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
 		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.
@@ -143,8 +149,8 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		if key := d.callKey(spanCtx); key != "" {
-			httpReq.Header.Set("x-goog-api-key", key)
+		if apiKey != "" {
+			httpReq.Header.Set("x-goog-api-key", apiKey)
 		}
 		resp, err := d.http.Do(httpReq)
 		if err != nil {
@@ -179,7 +185,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	out := make(chan providers.Event, 16)
 	go func() {
 		defer cancelStream()
-		streamEvents(streamCtx, resp.Body, out, req.Model)
+		streamEvents(streamCtx, resp.Body, out, req.Model, credSource, credScopeID)
 	}()
 	return out, nil
 }
@@ -442,7 +448,7 @@ type chunkUsage struct {
 	ThoughtsTokenCount int `json:"thoughtsTokenCount"`
 }
 
-func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, requestModel string) {
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, requestModel, credSource, credScopeID string) {
 	defer body.Close()
 	defer close(out)
 
@@ -549,6 +555,11 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 
 	if usage == nil {
 		usage = &providers.Usage{Model: model}
+	}
+	// RFC AV: tag the per-call usage with which credential scope paid.
+	if usage != nil {
+		usage.CredentialSource = credSource
+		usage.CredentialScopeID = credScopeID
 	}
 	send(providers.Event{
 		Type:       providers.EventDone,

@@ -335,6 +335,9 @@ func Run(t *testing.T, factory Factory) {
 		// fallback-routed runs.
 		{"FinishRunPersistsProvider", testFinishRunPersistsProvider},
 		{"FinishRunPersistsProviderEmpty", testFinishRunPersistsProviderEmpty},
+		// RFC AV — per-call usage ledger + per-run cost/source summary.
+		{"TokenUsageLedger", testTokenUsageLedger},
+		{"FinishRunPersistsCostAndSource", testFinishRunPersistsCostAndSource},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
 		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
@@ -570,6 +573,106 @@ func testFinishRunPersistsProviderEmpty(t *testing.T, s store.Store) {
 	}
 	if got.Provider != "" {
 		t.Errorf("Provider = %q, want empty string", got.Provider)
+	}
+}
+
+// testTokenUsageLedger exercises the RFC AV per-call ledger: RecordCallUsage
+// inserts + TokenUsageForRun reads back, credential_source distinguishes
+// operator vs tenant, cost is NULL when unpriced (empty currency) vs a genuine
+// zero, and the per-run summary (Σ token_usage) matches the FinishRun rollup.
+func testTokenUsageLedger(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "tenant-x", "default", "")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_usage_ledger", TenantID: "tenant-x", UserID: "u1"})
+
+	// Call 0: operator key paid, priced (USD). Call 1: a tenant override paid,
+	// left unpriced (unknown model) → NULL cost.
+	rows := []store.TokenUsageRow{
+		{RunID: run.ID, TenantID: "tenant-x", UserID: "u1", AgentID: "a_usage_ledger", Iteration: 0,
+			Provider: "anthropic", Model: "claude-opus-4-8", CredentialSource: "operator",
+			InputTokens: 100, OutputTokens: 50, Cost: 0.0564, CostCurrency: "USD"},
+		{RunID: run.ID, TenantID: "tenant-x", UserID: "u1", AgentID: "a_usage_ledger", Iteration: 1,
+			Provider: "deepseek", Model: "deepseek-v4-flash", CredentialSource: "tenant", CredentialScopeID: "tenant-x",
+			InputTokens: 200, OutputTokens: 80, Cost: 0, CostCurrency: ""}, // unpriced → NULL
+	}
+	for _, r := range rows {
+		if err := s.RecordCallUsage(ctx, r); err != nil {
+			t.Fatalf("RecordCallUsage: %v", err)
+		}
+	}
+
+	got, err := s.TokenUsageForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("TokenUsageForRun: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("rows = %d, want 2", len(got))
+	}
+	if got[0].CredentialSource != "operator" || got[1].CredentialSource != "tenant" {
+		t.Errorf("sources = %q,%q want operator,tenant", got[0].CredentialSource, got[1].CredentialSource)
+	}
+	if got[1].CredentialScopeID != "tenant-x" {
+		t.Errorf("scope_id = %q, want tenant-x", got[1].CredentialScopeID)
+	}
+	if got[0].CostCurrency != "USD" || got[0].Cost == 0 {
+		t.Errorf("row0 cost = (%v,%q), want (0.0564,USD)", got[0].Cost, got[0].CostCurrency)
+	}
+	// Unpriced row: empty currency round-trips (NULL cost); Cost stays 0.
+	if got[1].CostCurrency != "" || got[1].Cost != 0 {
+		t.Errorf("row1 (unpriced) = (%v,%q), want (0,\"\")", got[1].Cost, got[1].CostCurrency)
+	}
+
+	// Rollup invariant: the per-run summary the loop would write (Σ of the calls)
+	// must equal the sum of the ledger rows. Simulate FinishRun with those sums.
+	var inSum, outSum int
+	for _, r := range got {
+		inSum += r.InputTokens
+		outSum += r.OutputTokens
+	}
+	if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn",
+		store.Usage{InputTokens: inSum, OutputTokens: outSum, Model: "claude-opus-4-8", Provider: "anthropic"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	fin, _ := s.GetRunByAgentID(ctx, "a_usage_ledger")
+	if fin.InputTokens != inSum || fin.OutputTokens != outSum {
+		t.Errorf("rollup mismatch: runs=(%d,%d) Σledger=(%d,%d)", fin.InputTokens, fin.OutputTokens, inSum, outSum)
+	}
+}
+
+// testFinishRunPersistsCostAndSource verifies the per-run cost + credential
+// source summary round-trips, and that an UNPRICED run (empty currency) stores a
+// NULL cost (GetRun.Cost == nil), distinct from a priced zero.
+func testFinishRunPersistsCostAndSource(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+
+	// Priced + tenant-sourced run.
+	run1, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cost_priced"})
+	if err := s.FinishRun(ctx, run1.ID, store.RunCompleted, "end_turn",
+		store.Usage{InputTokens: 10, Model: "m", Provider: "anthropic",
+			Cost: 1.25, CostCurrency: "USD", CredentialSource: "tenant", CredentialScopeID: "tenant-x"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	got1, _ := s.GetRunByAgentID(ctx, "a_cost_priced")
+	if got1.Cost == nil || *got1.Cost != 1.25 || got1.CostCurrency != "USD" {
+		t.Errorf("priced cost = %v %q, want 1.25 USD", got1.Cost, got1.CostCurrency)
+	}
+	if got1.CredentialSource != "tenant" || got1.CredentialScopeID != "tenant-x" {
+		t.Errorf("source = %q/%q, want tenant/tenant-x", got1.CredentialSource, got1.CredentialScopeID)
+	}
+
+	// Unpriced run (empty currency) → NULL cost.
+	run2, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cost_unpriced"})
+	if err := s.FinishRun(ctx, run2.ID, store.RunCompleted, "end_turn",
+		store.Usage{InputTokens: 10, Model: "m", Provider: "openai", CredentialSource: "operator"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := s.GetRunByAgentID(ctx, "a_cost_unpriced")
+	if got2.Cost != nil {
+		t.Errorf("unpriced cost = %v, want nil (NULL)", *got2.Cost)
+	}
+	if got2.CredentialSource != "operator" {
+		t.Errorf("source = %q, want operator", got2.CredentialSource)
 	}
 }
 

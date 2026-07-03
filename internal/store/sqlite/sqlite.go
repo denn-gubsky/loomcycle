@@ -122,6 +122,35 @@ func (s *Store) migrate(ctx context.Context) error {
 			error                    TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS runs_by_session ON runs(session_id)`,
+		// RFC AV — per-call token-usage + cost ledger (one row per LLM call).
+		// Append-only; the runs row carries the per-run summary. No secrets:
+		// token counts, provider/model, the owning credential scope id (already
+		// non-secret, like user_id), and the computed/reported cost. cost REAL
+		// nullable ⇒ unpriced (unknown model) distinct from a zero cost.
+		`CREATE TABLE IF NOT EXISTS token_usage (
+			id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id                TEXT NOT NULL,
+			session_id            TEXT,
+			tenant_id             TEXT NOT NULL DEFAULT '',
+			user_id               TEXT,
+			agent_id              TEXT,
+			parent_run_id         TEXT,
+			iteration             INTEGER NOT NULL DEFAULT 0,
+			provider              TEXT NOT NULL,
+			model                 TEXT NOT NULL,
+			credential_source     TEXT NOT NULL,
+			credential_scope_id   TEXT NOT NULL DEFAULT '',
+			input_tokens          INTEGER NOT NULL DEFAULT 0,
+			output_tokens         INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+			cost                  REAL,
+			cost_currency         TEXT,
+			ts                    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS token_usage_by_run ON token_usage(run_id)`,
+		`CREATE INDEX IF NOT EXISTS token_usage_tenant_ts ON token_usage(tenant_id, ts)`,
+		`CREATE INDEX IF NOT EXISTS token_usage_source_ts ON token_usage(credential_source, ts)`,
 		`CREATE TABLE IF NOT EXISTS events (
 			seq        INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -852,6 +881,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// paused run can be re-dispatched with the correct park-vs-complete
 		// semantics. NULL/0 on legacy rows + batch runs; CreateRun stamps it.
 		`ALTER TABLE runs ADD COLUMN interactive INTEGER NOT NULL DEFAULT 0`,
+		// RFC AV — per-run cost + credential-source summary. cost REAL nullable
+		// (NULL ⇒ unpriced, distinct from a genuine zero); credential_source is
+		// "operator"|"tenant"|"user" for the run's primary key source. Idempotent
+		// on fresh deploys (declared in CREATE TABLE runs above once upgraded).
+		`ALTER TABLE runs ADD COLUMN cost REAL`,
+		`ALTER TABLE runs ADD COLUMN cost_currency TEXT`,
+		`ALTER TABLE runs ADD COLUMN credential_source TEXT`,
+		`ALTER TABLE runs ADD COLUMN credential_scope_id TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1160,6 +1197,12 @@ func (s *Store) AppendEvent(ctx context.Context, runID string, eventType string,
 // guard so a slow-to-finish goroutine can't overwrite a cancellation.)
 func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunStatus, stopReason string, usage store.Usage, errMsg string) error {
 	now := time.Now().UnixNano()
+	// RFC AV: cost is stored NULL when the run was not priced (empty currency),
+	// distinct from a genuine zero cost (which carries a currency).
+	var costArg interface{}
+	if usage.CostCurrency != "" {
+		costArg = usage.Cost
+	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET
 			status                = ?,
@@ -1171,15 +1214,88 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			cache_read_tokens     = ?,
 			model                 = ?,
 			provider              = ?,
-			error                 = ?
+			error                 = ?,
+			cost                  = ?,
+			cost_currency         = ?,
+			credential_source     = ?,
+			credential_scope_id   = ?
 		WHERE id = ? AND status = ?`,
 		string(status), now, stopReason,
 		usage.InputTokens, usage.OutputTokens,
 		usage.CacheCreationTokens, usage.CacheReadTokens,
 		usage.Model, nilIfEmpty(usage.Provider), errMsg,
+		costArg, nilIfEmpty(usage.CostCurrency),
+		nilIfEmpty(usage.CredentialSource), nilIfEmpty(usage.CredentialScopeID),
 		runID, string(store.RunRunning),
 	)
 	return err
+}
+
+// RecordCallUsage appends one per-call usage row (RFC AV). Append-only insert;
+// cost is stored NULL when unpriced (empty currency), distinct from zero.
+func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) error {
+	ts := row.TS
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	var costArg interface{}
+	if row.CostCurrency != "" {
+		costArg = row.Cost
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO token_usage (
+			run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
+			iteration, provider, model, credential_source, credential_scope_id,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			cost, cost_currency, ts
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		row.RunID, nilIfEmpty(row.SessionID), row.TenantID, nilIfEmpty(row.UserID),
+		nilIfEmpty(row.AgentID), nilIfEmpty(row.ParentRunID),
+		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
+		row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens,
+		costArg, nilIfEmpty(row.CostCurrency), ts.UnixNano(),
+	)
+	return err
+}
+
+// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
+func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.TokenUsageRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
+			iteration, provider, model, credential_source, credential_scope_id,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			cost, cost_currency, ts
+		 FROM token_usage WHERE run_id = ? ORDER BY iteration ASC, id ASC`,
+		runID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.TokenUsageRow
+	for rows.Next() {
+		var r store.TokenUsageRow
+		var sessionID, userID, agentID, parentRunID, costCurrency sql.NullString
+		var cost sql.NullFloat64
+		var tsNano int64
+		if err := rows.Scan(
+			&r.RunID, &sessionID, &r.TenantID, &userID, &agentID, &parentRunID,
+			&r.Iteration, &r.Provider, &r.Model, &r.CredentialSource, &r.CredentialScopeID,
+			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
+			&cost, &costCurrency, &tsNano,
+		); err != nil {
+			return nil, err
+		}
+		r.SessionID = sessionID.String
+		r.UserID = userID.String
+		r.AgentID = agentID.String
+		r.ParentRunID = parentRunID.String
+		r.Cost = cost.Float64
+		r.CostCurrency = costCurrency.String
+		r.TS = time.Unix(0, tsNano)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // GetTranscript returns all events for a session, ordered by seq ascending.
@@ -1365,6 +1481,8 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var idempotencyKey sql.NullString
 	var tenantID sql.NullString
 	var interactive sql.NullInt64
+	var cost sql.NullFloat64
+	var costCurrency, credentialSource, credentialScopeID sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -1376,6 +1494,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&userTier,
 		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &tenantID,
 		&interactive,
+		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -1437,6 +1556,19 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		r.TenantID = tenantID.String
 	}
 	r.Interactive = interactive.Valid && interactive.Int64 != 0
+	if cost.Valid {
+		v := cost.Float64
+		r.Cost = &v
+	}
+	if costCurrency.Valid {
+		r.CostCurrency = costCurrency.String
+	}
+	if credentialSource.Valid {
+		r.CredentialSource = credentialSource.String
+	}
+	if credentialScopeID.Valid {
+		r.CredentialScopeID = credentialScopeID.String
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -1459,6 +1591,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.user_tier,
 		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.tenant_id,
 		r.interactive,
+		r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.

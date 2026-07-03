@@ -1308,13 +1308,15 @@ func main() {
 	// below; provider drivers + WebSearch consult it via the run ctx. Fails soft
 	// (a lookup error → no override → host key), never blocking a run on a KEK
 	// gap. Reused by every transport since gRPC routes through the http Server.
-	credResolver := providers.CredentialResolver(func(ctx context.Context, name string) (string, bool) {
+	credResolver := providers.CredentialResolver(func(ctx context.Context, name string) (providers.CredentialResolution, bool) {
 		ri := tools.RunIdentity(ctx)
 		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
 		if err != nil || !found {
-			return "", false
+			return providers.CredentialResolution{}, false
 		}
-		return res.Value, true
+		// RFC AV: carry the owning scope + scope_id so a driver can tag usage
+		// (operator vs tenant/user spend) from the same resolve it uses for the key.
+		return providers.CredentialResolution{Value: res.Value, Scope: res.Scope, ScopeID: res.ScopeID}, true
 	})
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface

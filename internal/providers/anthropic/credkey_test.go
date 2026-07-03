@@ -7,30 +7,31 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
-// A run whose tenant/user stored ANTHROPIC_API_KEY authenticates with THAT key;
-// a run without one uses the operator host key (RFC AR).
-func TestCallKey_OverridesHostKey(t *testing.T) {
+// A run whose tenant/user stored ANTHROPIC_API_KEY authenticates with THAT key
+// (and the resolved scope is reported for usage attribution); a run without one
+// uses the operator host key with source "operator" (RFC AR / RFC AV).
+func TestResolveKey_OverridesHostKey(t *testing.T) {
 	d := &Driver{apiKey: "host-key"}
 
-	if got := d.callKey(context.Background()); got != "host-key" {
-		t.Errorf("no resolver: callKey = %q, want host-key", got)
+	if key, source, _ := d.resolveKey(context.Background()); key != "host-key" || source != "operator" {
+		t.Errorf("no resolver: (%q, %q), want (host-key, operator)", key, source)
 	}
 
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (string, bool) {
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
 		if name == "ANTHROPIC_API_KEY" {
-			return "tenant-key", true
+			return providers.CredentialResolution{Value: "tenant-key", Scope: "tenant"}, true
 		}
-		return "", false
+		return providers.CredentialResolution{}, false
 	})
-	if got := d.callKey(ctx); got != "tenant-key" {
-		t.Errorf("with override: callKey = %q, want tenant-key", got)
+	if key, source, _ := d.resolveKey(ctx); key != "tenant-key" || source != "tenant" {
+		t.Errorf("with override: (%q, %q), want (tenant-key, tenant)", key, source)
 	}
 
 	// A resolver that only knows a DIFFERENT provider's key leaves us on the host key.
-	ctxOther := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (string, bool) {
-		return "openai-key", name == "OPENAI_API_KEY"
+	ctxOther := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
+		return providers.CredentialResolution{Value: "openai-key"}, name == "OPENAI_API_KEY"
 	})
-	if got := d.callKey(ctxOther); got != "host-key" {
-		t.Errorf("unrelated override: callKey = %q, want host-key", got)
+	if key, source, _ := d.resolveKey(ctxOther); key != "host-key" || source != "operator" {
+		t.Errorf("unrelated override: (%q, %q), want (host-key, operator)", key, source)
 	}
 }

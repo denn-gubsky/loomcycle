@@ -33,8 +33,8 @@ func TestWebSearch_BraveKeyOverride(t *testing.T) {
 	}
 
 	// (2) Tenant override → the tenant key is sent instead of the host key.
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (string, bool) {
-		return "tenant-brave", name == "BRAVE_API_KEY"
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
+		return providers.CredentialResolution{Value: "tenant-brave"}, name == "BRAVE_API_KEY"
 	})
 	if res, err := ws.Execute(ctx, input); err != nil || res.IsError {
 		t.Fatalf("override call failed: err=%v res=%+v", err, res)
@@ -61,8 +61,8 @@ func TestWebSearch_TenantKeyEnablesWithNoHostKey(t *testing.T) {
 		t.Errorf("no host key + no override should refuse, got %+v", res)
 	}
 
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (string, bool) {
-		return "tenant-brave", name == "BRAVE_API_KEY"
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
+		return providers.CredentialResolution{Value: "tenant-brave"}, name == "BRAVE_API_KEY"
 	})
 	if res, err := ws.Execute(ctx, json.RawMessage(`{"query":"x"}`)); err != nil || res.IsError {
 		t.Fatalf("tenant key should enable the call: err=%v res=%+v", err, res)
