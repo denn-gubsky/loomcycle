@@ -6,6 +6,7 @@ import {
   Brain,
   CalendarClock,
   Camera,
+  Coins,
   FolderTree,
   HardDrive,
   Library,
@@ -76,6 +77,10 @@ const NAV_ITEMS: NavItem[] = [
   // handler strips live availability + the infra provider-header for a
   // non-admin principal (config cascade only).
   { to: "/routing", label: "routing", Icon: Route, vis: "tenant" },
+  // usage: token/cost report. Tenant-visible (RFC AV): GET /v1/_usage is
+  // ScopeTenant-gated and the handler tenant-scopes the aggregation (a tenant
+  // operator sees only its own tenant's spend; admin sees all + ?tenant=).
+  { to: "/usage", label: "usage", Icon: Coins, vis: "tenant" },
   { to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
 ];
 
