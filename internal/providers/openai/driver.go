@@ -35,6 +35,11 @@ type Driver struct {
 	baseURL     string
 	http        *http.Client
 	idleTimeout time.Duration
+	// keyEnvName is the well-known env-var NAME whose tenant/user credential
+	// overrides the operator host key for an inference request (RFC AR).
+	// Defaults to "OPENAI_API_KEY"; the DeepSeek wrapper points it at
+	// "DEEPSEEK_API_KEY" via SetKeyEnvName since it reuses this driver.
+	keyEnvName string
 }
 
 // New constructs a Driver. baseURL may be empty for the default endpoint, or
@@ -51,7 +56,23 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 	if httpClient == nil {
 		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
+	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout, keyEnvName: "OPENAI_API_KEY"}
+}
+
+// SetKeyEnvName overrides the env-var name whose tenant/user credential shadows
+// the host key (RFC AR). Used by the DeepSeek wrapper, which reuses this driver
+// but must resolve DEEPSEEK_API_KEY, not OPENAI_API_KEY.
+func (d *Driver) SetKeyEnvName(name string) { d.keyEnvName = name }
+
+// callKey returns the API key for an inference request: a tenant/user credential
+// named d.keyEnvName overrides the operator host key when the run has one (RFC
+// AR), else the host key. Model-availability probes (fetchModels) stay on the
+// host key.
+func (d *Driver) callKey(ctx context.Context) string {
+	if k, ok := providers.ResolveCredential(ctx, d.keyEnvName); ok {
+		return k
+	}
+	return d.apiKey
 }
 
 func (d *Driver) ID() string { return "openai" }
@@ -113,8 +134,8 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		if d.apiKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+d.apiKey)
+		if key := d.callKey(spanCtx); key != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+key)
 		}
 		resp, err := d.http.Do(httpReq)
 		if err != nil {

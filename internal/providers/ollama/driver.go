@@ -223,6 +223,21 @@ func (d *Driver) queryLoadedContext(model string) int {
 
 func (d *Driver) ID() string { return d.providerID }
 
+// callKey returns the Bearer key for a hosted-ollama.com inference request: a
+// tenant/user credential named OLLAMA_API_KEY overrides the operator host key
+// when the run has one (RFC AR), else the host key. Only "ollama" (hosted)
+// authenticates — "ollama-local" is unauthenticated local-network, so no
+// override applies there.
+func (d *Driver) callKey(ctx context.Context) string {
+	if d.providerID != "ollama" {
+		return d.apiKey
+	}
+	if k, ok := providers.ResolveCredential(ctx, "OLLAMA_API_KEY"); ok {
+		return k
+	}
+	return d.apiKey
+}
+
 func (d *Driver) Capabilities() providers.Capabilities {
 	return providers.Capabilities{
 		NativePromptCache: false,
@@ -282,8 +297,8 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "application/x-ndjson")
-		if d.apiKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+d.apiKey)
+		if key := d.callKey(spanCtx); key != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+key)
 		}
 		resp, err := d.http.Do(httpReq)
 		if err != nil {

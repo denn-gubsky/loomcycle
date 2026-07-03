@@ -56,7 +56,12 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	return &Driver{inner: openai.New(apiKey, baseURL, streamOpts, httpClient)}
+	inner := openai.New(apiKey, baseURL, streamOpts, httpClient)
+	// RFC AR: a tenant/user overrides its own DeepSeek key by the env-var name
+	// DEEPSEEK_API_KEY, not OPENAI_API_KEY — the wrapped driver would otherwise
+	// resolve the OpenAI name.
+	inner.SetKeyEnvName("DEEPSEEK_API_KEY")
+	return &Driver{inner: inner}
 }
 
 // ID returns "deepseek" so the provider resolver in cmd/loomcycle

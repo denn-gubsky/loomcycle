@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -97,7 +98,15 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	if strings.TrimSpace(args.Query) == "" {
 		return tools.Result{Text: "query is required", IsError: true}, nil
 	}
-	if s.APIKey == "" {
+	// RFC AR: a tenant/user credential named BRAVE_API_KEY overrides the
+	// operator host key for that run (scope precedence agent > user > tenant),
+	// so a tenant can search on its own Brave quota; the host key is the
+	// fallback. The key stays runtime-side — never surfaced to the model.
+	apiKey := s.APIKey
+	if k, ok := providers.ResolveCredential(ctx, "BRAVE_API_KEY"); ok {
+		apiKey = k
+	}
+	if apiKey == "" {
 		return tools.Result{Text: "WebSearch requires BRAVE_API_KEY; refusing", IsError: true}, nil
 	}
 	max := args.MaxResults
@@ -130,7 +139,7 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return tools.Result{Text: "build request: " + err.Error(), IsError: true}, nil
 	}
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("X-Subscription-Token", s.APIKey)
+	httpReq.Header.Set("X-Subscription-Token", apiKey)
 
 	client := s.HTTPClient
 	if client == nil {

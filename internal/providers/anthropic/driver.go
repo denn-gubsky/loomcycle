@@ -52,6 +52,18 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 
 func (d *Driver) ID() string { return "anthropic" }
 
+// callKey returns the API key to authenticate an inference request: a
+// tenant/user credential named ANTHROPIC_API_KEY overrides the operator's host
+// key when the run has one (RFC AR), else the host key. Only the token-consuming
+// inference path uses this — model-availability probes (fetchModels) stay on the
+// operator key, since which models are reachable is an operator concern.
+func (d *Driver) callKey(ctx context.Context) string {
+	if k, ok := providers.ResolveCredential(ctx, "ANTHROPIC_API_KEY"); ok {
+		return k
+	}
+	return d.apiKey
+}
+
 func (d *Driver) Capabilities() providers.Capabilities {
 	return providers.Capabilities{
 		NativePromptCache: true,
@@ -105,7 +117,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		httpReq.Header.Set("x-api-key", d.apiKey)
+		httpReq.Header.Set("x-api-key", d.callKey(spanCtx))
 		httpReq.Header.Set("anthropic-version", apiVersion)
 		resp, err := d.http.Do(httpReq)
 		if err != nil {

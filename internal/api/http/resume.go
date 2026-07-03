@@ -233,6 +233,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, run.AgentID, run.SessionID, run.UserID, emit)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// RFC AR: honor a tenant/user provider-key override on the resumed run too.
+	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
 		UserID:        run.UserID,
 		TenantID:      run.TenantID,
