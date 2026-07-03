@@ -90,6 +90,25 @@ class UserInput:
 
 
 @dataclass(frozen=True)
+class LimitInfo:
+    """Structured payload on ``limit`` events (RFC AW per-scope token budgets).
+
+    Names which scope tripped, how hard (``soft`` warns and the run continues;
+    ``hard`` means the NEXT run is refused at admission), and where the scope
+    stands against its ceiling. No secrets: ``scope``/``scope_id`` are a
+    tenant/subject id (already non-secret, like user_id) and the counts are
+    integers. Mirrors ``providers.LimitInfo`` on the Go side."""
+
+    scope: str  # "operator" | "tenant" | "user"
+    scope_id: str  # tenant id (scope=tenant), user subject (scope=user), "" (operator)
+    severity: str  # "soft" | "hard"
+    window: str  # "month" (calendar month, UTC) in Phase 1
+    used: int  # scope's month-to-date token total at the crossing
+    limit: int  # the tier that was crossed (soft or hard ceiling)
+    message: str = ""  # human-readable banner (optional)
+
+
+@dataclass(frozen=True)
 class AgentEvent:
     """One frame from a Run/Continue stream.
 
@@ -111,6 +130,7 @@ class AgentEvent:
     host_widening: Optional[HostWidening] = None
     awaiting_input: Optional[AwaitingInput] = None
     user_input: Optional[UserInput] = None
+    limit: Optional[LimitInfo] = None
     error: str = ""
     is_error: bool = False
     stop_reason: str = ""
@@ -164,6 +184,17 @@ class AgentEvent:
                 source=ev.user_input.source,
                 seen_at=ev.user_input.seen_at,
             )
+        li: Optional[LimitInfo] = None
+        if ev.HasField("limit"):
+            li = LimitInfo(
+                scope=ev.limit.scope,
+                scope_id=ev.limit.scope_id,
+                severity=ev.limit.severity,
+                window=ev.limit.window,
+                used=ev.limit.used,
+                limit=ev.limit.limit,
+                message=ev.limit.message,
+            )
         return cls(
             type=ev.type,
             text=ev.text,
@@ -173,6 +204,7 @@ class AgentEvent:
             host_widening=hw,
             awaiting_input=ai,
             user_input=ui,
+            limit=li,
             error=ev.error,
             is_error=ev.is_error,
             stop_reason=ev.stop_reason,

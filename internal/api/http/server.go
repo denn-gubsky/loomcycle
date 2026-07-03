@@ -4654,6 +4654,14 @@ func (s *Server) SeedLimits(ctx context.Context) error {
 	return s.limits.Seed(ctx)
 }
 
+// LimitsTracker exposes the RFC AW token-budget tracker so the gRPC TokenLimit
+// RPC can share the identical live month-to-date counters + cache reload the
+// HTTP /v1/_limits handler uses (never a parallel counter). Always non-nil
+// (http.New builds one via limits.New(st)).
+func (s *Server) LimitsTracker() *limits.Tracker {
+	return s.limits
+}
+
 // writeTokenLimitError writes the RFC AW hard-limit admission refusal as HTTP
 // 429 with a structured body naming the tripped scope, so an adapter can branch
 // on `code:"token_limit_exceeded"` and surface used/limit. The refusal names

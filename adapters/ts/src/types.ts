@@ -37,6 +37,10 @@ export type EventType =
   | "awaiting_input"
   | "steer"
   | "context_compaction"
+  // RFC AW per-scope token budgets. `limit` = a server-generated token-budget
+  // crossing (a soft warning at run start, or a soft crossing mid-run). The
+  // structured payload rides `AgentEvent.limit`.
+  | "limit"
   // v0.9.x — client-synthesized lifecycle events emitted ONLY when the
   // streaming caller passes `debug: true`. Never originate from the
   // server. The leading underscore signals "synthetic, not on the wire."
@@ -93,6 +97,30 @@ export interface HostWidening {
   hosts_added: string[];
 }
 
+/** LimitInfo accompanies an `event: limit` frame (RFC AW per-scope token
+ *  budgets). Names which scope tripped, how hard (`soft` warns + the run
+ *  continues; `hard` means the NEXT run is refused at admission), and where the
+ *  scope stands against its ceiling — so a UI can render "tenant acme at 1.2M /
+ *  1M tokens this month" without a follow-up fetch. Wire-stable; mirrors
+ *  providers.LimitInfo. */
+export interface LimitInfo {
+  /** Which axis tripped: "operator" | "tenant" | "user". */
+  scope: string;
+  /** The tripped scope's id — tenant id (scope=tenant), user subject
+   *  (scope=user), "" (operator-global). */
+  scope_id?: string;
+  /** "soft" (warn, run continues) | "hard" (next run refused at admission). */
+  severity: string;
+  /** Budget window; "month" (calendar month, UTC) in Phase 1. */
+  window: string;
+  /** The scope's month-to-date token total at the crossing. */
+  used: number;
+  /** The tier that was crossed (the soft or hard ceiling). */
+  limit: number;
+  /** Human-readable banner string. Optional. */
+  message?: string;
+}
+
 export interface AgentEvent {
   type: EventType;
   text?: string;
@@ -115,6 +143,9 @@ export interface AgentEvent {
   /** Payload on `event: steer` (RFC AI) — the operator's drained turn. On a
    *  re-attach replay, `source` is `"replay"`. Nil on all other event types. */
   user_input?: { text?: string; source?: string; seen_at?: string };
+  /** Payload on `event: limit` (RFC AW) — a per-scope token-budget crossing.
+   *  Nil on all other event types. */
+  limit?: LimitInfo;
   // v0.4 `event: agent` side-channel announces the run's tracking IDs
   // immediately after the `event: session` frame. parent_agent_id is null
   // for top-level runs.
@@ -1954,4 +1985,40 @@ export interface UsageReportResponse {
   from?: string;
   to?: string;
   rows: UsageAggregate[];
+}
+
+/** A per-scope token budget (RFC AW) plus its live month-to-date usage.
+ *  `soft_limit` / `hard_limit` are absent when that tier is unset (no ceiling
+ *  on that axis). Mirrors one row of GET /v1/_limits. */
+export interface TokenLimit {
+  tenant_id: string;
+  /** "operator" | "tenant" | "user" */
+  scope: string;
+  /** tenant id (scope=tenant), user subject (scope=user), "" (operator). */
+  scope_id?: string;
+  soft_limit?: number;
+  hard_limit?: number;
+  /** The scope's current month-to-date token total. */
+  used: number;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export interface TokenLimitsResponse {
+  limits: TokenLimit[];
+}
+
+/** The PUT /v1/_limits body (RFC AW). A present `soft_limit`/`hard_limit` sets
+ *  that tier; omitting it clears the tier (unlimited on that axis) — a full-row
+ *  upsert. `tenant_id` is an admin-only target; a tenant operator is confined to
+ *  its own tenant regardless of this field. */
+export interface SetTokenLimitRequest {
+  /** Admin-only target tenant; ignored for confinement on a scoped caller. */
+  tenant_id?: string;
+  /** "operator" | "tenant" | "user" */
+  scope: string;
+  /** Required for scope=user (the subject); must be empty for scope=tenant. */
+  scope_id?: string;
+  soft_limit?: number;
+  hard_limit?: number;
 }

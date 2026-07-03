@@ -123,6 +123,9 @@ import type {
   WhoamiResponse,
   UsageDimension,
   UsageReportResponse,
+  TokenLimit,
+  TokenLimitsResponse,
+  SetTokenLimitRequest,
 } from "./types.js";
 
 /** samplingToWire maps the camelCase SamplingOptions to the snake_case wire
@@ -470,6 +473,48 @@ export class LoomcycleClient {
     if (opts?.tenant) params.set("tenant", opts.tenant);
     const q = params.toString() ? `?${params.toString()}` : "";
     return jsonFetch<UsageReportResponse>(this.ctx, `/v1/_usage${q}`, opts);
+  }
+
+  /** List the per-scope token budgets visible to the caller (RFC AW), each with
+   *  its live month-to-date usage. Tenant-scoped server-side: a tenant operator
+   *  sees only its own tenant's budgets; an admin sees all (or focuses one via
+   *  `tenant`). Mirrors `GET /v1/_limits`. */
+  async listLimits(opts?: {
+    /** Admin-only tenant focus (?tenant=); ignored for a tenant principal. */
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<TokenLimitsResponse> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<TokenLimitsResponse>(this.ctx, `/v1/_limits${q}`, opts);
+  }
+
+  /** Upsert one token budget (RFC AW). A present `soft_limit`/`hard_limit` sets
+   *  that tier; omitting it clears the tier (unlimited on that axis) — a
+   *  full-row upsert. The operator-global scope + any cross-tenant `tenant_id`
+   *  are admin-only (403 otherwise). Mirrors `PUT /v1/_limits`. */
+  async setLimit(
+    body: SetTokenLimitRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TokenLimit> {
+    return putJSON<TokenLimit>(this.ctx, "/v1/_limits", body, opts);
+  }
+
+  /** Delete a token budget → the scope is unlimited again (RFC AW). Same
+   *  tenant-confinement as `setLimit`. Mirrors `DELETE /v1/_limits`. */
+  async deleteLimit(
+    scope: string,
+    opts?: {
+      /** Required for scope=user (the subject); empty for scope=tenant. */
+      scopeId?: string;
+      /** Admin-only target tenant; ignored for a tenant principal. */
+      tenant?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<void> {
+    const params = new URLSearchParams({ scope });
+    if (opts?.scopeId) params.set("scope_id", opts.scopeId);
+    if (opts?.tenant) params.set("tenant", opts.tenant);
+    return deleteRequest(this.ctx, `/v1/_limits?${params.toString()}`, opts);
   }
 
   /** Read the full event log for a session. Each entry has seq,

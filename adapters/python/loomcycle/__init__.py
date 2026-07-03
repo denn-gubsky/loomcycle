@@ -69,6 +69,7 @@ from .events import (
     HostWidening,
     AwaitingInput,
     UserInput,
+    LimitInfo,
 )
 from .errors import (
     LoomcycleError,
@@ -101,6 +102,7 @@ __all__ = [
     "HostWidening",
     "AwaitingInput",
     "UserInput",
+    "LimitInfo",
     "LoomcycleError",
     "AgentNotFoundError",
     "SessionNotFoundError",

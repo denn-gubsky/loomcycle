@@ -34,6 +34,15 @@ func grpcTenantScope(ctx context.Context) (tenantID string, allTenants bool) {
 	return p.TenantID, false
 }
 
+// grpcPrincipalSubject returns the ctx principal's subject for an audit column
+// (empty for open/legacy mode). Mirrors the HTTP principalSubject.
+func grpcPrincipalSubject(ctx context.Context) string {
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		return p.Subject
+	}
+	return ""
+}
+
 // grpcTenantVisible reports whether a row owned by rowTenant is in the caller's
 // tenant scope. Callers fold a false result into an opaque NotFound so the gate
 // is not a cross-tenant existence oracle (ids are not secret).

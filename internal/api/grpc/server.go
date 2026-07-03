@@ -71,6 +71,12 @@ type Server struct {
 	// field stays alongside connector.
 	runner runner.Runner
 
+	// limits is the RFC AW token-budget tracker the TokenLimit RPC reads for
+	// live month-to-date usage + reloads after a CRUD change. Shared with the
+	// HTTP /v1/_limits handler (main.go wires it to srv.LimitsTracker()) so both
+	// transports see the identical counters. Nil → used reads 0 + reload no-ops.
+	limits tokenLimitTracker
+
 	// authToken is the bearer token clients must present in the
 	// `authorization` gRPC metadata header. Empty means open-mode
 	// (matches the HTTP middleware's "no LOOMCYCLE_AUTH_TOKEN set"
@@ -107,7 +113,12 @@ type Config struct {
 	// *internal/api/http.Server also satisfies it. May be nil — Run +
 	// Continue then return codes.Unimplemented (useful for tests that
 	// don't need streaming).
-	Runner    runner.Runner
+	Runner runner.Runner
+	// Limits is the RFC AW token-budget tracker the TokenLimit RPC uses for live
+	// usage + cache reload. *internal/api/http.Server exposes it via
+	// LimitsTracker(). May be nil — TokenLimit then reports used=0 and skips the
+	// post-write reload (the store row is still persisted).
+	Limits    tokenLimitTracker
 	AuthToken string
 	// PrincipalResolver resolves a raw bearer to an auth.Principal (RFC
 	// L). Wired in main.go to the HTTP server's resolver so gRPC reuses
@@ -134,6 +145,7 @@ func New(cfg Config) *Server {
 		cancelReg:         cfg.CancelReg,
 		connector:         cfg.Connector,
 		runner:            cfg.Runner,
+		limits:            cfg.Limits,
 		authToken:         cfg.AuthToken,
 		principalResolver: cfg.PrincipalResolver,
 		authConfigured:    cfg.AuthConfigured,
@@ -574,6 +586,10 @@ var grpcConsumerScopes = map[string]string{
 	// RFC AV: the usage/cost report is tenant-readable (the handler tenant-scopes
 	// the aggregation), mirroring the HTTP /v1/_usage ScopeTenant gate.
 	"UsageReport": auth.ScopeTenant,
+	// RFC AW: token-budget management. The handler tenant-scopes reads + confines
+	// writes to the caller's own tenant (operator-global + cross-tenant stay
+	// admin-only), mirroring the HTTP /v1/_limits ScopeTenant gate.
+	"TokenLimit": auth.ScopeTenant,
 	// RFC AF: the tenant-confined substrate plane — the 8 def families + hook
 	// management. ScopeTenant (substrate:admin still satisfies). substrateGRPCCtx
 	// stamps the principal's authoritative tenant on the def-tools, and the hook
@@ -1134,6 +1150,19 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Attempt:  int32(ev.Retry.Attempt),
 			WaitMs:   ev.Retry.WaitMs,
 			Reason:   ev.Retry.Reason,
+		}
+	}
+	// RFC AW — the token-budget crossing payload on type=limit frames. Type is
+	// already set to "limit" from ev.Type above (mirrors how Usage is mapped).
+	if ev.Limit != nil {
+		out.Limit = &loomcyclepb.LimitInfo{
+			Scope:    ev.Limit.Scope,
+			ScopeId:  ev.Limit.ScopeID,
+			Severity: ev.Limit.Severity,
+			Window:   ev.Limit.Window,
+			Used:     ev.Limit.Used,
+			Limit:    ev.Limit.Limit,
+			Message:  ev.Limit.Message,
 		}
 	}
 	if ev.HostWidening != nil {

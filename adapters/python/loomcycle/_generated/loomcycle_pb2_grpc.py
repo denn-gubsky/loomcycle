@@ -93,6 +93,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.UsageReportRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.UsageReportResponse.FromString,
                 _registered_method=True)
+        self.TokenLimit = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/TokenLimit',
+                request_serializer=loomcycle__pb2.TokenLimitRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.TokenLimitResponse.FromString,
+                _registered_method=True)
         self.Health = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Health',
                 request_serializer=loomcycle__pb2.HealthRequest.SerializeToString,
@@ -393,6 +398,19 @@ class LoomcycleServicer(object):
         confined to its own tenant; admin sees all + an optional tenant focus).
 
         Mirrors GET /v1/_usage.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def TokenLimit(self, request, context):
+        """TokenLimit manages per-scope token budgets (RFC AW): one op-based RPC
+        (op ∈ list|set|delete) mirroring GET/PUT/DELETE /v1/_limits. Tenant-scoped
+        like the HTTP twin — a substrate:tenant caller may only see/set/delete its
+        own tenant's budgets; the operator-global cap + cross-tenant rows are
+        admin-only.
+
+        Mirrors GET/PUT/DELETE /v1/_limits.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -841,6 +859,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.UsageReport,
                     request_deserializer=loomcycle__pb2.UsageReportRequest.FromString,
                     response_serializer=loomcycle__pb2.UsageReportResponse.SerializeToString,
+            ),
+            'TokenLimit': grpc.unary_unary_rpc_method_handler(
+                    servicer.TokenLimit,
+                    request_deserializer=loomcycle__pb2.TokenLimitRequest.FromString,
+                    response_serializer=loomcycle__pb2.TokenLimitResponse.SerializeToString,
             ),
             'Health': grpc.unary_unary_rpc_method_handler(
                     servicer.Health,
@@ -1314,6 +1337,33 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/UsageReport',
             loomcycle__pb2.UsageReportRequest.SerializeToString,
             loomcycle__pb2.UsageReportResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def TokenLimit(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/TokenLimit',
+            loomcycle__pb2.TokenLimitRequest.SerializeToString,
+            loomcycle__pb2.TokenLimitResponse.FromString,
             options,
             channel_credentials,
             insecure,

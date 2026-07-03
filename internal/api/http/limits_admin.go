@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -18,9 +19,6 @@ import (
 // operator-global cap (tenant_id='', scope='operator') and cross-tenant rows
 // are admin-only. The write path stamps the tenant from the principal for a
 // scoped caller — the wire tenant_id is never trusted for confinement.
-
-// limitScopes is the closed set of valid scope axes.
-var limitScopes = map[string]bool{"operator": true, "tenant": true, "user": true}
 
 // limitRowResponse is one token_limits row plus its live month-to-date usage.
 type limitRowResponse struct {
@@ -101,11 +99,6 @@ func (s *Server) handleLimitPut(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
 		return
 	}
-	if !limitScopes[body.Scope] {
-		writeJSONError(w, http.StatusBadRequest, "bad_request",
-			"scope must be one of: operator, tenant, user")
-		return
-	}
 	if (body.SoftLimit != nil && *body.SoftLimit < 0) || (body.HardLimit != nil && *body.HardLimit < 0) {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", "soft_limit/hard_limit must be >= 0")
 		return
@@ -159,11 +152,6 @@ func (s *Server) handleLimitDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	scope := q.Get("scope")
-	if !limitScopes[scope] {
-		writeJSONError(w, http.StatusBadRequest, "bad_request",
-			"scope must be one of: operator, tenant, user")
-		return
-	}
 	tenantID, scopeID, ok := s.resolveLimitWrite(w, r, scope, q.Get("tenant"), q.Get("scope_id"))
 	if !ok {
 		return
@@ -180,55 +168,24 @@ func (s *Server) handleLimitDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveLimitWrite validates + resolves the authoritative (tenant_id, scope_id)
-// for a write, enforcing the RFC AW tenant confinement:
-//   - operator scope: admin-only; tenant_id and scope_id forced to "".
-//   - tenant scope: scope_id must be "" (the whole tenant); a scoped caller is
-//     confined to its own tenant, an admin may target any via wireTenant.
-//   - user scope: scope_id (the subject) required.
-//
-// Returns ok=false and writes the error response when the caller is not
+// for a write, delegating the RFC AW tenant confinement to limits.ResolveWrite
+// (shared with the gRPC TokenLimit RPC) and mapping its typed verdict to an HTTP
+// status. Returns ok=false and writes the error response when the caller is not
 // entitled or the shape is invalid.
 func (s *Server) resolveLimitWrite(w http.ResponseWriter, r *http.Request, scope, wireTenant, scopeID string) (tenantID, resolvedScopeID string, ok bool) {
 	// all == admin / legacy / open mode → full authority (may write any tenant
 	// + the operator scope). A scoped substrate:tenant caller has all=false.
 	callerTenant, all := tenantScopeFromCtx(r.Context())
-
-	switch scope {
-	case "operator":
-		if !all {
-			writeJSONError(w, http.StatusForbidden, "forbidden",
-				"the operator-global budget is admin-only")
-			return "", "", false
+	tenantID, resolvedScopeID, aerr := limits.ResolveWrite(scope, wireTenant, scopeID, callerTenant, all)
+	if aerr != nil {
+		if aerr.Forbidden {
+			writeJSONError(w, http.StatusForbidden, "forbidden", aerr.Msg)
+		} else {
+			writeJSONError(w, http.StatusBadRequest, "bad_request", aerr.Msg)
 		}
-		// operator scope is a single global row; ignore any tenant/scope id.
-		return "", "", true
-	case "tenant":
-		if scopeID != "" {
-			writeJSONError(w, http.StatusBadRequest, "bad_request",
-				"scope_id must be empty for scope=tenant")
-			return "", "", false
-		}
-	case "user":
-		if scopeID == "" {
-			writeJSONError(w, http.StatusBadRequest, "bad_request",
-				"scope_id (the user subject) is required for scope=user")
-			return "", "", false
-		}
-	}
-
-	// tenant / user scope: resolve the authoritative tenant.
-	if all {
-		// Admin may address any tenant; the wire tenant_id is authoritative here.
-		return wireTenant, scopeID, true
-	}
-	// Scoped caller: confined to its own tenant. A wire tenant_id that disagrees
-	// is a cross-tenant attempt → 403 (never silently rewritten to a foreign id).
-	if wireTenant != "" && wireTenant != callerTenant {
-		writeJSONError(w, http.StatusForbidden, "forbidden",
-			"a tenant operator may only manage budgets in its own tenant")
 		return "", "", false
 	}
-	return callerTenant, scopeID, true
+	return tenantID, resolvedScopeID, true
 }
 
 // principalSubject returns the ctx principal's subject for the updated_by audit

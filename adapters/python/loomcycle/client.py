@@ -314,6 +314,62 @@ class LoomcycleClient:
             ],
         }
 
+    # ---- RFC AW per-scope token budgets (TokenLimit RPC) ----
+
+    async def list_token_limits(self, *, tenant: str = "") -> Sequence[Mapping[str, Any]]:
+        """List the per-scope token budgets visible to the caller (RFC AW), each
+        with its live month-to-date usage. Tenant-scoped server-side: a tenant
+        principal sees only its own tenant's budgets; ``tenant`` is an admin-only
+        focus. Returns a list of dicts with ``tenant_id``/``scope``/``scope_id``/
+        ``soft_limit``/``hard_limit`` (``None`` when a tier is unset)/``used``/
+        ``updated_at``/``updated_by``."""
+        try:
+            resp = await self._stub.TokenLimit(
+                pb.TokenLimitRequest(op="list", tenant=tenant),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return [_token_limit_entry(e) for e in resp.limits]
+
+    async def set_token_limit(
+        self,
+        *,
+        scope: str,
+        scope_id: str = "",
+        tenant: str = "",
+        soft_limit: Optional[int] = None,
+        hard_limit: Optional[int] = None,
+    ) -> Mapping[str, Any]:
+        """Upsert one token budget (RFC AW). A non-``None`` ``soft_limit``/
+        ``hard_limit`` sets that tier; ``None`` clears it (unlimited on that
+        axis) — a full-row upsert. The operator-global scope and any cross-tenant
+        ``tenant`` are admin-only (PermissionDenied otherwise). Returns the
+        written row (same shape as ``list_token_limits`` entries)."""
+        req = pb.TokenLimitRequest(op="set", scope=scope, scope_id=scope_id, tenant=tenant)
+        if soft_limit is not None:
+            req.soft_limit = soft_limit
+        if hard_limit is not None:
+            req.hard_limit = hard_limit
+        try:
+            resp = await self._stub.TokenLimit(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _token_limit_entry(resp.limits[0]) if resp.limits else {}
+
+    async def delete_token_limit(
+        self, *, scope: str, scope_id: str = "", tenant: str = ""
+    ) -> None:
+        """Delete a token budget → the scope is unlimited again (RFC AW). Same
+        tenant-confinement as ``set_token_limit``."""
+        try:
+            await self._stub.TokenLimit(
+                pb.TokenLimitRequest(op="delete", scope=scope, scope_id=scope_id, tenant=tenant),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+
     async def get_transcript(self, session_id: str) -> Sequence[Mapping[str, Any]]:
         """Read the full event log for a session. Each entry is a
         dict with ``seq``, ``run_id``, ``ts``, ``type``, ``payload``
@@ -1286,6 +1342,22 @@ def _hook_to_dict(h: pb.Hook) -> Mapping[str, Any]:
         "fail_mode": h.fail_mode,
         "timeout_ms": h.timeout_ms,
         "registered_at": _ts_to_iso(h.registered_at) if h.HasField("registered_at") else "",
+    }
+
+
+def _token_limit_entry(e: "pb.TokenLimitEntry") -> Mapping[str, Any]:
+    """Convert a proto TokenLimitEntry → public dict (RFC AW). soft_limit /
+    hard_limit are ``None`` when that tier is unset (no ceiling on the axis) so
+    a consumer can distinguish "unlimited" from a real zero ceiling."""
+    return {
+        "tenant_id": e.tenant_id,
+        "scope": e.scope,
+        "scope_id": e.scope_id,
+        "soft_limit": e.soft_limit if e.HasField("soft_limit") else None,
+        "hard_limit": e.hard_limit if e.HasField("hard_limit") else None,
+        "used": e.used,
+        "updated_at": e.updated_at,
+        "updated_by": e.updated_by,
     }
 
 

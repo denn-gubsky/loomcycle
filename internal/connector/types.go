@@ -122,6 +122,13 @@ type SpawnRunResult struct {
 	FinalText  string           `json:"final_text,omitempty"`
 	Usage      *providers.Usage `json:"usage,omitempty"`
 	Error      string           `json:"error,omitempty"`
+	// Limits carries any RFC AW per-scope token-budget crossings observed
+	// during the run (soft warnings), so an MCP spawn_run caller sees the
+	// budget banner in the tool result itself — not only on the streamed
+	// run_event notifications. Populated on the streaming spawn path (the
+	// only path with per-event access); nil + omitted otherwise. Mirrors the
+	// structured Usage field rather than corrupting FinalText.
+	Limits []providers.LimitInfo `json:"limits,omitempty"`
 	// ParentContext echoes the run's tracking lineage back to the
 	// caller (v0.12.x) so a sub-agent's usage can be attributed to the
 	// root request. Nil when the run carried no context.

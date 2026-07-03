@@ -7,7 +7,7 @@ through ``AgentEvent._from_proto``.
 
 from __future__ import annotations
 
-from loomcycle.events import AgentEvent, ToolUse, Usage, Retry
+from loomcycle.events import AgentEvent, ToolUse, Usage, Retry, LimitInfo
 from loomcycle._generated import loomcycle_pb2 as pb
 
 
@@ -78,6 +78,32 @@ def test_error_event_propagates_flag_and_message():
     assert ev.type == "error"
     assert ev.error == "upstream 500"
     assert ev.is_error is True
+
+
+def test_limit_event_unwraps_budget_payload():
+    # RFC AW: a `limit` frame carries a token-budget crossing. Fails before the
+    # events parser learns the limit sub-message (ev.limit would stay None).
+    proto = pb.Event(
+        type="limit",
+        limit=pb.LimitInfo(
+            scope="tenant",
+            scope_id="acme",
+            severity="soft",
+            window="month",
+            used=1200,
+            limit=1000,
+            message="tenant acme soft budget reached",
+        ),
+    )
+    ev = AgentEvent._from_proto(proto)
+    assert ev.type == "limit"
+    assert isinstance(ev.limit, LimitInfo)
+    assert ev.limit.scope == "tenant"
+    assert ev.limit.scope_id == "acme"
+    assert ev.limit.severity == "soft"
+    assert ev.limit.used == 1200
+    assert ev.limit.limit == 1000
+    assert ev.limit.message == "tenant acme soft budget reached"
 
 
 def test_agentevent_is_frozen():
