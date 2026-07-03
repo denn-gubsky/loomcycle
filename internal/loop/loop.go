@@ -1682,6 +1682,13 @@ outerLoop:
 			// reflects the post-fallback identity. Used by downstream
 			// analysis to quantify primary-vs-fallback routing.
 			totalUsage.Provider = opts.Provider.ID()
+			// RFC AV: carry the per-call credential source (which key paid,
+			// stamped by the driver) onto the run-level summary. The last
+			// successful iteration's source becomes runs.credential_source —
+			// best-effort for the summary; the exact per-call split is in the
+			// token_usage ledger (one row per EventUsage below).
+			totalUsage.CredentialSource = iterUsage.CredentialSource
+			totalUsage.CredentialScopeID = iterUsage.CredentialScopeID
 			// Stamp the serving model's context-window ceiling onto the
 			// per-iteration usage event so the UI can render a "context
 			// used / max" gauge. Set on iterUsage (discarded after this
@@ -1693,6 +1700,10 @@ outerLoop:
 			if iterUsage.MaxContextTokens == 0 {
 				iterUsage.MaxContextTokens = opts.Provider.Capabilities().MaxContextTokens
 			}
+			// RFC AV: stamp the serving provider onto the per-call usage event
+			// too (not just totalUsage) so the token_usage row records which
+			// provider actually served this call — exact across mid-run fallback.
+			iterUsage.Provider = opts.Provider.ID()
 			emit(providers.Event{Type: providers.EventUsage, Usage: iterUsage})
 			// Retain this turn's CURRENT context footprint (input + cache, i.e.
 			// what the request actually sent — NOT cumulative totalUsage, which

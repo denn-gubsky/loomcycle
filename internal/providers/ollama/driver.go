@@ -223,19 +223,20 @@ func (d *Driver) queryLoadedContext(model string) int {
 
 func (d *Driver) ID() string { return d.providerID }
 
-// callKey returns the Bearer key for a hosted-ollama.com inference request: a
-// tenant/user credential named OLLAMA_API_KEY overrides the operator host key
-// when the run has one (RFC AR), else the host key. Only "ollama" (hosted)
-// authenticates — "ollama-local" is unauthenticated local-network, so no
-// override applies there.
-func (d *Driver) callKey(ctx context.Context) string {
-	if d.providerID != "ollama" {
-		return d.apiKey
+// resolveKey returns the Bearer key to authenticate an inference request AND
+// which credential scope it came from. On hosted "ollama" a tenant/user
+// credential named OLLAMA_API_KEY overrides the operator's host key (RFC AR);
+// "ollama-local" is unauthenticated local-network, so no override applies and
+// the source stays "operator". The source/scopeID ride the per-call Usage so
+// the server can attribute spend (RFC AV). Model-availability probes
+// (queryLoadedContext) stay on the operator key.
+func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string) {
+	if d.providerID == "ollama" {
+		if r, ok := providers.ResolveCredentialFull(ctx, "OLLAMA_API_KEY"); ok {
+			return r.Value, r.Scope, r.ScopeID
+		}
 	}
-	if k, ok := providers.ResolveCredential(ctx, "OLLAMA_API_KEY"); ok {
-		return k
-	}
-	return d.apiKey
+	return d.apiKey, "operator", ""
 }
 
 func (d *Driver) Capabilities() providers.Capabilities {
@@ -280,6 +281,10 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
 
+	// RFC AR/AV: resolve the key + its owning scope ONCE per call (not per retry
+	// attempt) so the header uses it and the source rides the per-call Usage.
+	apiKey, credSource, credScopeID := d.resolveKey(ctx)
+
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
 		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.
 		// d.providerID is "ollama" (cloud) or "ollama-local" — the
@@ -297,8 +302,8 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "application/x-ndjson")
-		if key := d.callKey(spanCtx); key != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+key)
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 		resp, err := d.http.Do(httpReq)
 		if err != nil {
@@ -335,7 +340,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		defer cancelStream()
 		// maxCtxFn is evaluated lazily at the done frame (model loaded by
 		// then) so the usage event carries the model's real loaded window.
-		streamEvents(streamCtx, resp.Body, out, len(req.Tools) > 0, func() int { return d.contextWindow(req.Model) })
+		streamEvents(streamCtx, resp.Body, out, len(req.Tools) > 0, func() int { return d.contextWindow(req.Model) }, credSource, credScopeID)
 	}()
 	return out, nil
 }
@@ -583,7 +588,7 @@ type chunkToolCallFn struct {
 
 // maxCtxFn (optional) returns the model's effective context window; called
 // once at the done frame to stamp usage.MaxContextTokens. nil → not stamped.
-func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, wantTools bool, maxCtxFn func() int) {
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, wantTools bool, maxCtxFn func() int, credSource, credScopeID string) {
 	defer body.Close()
 	defer close(out)
 
@@ -776,6 +781,11 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 	}
 
+	// RFC AV: tag the per-call usage with which credential scope paid.
+	if usage != nil {
+		usage.CredentialSource = credSource
+		usage.CredentialScopeID = credScopeID
+	}
 	send(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: usage})
 }
 

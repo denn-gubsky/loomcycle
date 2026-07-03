@@ -257,6 +257,16 @@ type Run struct {
 	// re-dispatched on another instance with the correct park-vs-complete
 	// semantics. false on legacy rows + batch runs.
 	Interactive bool `json:"interactive,omitempty"`
+
+	// --- RFC AV: per-run cost + credential-source summary. ---
+	// Cost is nil when the run was never priced (legacy rows, or an unknown
+	// model absent from the pricing table). CredentialSource is the primary key
+	// source ("operator"|"tenant"|"user"); the exact per-call split lives in
+	// token_usage. All optional/nullable for back-compat with pre-RFC-AV rows.
+	Cost              *float64 `json:"cost,omitempty"`
+	CostCurrency      string   `json:"cost_currency,omitempty"`
+	CredentialSource  string   `json:"credential_source,omitempty"`
+	CredentialScopeID string   `json:"credential_scope_id,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.
@@ -313,6 +323,54 @@ type Usage struct {
 	// model-name conventions. Differs from agent yaml when v0.8.2
 	// fallback engaged.
 	Provider string
+
+	// --- RFC AV: per-run cost + credential-source summary ---
+	// Cost is the run's computed money cost; CostCurrency names its unit
+	// (e.g. "USD"). An empty CostCurrency ⇒ the run was not priced (unknown
+	// model in the pricing table) and Cost is persisted as NULL, distinct
+	// from a genuine zero cost (mock / code-js, which carry a currency).
+	Cost         float64
+	CostCurrency string
+	// CredentialSource is the run's primary key source: "operator" (host key)
+	// or "tenant"/"user" when an RFC AR override paid. CredentialScopeID is the
+	// override owner. Best-effort per-run summary; the exact per-call split
+	// lives in token_usage.
+	CredentialSource  string
+	CredentialScopeID string
+}
+
+// TokenUsageRow is one LLM call's usage + cost, the append-only per-call ledger
+// beneath the runs summary (RFC AV). One row is written per EventUsage. It holds
+// no secrets — token counts, provider/model, the owning credential scope id
+// (already non-secret, like user_id), and the computed/provider-reported cost.
+type TokenUsageRow struct {
+	RunID       string
+	SessionID   string
+	TenantID    string
+	UserID      string
+	AgentID     string
+	ParentRunID string
+	// Iteration is the 0-based call index within the run (ordering + dedup).
+	Iteration int
+
+	Provider string
+	Model    string
+	// CredentialSource is "operator" | "tenant" | "user"; CredentialScopeID is
+	// the override owner ("" for operator / tenant scope).
+	CredentialSource  string
+	CredentialScopeID string
+
+	InputTokens         int
+	OutputTokens        int
+	CacheCreationTokens int
+	CacheReadTokens     int
+
+	// Cost is the call's money cost; CostCurrency its unit. An empty currency
+	// ⇒ unpriced (unknown model) → Cost stored NULL, distinct from a zero cost.
+	Cost         float64
+	CostCurrency string
+
+	TS time.Time
 }
 
 // RunIdentity carries the v0.4 tracking fields a CreateRun caller can
@@ -507,6 +565,15 @@ type Store interface {
 	// stop reason (or error message, when status is "failed"). Idempotent:
 	// calling on an already-finished run is a no-op.
 	FinishRun(ctx context.Context, runID string, status RunStatus, stopReason string, usage Usage, errMsg string) error
+
+	// RecordCallUsage appends one per-call usage row (RFC AV). Append-only; the
+	// caller supplies a fully-formed row (identity + tokens + priced cost). It
+	// is the granular ledger beneath the FinishRun per-run summary.
+	RecordCallUsage(ctx context.Context, row TokenUsageRow) error
+
+	// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
+	// Used by the rollup invariant test + (later) the archiver.
+	TokenUsageForRun(ctx context.Context, runID string) ([]TokenUsageRow, error)
 
 	// GetTranscript returns all events for a session, ordered by Seq.
 	// Returns an empty slice (not error) for a session with no runs yet.

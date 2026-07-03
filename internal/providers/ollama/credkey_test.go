@@ -10,20 +10,20 @@ import (
 // Hosted ollama.com honors an OLLAMA_API_KEY override; ollama-local is
 // unauthenticated local-network, so no override ever applies there (RFC AR).
 func TestCallKey_HostedOverride_LocalNever(t *testing.T) {
-	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (string, bool) {
-		return "tenant-ollama", name == "OLLAMA_API_KEY"
+	ctx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool) {
+		return providers.CredentialResolution{Value: "tenant-ollama"}, name == "OLLAMA_API_KEY"
 	})
 
 	hosted := &Driver{providerID: "ollama", apiKey: "host-key"}
-	if got := hosted.callKey(ctx); got != "tenant-ollama" {
-		t.Errorf("hosted with override: callKey = %q, want tenant-ollama", got)
+	if got, _, _ := hosted.resolveKey(ctx); got != "tenant-ollama" {
+		t.Errorf("hosted with override: resolveKey = %q, want tenant-ollama", got)
 	}
-	if got := hosted.callKey(context.Background()); got != "host-key" {
-		t.Errorf("hosted no resolver: callKey = %q, want host-key", got)
+	if got, _, _ := hosted.resolveKey(context.Background()); got != "host-key" {
+		t.Errorf("hosted no resolver: resolveKey = %q, want host-key", got)
 	}
 
 	local := &Driver{providerID: "ollama-local", apiKey: ""}
-	if got := local.callKey(ctx); got != "" {
-		t.Errorf("ollama-local must never take an override: callKey = %q, want empty", got)
+	if got, _, _ := local.resolveKey(ctx); got != "" {
+		t.Errorf("ollama-local must never take an override: resolveKey = %q, want empty", got)
 	}
 }

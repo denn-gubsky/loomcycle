@@ -850,4 +850,23 @@ type Usage struct {
 	// so older consumers and the run-final totalUsage (which leaves it 0)
 	// are unaffected.
 	MaxContextTokens int `json:"max_context_tokens,omitempty"`
+
+	// --- RFC AV: per-call usage attribution (all additive, omitempty). ---
+
+	// CredentialSource names which key paid for this call: "operator" (the
+	// host key), or "tenant" / "user" when an RFC AR override fired at that
+	// scope. Empty ⇒ operator (the default for every call with no override).
+	// The driver stamps it from the same resolve it uses to pick the key, so
+	// there is no extra credential-store read. CredentialScopeID is the owning
+	// subject/tenant id of an override ("" for operator / tenant scope). These
+	// let the server attribute spend to the operator vs the tenant/user.
+	CredentialSource  string `json:"credential_source,omitempty"`
+	CredentialScopeID string `json:"credential_scope_id,omitempty"`
+
+	// ProviderReportedCost is the provider's / gateway's OWN cost figure for
+	// this call, when the response carries one (OpenRouter-style `usage.cost`);
+	// 0/absent ⇒ the server prices the call from its pricing table. When set it
+	// is authoritative (never re-priced). ProviderCostCurrency pairs with it.
+	ProviderReportedCost float64 `json:"provider_reported_cost,omitempty"`
+	ProviderCostCurrency string  `json:"provider_cost_currency,omitempty"`
 }

@@ -4388,6 +4388,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 		return fwd
 	}
 	var mu sync.Mutex
+	var usageCallIdx int // RFC AV: per-call ledger row index within this run
 	return func(ev providers.Event) {
 		// Track parked (awaiting_input) state for the compaction boundary gate
 		// (handleCompactRun's IsParked check). The run is parked when it emits
@@ -4428,6 +4429,13 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 			}
 			return
 		}
+		// RFC AV: append one per-call usage row (which key paid + priced cost).
+		// Additive side-effect — the event still persists + forwards through the
+		// general path below (it is also stored as a "usage" event, unchanged).
+		if ev.Type == providers.EventUsage && ev.Usage != nil {
+			s.recordCallUsage(ctx, runID, usageCallIdx, ev.Usage)
+			usageCallIdx++
+		}
 		// F32: redact secrets out of the PERSISTED copy only — the tool_call
 		// input and tool_result text are the surfaces where a token inlined on a
 		// Bash cmdline / echoed by a tool would otherwise hit the events BLOB
@@ -4461,6 +4469,86 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 		}
 		fwd(ev)
 	}
+}
+
+// recordCallUsage appends one per-call token_usage row (RFC AV): who paid
+// (credential source from the driver-stamped Usage), what served it
+// (provider/model), the token buckets, and the priced cost. Identity comes from
+// the run ctx (never the wire). A store error is logged, not fatal — usage
+// telemetry must never fail a run.
+func (s *Server) recordCallUsage(ctx context.Context, runID string, iteration int, u *providers.Usage) {
+	if s.store == nil || u == nil {
+		return
+	}
+	ri := tools.RunIdentity(ctx)
+	source := u.CredentialSource
+	if source == "" {
+		source = "operator" // no override fired → operator host key paid
+	}
+	// Attribute a sub-agent's call to its spawn-tree root so a fan-out's cost
+	// rolls up to the originating request; empty for a top-level run.
+	parentRunID := ""
+	if ri.RootRunID != "" && ri.RootRunID != runID {
+		parentRunID = ri.RootRunID
+	}
+	cost, currency := s.priceCall(u.Provider, u.Model, u)
+	row := store.TokenUsageRow{
+		RunID:               runID,
+		TenantID:            ri.TenantID,
+		UserID:              ri.UserID,
+		AgentID:             ri.AgentID,
+		ParentRunID:         parentRunID,
+		Iteration:           iteration,
+		Provider:            u.Provider,
+		Model:               u.Model,
+		CredentialSource:    source,
+		CredentialScopeID:   u.CredentialScopeID,
+		InputTokens:         u.InputTokens,
+		OutputTokens:        u.OutputTokens,
+		CacheCreationTokens: u.CacheCreationTokens,
+		CacheReadTokens:     u.CacheReadTokens,
+		Cost:                cost,
+		CostCurrency:        currency,
+		TS:                  time.Now(),
+	}
+	if err := s.store.RecordCallUsage(ctx, row); err != nil {
+		log.Printf("store: RecordCallUsage failed (run=%s iter=%d): %v", runID, iteration, err)
+	}
+}
+
+// runSummarySource returns the credential source to record on the run summary,
+// mirroring the per-call rule (RFC AV): an empty source on a run that actually
+// served an iteration (Provider set) means the operator host key paid → report
+// "operator", consistent with the ledger rows. A run that never completed an
+// iteration (no Provider) leaves it empty (NULL — no key paid).
+func runSummarySource(u providers.Usage) string {
+	if u.CredentialSource == "" && u.Provider != "" {
+		return "operator"
+	}
+	return u.CredentialSource
+}
+
+// priceCall computes a call's money cost (RFC AV, O1: loomcycle owns pricing). A
+// provider/gateway-reported cost wins when present; otherwise the operator's
+// pricing table prices it. An empty returned currency means UNPRICED (model
+// absent from the table) — the store persists a NULL cost, distinct from a
+// genuine zero (e.g. code-js / mock, which carry a currency).
+func (s *Server) priceCall(provider, model string, u *providers.Usage) (float64, string) {
+	if u.ProviderReportedCost > 0 {
+		cur := u.ProviderCostCurrency
+		if cur == "" {
+			cur = "USD"
+		}
+		return u.ProviderReportedCost, cur
+	}
+	if s.cfg == nil {
+		return 0, "" // unpriced (no config — e.g. a minimal test server)
+	}
+	cost, currency, ok := s.cfg.Pricing.Cost(provider, model, u.InputTokens, u.OutputTokens, u.CacheCreationTokens, u.CacheReadTokens)
+	if !ok {
+		return 0, "" // unpriced → NULL cost
+	}
+	return cost, currency
 }
 
 // maskCredentialCreateValue blanks the plaintext `value` field of a CredentialDef
@@ -6031,7 +6119,12 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		CacheReadTokens:     res.Usage.CacheReadTokens,
 		Model:               res.Usage.Model,
 		Provider:            res.Usage.Provider,
+		// RFC AV: carry the cost + credential-source summary on cancel too, so a
+		// partially-completed cancelled run still attributes its spend.
+		CredentialSource:  runSummarySource(res.Usage),
+		CredentialScopeID: res.Usage.CredentialScopeID,
 	}
+	usage.Cost, usage.CostCurrency = s.priceCall(res.Usage.Provider, res.Usage.Model, &res.Usage)
 	if err := s.store.FinishRun(bg, runID, store.RunCancelled, reason, usage, ""); err != nil {
 		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
 	}
@@ -6146,7 +6239,13 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		CacheReadTokens:     res.Usage.CacheReadTokens,
 		Model:               res.Usage.Model,
 		Provider:            res.Usage.Provider,
+		// RFC AV: per-run cost + credential-source summary. Cost is best-effort
+		// (priced from the run's final provider/model + summed tokens); the exact
+		// per-call split lives in token_usage. Source is the last iteration's key.
+		CredentialSource:  runSummarySource(res.Usage),
+		CredentialScopeID: res.Usage.CredentialScopeID,
 	}
+	usage.Cost, usage.CostCurrency = s.priceCall(res.Usage.Provider, res.Usage.Model, &res.Usage)
 	if err := s.store.FinishRun(bg, runID, status, res.StopReason, usage, errMsg); err != nil {
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}

@@ -393,6 +393,11 @@ func (s *Store) AppendEvent(ctx context.Context, runID string, eventType string,
 // updated or not (matches SQLite adapter contract).
 func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunStatus, stopReason string, usage store.Usage, errMsg string) error {
 	completed := time.Now().UTC()
+	// RFC AV: cost is NULL when unpriced (empty currency), distinct from a zero.
+	var costArg interface{}
+	if usage.CostCurrency != "" {
+		costArg = usage.Cost
+	}
 	_, err := s.pool.Exec(ctx,
 		`UPDATE runs SET
 			status = $2,
@@ -404,18 +409,102 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			cache_read_tokens = $8,
 			model = $9,
 			provider = $10,
-			error = $11
-		 WHERE id = $1 AND status = $12`,
+			error = $11,
+			cost = $12,
+			cost_currency = $13,
+			credential_source = $14,
+			credential_scope_id = $15
+		 WHERE id = $1 AND status = $16`,
 		runID, string(status), completed, nullableText(stopReason),
 		usage.InputTokens, usage.OutputTokens,
 		usage.CacheCreationTokens, usage.CacheReadTokens,
 		nullableText(usage.Model), nullableText(usage.Provider), nullableText(errMsg),
+		costArg, nullableText(usage.CostCurrency),
+		nullableText(usage.CredentialSource), nullableText(usage.CredentialScopeID),
 		string(store.RunRunning),
 	)
 	if err != nil {
 		return fmt.Errorf("finish run: %w", err)
 	}
 	return nil
+}
+
+// RecordCallUsage appends one per-call usage row (RFC AV). Append-only; cost is
+// NULL when unpriced (empty currency), distinct from a genuine zero.
+func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) error {
+	ts := row.TS
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	var costArg interface{}
+	if row.CostCurrency != "" {
+		costArg = row.Cost
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO token_usage (
+			run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
+			iteration, provider, model, credential_source, credential_scope_id,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			cost, cost_currency, ts
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		row.RunID, nullableText(row.SessionID), row.TenantID, nullableText(row.UserID),
+		nullableText(row.AgentID), nullableText(row.ParentRunID),
+		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
+		row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens,
+		costArg, nullableText(row.CostCurrency), ts,
+	)
+	if err != nil {
+		return fmt.Errorf("record call usage: %w", err)
+	}
+	return nil
+}
+
+// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
+func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.TokenUsageRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
+			iteration, provider, model, credential_source, credential_scope_id,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			cost, cost_currency, ts
+		 FROM token_usage WHERE run_id = $1 ORDER BY iteration ASC, id ASC`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("token usage for run: %w", err)
+	}
+	defer rows.Close()
+	var out []store.TokenUsageRow
+	for rows.Next() {
+		var r store.TokenUsageRow
+		var sessionID, userID, agentID, parentRunID, costCurrency *string
+		var cost *float64
+		if err := rows.Scan(
+			&r.RunID, &sessionID, &r.TenantID, &userID, &agentID, &parentRunID,
+			&r.Iteration, &r.Provider, &r.Model, &r.CredentialSource, &r.CredentialScopeID,
+			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
+			&cost, &costCurrency, &r.TS,
+		); err != nil {
+			return nil, fmt.Errorf("scan token usage: %w", err)
+		}
+		if sessionID != nil {
+			r.SessionID = *sessionID
+		}
+		if userID != nil {
+			r.UserID = *userID
+		}
+		if agentID != nil {
+			r.AgentID = *agentID
+		}
+		if parentRunID != nil {
+			r.ParentRunID = *parentRunID
+		}
+		if cost != nil {
+			r.Cost = *cost
+		}
+		if costCurrency != nil {
+			r.CostCurrency = *costCurrency
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // GetTranscript returns every event for the session, ordered by seq.
@@ -604,6 +693,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
@@ -633,6 +723,7 @@ func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.idempotency_key = $1 LIMIT 1`, key,
@@ -658,6 +749,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.id = $1`, runID,
@@ -730,6 +822,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1
@@ -741,6 +834,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1 AND r.status = $2
@@ -766,6 +860,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.parent_agent_id = $1
@@ -867,6 +962,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.pause_state = $1
@@ -5893,6 +5989,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 		lastHeartbeatAt                                       *time.Time
 		sessAgent                                             *string
 
+		cost                                              *float64
+		costCurrency, credentialSource, credentialScopeID *string
+
 		interactive bool
 		statusStr   string
 	)
@@ -5904,6 +6003,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&userTier,
 		&agentDefID, &pauseState, &replicaID, &parentContext, &idempotencyKey, &tenantID,
 		&interactive,
+		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -5966,6 +6066,18 @@ func scanRun(r rowScanner) (store.Run, error) {
 		out.TenantID = *tenantID
 	}
 	out.Interactive = interactive
+	if cost != nil {
+		out.Cost = cost
+	}
+	if costCurrency != nil {
+		out.CostCurrency = *costCurrency
+	}
+	if credentialSource != nil {
+		out.CredentialSource = *credentialSource
+	}
+	if credentialScopeID != nil {
+		out.CredentialScopeID = *credentialScopeID
+	}
 	if sessAgent != nil {
 		out.Agent = *sessAgent
 	}
