@@ -2086,6 +2086,10 @@ func main() {
 		uCfg := usage.Config{
 			Interval:        cfg.Env.UsageSweepInterval,
 			DetailRetention: cfg.Env.UsageDetailRetention,
+			// RFC AV Phase 2b2 old-run archiver (opt-in; default OFF).
+			RunRetention:     cfg.Env.UsageRunRetention,
+			RunRetentionMode: cfg.Env.UsageRunRetentionMode,
+			ExportDir:        cfg.Env.UsageExportDir,
 		}
 		// Same typed-nil guard as the heartbeat block: only assign the
 		// interface field from a non-nil pointer, or the sweeper's

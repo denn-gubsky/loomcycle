@@ -1460,6 +1460,52 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	return int(n), nil
 }
 
+// PrunableCompletedRuns lists terminal runs older than olderThan (RFC AV Phase
+// 2b2). completed_at is unix-nano here.
+func (s *Store) PrunableCompletedRuns(ctx context.Context, olderThan time.Time, limit int) ([]store.Run, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+`
+		 WHERE r.status IN (?, ?, ?) AND r.completed_at IS NOT NULL AND r.completed_at < ?
+		 ORDER BY r.completed_at ASC LIMIT ?`,
+		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
+		olderThan.UnixNano(), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteRunAndEvents deletes a run + its events in one tx (RFC AV Phase 2b2).
+// Events are removed explicitly (not via FK cascade) so behavior is identical
+// regardless of the foreign_keys pragma; token_usage is intentionally left.
+func (s *Store) DeleteRunAndEvents(ctx context.Context, runID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE run_id = ?`, runID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE id = ?`, runID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // GetTranscript returns all events for a session, ordered by seq ascending.
 func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Event, error) {
 	if _, err := s.GetSession(ctx, sessionID); err != nil {

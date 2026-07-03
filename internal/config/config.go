@@ -2104,6 +2104,17 @@ type Env struct {
 	// this are rolled up into usage_archive and pruned. Default 720h
 	// (30 days). Env: LOOMCYCLE_USAGE_DETAIL_RETENTION_MS.
 	UsageDetailRetention time.Duration
+	// UsageRunRetention is the RFC AV Phase 2b2 old-run archiver cutoff:
+	// completed runs older than this are exported (per the mode) and
+	// deleted. Default 0 = OFF (run deletion is destructive — opt-in,
+	// unlike the lossless usage rollup). Env: LOOMCYCLE_USAGE_RUN_RETENTION_MS.
+	UsageRunRetention time.Duration
+	// UsageRunRetentionMode is "off" (default) | "prune" | "export+prune".
+	// Env: LOOMCYCLE_USAGE_RUN_RETENTION_MODE.
+	UsageRunRetentionMode string
+	// UsageExportDir is where export+prune writes run JSON (per-day subdir,
+	// one file per run). Required for export+prune. Env: LOOMCYCLE_USAGE_EXPORT_DIR.
+	UsageExportDir string
 	// ReplicasSweepInterval is the dead-replica reaper's tick rate.
 	// Default 60s. Tunable mostly for tests / crash-recovery load
 	// experiments — leave at default in production.
@@ -2994,6 +3005,14 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			cfg.Env.UsageDetailRetention = time.Duration(n) * time.Millisecond
 		}
 	}
+	// RFC AV Phase 2b2 old-run archiver (opt-in; default OFF).
+	if v := os.Getenv("LOOMCYCLE_USAGE_RUN_RETENTION_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.UsageRunRetention = time.Duration(n) * time.Millisecond
+		}
+	}
+	cfg.Env.UsageRunRetentionMode = os.Getenv("LOOMCYCLE_USAGE_RUN_RETENTION_MODE")
+	cfg.Env.UsageExportDir = os.Getenv("LOOMCYCLE_USAGE_EXPORT_DIR")
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.ReplicasSweepInterval = time.Duration(n) * time.Millisecond
