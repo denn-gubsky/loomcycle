@@ -2294,3 +2294,49 @@ export interface RoutingResponse {
 export function getRouting(): Promise<RoutingResponse> {
   return jsonFetch<RoutingResponse>("/v1/_routing");
 }
+
+// --- RFC AV: token-usage & cost report (GET /v1/_usage) ---
+
+// UsageAggregate is one grouped row. Only the dimensions in the query's
+// group_by are populated; the rest are "".
+export interface UsageAggregate {
+  tenant_id?: string;
+  user_id?: string;
+  provider?: string;
+  model?: string;
+  credential_source?: string; // operator | tenant | user
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  cost: number;
+  currency?: string;
+  call_count: number;
+  unpriced_calls: number;
+}
+
+export interface UsageReportResponse {
+  group_by: string[];
+  from?: string;
+  to?: string;
+  rows: UsageAggregate[];
+}
+
+export interface UsageReportParams {
+  group_by?: string; // comma list of tenant,user,provider,model,source
+  from?: string; // RFC3339
+  to?: string; // RFC3339
+  tenant?: string; // admin-only focus; ignored for a tenant operator
+}
+
+export function getUsage(
+  params: UsageReportParams = {}
+): Promise<UsageReportResponse> {
+  const q = new URLSearchParams();
+  if (params.group_by) q.set("group_by", params.group_by);
+  if (params.from) q.set("from", params.from);
+  if (params.to) q.set("to", params.to);
+  if (params.tenant) q.set("tenant", params.tenant);
+  const qs = q.toString();
+  return jsonFetch<UsageReportResponse>(`/v1/_usage${qs ? "?" + qs : ""}`);
+}
