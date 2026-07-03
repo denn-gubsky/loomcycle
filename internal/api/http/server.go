@@ -116,6 +116,14 @@ type Server struct {
 	// doc-internal/rfcs/model-resolution-matrix.md.
 	resolver *resolve.Resolver
 
+	// credResolver resolves a tenant/user credential by its env-var NAME (RFC
+	// AR): a run whose tenant/user stored e.g. ANTHROPIC_API_KEY / BRAVE_API_KEY
+	// overrides the operator's host key for that run. Stamped onto each run's
+	// loopCtx so provider drivers + WebSearch honor it; nil = never override
+	// (open-mode / no KEK). cmd/loomcycle/main.go calls SetCredentialResolver
+	// after construction. Reads run identity from the ctx it's given.
+	credResolver providers.CredentialResolver
+
 	// hookRegistry holds the runtime-registered tool-use hooks (the
 	// /v1/hooks endpoints write into this), and hookDispatcher is the
 	// loop-side adapter the agent loop calls into when dispatching
@@ -784,6 +792,12 @@ func (s *Server) SessionLocks() *runner.SessionLockMap { return s.sessionLocks }
 // no resolver is set, every agent uses the explicit-pin path
 // (cfg.ResolveAgentModel) — back-compat with v0.6.x.
 func (s *Server) SetResolver(r *resolve.Resolver) { s.resolver = r }
+
+// SetCredentialResolver wires the RFC AR credential resolver (env-var-name →
+// tenant/user credential value, scope agent>user>tenant). The Server stamps it
+// onto each run's ctx so provider drivers + WebSearch prefer a tenant-supplied
+// key over the operator host key. Nil ⇒ overrides disabled.
+func (s *Server) SetCredentialResolver(r providers.CredentialResolver) { s.credResolver = r }
 
 // markStalledFn returns a closure suitable for loop.RunOptions.MarkStalled.
 // The loop invokes the closure with the LIVE (provider, model) for the
@@ -1994,6 +2008,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	defer deregSteer()
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
+	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
+	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
 		UserID:          effectiveUserID,
 		TenantID:        effectiveTenantID, // RFC L: authoritative tenant (memory tenancy key)
@@ -3389,6 +3406,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// Skill tool's subset check on each call) read it via ctx instead
 	// of being constructed per-run.
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
+	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
+	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
 	// Stash the run's identity so the Agent built-in tool's
 	// SubAgentRunner can inherit user_id and set parent_agent_id on
 	// any sub-runs it spawns.
@@ -3894,6 +3914,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	heartbeat := s.makeHeartbeat(run.ID)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
+	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
+	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
 		UserID:          sess.UserID,
 		TenantID:        sess.TenantID, // RFC L: tenant from the session (authoritative at creation)

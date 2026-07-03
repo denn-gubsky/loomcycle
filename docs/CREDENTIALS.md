@@ -71,11 +71,48 @@ unresolved `$cred:` ref drops the header (no literal token is ever sent).
 > can't carry per-user tokens. Use an http MCP server (token as a per-request
 > header) for the per-user case.
 
+## Overriding a provider / tool API key by its env-var name
+
+Some credentials aren't referenced with `$cred:` — they **override the operator's
+host key automatically**, keyed by the credential's *name*. Store a credential
+**named after the well-known env var** and loomcycle uses it for that
+tenant/user's requests, falling back to the operator's key when absent. Scope
+precedence is the same **agent > user > tenant**, and the key stays runtime-side —
+the model never sees it.
+
+| Store a credential named | …and it overrides the host key for |
+|--------------------------|------------------------------------|
+| `ANTHROPIC_API_KEY`      | Anthropic LLM calls                |
+| `OPENAI_API_KEY`         | OpenAI LLM calls                   |
+| `DEEPSEEK_API_KEY`       | DeepSeek LLM calls                 |
+| `GEMINI_API_KEY`         | Gemini LLM calls                   |
+| `OLLAMA_API_KEY`         | hosted ollama.com LLM calls        |
+| `BRAVE_API_KEY`          | the `WebSearch` tool               |
+
+So a tenant that stores its own `ANTHROPIC_API_KEY` (scope `tenant`) has every
+run in that tenant bill Anthropic to **its** key; a single user that stores one
+(scope `user`) shadows the tenant default for **that user's** runs only. A tenant
+with no override transparently uses the operator's host key. A `BRAVE_API_KEY`
+credential even lets a tenant search on its own Brave quota when the operator set
+no host key at all.
+
+```jsonc
+// as a substrate:tenant operator, over MCP or HTTP
+credentialdef  op=create  scope=tenant  name=ANTHROPIC_API_KEY  value=sk-ant-…
+```
+
+> This override happens only on the **inference / tool request** path.
+> Model-*availability* probes stay on the operator key (which models are reachable
+> is an operator concern), and `ollama-local` is unauthenticated so it never takes
+> an override.
+
 ## Limitations / roadmap
 
 - Tenants can't set host env, so a `$cred:` value must be provisioned as a
   CredentialDef (above), not a `${LOOMCYCLE_*}` ref.
+- The provider-key override attributes spend to the run's tenant/user identity;
+  per-key usage **accounting / limits** (audit + report + cap per scope) is the
+  next step, tracked separately.
 - External backends (Vault / AWS SM / GCP SM / 1Password) — interface locked,
   implementation is RFC AR Phase 4.
-- A bundled search/messaging MCP catalog + the per-agent LLM-provider-key seam
-  are follow-ons (RFC AR).
+- A bundled search/messaging MCP catalog is a follow-on (RFC AR).

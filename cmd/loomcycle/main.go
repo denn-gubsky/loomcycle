@@ -1302,6 +1302,20 @@ func main() {
 		ri := tools.RunIdentity(ctx)
 		return credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, nil)
 	}
+	// RFC AR: resolve a tenant/user credential by env-var NAME (ANTHROPIC_API_KEY,
+	// BRAVE_API_KEY, …) for the run's identity, so a tenant's own key overrides
+	// the operator host key (scope agent>user>tenant). Wired onto the Server
+	// below; provider drivers + WebSearch consult it via the run ctx. Fails soft
+	// (a lookup error → no override → host key), never blocking a run on a KEK
+	// gap. Reused by every transport since gRPC routes through the http Server.
+	credResolver := providers.CredentialResolver(func(ctx context.Context, name string) (string, bool) {
+		ri := tools.RunIdentity(ctx)
+		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
+		if err != nil || !found {
+			return "", false
+		}
+		return res.Value, true
+	})
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface
 	skillTool.Store = storeIface
@@ -1403,6 +1417,9 @@ func main() {
 	// server's tool set, which isn't in allTools here (F45). New re-points any
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
+	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
+	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
+	srv.SetCredentialResolver(credResolver)
 
 	// RFC AA SQL Memory (Phase 1). Off by default; constructed only when the
 	// operator enables it. The manager hosts per-scope sqlite databases that

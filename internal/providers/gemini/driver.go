@@ -78,6 +78,17 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 
 func (d *Driver) ID() string { return "gemini" }
 
+// callKey returns the API key for an inference request: a tenant/user credential
+// named GEMINI_API_KEY overrides the operator host key when the run has one (RFC
+// AR), else the host key. Model-availability probes (fetchModels) stay on the
+// host key.
+func (d *Driver) callKey(ctx context.Context) string {
+	if k, ok := providers.ResolveCredential(ctx, "GEMINI_API_KEY"); ok {
+		return k
+	}
+	return d.apiKey
+}
+
 func (d *Driver) Capabilities() providers.Capabilities {
 	return providers.Capabilities{
 		// Gemini has implicit prompt caching on long contexts but no
@@ -132,8 +143,8 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		if d.apiKey != "" {
-			httpReq.Header.Set("x-goog-api-key", d.apiKey)
+		if key := d.callKey(spanCtx); key != "" {
+			httpReq.Header.Set("x-goog-api-key", key)
 		}
 		resp, err := d.http.Do(httpReq)
 		if err != nil {
