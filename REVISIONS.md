@@ -8,6 +8,76 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.10.0
+
+**🔑 Tenant credentials + 📊 per-scope token-usage & cost attribution.** Two feature
+lines on top of v1.9.1: tenants define + use their own API keys (RFC AR), and every
+LLM call's token usage + money cost is attributed **operator-vs-tenant**, reported,
+retained, and visible in the console (RFC AV). Plus Web-UI self-service import of
+Claude Code skills / MCP servers (RFC AU) and a Path `ls` fix. New env:
+`LOOMCYCLE_SECRET_KEY` (credential KEK), `LOOMCYCLE_USAGE_*` (retention/archiver).
+`@loomcycle/client` → **1.10.0** (adds `usageReport()`).
+
+**RFC AR — tenant credentials (CredentialDef):**
+
+- **Secure per-tenant/user encrypted store (#630).** AES-256-GCM envelope
+  encryption, a per-tenant HKDF key derived from one deployment KEK
+  (`LOOMCYCLE_SECRET_KEY`, + `_PREVIOUS` for rotation), GCM AAD binding each
+  ciphertext to its row, **fail-closed** (no KEK → inline backend disabled, never
+  plaintext). Scope precedence **agent > user > tenant**; `get`/`list` are
+  metadata-only — no model-callable op ever returns a secret value.
+- **`$cred:<name>` consumption for http MCP servers (#631).** Resolved per request
+  from the run's identity, so a user-authorized agent posts through **each user's
+  own** Telegram / Slack channel (a per-user token shadows a tenant default).
+- **Provider / tool key override by env-var name (#632).** A tenant (or user) that
+  stores a credential named after the env var — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, hosted `OLLAMA_API_KEY`, `BRAVE_API_KEY` —
+  has it **override the operator's host key** for that tenant/user's requests (all
+  five LLM drivers + WebSearch), on the inference path only; the key never reaches
+  the model.
+
+**RFC AV — per-scope token-usage & cost attribution:**
+
+- **Per-call `token_usage` ledger + per-run summary (#633).** Every LLM call records
+  which key paid (`credential_source` operator|tenant|user), provider/model, the four
+  token buckets, and cost. An operator-key run counts toward **both** the operator
+  bill and tenant consumption; a tenant-key run toward the **tenant only** — two
+  queries over one flag.
+- **`GET /v1/_usage` report (#634).** Grouped by any of tenant/user/provider/model/
+  source over a time window; tenant-scoped (a `substrate:tenant` operator sees only
+  its own spend; admin sees all + a `?tenant=` focus).
+- **Retention (#635).** A singleton rollup-and-prune sweeper folds detail older than
+  the window into a compact `usage_archive` (day-bucketed, UTC); the report unions
+  recent detail ∪ archive so pruned windows still report.
+- **Web UI Usage page (#636).** The report in the console with the operator-vs-tenant
+  split + an unpriced-calls flag; tenant-scoped nav.
+- **Old-run archiver (#637).** Opt-in prune / export of aged **completed sessions**
+  (`LOOMCYCLE_USAGE_RUN_RETENTION_*`), OFF by default.
+- **gRPC + TS + Python adapter parity (#638).** A `UsageReport` RPC +
+  `@loomcycle/client` `usageReport()` + the Python `usage_report()`.
+- loomcycle **owns pricing** — an operator `pricing:` table (per-`provider/model`
+  per-1M-token) computes cost; a provider/gateway-reported cost wins when present.
+
+**RFC AU — Web UI import of Claude Code skills + MCP servers (#628).** Tenant
+self-service: upload / paste a `SKILL.md` or `mcp.json`, preview, and commit it into
+the tenant's own substrate (create/fork, tenant-safe), plus one-click wiring to a
+local-LLM agent.
+
+**Fix.** Path one-level `ls` now synthesizes implicit directories (#629, RFC AL).
+
+**Post-merge code review (15 findings; fixed #639 / #641).** A 10-angle self-review of
+the whole line caught + fixed real defects, several in the just-merged code: the
+per-call ledger was recording an **empty identity** on directly-invoked runs
+(breaking per-tenant reports — the primary path); the Postgres archive day-bucket
+used the session timezone (now UTC, matching sqlite); the old-run archiver deleted
+events **per-run**, corrupting a continued session's transcript (now prunes by
+**session**); resolved credential values are now **registered in the redactor** so a
+downstream echo is masked; `runs.cost` now equals the ledger sum; the report never
+sums across currencies; and the credential resolver short-circuits when no KEK is set
+(no per-call store reads when the feature is unused).
+
+---
+
 ## What's in v1.9.1
 
 **🔒 Security + robustness hardening patch.** A whole-repo security review plus a

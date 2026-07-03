@@ -220,6 +220,72 @@ func TestArchiveSessionsOnce(t *testing.T) {
 	})
 }
 
+// cancelAfterFirstDeleteStore wraps a real store but cancels a captured context
+// right after the FIRST DeleteSessionCascade succeeds — simulating the shared
+// batch deadline expiring mid-batch. Used by the fix-11 regression.
+type cancelAfterFirstDeleteStore struct {
+	store.Store
+	cancel  context.CancelFunc
+	deletes int
+}
+
+func (c *cancelAfterFirstDeleteStore) DeleteSessionCascade(ctx context.Context, id string) error {
+	c.deletes++
+	err := c.Store.DeleteSessionCascade(ctx, id)
+	if c.deletes == 1 {
+		c.cancel() // the batch's 2-minute deadline "expires" after one delete
+	}
+	return err
+}
+
+// TestArchiveSessionsOnce_StopsOnExpiredDeadline is the fix-11 regression: the
+// archiver batch shares one deadline, so once it expires mid-batch every remaining
+// DeleteSessionCascade would fail with the same ctx error. The loop must break at
+// the next iteration and return what it finished — not iterate the whole batch
+// against a dead ctx (a burst of "context deadline exceeded" logs). Three sessions
+// are prunable, but the ctx dies after the first delete → exactly one delete runs.
+func TestArchiveSessionsOnce_StopsOnExpiredDeadline(t *testing.T) {
+	ctx := context.Background()
+	future := func() time.Time { return time.Now().Add(48 * time.Hour) }
+	st := newTestStore(t)
+
+	// Seed three aged, all-terminal (prunable) sessions.
+	for _, agentID := range []string{"exp-a", "exp-b", "exp-c"} {
+		sess, err := st.CreateSession(ctx, "t", "default", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agentID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wrapped := &cancelAfterFirstDeleteStore{Store: st, cancel: cancel}
+	sw := New(wrapped, Config{
+		RunRetention:     24 * time.Hour,
+		RunRetentionMode: "prune",
+		Logger:           func(string, ...any) {},
+		Now:              future,
+	})
+
+	n, err := sw.archiveSessionsOnce(parent)
+	if err != nil {
+		t.Fatalf("archiveSessionsOnce err = %v, want nil (clean early stop)", err)
+	}
+	if n != 1 {
+		t.Errorf("deleted = %d, want 1 (batch stopped after the deadline expired)", n)
+	}
+	if wrapped.deletes != 1 {
+		t.Errorf("DeleteSessionCascade called %d times, want 1 (loop must break, not run against a dead ctx)", wrapped.deletes)
+	}
+}
+
 // TestSweeperRun_StopsOnContextDone asserts the goroutine exits cleanly
 // when its context is cancelled, so shutdown doesn't leak the sweeper
 // goroutine past the Store's close.
