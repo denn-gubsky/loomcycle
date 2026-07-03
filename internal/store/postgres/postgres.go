@@ -640,6 +640,50 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	return pruned, nil
 }
 
+// PrunableCompletedRuns lists terminal runs older than olderThan (RFC AV Phase
+// 2b2). completed_at is TIMESTAMPTZ here.
+func (s *Store) PrunableCompletedRuns(ctx context.Context, olderThan time.Time, limit int) ([]store.Run, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.provider, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE r.status IN ($1, $2, $3) AND r.completed_at IS NOT NULL AND r.completed_at < $4
+		 ORDER BY r.completed_at ASC LIMIT $5`,
+		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
+		olderThan, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list prunable runs: %w", err)
+	}
+	defer rows.Close()
+	return scanRunRows(rows)
+}
+
+// DeleteRunAndEvents deletes a run + its events in one tx (RFC AV Phase 2b2).
+// Events removed explicitly; token_usage intentionally left (own retention).
+func (s *Store) DeleteRunAndEvents(ctx context.Context, runID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete-run tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM events WHERE run_id = $1`, runID); err != nil {
+		return fmt.Errorf("delete run events: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM runs WHERE id = $1`, runID); err != nil {
+		return fmt.Errorf("delete run: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
 // GetTranscript returns every event for the session, ordered by seq.
 // Empty slice (not error) when the session has no events yet.
 func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Event, error) {

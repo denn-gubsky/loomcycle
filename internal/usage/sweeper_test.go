@@ -1,7 +1,9 @@
 package usage
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -84,6 +86,97 @@ func TestSweeperOnce_PrunesOldDetail(t *testing.T) {
 	if n2, err := sw.sweepOnce(ctx); err != nil || n2 != 0 {
 		t.Errorf("second sweepOnce = (%d, %v), want (0, nil) — should be idempotent", n2, err)
 	}
+}
+
+// TestArchiveRunsOnce covers the RFC AV Phase 2b2 old-run archiver in both
+// modes: "prune" deletes an aged completed run + its events; "export+prune"
+// first writes the run JSON to the export dir, then deletes. The clock is
+// pinned into the future so a just-completed run lands past the cutoff.
+func TestArchiveRunsOnce(t *testing.T) {
+	ctx := context.Background()
+	// Pin now well past the run's completed_at so cutoff = now-24h > completed_at.
+	future := func() time.Time { return time.Now().Add(48 * time.Hour) }
+
+	seedCompletedRun := func(st *sqlite.Store, agentID string) string {
+		sess, err := st.CreateSession(ctx, "t", "default", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agentID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.AppendEvent(ctx, run.ID, "text", []byte(`{"t":"hi"}`)); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+			t.Fatal(err)
+		}
+		return run.ID
+	}
+
+	t.Run("prune", func(t *testing.T) {
+		st := newTestStore(t)
+		runID := seedCompletedRun(st, "prune-a")
+		sw := New(st, Config{
+			RunRetention:     24 * time.Hour,
+			RunRetentionMode: "prune",
+			Logger:           func(string, ...any) {},
+			Now:              future,
+		})
+		if !sw.runArchivalEnabled() {
+			t.Fatal("prune mode should be enabled")
+		}
+		n, err := sw.archiveRunsOnce(ctx)
+		if err != nil || n != 1 {
+			t.Fatalf("archiveRunsOnce = (%d, %v), want (1, nil)", n, err)
+		}
+		if _, err := st.GetRun(ctx, runID); err == nil {
+			t.Errorf("run survived prune")
+		}
+	})
+
+	t.Run("export+prune", func(t *testing.T) {
+		st := newTestStore(t)
+		exportDir := t.TempDir()
+		runID := seedCompletedRun(st, "export-a")
+		sw := New(st, Config{
+			RunRetention:     24 * time.Hour,
+			RunRetentionMode: "export+prune",
+			ExportDir:        exportDir,
+			Logger:           func(string, ...any) {},
+			Now:              future,
+		})
+		n, err := sw.archiveRunsOnce(ctx)
+		if err != nil || n != 1 {
+			t.Fatalf("archiveRunsOnce = (%d, %v), want (1, nil)", n, err)
+		}
+		if _, err := st.GetRun(ctx, runID); err == nil {
+			t.Errorf("run survived export+prune")
+		}
+		// A JSON export exists under a per-day subdir and mentions the run id.
+		matches, _ := filepath.Glob(filepath.Join(exportDir, "*", runID+".json"))
+		if len(matches) != 1 {
+			t.Fatalf("export file glob = %v, want exactly one %s.json", matches, runID)
+		}
+		blob, err := os.ReadFile(matches[0])
+		if err != nil || !bytes.Contains(blob, []byte(runID)) || !bytes.Contains(blob, []byte(`"events"`)) {
+			t.Errorf("export file missing run id / events: err=%v", err)
+		}
+	})
+
+	t.Run("export+prune without dir is disabled", func(t *testing.T) {
+		st := newTestStore(t)
+		sw := New(st, Config{
+			RunRetention:     24 * time.Hour,
+			RunRetentionMode: "export+prune", // no ExportDir
+			Logger:           func(string, ...any) {},
+			Now:              future,
+		})
+		if sw.runArchivalEnabled() {
+			t.Error("export+prune with no ExportDir must be disabled (never delete un-exported)")
+		}
+	})
 }
 
 // TestSweeperRun_StopsOnContextDone asserts the goroutine exits cleanly

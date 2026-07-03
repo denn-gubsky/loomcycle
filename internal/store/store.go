@@ -666,6 +666,18 @@ type Store interface {
 	// pruned. The rollup-and-prune sweeper calls this on a timer (RFC AV Phase 2b).
 	RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (pruned int, err error)
 
+	// PrunableCompletedRuns returns terminal (completed/failed/cancelled) runs
+	// whose completed_at is older than olderThan, oldest first, capped at limit.
+	// The old-run archiver (RFC AV Phase 2b2) lists these to export and/or
+	// delete. Non-terminal runs (running/paused/pausing) are never returned.
+	PrunableCompletedRuns(ctx context.Context, olderThan time.Time, limit int) ([]Run, error)
+
+	// DeleteRunAndEvents deletes a run and its events in one transaction (events
+	// removed explicitly, not relying on FK cascade). token_usage rows are LEFT
+	// INTACT — usage has its own retention (RollupAndPruneUsage), and the usage
+	// report does not join runs. RFC AV Phase 2b2.
+	DeleteRunAndEvents(ctx context.Context, runID string) error
+
 	// GetTranscript returns all events for a session, ordered by Seq.
 	// Returns an empty slice (not error) for a session with no runs yet.
 	GetTranscript(ctx context.Context, sessionID string) ([]Event, error)

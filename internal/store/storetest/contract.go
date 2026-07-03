@@ -340,6 +340,7 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunPersistsCostAndSource", testFinishRunPersistsCostAndSource},
 		{"UsageReport", testUsageReport},
 		{"UsageRollupAndPrune", testUsageRollupAndPrune},
+		{"RunArchiver", testRunArchiver},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
 		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
@@ -801,6 +802,70 @@ func testUsageRollupAndPrune(t *testing.T, s store.Store) {
 	rep2, _ := s.UsageReport(ctx, store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageBySource}})
 	if len(rep2) != 1 || rep2[0].InputTokens != 350 {
 		t.Errorf("report after idempotent re-run = %+v, want unchanged 350", rep2)
+	}
+}
+
+// testRunArchiver exercises RFC AV Phase 2b2: PrunableCompletedRuns lists only
+// terminal runs within the age cutoff, and DeleteRunAndEvents removes the run +
+// its events while leaving token_usage (independent retention) intact.
+func testRunArchiver(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+
+	// runA: completed, with events + a usage row. runB: completed. runC: running.
+	runA, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "arch-a"})
+	runB, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "arch-b"})
+	runC, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "arch-c"}) // stays running
+	for _, e := range []string{"text", "done"} {
+		if err := s.AppendEvent(ctx, runA.ID, e, []byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RecordCallUsage(ctx, store.TokenUsageRow{RunID: runA.ID, TenantID: "t", Provider: "p", Model: "m", CredentialSource: "operator", InputTokens: 10}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{runA.ID, runB.ID} {
+		if err := s.FinishRun(ctx, id, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A future cutoff → both completed runs qualify; the running one never does.
+	got, err := s.PrunableCompletedRuns(ctx, time.Now().Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("PrunableCompletedRuns: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, r := range got {
+		ids[r.ID] = true
+	}
+	if !ids[runA.ID] || !ids[runB.ID] {
+		t.Errorf("prunable set missing a completed run: %v", ids)
+	}
+	if ids[runC.ID] {
+		t.Errorf("prunable set included the RUNNING run %s", runC.ID)
+	}
+	// A past cutoff → nothing (both completed just now).
+	if old, _ := s.PrunableCompletedRuns(ctx, time.Now().Add(-time.Hour), 100); len(old) != 0 {
+		t.Errorf("past-cutoff prunable = %d, want 0", len(old))
+	}
+
+	// Delete runA: run + events gone, token_usage preserved.
+	if err := s.DeleteRunAndEvents(ctx, runA.ID); err != nil {
+		t.Fatalf("DeleteRunAndEvents: %v", err)
+	}
+	if _, err := s.GetRun(ctx, runA.ID); err == nil {
+		t.Errorf("runA still present after delete")
+	}
+	if evs, _ := s.GetRunEventsSince(ctx, runA.ID, 0, 100); len(evs) != 0 {
+		t.Errorf("runA events survived delete: %d", len(evs))
+	}
+	if usage, _ := s.TokenUsageForRun(ctx, runA.ID); len(usage) != 1 {
+		t.Errorf("token_usage for deleted run = %d, want 1 (usage retention is independent)", len(usage))
+	}
+	// runC (running) untouched.
+	if _, err := s.GetRun(ctx, runC.ID); err != nil {
+		t.Errorf("runC (running) was affected: %v", err)
 	}
 }
 
