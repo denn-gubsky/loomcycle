@@ -1321,6 +1321,24 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 	return out, rows.Err()
 }
 
+// RunCostSummary sums a run's per-call token_usage ledger (RFC AV). COUNT(cost)
+// counts non-NULL costs (unpriced rows store NULL cost), so priced>0 ⇒ at least
+// one call was priced; MAX(cost_currency) ignores NULLs so it returns the currency
+// among the priced rows (or ” when none priced ⇒ unpriced run). This makes
+// runs.cost == Σ(ledger) by construction (see the interface doc).
+func (s *Store) RunCostSummary(ctx context.Context, runID string) (float64, string, bool, error) {
+	var cost float64
+	var currency string
+	var priced int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(cost),0), COALESCE(MAX(cost_currency),''), COUNT(cost)
+		 FROM token_usage WHERE run_id = ?`, runID).Scan(&cost, &currency, &priced)
+	if err != nil {
+		return 0, "", false, err
+	}
+	return cost, currency, priced > 0, nil
+}
+
 // nanosPerDay is the day bucket for the usage rollup's period_start (ts is
 // stored as unix-nano in sqlite).
 const nanosPerDay = int64(86400) * int64(1e9)
@@ -1331,22 +1349,7 @@ const nanosPerDay = int64(86400) * int64(1e9)
 // UsageCanonicalDims order — the column when grouped, else ” — a fixed
 // 13-column shape. ts / period_start are unix-nano, so window bounds are nanos.
 func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error) {
-	grouped := map[store.UsageDimension]bool{}
-	for _, d := range q.GroupBy {
-		if _, ok := store.UsageDimColumn(d); ok {
-			grouped[d] = true
-		}
-	}
-	var dimExprs, groupCols []string
-	for _, d := range store.UsageCanonicalDims {
-		col, _ := store.UsageDimColumn(d)
-		if grouped[d] {
-			dimExprs = append(dimExprs, col)
-			groupCols = append(groupCols, col)
-		} else {
-			dimExprs = append(dimExprs, "''")
-		}
-	}
+	dimExprs, groupCols := store.UsageGroupColumns(q.GroupBy)
 	// Per-source WHERE (tenant + window). token_usage windows on ts (exact);
 	// usage_archive on period_start (day-truncated UTC midnight). Args are
 	// appended in placeholder order (token_usage first). floorFromDay floors the
@@ -1398,11 +1401,13 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 		COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(cache_read_tokens),0),
 		COALESCE(SUM(cost),0), COALESCE(SUM(call_count),0), COALESCE(SUM(unpriced_calls),0),
-		COALESCE(MAX(cost_currency),'')
+		cost_currency
 		FROM (` + inner + `)`
-	if len(groupCols) > 0 {
-		query += " GROUP BY " + strings.Join(groupCols, ", ")
-	}
+	// cost_currency is ALWAYS in the GROUP BY so a row never sums across currencies
+	// — each output row is single-currency (unpriced rows, currency '', group
+	// together). A single-currency deployment still yields one row per bucket.
+	groupCols = append(groupCols, "cost_currency")
+	query += " GROUP BY " + strings.Join(groupCols, ", ")
 	query += " ORDER BY COALESCE(SUM(cost),0) DESC"
 
 	args := append(append([]any{}, tuArgs...), uaArgs...)

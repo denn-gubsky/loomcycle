@@ -418,10 +418,12 @@ type UsageAggregate struct {
 	CacheReadTokens     int64 `json:"cache_read_tokens"`
 
 	// Cost is the summed money cost of the PRICED calls in the group; Currency is
-	// a representative unit (mixed currencies are not summed meaningfully — a v1
-	// caveat; single-currency deployments are the common case). UnpricedCalls
-	// counts calls with no cost (model absent from the pricing table) so a report
-	// can surface a "pricing incomplete" signal instead of silently undercounting.
+	// the group's exact currency — UsageReport groups by cost_currency so a row is
+	// never summed across currencies (mixing them would be meaningless). A group
+	// with a real cost is one-per-currency; unpriced rows (currency "") group
+	// together. UnpricedCalls counts calls with no cost (model absent from the
+	// pricing table) so a report can surface a "pricing incomplete" signal instead
+	// of silently undercounting.
 	Cost          float64 `json:"cost"`
 	Currency      string  `json:"currency,omitempty"`
 	CallCount     int64   `json:"call_count"`
@@ -452,6 +454,32 @@ func UsageDimColumn(d UsageDimension) (col string, ok bool) {
 		return "credential_source", true
 	}
 	return "", false
+}
+
+// UsageGroupColumns builds a usage report's per-dimension SELECT expressions and
+// GROUP BY column list, in UsageCanonicalDims order: a grouped dimension emits its
+// column into BOTH lists; an ungrouped one emits the literal ” into dimExprs only,
+// keeping the SELECT a fixed 5-dimension shape regardless of group_by. Shared by
+// both backends so the scan-target order can't drift from the query — and it's
+// dialect-independent (no ?/$N placeholders, no day-floor math, which genuinely
+// differ between backends and are NOT shared).
+func UsageGroupColumns(groupBy []UsageDimension) (dimExprs, groupCols []string) {
+	grouped := map[UsageDimension]bool{}
+	for _, d := range groupBy {
+		if _, ok := UsageDimColumn(d); ok {
+			grouped[d] = true
+		}
+	}
+	for _, d := range UsageCanonicalDims {
+		col, _ := UsageDimColumn(d)
+		if grouped[d] {
+			dimExprs = append(dimExprs, col)
+			groupCols = append(groupCols, col)
+		} else {
+			dimExprs = append(dimExprs, "''")
+		}
+	}
+	return dimExprs, groupCols
 }
 
 // RunIdentity carries the v0.4 tracking fields a CreateRun caller can
@@ -655,6 +683,16 @@ type Store interface {
 	// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
 	// Used by the rollup invariant test + (later) the archiver.
 	TokenUsageForRun(ctx context.Context, runID string) ([]TokenUsageRow, error)
+
+	// RunCostSummary sums a run's per-call token_usage ledger into its authoritative
+	// per-run cost (RFC AV): cost = SUM(token_usage.cost), currency = MAX(cost_currency)
+	// among priced rows, priced = at least one non-NULL cost row. FinishRun uses this
+	// so runs.cost == Σ(ledger) BY CONSTRUCTION — it can't disagree with the ledger on
+	// a mid-run fallback (where pricing the final model × cumulative tokens differs
+	// from summing each call at its own model). An unpriced run (no priced rows) yields
+	// currency="" so the caller stores a NULL cost, preserving the NULL-vs-zero
+	// distinction (a genuine zero — mock/code-js — carries a currency).
+	RunCostSummary(ctx context.Context, runID string) (cost float64, currency string, priced bool, err error)
 
 	// UsageReport aggregates the token_usage ledger for a report (RFC AV Phase 2):
 	// summed tokens + cost grouped by the requested dimensions, over an optional

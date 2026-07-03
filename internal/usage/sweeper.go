@@ -294,6 +294,14 @@ func (s *Sweeper) archiveSessionsOnce(parent context.Context) (int, error) {
 	}
 	deleted := 0
 	for _, sid := range sessions {
+		// The whole batch shares one 2-minute deadline. Once it expires, every
+		// remaining export/DeleteSessionCascade would fail with the same ctx error —
+		// stop cleanly and return what we finished, instead of logging a burst of
+		// "context deadline exceeded" once per remaining session. The next tick
+		// resumes from where this one stopped (PrunableAgedSessions is re-queried).
+		if ctx.Err() != nil {
+			break
+		}
 		if s.runMode == "export+prune" {
 			if err := s.exportSession(ctx, sid); err != nil {
 				// Never delete a session we failed to export — retry next tick.
