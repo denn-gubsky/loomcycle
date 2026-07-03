@@ -507,6 +507,75 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 	return out, rows.Err()
 }
 
+// UsageReport aggregates token_usage for a report (RFC AV Phase 2). Mirrors the
+// sqlite implementation: the five dimension columns SELECTed in
+// UsageCanonicalDims order (column when grouped, else literal ”), a fixed
+// 13-column result. ts is TIMESTAMPTZ here, so window bounds pass as time.Time.
+func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error) {
+	grouped := map[store.UsageDimension]bool{}
+	for _, d := range q.GroupBy {
+		if _, ok := store.UsageDimColumn(d); ok {
+			grouped[d] = true
+		}
+	}
+	var dimExprs, groupCols []string
+	for _, d := range store.UsageCanonicalDims {
+		col, _ := store.UsageDimColumn(d)
+		if grouped[d] {
+			dimExprs = append(dimExprs, col)
+			groupCols = append(groupCols, col)
+		} else {
+			dimExprs = append(dimExprs, "''")
+		}
+	}
+	query := `SELECT ` + strings.Join(dimExprs, ", ") + `,
+		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+		COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(cache_read_tokens),0),
+		COALESCE(SUM(cost),0), COUNT(*),
+		COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END),0),
+		COALESCE(MAX(cost_currency),'')
+		FROM token_usage`
+	var conds []string
+	var args []any
+	n := 0
+	ph := func(v any) string { n++; args = append(args, v); return fmt.Sprintf("$%d", n) }
+	if q.TenantID != "" {
+		conds = append(conds, "tenant_id = "+ph(q.TenantID))
+	}
+	if !q.From.IsZero() {
+		conds = append(conds, "ts >= "+ph(q.From))
+	}
+	if !q.To.IsZero() {
+		conds = append(conds, "ts <= "+ph(q.To))
+	}
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	if len(groupCols) > 0 {
+		query += " GROUP BY " + strings.Join(groupCols, ", ")
+	}
+	query += " ORDER BY COALESCE(SUM(cost),0) DESC"
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage report: %w", err)
+	}
+	defer rows.Close()
+	var out []store.UsageAggregate
+	for rows.Next() {
+		var a store.UsageAggregate
+		if err := rows.Scan(
+			&a.TenantID, &a.UserID, &a.Provider, &a.Model, &a.CredentialSource,
+			&a.InputTokens, &a.OutputTokens, &a.CacheCreationTokens, &a.CacheReadTokens,
+			&a.Cost, &a.CallCount, &a.UnpricedCalls, &a.Currency,
+		); err != nil {
+			return nil, fmt.Errorf("scan usage aggregate: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // GetTranscript returns every event for the session, ordered by seq.
 // Empty slice (not error) when the session has no events yet.
 func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Event, error) {

@@ -528,6 +528,12 @@ func requiredScopeFor(method, path string) string {
 	// ScopeAdmin also satisfies. Read-only GET.
 	case path == "/v1/_events":
 		return auth.ScopeTenant
+	// RFC AV: the usage/cost report. token_usage rows carry tenant_id, so
+	// handleUsageReport tenant-scopes the aggregation (a tenant operator sees
+	// only its own tenant's spend; admin sees all + the ?tenant= focus).
+	// ScopeAdmin also satisfies. Read-only GET.
+	case path == "/v1/_usage":
+		return auth.ScopeTenant
 	// Routing view (GET /v1/_routing). Tenant-readable so a tenant operator's UI
 	// can see the resolved model cascade per tier; the HANDLER strips the live
 	// provider reachability / infra detail for a non-admin caller (admin gets the

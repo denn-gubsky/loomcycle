@@ -1298,6 +1298,76 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 	return out, rows.Err()
 }
 
+// UsageReport aggregates token_usage for a report (RFC AV Phase 2). The five
+// dimension columns are SELECTed in UsageCanonicalDims order — the column when
+// grouped, else the literal ” — so the result is a fixed 13-column shape. ts is
+// stored as unix-nano here, so the window bounds are compared as nanos.
+func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error) {
+	grouped := map[store.UsageDimension]bool{}
+	for _, d := range q.GroupBy {
+		if _, ok := store.UsageDimColumn(d); ok {
+			grouped[d] = true
+		}
+	}
+	var dimExprs, groupCols []string
+	for _, d := range store.UsageCanonicalDims {
+		col, _ := store.UsageDimColumn(d)
+		if grouped[d] {
+			dimExprs = append(dimExprs, col)
+			groupCols = append(groupCols, col)
+		} else {
+			dimExprs = append(dimExprs, "''")
+		}
+	}
+	query := `SELECT ` + strings.Join(dimExprs, ", ") + `,
+		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+		COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(cache_read_tokens),0),
+		COALESCE(SUM(cost),0), COUNT(*),
+		COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END),0),
+		COALESCE(MAX(cost_currency),'')
+		FROM token_usage`
+	var conds []string
+	var args []any
+	if q.TenantID != "" {
+		conds = append(conds, "tenant_id = ?")
+		args = append(args, q.TenantID)
+	}
+	if !q.From.IsZero() {
+		conds = append(conds, "ts >= ?")
+		args = append(args, q.From.UnixNano())
+	}
+	if !q.To.IsZero() {
+		conds = append(conds, "ts <= ?")
+		args = append(args, q.To.UnixNano())
+	}
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	if len(groupCols) > 0 {
+		query += " GROUP BY " + strings.Join(groupCols, ", ")
+	}
+	query += " ORDER BY COALESCE(SUM(cost),0) DESC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.UsageAggregate
+	for rows.Next() {
+		var a store.UsageAggregate
+		if err := rows.Scan(
+			&a.TenantID, &a.UserID, &a.Provider, &a.Model, &a.CredentialSource,
+			&a.InputTokens, &a.OutputTokens, &a.CacheCreationTokens, &a.CacheReadTokens,
+			&a.Cost, &a.CallCount, &a.UnpricedCalls, &a.Currency,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // GetTranscript returns all events for a session, ordered by seq ascending.
 func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Event, error) {
 	if _, err := s.GetSession(ctx, sessionID); err != nil {
