@@ -179,6 +179,9 @@ func (m *httpMockConnector) OperatorTokenDef(context.Context, json.RawMessage) (
 func (m *httpMockConnector) VolumeDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) CredentialDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
 func (m *httpMockConnector) Path(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }

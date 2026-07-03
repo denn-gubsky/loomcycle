@@ -273,6 +273,7 @@ func Run(t *testing.T, factory Factory) {
 		// RFC AH Phase 2a VolumeDef substrate — flat (tenant, name) table.
 		{"VolumeDefCreateAndGet", testVolumeDefCreateAndGet},
 		{"VolumeDefTenantIsolation", testVolumeDefTenantIsolation},
+		{"CredentialDefScopeIsolation", testCredentialDefScopeIsolation},
 		{"VolumeDefDelete", testVolumeDefDelete},
 		{"VolumeDefList", testVolumeDefList},
 		{"VolumeDefCreateUpdatesDefinition", testVolumeDefCreateUpdatesDefinition},
@@ -7123,6 +7124,84 @@ func testVolumeDefTenantIsolation(t *testing.T, s store.Store) {
 	}
 	if _, err := s.VolumeDefGetByName(ctx, "tenant-b", "work"); err != nil {
 		t.Errorf("tenant B's row vanished after A's delete: %v", err)
+	}
+}
+
+func mkCredentialDef(tenant, scope, scopeID, name, value string) store.CredentialDefRow {
+	return store.CredentialDefRow{
+		TenantID: tenant, Scope: scope, ScopeID: scopeID, Name: name,
+		Backend:    "inline",
+		Definition: json.RawMessage(fmt.Sprintf(`{"value":%q}`, value)),
+	}
+}
+
+// testCredentialDefScopeIsolation pins the RFC AR isolation boundary across both
+// the tenant axis AND the user/agent scope axis: user A's per-user token must
+// never collide with user B's, a per-user override coexists with a tenant
+// default of the same name, and list is scoped to a single bucket.
+func testCredentialDefScopeIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// Tenant isolation: the same (scope, name) in two tenants don't clobber.
+	if _, err := s.CredentialDefPut(ctx, mkCredentialDef("tenant-a", "tenant", "", "serper", "sealed-a")); err != nil {
+		t.Fatalf("put tenant-a serper: %v", err)
+	}
+	if _, err := s.CredentialDefPut(ctx, mkCredentialDef("tenant-b", "tenant", "", "serper", "sealed-b")); err != nil {
+		t.Fatalf("put tenant-b serper: %v", err)
+	}
+	gotA, err := s.CredentialDefGet(ctx, "tenant-a", "tenant", "", "serper")
+	if err != nil || !jsonEqual(gotA.Definition, `{"value":"sealed-a"}`) {
+		t.Errorf("tenant A serper = (%s, %v), want sealed-a", gotA.Definition, err)
+	}
+
+	// User-scope isolation: two users in the SAME tenant, SAME name → distinct.
+	if _, err := s.CredentialDefPut(ctx, mkCredentialDef("tenant-a", "user", "userA", "telegram", "tokA")); err != nil {
+		t.Fatalf("put userA telegram: %v", err)
+	}
+	if _, err := s.CredentialDefPut(ctx, mkCredentialDef("tenant-a", "user", "userB", "telegram", "tokB")); err != nil {
+		t.Fatalf("put userB telegram: %v", err)
+	}
+	uA, err := s.CredentialDefGet(ctx, "tenant-a", "user", "userA", "telegram")
+	if err != nil || !jsonEqual(uA.Definition, `{"value":"tokA"}`) {
+		t.Errorf("userA telegram = (%s, %v), want tokA", uA.Definition, err)
+	}
+	uB, err := s.CredentialDefGet(ctx, "tenant-a", "user", "userB", "telegram")
+	if err != nil || !jsonEqual(uB.Definition, `{"value":"tokB"}`) {
+		t.Errorf("userB telegram = (%s, %v), want tokB (user A's token leaked to B)", uB.Definition, err)
+	}
+
+	// Scope shadowing: a tenant default of the same name coexists with the
+	// per-user overrides (distinct rows, no clobber).
+	if _, err := s.CredentialDefPut(ctx, mkCredentialDef("tenant-a", "tenant", "", "telegram", "teamTok")); err != nil {
+		t.Fatalf("put tenant telegram default: %v", err)
+	}
+	if uA2, _ := s.CredentialDefGet(ctx, "tenant-a", "user", "userA", "telegram"); !jsonEqual(uA2.Definition, `{"value":"tokA"}`) {
+		t.Errorf("userA telegram override clobbered by the tenant default: %s", uA2.Definition)
+	}
+
+	// List is scoped to a single (tenant, scope, scope_id) bucket.
+	listUA, err := s.CredentialDefList(ctx, "tenant-a", "user", "userA")
+	if err != nil {
+		t.Fatalf("list userA: %v", err)
+	}
+	if len(listUA) != 1 || listUA[0].Name != "telegram" {
+		t.Errorf("list userA = %d rows %v, want exactly [telegram] (leaked another bucket)", len(listUA), listUA)
+	}
+
+	// Delete A's tenant serper leaves tenant B's untouched.
+	found, err := s.CredentialDefDelete(ctx, "tenant-a", "tenant", "", "serper")
+	if err != nil || !found {
+		t.Fatalf("delete tenant-a serper: found=%v err=%v", found, err)
+	}
+	if _, err := s.CredentialDefGet(ctx, "tenant-b", "tenant", "", "serper"); err != nil {
+		t.Errorf("tenant B's serper vanished after A's delete: %v", err)
+	}
+
+	// A miss is *ErrNotFound.
+	_, err = s.CredentialDefGet(ctx, "tenant-a", "user", "userA", "nope")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("get of a missing credential = %v, want *ErrNotFound", err)
 	}
 }
 

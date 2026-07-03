@@ -4412,13 +4412,23 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 		// still forwards the ORIGINAL event: the live SSE caller is the trust
 		// boundary that already holds the secret, so we don't mangle its stream.
 		toStore := ev
-		if s.redactor.Enabled() && (ev.Type == providers.EventToolCall || ev.Type == providers.EventToolResult) {
+		if ev.Type == providers.EventToolCall || ev.Type == providers.EventToolResult {
 			if ev.ToolUse != nil {
 				tu := *ev.ToolUse // copy so we don't mutate the event fwd() sends
-				tu.Input = s.redactor.Bytes(tu.Input)
+				if s.redactor.Enabled() {
+					tu.Input = s.redactor.Bytes(tu.Input)
+				}
+				// ALWAYS mask a CredentialDef create's plaintext `value` field,
+				// independent of the general redactor toggle: it's a known
+				// secret-bearing arg, and the tool-call event is persisted BEFORE
+				// the tool runs (so post-hoc value-registration is too late — a
+				// deterministic field mask is the timing-safe fix). RFC AR.
+				tu.Input = maskCredentialCreateValue(tu.Name, tu.Input)
 				toStore.ToolUse = &tu
 			}
-			toStore.Text = s.redactor.String(ev.Text)
+			if s.redactor.Enabled() {
+				toStore.Text = s.redactor.String(ev.Text)
+			}
 		}
 		payload, err := json.Marshal(toStore)
 		if err == nil {
@@ -4428,6 +4438,33 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 		}
 		fwd(ev)
 	}
+}
+
+// maskCredentialCreateValue blanks the plaintext `value` field of a CredentialDef
+// create tool-call before it is persisted (RFC AR), so an agent that creates a
+// credential in-band never leaves the secret in the events BLOB / snapshots /
+// audit. Applied UNCONDITIONALLY (not gated on the general redactor toggle): the
+// tool-call event is stored before the tool runs, so a deterministic field mask
+// — not post-hoc value registration — is the timing-safe fix. Non-credential
+// tools pass through unchanged; get/list/delete carry no secret; a credential
+// input that won't parse is blanked defensively.
+func maskCredentialCreateValue(toolName string, input json.RawMessage) json.RawMessage {
+	if toolName != "CredentialDef" && toolName != "credentialdef" {
+		return input
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(input, &m); err != nil {
+		return json.RawMessage(`{"_redacted":"credential input"}`)
+	}
+	if _, ok := m["value"]; !ok {
+		return input
+	}
+	m["value"] = json.RawMessage(`"[redacted]"`)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(`{"_redacted":"credential input"}`)
+	}
+	return out
 }
 
 // secretEnvValues extracts the VALUES of secret-classified env vars (by name)

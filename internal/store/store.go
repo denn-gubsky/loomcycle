@@ -1233,6 +1233,24 @@ type Store interface {
 	// op, which deletes the row AND the files behind a four-way fence.
 	VolumeDefDelete(ctx context.Context, tenantID, name string) (bool, error)
 
+	// ---- RFC AR CredentialDef — secure per-tenant credential store ----
+	//
+	// A flat (tenant_id, scope, scope_id, name) table. The `definition` holds
+	// ONLY sealed ciphertext (inline backend — see internal/credential) or an
+	// external-backend pointer (vault/aws_sm/…) — NEVER a plaintext secret. All
+	// four methods scope by (tenant_id, scope, scope_id): tenant isolation AND
+	// user/agent-scope isolation are enforced at the store boundary and
+	// re-checked at the tool layer (opaque-404). scope_id is "" for tenant
+	// scope, the user subject for user scope, the agent name for agent scope.
+	//
+	// CredentialDefPut UPSERTs the (tenant_id, scope, scope_id, name) row
+	// (create + update + rotate all map to it; rotation re-seals in place).
+	// CredentialDefGet returns *ErrNotFound on a miss.
+	CredentialDefPut(ctx context.Context, row CredentialDefRow) (CredentialDefRow, error)
+	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (CredentialDefRow, error)
+	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]CredentialDefRow, error)
+	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
+
 	// ---- RFC AL Path primitive — the dirent (path tree) substrate ----
 	//
 	// A dirent maps a (tenant_id, scope, scope_id, parent_path, name)
@@ -2273,6 +2291,33 @@ type VolumeDefRow struct {
 	Definition json.RawMessage `json:"definition"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
+// CredentialDefRow is a single RFC AR credential: a named secret scoped to a
+// (tenant, scope, scope_id) bucket. Definition holds ONLY sealed ciphertext
+// (inline backend) or an external-backend pointer — NEVER a plaintext secret;
+// callers that surface a row to a client MUST strip Definition (metadata-only).
+type CredentialDefRow struct {
+	// TenantID is the RFC N tenant-isolation axis. "" = shared/operator/legacy.
+	// Set from the authoritative principal at the write site, never the wire.
+	TenantID string `json:"tenant_id,omitempty"`
+	// Scope is "tenant" | "user" | "agent". ScopeID is "" for tenant, the user
+	// subject for user scope, the agent name for agent scope — together with
+	// name they form the row key, so user A's token can't collide with B's.
+	Scope   string `json:"scope"`
+	ScopeID string `json:"scope_id"`
+	Name    string `json:"name"`
+	// Backend is "inline" (sealed value) | "vault" | "aws_sm" | "gcp_sm" |
+	// "onepassword" (pointer only).
+	Backend string `json:"backend"`
+	// Definition is the sealed value ({"value":{key_id,nonce,ciphertext}}) for
+	// inline, or the external pointer JSON. Never plaintext, never logged.
+	Definition json.RawMessage `json:"definition"`
+	// ExpiresAt is an optional advisory soft-expiry (rotation reminder); nil =
+	// no expiry. Not enforced at resolve in v1.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // DirentRow is one entry in the RFC AL Path tree: it names a backing resource

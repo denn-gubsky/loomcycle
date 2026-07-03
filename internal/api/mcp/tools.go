@@ -265,6 +265,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("volumedef"),
 		},
 		{
+			Name:        "credentialdef",
+			Description: "CredentialDef tool ops (create/get/list/delete). RFC AR secure per-tenant credential store — named API secrets encrypted at rest, scoped tenant|user|agent, referenced elsewhere as $cred:<name> and bound server-side (the model never sees the value). user scope keys on YOUR subject (per-user tokens, e.g. a personal Telegram/Slack bot token); tenant scope is shared. get/list return metadata only, never the secret. Requires LOOMCYCLE_SECRET_KEY. Tenant-confined. Pass-through.",
+			InputSchema: builtinSchema("credentialdef"),
+		},
+		{
 			Name:        "path",
 			Description: "Path tool ops (resolve/ls/stat/mkdir/mv/rm). RFC AL Unix-like VFS over the dirents table — address Memory entries, Volume mounts, and Documents by human-readable paths (e.g. /docs/launch). Scope-aware (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\". mkdir is a no-op (dirs are implicit). Pass-through.",
 			InputSchema: builtinSchema("path"),

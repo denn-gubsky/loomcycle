@@ -1946,6 +1946,16 @@ type Env struct {
 	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
 	// the pepper yields no usable token lookup. Secret — never logged.
 	OperatorTokenPepper string
+	// SecretKey (LOOMCYCLE_SECRET_KEY) is the deployment master key (KEK) for
+	// the RFC AR CredentialDef inline backend: a base64-encoded 32-byte value
+	// from which a per-tenant DEK is derived (HKDF) to AES-256-GCM-encrypt
+	// stored credentials. Unset → the inline backend is disabled (fail-closed;
+	// external backends still work). Secret — never logged, never interpolated.
+	SecretKey string
+	// SecretKeyPrevious (LOOMCYCLE_SECRET_KEY_PREVIOUS) is the prior KEK during
+	// a rotation grace window: rows sealed under it still decrypt while new
+	// writes use SecretKey. Optional. Secret.
+	SecretKeyPrevious string
 	// AuditLogPath is the JSONL sink for OperatorTokenDef mutations
 	// (RFC L). Empty = no file audit (a NopSink is wired).
 	AuditLogPath string
@@ -2760,6 +2770,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		PublicURL:                 strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
 		AuthToken:                 os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		OperatorTokenPepper:       os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
+		SecretKey:                 os.Getenv("LOOMCYCLE_SECRET_KEY"),
+		SecretKeyPrevious:         os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"),
 		AuditLogPath:              os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
 		AuthVerbose:               os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		DataDir:                   getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
@@ -3859,6 +3871,8 @@ var expandDenyNames = map[string]bool{
 	"LOOMCYCLE_OPERATOR_TOKEN_PEPPER":      true, // RFC L token-hash pepper (S1: the high-value miss)
 	"LOOMCYCLE_MCP_UPSTREAM_TOKEN":         true, // thin-client upstream MCP bearer
 	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true, // collector auth headers
+	"LOOMCYCLE_SECRET_KEY":                 true, // RFC AR CredentialDef master KEK
+	"LOOMCYCLE_SECRET_KEY_PREVIOUS":        true, // RFC AR KEK rotation grace key
 }
 
 // secretEnvSuffixes are the env-var NAME patterns this project classifies as

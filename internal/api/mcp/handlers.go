@@ -118,6 +118,12 @@ var handlersByName = map[string]toolHandler{
 	"volumedef": wrapBuiltin("volumedef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.VolumeDef(ctx, in)
 	}),
+	// RFC AR — secure per-tenant credential store. Tenant/user identity from the
+	// principal ctx (RFC AG mcpPrincipalCtx), never the wire; get/list metadata
+	// only. ops: create/get/list/delete.
+	"credentialdef": wrapBuiltin("credentialdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.CredentialDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),
