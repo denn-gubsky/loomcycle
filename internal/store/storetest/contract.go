@@ -343,6 +343,9 @@ func Run(t *testing.T, factory Factory) {
 		{"UsageReportPerCurrency", testUsageReportPerCurrency},
 		{"UsageRollupAndPrune", testUsageRollupAndPrune},
 		{"UsageReportArchiveWindowBoundary", testUsageReportArchiveWindowBoundary},
+		// RFC AW — per-scope token budgets: upsert / get-all / delete round-trip
+		// incl. nullable tiers.
+		{"TokenLimits", testTokenLimits},
 		{"SessionArchiver", testSessionArchiver},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
@@ -943,6 +946,103 @@ func testUsageReportArchiveWindowBoundary(t *testing.T, s store.Store) {
 	}
 	if rep[0].InputTokens != 100 {
 		t.Errorf("windowed archive report = %d tokens, want 100 (from-day bucket included, prior day excluded)", rep[0].InputTokens)
+	}
+}
+
+// testTokenLimits exercises the RFC AW token_limits store: upsert (both tiers,
+// then a re-upsert overwrite), get-all across scopes with nullable tiers, and
+// delete. It also proves the NULL-vs-zero distinction survives the round-trip (a
+// nil tier reads back nil, a zero tier reads back a real 0).
+func testTokenLimits(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	i64 := func(v int64) *int64 { return &v }
+
+	all, err := s.TokenLimitsAll(ctx)
+	if err != nil {
+		t.Fatalf("TokenLimitsAll (empty): %v", err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("fresh store has %d limit rows, want 0", len(all))
+	}
+
+	// Operator-global: hard only (soft unset). Tenant: both. User: soft=0 (a
+	// real zero, distinct from unset) + hard nil.
+	rows := []store.TokenLimitRow{
+		{TenantID: "", Scope: "operator", ScopeID: "", HardLimit: i64(1_000_000), UpdatedBy: "admin"},
+		{TenantID: "acme", Scope: "tenant", ScopeID: "", SoftLimit: i64(500), HardLimit: i64(800), UpdatedBy: "admin"},
+		{TenantID: "acme", Scope: "user", ScopeID: "u1", SoftLimit: i64(0), UpdatedBy: "op@acme"},
+	}
+	for _, r := range rows {
+		if err := s.TokenLimitPut(ctx, r); err != nil {
+			t.Fatalf("TokenLimitPut(%s/%s): %v", r.Scope, r.ScopeID, err)
+		}
+	}
+
+	byKey := func() map[string]store.TokenLimitRow {
+		got, err := s.TokenLimitsAll(ctx)
+		if err != nil {
+			t.Fatalf("TokenLimitsAll: %v", err)
+		}
+		m := make(map[string]store.TokenLimitRow, len(got))
+		for _, r := range got {
+			m[r.TenantID+"|"+r.Scope+"|"+r.ScopeID] = r
+		}
+		return m
+	}
+
+	m := byKey()
+	if len(m) != 3 {
+		t.Fatalf("got %d rows, want 3", len(m))
+	}
+	op := m["|operator|"]
+	if op.SoftLimit != nil {
+		t.Errorf("operator soft = %v, want nil (unset)", *op.SoftLimit)
+	}
+	if op.HardLimit == nil || *op.HardLimit != 1_000_000 {
+		t.Errorf("operator hard = %v, want 1000000", op.HardLimit)
+	}
+	usr := m["acme|user|u1"]
+	if usr.SoftLimit == nil || *usr.SoftLimit != 0 {
+		t.Errorf("user soft = %v, want a real 0 (not nil)", usr.SoftLimit)
+	}
+	if usr.HardLimit != nil {
+		t.Errorf("user hard = %v, want nil", *usr.HardLimit)
+	}
+
+	// Upsert overwrite: raise the tenant hard tier + clear its soft tier.
+	if err := s.TokenLimitPut(ctx, store.TokenLimitRow{
+		TenantID: "acme", Scope: "tenant", ScopeID: "", HardLimit: i64(2000), UpdatedBy: "admin2",
+	}); err != nil {
+		t.Fatalf("TokenLimitPut (overwrite): %v", err)
+	}
+	m = byKey()
+	if len(m) != 3 {
+		t.Fatalf("after overwrite got %d rows, want 3 (upsert must not insert a dup)", len(m))
+	}
+	tn := m["acme|tenant|"]
+	if tn.SoftLimit != nil {
+		t.Errorf("tenant soft after overwrite = %v, want nil (cleared)", *tn.SoftLimit)
+	}
+	if tn.HardLimit == nil || *tn.HardLimit != 2000 {
+		t.Errorf("tenant hard after overwrite = %v, want 2000", tn.HardLimit)
+	}
+	if tn.UpdatedBy != "admin2" {
+		t.Errorf("tenant updated_by = %q, want admin2", tn.UpdatedBy)
+	}
+
+	// Delete the user row → unlimited again. Deleting a missing row is a no-op.
+	if err := s.TokenLimitDelete(ctx, "acme", "user", "u1"); err != nil {
+		t.Fatalf("TokenLimitDelete: %v", err)
+	}
+	if err := s.TokenLimitDelete(ctx, "acme", "user", "nope"); err != nil {
+		t.Fatalf("TokenLimitDelete (absent) should be a no-op: %v", err)
+	}
+	m = byKey()
+	if _, ok := m["acme|user|u1"]; ok {
+		t.Error("user row still present after delete")
+	}
+	if len(m) != 2 {
+		t.Fatalf("after delete got %d rows, want 2", len(m))
 	}
 }
 

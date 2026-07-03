@@ -174,6 +174,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source)
 		)`,
 		`CREATE INDEX IF NOT EXISTS usage_archive_tenant_period ON usage_archive(tenant_id, period_start)`,
+		// RFC AW — per-scope token budgets (soft + hard). A row's absence =
+		// unlimited; a NULL soft/hard = that tier unset. No secrets: scope ids
+		// (tenant / subject, already non-secret) + integer token amounts.
+		// updated_at is unix-nano. Mirrors postgres migration 0054.
+		`CREATE TABLE IF NOT EXISTS token_limits (
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			scope       TEXT NOT NULL,
+			scope_id    TEXT NOT NULL DEFAULT '',
+			soft_limit  INTEGER,
+			hard_limit  INTEGER,
+			updated_at  INTEGER NOT NULL,
+			updated_by  TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, scope, scope_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS events (
 			seq        INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -1337,6 +1351,67 @@ func (s *Store) RunCostSummary(ctx context.Context, runID string) (float64, stri
 		return 0, "", false, err
 	}
 	return cost, currency, priced > 0, nil
+}
+
+// TokenLimitPut upserts one per-scope token budget (RFC AW). A nil soft/hard
+// stores NULL for that tier. updated_at is stored as unix-nano.
+func (s *Store) TokenLimitPut(ctx context.Context, row store.TokenLimitRow) error {
+	updatedAt := row.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO token_limits (tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by)
+		 VALUES (?,?,?,?,?,?,?)
+		 ON CONFLICT (tenant_id, scope, scope_id) DO UPDATE SET
+		   soft_limit = excluded.soft_limit,
+		   hard_limit = excluded.hard_limit,
+		   updated_at = excluded.updated_at,
+		   updated_by = excluded.updated_by`,
+		row.TenantID, row.Scope, row.ScopeID,
+		nullableInt64(row.SoftLimit), nullableInt64(row.HardLimit),
+		updatedAt.UnixNano(), row.UpdatedBy,
+	)
+	return err
+}
+
+// TokenLimitDelete removes a scope's budget (→ unlimited). No-op when absent.
+func (s *Store) TokenLimitDelete(ctx context.Context, tenantID, scope, scopeID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM token_limits WHERE tenant_id = ? AND scope = ? AND scope_id = ?`,
+		tenantID, scope, scopeID)
+	return err
+}
+
+// TokenLimitsAll returns every token-limit row (RFC AW) for the tracker cache.
+func (s *Store) TokenLimitsAll(ctx context.Context) ([]store.TokenLimitRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by
+		 FROM token_limits`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.TokenLimitRow
+	for rows.Next() {
+		var r store.TokenLimitRow
+		var soft, hard sql.NullInt64
+		var updatedNano int64
+		if err := rows.Scan(&r.TenantID, &r.Scope, &r.ScopeID, &soft, &hard, &updatedNano, &r.UpdatedBy); err != nil {
+			return nil, err
+		}
+		if soft.Valid {
+			v := soft.Int64
+			r.SoftLimit = &v
+		}
+		if hard.Valid {
+			v := hard.Int64
+			r.HardLimit = &v
+		}
+		r.UpdatedAt = time.Unix(0, updatedNano)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // nanosPerDay is the day bucket for the usage rollup's period_start (ts is
@@ -6662,6 +6737,15 @@ func nilIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// nullableInt64 returns nil when p is nil so the SQL driver writes NULL — for
+// a genuinely-unset tier, distinct from a zero limit (RFC AW token budgets).
+func nullableInt64(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // ---- v0.8.x Process-resource metrics sampler ----

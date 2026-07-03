@@ -27,6 +27,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
@@ -123,6 +124,13 @@ type Server struct {
 	// (open-mode / no KEK). cmd/loomcycle/main.go calls SetCredentialResolver
 	// after construction. Reads run identity from the ctx it's given.
 	credResolver providers.CredentialResolver
+
+	// limits is the RFC AW per-scope token-budget tracker: month-to-date
+	// counters + cached soft/hard ceilings, checked at admission and
+	// incremented from recordCallUsage. Always non-nil after New() (a nil store
+	// yields a no-op tracker); its methods are nil-safe. Seeded from the ledger
+	// at boot via SeedLimits (main.go).
+	limits *limits.Tracker
 
 	// hookRegistry holds the runtime-registered tool-use hooks (the
 	// /v1/hooks endpoints write into this), and hookDispatcher is the
@@ -399,6 +407,10 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		startedAt:      time.Now(),
 	}
+	// RFC AW: per-scope token-budget tracker. limits.New(nil) is a no-op tracker
+	// (Check always allows, Add no-ops), so a store-less server keeps today's
+	// unlimited behavior. Seeded from the ledger at boot via SeedLimits.
+	s.limits = limits.New(st)
 	// F32: build the secret redactor from the process env (secret-classified
 	// names only). Default-ON; LOOMCYCLE_REDACT_SECRETS=0 leaves s.redactor nil
 	// (its methods are nil-safe, so makeRecordingEmit just skips redaction).
@@ -1850,6 +1862,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 	}
+	// RFC AW token-budget admission: refuse a NEW run whose (tenant, user) has a
+	// hard ceiling at/over its month-to-date cap (checked AFTER the slot so a
+	// refusal doesn't leave one held, but BEFORE `defer release()` so the manual
+	// release() here isn't double-fired). Soft crossings (limitDec.Soft) don't
+	// block — they're emitted as warning events once the run's emit exists.
+	limitDec := s.limits.Check(effectiveTenantID, effectiveUserID)
+	if !limitDec.Allowed {
+		release()
+		return fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, limitDec.Refusal.Message)
+	}
 	defer release()
 
 	// ---- Tool filtering + host narrowing ----
@@ -2015,6 +2037,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			cb.OnEvent(ev)
 		}
 	})
+	// RFC AW: emit any soft budget crossings the admission check found, so the
+	// warning lands at run start in the transcript/stream (dedup'd once-per-run
+	// by makeRecordingEmit's seenLimit set).
+	for _, info := range limitDec.Soft {
+		emit(providers.Event{Type: providers.EventLimit, Limit: &info})
+	}
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, deregSteer := s.makeSteer(ctx, runID, agentID, sessionID, effectiveUserID, emit)
@@ -2340,6 +2368,12 @@ func (s *Server) Mux() http.Handler {
 	// /ui/audit page. Bearer-authed admin surface.
 	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
 	mux.Handle("GET /v1/_usage", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageReport))))
+	// RFC AW — per-scope token budgets (list / upsert / delete). Tenant-scoped
+	// (the handlers confine a substrate:tenant caller to its own tenant + reject
+	// the operator-global / cross-tenant writes with 403).
+	mux.Handle("GET /v1/_limits", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleLimitsList))))
+	mux.Handle("PUT /v1/_limits", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleLimitPut))))
+	mux.Handle("DELETE /v1/_limits", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleLimitDelete))))
 	// v0.8.22 substrate admin endpoints. Bearer-authed; accept the
 	// same op-discriminated JSON body as the in-process tool +
 	// dispatch through the Connector with operator-trust ctx.
@@ -3168,6 +3202,17 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeQuotaError(w, err)
 		return
 	}
+	// RFC AW token-budget admission: refuse with 429 when a hard ceiling for the
+	// run's (tenant, user) is at/over its month-to-date cap. Release the slot
+	// first so the refusal doesn't leak it; checked BEFORE `defer release()` so
+	// the manual release() isn't double-fired. Soft crossings are emitted as
+	// warning events once the run's emit exists (below).
+	limitDec := s.limits.Check(req.TenantID, req.UserID)
+	if !limitDec.Allowed {
+		release()
+		writeTokenLimitError(w, limitDec.Refusal)
+		return
+	}
 	defer release()
 
 	// Filter tools by agent allowlist + caller request.
@@ -3410,6 +3455,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// Persist under runCtx so events survive a client disconnect on an
 	// interactive run (runCtx tracks the request for a normal run).
 	emit := s.makeRecordingEmit(runCtx, runID, rid, sessionID, streamFwd)
+	// RFC AW: emit any soft budget crossings found at admission so the warning
+	// lands at run start (dedup'd once-per-run by makeRecordingEmit).
+	for _, info := range limitDec.Soft {
+		emit(providers.Event{Type: providers.EventLimit, Limit: &info})
+	}
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, runID, agentID, sessionID, req.UserID, emit)
@@ -3760,6 +3810,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeQuotaError(w, err)
 		return
 	}
+	// RFC AW token-budget admission: a continuation starts a new turn/run, so
+	// refuse with 429 when the session's (tenant, user) hard ceiling is at/over
+	// its month-to-date cap. Release the slot first; check BEFORE `defer
+	// release()` so the manual release() isn't double-fired.
+	limitDec := s.limits.Check(sess.TenantID, sess.UserID)
+	if !limitDec.Allowed {
+		release()
+		writeTokenLimitError(w, limitDec.Refusal)
+		return
+	}
 	defer release()
 
 	// RFC N FIX 2-mcp: a continuation advertises at the SESSION's
@@ -3926,6 +3986,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		ParentContext:   body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 	}
 	emit := s.makeRecordingEmit(r.Context(), run.ID, rid, id, stream.send)
+	// RFC AW: emit any soft budget crossings found at admission so the warning
+	// lands at run start (dedup'd once-per-run by makeRecordingEmit).
+	for _, info := range limitDec.Soft {
+		emit(providers.Event{Type: providers.EventLimit, Limit: &info})
+	}
 
 	// PR 2: operator steering queue for this continuation run.
 	steerQ, onSteer, deregSteer := s.makeSteer(r.Context(), run.ID, agentID, id, sess.UserID, emit)
@@ -4405,6 +4470,27 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 	}
 	var mu sync.Mutex
 	var usageCallIdx int // RFC AV: per-call ledger row index within this run
+	// RFC AW: emit a budget `limit` event at most ONCE per (scope, severity)
+	// this run, so neither the soft-at-admission events nor repeated in-flight
+	// crossings spam the transcript. emitLimitLocked persists (a "limit" row)
+	// + forwards it; the caller must hold mu. Shared by BOTH the incoming
+	// EventLimit path (soft-at-admission, routed here) and the recordCallUsage
+	// in-flight crossings below, so the dedup set covers both.
+	seenLimit := map[string]bool{}
+	emitLimitLocked := func(info providers.LimitInfo) {
+		key := info.Scope + "|" + info.Severity
+		if seenLimit[key] {
+			return
+		}
+		seenLimit[key] = true
+		lev := providers.Event{Type: providers.EventLimit, Limit: &info}
+		if payload, err := json.Marshal(lev); err == nil {
+			if err := s.store.AppendEvent(ctx, runID, string(providers.EventLimit), payload); err != nil {
+				log.Printf("store: AppendEvent failed (run=%s type=limit): %v", runID, err)
+			}
+		}
+		fwd(lev)
+	}
 	return func(ev providers.Event) {
 		// Track parked (awaiting_input) state for the compaction boundary gate
 		// (handleCompactRun's IsParked check). The run is parked when it emits
@@ -4445,11 +4531,22 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			}
 			return
 		}
+		// RFC AW: a budget `limit` event (soft-at-admission emitted at the run
+		// site via this same callback) routes through the dedup + persist +
+		// forward helper, so it lands once as a "limit" transcript row.
+		if ev.Type == providers.EventLimit && ev.Limit != nil {
+			emitLimitLocked(*ev.Limit)
+			return
+		}
 		// RFC AV: append one per-call usage row (which key paid + priced cost).
 		// Additive side-effect — the event still persists + forwards through the
 		// general path below (it is also stored as a "usage" event, unchanged).
+		// RFC AW: recordCallUsage also increments the budget counters and returns
+		// any tier this call crossed (in-flight crossing) → emitted after the
+		// usage event itself is persisted+forwarded, below.
+		var crossings []providers.LimitInfo
 		if ev.Type == providers.EventUsage && ev.Usage != nil {
-			s.recordCallUsage(ctx, runID, rid, sessionID, usageCallIdx, ev.Usage)
+			crossings = s.recordCallUsage(ctx, runID, rid, sessionID, usageCallIdx, ev.Usage)
 			usageCallIdx++
 		}
 		// F32: redact secrets out of the PERSISTED copy only — the tool_call
@@ -4484,6 +4581,12 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			}
 		}
 		fwd(ev)
+		// RFC AW: emit any in-flight budget crossing AFTER the usage event it
+		// rode in on is persisted+forwarded, still under mu so the transcript
+		// order is stable. Dedup'd once-per-(scope,severity) per run.
+		for _, info := range crossings {
+			emitLimitLocked(info)
+		}
 	}
 }
 
@@ -4494,9 +4597,14 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 // wire) — makeRecordingEmit is constructed before WithRunIdentity stamps the
 // loop ctx, so reading it here would attribute every row to "". A store error
 // is logged, not fatal — usage telemetry must never fail a run.
-func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, iteration int, u *providers.Usage) {
+//
+// RFC AW: also increments the in-memory token-budget counters for the run's
+// (tenant, user) by this call's total tokens and RETURNS the tiers this call
+// newly crossed, so makeRecordingEmit can emit a `limit` event. Nil tracker /
+// zero tokens → nil.
+func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, iteration int, u *providers.Usage) []providers.LimitInfo {
 	if s.store == nil || u == nil {
-		return
+		return nil
 	}
 	source := u.CredentialSource
 	if source == "" {
@@ -4532,6 +4640,38 @@ func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.Ru
 	if err := s.store.RecordCallUsage(ctx, row); err != nil {
 		log.Printf("store: RecordCallUsage failed (run=%s iter=%d): %v", runID, iteration, err)
 	}
+	// RFC AW: increment the month-to-date budget counters + report any tier this
+	// call newly crossed (in-flight crossing). Nil-safe (no-op tracker → nil).
+	total := int64(u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens)
+	return s.limits.Add(rid.TenantID, rid.UserID, total)
+}
+
+// SeedLimits loads the RFC AW token-budget counters + ceilings from the store at
+// boot. Non-fatal: a seeding error leaves the counters empty (fail-open — a
+// budgeting fault must not block the runtime). Called from main.go once the
+// store is ready.
+func (s *Server) SeedLimits(ctx context.Context) error {
+	return s.limits.Seed(ctx)
+}
+
+// writeTokenLimitError writes the RFC AW hard-limit admission refusal as HTTP
+// 429 with a structured body naming the tripped scope, so an adapter can branch
+// on `code:"token_limit_exceeded"` and surface used/limit. The refusal names
+// only the CALLER's own tripped scope (not a cross-tenant oracle).
+func writeTokenLimitError(w http.ResponseWriter, info *providers.LimitInfo) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	body := map[string]any{
+		"code":     "token_limit_exceeded",
+		"error":    info.Message,
+		"scope":    info.Scope,
+		"scope_id": info.ScopeID,
+		"used":     info.Used,
+		"limit":    info.Limit,
+		"window":   info.Window,
+		"message":  info.Message,
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // runSummarySource returns the credential source to record on the run summary,

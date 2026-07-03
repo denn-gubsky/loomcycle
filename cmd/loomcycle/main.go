@@ -2140,6 +2140,14 @@ func main() {
 		log.Printf("usage: sweeper disabled (LOOMCYCLE_USAGE_SWEEPER=0 or no Store)")
 	}
 
+	// RFC AW: seed the per-scope token-budget tracker from the RFC AV ledger
+	// (month-to-date counters + the token_limits ceilings). Non-fatal — a
+	// seeding fault leaves the counters empty (fail-open: budgets must never
+	// block the runtime from starting). No-op when the server has no store.
+	if err := srv.SeedLimits(bgCtx); err != nil {
+		log.Printf("limits: seed failed (budgets start empty until next write): %v", err)
+	}
+
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
 	// The store also filters expired entries at read time, so this
 	// goroutine only matters for keeping the table small over the

@@ -534,6 +534,13 @@ func requiredScopeFor(method, path string) string {
 	// ScopeAdmin also satisfies. Read-only GET.
 	case path == "/v1/_usage":
 		return auth.ScopeTenant
+	// RFC AW: the token-budget management surface (GET list + PUT upsert + DELETE).
+	// Tenant-readable/writable so a tenant operator manages its own tenant + user
+	// budgets; the handler enforces the operator-global + cross-tenant admin
+	// restriction (a scoped caller writing the operator scope or a foreign tenant
+	// gets 403). ScopeAdmin also satisfies. Mirrors /v1/_usage's posture.
+	case path == "/v1/_limits":
+		return auth.ScopeTenant
 	// Routing view (GET /v1/_routing). Tenant-readable so a tenant operator's UI
 	// can see the resolved model cascade per tier; the HANDLER strips the live
 	// provider reachability / infra detail for a non-admin caller (admin gets the

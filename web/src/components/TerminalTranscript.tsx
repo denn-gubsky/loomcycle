@@ -246,6 +246,21 @@ function formatLine(row: TranscriptEvent): FormattedLine {
       const sizes = before > 0 && after > 0 ? ` (~${fmtTokens(before)} → ~${fmtTokens(after)})` : "";
       return { key, ts, kind, cls: "tl-meta", payload: `↯ context compacted${sizes}` };
     }
+    case "limit": {
+      // RFC AW per-scope token-budget crossing — a banner line, amber for a
+      // soft warning, red for a hard cap (colored via .limit-banner in CSS).
+      const li = ev.limit;
+      const sev = li?.severity === "hard" ? "hard" : "soft";
+      const icon = sev === "hard" ? "⛔" : "⚠";
+      const who = li ? (li.scope_id ? `${li.scope} ${li.scope_id}` : li.scope) : "";
+      const when = li?.window === "month" ? "this month" : li?.window ? `this ${li.window}` : "";
+      const used = (li?.used ?? 0).toLocaleString();
+      const limit = (li?.limit ?? 0).toLocaleString();
+      return {
+        key, ts, kind, cls: `limit-banner ${sev}`,
+        payload: `${icon} token budget (${sev}): ${who} used ${used}/${limit} ${when}`.trimEnd(),
+      };
+    }
     case "started":
       return { key, ts, kind, cls: "tl-meta", payload: "" };
     case "session":

@@ -499,6 +499,19 @@ const (
 	// a crash-recovery/resume rebuild reconstructs the compacted form, not the
 	// full history. The full transcript is retained (non-destructive audit).
 	EventContextCompaction EventType = "context_compaction"
+
+	// EventLimit carries a per-scope token-budget crossing (RFC AW): a soft
+	// crossing (warn, run continues) or a hard crossing (a mid-run notice; the
+	// run still finishes, but the NEXT run for the scope is refused at
+	// admission). The Limit field carries the structured payload.
+	//
+	// Unlike EventUsage/EventThinking, EventLimit is SERVER-generated (the
+	// admission gate + recordCallUsage increment path), never emitted by a
+	// provider driver — so the loop's per-iteration event switch needs NO case
+	// for it. It is forwarded to consumers + persisted as a transcript row
+	// through the server's makeRecordingEmit path (soft-at-admission + in-flight
+	// crossing), so the /run terminal + chat render a budget banner.
+	EventLimit EventType = "limit"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -560,6 +573,10 @@ type Event struct {
 	// ContextCompaction carries the structured payload on EventContextCompaction
 	// (the conversation summary that replaces prior history). Nil otherwise.
 	ContextCompaction *ContextCompactionEventInfo `json:"context_compaction,omitempty"`
+
+	// Limit carries the structured payload on EventLimit (a per-scope
+	// token-budget crossing, RFC AW). Nil on all other event types.
+	Limit *LimitInfo `json:"limit,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -775,6 +792,31 @@ type ContextCompactionEventInfo struct {
 	// Trigger is "manual" | "auto" | "self" — which path fired the compaction.
 	// Surfaced for metrics + the UI; not used by replay.
 	Trigger string `json:"trigger,omitempty"`
+}
+
+// LimitInfo is the structured payload on EventLimit (RFC AW — per-scope token
+// budgets). It names which scope tripped, how hard, and where the scope stands
+// against its ceiling, so a UI can render "tenant acme at 1.2M / 1M tokens this
+// month" without a follow-up fetch. No secrets: Scope/ScopeID are a
+// tenant/subject id (already non-secret, like user_id) and the counts are
+// integers. Wire-stable; field names are part of the RFC AW contract.
+type LimitInfo struct {
+	// Scope is which axis tripped: "operator" | "tenant" | "user".
+	Scope string `json:"scope"`
+	// ScopeID is the tripped scope's id — the tenant id for scope=tenant, the
+	// user subject for scope=user, "" for the operator-global scope.
+	ScopeID string `json:"scope_id,omitempty"`
+	// Severity is "soft" (warn, run continues) or "hard" (this run finishes but
+	// the next is refused at admission).
+	Severity string `json:"severity"`
+	// Window is the budget window; "month" (calendar month, UTC) in Phase 1.
+	Window string `json:"window"`
+	// Used is the scope's month-to-date token total at the crossing.
+	Used int64 `json:"used"`
+	// Limit is the tier that was crossed (the soft or hard ceiling).
+	Limit int64 `json:"limit"`
+	// Message is a human-readable banner string. Optional.
+	Message string `json:"message,omitempty"`
 }
 
 // HostWideningEventInfo is the structured payload on EventHostWidened

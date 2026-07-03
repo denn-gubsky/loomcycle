@@ -1221,6 +1221,10 @@ func mapRunnerErr(err error) error {
 		// Runtime-wide pause in effect (RFC X) — new runs rejected until
 		// resume. Unavailable mirrors the HTTP 503 gate.
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, runner.ErrTokenLimitExceeded):
+		// Per-scope token budget hard cap reached (RFC AW). ResourceExhausted
+		// mirrors the HTTP 429 refusal + the backpressure/quota flavors above.
+		return status.Error(codes.ResourceExhausted, err.Error())
 	default:
 		return status.Errorf(codes.Internal, "runner: %v", err)
 	}

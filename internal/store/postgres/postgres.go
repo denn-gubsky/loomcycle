@@ -525,6 +525,63 @@ func (s *Store) RunCostSummary(ctx context.Context, runID string) (float64, stri
 	return cost, currency, priced > 0, nil
 }
 
+// TokenLimitPut upserts one per-scope token budget (RFC AW). A nil soft/hard
+// stores NULL for that tier (unset).
+func (s *Store) TokenLimitPut(ctx context.Context, row store.TokenLimitRow) error {
+	updatedAt := row.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO token_limits (tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)
+		 ON CONFLICT (tenant_id, scope, scope_id) DO UPDATE SET
+		   soft_limit = EXCLUDED.soft_limit,
+		   hard_limit = EXCLUDED.hard_limit,
+		   updated_at = EXCLUDED.updated_at,
+		   updated_by = EXCLUDED.updated_by`,
+		row.TenantID, row.Scope, row.ScopeID, row.SoftLimit, row.HardLimit, updatedAt, row.UpdatedBy,
+	)
+	if err != nil {
+		return fmt.Errorf("token limit put: %w", err)
+	}
+	return nil
+}
+
+// TokenLimitDelete removes a scope's budget (→ unlimited). No-op when absent.
+func (s *Store) TokenLimitDelete(ctx context.Context, tenantID, scope, scopeID string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM token_limits WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
+		tenantID, scope, scopeID)
+	if err != nil {
+		return fmt.Errorf("token limit delete: %w", err)
+	}
+	return nil
+}
+
+// TokenLimitsAll returns every token-limit row (RFC AW) for the tracker cache.
+func (s *Store) TokenLimitsAll(ctx context.Context) ([]store.TokenLimitRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by
+		 FROM token_limits`)
+	if err != nil {
+		return nil, fmt.Errorf("token limits all: %w", err)
+	}
+	defer rows.Close()
+	var out []store.TokenLimitRow
+	for rows.Next() {
+		var r store.TokenLimitRow
+		var soft, hard *int64
+		if err := rows.Scan(&r.TenantID, &r.Scope, &r.ScopeID, &soft, &hard, &r.UpdatedAt, &r.UpdatedBy); err != nil {
+			return nil, fmt.Errorf("scan token limit: %w", err)
+		}
+		r.SoftLimit = soft
+		r.HardLimit = hard
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // UsageReport aggregates recent per-call token_usage UNION the compact
 // usage_archive rollup (RFC AV Phase 2b), so a pruned window still reports.
 // Mirrors the sqlite implementation: five dimension columns in
