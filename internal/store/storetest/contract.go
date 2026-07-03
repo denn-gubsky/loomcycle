@@ -338,6 +338,7 @@ func Run(t *testing.T, factory Factory) {
 		// RFC AV — per-call usage ledger + per-run cost/source summary.
 		{"TokenUsageLedger", testTokenUsageLedger},
 		{"FinishRunPersistsCostAndSource", testFinishRunPersistsCostAndSource},
+		{"UsageReport", testUsageReport},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
 		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
@@ -673,6 +674,78 @@ func testFinishRunPersistsCostAndSource(t *testing.T, s store.Store) {
 	}
 	if got2.CredentialSource != "operator" {
 		t.Errorf("source = %q, want operator", got2.CredentialSource)
+	}
+}
+
+// testUsageReport exercises the RFC AV Phase 2 aggregation: grouping,
+// tenant/window scoping, the operator-vs-tenant split, and the unpriced-call
+// count. Rows are inserted directly (no run needed — token_usage has no FK).
+func testUsageReport(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	mk := func(tenant, source string, in int, cost float64, cur string) store.TokenUsageRow {
+		return store.TokenUsageRow{
+			RunID: "r_" + tenant + source, TenantID: tenant, Provider: "anthropic", Model: "m",
+			CredentialSource: source, InputTokens: in, Cost: cost, CostCurrency: cur,
+		}
+	}
+	rows := []store.TokenUsageRow{
+		mk("A", "operator", 100, 1.0, "USD"),
+		mk("A", "tenant", 200, 2.0, "USD"),
+		mk("B", "operator", 400, 4.0, "USD"),
+		// tenant A, operator, UNPRICED (empty currency) — counts tokens, no cost.
+		{RunID: "r_unpriced", TenantID: "A", Provider: "openai", Model: "x",
+			CredentialSource: "operator", InputTokens: 50, CostCurrency: ""},
+	}
+	for _, r := range rows {
+		if err := s.RecordCallUsage(ctx, r); err != nil {
+			t.Fatalf("RecordCallUsage: %v", err)
+		}
+	}
+
+	sum := func(aggs []store.UsageAggregate, tenant, source string) (in int64, cost float64, unpriced int64, found bool) {
+		for _, a := range aggs {
+			if a.TenantID == tenant && a.CredentialSource == source {
+				return a.InputTokens, a.Cost, a.UnpricedCalls, true
+			}
+		}
+		return 0, 0, 0, false
+	}
+
+	// Group by (tenant, source), all tenants.
+	all, err := s.UsageReport(ctx, store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageBySource}})
+	if err != nil {
+		t.Fatalf("UsageReport: %v", err)
+	}
+	// A/operator merges the priced + unpriced rows: 150 tokens, cost 1.0, 1 unpriced.
+	if in, cost, unpriced, ok := sum(all, "A", "operator"); !ok || in != 150 || cost != 1.0 || unpriced != 1 {
+		t.Errorf("A/operator = (in=%d cost=%v unpriced=%d ok=%v), want (150,1,1,true)", in, cost, unpriced, ok)
+	}
+	if in, cost, _, ok := sum(all, "A", "tenant"); !ok || in != 200 || cost != 2.0 {
+		t.Errorf("A/tenant = (%d,%v,%v), want (200,2,true)", in, cost, ok)
+	}
+	if in, cost, _, ok := sum(all, "B", "operator"); !ok || in != 400 || cost != 4.0 {
+		t.Errorf("B/operator = (%d,%v,%v), want (400,4,true)", in, cost, ok)
+	}
+
+	// Tenant-scoped to A → no B rows.
+	onlyA, _ := s.UsageReport(ctx, store.UsageQuery{TenantID: "A", GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageBySource}})
+	for _, a := range onlyA {
+		if a.TenantID == "B" {
+			t.Errorf("tenant-scoped report leaked tenant B: %+v", a)
+		}
+	}
+
+	// Operator bill = group by source, filter source=operator across all tenants:
+	// cost 1.0 (A) + 4.0 (B) = 5.0.
+	bySource, _ := s.UsageReport(ctx, store.UsageQuery{GroupBy: []store.UsageDimension{store.UsageBySource}})
+	var opCost float64
+	for _, a := range bySource {
+		if a.CredentialSource == "operator" {
+			opCost = a.Cost
+		}
+	}
+	if opCost != 5.0 {
+		t.Errorf("operator bill = %v, want 5.0", opCost)
 	}
 }
 

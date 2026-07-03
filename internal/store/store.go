@@ -373,6 +373,82 @@ type TokenUsageRow struct {
 	TS time.Time
 }
 
+// UsageDimension is a whitelisted grouping axis for a usage report (RFC AV
+// Phase 2). The string value maps to a token_usage column; the whitelist is the
+// injection guard — a caller-supplied group_by is validated against these.
+type UsageDimension string
+
+const (
+	UsageByTenant   UsageDimension = "tenant"
+	UsageByUser     UsageDimension = "user"
+	UsageByProvider UsageDimension = "provider"
+	UsageByModel    UsageDimension = "model"
+	UsageBySource   UsageDimension = "source" // credential_source (operator|tenant|user)
+)
+
+// UsageQuery filters + groups a usage report.
+type UsageQuery struct {
+	// TenantID scopes to one tenant; "" = all tenants (admin only — the handler
+	// enforces this via principalTenantScope).
+	TenantID string
+	// From/To bound the window on ts (inclusive); zero = unbounded on that end.
+	From, To time.Time
+	// GroupBy is the ordered set of dimensions to group by (validated against the
+	// UsageBy* whitelist). Empty ⇒ a single grand-total row.
+	GroupBy []UsageDimension
+}
+
+// UsageAggregate is one grouped row of a usage report. Only the dimensions named
+// in the query's GroupBy are populated; the rest are "".
+type UsageAggregate struct {
+	TenantID         string `json:"tenant_id,omitempty"`
+	UserID           string `json:"user_id,omitempty"`
+	Provider         string `json:"provider,omitempty"`
+	Model            string `json:"model,omitempty"`
+	CredentialSource string `json:"credential_source,omitempty"`
+
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+
+	// Cost is the summed money cost of the PRICED calls in the group; Currency is
+	// a representative unit (mixed currencies are not summed meaningfully — a v1
+	// caveat; single-currency deployments are the common case). UnpricedCalls
+	// counts calls with no cost (model absent from the pricing table) so a report
+	// can surface a "pricing incomplete" signal instead of silently undercounting.
+	Cost          float64 `json:"cost"`
+	Currency      string  `json:"currency,omitempty"`
+	CallCount     int64   `json:"call_count"`
+	UnpricedCalls int64   `json:"unpriced_calls"`
+}
+
+// UsageCanonicalDims is the fixed order the report's 5 dimension columns are
+// SELECTed + scanned in, shared by both backends so the scan target order can't
+// drift from the query. A grouped dimension SELECTs its column; an ungrouped one
+// SELECTs ” — keeping the result a fixed 13-column shape regardless of group_by.
+var UsageCanonicalDims = []UsageDimension{UsageByTenant, UsageByUser, UsageByProvider, UsageByModel, UsageBySource}
+
+// UsageDimColumn maps a whitelisted dimension to its token_usage column name.
+// The whitelist IS the SQL-injection guard — only these five map to a column, so
+// a caller-supplied group_by can never inject arbitrary SQL. ok=false rejects an
+// unknown dimension.
+func UsageDimColumn(d UsageDimension) (col string, ok bool) {
+	switch d {
+	case UsageByTenant:
+		return "tenant_id", true
+	case UsageByUser:
+		return "user_id", true
+	case UsageByProvider:
+		return "provider", true
+	case UsageByModel:
+		return "model", true
+	case UsageBySource:
+		return "credential_source", true
+	}
+	return "", false
+}
+
 // RunIdentity carries the v0.4 tracking fields a CreateRun caller can
 // supply. Zero-value fields mean "no value" — implementations must
 // store them as NULL (or empty string for TEXT columns) so historical
@@ -574,6 +650,12 @@ type Store interface {
 	// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
 	// Used by the rollup invariant test + (later) the archiver.
 	TokenUsageForRun(ctx context.Context, runID string) ([]TokenUsageRow, error)
+
+	// UsageReport aggregates the token_usage ledger for a report (RFC AV Phase 2):
+	// summed tokens + cost grouped by the requested dimensions, over an optional
+	// tenant + time window. The operator bill (source=operator) and per-tenant
+	// consumption fall out of the group-by + a source dimension.
+	UsageReport(ctx context.Context, q UsageQuery) ([]UsageAggregate, error)
 
 	// GetTranscript returns all events for a session, ordered by Seq.
 	// Returns an empty slice (not error) for a session with no runs yet.

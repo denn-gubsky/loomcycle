@@ -2335,6 +2335,7 @@ func (s *Server) Mux() http.Handler {
 	// optional type + date-range filter. Drives the Web UI's
 	// /ui/audit page. Bearer-authed admin surface.
 	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
+	mux.Handle("GET /v1/_usage", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageReport))))
 	// v0.8.22 substrate admin endpoints. Bearer-authed; accept the
 	// same op-discriminated JSON body as the in-process tool +
 	// dispatch through the Connector with operator-trust ctx.
