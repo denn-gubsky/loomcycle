@@ -364,6 +364,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		finalText                          string
 		finalUsage                         *providers.Usage
 		finalStopReason                    string
+		limitCrossings                     []providers.LimitInfo
 	)
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, sessionID, _ string) {
@@ -385,6 +386,13 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 					u := *ev.Usage
 					finalUsage = &u
 				}
+			case providers.EventLimit:
+				// RFC AW — surface the token-budget crossing in the spawn_run
+				// tool result (not only on the streamed run_event notification
+				// emitted above), so a non-streaming MCP caller sees the banner.
+				if ev.Limit != nil {
+					limitCrossings = append(limitCrossings, *ev.Limit)
+				}
 			case providers.EventDone:
 				finalStopReason = ev.StopReason
 				if ev.Usage != nil && finalUsage == nil {
@@ -405,6 +413,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		StopReason:    finalStopReason,
 		FinalText:     finalText,
 		Usage:         finalUsage,
+		Limits:        limitCrossings,    // RFC AW: budget crossings observed during the run
 		ParentContext: req.ParentContext, // v0.12.x: echo the lineage back to the caller
 	}
 	switch {

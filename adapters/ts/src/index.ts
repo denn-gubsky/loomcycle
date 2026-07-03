@@ -263,6 +263,11 @@ export type {
   UsageDimension,
   UsageAggregate,
   UsageReportResponse,
+  // RFC AW per-scope token budgets
+  LimitInfo,
+  TokenLimit,
+  TokenLimitsResponse,
+  SetTokenLimitRequest,
 } from "./types.js";
 
 export {

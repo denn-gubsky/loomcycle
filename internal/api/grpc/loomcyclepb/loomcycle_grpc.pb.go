@@ -49,6 +49,7 @@ const (
 	Loomcycle_CancelAgent_FullMethodName         = "/loomcycle.v1.Loomcycle/CancelAgent"
 	Loomcycle_ListUserAgents_FullMethodName      = "/loomcycle.v1.Loomcycle/ListUserAgents"
 	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
+	Loomcycle_TokenLimit_FullMethodName          = "/loomcycle.v1.Loomcycle/TokenLimit"
 	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
 	Loomcycle_RegisterHook_FullMethodName        = "/loomcycle.v1.Loomcycle/RegisterHook"
 	Loomcycle_ListHooks_FullMethodName           = "/loomcycle.v1.Loomcycle/ListHooks"
@@ -160,6 +161,14 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET /v1/_usage.
 	UsageReport(ctx context.Context, in *UsageReportRequest, opts ...grpc.CallOption) (*UsageReportResponse, error)
+	// TokenLimit manages per-scope token budgets (RFC AW): one op-based RPC
+	// (op ∈ list|set|delete) mirroring GET/PUT/DELETE /v1/_limits. Tenant-scoped
+	// like the HTTP twin — a substrate:tenant caller may only see/set/delete its
+	// own tenant's budgets; the operator-global cap + cross-tenant rows are
+	// admin-only.
+	//
+	// Mirrors GET/PUT/DELETE /v1/_limits.
+	TokenLimit(ctx context.Context, in *TokenLimitRequest, opts ...grpc.CallOption) (*TokenLimitResponse, error)
 	// Health is the liveness probe. Returns build identifier + uptime.
 	//
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -491,6 +500,16 @@ func (c *loomcycleClient) UsageReport(ctx context.Context, in *UsageReportReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UsageReportResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_UsageReport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) TokenLimit(ctx context.Context, in *TokenLimitRequest, opts ...grpc.CallOption) (*TokenLimitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TokenLimitResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_TokenLimit_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -921,6 +940,14 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET /v1/_usage.
 	UsageReport(context.Context, *UsageReportRequest) (*UsageReportResponse, error)
+	// TokenLimit manages per-scope token budgets (RFC AW): one op-based RPC
+	// (op ∈ list|set|delete) mirroring GET/PUT/DELETE /v1/_limits. Tenant-scoped
+	// like the HTTP twin — a substrate:tenant caller may only see/set/delete its
+	// own tenant's budgets; the operator-global cap + cross-tenant rows are
+	// admin-only.
+	//
+	// Mirrors GET/PUT/DELETE /v1/_limits.
+	TokenLimit(context.Context, *TokenLimitRequest) (*TokenLimitResponse, error)
 	// Health is the liveness probe. Returns build identifier + uptime.
 	//
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -1153,6 +1180,9 @@ func (UnimplementedLoomcycleServer) ListUserAgents(context.Context, *ListUserAge
 }
 func (UnimplementedLoomcycleServer) UsageReport(context.Context, *UsageReportRequest) (*UsageReportResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UsageReport not implemented")
+}
+func (UnimplementedLoomcycleServer) TokenLimit(context.Context, *TokenLimitRequest) (*TokenLimitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TokenLimit not implemented")
 }
 func (UnimplementedLoomcycleServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
@@ -1450,6 +1480,24 @@ func _Loomcycle_UsageReport_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).UsageReport(ctx, req.(*UsageReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_TokenLimit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TokenLimitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).TokenLimit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_TokenLimit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).TokenLimit(ctx, req.(*TokenLimitRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2097,6 +2145,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UsageReport",
 			Handler:    _Loomcycle_UsageReport_Handler,
+		},
+		{
+			MethodName: "TokenLimit",
+			Handler:    _Loomcycle_TokenLimit_Handler,
 		},
 		{
 			MethodName: "Health",

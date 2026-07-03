@@ -111,6 +111,15 @@ service Loomcycle {
   // Mirrors GET /v1/_usage.
   rpc UsageReport(UsageReportRequest) returns (UsageReportResponse);
 
+  // TokenLimit manages per-scope token budgets (RFC AW): one op-based RPC
+  // (op ∈ list|set|delete) mirroring GET/PUT/DELETE /v1/_limits. Tenant-scoped
+  // like the HTTP twin — a substrate:tenant caller may only see/set/delete its
+  // own tenant's budgets; the operator-global cap + cross-tenant rows are
+  // admin-only.
+  //
+  // Mirrors GET/PUT/DELETE /v1/_limits.
+  rpc TokenLimit(TokenLimitRequest) returns (TokenLimitResponse);
+
   // Health is the liveness probe. Returns build identifier + uptime.
   //
   // Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -637,6 +646,11 @@ message Event {
   // by StreamRun re-attach when replaying persisted operator turns
   // (source="replay"). Nil on every other event type.
   UserInput user_input = 11;
+
+  // limit carries the payload on type=limit frames (RFC AW) — a per-scope
+  // token-budget crossing (soft warning at run start, or a soft crossing
+  // mid-run). SERVER-generated. Nil on every other event type.
+  LimitInfo limit = 12;
 }
 
 // AwaitingInput is the type=awaiting_input payload (RFC AI). Mirrors
@@ -694,6 +708,21 @@ message Retry {
   int32 attempt = 2;
   int64 wait_ms = 3;
   string reason = 4;  // RetryReasonHeader | RetryReasonSchedule
+}
+
+// LimitInfo is the structured payload on type=limit frames (RFC AW — per-scope
+// token budgets). Names which scope tripped, how hard, and where the scope
+// stands against its ceiling. No secrets: scope/scope_id are a tenant/subject
+// id (already non-secret, like user_id) and the counts are integers. Mirrors
+// providers.LimitInfo on the Go side.
+message LimitInfo {
+  string scope = 1;      // "operator" | "tenant" | "user"
+  string scope_id = 2;   // tenant id (scope=tenant), user subject (scope=user), "" (operator)
+  string severity = 3;   // "soft" | "hard"
+  string window = 4;     // "month" (calendar month, UTC) in Phase 1
+  int64 used = 5;        // scope's month-to-date token total at the crossing
+  int64 limit = 6;       // the tier that was crossed (the soft or hard ceiling)
+  string message = 7;    // human-readable banner (optional)
 }
 
 // ========================
@@ -815,6 +844,47 @@ message UsageAggregate {
 message UsageReportResponse {
   repeated string group_by = 1;
   repeated UsageAggregate rows = 2;
+}
+
+// TokenLimitRequest is the op-based token-budget management RPC (RFC AW),
+// mirroring GET/PUT/DELETE /v1/_limits. op ∈ {list,set,delete}:
+//   - list:   returns every budget the caller may see (tenant-scoped). scope /
+//             scope_id / soft_limit / hard_limit ignored; tenant is an
+//             admin-only focus (ignored for a scoped principal).
+//   - set:    upserts one budget row for (scope, scope_id). soft_limit /
+//             hard_limit are optional — PRESENT sets that tier, ABSENT clears it
+//             (unlimited on that axis), so a full-row upsert matches the HTTP
+//             PUT semantics (soft_limit:0 is a real zero ceiling ≠ unset).
+//   - delete: removes the budget for (scope, scope_id) → that scope is unlimited.
+// scope is "operator" | "tenant" | "user"; scope_id is the user subject for
+// scope=user, empty otherwise. tenant is the target tenant (admin only; a
+// scoped caller is confined to its own tenant regardless of this field).
+message TokenLimitRequest {
+  string op = 1;                 // "list" | "set" | "delete"
+  string tenant = 2;
+  string scope = 3;
+  string scope_id = 4;
+  optional int64 soft_limit = 5; // present = set that tier, absent = unset (unlimited)
+  optional int64 hard_limit = 6;
+}
+
+// TokenLimitEntry is one token_limits row plus its live month-to-date usage.
+// soft_limit / hard_limit are optional: absent = that tier unset (no ceiling).
+message TokenLimitEntry {
+  string tenant_id = 1;
+  string scope = 2;
+  string scope_id = 3;
+  optional int64 soft_limit = 4;
+  optional int64 hard_limit = 5;
+  int64 used = 6;          // scope's current month-to-date token total
+  string updated_at = 7;   // RFC3339 (empty when unknown)
+  string updated_by = 8;   // principal subject that last wrote the row
+}
+
+// TokenLimitResponse carries the caller-visible budgets. Always populated for
+// op=list; for op=set it echoes the written row; empty for op=delete.
+message TokenLimitResponse {
+  repeated TokenLimitEntry limits = 1;
 }
 
 // ========================

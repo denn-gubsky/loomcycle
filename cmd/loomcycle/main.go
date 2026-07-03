@@ -2589,6 +2589,10 @@ func main() {
 			CancelReg: srv.CancelRegistry(),
 			Connector: srv, // v0.8.15: *http.Server satisfies connector.Connector
 			Runner:    srv, // *http.Server satisfies runner.Runner (streaming)
+			// RFC AW: share the HTTP server's token-budget tracker so the gRPC
+			// TokenLimit RPC reads the identical live counters + reloads the same
+			// cache the /v1/_limits handler uses.
+			Limits:    srv.LimitsTracker(),
 			AuthToken: cfg.Env.AuthToken,
 			// RFC L: reuse the HTTP server's token resolution so gRPC
 			// stamps the same authoritative principal (gRPC runs flow
