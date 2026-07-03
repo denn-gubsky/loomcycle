@@ -373,6 +373,22 @@ type TokenUsageRow struct {
 	TS time.Time
 }
 
+// TokenLimitRow is one per-scope token budget (RFC AW). Scope is
+// "operator" | "tenant" | "user"; ScopeID is the tenant/subject id ("" for
+// operator/tenant scope, the user subject for scope=user). SoftLimit/HardLimit
+// are nullable (*int64): nil = that tier unset (the enforcement treats an unset
+// tier as "no ceiling on this axis"). No secrets — scope ids are already
+// non-secret (like user_id) and the amounts are integers.
+type TokenLimitRow struct {
+	TenantID  string
+	Scope     string
+	ScopeID   string
+	SoftLimit *int64
+	HardLimit *int64
+	UpdatedAt time.Time
+	UpdatedBy string
+}
+
 // UsageDimension is a whitelisted grouping axis for a usage report (RFC AV
 // Phase 2). The string value maps to a token_usage column; the whitelist is the
 // injection guard — a caller-supplied group_by is validated against these.
@@ -701,6 +717,20 @@ type Store interface {
 	// per-call rows UNION the compact usage_archive rollup, so old (pruned)
 	// windows still report.
 	UsageReport(ctx context.Context, q UsageQuery) ([]UsageAggregate, error)
+
+	// TokenLimitPut upserts one per-scope token budget on its
+	// (tenant_id, scope, scope_id) primary key (RFC AW). A nil SoftLimit/
+	// HardLimit stores NULL for that tier (unset). Idempotent.
+	TokenLimitPut(ctx context.Context, row TokenLimitRow) error
+
+	// TokenLimitDelete removes the budget for a scope → the scope is unlimited
+	// again. A no-op (no error) when the row does not exist.
+	TokenLimitDelete(ctx context.Context, tenantID, scope, scopeID string) error
+
+	// TokenLimitsAll returns every token-limit row (RFC AW). The in-memory limits
+	// tracker caches these at boot + on CRUD; tenant filtering for the read API
+	// happens at the HTTP layer, so this returns all rows unscoped.
+	TokenLimitsAll(ctx context.Context) ([]TokenLimitRow, error)
 
 	// RollupAndPruneUsage folds every token_usage row older than olderThan into
 	// usage_archive (day-bucketed, summed per dimension tuple) and deletes the

@@ -93,6 +93,22 @@ export interface ListAgentsResponse {
   agents: Agent[];
 }
 
+// LimitEventInfo mirrors providers.LimitInfo — the sidecar on a `limit`
+// event (RFC AW per-scope token budgets). The event is SERVER-generated
+// (not from a provider): emitted once per (scope, severity) per run when a
+// scope crosses its soft/hard ceiling. Present identically on the live SSE
+// `limit` frame and the persisted `limit` transcript row, so the terminal
+// renders both through the same path. Non-secret (ids + integer counts).
+export interface LimitEventInfo {
+  scope: string; // operator | tenant | user
+  scope_id?: string; // tenant id / user subject; "" for operator-global
+  severity: "soft" | "hard" | string; // soft = warn, hard = next run refused
+  window: string; // "month" (calendar month, UTC) in Phase 1
+  used: number; // month-to-date token total at the crossing
+  limit: number; // the tier crossed (the soft or hard ceiling)
+  message?: string;
+}
+
 // EventPayload mirrors providers.Event on the server side. Carried
 // inside `TranscriptEvent.event` (the wire shape from
 // /v1/sessions/{id}/transcript wraps each row with seq/run_id/ts_ns
@@ -139,6 +155,9 @@ export interface EventPayload {
   // "context_compaction" sidecar — the conversation before this marker was
   // summarized to free context (interactive compaction).
   context_compaction?: { summary?: string; before_tokens?: number; after_tokens?: number };
+  // "limit" sidecar (RFC AW) — a per-scope token-budget crossing. Present on
+  // both the live SSE `limit` frame and the persisted `limit` transcript row.
+  limit?: LimitEventInfo;
 }
 
 // v0.9.x — payloads for event types whose shape doesn't fit
@@ -2339,4 +2358,79 @@ export function getUsage(
   if (params.tenant) q.set("tenant", params.tenant);
   const qs = q.toString();
   return jsonFetch<UsageReportResponse>(`/v1/_usage${qs ? "?" + qs : ""}`);
+}
+
+// --- RFC AW: per-scope token budgets (GET/PUT/DELETE /v1/_limits) ---
+
+// TokenLimit is one token_limits row plus its live month-to-date usage
+// (mirrors limitRowResponse). soft_limit/hard_limit are number|null — null
+// (the wire omits an unset tier) means "no ceiling on that severity". `used`
+// is the scope's calendar-month token total. Tenant-scoped server-side: a
+// substrate:tenant operator sees only its own tenant + users; admin sees all
+// (or one tenant via ?tenant=).
+export interface TokenLimit {
+  tenant_id?: string;
+  scope: string; // operator | tenant | user
+  scope_id?: string; // tenant id / user subject; "" for operator-global
+  soft_limit: number | null;
+  hard_limit: number | null;
+  used: number;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export interface LimitsResponse {
+  limits: TokenLimit[];
+}
+
+// listLimits fetches the budgets visible to the caller. tenant is the admin-
+// only focus (?tenant=); ignored server-side for a tenant operator.
+export function listLimits(tenant?: string): Promise<LimitsResponse> {
+  const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
+  return jsonFetch<LimitsResponse>(`/v1/_limits${q}`);
+}
+
+// LimitPutBody upserts one budget row. Send a number to set a tier, or null /
+// omit to leave it unset. tenant_id addresses a tenant (admin only); a tenant
+// operator's tenant is stamped from the principal server-side, and the
+// operator scope + any cross-tenant write is refused (403) for a tenant
+// operator. scope_id is the user subject (scope=user); it must be empty for
+// scope=tenant and scope=operator.
+export interface LimitPutBody {
+  tenant_id?: string;
+  scope: string;
+  scope_id?: string;
+  soft_limit?: number | null;
+  hard_limit?: number | null;
+}
+
+export function putLimit(body: LimitPutBody): Promise<TokenLimit> {
+  return jsonFetch<TokenLimit>("/v1/_limits", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// deleteLimit removes a budget row (→ unlimited again). 204 No Content, so it
+// uses a raw fetch (jsonFetch would choke parsing the empty body) — mirrors
+// deleteSnapshot. tenant is the admin-only focus (ignored for a tenant op).
+export async function deleteLimit(
+  scope: string,
+  scopeId?: string,
+  tenant?: string,
+): Promise<void> {
+  const q = new URLSearchParams();
+  q.set("scope", scope);
+  if (scopeId) q.set("scope_id", scopeId);
+  if (tenant) q.set("tenant", tenant);
+  const resp = await fetch(baseURL + `/v1/_limits?${q.toString()}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) return;
+    const body = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+  }
 }

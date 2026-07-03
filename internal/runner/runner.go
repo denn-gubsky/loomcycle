@@ -93,6 +93,11 @@ var (
 	// quiescing for a snapshot; retry after resume. Wire: HTTP 503 / gRPC
 	// Unavailable.
 	ErrRuntimePaused = errors.New("runtime paused")
+	// ErrTokenLimitExceeded — a per-scope token budget's HARD ceiling is at/over
+	// its month-to-date cap, so the run is refused at admission (RFC AW). The
+	// operator/tenant/user has spent its monthly token budget; retry next month
+	// or raise the limit. Wire: HTTP 429 / gRPC ResourceExhausted.
+	ErrTokenLimitExceeded = errors.New("token_limit_exceeded")
 	// ErrInternal — unexpected error from store / loop / providers.
 	// Wire: HTTP 500 / gRPC Internal.
 	ErrInternal = errors.New("internal error")

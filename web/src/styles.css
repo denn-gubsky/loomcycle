@@ -6158,3 +6158,125 @@ button.primary:disabled {
   color: var(--accent);
   font-size: 11px;
 }
+
+/* --- RFC AW: per-scope token budgets (LimitsView) --------------------------
+   Mirrors the .usage-* console conventions (--bg-soft cards, --mono table). */
+.limits-view {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+}
+.limits-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.limits-header h1 {
+  margin: 0;
+}
+.limits-sub {
+  margin: 4px 0 0;
+  color: var(--fg-soft);
+  font-size: 13px;
+  max-width: 62ch;
+}
+.limits-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+.limits-tenant {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+/* Add-budget row: same soft card as .usage-controls, laid out inline. */
+.limits-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--lc-radius-sm);
+}
+.limits-add-label {
+  color: var(--fg-soft);
+  font-size: 12px;
+  margin-right: 4px;
+}
+.limits-add-err {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+}
+.limits-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.limits-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.limits-table th,
+.limits-table td {
+  text-align: left;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.limits-table th {
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+.limits-table th.num,
+.limits-table td.num {
+  text-align: right;
+}
+.limits-table tbody tr:hover {
+  background: var(--bg-soft-2);
+}
+.limits-scopeid {
+  color: var(--fg-soft);
+}
+.limits-num {
+  width: 10ch;
+  text-align: right;
+  font-family: var(--mono);
+}
+.limits-row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.limits-remove {
+  color: var(--failed);
+}
+.limits-row-err {
+  margin: 0;
+}
+
+/* limit crossing in the run terminal (TerminalTranscript): a colored banner
+   line — amber for a soft warning, red for a hard cap. The row keeps the
+   terminal grid (.tl-row); these only recolor + embolden the message cell. */
+.limit-banner .tl-payload {
+  font-weight: 600;
+}
+.limit-banner.soft .tl-payload {
+  color: #fbbf24;
+}
+.limit-banner.hard .tl-payload {
+  color: var(--failed);
+}

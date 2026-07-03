@@ -8,6 +8,7 @@ import {
   Camera,
   Coins,
   FolderTree,
+  Gauge,
   HardDrive,
   Library,
   ListTree,
@@ -81,6 +82,11 @@ const NAV_ITEMS: NavItem[] = [
   // ScopeTenant-gated and the handler tenant-scopes the aggregation (a tenant
   // operator sees only its own tenant's spend; admin sees all + ?tenant=).
   { to: "/usage", label: "usage", Icon: Coins, vis: "tenant" },
+  // limits: per-scope monthly token budgets (RFC AW). Tenant-visible: GET/PUT/
+  // DELETE /v1/_limits is ScopeTenant-gated and the handler tenant-scopes the
+  // rows + confines writes (a tenant operator manages only its own tenant +
+  // users; admin sees all + ?tenant=).
+  { to: "/limits", label: "limits", Icon: Gauge, vis: "tenant" },
   { to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
 ];
 
