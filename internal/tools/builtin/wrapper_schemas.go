@@ -34,6 +34,7 @@ var mcpWrapperSchemas = map[string]string{
 	"memorybackenddef": memoryBackendDefInputSchema,
 	"operatortokendef": operatorTokenDefInputSchema,
 	"volumedef":        volumeDefInputSchema,
+	"credentialdef":    credentialDefInputSchema,
 	"evaluation":       evaluationInputSchema,
 	"context":          contextInputSchema,
 	"path":             pathInputSchema,

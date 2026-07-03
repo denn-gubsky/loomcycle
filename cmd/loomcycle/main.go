@@ -45,6 +45,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -882,6 +883,14 @@ func main() {
 	}
 	allTools = append(allTools, volumeDefTool)
 
+	// RFC AR — the CredentialDef tool (secure per-tenant credential store).
+	// Engine (store + Sealer) is late-bound below, once the store + the master
+	// key (LOOMCYCLE_SECRET_KEY) are available. In-loop with tenant/user/agent
+	// scope isolation; the plaintext value is masked from the persisted
+	// transcript at store time (see maskCredentialCreateValue).
+	credentialDefTool := &builtin.CredentialDef{}
+	allTools = append(allTools, credentialDefTool)
+
 	// RFC AL — the Path tool (Unix-like VFS over the dirents substrate). Store
 	// late-bound below alongside the other substrate tools.
 	pathTool := &builtin.Path{}
@@ -1265,6 +1274,15 @@ func main() {
 	agentDefTool.Store = storeIface
 	skillDefTool.Store = storeIface
 	volumeDefTool.Store = storeIface
+	// RFC AR — build the credential Sealer (per-tenant AES-GCM under the master
+	// KEK) + Engine now that the store exists. A malformed LOOMCYCLE_SECRET_KEY
+	// is fatal (fail-closed); an empty key leaves the inline backend disabled.
+	credSealer, credErr := credential.NewSealer(cfg.Env.SecretKey, cfg.Env.SecretKeyPrevious)
+	if credErr != nil {
+		log.Fatalf("credential: invalid LOOMCYCLE_SECRET_KEY: %v", credErr)
+	}
+	credEngine := credential.NewEngine(storeIface, credSealer)
+	credentialDefTool.Engine = credEngine
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface
 	skillTool.Store = storeIface

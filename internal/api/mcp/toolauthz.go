@@ -54,6 +54,7 @@ var tenantConfinableTools = map[string]bool{
 	"webhookdef":       true,
 	"memorybackenddef": true,
 	"volumedef":        true,
+	"credentialdef":    true, // RFC AR — tenant/user-confined secure credential store
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,

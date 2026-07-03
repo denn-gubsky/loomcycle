@@ -222,6 +222,14 @@ type Connector interface {
 	// dispatch through this single Connector method.
 	VolumeDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// CredentialDef — RFC AR secure per-tenant credential store. Op-discriminated
+	// (create / get / list / delete). TENANT-CONFINED (ScopeTenant): the tool
+	// stamps the caller's authoritative tenant, and for scope=user the caller's
+	// OWN subject (per-user tokens). get/list return metadata only — never a
+	// secret. Reachable via the MCP meta-tool `credentialdef` and in-band
+	// (allowed_tools:[CredentialDef]); dispatches through this single method.
+	CredentialDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

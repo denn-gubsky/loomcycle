@@ -486,6 +486,14 @@ func (s *Server) VolumeDef(ctx context.Context, input json.RawMessage) (connecto
 	return s.dispatchBuiltin(ctx, "VolumeDef", input)
 }
 
+// CredentialDef dispatches to the RFC AR secure credential store tool. In the
+// per-agent dispatcher (s.tools), so it routes through dispatchBuiltin; what the
+// MCP `credentialdef` meta-tool + in-band calls reach. Tenant/user identity comes
+// from the operator-trust ctx the transport stamped, never the wire.
+func (s *Server) CredentialDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	return s.dispatchBuiltin(ctx, "CredentialDef", input)
+}
+
 func (s *Server) Evaluation(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
 	return s.dispatchBuiltin(ctx, "Evaluation", input)
 }
