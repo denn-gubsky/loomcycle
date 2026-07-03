@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -154,22 +155,70 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		return errResult(err.Error()), nil
 	}
 	prefix := dirPrefix(canonical)
-	var rows []store.DirentRow
+
+	// Recursive ls returns every descendant dirent, flat (full paths).
 	if in.Recursive {
-		rows, err = p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, prefix)
-	} else {
-		rows, err = p.Store.DirentList(ctx, tenantID, scope, scopeID, prefix)
+		rows, err := p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, prefix)
+		if err != nil {
+			return errResult("ls: " + err.Error()), nil
+		}
+		entries := make([]pathEntry, 0, len(rows))
+		for _, r := range rows {
+			if in.KindFilter != "" && r.Kind != in.KindFilter {
+				continue
+			}
+			entries = append(entries, pathEntry{Name: r.Name, Kind: r.Kind, FullPath: r.ParentPath + r.Name, ResourceRef: r.ResourceRef})
+		}
+		return jsonResult(map[string]any{"path": canonical, "entries": entries})
 	}
+
+	// One-level ls. Directories are IMPLICIT (S3-style, RFC AL): a document at
+	// /a/b/c writes a dirent under parent_path=/a/b/ but no row for /a or /a/b.
+	// A plain DirentList (exact parent match) would therefore return only the
+	// explicit direct children (leaves + mkdir'd dirs) and hide the /a/b
+	// "folder" that clearly exists. So scan the subtree once and synthesize the
+	// immediate child directories from descendants' parent paths. (Path segments
+	// are ASCII per pathSegmentRe, so byte-index splitting is safe; ls is an
+	// operator/agent op over a per-scope tree, not a run hot-path.)
+	rows, err := p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, prefix)
 	if err != nil {
 		return errResult("ls: " + err.Error()), nil
 	}
 	entries := make([]pathEntry, 0, len(rows))
+	seen := make(map[string]bool)     // explicit direct-child names (leaf or dir)
+	implicit := make(map[string]bool) // synthesized child-directory names
 	for _, r := range rows {
-		if in.KindFilter != "" && r.Kind != in.KindFilter {
+		if r.ParentPath == prefix {
+			// An explicit direct child.
+			seen[r.Name] = true
+			if in.KindFilter != "" && r.Kind != in.KindFilter {
+				continue
+			}
+			entries = append(entries, pathEntry{Name: r.Name, Kind: r.Kind, FullPath: r.ParentPath + r.Name, ResourceRef: r.ResourceRef})
 			continue
 		}
-		entries = append(entries, pathEntry{Name: r.Name, Kind: r.Kind, FullPath: r.ParentPath + r.Name, ResourceRef: r.ResourceRef})
+		// A deeper descendant: its first segment below prefix is an implicit
+		// directory child of the listed path.
+		rest := strings.TrimPrefix(r.ParentPath, prefix)
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			rest = rest[:i]
+		}
+		if rest != "" {
+			implicit[rest] = true
+		}
 	}
+	// Add implicit directories that aren't shadowed by an explicit direct child
+	// (a mkdir'd directory of the same name wins). Skipped when a kind_filter
+	// excludes directories.
+	if in.KindFilter == "" || in.KindFilter == "directory" {
+		for name := range implicit {
+			if seen[name] {
+				continue
+			}
+			entries = append(entries, pathEntry{Name: name, Kind: "directory", FullPath: prefix + name})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return jsonResult(map[string]any{"path": canonical, "entries": entries})
 }
 
