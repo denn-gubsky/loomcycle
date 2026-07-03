@@ -266,6 +266,54 @@ class LoomcycleClient:
             _raise_from_grpc(e)
         return [_agent_to_dict(a) for a in resp.agents]
 
+    async def usage_report(
+        self,
+        *,
+        group_by: Sequence[str] = (),
+        from_time: str = "",
+        to_time: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """Aggregated token-usage + cost report (RFC AV). Group by any of
+        ``tenant``/``user``/``provider``/``model``/``source`` over an optional
+        RFC3339 window (``from_time``/``to_time``); group by ``source`` for the
+        operator-vs-tenant split. Tenant-scoped server-side (a tenant principal
+        sees only its own tenant; ``tenant`` is an admin-only focus). Returns
+        ``{"group_by": [...], "rows": [{...}, ...]}``."""
+        try:
+            resp = await self._stub.UsageReport(
+                pb.UsageReportRequest(
+                    group_by=list(group_by),
+                    from_time=from_time,
+                    to_time=to_time,
+                    tenant=tenant,
+                ),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "group_by": list(resp.group_by),
+            "rows": [
+                {
+                    "tenant_id": r.tenant_id,
+                    "user_id": r.user_id,
+                    "provider": r.provider,
+                    "model": r.model,
+                    "credential_source": r.credential_source,
+                    "input_tokens": r.input_tokens,
+                    "output_tokens": r.output_tokens,
+                    "cache_creation_tokens": r.cache_creation_tokens,
+                    "cache_read_tokens": r.cache_read_tokens,
+                    "cost": r.cost,
+                    "currency": r.currency,
+                    "call_count": r.call_count,
+                    "unpriced_calls": r.unpriced_calls,
+                }
+                for r in resp.rows
+            ],
+        }
+
     async def get_transcript(self, session_id: str) -> Sequence[Mapping[str, Any]]:
         """Read the full event log for a session. Each entry is a
         dict with ``seq``, ``run_id``, ``ts``, ``type``, ``payload``

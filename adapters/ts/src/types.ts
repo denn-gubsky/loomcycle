@@ -1920,3 +1920,38 @@ export interface LLMEmbeddingsResponse {
   model: string;
   usage: LLMEmbeddingsUsage;
 }
+
+// --- RFC AV: token-usage & cost report (GET /v1/_usage) ---
+
+/** A whitelisted grouping dimension for the usage report. */
+export type UsageDimension =
+  | "tenant"
+  | "user"
+  | "provider"
+  | "model"
+  | "source";
+
+/** One grouped row of a usage report; only the grouped dimensions are set. */
+export interface UsageAggregate {
+  tenant_id?: string;
+  user_id?: string;
+  provider?: string;
+  model?: string;
+  /** operator | tenant | user */
+  credential_source?: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  cost: number;
+  currency?: string;
+  call_count: number;
+  unpriced_calls: number;
+}
+
+export interface UsageReportResponse {
+  group_by: string[];
+  from?: string;
+  to?: string;
+  rows: UsageAggregate[];
+}
