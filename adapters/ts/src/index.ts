@@ -259,6 +259,10 @@ export type {
   LLMEmbeddingsOptions,
   LLMEmbeddingsResponse,
   LLMEmbeddingsUsage,
+  // RFC AV usage/cost report
+  UsageDimension,
+  UsageAggregate,
+  UsageReportResponse,
 } from "./types.js";
 
 export {

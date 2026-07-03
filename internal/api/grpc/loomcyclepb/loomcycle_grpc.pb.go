@@ -48,6 +48,7 @@ const (
 	Loomcycle_GetAgent_FullMethodName            = "/loomcycle.v1.Loomcycle/GetAgent"
 	Loomcycle_CancelAgent_FullMethodName         = "/loomcycle.v1.Loomcycle/CancelAgent"
 	Loomcycle_ListUserAgents_FullMethodName      = "/loomcycle.v1.Loomcycle/ListUserAgents"
+	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
 	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
 	Loomcycle_RegisterHook_FullMethodName        = "/loomcycle.v1.Loomcycle/RegisterHook"
 	Loomcycle_ListHooks_FullMethodName           = "/loomcycle.v1.Loomcycle/ListHooks"
@@ -152,6 +153,13 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET /v1/users/{user_id}/agents.
 	ListUserAgents(ctx context.Context, in *ListUserAgentsRequest, opts ...grpc.CallOption) (*ListUserAgentsResponse, error)
+	// UsageReport aggregates the token-usage + cost ledger (RFC AV): summed
+	// tokens + cost grouped by the requested dimensions over an optional tenant +
+	// time window. Tenant-scoped like the HTTP twin (a substrate:tenant caller is
+	// confined to its own tenant; admin sees all + an optional tenant focus).
+	//
+	// Mirrors GET /v1/_usage.
+	UsageReport(ctx context.Context, in *UsageReportRequest, opts ...grpc.CallOption) (*UsageReportResponse, error)
 	// Health is the liveness probe. Returns build identifier + uptime.
 	//
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -473,6 +481,16 @@ func (c *loomcycleClient) ListUserAgents(ctx context.Context, in *ListUserAgents
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListUserAgentsResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_ListUserAgents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) UsageReport(ctx context.Context, in *UsageReportRequest, opts ...grpc.CallOption) (*UsageReportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UsageReportResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_UsageReport_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -896,6 +914,13 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET /v1/users/{user_id}/agents.
 	ListUserAgents(context.Context, *ListUserAgentsRequest) (*ListUserAgentsResponse, error)
+	// UsageReport aggregates the token-usage + cost ledger (RFC AV): summed
+	// tokens + cost grouped by the requested dimensions over an optional tenant +
+	// time window. Tenant-scoped like the HTTP twin (a substrate:tenant caller is
+	// confined to its own tenant; admin sees all + an optional tenant focus).
+	//
+	// Mirrors GET /v1/_usage.
+	UsageReport(context.Context, *UsageReportRequest) (*UsageReportResponse, error)
 	// Health is the liveness probe. Returns build identifier + uptime.
 	//
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -1125,6 +1150,9 @@ func (UnimplementedLoomcycleServer) CancelAgent(context.Context, *CancelAgentReq
 }
 func (UnimplementedLoomcycleServer) ListUserAgents(context.Context, *ListUserAgentsRequest) (*ListUserAgentsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListUserAgents not implemented")
+}
+func (UnimplementedLoomcycleServer) UsageReport(context.Context, *UsageReportRequest) (*UsageReportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UsageReport not implemented")
 }
 func (UnimplementedLoomcycleServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
@@ -1404,6 +1432,24 @@ func _Loomcycle_ListUserAgents_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).ListUserAgents(ctx, req.(*ListUserAgentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_UsageReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UsageReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).UsageReport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_UsageReport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).UsageReport(ctx, req.(*UsageReportRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2047,6 +2093,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListUserAgents",
 			Handler:    _Loomcycle_ListUserAgents_Handler,
+		},
+		{
+			MethodName: "UsageReport",
+			Handler:    _Loomcycle_UsageReport_Handler,
 		},
 		{
 			MethodName: "Health",

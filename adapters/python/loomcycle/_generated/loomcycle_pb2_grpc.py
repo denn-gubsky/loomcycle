@@ -88,6 +88,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.ListUserAgentsRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.ListUserAgentsResponse.FromString,
                 _registered_method=True)
+        self.UsageReport = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/UsageReport',
+                request_serializer=loomcycle__pb2.UsageReportRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.UsageReportResponse.FromString,
+                _registered_method=True)
         self.Health = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Health',
                 request_serializer=loomcycle__pb2.HealthRequest.SerializeToString,
@@ -376,6 +381,18 @@ class LoomcycleServicer(object):
         filtered by status.
 
         Mirrors GET /v1/users/{user_id}/agents.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UsageReport(self, request, context):
+        """UsageReport aggregates the token-usage + cost ledger (RFC AV): summed
+        tokens + cost grouped by the requested dimensions over an optional tenant +
+        time window. Tenant-scoped like the HTTP twin (a substrate:tenant caller is
+        confined to its own tenant; admin sees all + an optional tenant focus).
+
+        Mirrors GET /v1/_usage.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -819,6 +836,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.ListUserAgents,
                     request_deserializer=loomcycle__pb2.ListUserAgentsRequest.FromString,
                     response_serializer=loomcycle__pb2.ListUserAgentsResponse.SerializeToString,
+            ),
+            'UsageReport': grpc.unary_unary_rpc_method_handler(
+                    servicer.UsageReport,
+                    request_deserializer=loomcycle__pb2.UsageReportRequest.FromString,
+                    response_serializer=loomcycle__pb2.UsageReportResponse.SerializeToString,
             ),
             'Health': grpc.unary_unary_rpc_method_handler(
                     servicer.Health,
@@ -1265,6 +1287,33 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/ListUserAgents',
             loomcycle__pb2.ListUserAgentsRequest.SerializeToString,
             loomcycle__pb2.ListUserAgentsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UsageReport(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/UsageReport',
+            loomcycle__pb2.UsageReportRequest.SerializeToString,
+            loomcycle__pb2.UsageReportResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -103,6 +103,14 @@ service Loomcycle {
   // Mirrors GET /v1/users/{user_id}/agents.
   rpc ListUserAgents(ListUserAgentsRequest) returns (ListUserAgentsResponse);
 
+  // UsageReport aggregates the token-usage + cost ledger (RFC AV): summed
+  // tokens + cost grouped by the requested dimensions over an optional tenant +
+  // time window. Tenant-scoped like the HTTP twin (a substrate:tenant caller is
+  // confined to its own tenant; admin sees all + an optional tenant focus).
+  //
+  // Mirrors GET /v1/_usage.
+  rpc UsageReport(UsageReportRequest) returns (UsageReportResponse);
+
   // Health is the liveness probe. Returns build identifier + uptime.
   //
   // Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -772,6 +780,41 @@ message ListUserAgentsRequest {
 
 message ListUserAgentsResponse {
   repeated Agent agents = 1;
+}
+
+// UsageReportRequest mirrors GET /v1/_usage query params. group_by is a subset
+// of {tenant,user,provider,model,source}; an unknown dimension is rejected. from
+// / to are RFC3339 (empty = unbounded). tenant is an admin-only focus (ignored
+// for a scoped principal, which is confined to its own tenant).
+message UsageReportRequest {
+  repeated string group_by = 1;
+  // RFC3339 window bounds (empty = unbounded). Named *_time (not from/to) so the
+  // generated Python field names don't collide with the `from` keyword.
+  string from_time = 2;
+  string to_time = 3;
+  string tenant = 4;
+}
+
+// UsageAggregate is one grouped row; only the grouped dimensions are populated.
+message UsageAggregate {
+  string tenant_id = 1;
+  string user_id = 2;
+  string provider = 3;
+  string model = 4;
+  string credential_source = 5;
+  int64 input_tokens = 6;
+  int64 output_tokens = 7;
+  int64 cache_creation_tokens = 8;
+  int64 cache_read_tokens = 9;
+  double cost = 10;
+  string currency = 11;
+  int64 call_count = 12;
+  int64 unpriced_calls = 13;
+}
+
+message UsageReportResponse {
+  repeated string group_by = 1;
+  repeated UsageAggregate rows = 2;
 }
 
 // ========================

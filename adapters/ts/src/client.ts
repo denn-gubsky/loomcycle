@@ -121,6 +121,8 @@ import type {
   DocumentToolResponse,
   TranscriptResponse,
   WhoamiResponse,
+  UsageDimension,
+  UsageReportResponse,
 } from "./types.js";
 
 /** samplingToWire maps the camelCase SamplingOptions to the snake_case wire
@@ -443,6 +445,31 @@ export class LoomcycleClient {
       return all.filter((a) => a.parent_agent_id === opts.parentAgentId);
     }
     return all;
+  }
+
+  /** Aggregated token-usage + cost report (RFC AV). Group by any of
+   *  tenant/user/provider/model/source over an optional time window; group by
+   *  `source` for the operator-vs-tenant split. Tenant-scoped server-side: a
+   *  tenant principal sees only its own tenant (the `tenant` focus is
+   *  admin-only). Mirrors `GET /v1/_usage`. */
+  async usageReport(opts?: {
+    /** Dimensions to group by (default server-side: tenant,source). */
+    groupBy?: UsageDimension[];
+    /** RFC3339 window bounds (inclusive); omit for unbounded. */
+    from?: string;
+    to?: string;
+    /** Super-admin tenant focus (?tenant=); ignored for a tenant principal. */
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<UsageReportResponse> {
+    const params = new URLSearchParams();
+    if (opts?.groupBy && opts.groupBy.length > 0)
+      params.set("group_by", opts.groupBy.join(","));
+    if (opts?.from) params.set("from", opts.from);
+    if (opts?.to) params.set("to", opts.to);
+    if (opts?.tenant) params.set("tenant", opts.tenant);
+    const q = params.toString() ? `?${params.toString()}` : "";
+    return jsonFetch<UsageReportResponse>(this.ctx, `/v1/_usage${q}`, opts);
   }
 
   /** Read the full event log for a session. Each entry has seq,

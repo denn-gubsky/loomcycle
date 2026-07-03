@@ -290,6 +290,70 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	return out, nil
 }
 
+// UsageReport is the gRPC twin of GET /v1/_usage (RFC AV): grouped token-usage +
+// cost aggregation over the ledger ∪ archive. group_by is whitelist-validated;
+// tenant scope mirrors principalTenantScope — an admin/legacy caller honors the
+// optional wire tenant focus, a scoped principal is confined to its own tenant.
+func (s *Server) UsageReport(ctx context.Context, req *loomcyclepb.UsageReportRequest) (*loomcyclepb.UsageReportResponse, error) {
+	if s.store == nil {
+		return &loomcyclepb.UsageReportResponse{}, nil
+	}
+	var q store.UsageQuery
+	for _, g := range req.GetGroupBy() {
+		if _, ok := store.UsageDimColumn(store.UsageDimension(g)); !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "unknown group_by dimension: %s (allowed: tenant,user,provider,model,source)", g)
+		}
+		q.GroupBy = append(q.GroupBy, store.UsageDimension(g))
+	}
+	if v := req.GetFromTime(); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "from_time must be RFC3339: %v", err)
+		}
+		q.From = t
+	}
+	if v := req.GetToTime(); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "to_time must be RFC3339: %v", err)
+		}
+		q.To = t
+	}
+	// Tenant scope: admin/legacy honor the wire focus; a scoped principal is
+	// confined to its own tenant (req.tenant ignored).
+	if tenantID, all := grpcTenantScope(ctx); all {
+		q.TenantID = req.GetTenant()
+	} else {
+		q.TenantID = tenantID
+	}
+	rows, err := s.store.UsageReport(ctx, q)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "usage report: %v", err)
+	}
+	out := &loomcyclepb.UsageReportResponse{
+		GroupBy: req.GetGroupBy(),
+		Rows:    make([]*loomcyclepb.UsageAggregate, 0, len(rows)),
+	}
+	for _, r := range rows {
+		out.Rows = append(out.Rows, &loomcyclepb.UsageAggregate{
+			TenantId:            r.TenantID,
+			UserId:              r.UserID,
+			Provider:            r.Provider,
+			Model:               r.Model,
+			CredentialSource:    r.CredentialSource,
+			InputTokens:         r.InputTokens,
+			OutputTokens:        r.OutputTokens,
+			CacheCreationTokens: r.CacheCreationTokens,
+			CacheReadTokens:     r.CacheReadTokens,
+			Cost:                r.Cost,
+			Currency:            r.Currency,
+			CallCount:           r.CallCount,
+			UnpricedCalls:       r.UnpricedCalls,
+		})
+	}
+	return out, nil
+}
+
 // ========================
 // Transcript
 // ========================
@@ -507,6 +571,9 @@ var grpcConsumerScopes = map[string]string{
 	"SubscribeChannel":    auth.ScopeChannelRead,
 	"PeekChannel":         auth.ScopeChannelRead,
 	"ListChannels":        auth.ScopeChannelRead,
+	// RFC AV: the usage/cost report is tenant-readable (the handler tenant-scopes
+	// the aggregation), mirroring the HTTP /v1/_usage ScopeTenant gate.
+	"UsageReport": auth.ScopeTenant,
 	// RFC AF: the tenant-confined substrate plane — the 8 def families + hook
 	// management. ScopeTenant (substrate:admin still satisfies). substrateGRPCCtx
 	// stamps the principal's authoritative tenant on the def-tools, and the hook
