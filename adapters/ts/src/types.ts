@@ -993,13 +993,18 @@ export type PathToolInput = {
 };
 
 /** Input for {@link LoomcycleClient.document} — the RFC AK chunked-graph
- *  Document tool (POST /v1/_document). Op-discriminated (13 ops); requires
+ *  Document tool (POST /v1/_document). Op-discriminated (16 ops); requires
  *  SQL Memory on the sidecar. Scope agent/user (tenant deferred). */
 export type DocumentToolInput = {
+  // Op order mirrors the backend enum (internal/tools/builtin/document.go)
+  // exactly so a reader can line the two up 1:1. set_path attaches/re-homes a
+  // Path-tree name for an existing document; export_md / import_md render to /
+  // build from export_md-shaped Markdown.
   op:
     | "create_document"
     | "get_document"
     | "delete_document"
+    | "set_path"
     | "create_chunk"
     | "get_chunk"
     | "update_chunk"
@@ -1009,7 +1014,9 @@ export type DocumentToolInput = {
     | "unlink_chunks"
     | "query_chunks"
     | "define_type"
-    | "list_types";
+    | "list_types"
+    | "export_md"
+    | "import_md";
   scope?: "agent" | "user";
   /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
   id?: string;
@@ -1036,6 +1043,14 @@ export type DocumentToolInput = {
   limit?: number;
   /** define/list_types: the type name. */
   name?: string;
+  /** export_md: embed round-trippable chunk metadata + edges as HTML comments
+   *  (default true server-side). false = clean human-facing Markdown. */
+  include_metadata?: boolean;
+  /** import_md: an export_md-shaped Markdown document (headings = hierarchy;
+   *  `<!-- loom: ... -->` metadata; `<!-- loom-edges: ... -->` trailer). Omit
+   *  document_id to create a new document; pass it (+ optional parent_id) to
+   *  import under an existing chunk. */
+  markdown?: string;
   [extra: string]: unknown;
 };
 

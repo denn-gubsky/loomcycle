@@ -62,6 +62,20 @@ export function authHeaders(ctx: _FetchContext): Record<string, string> {
   return h;
 }
 
+/** queryString turns an optional param map into a leading-`?` query
+ *  string, dropping empty-valued entries. Returns "" for an absent or
+ *  all-empty map so a caller that passes no query builds the same URL as
+ *  before. Insertion order is preserved (URLSearchParams is stable). */
+function queryString(query?: Record<string, string>): string {
+  if (!query) return "";
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(query)) {
+    if (v) qs.set(k, v);
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
 /** jsonFetch performs a GET and unwraps the JSON body. Non-2xx
  *  status maps to a typed error via raiseFromResponse. */
 export async function jsonFetch<T>(
@@ -82,12 +96,14 @@ export async function jsonFetch<T>(
 
 /** postJSON sends a JSON-encoded body and unwraps the response.
  *  When `body` is undefined, no body is sent (Content-Type
- *  omitted). */
+ *  omitted). `opts.query` appends URL query params (empty-valued
+ *  entries are dropped; an all-empty/absent map yields no `?`, so
+ *  existing callers produce a byte-identical URL). */
 export async function postJSON<T>(
   ctx: _FetchContext,
   path: string,
   body?: unknown,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; query?: Record<string, string> },
 ): Promise<T> {
   const headers = authHeaders(ctx);
   let bodyStr: string | undefined;
@@ -95,7 +111,7 @@ export async function postJSON<T>(
     headers["Content-Type"] = "application/json";
     bodyStr = JSON.stringify(body);
   }
-  const resp = await ctx.fetchImpl(ctx.baseUrl + path, {
+  const resp = await ctx.fetchImpl(ctx.baseUrl + path + queryString(opts?.query), {
     method: "POST",
     headers,
     body: bodyStr,
