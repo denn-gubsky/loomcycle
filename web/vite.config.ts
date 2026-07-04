@@ -15,6 +15,10 @@ import react from "@vitejs/plugin-react";
 const webRoot = path.dirname(fileURLToPath(import.meta.url));
 const libSrc = path.resolve(webRoot, "../packages/library/src/index.ts");
 const libStyles = path.resolve(webRoot, "../packages/library/src/styles.css");
+// @loomcycle/explorer (RFC AZ) — consumed from SOURCE the same way as
+// @loomcycle/library. Same styles-key-first ordering rationale as above.
+const explorerSrc = path.resolve(webRoot, "../packages/explorer/src/index.ts");
+const explorerStyles = path.resolve(webRoot, "../packages/explorer/src/styles.css");
 
 // loomcycle UI build configuration.
 //
@@ -36,6 +40,8 @@ export default defineConfig({
     alias: {
       "@loomcycle/library/styles.css": libStyles,
       "@loomcycle/library": libSrc,
+      "@loomcycle/explorer/styles.css": explorerStyles,
+      "@loomcycle/explorer": explorerSrc,
     },
     // We consume @loomcycle/library from SOURCE, which imports `react` /
     // `react-dom` (and the JSX runtime). Because the package has its OWN

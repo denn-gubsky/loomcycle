@@ -7,7 +7,9 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@loomcycle/library": ["../packages/library/src/index.ts"]
+      "@loomcycle/library": ["../packages/library/src/index.ts"],
+      "@loomcycle/explorer": ["../packages/explorer/src/index.ts"],
+      "@loomcycle/explorer/styles.css": ["../packages/explorer/src/styles.css"]
     },
     "strict": true,
     "noUnusedLocals": true,

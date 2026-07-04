@@ -1,397 +1,71 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import {
-  type BrowseScope,
-  type DocScope,
-  type PathEntry,
-  type PathScope,
-  documentDelete,
-  documentCreate,
-  pathLs,
-  pathMkdir,
-  pathMv,
-  pathRm,
-} from "../api";
-import { useFocusTenant, useUserId } from "../components/Layout";
-import Splitter from "../components/Splitter";
-import DocumentViewer from "../components/DocumentViewer";
-import PathTree, {
-  buildPathTree,
-  collectDocumentIds,
-  parentPathOf,
-  type PathNode,
-} from "../components/PathTree";
+import { PathExplorer } from "@loomcycle/explorer";
+import { useFocusTenant, usePrincipal, useUserId } from "../components/Layout";
+import DocumentAssistantPanel from "../components/DocumentAssistantPanel";
+import type { DocScope } from "../api";
 
-// PathTreeView is the RFC AM Phase 1 Path console: the unified dirent tree
-// (RFC AL) with directory + document CRUD. Identity (tenant + the user-scope
-// id) is resolved server-side from the cookie principal — the page sends only
-// `scope`, which is the subtree SELECTOR, not an authority grant. Defaults to
-// `user` scope so the tree lines up with the principal's own agent runs.
+// PathTreeView is a thin wrapper around the standalone <PathExplorer> component
+// from @loomcycle/explorer (RFC AZ). The full Path VFS console — the dirent tree
+// with folder/document CRUD and the inline chunked-graph Document viewer/editor —
+// now lives in the package; web consumes its SOURCE via a Vite alias so this
+// build compiles it.
+//
+// CSS: we deliberately do NOT `import "@loomcycle/explorer/styles.css"`. The
+// package emits the SAME class names (.paths-*, .doc-*, .chunk-*, .md, .tree,
+// .splitter*, .modal*) that web's global styles.css already styles, so the
+// existing global sheet renders the component identically with zero token drift.
+// The package ships its own scoped styles.css only for EXTERNAL hosts.
+//
+// The Document Assistant (RFC AM Phase 3) is injected via the package's
+// renderAssistant slot: the package keeps the run-stream machinery (LiveRunPane /
+// useRunStream) OUT of its bundle, so web supplies its existing
+// <DocumentAssistantPanel>. ctx.onChanged is the viewer's own reload, so a turn
+// that mutates the document refreshes the tree + selected chunk.
 
-const NAME_RE = /^[A-Za-z0-9._-]+$/;
-
-// joinPath appends a leaf segment to a canonical parent dir ("" = root).
-function joinPath(dir: string, name: string): string {
-  return `${dir}/${name}`;
-}
-
-function findNode(tree: PathNode[], fullPath: string): PathNode | undefined {
-  for (const n of tree) {
-    if (n.fullPath === fullPath) return n;
-    const hit = findNode(n.children, fullPath);
-    if (hit) return hit;
+// cookieFetch mirrors api.ts's jsonFetch transport EXACTLY: the Web UI is
+// same-origin and rides the `loomcycle_session` HttpOnly cookie (no bearer), and
+// a 401 bounces to the login page. Injecting it into the package's
+// @loomcycle/client keeps that behavior transparent. Defined at module scope so
+// its identity is stable across renders (the package memoizes its client on the
+// connection's `fetch` reference).
+const cookieFetch: typeof fetch = async (input, init) => {
+  const r = await fetch(input, { ...init, credentials: "same-origin" });
+  if (r.status === 401) {
+    window.location.assign("/ui/login");
+    // Navigation underway — never-settling so the caller doesn't flash an error
+    // mid-redirect (matches jsonFetch's redirect-then-hang contract).
+    return new Promise<Response>(() => {});
   }
-  return undefined;
-}
-
-interface ModalField {
-  key: string;
-  label: string;
-  placeholder?: string;
-  value?: string;
-}
-interface ModalState {
-  title: string;
-  message?: string;
-  fields: ModalField[];
-  submitLabel: string;
-  danger?: boolean;
-  onSubmit: (vals: Record<string, string>) => Promise<void>;
-}
+  return r;
+};
 
 export default function PathTreeView() {
-  const [scope, setScope] = useState<PathScope>("user");
-  const [entries, setEntries] = useState<PathEntry[]>([]);
-  const [selectedPath, setSelectedPath] = useState<string | undefined>(undefined);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [modal, setModal] = useState<ModalState | null>(null);
-
-  // RFC AS: the active subject + tenant focus from the topbar drive WHICH
-  // subject's tree this console browses (?scope_id= / ?tenant=). The server
-  // authorizes: an admin may target any subject/tenant; a substrate:tenant
-  // operator is confined to its own tenant but may browse any subject in it.
-  // Empty fields are omitted → the caller's own subject (default). Memoized on
-  // the primitives so changing the picked subject re-fetches without an
-  // identity-churn render loop.
+  const principal = usePrincipal();
   const userId = useUserId();
   const focusTenant = useFocusTenant();
-  const browse = useMemo<BrowseScope>(
-    () => ({ scopeId: userId || undefined, tenant: focusTenant || undefined }),
-    [userId, focusTenant],
-  );
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const resp = await pathLs("/", scope, true, browse);
-      setEntries(resp.entries ?? []);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      setEntries([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [scope, browse]);
-
-  // Reload whenever the scope changes (and on mount). Clear the selection so a
-  // stale path from the previous scope doesn't drive the detail pane.
-  useEffect(() => {
-    setSelectedPath(undefined);
-    void refresh();
-  }, [refresh]);
-
-  const tree = useMemo(() => buildPathTree(entries), [entries]);
-  const selected = useMemo(
-    () => (selectedPath ? findNode(tree, selectedPath) : undefined),
-    [tree, selectedPath],
-  );
-
-  // The directory new items are created under: the selected directory, the
-  // parent of a selected leaf, or root.
-  const currentDir = useMemo(() => {
-    if (!selected) return "";
-    return selected.kind === "directory" ? selected.fullPath : parentPathOf(selected.fullPath);
-  }, [selected]);
-  const currentDirLabel = currentDir || "/";
-
-  const canDocuments = scope !== "tenant"; // Documents are agent|user only.
-
-  const newFolder = useCallback(() => {
-    setModal({
-      title: `New folder in ${currentDirLabel}`,
-      fields: [{ key: "name", label: "Folder name", placeholder: "e.g. launches" }],
-      submitLabel: "Create",
-      onSubmit: async (v) => {
-        const name = v.name.trim();
-        if (!NAME_RE.test(name)) throw new Error("name may contain only [A-Za-z0-9._-]");
-        const p = joinPath(currentDir, name);
-        await pathMkdir(p, scope, browse);
-        await refresh();
-        setSelectedPath(p);
-      },
-    });
-  }, [currentDir, currentDirLabel, scope, browse, refresh]);
-
-  const newDocument = useCallback(() => {
-    setModal({
-      title: `New document in ${currentDirLabel}`,
-      fields: [
-        { key: "name", label: "Path name", placeholder: "e.g. launch-plan" },
-        { key: "title", label: "Title", placeholder: "e.g. Launch Plan" },
-      ],
-      submitLabel: "Create",
-      onSubmit: async (v) => {
-        const name = v.name.trim();
-        if (!NAME_RE.test(name)) throw new Error("name may contain only [A-Za-z0-9._-]");
-        const title = v.title.trim() || name;
-        const p = joinPath(currentDir, name);
-        await documentCreate(title, p, scope as DocScope, browse);
-        await refresh();
-        setSelectedPath(p);
-      },
-    });
-  }, [currentDir, currentDirLabel, scope, browse, refresh]);
-
-  const renameSelected = useCallback(() => {
-    if (!selected) return;
-    setModal({
-      title: `Rename / move ${selected.fullPath}`,
-      fields: [{ key: "to", label: "New path", value: selected.fullPath }],
-      submitLabel: "Move",
-      onSubmit: async (v) => {
-        const to = v.to.trim();
-        if (!to.startsWith("/")) throw new Error("path must start with /");
-        await pathMv(selected.fullPath, to, scope, browse);
-        await refresh();
-        setSelectedPath(to);
-      },
-    });
-  }, [selected, scope, browse, refresh]);
-
-  const deleteSelected = useCallback(() => {
-    if (!selected) return;
-    if (selected.kind === "document") {
-      const ref = selected.resourceRef as { document_id?: string } | undefined;
-      const id = ref?.document_id;
-      setModal({
-        title: `Delete document ${selected.fullPath}`,
-        message: "This deletes the document, all its chunks, and its path entry. This cannot be undone.",
-        fields: [],
-        submitLabel: "Delete",
-        danger: true,
-        onSubmit: async () => {
-          if (!id) throw new Error("this document dirent has no document_id");
-          await documentDelete(id, scope as DocScope, browse);
-          await refresh();
-          setSelectedPath(undefined);
-        },
-      });
-      return;
-    }
-    // Directory: cascade-delete contained Documents (so no orphaned content),
-    // then remove the dirent subtree. Documents only exist in agent|user scope.
-    const docIds = scope === "tenant" ? [] : collectDocumentIds(selected);
-    const childCount = selected.children.length;
-    setModal({
-      title: `Delete branch ${selected.fullPath}`,
-      message:
-        childCount === 0
-          ? "This removes the (empty) folder."
-          : `This removes the folder and everything under it` +
-            (docIds.length > 0
-              ? ` — including ${docIds.length} document(s), whose chunks are deleted.`
-              : "."),
-      fields: [],
-      submitLabel: "Delete",
-      danger: true,
-      onSubmit: async () => {
-        for (const id of docIds) {
-          await documentDelete(id, scope as DocScope, browse);
-        }
-        await pathRm(selected.fullPath, scope, true, browse);
-        await refresh();
-        setSelectedPath(undefined);
-      },
-    });
-  }, [selected, scope, browse, refresh]);
-
-  const mutable = selected && (selected.kind === "directory" || selected.kind === "document");
 
   return (
-    <>
-      <Splitter
-        className="paths-view"
-        defaultLeftWidth={420}
-        minLeftWidth={280}
-        minRightWidth={300}
-        storageKey="loomcycle.split.paths"
-      >
-        <div className="left">
-          <div className="paths-toolbar">
-            <label className="paths-scope">
-              <span>scope</span>
-              <select value={scope} onChange={(e) => setScope(e.target.value as PathScope)}>
-                <option value="user">user</option>
-                <option value="agent">agent</option>
-                <option value="tenant">tenant</option>
-              </select>
-            </label>
-            <div className="paths-toolbar-actions">
-              <button type="button" onClick={newFolder} title={`New folder in ${currentDirLabel}`}>
-                + folder
-              </button>
-              <button
-                type="button"
-                onClick={newDocument}
-                disabled={!canDocuments}
-                title={
-                  canDocuments
-                    ? `New document in ${currentDirLabel}`
-                    : "Documents are agent/user scope only"
-                }
-              >
-                + document
-              </button>
-              <button type="button" onClick={() => void refresh()} title="Reload the tree">
-                ↻
-              </button>
-            </div>
-          </div>
-          <p className="paths-context">
-            new items → <code>{currentDirLabel}</code>
-            {browse.scopeId && (
-              <>
-                {" · "}subject <code>{browse.scopeId}</code>
-              </>
-            )}
-            {browse.tenant && (
-              <>
-                {" · "}tenant <code>{browse.tenant}</code>
-              </>
-            )}
-          </p>
-          {err && <div className="paths-err">{err}</div>}
-          {loading && entries.length === 0 ? (
-            <div className="empty">
-              <p>Loading…</p>
-            </div>
-          ) : (
-            <PathTree tree={tree} selectedPath={selectedPath} onSelect={(n) => setSelectedPath(n.fullPath)} />
-          )}
-        </div>
-        <div className="right">
-          {selected ? (
-            selected.kind === "document" ? (
-              <div className="paths-doc">
-                <div className="paths-doc-head">
-                  <code className="paths-doc-path">{selected.fullPath}</code>
-                  <div className="paths-detail-actions">
-                    <button type="button" onClick={renameSelected}>
-                      rename / move
-                    </button>
-                    <button type="button" className="danger" onClick={deleteSelected}>
-                      delete
-                    </button>
-                  </div>
-                </div>
-                <DocumentViewer
-                  documentId={(selected.resourceRef as { document_id?: string })?.document_id ?? ""}
-                  scope={scope === "agent" ? "agent" : "user"}
-                  titleHint={selected.name}
-                  browse={browse}
-                />
-              </div>
-            ) : (
-              <div className="paths-detail">
-                <h2>
-                  <span className="paths-detail-kind">{selected.kind}</span>
-                  <code>{selected.fullPath}</code>
-                </h2>
-                <dl className="paths-detail-meta">
-                  <dt>scope</dt>
-                  <dd>{scope}</dd>
-                  <dt>stored</dt>
-                  <dd>{selected.explicit ? "yes" : "implicit (no entry)"}</dd>
-                </dl>
-                {mutable ? (
-                  <div className="paths-detail-actions">
-                    <button type="button" onClick={renameSelected}>
-                      rename / move
-                    </button>
-                    <button type="button" className="danger" onClick={deleteSelected}>
-                      delete
-                    </button>
-                  </div>
-                ) : (
-                  <p className="paths-readonly">
-                    Read-only — {selected.kind} entries are managed by their own tool.
-                  </p>
-                )}
-              </div>
-            )
-          ) : (
-            <div className="empty">
-              <p>Select a path on the left, or create a folder / document.</p>
-            </div>
-          )}
-        </div>
-      </Splitter>
-      {modal && <PromptModal state={modal} onClose={() => setModal(null)} />}
-    </>
-  );
-}
-
-// PromptModal is a minimal create/rename/confirm dialog reusing the shared
-// .modal-* anchors. Zero fields + a message renders a confirm; submit errors
-// (incl. tool refusals surfaced by substratePost) show inline.
-function PromptModal({ state, onClose }: { state: ModalState; onClose: () => void }) {
-  const [vals, setVals] = useState<Record<string, string>>(() =>
-    Object.fromEntries(state.fields.map((f) => [f.key, f.value ?? ""])),
-  );
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setErr(null);
-    try {
-      await state.onSubmit(vals);
-      onClose();
-    } catch (ex) {
-      setErr(ex instanceof Error ? ex.message : String(ex));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <h3>{state.title}</h3>
-        {state.message && <p className="modal-context">{state.message}</p>}
-        {state.fields.map((f, i) => (
-          <label key={f.key} className="path-field">
-            <span>{f.label}</span>
-            <input
-              className="path-modal-input"
-              value={vals[f.key]}
-              placeholder={f.placeholder}
-              autoFocus={i === 0}
-              onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))}
-            />
-          </label>
-        ))}
-        {err && <div className="modal-err">{err}</div>}
-        <div className="modal-buttons">
-          <button type="button" onClick={onClose} disabled={busy}>
-            cancel
-          </button>
-          <button type="submit" className={state.danger ? "danger" : "primary"} disabled={busy}>
-            {busy ? "working…" : state.submitLabel}
-          </button>
-        </div>
-      </form>
-    </div>
+    <PathExplorer
+      connection={{ baseUrl: "", fetch: cookieFetch }}
+      principal={principal ?? undefined}
+      // RFC AS browse-by-subject: the topbar user/tenant picker drives WHICH
+      // subject's tree this console browses (?scope_id= / ?tenant=). Empty →
+      // the caller's own subject. The server re-authorizes.
+      browse={{ scopeId: userId || undefined, tenant: focusTenant || undefined }}
+      renderAssistant={(ctx) => (
+        <DocumentAssistantPanel
+          documentId={ctx.documentId}
+          scope={ctx.scope as DocScope}
+          // The package's slot ctx does not thread the live chunk selection, so
+          // the assistant grounds itself via its own Document tool (query_chunks)
+          // rather than a prefilled outline. onChanged refreshes the viewer at
+          // each turn boundary; onStopped also refreshes (the panel's LiveRunPane
+          // shows the terminal state / error inline).
+          chunks={[]}
+          selectedChunk={null}
+          onChanged={() => ctx.onChanged?.()}
+          onStopped={() => ctx.onChanged?.()}
+        />
+      )}
+    />
   );
 }

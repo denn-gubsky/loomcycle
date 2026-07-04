@@ -196,6 +196,12 @@ jobs:
       - name: Install @loomcycle/library deps
         working-directory: packages/library
         run: npm ci
+      # @loomcycle/explorer (RFC AZ) is consumed from SOURCE via a Vite alias
+      # the same way — install its react / @loomcycle/client deps before the web
+      # steps (packages/explorer/node_modules is gitignored → absent on checkout).
+      - name: Install @loomcycle/explorer deps
+        working-directory: packages/explorer
+        run: npm ci
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test
