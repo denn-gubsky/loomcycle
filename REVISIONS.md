@@ -8,6 +8,50 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.12.0
+
+**🔑 `providers:operator-key` scope — gate the operator-API-key fallback (RFC AX).**
+RFC AR let a tenant bring its **own** provider key (an override); the *fallback*
+to the operator's host key on a miss was unconditional, so any tenant could spend
+the operator's LLM/search budget just by not bringing a key. RFC AX adds a scope
+that gates that fallback, enabling **cost-isolated, bring-your-own-key tenants**.
+`@loomcycle/client` + the Python adapter are unchanged (server-side auth feature,
+no new adapter method).
+
+Behind a **default-off gate `LOOMCYCLE_OPERATOR_KEY_RESTRICTION`**, a run whose
+principal lacks the (tenant-implied) `providers:operator-key` scope is
+**restricted** — it may use only providers it can key itself. **Gate-off ⇒
+byte-identical behavior** — nothing changes for an existing deployment until you
+opt in.
+
+- **Two-layer enforcement.** *Layer 1 — credential-aware routing* (admission): the
+  server precomputes the providers a restricted tenant can key (metadata-only, no
+  decrypt) and the resolver skips the rest, routing to a keyable provider or
+  refusing **403** (`operator_key_restricted` / gRPC `PermissionDenied`) when none
+  remain — the resolver stays lock-free. *Layer 2 — driver backstop* (mandatory):
+  a restricted run that reaches a driver's operator-key fallback is refused, never
+  served the operator's key — covering **pinned agents** (which skip routing) and
+  any gap.
+- **Universal + backward-safe.** The permission rides a negative
+  `OperatorKeyRestricted` bit (fail-open) + an additive `runs.operator_key_restricted`
+  column (migration 0055, both backends); it's stamped at every run-start,
+  inherited by sub-agents, restored on resume, captured on Schedule/Webhook
+  trigger defs (anti-bypass), derived from the authenticated peer's scopes for
+  A2A, and fail-closed on the LLM gateway + embeddings + compaction.
+- **Managed at token mint** — grant `providers:operator-key` in the Web UI scope
+  list (or omit it, with granular scopes, to restrict a tenant); no new endpoint.
+
+**Restricting a tenant:** set the gate, mint that tenant's tokens with granular
+scopes that omit `providers:operator-key` (and `substrate:tenant`/`substrate:admin`,
+which imply it), and give the tenant its own `CredentialDef` keys.
+
+**Known carve-outs** (out of RFC AX's scope of provider LLM keys + WebSearch): a
+restricted run's in-run **Memory semantic-embed** still uses the operator's
+embedder key (BYO-embedder is a future enhancement; the `/v1/embeddings` gateway
+endpoint conservatively refuses restricted principals).
+
+---
+
 ## What's in v1.11.1
 
 **🩹 Web UI patch.** Two operator-console fixes on top of v1.11.0; the only wire

@@ -142,7 +142,7 @@ Notes:
 name: loomcycle
 services:
   loomcycle-migrate:
-    image: denngubsky/loomcycle:1.11.1
+    image: denngubsky/loomcycle:1.12.0
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -151,7 +151,7 @@ services:
     environment:
       LOOMCYCLE_STORAGE_BACKEND: postgres
   loomcycle:
-    image: denngubsky/loomcycle:1.11.1
+    image: denngubsky/loomcycle:1.12.0
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
