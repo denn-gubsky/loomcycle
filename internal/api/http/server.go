@@ -6025,7 +6025,18 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	if !splitOK {
 		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"}, nil
 	}
-	summary, serr := loop.Summarize(ctx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
+	// RFC AX: compaction summarizes via a provider.Call made OUTSIDE the run loop,
+	// so the summary ctx must carry the same credential context a run's loopCtx does
+	// (mirrors resume.go). Without WithOperatorKeyAllowed the driver backstop is
+	// inert (fail-open) and a restricted run's summary would spend the operator's
+	// key — Layer-1 routing above skips PINNED agents, so this Layer-2 stamp is the
+	// guarantee; and without the resolver/identity a restricted tenant's OWN key
+	// would be ignored (mis-attributed + wrongly refused).
+	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
+	summCtx = providers.WithOperatorKeyAllowed(summCtx, !run.OperatorKeyRestricted)
+	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID})
+	summCtx = tools.WithAgentName(summCtx, run.Agent)
+	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
 	if serr != nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusBadGateway, msg: "summarize: " + serr.Error()}
 	}

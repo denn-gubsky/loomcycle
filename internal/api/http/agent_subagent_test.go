@@ -30,6 +30,11 @@ type scriptedProvider struct {
 	calls    atomic.Int32
 	scripts  [][]providers.Event
 	defaultS []providers.Event // returned for any call past len(scripts)
+	// lastOpKeyAllowed records providers.OperatorKeyAllowed(ctx) from the most
+	// recent Call — RFC AX regression: a restricted run's provider calls (incl.
+	// the compaction summary call, which runs outside the loop) must execute under
+	// a ctx where this is false, so the driver backstop denies the operator key.
+	lastOpKeyAllowed atomic.Bool
 }
 
 func (s *scriptedProvider) ID() string                    { return "scripted" }
@@ -40,7 +45,8 @@ func (s *scriptedProvider) ListModels(_ context.Context) ([]string, error) {
 func (s *scriptedProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }
-func (s *scriptedProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
+func (s *scriptedProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	s.lastOpKeyAllowed.Store(providers.OperatorKeyAllowed(ctx))
 	idx := int(s.calls.Add(1)) - 1
 	var events []providers.Event
 	if idx < len(s.scripts) {
