@@ -2655,7 +2655,15 @@ button.primary:disabled {
   padding: 10px 16px;
   color: var(--fg-soft);
   text-decoration: none;
+  /* The @loomcycle/library <Library> renders these tabs as <button>s (they
+   * used to be anchors). Without these resets the browser's default button
+   * chrome (grey fill + border) leaks through — web styles the library from
+   * this global sheet, NOT the package's scoped styles.css, so it must carry
+   * the same resets the package's `.loomcycle-library .library-subtab` does. */
+  border: 0;
   border-bottom: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
   font-size: 13px;
 }
 .library-subtab:hover {
