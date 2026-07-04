@@ -125,7 +125,7 @@ export default function LibraryEditModal({
     pickString(forkSource?.definition, "code_body"),
   );
   const [allowedTools, setAllowedTools] = useState(
-    pickStringArray(forkSource?.definition, "allowed_tools").join(", "),
+    pickStringArray(forkSource?.definition, "tools").join(", "),
   );
   const [agentSkills, setAgentSkills] = useState(
     pickStringArray(forkSource?.definition, "skills").join(", "),
@@ -220,7 +220,7 @@ export default function LibraryEditModal({
     pickString(forkSource?.definition, "body"),
   );
   const [skillAllowedTools, setSkillAllowedTools] = useState<string>(
-    pickStringArray(forkSource?.definition, "allowed_tools").join(", "),
+    pickStringArray(forkSource?.definition, "tools").join(", "),
   );
 
   // --- MCP-flavor specific
@@ -392,7 +392,7 @@ export default function LibraryEditModal({
       // doesn't write a "" body.
       if (codeBody.trim()) ov.code_body = codeBody;
       const tools = parseCommaList(allowedTools);
-      if (tools.length > 0) ov.allowed_tools = tools;
+      if (tools.length > 0) ov.tools = tools;
       const sk = parseCommaList(agentSkills);
       if (sk.length > 0) ov.skills = sk;
       const provs = parseCommaList(agentProviders);
@@ -467,7 +467,7 @@ export default function LibraryEditModal({
       const ov: Record<string, unknown> = { body: skillBody };
       if (description.trim()) ov.description = description.trim();
       const tools = parseCommaList(skillAllowedTools);
-      if (tools.length > 0) ov.allowed_tools = tools;
+      if (tools.length > 0) ov.tools = tools;
       return ov;
     }
     // mcp-server
@@ -910,7 +910,7 @@ function AgentFields(props: AgentFieldsProps) {
 
       <div className="library-form-row">
         <label htmlFor="lib-allowed-tools">
-          allowed_tools
+          tools
           <span className="library-modal-field-hint">
             {" "}— comma-separated tool names (Read, WebFetch, Memory…)
           </span>
@@ -1316,7 +1316,7 @@ function SkillFields(props: {
     <>
       <div className="library-form-row">
         <label htmlFor="lib-skill-tools">
-          allowed_tools
+          tools
           <span className="library-modal-field-hint">
             {" "}— comma-separated; must be a subset of the calling agent's tools
           </span>
@@ -1651,7 +1651,7 @@ const STRUCTURED_AGENT_KEYS = new Set<string>([
   "effort",
   "system_prompt",
   "code_body",
-  "allowed_tools",
+  "tools",
   "skills",
   "providers",
   "max_tokens",
@@ -1817,7 +1817,7 @@ function parseAdvancedOverlay(
 
 // parseCommaList splits a comma-separated string into trimmed,
 // non-empty entries. Handles whitespace + trailing commas + duplicate
-// spaces. Used for allowed_tools, skills, and providers.
+// spaces. Used for tools, skills, and providers.
 function parseCommaList(s: string): string[] {
   return s
     .split(",")
@@ -1880,8 +1880,8 @@ export function explainServerError(e: unknown): string {
   if (innerText.includes("not allowed for dynamic registration")) {
     return "stdio MCP servers require the operator to set LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO=1 (host RCE opt-in), or declare the server in yaml mcp_servers:.";
   }
-  if (innerText.includes("allowed_tools") && innerText.includes("widen")) {
-    return "Fork can't add tools beyond the calling agent's ceiling. Trim allowed_tools.";
+  if (innerText.includes("tools") && innerText.includes("widen")) {
+    return "Fork can't add tools beyond the calling agent's ceiling. Trim tools.";
   }
   if (innerText.includes("body is required") || innerText.includes("empty")) {
     return "Body cannot be empty.";
