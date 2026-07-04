@@ -8,6 +8,61 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.11.0
+
+**🎚️ Per-scope token budgets (RFC AW).** Dynamically-configured **soft + hard token
+limits per operator / tenant / user** on top of v1.10.0. No limit row = unlimited
+(today's behavior). The window is the **calendar month in UTC**; counters seed at boot
+from the RFC AV usage ledger and increment on every per-call usage record, so admission
+is O(1). Enforcement is **advisory** — each replica counts only its own calls (a hard
+ceiling can be briefly overshot across replicas), and it is **fail-open** (a budgeting
+fault never takes the runtime down). `@loomcycle/client` → **1.11.0** (adds
+`listLimits()` / `setLimit()` / `deleteLimit()`).
+
+**Phase 1 — enforcement + the event + the console (#642):**
+
+- **Admission gating.** A **hard** limit refuses **new** runs at admission — HTTP
+  **429** `token_limit_exceeded` / gRPC **`ResourceExhausted`**. Because every trigger
+  surface (gRPC, MCP `spawn_run`, scheduler, inbound webhook, A2A, the connector, batch
+  `/v1/runs:batch`) routes through `runner.RunOnce`, the single `limits.Check` there
+  covers them all. An **in-flight** run that crosses hard **warns but finishes** (no
+  mid-run abort — RFC AW's "in-flight warns, new runs refuse"). **Most-restrictive scope
+  wins.**
+- **`EventLimit` warn event.** A crossing (soft or hard) emits a server-generated
+  `limit` event carrying `{scope, scope_id, severity, window, used, limit, message}`,
+  delivered on SSE + persisted as a transcript row so it renders in the run history.
+- **Store + tracker.** A `token_limits` table (migration 0054, both sqlite + postgres,
+  nullable `*int64` soft/hard so a limit of 0 is distinct from unset) + an in-memory
+  `internal/limits.Tracker` (month-rollover, seeded from the ledger).
+- **Management API + Web UI.** Tenant-scoped **`GET/PUT/DELETE /v1/_limits`** (a
+  `substrate:tenant` operator manages only its own tenant + users; the operator-global
+  and cross-tenant budgets are admin-only) and a **Web UI Limits console** showing live
+  month-to-date usage against each ceiling, with a soft/hard banner in the terminal.
+
+**Phase 2 — cross-transport parity (#643):**
+
+- **`EventLimit` everywhere.** Mapped onto the gRPC `Event` (proto `LimitInfo`), the
+  TS adapter (`"limit"` event), the Python adapter (`LimitInfo`), and MCP `spawn_run`
+  (via `SpawnRunResult.Limits`) — so a budget warning renders in every client, not just
+  HTTP SSE.
+- **CRUD parity.** A gRPC op-based **`TokenLimit`** RPC (`list|set|delete`, `ScopeTenant`)
+  and `listLimits()` / `setLimit()` / `deleteLimit()` on the TS + Python clients. The
+  tenant-confinement rule is shared once in `limits.ResolveWrite` so HTTP and gRPC can't
+  drift.
+
+**Post-merge code review (#644):** four findings fixed — **(HIGH)** a cross-tenant
+oracle: the operator scope's `used`/`limit` are platform-wide aggregates and were leaking
+into a tenant's own 429 body + `limit` events; `makeLimitInfo` now redacts them
+(enforcement unchanged; the admin console still reads real figures via `/v1/_limits`).
+**(MED)** a transient ceiling-cache reload fault returned 500 *after* the row persisted,
+leaving a budget stored-but-unenforced — replaced with an O(1) `PutLimit`/`DeleteLimit`
+that can't fail. **(MED)** a sync webhook refused by a budget returned 503 instead of the
+HTTP-parity 429. **(MED)** the blocking `spawn_run`/`spawn_runs` path didn't surface
+`Limits`. Interactive-input / sub-agent / LLM-gateway paths are left ungated by design
+(in-flight work warns-but-finishes; the gateway records no usage — a Phase-3 item).
+
+---
+
 ## What's in v1.10.0
 
 **🔑 Tenant credentials + 📊 per-scope token-usage & cost attribution.** Two feature
