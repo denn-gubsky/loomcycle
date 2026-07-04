@@ -8,6 +8,31 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.11.1
+
+**🩹 Web UI patch.** Two operator-console fixes on top of v1.11.0; the only wire
+change is the usage endpoint's empty-result shape. Binaries otherwise identical
+to v1.11.0 — `@loomcycle/client` unchanged at **1.11.0**.
+
+- **Usage page no longer blanks on an empty report (#647).** `GET /v1/_usage`
+  returned a Go nil slice, which marshals to JSON `null`; the Web UI types `rows`
+  as an array and did `resp.rows.length`, so a no-usage window (a fresh deploy, or
+  a tenant with no spend yet) crashed the page to a blank overlay while the nav
+  kept working. The endpoint now normalizes an empty result to `[]` (matching the
+  wire contract for the UI *and* the TS adapter's `usageReport()`), and the page
+  guards `resp.rows` defensively.
+- **K/M/G shorthand in the token-limit editors (#648).** The RFC AW soft/hard
+  budget fields now accept a human shorthand — `500K`, `5M`, `2G` (also `B`/`T`,
+  case-insensitive, `1.5M` decimals, comma/underscore separators) — and show a
+  live `= 5,000,000` recognition hint, so setting a multi-million-token budget no
+  longer means eye-counting zeros. The wire still carries a plain integer.
+
+Also on this line: the **Python adapter** version was realigned to **1.11.0**
+(#646) so its RFC AV/AW gRPC methods (`usage_report()`, `list/set/delete_token_limit()`)
+publish to PyPI on the separate `python-v1.11.0` tag.
+
+---
+
 ## What's in v1.11.0
 
 **🎚️ Per-scope token budgets (RFC AW).** Dynamically-configured **soft + hard token
