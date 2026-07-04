@@ -12,7 +12,7 @@
 //
 // What gets hashed (content-only — NOT metadata or identity):
 //
-//	name, description, system_prompt, allowed_tools, skills, model,
+//	name, description, system_prompt, tools, skills, model,
 //	provider, tier, effort, sampling, max_tokens, max_iterations,
 //	max_concurrent_children, code_body, providers, models, memory_scopes,
 //	memory_quota_bytes, memory_backend, channels, evaluation_scopes,
@@ -54,7 +54,7 @@
 //     error source — operators who edit MDs in Windows-line-ending
 //     editors would otherwise see spurious drift.)
 //   - String slices preserve declaration order (semantic order
-//     matters for allowed_tools, skills, providers).
+//     matters for tools, skills, providers).
 //
 // Output: "sha256:" + 64 lowercase hex chars. The prefix matches
 // Docker's image-digest convention and leaves room for future algos
@@ -79,7 +79,6 @@ import (
 // Tag order matters; do NOT reorder without bumping the hash-format
 // version on every existing row + re-running the backfill.
 type AgentContent struct {
-	AllowedTools []string `json:"allowed_tools,omitempty"`
 	// Channels is the Channel-tool ACL (F14). Pointer + omitempty so an
 	// agent without a channels block omits the key entirely — an empty
 	// AgentChannelACL is a VALUE struct that would serialise as
@@ -87,7 +86,7 @@ type AgentContent struct {
 	// collapses an all-empty pointer back to nil so both the
 	// no-channels-agent and the substrate-read path (`"channels":{}` in the
 	// persisted def) hash identically to before. Tag "channels" sorts
-	// between allowed_tools and code_body.
+	// first (before code_body).
 	Channels *AgentChannelACL `json:"channels,omitempty"`
 	// CodeBody is the inline code-js orchestrator source (RFC J). Empty
 	// for every LLM agent and for filesystem-backed static code agents
@@ -96,7 +95,7 @@ type AgentContent struct {
 	// byte-for-byte as before. NOT run through normalizeText: JS
 	// whitespace/CRLF is semantically load-bearing and must match the
 	// operator's `loomcycle hash agent` CI. Tag "code_body" sorts between
-	// allowed_tools and description, preserving the alphabetical order.
+	// channels and compaction, preserving the alphabetical order.
 	CodeBody string `json:"code_body,omitempty"`
 	// Compaction is the per-agent context-compaction block (mirrors
 	// config.Compaction; the agents package stays config-free). Content-
@@ -135,6 +134,9 @@ type AgentContent struct {
 	Skills       []string  `json:"skills,omitempty"`
 	SystemPrompt string    `json:"system_prompt,omitempty"`
 	Tier         string    `json:"tier,omitempty"`
+	// Tools is the agent's tool allowlist (the capability ceiling). Tag
+	// "tools" sorts between tier and unbounded_iterations.
+	Tools []string `json:"tools,omitempty"`
 	// UnboundedIterations is content-identifying (like MaxIterations): a fork
 	// that only flips it must get a distinct content_sha256, not silently
 	// dedup (cf. F14). omitempty keeps pre-existing rows byte-identical.
@@ -173,8 +175,8 @@ func normalize(c *AgentContent) {
 	// Empty slices → nil. The encoding/json behaviour difference between
 	// []string{} (emits "[]") and []string(nil) (omitted via omitempty)
 	// is the load-bearing detail here.
-	if len(c.AllowedTools) == 0 {
-		c.AllowedTools = nil
+	if len(c.Tools) == 0 {
+		c.Tools = nil
 	}
 	if len(c.MemoryScopes) == 0 {
 		c.MemoryScopes = nil
@@ -262,7 +264,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		MaxTokens:             a.MaxTokens,
 		MaxIterations:         a.MaxIterations,
 		MaxConcurrentChildren: a.MaxConcurrentChildren,
-		AllowedTools:          a.AllowedTools,
+		Tools:                 a.Tools,
 		Skills:                a.Skills,
 		SystemPrompt:          a.SystemPrompt,
 		Providers:             a.Providers,

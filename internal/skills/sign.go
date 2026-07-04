@@ -2,7 +2,7 @@
 // Mirror of internal/agents/sign.go for the SkillDef substrate
 // (v0.8.22). Same algorithm + same encoding rules + same prefix on
 // the output string, only the field set differs (skills are smaller —
-// body + allowed_tools + description, plus the name).
+// body + tools + description, plus the name).
 //
 // See agents/sign.go for the architectural rationale (canonical
 // encoding, why we don't pull RFC 8785, the CLI / runtime / verify
@@ -20,10 +20,10 @@ import (
 // skill content-hash. Field order matches alphabetical json-tag
 // order for the same stability reason as AgentContent.
 type SkillContent struct {
-	AllowedTools []string `json:"allowed_tools,omitempty"`
-	Body         string   `json:"body,omitempty"`
-	Description  string   `json:"description,omitempty"`
-	Name         string   `json:"name,omitempty"`
+	Body        string   `json:"body,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
 }
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of the canonical
@@ -39,8 +39,8 @@ func Sign(c SkillContent) string {
 }
 
 func normalize(c *SkillContent) {
-	if len(c.AllowedTools) == 0 {
-		c.AllowedTools = nil
+	if len(c.Tools) == 0 {
+		c.Tools = nil
 	}
 	// Skill body is the primary content. Normalise line endings and
 	// trim trailing whitespace so editor drift doesn't cause spurious
@@ -66,10 +66,10 @@ func FromSkill(s *Skill) SkillContent {
 		return SkillContent{}
 	}
 	return SkillContent{
-		Name:         s.Name,
-		Description:  s.Description,
-		AllowedTools: s.AllowedTools,
-		Body:         s.Body,
+		Name:        s.Name,
+		Description: s.Description,
+		Tools:       s.Tools,
+		Body:        s.Body,
 	}
 }
 

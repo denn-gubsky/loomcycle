@@ -8,8 +8,8 @@ import (
 )
 
 // F11: operatorCtx must attach the AgentTools wildcard ceiling so an MCP
-// `agentdef`/`skilldef` create with a tool-bearing allowed_tools overlay
-// validates instead of refusing "caller's effective allowed_tools not on ctx
+// `agentdef`/`skilldef` create with a tool-bearing tools overlay
+// validates instead of refusing "caller's effective tools not on ctx
 // (runtime misconfiguration)". The builtin agentdef test pins that a ["*"]
 // ceiling actually accepts a tool-bearing create; this pins that operatorCtx
 // provides it (mirroring HTTP substrateAdminCtx). Fails on the pre-fix code,

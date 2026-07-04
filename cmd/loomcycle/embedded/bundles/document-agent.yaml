@@ -12,8 +12,8 @@
 # UI Assistant shows a hint rather than a broken spawn.
 #
 # The operator overlay can override any of this by re-declaring the key (last layer
-# wins per field) — retarget the tier, swap a skill body, narrow allowed_tools.
-# It cannot WIDEN allowed_tools (the AgentDef capability ceiling is unchanged).
+# wins per field) — retarget the tier, swap a skill body, narrow tools.
+# It cannot WIDEN tools (the AgentDef capability ceiling is unchanged).
 
 agents:
   doc-manager:
@@ -21,7 +21,7 @@ agents:
     max_iterations: 24
     max_tokens: 8192
     effort: medium
-    allowed_tools: [Document, Memory, Context]
+    tools: [Document, Memory, Context]
     memory_scopes: [user]
     sql_scopes: [user]
     skills: [semantic-chunking, edge-linking, restructuring, md-import]
@@ -59,7 +59,7 @@ agents:
 skills:
   semantic-chunking:
     description: Split arbitrary prose or a Markdown file into a sensible chunk hierarchy in a chunked-graph Document.
-    allowed_tools: [Document]
+    tools: [Document]
     body: |
       # Semantic chunking
 
@@ -87,7 +87,7 @@ skills:
 
   edge-linking:
     description: Create and curate graph edges between chunks (and across documents) in a chunked-graph Document.
-    allowed_tools: [Document]
+    tools: [Document]
     body: |
       # Edge linking
 
@@ -114,7 +114,7 @@ skills:
 
   restructuring:
     description: Safely move, reparent, reorder, promote, or delete chunks in a chunked-graph Document.
-    allowed_tools: [Document]
+    tools: [Document]
     body: |
       # Restructuring
 
@@ -142,7 +142,7 @@ skills:
 
   md-import:
     description: Import a Markdown file into a chunked-graph Document — deterministic round-trip vs semantic chunking.
-    allowed_tools: [Document]
+    tools: [Document]
     body: |
       # Markdown import
 

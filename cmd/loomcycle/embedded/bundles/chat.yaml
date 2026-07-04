@@ -21,7 +21,7 @@
 #     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml.
 #
 # The operator overlay can override any field by re-declaring the key (last layer
-# wins per field). It cannot WIDEN allowed_tools (the AgentDef ceiling is unchanged).
+# wins per field). It cannot WIDEN tools (the AgentDef ceiling is unchanged).
 
 agents:
   chat:
@@ -31,7 +31,7 @@ agents:
     # (Anthropic defaults to 8192; ollama generates until the context fills).
     # Pinning a value would only IMPOSE a per-reply cap, not add headroom.
     unbounded_iterations: true              # interactive chat parks at end_turn
-    allowed_tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill]
     memory_scopes: [user]
     sql_scopes: [user]                      # Document is SQL-Memory-backed
     sampling:
@@ -71,7 +71,7 @@ agents:
     # max_tokens OMITTED — ollama-local generates until the context window fills
     # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
     unbounded_iterations: true
-    allowed_tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill]
     memory_scopes: [user]
     sql_scopes: [user]
     sampling:

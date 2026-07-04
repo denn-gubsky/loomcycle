@@ -50,7 +50,7 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		SessionID:       req.SessionID,
 		TenantID:        req.TenantID,
 		Segments:        req.Segments,
-		AllowedTools:    req.AllowedTools,
+		Tools:           req.Tools,
 		AllowedHosts:    req.AllowedHosts,
 		WebSearchFilter: req.WebSearchFilter,
 		UserID:          req.UserID,
@@ -341,8 +341,8 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if len(req.SystemPrompt) > 64*1024 {
 		return connector.AgentDescriptor{}, fmt.Errorf("system_prompt exceeds 64KB cap")
 	}
-	if len(req.AllowedTools) == 0 {
-		return connector.AgentDescriptor{}, fmt.Errorf("allowed_tools required (default-deny model)")
+	if len(req.Tools) == 0 {
+		return connector.AgentDescriptor{}, fmt.Errorf("tools required (default-deny model)")
 	}
 	if _, collides := s.cfg.Agents[req.Name]; collides {
 		return connector.AgentDescriptor{}, fmt.Errorf("agent %q is statically defined in yaml; cannot register over it", req.Name)
@@ -351,11 +351,11 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		return connector.AgentDescriptor{}, fmt.Errorf("register_agent requires persistence (no Store configured)")
 	}
 
-	allowedTools := stripPrivilegedTools(req.AllowedTools, s.cfg.Env.MCPAllowPrivilegedTools)
+	allowedTools := stripPrivilegedTools(req.Tools, s.cfg.Env.MCPAllowPrivilegedTools)
 
 	def := config.AgentDef{
 		SystemPrompt:     req.SystemPrompt,
-		AllowedTools:     allowedTools,
+		Tools:            allowedTools,
 		Tier:             req.Tier,
 		Provider:         req.Provider,
 		Model:            req.Model,
@@ -393,14 +393,14 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	}
 
 	desc := connector.AgentDescriptor{
-		Name:         req.Name,
-		Source:       "dynamic",
-		AllowedTools: allowedTools,
-		Tier:         req.Tier,
-		Provider:     req.Provider,
-		Model:        req.Model,
-		Description:  req.Description,
-		CreatedAt:    &createdAt,
+		Name:        req.Name,
+		Source:      "dynamic",
+		Tools:       allowedTools,
+		Tier:        req.Tier,
+		Provider:    req.Provider,
+		Model:       req.Model,
+		Description: req.Description,
+		CreatedAt:   &createdAt,
 	}
 	if !expiresAt.IsZero() {
 		desc.ExpiresAt = &expiresAt
@@ -430,12 +430,12 @@ func (s *Server) ListAgents(ctx context.Context, includeDynamic bool) ([]connect
 	out := make([]connector.AgentDescriptor, 0, len(s.cfg.Agents)+8)
 	for name, def := range s.cfg.Agents {
 		out = append(out, connector.AgentDescriptor{
-			Name:         name,
-			Source:       "static",
-			AllowedTools: append([]string(nil), def.AllowedTools...),
-			Tier:         def.Tier,
-			Provider:     def.Provider,
-			Model:        def.Model,
+			Name:     name,
+			Source:   "static",
+			Tools:    append([]string(nil), def.Tools...),
+			Tier:     def.Tier,
+			Provider: def.Provider,
+			Model:    def.Model,
 		})
 	}
 	if includeDynamic && s.store != nil {
@@ -447,13 +447,13 @@ func (s *Server) ListAgents(ctx context.Context, includeDynamic bool) ([]connect
 			var def config.AgentDef
 			_ = json.Unmarshal(row.Definition, &def) // best-effort; we still surface name/description on parse failure
 			desc := connector.AgentDescriptor{
-				Name:         row.Name,
-				Source:       "dynamic",
-				AllowedTools: def.AllowedTools,
-				Tier:         def.Tier,
-				Provider:     def.Provider,
-				Model:        def.Model,
-				Description:  row.Description,
+				Name:        row.Name,
+				Source:      "dynamic",
+				Tools:       def.Tools,
+				Tier:        def.Tier,
+				Provider:    def.Provider,
+				Model:       def.Model,
+				Description: row.Description,
 			}
 			c := row.CreatedAt
 			desc.CreatedAt = &c
@@ -669,7 +669,7 @@ func (s *Server) dispatchBuiltin(ctx context.Context, name string, input json.Ra
 		}
 	}
 	if tool == nil {
-		return connector.ToolResult{}, fmt.Errorf("builtin tool %q not registered (operator disabled it via allowed_tools or yaml)", name)
+		return connector.ToolResult{}, fmt.Errorf("builtin tool %q not registered (operator disabled it via tools or yaml)", name)
 	}
 	res, err := tool.Execute(ctx, input)
 	if err != nil {
@@ -1102,7 +1102,7 @@ func validDynamicAgentName(s string) bool {
 }
 
 // stripPrivilegedTools removes Bash/Write/Edit from the requested
-// allowed_tools when the operator hasn't opted into privileged-tool
+// tools when the operator hasn't opted into privileged-tool
 // dynamic registration. Default-deny matches v0.8.7 / v0.8.8 pattern.
 func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	if allowPrivileged {

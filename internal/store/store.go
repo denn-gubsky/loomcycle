@@ -2422,7 +2422,7 @@ type AgentDefNameSummary struct {
 // Mirror of AgentDef* — same identity / lineage / provenance
 // semantics, but the Definition payload is a skill body + metadata
 // instead of an agent body. See internal/tools/builtin/skilldef.go
-// for the JSON shape (body / description / allowed_tools).
+// for the JSON shape (body / description / tools).
 //
 // Identity, lineage, and provenance fields carry identical
 // invariants to AgentDefRow. See the AgentDefRow doc for full

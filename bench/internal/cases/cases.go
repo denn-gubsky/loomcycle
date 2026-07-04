@@ -18,13 +18,13 @@ import (
 // Case is one bench fixture. Fields mirror the YAML on disk verbatim;
 // no derived state lives here.
 type Case struct {
-	ID           string   `yaml:"id"`
-	Tier         string   `yaml:"tier"` // "low" | "middle"
-	Description  string   `yaml:"description"`
-	AllowedTools []string `yaml:"allowed_tools"`
-	MaxTurns     int      `yaml:"max_turns"`
-	InputText    string   `yaml:"input_text"`
-	Expected     Expected `yaml:"expected"`
+	ID          string   `yaml:"id"`
+	Tier        string   `yaml:"tier"` // "low" | "middle"
+	Description string   `yaml:"description"`
+	Tools       []string `yaml:"tools"`
+	MaxTurns    int      `yaml:"max_turns"`
+	InputText   string   `yaml:"input_text"`
+	Expected    Expected `yaml:"expected"`
 }
 
 // Expected groups the three grading axes for the case.

@@ -36,7 +36,7 @@ func TestResumePausedRuns_ResumesMidConversationToCompletion(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"resumer": {Provider: "scripted", Model: "stub-model", SystemPrompt: "you resume work", AllowedTools: []string{}},
+			"resumer": {Provider: "scripted", Model: "stub-model", SystemPrompt: "you resume work", Tools: []string{}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
 	}
@@ -246,8 +246,8 @@ func TestResumePausedRuns_ReconcilesFanoutParent(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"breeder": {Provider: "scripted", Model: "stub-model", SystemPrompt: "breed", AllowedTools: []string{"Agent"}},
-			"solver":  {Provider: "scripted", Model: "stub-model", SystemPrompt: "solve", AllowedTools: []string{}},
+			"breeder": {Provider: "scripted", Model: "stub-model", SystemPrompt: "breed", Tools: []string{"Agent"}},
+			"solver":  {Provider: "scripted", Model: "stub-model", SystemPrompt: "solve", Tools: []string{}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
 	}
@@ -352,7 +352,7 @@ func TestResumePausedRuns_FanoutFlagOff_NotReconciled(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"breeder": {Provider: "scripted", Model: "stub-model", SystemPrompt: "breed", AllowedTools: []string{"Agent"}},
+			"breeder": {Provider: "scripted", Model: "stub-model", SystemPrompt: "breed", Tools: []string{"Agent"}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
 	}

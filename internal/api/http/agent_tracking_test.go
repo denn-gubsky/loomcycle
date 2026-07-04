@@ -75,7 +75,7 @@ func makeBaseConfig() *config.Config {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"default": {Model: "stub-model", AllowedTools: []string{}},
+			"default": {Model: "stub-model", Tools: []string{}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
 	}
@@ -602,10 +602,10 @@ func TestCancel_CascadesToSubAgent(t *testing.T) {
 	t.Skip("see comment above — cascade is unit-tested by TestRegistry_Cancel_CascadesTree")
 	cfg := makeBaseConfig()
 	cfg.Agents["parent"] = config.AgentDef{
-		Model: "stub-model", AllowedTools: []string{"Agent"},
+		Model: "stub-model", Tools: []string{"Agent"},
 	}
 	cfg.Agents["child"] = config.AgentDef{
-		Model: "stub-model", AllowedTools: []string{},
+		Model: "stub-model", Tools: []string{},
 	}
 	// Provider script: parent emits one tool_call to spawn child;
 	// child blocks indefinitely on a pausable provider released by
@@ -696,10 +696,10 @@ func TestCancel_CascadesToSubAgent(t *testing.T) {
 func TestSubAgent_InheritsUserID_GeneratesFreshAgentID(t *testing.T) {
 	cfg := makeBaseConfig()
 	cfg.Agents["parent"] = config.AgentDef{
-		Model: "stub-model", AllowedTools: []string{"Agent"},
+		Model: "stub-model", Tools: []string{"Agent"},
 	}
 	cfg.Agents["child"] = config.AgentDef{
-		Model: "stub-model", AllowedTools: []string{},
+		Model: "stub-model", Tools: []string{},
 	}
 	prov := &scriptedProvider{
 		scripts: [][]providers.Event{

@@ -22,8 +22,8 @@ type SkillStore interface {
 // provenance — see resolveSkillBodiesForRun in api/http/server.go).
 // When the resolution came from the static set, DefID is "".
 type SkillResolution struct {
-	Body         string
-	AllowedTools []string
+	Body  string
+	Tools []string
 	// DefID — non-empty only for substrate-resolved skills.
 	DefID string
 	// Source — "substrate" or "static". Useful for the
@@ -31,7 +31,7 @@ type SkillResolution struct {
 	Source string
 }
 
-// Skill resolves a skill NAME to its effective body + allowed_tools
+// Skill resolves a skill NAME to its effective body + tools
 // within the caller's tenant, walking the lookup chain in precedence
 // order:
 //
@@ -80,9 +80,9 @@ func Skill(ctx context.Context, s SkillStore, set *skills.Set, tenantID, name st
 	if set != nil {
 		if sk, ok := set.Get(name); ok {
 			return SkillResolution{
-				Body:         sk.Body,
-				AllowedTools: sk.AllowedTools,
-				Source:       "static",
+				Body:   sk.Body,
+				Tools:  sk.Tools,
+				Source: "static",
 			}, true
 		}
 	}
@@ -106,10 +106,10 @@ func resolveSubstrateSkill(ctx context.Context, s SkillStore, tenantID, name str
 			log.Printf("lookup.Skill(%q): parse %s definition failed: %v", name, row.DefID, uerr)
 		} else if sd.Body != "" {
 			return SkillResolution{
-				Body:         sd.Body,
-				AllowedTools: sd.AllowedTools,
-				DefID:        row.DefID,
-				Source:       "substrate",
+				Body:   sd.Body,
+				Tools:  sd.Tools,
+				DefID:  row.DefID,
+				Source: "substrate",
 			}, true
 		}
 	default:
@@ -144,7 +144,7 @@ func resolveSubstrateSkill(ctx context.Context, s SkillStore, tenantID, name str
 //     api/http/server.go's local skillDefOverlay + builtin/skilldef.go's
 //     skillDefOverlay (both were the same fields independently).
 type SubstrateSkillDef struct {
-	Body         string   `json:"body,omitempty"`
-	Description  string   `json:"description,omitempty"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
+	Body        string   `json:"body,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
 }

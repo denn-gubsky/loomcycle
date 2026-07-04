@@ -19,19 +19,18 @@
 // drive both Claude Code and loomcycle. Standard Claude Code keys
 // (name / description / tools / model) are honoured. Loomcycle-
 // specific keys (tier / models / effort / max_tokens / skills /
-// memory_scopes / memory_quota_bytes / providers / allowed_tools /
+// memory_scopes / memory_quota_bytes / providers /
 // system_prompt_file / provider) sit alongside them at the top level.
 // Claude Code ignores keys it doesn't know, so MDs stay forward-
 // compatible across both consumers.
 //
-// Tool-list shape: Claude Code emits `tools: A, B, C` (comma-string).
-// Loomcycle's yaml prefers `allowed_tools: [A, B, C]` (list). Both
-// are accepted on read; if both are present in one file, the list
-// form wins (loomcycle is the consumer that cares about precision).
+// Tool-list shape: the single `tools` key accepts BOTH Claude Code's
+// comma-string (`tools: A, B, C`) and loomcycle's list (`tools: [A, B, C]`).
+// One canonical key aligns natively with Claude Code frontmatter.
 //
 // SECURITY: this package only parses + exposes metadata. Validation
 // (Pin XOR Tier, Effort domain, MemoryScopes domain, etc.) and
-// skill-subset enforcement (skill.allowed-tools ⊆ agent.allowed_tools)
+// skill-subset enforcement (skill.allowed-tools ⊆ agent.tools)
 // happen at the config layer post-merge, against the existing rules.
 package agents
 
@@ -81,7 +80,7 @@ type Agent struct {
 	// runtime default (builtin.DefaultMaxConcurrentChildren = 4).
 	// Sequential Agent.spawn calls are unaffected.
 	MaxConcurrentChildren int
-	AllowedTools          []string
+	Tools                 []string
 	Skills                []string
 	SystemPrompt          string
 	SystemPromptFile      string
@@ -284,16 +283,13 @@ func LoadSet(root string) (*Set, error) {
 // frontmatter is the strict-ish set of YAML keys we read from an MD.
 //
 // Tools field accepts a string OR a list, modelled as `any` and
-// post-processed in parseAgent. Loomcycle's `allowed_tools` (yaml
-// list) takes precedence over `tools` (Claude Code's comma-string)
-// when both are set; that mirrors the design call we made: yaml
-// shape is the precise one, comma-string is the legacy/Claude Code
-// shape we tolerate so MDs stay portable.
+// post-processed in parseAgent via coerceToolsField. One canonical
+// `tools` key serves both the Claude Code comma-string and the
+// loomcycle list shape, so MDs stay portable across both consumers.
 type frontmatter struct {
 	Name                  string                     `yaml:"name"`
 	Description           string                     `yaml:"description"`
-	Tools                 any                        `yaml:"tools"`         // Claude Code shape — string OR []string
-	AllowedTools          []string                   `yaml:"allowed_tools"` // loomcycle's preferred shape
+	Tools                 any                        `yaml:"tools"` // string OR []string (CC comma-string or loomcycle list)
 	Provider              string                     `yaml:"provider"`
 	Model                 string                     `yaml:"model"`
 	Code                  string                     `yaml:"code"` // inline code-js body (RFC J)
@@ -325,7 +321,7 @@ type frontmatter struct {
 // after the closing line is the body and becomes Agent.SystemPrompt.
 //
 // An MD without a leading "---\n" is treated as body-only: name will
-// fall back to the filename at the LoadSet layer, and AllowedTools /
+// fall back to the filename at the LoadSet layer, and Tools /
 // model / etc. all stay zero. This tolerates ad-hoc MD files that
 // haven't been written with frontmatter yet.
 func parseAgent(raw []byte) (*Agent, error) {
@@ -386,19 +382,15 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body
 
-	// Tool-list precedence: yaml list (allowed_tools) wins when set;
-	// otherwise fall back to the Claude Code comma-string (tools).
-	// Both empty → AllowedTools stays nil (default-deny — matches the
-	// existing semantics that an agent without allowed_tools sees no
-	// tools).
-	if len(fm.AllowedTools) > 0 {
-		a.AllowedTools = fm.AllowedTools
-	} else if fm.Tools != nil {
+	// The single `tools` key accepts a comma-string OR a list; nil →
+	// Tools stays nil (default-deny — matches the existing semantics
+	// that an agent without a tools list sees no tools).
+	if fm.Tools != nil {
 		toolsList, err := coerceToolsField(fm.Tools)
 		if err != nil {
 			return nil, fmt.Errorf("tools: %w", err)
 		}
-		a.AllowedTools = toolsList
+		a.Tools = toolsList
 	}
 
 	return a, nil
@@ -438,7 +430,7 @@ func coerceToolsField(v any) ([]string, error) {
 // signals "explicit empty, override discovered" vs nil "absent").
 //
 // Exported because the same comma-vs-list duality appears in MCP
-// server allowed_tools fields and would benefit from one canonical
+// server tools fields and would benefit from one canonical
 // implementation; future callers can reuse this without copy-pasting.
 func ParseToolList(s string) []string {
 	out := []string{}

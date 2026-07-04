@@ -56,7 +56,7 @@ func echoCfg() *config.Config {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"echo": {Model: "stub-model", AllowedTools: []string{}},
+			"echo": {Model: "stub-model", Tools: []string{}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}

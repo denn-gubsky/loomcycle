@@ -30,7 +30,7 @@ func agentDefFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 				Provider:     "anthropic",
 				Model:        "claude-haiku-4-5",
 				SystemPrompt: "operator-blessed root prompt",
-				AllowedTools: []string{"Read", "WebFetch", "AgentDef"},
+				Tools:        []string{"Read", "WebFetch", "AgentDef"},
 			},
 		},
 	}
@@ -72,8 +72,8 @@ func TestAgentDefTool_CreateRoundTripsDefScopes(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
-	// No allowed_tools in the overlay: the def-scopes round-trip is what F40 is about,
-	// and the narrow-only allowed_tools ceiling check requires WithAgentTools on ctx,
+	// No tools in the overlay: the def-scopes round-trip is what F40 is about,
+	// and the narrow-only tools ceiling check requires WithAgentTools on ctx,
 	// which agentDefFixture intentionally does not set (matches TestAgentDefTool_CreateNewName).
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"breeder","overlay":{`+
 		`"system_prompt":"breed agents",`+
@@ -242,7 +242,7 @@ func TestAgentDefTool_ForkFallsBackToSharedBase(t *testing.T) {
 
 	// Seed a NON-static name under the shared "" tenant — the fixture ctx
 	// carries TenantID="" by default — promoted so it has an "" active
-	// pointer. (Omit allowed_tools so the later fork can't trip the ceiling.)
+	// pointer. (Omit tools so the later fork can't trip the ceiling.)
 	res, _ := tool.Execute(baseCtx, json.RawMessage(`{"op":"create","name":"legacy-seed","overlay":{"system_prompt":"shared base body"}}`))
 	if res.IsError {
 		t.Fatalf("seed create under \"\" tenant: %s", res.Text)
@@ -423,25 +423,25 @@ func TestAgentDefTool_CreateIdempotentOnSameContent(t *testing.T) {
 	}
 }
 
-func TestAgentDefTool_ForkAllowedToolsCannotWiden(t *testing.T) {
+func TestAgentDefTool_ForkToolsCannotWiden(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
 	// Static root has [Read, WebFetch, AgentDef]. Try to fork adding "Write".
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"allowed_tools":["Read","WebFetch","Write"]}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"tools":["Read","WebFetch","Write"]}}`))
 	if !res.IsError {
-		t.Fatalf("fork widening allowed_tools should refuse; got %s", res.Text)
+		t.Fatalf("fork widening tools should refuse; got %s", res.Text)
 	}
-	if !strings.Contains(res.Text, "AllowedTools cannot widen") {
+	if !strings.Contains(res.Text, "Tools cannot widen") {
 		t.Errorf("refusal should mention widening; got %s", res.Text)
 	}
 }
 
-func TestAgentDefTool_ForkAllowedToolsCanNarrow(t *testing.T) {
+func TestAgentDefTool_ForkToolsCanNarrow(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"allowed_tools":["Read"]}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"tools":["Read"]}}`))
 	if res.IsError {
 		t.Fatalf("fork narrowing should succeed; got %s", res.Text)
 	}
@@ -557,7 +557,7 @@ func TestAgentDefTool_RetireRoundTrip(t *testing.T) {
 // at the tool layer: after retiring the active def for a name, a fresh
 // `create` of the SAME name succeeds (the cleared active pointer means the
 // name no longer collides). This is the operator workflow for granting an
-// agent MORE tools — a fork can't widen the allowed_tools ceiling, but a
+// agent MORE tools — a fork can't widen the tools ceiling, but a
 // recreate (fresh root) can, and reclaim unblocks it.
 func TestAgentDefTool_ReclaimNameAfterRetire(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
@@ -743,10 +743,10 @@ func TestAgentDefTool_ForkFromSharedBaseAllowed(t *testing.T) {
 }
 
 // Capability-escalation guard on `create`: an agent with narrow
-// allowed_tools cannot mint a new agent with a wider tool surface
+// tools cannot mint a new agent with a wider tool surface
 // than its own. The caller's effective AgentTools(ctx) is the
 // ceiling. Mirror of the subset check in `fork`.
-func TestAgentDefTool_CreateRefusedOnAllowedToolsWidening(t *testing.T) {
+func TestAgentDefTool_CreateRefusedOnToolsWidening(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
@@ -754,26 +754,26 @@ func TestAgentDefTool_CreateRefusedOnAllowedToolsWidening(t *testing.T) {
 	narrowCtx := tools.WithAgentTools(ctx, []string{"Read", "AgentDef"})
 
 	// Overlay tries to add Write — wider than the caller's surface.
-	res, _ := tool.Execute(narrowCtx, json.RawMessage(`{"op":"create","name":"newagent","overlay":{"allowed_tools":["Read","Write"]}}`))
+	res, _ := tool.Execute(narrowCtx, json.RawMessage(`{"op":"create","name":"newagent","overlay":{"tools":["Read","Write"]}}`))
 	if !res.IsError {
-		t.Fatalf("create with wider allowed_tools should refuse; got %s", res.Text)
+		t.Fatalf("create with wider tools should refuse; got %s", res.Text)
 	}
-	if !strings.Contains(res.Text, "AllowedTools cannot widen") {
-		t.Errorf("error should mention AllowedTools widening; got %s", res.Text)
+	if !strings.Contains(res.Text, "Tools cannot widen") {
+		t.Errorf("error should mention Tools widening; got %s", res.Text)
 	}
 
 	// Same overlay but subset of caller's tools is fine.
-	res, _ = tool.Execute(narrowCtx, json.RawMessage(`{"op":"create","name":"newagent2","overlay":{"allowed_tools":["Read"]}}`))
+	res, _ = tool.Execute(narrowCtx, json.RawMessage(`{"op":"create","name":"newagent2","overlay":{"tools":["Read"]}}`))
 	if res.IsError {
-		t.Fatalf("create with narrowed allowed_tools should pass; got %s", res.Text)
+		t.Fatalf("create with narrowed tools should pass; got %s", res.Text)
 	}
 }
 
 // Wildcard caller tools — used by the substrate-admin HTTP context
 // (substrateAdminCtx in internal/api/http/substrate_admin.go) so the
-// operator can register agents whose allowed_tools the operator
+// operator can register agents whose tools the operator
 // chooses, without first listing every per-tool name as their own
-// callerTools list. assertAllowedToolsSubset short-circuits on a
+// callerTools list. assertToolsSubset short-circuits on a
 // "*" entry in root.
 func TestAgentDefTool_CreateWithWildcardCallerToolsAllowsAnyOverlay(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
@@ -781,35 +781,35 @@ func TestAgentDefTool_CreateWithWildcardCallerToolsAllowsAnyOverlay(t *testing.T
 
 	wildCtx := tools.WithAgentTools(ctx, []string{"*"})
 
-	// Operator picks a broad allowed_tools list — every entry should
+	// Operator picks a broad tools list — every entry should
 	// pass even though "*" alone is the caller's ceiling.
-	res, _ := tool.Execute(wildCtx, json.RawMessage(`{"op":"create","name":"opagent","overlay":{"allowed_tools":["Read","Write","WebFetch","Bash"]}}`))
+	res, _ := tool.Execute(wildCtx, json.RawMessage(`{"op":"create","name":"opagent","overlay":{"tools":["Read","Write","WebFetch","Bash"]}}`))
 	if res.IsError {
-		t.Fatalf("create with wildcard ctx + arbitrary allowed_tools should pass; got %s", res.Text)
+		t.Fatalf("create with wildcard ctx + arbitrary tools should pass; got %s", res.Text)
 	}
 }
 
 // Missing AgentTools(ctx) — runtime misconfiguration. With a
-// non-empty overlay AllowedTools, refuse rather than silently
+// non-empty overlay Tools, refuse rather than silently
 // allow the wider value.
 func TestAgentDefTool_CreateRefusedWhenCallerToolsMissing(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
-	// ctx does NOT have AgentTools attached. Overlay sets allowed_tools.
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"newagent","overlay":{"allowed_tools":["Read"]}}`))
+	// ctx does NOT have AgentTools attached. Overlay sets tools.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"newagent","overlay":{"tools":["Read"]}}`))
 	if !res.IsError {
-		t.Fatalf("create with no AgentTools(ctx) + AllowedTools overlay should refuse; got %s", res.Text)
+		t.Fatalf("create with no AgentTools(ctx) + Tools overlay should refuse; got %s", res.Text)
 	}
 	if !strings.Contains(res.Text, "not on ctx") {
 		t.Errorf("error should mention missing ctx tools; got %s", res.Text)
 	}
 
-	// Create WITHOUT allowed_tools overlay should still pass (no
+	// Create WITHOUT tools overlay should still pass (no
 	// widening risk when the def doesn't declare its own tools).
 	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"toolless"}`))
 	if res.IsError {
-		t.Fatalf("create with no allowed_tools overlay should pass even without ctx tools; got %s", res.Text)
+		t.Fatalf("create with no tools overlay should pass even without ctx tools; got %s", res.Text)
 	}
 }
 
@@ -978,7 +978,7 @@ func TestAgentDefTool_ListIncludesDefinition(t *testing.T) {
 	defer cleanup()
 	ctx = tools.WithAgentTools(ctx, []string{"Read"})
 
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"with-body","overlay":{"system_prompt":"hello world","allowed_tools":["Read"]},"promote":true}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"with-body","overlay":{"system_prompt":"hello world","tools":["Read"]},"promote":true}`))
 	if res.IsError {
 		t.Fatalf("create: %s", res.Text)
 	}

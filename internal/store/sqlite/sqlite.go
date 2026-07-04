@@ -326,7 +326,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		// v0.8.22 SkillDef substrate — mirror of agent_defs with
 		// the same identity / lineage / promotion semantics. The
 		// `definition` column carries the JSON-encoded skill body
-		// + metadata (body / description / allowed_tools).
+		// + metadata (body / description / tools).
 		`CREATE TABLE IF NOT EXISTS skill_defs (
 			def_id                    TEXT    PRIMARY KEY,
 			name                      TEXT    NOT NULL,

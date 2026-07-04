@@ -6,8 +6,8 @@
 # Two-layer policy model (see docs/TOOLS.md):
 #   1. Operator-side env: each built-in is registered but DISABLED until
 #      its env var is set. .env.insecure.example documents these.
-#   2. Per-agent allowed_tools below: anchored allowlist (default-deny).
-#      An agent with no allowed_tools sees ZERO tools at the dispatcher.
+#   2. Per-agent tools below: anchored allowlist (default-deny).
+#      An agent with no tools sees ZERO tools at the dispatcher.
 #
 # YAML interpolation: ${VAR} is allowed but RESTRICTED — only LOOMCYCLE_*
 # names plus a small list of well-known third-party tokens (BRAVE_API_KEY,
@@ -437,7 +437,7 @@ defaults:
 
 # ─── Agents ───────────────────────────────────────────────────────────
 # Each agent is addressed by name in POST /v1/runs's "agent" field.
-# allowed_tools is the ANCHORED allowlist — anything not on the list is
+# tools is the ANCHORED allowlist — anything not on the list is
 # invisible to that agent's runs. Glob `mcp__server__*` exposes every
 # tool from one MCP server.
 #
@@ -464,7 +464,7 @@ agents:
   default:
     model: sonnet
     system_prompt: "You are a helpful assistant."
-    allowed_tools: []
+    tools: []
 
   # ─── Tier-based agents (v0.7+) ──────────────────────────────────────
   # These three illustrate the resolver's three shapes: bare tier,
@@ -477,7 +477,7 @@ agents:
   ats-filter:
     tier: low
     system_prompt: "You filter job postings against the user's resume. Output JSON."
-    allowed_tools: []
+    tools: []
 
   # Tier + provider override: this agent skips DeepSeek and Ollama
   # entirely, preferring Anthropic and OpenAI in that order. Useful
@@ -490,7 +490,7 @@ agents:
     effort: high
     providers: [anthropic, openai]
     system_prompt: "You rank candidates against a position rubric. Show your reasoning."
-    allowed_tools: []
+    tools: []
 
   # Tier + per-agent matrix override: full replacement of the tier's
   # candidate list. This agent locks user-sensitive paths to
@@ -505,7 +505,7 @@ agents:
       high:
         - opus   # alias → {anthropic, claude-opus-4-7}; locks this sensitive agent to Anthropic
     system_prompt: "You adapt the user's CV to a target job description."
-    allowed_tools: [Read, Write]
+    tools: [Read, Write]
 
   # Loads the system prompt from a file relative to this YAML's
   # directory. Mutually exclusive with system_prompt. Useful when the
@@ -513,7 +513,7 @@ agents:
   # docs-from-file:
   #   model: sonnet
   #   system_prompt_file: prompts/docs-agent.md
-  #   allowed_tools: [WebFetch]
+  #   tools: [WebFetch]
 
   # Filesystem-only agent: can read/write/edit files but cannot reach
   # the network. Good for code-review or doc-editing flows where the
@@ -521,7 +521,7 @@ agents:
   file-editor:
     model: sonnet
     system_prompt: "You edit files in the configured sandbox. Never speculate about files you haven't read."
-    allowed_tools: [Read, Write, Edit]
+    tools: [Read, Write, Edit]
 
   # Research agent: can search the web and fetch pages. Cannot touch
   # the filesystem. Default WebSearch filter is "drop" — the model
@@ -536,7 +536,7 @@ agents:
   researcher:
     model: sonnet
     system_prompt: "You do focused web research. Cite every claim with a URL. Publish each finding as a single JSON object to the `findings` channel."
-    allowed_tools: [WebSearch, WebFetch, Channel]
+    tools: [WebSearch, WebFetch, Channel]
     channels:
       publish: [findings]
       subscribe: []
@@ -547,7 +547,7 @@ agents:
   analyst:
     model: sonnet
     system_prompt: "You drain the `findings` channel and produce summary reports. Subscribe to `alerts` for cross-tenant notifications."
-    allowed_tools: [Channel, Write]
+    tools: [Channel, Write]
     channels:
       publish: []
       subscribe: [findings, alerts]
@@ -558,16 +558,16 @@ agents:
   power-user:
     model: opus
     system_prompt: "You have broad access. Do the minimum work needed."
-    allowed_tools: [Read, Write, Edit, WebSearch, WebFetch]
+    tools: [Read, Write, Edit, WebSearch, WebFetch]
     # Add Bash only if loomcycle runs inside a container/VM:
-    # allowed_tools: [Read, Write, Edit, WebSearch, WebFetch, Bash]
+    # tools: [Read, Write, Edit, WebSearch, WebFetch, Bash]
 
   # MCP-backed agent: glob exposes every tool the brave-search MCP
   # server registers, alongside built-in WebFetch for the deep-dive.
   # The mcp_servers.brave-search block below declares the server.
   brave-researcher:
     model: sonnet
-    allowed_tools: ["mcp__brave-search__*", WebFetch]
+    tools: ["mcp__brave-search__*", WebFetch]
     system_prompt: "Search via Brave, fetch top results, synthesise."
 
   # Cheap classifier: haiku model, no tools, system prompt does
@@ -578,13 +578,13 @@ agents:
     system_prompt: |
       Classify each input into exactly one of: bug, feature, question, spam.
       Output ONLY the label, no explanation.
-    allowed_tools: []
+    tools: []
 
 # ─── MCP servers ──────────────────────────────────────────────────────
 # Declared servers spawn at startup (stdio) or are dialed per-call
 # (http). Their tools register as `mcp__{server}__{tool}` after
-# tools/list discovery. Operator-level allowed_tools narrows what the
-# server exposes BEFORE any agent's allowed_tools is consulted.
+# tools/list discovery. Operator-level tools narrows what the
+# server exposes BEFORE any agent's tools is consulted.
 #
 # v0.9.x — HTTP / Streamable-HTTP MCP servers can ALSO be registered
 # at runtime via the MCPServerDef substrate (no yaml edit, no restart).
@@ -617,7 +617,7 @@ mcp_servers: {}
   #   # Operator-level filter: only this subset of the server's tools is
   #   # registered AT ALL. Useful when an MCP server advertises 20 tools
   #   # but you only want the model to see 2.
-  #   allowed_tools: [brave_web_search]
+  #   tools: [brave_web_search]
 
   # ─ HTTP MCP server (per-call dial) ──────────────────────────────────
   # Use HTTP transport when the MCP server runs as a separate service

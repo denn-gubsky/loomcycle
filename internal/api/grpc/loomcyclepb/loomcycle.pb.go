@@ -52,9 +52,9 @@ type RunRequest struct {
 	// Prompt content blocks (system + user mix). Empty → use the
 	// operator-configured agent system_prompt only.
 	Segments []*PromptSegment `protobuf:"bytes,3,rep,name=segments,proto3" json:"segments,omitempty"`
-	// Per-call tool allowlist, intersected with the agent's allowed_tools.
+	// Per-call tool allowlist, intersected with the agent's tools.
 	// Empty → no narrowing (agent's full tool surface).
-	AllowedTools []string `protobuf:"bytes,4,rep,name=allowed_tools,json=allowedTools,proto3" json:"allowed_tools,omitempty"`
+	Tools []string `protobuf:"bytes,4,rep,name=tools,proto3" json:"tools,omitempty"`
 	// Per-call host allowlist for HTTP / WebFetch / WebSearch.
 	// Three states (proto3 doesn't support nullable repeated, so we use
 	// a wrapper):
@@ -164,9 +164,9 @@ func (x *RunRequest) GetSegments() []*PromptSegment {
 	return nil
 }
 
-func (x *RunRequest) GetAllowedTools() []string {
+func (x *RunRequest) GetTools() []string {
 	if x != nil {
-		return x.AllowedTools
+		return x.Tools
 	}
 	return nil
 }
@@ -252,7 +252,7 @@ type ContinueRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	SessionId       string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Segments        []*PromptSegment       `protobuf:"bytes,2,rep,name=segments,proto3" json:"segments,omitempty"`
-	AllowedTools    []string               `protobuf:"bytes,3,rep,name=allowed_tools,json=allowedTools,proto3" json:"allowed_tools,omitempty"`
+	Tools           []string               `protobuf:"bytes,3,rep,name=tools,proto3" json:"tools,omitempty"`
 	AllowedHosts    *HostAllowlist         `protobuf:"bytes,4,opt,name=allowed_hosts,json=allowedHosts,proto3" json:"allowed_hosts,omitempty"`
 	WebSearchFilter string                 `protobuf:"bytes,5,opt,name=web_search_filter,json=webSearchFilter,proto3" json:"web_search_filter,omitempty"`
 	AgentId         string                 `protobuf:"bytes,6,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"` // fresh tracking handle for this continuation
@@ -319,9 +319,9 @@ func (x *ContinueRequest) GetSegments() []*PromptSegment {
 	return nil
 }
 
-func (x *ContinueRequest) GetAllowedTools() []string {
+func (x *ContinueRequest) GetTools() []string {
 	if x != nil {
-		return x.AllowedTools
+		return x.Tools
 	}
 	return nil
 }
@@ -6518,14 +6518,14 @@ var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
-	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xca\x05\n" +
+	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbb\x05\n" +
 	"\n" +
 	"RunRequest\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x127\n" +
-	"\bsegments\x18\x03 \x03(\v2\x1b.loomcycle.v1.PromptSegmentR\bsegments\x12#\n" +
-	"\rallowed_tools\x18\x04 \x03(\tR\fallowedTools\x12@\n" +
+	"\bsegments\x18\x03 \x03(\v2\x1b.loomcycle.v1.PromptSegmentR\bsegments\x12\x14\n" +
+	"\x05tools\x18\x04 \x03(\tR\x05tools\x12@\n" +
 	"\rallowed_hosts\x18\x05 \x01(\v2\x1b.loomcycle.v1.HostAllowlistR\fallowedHosts\x12*\n" +
 	"\x11web_search_filter\x18\x06 \x01(\tR\x0fwebSearchFilter\x12\x19\n" +
 	"\bagent_id\x18\a \x01(\tR\aagentId\x12\x17\n" +
@@ -6543,12 +6543,12 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\vinteractive\x18\x0f \x01(\bR\vinteractive\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x88\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf9\x04\n" +
 	"\x0fContinueRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x127\n" +
-	"\bsegments\x18\x02 \x03(\v2\x1b.loomcycle.v1.PromptSegmentR\bsegments\x12#\n" +
-	"\rallowed_tools\x18\x03 \x03(\tR\fallowedTools\x12@\n" +
+	"\bsegments\x18\x02 \x03(\v2\x1b.loomcycle.v1.PromptSegmentR\bsegments\x12\x14\n" +
+	"\x05tools\x18\x03 \x03(\tR\x05tools\x12@\n" +
 	"\rallowed_hosts\x18\x04 \x01(\v2\x1b.loomcycle.v1.HostAllowlistR\fallowedHosts\x12*\n" +
 	"\x11web_search_filter\x18\x05 \x01(\tR\x0fwebSearchFilter\x12\x19\n" +
 	"\bagent_id\x18\x06 \x01(\tR\aagentId\x12\x1b\n" +

@@ -475,8 +475,8 @@ func TestContextTool_DocOutsideAllowlist(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("doc for out-of-allowlist tool should refuse; got %s", res.Text)
 	}
-	if !strings.Contains(res.Text, "allowed_tools") {
-		t.Errorf("error should mention allowed_tools; got %q", res.Text)
+	if !strings.Contains(res.Text, "tools") {
+		t.Errorf("error should mention tools; got %q", res.Text)
 	}
 }
 
@@ -513,8 +513,8 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 		t.Fatalf("permissions: %s", res.Text)
 	}
 	out := decodeResult(t, res.Text)
-	if got := out["allowed_tools"].([]any); len(got) != 4 {
-		t.Errorf("allowed_tools len = %d, want 4", len(got))
+	if got := out["tools"].([]any); len(got) != 4 {
+		t.Errorf("tools len = %d, want 4", len(got))
 	}
 	if hp := out["host_policy"].(map[string]any); hp["has_list"].(bool) != true {
 		t.Error("host_policy.has_list != true")
@@ -627,14 +627,14 @@ func substrateFixture(t *testing.T) (*Context, store.Store, context.Context, str
 	cfg := &config.Config{
 		Agents: map[string]config.AgentDef{
 			agentName: {
-				Tier:         "low",
-				Provider:     "anthropic",
-				Model:        "claude-haiku-4-5",
-				AllowedTools: []string{"Read", "Context"},
+				Tier:     "low",
+				Provider: "anthropic",
+				Model:    "claude-haiku-4-5",
+				Tools:    []string{"Read", "Context"},
 			},
 			"qa_" + suffix: {
-				Tier:         "middle",
-				AllowedTools: []string{"Read"},
+				Tier:  "middle",
+				Tools: []string{"Read"},
 			},
 		},
 	}

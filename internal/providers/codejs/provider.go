@@ -414,7 +414,7 @@ func latestUserText(req providers.Request) string {
 }
 
 // toolNames returns the names of the tools the loop exposed to this run
-// (from the agent's allowed_tools). The bindings register ONLY these.
+// (from the agent's tools). The bindings register ONLY these.
 func toolNames(req providers.Request) []string {
 	names := make([]string, 0, len(req.Tools))
 	for _, t := range req.Tools {

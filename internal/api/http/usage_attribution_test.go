@@ -240,7 +240,7 @@ func TestUsageAttribution_RunCostIsSumOfLedgerNotFinalModel(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "model-a"},
 		Agents: map[string]config.AgentDef{
-			"solo": {Model: "model-a", AllowedTools: []string{"Noop"}, SystemPrompt: "you are solo"},
+			"solo": {Model: "model-a", Tools: []string{"Noop"}, SystemPrompt: "you are solo"},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 		// model-a is 100× the price of model-b, so summing per-call (ledger) vs

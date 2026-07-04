@@ -483,7 +483,7 @@ func (m *Memory) InputSchema() json.RawMessage { return json.RawMessage(memoryIn
 // errors as model-readable tool_results.
 func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if m.Store == nil {
-		return errResult("Memory tool: not configured (no Store backend — set LOOMCYCLE_STORAGE_BACKEND or remove Memory from the agent's allowed_tools)"), nil
+		return errResult("Memory tool: not configured (no Store backend — set LOOMCYCLE_STORAGE_BACKEND or remove Memory from the agent's tools)"), nil
 	}
 	var in memoryInput
 	if err := json.Unmarshal(raw, &in); err != nil {

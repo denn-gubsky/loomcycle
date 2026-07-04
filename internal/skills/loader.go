@@ -21,7 +21,7 @@
 //
 // SECURITY (intersection enforcement, applied by the config layer, not
 // here): a skill's `allowed-tools` frontmatter must be a subset of the
-// agent's `allowed_tools` YAML field. A skill may NEVER widen the
+// agent's `tools` YAML field. A skill may NEVER widen the
 // agent's tool set. The config layer (resolveSkills) refuses to load if
 // any skill demands a tool the agent doesn't grant. This package's job
 // is only to parse and expose the metadata.
@@ -47,11 +47,11 @@ type Skill struct {
 	// (Approach B, v0.4.0) so the model can decide which skill to load.
 	// In Approach A it is unused at runtime but kept for parity.
 	Description string
-	// AllowedTools is the skill's declared tool requirement. The config
+	// Tools is the skill's declared tool requirement. The config
 	// layer validates this is a subset of the bundling agent's
-	// allowed_tools. Empty = the skill needs no tools (its body is
+	// tools. Empty = the skill needs no tools (its body is
 	// pure prompt guidance).
-	AllowedTools []string
+	Tools []string
 	// Body is the markdown after the closing frontmatter `---`. The
 	// config layer concatenates this onto the agent's system_prompt.
 	// Trailing whitespace is preserved (some skills use a final newline
@@ -170,12 +170,14 @@ func LoadSet(root string) (*Set, error) {
 }
 
 // frontmatter is the strict subset of YAML keys we read out of a
-// SKILL.md. Hyphenated keys match the Claude Code on-disk convention
-// (allowed-tools, not allowed_tools).
+// SKILL.md. The tool list keeps the hyphenated `allowed-tools` key to
+// match the Claude Code on-disk convention — it is a stable import
+// alias that maps into the canonical Tools field (loomcycle's own
+// inline `skills:` yaml uses `tools`).
 type frontmatter struct {
-	Name         string   `yaml:"name"`
-	Description  string   `yaml:"description"`
-	AllowedTools []string `yaml:"allowed-tools"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Tools       []string `yaml:"allowed-tools"`
 }
 
 // parseSkill splits raw bytes into frontmatter + body. The frontmatter
@@ -221,7 +223,7 @@ func parseSkill(raw []byte) (*Skill, error) {
 	}
 	sk.Name = fm.Name
 	sk.Description = fm.Description
-	sk.AllowedTools = fm.AllowedTools
+	sk.Tools = fm.Tools
 	sk.Body = body
 	return sk, nil
 }

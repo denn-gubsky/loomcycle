@@ -156,7 +156,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 }
 
 // RegisterAgent registers a dynamic agent with the supplied
-// system_prompt + allowed_tools + provider/model pin. Returns the
+// system_prompt + tools + provider/model pin. Returns the
 // echo of the registered name on success.
 func (c *Client) RegisterAgent(ctx context.Context, args RegisterAgentArgs) error {
 	in, _ := json.Marshal(args)
@@ -175,7 +175,7 @@ func (c *Client) RegisterAgent(ctx context.Context, args RegisterAgentArgs) erro
 type RegisterAgentArgs struct {
 	Name         string   `json:"name"`
 	SystemPrompt string   `json:"system_prompt"`
-	AllowedTools []string `json:"allowed_tools"`
+	Tools        []string `json:"tools"`
 	Provider     string   `json:"provider,omitempty"`
 	Model        string   `json:"model,omitempty"`
 	Tier         string   `json:"tier,omitempty"`
@@ -236,21 +236,21 @@ func (c *Client) SpawnRun(ctx context.Context, args SpawnRunArgs) (RunResult, er
 // (internal/api/mcp/tools.go:25). The bench always sends one user
 // segment with one trusted-text content block.
 //
-// AllowedTools narrows the agent's tool surface for THIS call.
+// Tools narrows the agent's tool surface for THIS call.
 // Empty/nil = use the agent's registered allowlist (the union we
 // register on first agent-create); non-empty = intersect with that
 // allowlist. The bench uses this to make cases that declare
-// `allowed_tools: ["X"]` actually restrict the model to X at
+// `tools: ["X"]` actually restrict the model to X at
 // runtime, not just check at grading time. Pass an empty (non-nil)
 // slice to deny all tools for a case.
 type SpawnRunArgs struct {
-	Agent        string          `json:"agent"`
-	Segments     []PromptSegment `json:"segments"`
-	TenantID     string          `json:"tenant_id,omitempty"`
-	UserID       string          `json:"user_id,omitempty"`
-	AgentID      string          `json:"agent_id,omitempty"`
-	UserTier     string          `json:"user_tier,omitempty"`
-	AllowedTools []string        `json:"allowed_tools,omitempty"`
+	Agent    string          `json:"agent"`
+	Segments []PromptSegment `json:"segments"`
+	TenantID string          `json:"tenant_id,omitempty"`
+	UserID   string          `json:"user_id,omitempty"`
+	AgentID  string          `json:"agent_id,omitempty"`
+	UserTier string          `json:"user_tier,omitempty"`
+	Tools    []string        `json:"tools,omitempty"`
 }
 
 // PromptSegment mirrors loop.PromptSegment on the wire.

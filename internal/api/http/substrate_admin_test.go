@@ -149,17 +149,17 @@ func TestSubstrateAdmin_AgentDef_MaxIterationsThreadsThrough(t *testing.T) {
 	}
 }
 
-// HTTP-admin AgentDef.create with a non-empty allowed_tools list
+// HTTP-admin AgentDef.create with a non-empty tools list
 // MUST succeed. Before the substrateAdminCtx wildcard fix, the
-// in-process tool refused with "caller's effective allowed_tools
+// in-process tool refused with "caller's effective tools
 // not on ctx" because the admin context didn't set WithAgentTools,
 // blocking containerised callers (JobEmber) from registering their
 // agents at boot. Pin the contract so the regression has teeth.
-func TestSubstrateAdmin_AgentDef_CreateWithAllowedToolsSucceeds(t *testing.T) {
+func TestSubstrateAdmin_AgentDef_CreateWithToolsSucceeds(t *testing.T) {
 	ts := substrateAdminFixture(t)
 	defer ts.Close()
 
-	body := `{"op":"create","name":"cv-adapter","overlay":{"system_prompt":"adapt the CV","allowed_tools":["Read","Write","WebFetch"]}}`
+	body := `{"op":"create","name":"cv-adapter","overlay":{"system_prompt":"adapt the CV","tools":["Read","Write","WebFetch"]}}`
 	resp := postAdmin(t, ts, "/v1/_agentdef", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -179,13 +179,13 @@ func TestSubstrateAdmin_AgentDef_CreateWithAllowedToolsSucceeds(t *testing.T) {
 }
 
 // Mirror test for SkillDef — same gap, same fix. Skills with their
-// own allowed_tools (e.g. position-relevance-filtering carries
+// own tools (e.g. position-relevance-filtering carries
 // mcp__jobs__matchUserLocations) must register over HTTP admin.
-func TestSubstrateAdmin_SkillDef_CreateWithAllowedToolsSucceeds(t *testing.T) {
+func TestSubstrateAdmin_SkillDef_CreateWithToolsSucceeds(t *testing.T) {
 	ts := substrateAdminFixture(t)
 	defer ts.Close()
 
-	body := `{"op":"create","name":"position-relevance-filtering","overlay":{"body":"Evaluate postings.","allowed_tools":["Read","WebFetch"]}}`
+	body := `{"op":"create","name":"position-relevance-filtering","overlay":{"body":"Evaluate postings.","tools":["Read","WebFetch"]}}`
 	resp := postAdmin(t, ts, "/v1/_skilldef", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {

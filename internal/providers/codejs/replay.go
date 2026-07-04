@@ -93,7 +93,7 @@ func (s *replayState) emit(name string, input json.RawMessage) (string, bool, er
 		// Divergence guard: ambient determinism (sandbox.go) keeps the
 		// replayed call sequence identical to the recorded one. A mismatch
 		// means control flow changed (an unhooked non-determinism source, an
-		// anchor/seed shift on a cross-process resume, or allowed_tools
+		// anchor/seed shift on a cross-process resume, or tools
 		// changed mid-run) — abort rather than feed the wrong result into the
 		// JS. We check BOTH the tool name AND the input: a same-name call with
 		// different ARGS (e.g. a key derived from the clock/RNG that shifted on

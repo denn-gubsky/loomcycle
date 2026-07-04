@@ -17,7 +17,7 @@ func TestRunHashAgent_PrintsSameHashAsInProcessSign(t *testing.T) {
 	body := `---
 name: researcher
 description: thorough investigator
-allowed_tools: [Read, WebFetch]
+tools: [Read, WebFetch]
 max_tokens: 8192
 max_iterations: 32
 ---
@@ -143,7 +143,7 @@ agents:
   researcher:
     provider: anthropic
     model: claude-sonnet-4-6
-    allowed_tools: [Read, WebFetch]
+    tools: [Read, WebFetch]
     max_tokens: 8192
     max_iterations: 32
     system_prompt: be thorough
@@ -182,9 +182,9 @@ defaults:
   model: claude-sonnet-4-6
 agents:
   alpha:
-    allowed_tools: [Read]
+    tools: [Read]
   beta:
-    allowed_tools: [Read]
+    tools: [Read]
 `
 	if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -214,10 +214,10 @@ defaults:
   model: claude-sonnet-4-6
 agents:
   alpha:
-    allowed_tools: [Read]
+    tools: [Read]
     system_prompt: alpha prompt
   beta:
-    allowed_tools: [Read, WebFetch]
+    tools: [Read, WebFetch]
     system_prompt: beta prompt
 `
 	if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {

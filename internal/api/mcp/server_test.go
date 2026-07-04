@@ -1005,7 +1005,7 @@ func TestServer_RegisterAgent_DispatchesThroughConnector(t *testing.T) {
 		regResult: connector.AgentDescriptor{Name: "x", Source: "dynamic"},
 	}
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
-	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"register_agent","arguments":{"name":"x","system_prompt":"p","allowed_tools":["Memory"]}}}` + "\n"
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"register_agent","arguments":{"name":"x","system_prompt":"p","tools":["Memory"]}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
 		t.Fatalf("got %d responses, want 1", len(resps))

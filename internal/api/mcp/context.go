@@ -98,8 +98,8 @@ func operatorCtx(ctx context.Context) context.Context {
 // those zero (default-deny) — so even if such a tool were reached it refuses.
 func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) context.Context {
 	// AgentTools wildcard ceiling (F11): without it, agentdef/skilldef create
-	// with a non-empty allowed_tools overlay refuses ("caller's effective
-	// allowed_tools not on ctx"). Operator-trust → the same wildcard the HTTP
+	// with a non-empty tools overlay refuses ("caller's effective
+	// tools not on ctx"). Operator-trust → the same wildcard the HTTP
 	// /v1/_agentdef admin path uses (substrateAdminCtx).
 	ctx = tools.WithAgentTools(ctx, []string{"*"})
 

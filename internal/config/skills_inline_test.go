@@ -8,12 +8,12 @@ import (
 )
 
 // agentWithSkills builds a minimal Config for resolveSkills: one agent that
-// lists the given skills, with the given allowed_tools + base prompt.
+// lists the given skills, with the given tools + base prompt.
 func agentWithSkills(skillsRoot string, inline map[string]SkillSpec, agentAllowed, agentSkills []string) *Config {
 	return &Config{
 		Skills: inline,
 		Agents: map[string]AgentDef{
-			"a": {SystemPrompt: "BASE", AllowedTools: agentAllowed, Skills: agentSkills},
+			"a": {SystemPrompt: "BASE", Tools: agentAllowed, Skills: agentSkills},
 		},
 		Env: Env{SkillsRoot: skillsRoot},
 	}
@@ -23,7 +23,7 @@ func TestResolveSkills_InlineNoRoot(t *testing.T) {
 	// An inline skill with NO LOOMCYCLE_SKILLS_ROOT set must resolve (the
 	// fast-fail relaxation) and bake its body onto the agent prompt.
 	cfg := agentWithSkills("", map[string]SkillSpec{
-		"chunker": {Description: "split prose", AllowedTools: []string{"Read"}, Body: "CHUNK GUIDANCE"},
+		"chunker": {Description: "split prose", Tools: []string{"Read"}, Body: "CHUNK GUIDANCE"},
 	}, []string{"Read"}, []string{"chunker"})
 	if err := resolveSkills(cfg); err != nil {
 		t.Fatalf("resolveSkills: %v", err)
@@ -40,7 +40,7 @@ func TestResolveSkills_InlineNoRoot(t *testing.T) {
 func TestResolveSkills_InlineWideningRefused(t *testing.T) {
 	// A skill may not widen the agent's tool set — even inline.
 	cfg := agentWithSkills("", map[string]SkillSpec{
-		"writer": {AllowedTools: []string{"Edit"}, Body: "x"},
+		"writer": {Tools: []string{"Edit"}, Body: "x"},
 	}, []string{"Read"}, []string{"writer"})
 	if err := resolveSkills(cfg); err == nil || !strings.Contains(err.Error(), "not granted") {
 		t.Errorf("err = %v, want a tool-widening refusal", err)

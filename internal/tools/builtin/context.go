@@ -489,7 +489,7 @@ func (c *Context) execDoc(ctx context.Context, in contextInput) (tools.Result, e
 			// run's effective list. Refuse with a clear message
 			// rather than leaking the docs of a tool the agent
 			// can't actually call.
-			return errResult(fmt.Sprintf("doc: tool %q is not in this agent's allowed_tools", in.Name)), nil
+			return errResult(fmt.Sprintf("doc: tool %q is not in this agent's tools", in.Name)), nil
 		}
 		schema := t.InputSchema()
 		return okJSON(map[string]any{
@@ -517,7 +517,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 
 	histPol := tools.HistoryPolicy(ctx)
 	out := map[string]any{
-		"allowed_tools": tools.AgentTools(ctx),
+		"tools": tools.AgentTools(ctx),
 		"host_policy": map[string]any{
 			"has_list":          hostPol.HasList,
 			"allowed_hosts":     hostPol.AllowedHosts,
@@ -552,11 +552,11 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 		// doesn't get propagated into cfg.Agents. Omitted from this op
 		// pending a follow-up that threads it through (low priority;
 		// agents already know their own description from their prompt).
-		Tier         string `json:"tier,omitempty"`
-		Model        string `json:"model,omitempty"`
-		Provider     string `json:"provider,omitempty"`
-		ActiveDefID  string `json:"active_def_id,omitempty"`
-		AllowedTools int    `json:"allowed_tools_count"`
+		Tier        string `json:"tier,omitempty"`
+		Model       string `json:"model,omitempty"`
+		Provider    string `json:"provider,omitempty"`
+		ActiveDefID string `json:"active_def_id,omitempty"`
+		Tools       int    `json:"tools_count"`
 		// Error surfaces a per-name lookup failure (e.g. DB connection
 		// drop while resolving ActiveDefID). Empty when the lookup
 		// succeeded or the name has no DB row (the NotFound case
@@ -577,11 +577,11 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 	for _, name := range names {
 		def := c.Cfg.Agents[name]
 		s := agentSummary{
-			Name:         name,
-			Tier:         def.Tier,
-			Model:        def.Model,
-			Provider:     def.Provider,
-			AllowedTools: len(def.AllowedTools),
+			Name:     name,
+			Tier:     def.Tier,
+			Model:    def.Model,
+			Provider: def.Provider,
+			Tools:    len(def.Tools),
 		}
 		// Active def_id from the v0.8.5 substrate. Best-effort — if
 		// Store is nil or no active row, we omit the field. Non-

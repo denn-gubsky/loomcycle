@@ -147,7 +147,7 @@ func AppendToConfig(rec *Recipe, targetPath string, opts AppendOptions) ([]byte,
 // recipeToYAMLValueNode builds the YAML mapping for one recipe's
 // `mcp_servers.<name>:` block. Order is operator-friendly:
 //
-//	transport, command, args, env, url, headers, pool_size, allowed_tools
+//	transport, command, args, env, url, headers, pool_size, tools
 //
 // The transport key is always written explicitly (yaml expects it; the
 // JSON recipe's `_loomcycle.transport` field is inferred at validate

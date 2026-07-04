@@ -65,7 +65,7 @@ func TestHandleRunsSSE(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"default": {Model: "stub-model", AllowedTools: []string{"Read"}, SystemPrompt: "be brief"},
+			"default": {Model: "stub-model", Tools: []string{"Read"}, SystemPrompt: "be brief"},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}
@@ -117,7 +117,7 @@ func TestHandleRunsSSEEmitsRetryFrame(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"default": {Model: "stub-model", AllowedTools: []string{"Read"}},
+			"default": {Model: "stub-model", Tools: []string{"Read"}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}
@@ -1131,16 +1131,16 @@ func TestPerSessionLockAppliesToRunsWithSessionID(t *testing.T) {
 }
 
 // Per-agent default-deny invariant: an agent declared with no
-// allowed_tools in YAML must see ZERO tools at the dispatcher,
+// tools in YAML must see ZERO tools at the dispatcher,
 // even though several built-ins are registered server-wide. The
 // model's req.Tools should be empty. This is the security floor —
 // turning off filterTools' empty-list early-return would silently
 // expose every registered tool to every agent.
-func TestAgentWithNoAllowedToolsSeesZeroTools(t *testing.T) {
+func TestAgentWithNoToolsSeesZeroTools(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			// AllowedTools omitted — default-deny.
+			// Tools omitted — default-deny.
 			"locked": {Model: "stub-model"},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
@@ -1153,7 +1153,7 @@ func TestAgentWithNoAllowedToolsSeesZeroTools(t *testing.T) {
 		return ch, nil
 	}
 	// Server-wide tool inventory has FakeTool registered — the agent
-	// must NOT see it because its allowed_tools is empty.
+	// must NOT see it because its tools is empty.
 	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{&fakeBuiltinTool{}}, concurrency.New(4, 4, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -1180,7 +1180,7 @@ func TestAgentWithNoAllowedToolsSeesZeroTools(t *testing.T) {
 		for _, ts := range provider.requests[0].Tools {
 			names = append(names, ts.Name)
 		}
-		t.Errorf("agent with no allowed_tools saw %d tools (%v); want 0", got, names)
+		t.Errorf("agent with no tools saw %d tools (%v); want 0", got, names)
 	}
 }
 
@@ -1192,7 +1192,7 @@ func TestAgentWithExplicitAllowSeeTool(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"open": {Model: "stub-model", AllowedTools: []string{"FakeTool"}},
+			"open": {Model: "stub-model", Tools: []string{"FakeTool"}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}
@@ -1236,7 +1236,7 @@ func TestPerRequestAllowedHostsEmptyDeniesNetworkCalls(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"net": {Model: "stub-model", AllowedTools: []string{"HTTP"}},
+			"net": {Model: "stub-model", Tools: []string{"HTTP"}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}
@@ -1319,7 +1319,7 @@ func TestPerRequestAllowedHostsNilLeavesOperatorListIntact(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"net": {Model: "stub-model", AllowedTools: []string{"HTTP"}},
+			"net": {Model: "stub-model", Tools: []string{"HTTP"}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}
@@ -1457,7 +1457,7 @@ func TestMessagesEndpointReplaysToolCallsCorrectly(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"default": {Model: "stub-model", AllowedTools: []string{"FakeTool"}},
+			"default": {Model: "stub-model", Tools: []string{"FakeTool"}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}
@@ -1507,7 +1507,7 @@ func TestMessagesEndpointReplaysToolCallsCorrectly(t *testing.T) {
 
 	// First run — uses the tool.
 	resp, _ := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
-		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hello"}]}],"allowed_tools":["FakeTool"]}`,
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hello"}]}],"tools":["FakeTool"]}`,
 	))
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1716,7 +1716,7 @@ func TestRunRequest_UserBearerValidation(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"default": {Model: "stub-model", AllowedTools: []string{"Read"}},
+			"default": {Model: "stub-model", Tools: []string{"Read"}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}
@@ -1800,7 +1800,7 @@ func TestLookupAgent_FallsThroughToSubstrate(t *testing.T) {
 	// what /v1/_agentdef create+promote does.
 	defJSON, _ := json.Marshal(map[string]any{
 		"system_prompt": "be brief",
-		"allowed_tools": []string{"Read"},
+		"tools":         []string{"Read"},
 		"model":         "stub-model",
 	})
 	row := store.AgentDefRow{
@@ -1825,8 +1825,8 @@ func TestLookupAgent_FallsThroughToSubstrate(t *testing.T) {
 	if def.SystemPrompt != "be brief" {
 		t.Errorf("SystemPrompt = %q, want %q", def.SystemPrompt, "be brief")
 	}
-	if len(def.AllowedTools) != 1 || def.AllowedTools[0] != "Read" {
-		t.Errorf("AllowedTools = %v, want [Read]", def.AllowedTools)
+	if len(def.Tools) != 1 || def.Tools[0] != "Read" {
+		t.Errorf("Tools = %v, want [Read]", def.Tools)
 	}
 }
 
@@ -1854,7 +1854,7 @@ func TestLookupAgent_DynamicAgentsStillWins(t *testing.T) {
 	// dynamic-path branch unmarshals correctly.
 	dynDefJSON, _ := json.Marshal(config.AgentDef{
 		SystemPrompt: "dynamic wins",
-		AllowedTools: []string{"Bash"},
+		Tools:        []string{"Bash"},
 	})
 	if err := st.DynamicAgentUpsert(ctx, store.DynamicAgent{
 		Name:       "shared-name",
@@ -1865,7 +1865,7 @@ func TestLookupAgent_DynamicAgentsStillWins(t *testing.T) {
 	}
 	substrateDefJSON, _ := json.Marshal(map[string]any{
 		"system_prompt": "substrate loses tie",
-		"allowed_tools": []string{"Read"},
+		"tools":         []string{"Read"},
 	})
 	if _, err := st.AgentDefCreate(ctx, store.AgentDefRow{
 		DefID:      "def_shared",
@@ -1912,7 +1912,7 @@ func TestLookupAgent_SystemPromptBaseSetFromSubstrate(t *testing.T) {
 	const agentBody = "You are ats-filter. First call mcp__jobs__getAgentContext, then score."
 	defJSON, _ := json.Marshal(map[string]any{
 		"system_prompt": agentBody,
-		"allowed_tools": []string{"mcp__jobs__getAgentContext", "Skill"},
+		"tools":         []string{"mcp__jobs__getAgentContext", "Skill"},
 		"skills":        []string{"position-relevance-filtering"},
 	})
 	if _, err := st.AgentDefCreate(ctx, store.AgentDefRow{
@@ -1965,7 +1965,7 @@ func TestLookupAgent_ResolvesExplicitTenantWithoutPrincipalOnCtx(t *testing.T) {
 	// Seed "report-agent" ONLY under tenant "acme" — not the shared "" tenant.
 	defJSON, _ := json.Marshal(map[string]any{
 		"system_prompt": "acme tenant body",
-		"allowed_tools": []string{"Read"},
+		"tools":         []string{"Read"},
 	})
 	if _, err := st.AgentDefCreate(ctx, store.AgentDefRow{
 		DefID: "def_acme_report", Name: "report-agent", Definition: defJSON, TenantID: "acme",
@@ -2013,7 +2013,7 @@ func TestLookupAgent_SystemPromptBaseSetFromDynamic(t *testing.T) {
 	const agentBody = "You are a legacy dynamic agent. Body must survive."
 	defJSON, _ := json.Marshal(config.AgentDef{
 		SystemPrompt: agentBody,
-		AllowedTools: []string{"Skill"},
+		Tools:        []string{"Skill"},
 		Skills:       []string{"some-skill"},
 	})
 	if err := st.DynamicAgentUpsert(ctx, store.DynamicAgent{

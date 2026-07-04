@@ -384,9 +384,9 @@ message RunRequest {
   // operator-configured agent system_prompt only.
   repeated PromptSegment segments = 3;
 
-  // Per-call tool allowlist, intersected with the agent's allowed_tools.
+  // Per-call tool allowlist, intersected with the agent's tools.
   // Empty → no narrowing (agent's full tool surface).
-  repeated string allowed_tools = 4;
+  repeated string tools = 4;
 
   // Per-call host allowlist for HTTP / WebFetch / WebSearch.
   // Three states (proto3 doesn't support nullable repeated, so we use
@@ -454,7 +454,7 @@ message RunRequest {
 message ContinueRequest {
   string session_id = 1;
   repeated PromptSegment segments = 2;
-  repeated string allowed_tools = 3;
+  repeated string tools = 3;
   HostAllowlist allowed_hosts = 4;
   string web_search_filter = 5;
   string agent_id = 6;  // fresh tracking handle for this continuation

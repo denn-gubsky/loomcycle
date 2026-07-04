@@ -72,7 +72,7 @@ func TestUnifiedLibrary_Agents_StaticOnly(t *testing.T) {
 		"qa": {
 			Model:        "stub-model",
 			SystemPrompt: "you are qa",
-			AllowedTools: []string{"Read"},
+			Tools:        []string{"Read"},
 		},
 	}, nil)
 	defer cleanup()
@@ -96,12 +96,12 @@ func TestUnifiedLibrary_Agents_StaticOnly(t *testing.T) {
 	}
 	var def struct {
 		SystemPrompt string   `json:"system_prompt"`
-		AllowedTools []string `json:"allowed_tools"`
+		Tools        []string `json:"tools"`
 	}
 	if err := json.Unmarshal(e.StaticDefinition, &def); err != nil {
 		t.Fatal(err)
 	}
-	if def.SystemPrompt != "you are qa" || len(def.AllowedTools) != 1 || def.AllowedTools[0] != "Read" {
+	if def.SystemPrompt != "you are qa" || len(def.Tools) != 1 || def.Tools[0] != "Read" {
 		t.Errorf("static_definition payload wrong: %+v", def)
 	}
 }
@@ -495,9 +495,9 @@ func TestUnifiedLibrary_Skills_InlineCfgSurfaced(t *testing.T) {
 	defer cleanup()
 	srv.cfg.Skills = map[string]config.SkillSpec{
 		"semantic-chunking": {
-			Description:  "split prose into a chunk hierarchy",
-			AllowedTools: []string{"Document"},
-			Body:         "# Semantic chunking\n\nMethod…",
+			Description: "split prose into a chunk hierarchy",
+			Tools:       []string{"Document"},
+			Body:        "# Semantic chunking\n\nMethod…",
 		},
 	}
 	call := func(p auth.Principal) []LibraryEntry {

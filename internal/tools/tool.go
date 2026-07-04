@@ -94,10 +94,10 @@ func (d *Dispatcher) Specs(order []Tool) []providers.ToolSpec {
 }
 
 // ctxKeyAgentTools is the context key under which the runtime stores
-// the calling agent's effective allowed_tools list (after agent + caller
+// the calling agent's effective tools list (after agent + caller
 // narrowing). Tools that need to apply secondary subset checks (like
 // the built-in Skill tool, which validates skill `allowed-tools` ⊆
-// agent `allowed_tools` at call time) read it via AgentTools.
+// agent `tools` at call time) read it via AgentTools.
 type ctxKeyAgentTools struct{}
 
 // WithAgentTools attaches the agent's effective tool names to ctx. The
@@ -517,7 +517,7 @@ type ctxKeyMemoryPolicy struct{}
 //
 //   - AllowedScopes is the yaml `memory_scopes` allowlist; an empty
 //     slice means the agent has NO Memory access (the tool itself
-//     must already be in allowed_tools for the agent to even call it,
+//     must already be in tools for the agent to even call it,
 //     but the scope allowlist is a second gate that lets operators
 //     grant Memory:read-only on `user` while withholding `agent`).
 //   - QuotaBytes is the yaml `memory_quota_bytes` override; 0 falls
@@ -555,7 +555,7 @@ type ctxKeySqlMemPolicy struct{}
 //
 //   - AllowedScopes is the yaml `sql_scopes` allowlist {agent,user,run}. An
 //     empty slice means the agent has NO SQL access — the DEFAULT-DENY
-//     invariant (the Memory tool must be in allowed_tools for the agent to
+//     invariant (the Memory tool must be in tools for the agent to
 //     call it at all, but the scope allowlist is a second, SQL-specific gate).
 //   - QuotaBytes is the yaml `sql_quota_bytes` override; 0 falls back to the
 //     global LOOMCYCLE_SQLMEM_QUOTA_BYTES default.

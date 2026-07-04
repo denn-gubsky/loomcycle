@@ -33,7 +33,7 @@ type CredentialDef struct {
 	Engine *credential.Engine
 }
 
-// CredentialToolName is the in-band tool name (allowed_tools:[CredentialDef]).
+// CredentialToolName is the in-band tool name (tools:[CredentialDef]).
 const CredentialToolName = "CredentialDef"
 
 // CredentialValueField is the create-op input field carrying the plaintext

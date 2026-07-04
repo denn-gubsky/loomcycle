@@ -24,7 +24,7 @@ import (
 // admin transports (CLI / POST /v1/_operatortokendef / gRPC / MCP), all
 // of which set OperatorTokenDefPolicy{Admin:true} after clearing the
 // substrate:admin scope check. Agents do NOT get this tool in their
-// allowed_tools, and the default policy is deny.
+// tools, and the default policy is deny.
 //
 // NOT a versioned/forkable substrate Def: a secret has no "content hash
 // to fork", so there is no fork op, no version, no active pointer —

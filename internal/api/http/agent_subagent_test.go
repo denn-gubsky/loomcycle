@@ -79,12 +79,12 @@ func TestSubAgentRoundTrip_ParentSeesChildOutput(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"parent": {
 				Model:        "stub-model",
-				AllowedTools: []string{"Agent"},
+				Tools:        []string{"Agent"},
 				SystemPrompt: "you are the parent",
 			},
 			"child": {
 				Model:        "stub-model",
-				AllowedTools: []string{},
+				Tools:        []string{},
 				SystemPrompt: "you are the child",
 			},
 		},
@@ -195,7 +195,7 @@ func TestSubAgentRoundTrip_ParentSeesChildOutput(t *testing.T) {
 	}
 }
 
-// Regression: a parent without "Agent" in its allowed_tools cannot call
+// Regression: a parent without "Agent" in its tools cannot call
 // the Agent tool — the dispatcher refuses. The model would see a
 // "tool not found" tool_result. This locks the per-agent gate.
 func TestSubAgent_ParentWithoutAgentToolCannotSpawn(t *testing.T) {
@@ -204,12 +204,12 @@ func TestSubAgent_ParentWithoutAgentToolCannotSpawn(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"locked": {
 				Model:        "stub-model",
-				AllowedTools: []string{}, // no Agent
+				Tools:        []string{}, // no Agent
 				SystemPrompt: "you cannot spawn",
 			},
 			"child": {
 				Model:        "stub-model",
-				AllowedTools: []string{},
+				Tools:        []string{},
 				SystemPrompt: "you are the child",
 			},
 		},
@@ -269,8 +269,8 @@ func TestSubAgent_UnknownChildName(t *testing.T) {
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
 			"parent": {
-				Model:        "stub-model",
-				AllowedTools: []string{"Agent"},
+				Model: "stub-model",
+				Tools: []string{"Agent"},
 			},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
@@ -340,7 +340,7 @@ func TestSubAgent_SpawnsDynamicallyRegisteredChild(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"parent": {
 				Model:        "stub-model",
-				AllowedTools: []string{"Agent"},
+				Tools:        []string{"Agent"},
 				SystemPrompt: "you are the parent",
 			},
 			// NB: "child" is NOT in cfg.Agents — it's registered
@@ -388,7 +388,7 @@ func TestSubAgent_SpawnsDynamicallyRegisteredChild(t *testing.T) {
 	// connector.RegisterAgent persists.
 	childDef := config.AgentDef{
 		Model:        "stub-model",
-		AllowedTools: []string{},
+		Tools:        []string{},
 		SystemPrompt: "you are the dynamic child",
 	}
 	childDefJSON, err := json.Marshal(childDef)
@@ -454,8 +454,8 @@ func TestSubAgent_InheritsParentCallerHostAllowlist(t *testing.T) {
 	cfg.Env.HTTPHostAllowlist = nil
 	cfg.Env.HTTPPrivateHostAllowlist = []string{"127.0.0.1"} // dial-layer loopback exemption
 	cfg.Agents = map[string]config.AgentDef{
-		"parent": {Model: "stub-model", AllowedTools: []string{"HTTP", "Agent"}, SystemPrompt: "you are the parent"},
-		"child":  {Model: "stub-model", AllowedTools: []string{"HTTP"}, SystemPrompt: "you are the child"},
+		"parent": {Model: "stub-model", Tools: []string{"HTTP", "Agent"}, SystemPrompt: "you are the parent"},
+		"child":  {Model: "stub-model", Tools: []string{"HTTP"}, SystemPrompt: "you are the child"},
 	}
 	cfg.Env.AuthToken = ""
 
@@ -620,8 +620,8 @@ func (b *bearerCapturingProvider) Call(ctx context.Context, _ providers.Request)
 func TestSubAgent_InheritsParentUserBearer(t *testing.T) {
 	cfg := makeBaseConfig()
 	cfg.Agents = map[string]config.AgentDef{
-		"parent": {Model: "stub-model", AllowedTools: []string{"Agent"}, SystemPrompt: "you are the parent"},
-		"child":  {Model: "stub-model", AllowedTools: []string{}, SystemPrompt: "you are the child"},
+		"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the parent"},
+		"child":  {Model: "stub-model", Tools: []string{}, SystemPrompt: "you are the child"},
 	}
 
 	const parentBearer = "parent-bearer-xyz123456"
@@ -699,8 +699,8 @@ func TestSubAgent_InheritsParentUserBearer(t *testing.T) {
 func TestSubAgent_InheritsParentContext(t *testing.T) {
 	cfg := makeBaseConfig()
 	cfg.Agents = map[string]config.AgentDef{
-		"parent": {Model: "stub-model", AllowedTools: []string{"Agent"}, SystemPrompt: "you are the parent"},
-		"child":  {Model: "stub-model", AllowedTools: []string{}, SystemPrompt: "you are the child"},
+		"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the parent"},
+		"child":  {Model: "stub-model", Tools: []string{}, SystemPrompt: "you are the child"},
 	}
 
 	prov := &scriptedProvider{
@@ -789,8 +789,8 @@ func TestSubAgent_InheritsParentContext(t *testing.T) {
 func TestSubAgent_SessionInheritsParentTenant(t *testing.T) {
 	cfg := makeBaseConfig()
 	cfg.Agents = map[string]config.AgentDef{
-		"parent": {Model: "stub-model", AllowedTools: []string{"Agent"}, SystemPrompt: "you are the parent"},
-		"child":  {Model: "stub-model", AllowedTools: []string{}, SystemPrompt: "you are the child"},
+		"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the parent"},
+		"child":  {Model: "stub-model", Tools: []string{}, SystemPrompt: "you are the child"},
 	}
 
 	prov := &scriptedProvider{

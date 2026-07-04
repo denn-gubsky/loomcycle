@@ -17,7 +17,7 @@ import (
 // human-readable, tenant-rooted, scope-aware paths. Resources keep their
 // native ids; a dirent is just the name (Linux inode/dirent separation).
 //
-// Gated by allowed_tools:[Path]. Tenant + scope isolation is enforced at the
+// Gated by tools:[Path]. Tenant + scope isolation is enforced at the
 // store boundary — every op scopes by (tenant, scope, scope_id), and a crafted
 // path can't escape its tree because normalizePath rejects "..". A dirent is a
 // NAME, not an authority grant: resolving one returns a resource_ref, but

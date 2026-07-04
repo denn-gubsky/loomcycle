@@ -55,13 +55,13 @@ func (f fakeDynReg) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 
 // TestMCPServer_StaticDynamicPrecedence pins the lookup chain MCP now shares
 // with every other primitive: static yaml → dynamic substrate, yaml-wins on
-// collision, AllowedTools carried only for the static source (dynamic =
+// collision, Tools carried only for the static source (dynamic =
 // allow-all). This is the resolver-level guard the MCP lazy resolver lacked
 // before #341 — it had duplicated the membership check static-only. The lazy
 // resolver now routes through this function, so this test covers both.
 func TestMCPServer_StaticDynamicPrecedence(t *testing.T) {
 	cfg := &config.Config{MCPServers: map[string]config.MCPServer{
-		"static-srv": {Transport: "http", URL: "http://s/mcp", AllowedTools: []string{"a", "b"}},
+		"static-srv": {Transport: "http", URL: "http://s/mcp", Tools: []string{"a", "b"}},
 		"both":       {Transport: "http", URL: "http://yaml/mcp"},
 	}}
 	dyn := fakeDynReg{
@@ -71,11 +71,11 @@ func TestMCPServer_StaticDynamicPrecedence(t *testing.T) {
 
 	// Default "" tenant: order collapses to static → shared-dynamic, exactly
 	// as pre-RFC-N.
-	if spec, ok := lookup.MCPServer(cfg, dyn, "", "static-srv"); !ok || spec.Source != "static" || !reflect.DeepEqual(spec.AllowedTools, []string{"a", "b"}) {
+	if spec, ok := lookup.MCPServer(cfg, dyn, "", "static-srv"); !ok || spec.Source != "static" || !reflect.DeepEqual(spec.Tools, []string{"a", "b"}) {
 		t.Errorf("static: got (%+v, %v), want source=static + allowed [a b]", spec, ok)
 	}
-	if spec, ok := lookup.MCPServer(cfg, dyn, "", "dyn-srv"); !ok || spec.Source != "dynamic" || len(spec.AllowedTools) != 0 {
-		t.Errorf("dynamic: got (%+v, %v), want source=dynamic + no allowed_tools (allow-all)", spec, ok)
+	if spec, ok := lookup.MCPServer(cfg, dyn, "", "dyn-srv"); !ok || spec.Source != "dynamic" || len(spec.Tools) != 0 {
+		t.Errorf("dynamic: got (%+v, %v), want source=dynamic + no tools (allow-all)", spec, ok)
 	}
 	if spec, ok := lookup.MCPServer(cfg, dyn, "", "both"); !ok || spec.Source != "static" || spec.URL != "http://yaml/mcp" {
 		t.Errorf("collision: got (%+v, %v), want the static (yaml) entry to win", spec, ok)

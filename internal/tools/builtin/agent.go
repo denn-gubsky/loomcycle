@@ -19,14 +19,14 @@ import (
 //
 //   - Reject unknown agent names (operator-controlled allowlist:
 //     cfg.Agents).
-//   - Apply the sub-agent's own AllowedTools as the security floor; the
+//   - Apply the sub-agent's own Tools as the security floor; the
 //     parent's tool set does NOT widen the child's. Parent and child are
 //     both operator-vetted definitions, so each agent's declared
 //     allow-list is authoritative for itself.
 //   - When defID is non-empty, resolve the sub-agent against the
 //     agent_defs row at that id (v0.8.5 substrate). The row's Name MUST
 //     match the requested name — cross-name pinning is refused. The
-//     def's mutable fields (system_prompt, allowed_tools, model, tier,
+//     def's mutable fields (system_prompt, tools, model, tier,
 //     etc.) override the static cfg.Agents entry for this sub-run. The
 //     pinned defID is also persisted on the sub-run row so evaluations
 //     denormalise correctly.
@@ -131,7 +131,7 @@ const MaxParallelSpawns = 32
 //	  ]
 //	}
 //
-// The sub-agent's `allowed_tools` (from its YAML AgentDef) is the sole
+// The sub-agent's `tools` (from its YAML AgentDef) is the sole
 // authority on what the sub can use — the parent's allow-list does not
 // widen or narrow it. This matches the trust model: each agent
 // definition is operator-curated and self-describing.

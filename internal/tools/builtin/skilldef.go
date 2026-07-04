@@ -43,9 +43,9 @@ import (
 // in-flight runs keep their locked system prompt — there is no
 // mid-run skill body swap.
 //
-// AllowedTools enforcement: forks may NARROW but NEVER widen. The
-// operator-blessed root (static skill.AllowedTools if it exists,
-// else the v1 row's allowed_tools) is the permanent capability
+// Tools enforcement: forks may NARROW but NEVER widen. The
+// operator-blessed root (static skill.Tools if it exists,
+// else the v1 row's tools) is the permanent capability
 // ceiling. Mirror of the AgentDef rule.
 //
 // Validation specific to skills:
@@ -78,7 +78,7 @@ type SkillDef struct {
 
 const skillDefDescription = `Author, fork, promote, retire, and inspect skill definitions at runtime. ` +
 	`Static SKILL.md files (LOOMCYCLE_SKILLS_ROOT) remain the operator's immutable ground truth; ` +
-	`this tool produces the DERIVED layer of agent-authored versions. AllowedTools may be NARROWED ` +
+	`this tool produces the DERIVED layer of agent-authored versions. Tools may be NARROWED ` +
 	`on forks but never WIDENED. Promotion is explicit — selection is policy, not runtime. ` +
 	`Operations: create, fork, get, list, retire, promote.`
 
@@ -91,11 +91,11 @@ const skillDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, falling back to the static SKILL.md bootstrap)."},
     "overlay": {
       "type": "object",
-      "description": "Skill content + metadata. Fields: body (required string for create/fork), description (string), allowed_tools (array). Server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
+      "description": "Skill content + metadata. Fields: body (required string for create/fork), description (string), tools (array). Server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
       "properties": {
         "body":          {"type": "string", "description": "Skill markdown body (required, non-empty)."},
         "description":   {"type": "string", "description": "Skill self-description for discovery."},
-        "allowed_tools": {"type": "array", "items": {"type": "string"}, "description": "Tools this skill needs. Must be a subset of the calling agent's effective allowed_tools."}
+        "tools": {"type": "array", "items": {"type": "string"}, "description": "Tools this skill needs. Must be a subset of the calling agent's effective tools."}
       },
       "additionalProperties": false
     },
@@ -121,9 +121,9 @@ type skillDefInput struct {
 // skillDefOverlay is the JSON shape of overlay + the persisted
 // `definition` column for skill_defs rows.
 type skillDefOverlay struct {
-	Body         string   `json:"body,omitempty"`
-	Description  string   `json:"description,omitempty"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
+	Body        string   `json:"body,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
 }
 
 func (d *skillDefOverlay) applyOverlay(ov skillDefOverlay) {
@@ -133,8 +133,8 @@ func (d *skillDefOverlay) applyOverlay(ov skillDefOverlay) {
 	if ov.Description != "" {
 		d.Description = ov.Description
 	}
-	if ov.AllowedTools != nil {
-		d.AllowedTools = ov.AllowedTools
+	if ov.Tools != nil {
+		d.Tools = ov.Tools
 	}
 }
 
@@ -204,13 +204,13 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyVa
 	if err := s.validateBody(def.Body); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	// AllowedTools ceiling on `create`: caller's effective allowed_tools.
+	// Tools ceiling on `create`: caller's effective tools.
 	callerTools := tools.AgentTools(ctx)
-	if len(def.AllowedTools) > 0 {
+	if len(def.Tools) > 0 {
 		if callerTools == nil {
-			return errResult("create: caller's effective allowed_tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening"), nil
+			return errResult("create: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening"), nil
 		}
-		if err := assertAllowedToolsSubset(def.AllowedTools, callerTools); err != nil {
+		if err := assertToolsSubset(def.Tools, callerTools); err != nil {
 			return errResult(fmt.Sprintf("create: %s", err)), nil
 		}
 	}
@@ -357,12 +357,12 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 	if err := s.validateBody(def.Body); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
-	// AllowedTools ceiling — fork may narrow, never widen.
-	root, err := s.resolveAllowedToolsRoot(ctx, in.Name, parent)
+	// Tools ceiling — fork may narrow, never widen.
+	root, err := s.resolveToolsRoot(ctx, in.Name, parent)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: resolve root: %s", err)), nil
 	}
-	if err := assertAllowedToolsSubset(def.AllowedTools, root); err != nil {
+	if err := assertToolsSubset(def.Tools, root); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 
@@ -620,14 +620,14 @@ func (s *SkillDef) checkSizeCaps(defJSON []byte, body, description string) error
 	return nil
 }
 
-// resolveAllowedToolsRoot returns the operator-blessed AllowedTools
+// resolveToolsRoot returns the operator-blessed Tools
 // ceiling for a skill name. For names with a static SKILL.md,
-// that's the static AllowedTools. For DB-only lineages, it's the
-// v1 row's allowed_tools.
-func (s *SkillDef) resolveAllowedToolsRoot(ctx context.Context, name string, parent store.SkillDefRow) ([]string, error) {
+// that's the static Tools. For DB-only lineages, it's the
+// v1 row's tools.
+func (s *SkillDef) resolveToolsRoot(ctx context.Context, name string, parent store.SkillDefRow) ([]string, error) {
 	if s.Set != nil {
 		if static, ok := s.Set.Get(name); ok {
-			return static.AllowedTools, nil
+			return static.Tools, nil
 		}
 	}
 	cur := parent
@@ -651,7 +651,7 @@ func (s *SkillDef) resolveAllowedToolsRoot(ctx context.Context, name string, par
 	if err := json.Unmarshal(cur.Definition, &rootDef); err != nil {
 		return nil, fmt.Errorf("parse root definition: %w", err)
 	}
-	return rootDef.AllowedTools, nil
+	return rootDef.Tools, nil
 }
 
 // bootstrapStatic snapshots the static skills.Set entry into a v1
@@ -685,9 +685,9 @@ func staticToSkillDefOverlay(sk *skills.Skill) skillDefOverlay {
 		return skillDefOverlay{}
 	}
 	return skillDefOverlay{
-		Body:         sk.Body,
-		Description:  sk.Description,
-		AllowedTools: sk.AllowedTools,
+		Body:        sk.Body,
+		Description: sk.Description,
+		Tools:       sk.Tools,
 	}
 }
 
@@ -722,10 +722,10 @@ func skillDefRowResponseMap(row store.SkillDefRow) map[string]any {
 // as signFromMergedDef in agentdef.go.
 func signFromSkillDef(name string, def skillDefOverlay) string {
 	return skills.Sign(skills.SkillContent{
-		Name:         name,
-		Description:  def.Description,
-		Body:         def.Body,
-		AllowedTools: def.AllowedTools,
+		Name:        name,
+		Description: def.Description,
+		Body:        def.Body,
+		Tools:       def.Tools,
 	})
 }
 

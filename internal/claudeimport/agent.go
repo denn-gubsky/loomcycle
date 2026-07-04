@@ -18,24 +18,20 @@ type claudeAgentFrontmatter struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 	Model       string `yaml:"model"`
-	// Tools is Claude Code's shape: either a comma-string OR []string.
-	// We accept any here and coerce in agentToFragment.
+	// Tools is the tool list: Claude Code's comma-string OR a []string.
+	// One canonical `tools` key (aligns natively with Claude Code
+	// frontmatter). We accept any here and coerce in agentToFragment.
 	Tools any `yaml:"tools"`
-	// Some .claude/agents/<name>.md files use "allowed_tools" instead
-	// (loomcycle-shape mirroring Claude Code's tools field). Accept
-	// both; allowed_tools wins on conflict.
-	AllowedTools []string `yaml:"allowed_tools"`
 }
 
 // knownClaudeAgentFields is the closed set of frontmatter keys the
 // importer expects to see on .claude/agents/<name>.md. Anything else
 // surfaces in the unmapped-fields list with a fixed hint.
 var knownClaudeAgentFields = map[string]struct{}{
-	"name":          {},
-	"description":   {},
-	"model":         {},
-	"tools":         {},
-	"allowed_tools": {},
+	"name":        {},
+	"description": {},
+	"model":       {},
+	"tools":       {},
 }
 
 // unmappedFieldHints maps frontmatter keys to an explanatory hint
@@ -134,10 +130,10 @@ func buildAgentEntry(name, path string, raw []byte) (*agentEntryBuilder, error) 
 		}
 	}
 
-	// Resolve the tool list: allowed_tools wins; otherwise coerce
-	// Claude Code's comma-string OR []string into []string.
-	tools := fm.AllowedTools
-	if len(tools) == 0 && fm.Tools != nil {
+	// Resolve the tool list: the single `tools` key accepts a
+	// comma-string OR []string; coerce to []string.
+	var tools []string
+	if fm.Tools != nil {
 		tools = coerceToolsField(fm.Tools)
 	}
 
@@ -331,7 +327,7 @@ func buildAgentYAML(name string, fm *claudeAgentFrontmatter,
 		fmt.Fprintf(&b, "  model: %s\n", fm.Model)
 	}
 	if len(tools) > 0 {
-		fmt.Fprintln(&b, "  allowed_tools:")
+		fmt.Fprintln(&b, "  tools:")
 		for _, t := range tools {
 			fmt.Fprintf(&b, "    - %s\n", t)
 		}

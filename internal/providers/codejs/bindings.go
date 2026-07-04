@@ -22,14 +22,14 @@ type toolEmitter func(name string, input json.RawMessage) (text string, isError 
 
 // buildBindFunc returns the bindFunc that registers ONLY the agent's
 // permitted tool surface (RFC J Decision 7: default-deny by construction). It
-// is driven by the tool names the loop computed from the agent's allowed_tools
+// is driven by the tool names the loop computed from the agent's tools
 // (req.Tools); a tool absent from that list gets NO JS binding — operator code
 // referencing it sees `ReferenceError: <name> is not defined`, not a
-// permission error. `allowed_tools` is the floor: ANY allowed tool — built-in
+// permission error. `tools` is the floor: ANY allowed tool — built-in
 // or MCP — is callable, never just a hardcoded subset.
 //
 // Tools are referenced in JS by their EXACT canonical name — the same string
-// as in `allowed_tools` and as every other agent uses (CamelCase: Memory,
+// as in `tools` and as every other agent uses (CamelCase: Memory,
 // WebFetch, …). No casing translation. Two binding shapes:
 //   - The three multi-op META-tools are objects whose methods are the ops:
 //     Memory.get/set/delete/search(obj) → "Memory" with {op, ...obj}

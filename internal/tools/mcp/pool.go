@@ -361,7 +361,7 @@ type mcpTool struct {
 }
 
 // NewTool wraps a single MCP tool descriptor as a tools.Tool. Operators
-// that want per-server allowed_tools filtering can call this directly with
+// that want per-server tools filtering can call this directly with
 // the subset of descriptors they want to expose.
 func NewTool(pool *Pool, server string, descriptor ToolDescriptor) tools.Tool {
 	return &mcpTool{

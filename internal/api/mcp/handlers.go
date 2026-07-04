@@ -347,7 +347,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		SessionID:       req.SessionID,
 		TenantID:        req.TenantID,
 		Segments:        req.Segments,
-		AllowedTools:    req.AllowedTools,
+		Tools:           req.Tools,
 		AllowedHosts:    req.AllowedHosts,
 		WebSearchFilter: req.WebSearchFilter,
 		UserID:          req.UserID,

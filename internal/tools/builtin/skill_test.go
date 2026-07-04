@@ -16,9 +16,9 @@ import (
 // loadSetWithSkills builds a skills.Set from a temp directory of
 // (name, frontmatter-tools, body) tuples. Helper for the tests below.
 func loadSetWithSkills(t *testing.T, defs []struct {
-	Name         string
-	AllowedTools []string
-	Body         string
+	Name  string
+	Tools []string
+	Body  string
 }) *skills.Set {
 	t.Helper()
 	root := t.TempDir()
@@ -28,9 +28,9 @@ func loadSetWithSkills(t *testing.T, defs []struct {
 			t.Fatal(err)
 		}
 		fm := "---\nname: " + d.Name + "\n"
-		if len(d.AllowedTools) > 0 {
+		if len(d.Tools) > 0 {
 			fm += "allowed-tools:\n"
-			for _, tn := range d.AllowedTools {
+			for _, tn := range d.Tools {
 				fm += "  - " + tn + "\n"
 			}
 		}
@@ -49,11 +49,11 @@ func loadSetWithSkills(t *testing.T, defs []struct {
 // Happy path: agent's tools cover the skill's needs; tool returns the body.
 func TestSkillTool_HappyPath(t *testing.T) {
 	set := loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{
-		{Name: "voice-applier", AllowedTools: []string{"Read", "Skill"}, Body: "VOICE BODY"},
+		{Name: "voice-applier", Tools: []string{"Read", "Skill"}, Body: "VOICE BODY"},
 	})
 	tool := &SkillTool{Set: set}
 	ctx := tools.WithAgentTools(context.Background(), []string{"Read", "Skill", "HTTP"})
@@ -75,11 +75,11 @@ func TestSkillTool_HappyPath(t *testing.T) {
 // would be returned successfully despite the missing tool).
 func TestSkillTool_RefusesWideningSkill(t *testing.T) {
 	set := loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{
-		{Name: "writer-skill", AllowedTools: []string{"Read", "Write", "Edit"}, Body: "X"},
+		{Name: "writer-skill", Tools: []string{"Read", "Write", "Edit"}, Body: "X"},
 	})
 	tool := &SkillTool{Set: set}
 	// Agent only has Read.
@@ -102,11 +102,11 @@ func TestSkillTool_RefusesWideningSkill(t *testing.T) {
 // path check in resolveSkills, ensuring both code paths agree.
 func TestSkillTool_GlobCoversSkillLiteral(t *testing.T) {
 	set := loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{
-		{Name: "search-skill", AllowedTools: []string{"mcp__brave__search"}, Body: "OK"},
+		{Name: "search-skill", Tools: []string{"mcp__brave__search"}, Body: "OK"},
 	})
 	tool := &SkillTool{Set: set}
 	ctx := tools.WithAgentTools(context.Background(), []string{"mcp__brave__*"})
@@ -121,11 +121,11 @@ func TestSkillTool_GlobCoversSkillLiteral(t *testing.T) {
 // the literal `mcp__brave__search`. The skill demands wider access; refused.
 func TestSkillTool_RefusesBroaderGlob(t *testing.T) {
 	set := loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{
-		{Name: "broad-skill", AllowedTools: []string{"mcp__brave__*"}, Body: "X"},
+		{Name: "broad-skill", Tools: []string{"mcp__brave__*"}, Body: "X"},
 	})
 	tool := &SkillTool{Set: set}
 	ctx := tools.WithAgentTools(context.Background(), []string{"mcp__brave__search"})
@@ -138,13 +138,13 @@ func TestSkillTool_RefusesBroaderGlob(t *testing.T) {
 
 // A skill with empty allowed-tools (pure prose-guidance) attaches
 // regardless of agent's tool set.
-func TestSkillTool_EmptyAllowedToolsAlwaysAllowed(t *testing.T) {
+func TestSkillTool_EmptyToolsAlwaysAllowed(t *testing.T) {
 	set := loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{
-		{Name: "guidance", AllowedTools: nil, Body: "GUIDANCE"},
+		{Name: "guidance", Tools: nil, Body: "GUIDANCE"},
 	})
 	tool := &SkillTool{Set: set}
 	// Even an agent with NO tools at all should see this skill.
@@ -162,12 +162,12 @@ func TestSkillTool_EmptyAllowedToolsAlwaysAllowed(t *testing.T) {
 // Unknown skill: hint with available names so the model can recover.
 func TestSkillTool_UnknownSkillHints(t *testing.T) {
 	set := loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{
-		{Name: "alpha", AllowedTools: nil, Body: "x"},
-		{Name: "beta", AllowedTools: nil, Body: "y"},
+		{Name: "alpha", Tools: nil, Body: "x"},
+		{Name: "beta", Tools: nil, Body: "y"},
 	})
 	tool := &SkillTool{Set: set}
 	ctx := tools.WithAgentTools(context.Background(), nil)
@@ -211,9 +211,9 @@ func TestSkillTool_EmptySetReturnsConfigError(t *testing.T) {
 // Missing/whitespace name surfaces as IsError with a hint.
 func TestSkillTool_MissingName(t *testing.T) {
 	tool := &SkillTool{Set: loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{{Name: "x", Body: "y"}})}
 	ctx := tools.WithAgentTools(context.Background(), nil)
 
@@ -231,9 +231,9 @@ func TestSkillTool_MissingName(t *testing.T) {
 // Malformed JSON is recoverable — IsError, not a Go error.
 func TestSkillTool_MalformedJSON(t *testing.T) {
 	tool := &SkillTool{Set: loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{{Name: "x", Body: "y"}})}
 
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{not json`))
@@ -251,11 +251,11 @@ func TestSkillTool_MalformedJSON(t *testing.T) {
 func TestSkillTool_ResolvesDBActiveOverStatic(t *testing.T) {
 	// Static set carries one entry.
 	set := loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{
-		{Name: "shared-skill", AllowedTools: []string{"Read"}, Body: "STATIC BODY"},
+		{Name: "shared-skill", Tools: []string{"Read"}, Body: "STATIC BODY"},
 	})
 	// Store contains a promoted SkillDef row for the same name
 	// with a DIFFERENT body.
