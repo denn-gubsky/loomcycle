@@ -67,4 +67,9 @@ export interface AssistantContext {
   documentId: string;
   scope: string;
   subject?: string;
+  // onChanged lets an injected assistant refresh the viewer after it mutates the
+  // document (e.g. at each turn boundary) — it calls the viewer's own reload, so
+  // the tree + selected chunk re-fetch. Without it the viewer would show stale
+  // content until a manual reload.
+  onChanged?: () => void;
 }

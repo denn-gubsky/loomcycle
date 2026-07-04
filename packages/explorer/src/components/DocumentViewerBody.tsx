@@ -294,7 +294,14 @@ export default function DocumentViewerBody({
       </div>
       {assistantOpen && renderAssistant && (
         <div className="doc-assistant">
-          {renderAssistant({ documentId, scope, subject: principal?.subject })}
+          {renderAssistant({
+            documentId,
+            scope,
+            subject: principal?.subject,
+            // Pass the viewer's own reload so the injected assistant can refresh
+            // the tree + selected chunk after a turn mutates the document.
+            onChanged: refresh,
+          })}
         </div>
       )}
       {editing && (
