@@ -8,6 +8,30 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.12.1
+
+**🧩 `@loomcycle/client` 1.12.1 — Path/Document browse-by-subject + the full
+Document op set.** A lockstep adapter-surface release: the Go binary is
+functionally identical to v1.12.0; the change lives entirely in the TypeScript
+client, extending it so the upcoming **`@loomcycle/explorer`** reusable React
+component (RFC AZ — the Path/Document twin of `@loomcycle/library`) can drive the
+Path + Document tools through the SDK without losing behavior.
+
+- **Browse-by-subject.** `path(input, opts)` / `document(input, opts)` accept an
+  optional `{ scopeId, tenant }`, sent as `?scope_id=` / `?tenant=` query params —
+  the RFC AS off-run browse override the server reads from the URL and
+  re-authorizes — so an operator can browse a document another subject created.
+  Additive: omit both and the request is byte-identical to before.
+- **Full Document op set.** `DocumentToolInput.op` now mirrors the backend enum
+  1:1 (16 ops) — adding `set_path`, `export_md`, and `import_md` (with the
+  matching `include_metadata` / `markdown` fields) — where it previously exposed
+  only 13.
+
+No server/wire change; no behavior change for existing `path()` / `document()`
+callers. `@loomcycle/client` **1.12.1** (#655).
+
+---
+
 ## What's in v1.12.0
 
 **🔑 `providers:operator-key` scope — gate the operator-API-key fallback (RFC AX).**
