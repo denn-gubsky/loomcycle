@@ -1,12 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { load as yamlLoad } from "js-yaml";
-import {
-  createDef,
-  forkDef,
-  type DefRow,
-  type LibraryEntry,
-  type SubstrateKind,
-} from "../api";
+import type { DefRow, LibraryEntry, SubstrateKind } from "../types";
+import { useLibraryData } from "../lib/dataLayer";
 
 // LibraryEditModal — Library admin UI.
 //
@@ -94,6 +89,7 @@ export default function LibraryEditModal({
   onClose,
   onSaved,
 }: LibraryEditModalProps) {
+  const data = useLibraryData();
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
@@ -535,7 +531,7 @@ export default function LibraryEditModal({
       const overlay = { ...buildOverlay(), ...advancedOv };
       let row: DefRow;
       if (mode === "create") {
-        row = await createDef(substrateKind, name.trim(), overlay, promote);
+        row = await data.createDef(substrateKind, name.trim(), overlay, promote);
       } else {
         // Pass the active def_id as parent_def_id so the fork hangs
         // off the right ancestor even when the substrate state has
@@ -546,7 +542,7 @@ export default function LibraryEditModal({
           forkSource?.def_id && !forkSource.def_id.startsWith("static:")
             ? forkSource.def_id
             : undefined;
-        row = await forkDef(
+        row = await data.forkDef(
           substrateKind,
           name.trim(),
           overlay,

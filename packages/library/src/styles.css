@@ -1,0 +1,951 @@
+/* @loomcycle/library styles. Everything is scoped under the component's
+   `.loomcycle-library` root so it can't leak into — or be clobbered by — the
+   host app. The palette lives on the root as CSS variables; light mode activates
+   when the root (via the `theme` prop) OR any ancestor carries
+   data-theme="light", so an app that themes <html> gets themed Library for free.
+   Override any --var on `.loomcycle-library` to restyle.
+
+   The rules below use the loomcycle Web UI's legacy alias token names
+   (--bg/--fg/--accent/…); those are defined on the root here (dark default +
+   light override) so the package is self-contained — no external tokens.css. */
+
+.loomcycle-library {
+  /* dark palette (default) — resolved from the loomcycle --lc-* design tokens */
+  --bg: #0f1115;
+  --bg-soft: #161922;
+  --bg-soft-2: #1d2230;
+  --bg-muted: #1a1a1a;
+  --bg-input: #1a1a1a;
+
+  --fg: #e6e6e6;
+  --fg-soft: #9aa0ad;
+  --fg-muted: #888888;
+  /* `--muted` was undefined in the source rules (def-tool-*); alias it to
+     --fg-muted so those greys resolve instead of falling back to initial. */
+  --muted: var(--fg-muted);
+
+  --border: #2a2e3a;
+  --accent: #56c596;
+  --running: #f0a040;
+  --completed: #4ec9b0;
+  --failed: #ff5d68;
+  --cancelled: #b08bd0;
+  --danger: #cc3333;
+
+  --mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono",
+    Menlo, Consolas, monospace;
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+  /* fill the host's slot; the host controls the surrounding layout */
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Light mode: the component root opts in via the `theme` prop, or inherits a
+   light ancestor (e.g. an app that sets data-theme on <html>). */
+.loomcycle-library[data-theme="light"],
+[data-theme="light"] .loomcycle-library {
+  --bg: #f5f6f8;
+  --bg-soft: #ffffff;
+  --bg-soft-2: #eceef2;
+  --bg-muted: #ffffff;
+  --bg-input: #ffffff;
+
+  --fg: #1a1d24;
+  --fg-soft: #5a6270;
+  --fg-muted: #8a909c;
+
+  --border: #d7dbe2;
+  --accent: #2f9e6f;
+  --running: #b9740f;
+  --completed: #1f9e86;
+  --failed: #d23f4a;
+  --cancelled: #7d4fb3;
+  --danger: #c0392b;
+
+  color-scheme: light;
+}
+
+/* ---- scoped base / utilities ---- */
+.loomcycle-library,
+.loomcycle-library *,
+.loomcycle-library *::before,
+.loomcycle-library *::after {
+  box-sizing: border-box;
+}
+.loomcycle-library button {
+  font: inherit;
+}
+.loomcycle-library code,
+.loomcycle-library pre {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.loomcycle-library .mono {
+  font-family: var(--mono);
+}
+/* Text-like form controls get the themed look; the more-specific
+   .library-* rules below still win where they apply (e.g. text inputs). */
+.loomcycle-library
+  input:where(
+    :not([type="checkbox"]):not([type="radio"]):not([type="file"]):not(
+        [type="range"]
+      ):not([type="color"])
+  ),
+.loomcycle-library textarea,
+.loomcycle-library select {
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+/* ============================================================
+   Shared modal base (LibraryEditModal + ImportModal)
+   ============================================================ */
+.loomcycle-library .modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.loomcycle-library .modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: auto;
+}
+.loomcycle-library .modal h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+}
+.loomcycle-library .modal-err {
+  color: var(--failed);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.loomcycle-library .modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.loomcycle-library .modal-buttons button {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.loomcycle-library .modal-buttons button.primary {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+  border-radius: 4px;
+  padding: 8px 16px;
+}
+.loomcycle-library .modal-buttons button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   Library edit modal (structured form)
+   ============================================================ */
+.loomcycle-library .modal.library-modal {
+  max-width: 720px;
+  width: 92vw;
+}
+.loomcycle-library .library-modal-bootstrap-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-weight: normal;
+}
+.loomcycle-library .library-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.loomcycle-library .library-form-row label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.loomcycle-library .library-form-row input[type="text"] {
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg);
+}
+.loomcycle-library .library-form-row-quad {
+  display: grid;
+  grid-template-columns: max-content 1fr max-content 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.loomcycle-library .library-form-row-quad label {
+  margin-bottom: 0;
+}
+.loomcycle-library .library-form-row-checkbox label {
+  font-weight: normal;
+  color: var(--fg);
+}
+.loomcycle-library .library-schema-hint-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.loomcycle-library .library-schema-hint-toggle:hover {
+  color: var(--fg);
+}
+.loomcycle-library .library-radio-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-weight: normal;
+}
+.loomcycle-library .library-radio-note {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-style: italic;
+  font-weight: normal;
+}
+.loomcycle-library .library-headers-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.loomcycle-library .library-header-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr max-content;
+  gap: 6px;
+}
+.loomcycle-library .library-header-row input {
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-input);
+  color: var(--fg);
+}
+.loomcycle-library .library-header-row button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0 8px;
+  border-radius: 3px;
+}
+.loomcycle-library .library-header-row button:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.loomcycle-library .library-modal-field-hint {
+  font-weight: normal;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.loomcycle-library .library-prompt-textarea {
+  width: 100%;
+  padding: 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg);
+  resize: vertical;
+  min-height: 120px;
+}
+.loomcycle-library .library-checkbox-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-weight: normal;
+}
+.loomcycle-library .library-models-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-muted);
+}
+.loomcycle-library .library-models-warning {
+  padding: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  background: rgba(240, 160, 64, 0.08);
+  border: 1px solid var(--running);
+  border-radius: 4px;
+  color: var(--fg);
+}
+.loomcycle-library .library-advanced-overlay {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.loomcycle-library .library-advanced-format {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+}
+.loomcycle-library .library-models-warning code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--running);
+}
+.loomcycle-library .library-models-tier-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.loomcycle-library .library-models-tier-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.loomcycle-library .library-models-tier-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 60px;
+}
+.loomcycle-library .library-models-candidate-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr max-content;
+  gap: 6px;
+}
+.loomcycle-library .library-models-candidate-row input {
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-input);
+  color: var(--fg);
+}
+.loomcycle-library .library-models-candidate-row button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0 8px;
+  border-radius: 3px;
+}
+.loomcycle-library .library-models-candidate-row button:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* ============================================================
+   Lineage per-row + header actions, primary CTA
+   ============================================================ */
+.loomcycle-library .lineage-row-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.loomcycle-library .lineage-row-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.1s, border-color 0.1s, background-color 0.1s;
+}
+.loomcycle-library .lineage-row-action:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(86, 197, 150, 0.08);
+}
+.loomcycle-library .lineage-row-action-danger:hover {
+  color: var(--failed);
+  border-color: var(--failed);
+  background: rgba(255, 93, 104, 0.08);
+}
+.loomcycle-library .lineage-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.loomcycle-library button.primary {
+  background: var(--accent);
+  color: white;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.1s, border-color 0.1s;
+}
+.loomcycle-library button.primary:hover {
+  filter: brightness(1.08);
+}
+.loomcycle-library button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.loomcycle-library .lineage-create-cta {
+  font-size: 12px;
+}
+
+/* ============================================================
+   Splitter
+   ============================================================ */
+.loomcycle-library .splitter {
+  display: grid;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+}
+.loomcycle-library .splitter.dragging {
+  /* Suppress text-select highlighting during a drag. */
+  user-select: none;
+  cursor: col-resize;
+}
+.loomcycle-library .splitter > .splitter-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.loomcycle-library .splitter > .splitter-handle {
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+}
+.loomcycle-library .splitter > .splitter-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: var(--border);
+  transition: background 80ms ease;
+}
+.loomcycle-library .splitter > .splitter-handle:hover::before,
+.loomcycle-library .splitter.dragging > .splitter-handle::before {
+  background: var(--accent);
+}
+
+/* ============================================================
+   Empty / error / loading
+   ============================================================ */
+.loomcycle-library .empty-state {
+  color: var(--fg-soft);
+  padding: 32px 16px;
+  text-align: center;
+}
+.loomcycle-library .error-banner {
+  background: rgba(255, 93, 104, 0.1);
+  border: 1px solid var(--failed);
+  color: var(--failed);
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin: 8px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.loomcycle-library .loading-indicator {
+  color: var(--fg-soft);
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+/* ============================================================
+   Library page + sub-tabs
+   ============================================================ */
+.loomcycle-library .library-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.loomcycle-library .library-subtabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+.loomcycle-library .library-subtab {
+  padding: 10px 16px;
+  color: var(--fg-soft);
+  text-decoration: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+}
+.loomcycle-library .library-subtab:hover {
+  color: var(--fg);
+}
+.loomcycle-library .library-subtab-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.loomcycle-library .library-subtab-count {
+  margin-left: 6px;
+  color: var(--fg-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.loomcycle-library .library-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- LineagePanel: list-left, lineage-right ---- */
+.loomcycle-library .lineage-name-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  height: 100%;
+}
+.loomcycle-library .lineage-name-row {
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-library .lineage-name-row.lineage-name-selected {
+  background: rgba(86, 197, 150, 0.12);
+}
+.loomcycle-library .lineage-name-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+.loomcycle-library .lineage-name-button:hover {
+  background: var(--bg-soft);
+}
+.loomcycle-library .lineage-name-label {
+  font-weight: 500;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.loomcycle-library .lineage-name-versions {
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.loomcycle-library .lineage-right {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+.loomcycle-library .lineage-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.loomcycle-library .lineage-header h3 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 16px;
+}
+
+/* ---- LineageTree: indented <ul> rows ---- */
+.loomcycle-library .lineage-tree,
+.loomcycle-library .lineage-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.loomcycle-library .lineage-row {
+  margin: 0;
+}
+.loomcycle-library .lineage-row-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px;
+}
+.loomcycle-library .lineage-row-line[role="button"] {
+  cursor: pointer;
+  border-radius: 3px;
+}
+.loomcycle-library .lineage-row-line[role="button"]:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.loomcycle-library .lineage-row-line[role="button"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.loomcycle-library .lineage-row.lineage-row-selected > .lineage-row-line {
+  background: rgba(86, 197, 150, 0.18);
+  border-radius: 3px;
+}
+.loomcycle-library .lineage-caret {
+  background: transparent;
+  border: 0;
+  color: var(--fg-soft);
+  cursor: pointer;
+  width: 16px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.loomcycle-library .lineage-caret:hover {
+  color: var(--fg);
+}
+.loomcycle-library .lineage-caret-empty {
+  cursor: default;
+  user-select: none;
+}
+.loomcycle-library .lineage-row-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+}
+.loomcycle-library .lineage-content-indicator {
+  font-size: 10px;
+  color: var(--fg-soft);
+  font-family: var(--mono);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  user-select: none;
+}
+.loomcycle-library .lineage-row-line[role="button"]:hover .lineage-content-indicator,
+.loomcycle-library
+  .lineage-row-line[role="button"][aria-expanded="true"]
+  .lineage-content-indicator {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.loomcycle-library .lineage-version {
+  font-family: var(--mono);
+  font-weight: 500;
+}
+.loomcycle-library .lineage-defid {
+  font-size: 11px;
+  color: var(--fg-soft);
+  margin-left: 4px;
+}
+
+/* ---- Lineage detail (version body) ---- */
+.loomcycle-library .lineage-detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.loomcycle-library .lineage-detail-meta {
+  color: var(--fg-soft);
+}
+.loomcycle-library .def-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.loomcycle-library .def-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.loomcycle-library .def-field-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-soft);
+}
+.loomcycle-library .def-prompt {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+}
+.loomcycle-library .def-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.loomcycle-library .def-pill {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+.loomcycle-library .def-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.loomcycle-library .def-meta-item {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.loomcycle-library .def-meta-key {
+  color: var(--fg-soft);
+  font-size: 11px;
+}
+.loomcycle-library .def-meta-value {
+  color: var(--fg);
+}
+
+/* ---- Definition chips (active / retired / bootstrapped / source) ---- */
+.loomcycle-library .def-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+}
+.loomcycle-library .def-chip-active {
+  background: rgba(78, 201, 176, 0.15);
+  color: var(--completed);
+  border: 1px solid var(--completed);
+}
+.loomcycle-library .def-chip-bootstrap {
+  background: rgba(240, 160, 64, 0.15);
+  color: var(--running);
+  border: 1px solid var(--running);
+}
+.loomcycle-library .def-chip-no-active {
+  background: rgba(255, 93, 104, 0.1);
+  color: var(--failed);
+  border: 1px solid var(--failed);
+}
+/* Soft-reclaim markers: a fully-retired (inactive) name, or an active pointer
+   still on a retired row (corrupt-legacy). Muted/warning tone. Declared after
+   def-chip-active so it wins for a plain `retired` chip. */
+.loomcycle-library .def-chip-retired {
+  background: rgba(150, 150, 160, 0.12);
+  color: var(--fg-soft);
+  border: 1px solid var(--fg-soft);
+}
+.loomcycle-library .def-chip-static {
+  background: rgba(125, 165, 220, 0.15);
+  color: #7da5dc;
+  border: 1px solid #7da5dc;
+}
+.loomcycle-library .def-chip-dynamic {
+  background: rgba(176, 139, 208, 0.15);
+  color: #b08bd0;
+  border: 1px solid #b08bd0;
+}
+/* The static base is the definition runs resolve to when no dynamic version is
+   active — a FILLED accent chip so it reads as "live", visually distinct from
+   the outlined "active ★". */
+.loomcycle-library .def-chip-effective {
+  background: var(--accent);
+  color: #0b0b0d;
+  border: 1px solid var(--accent);
+  font-weight: 600;
+}
+.loomcycle-library .lineage-name-chips {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-left: 6px;
+}
+
+/* Inline content expansion — the whole row is clickable to toggle content. */
+.loomcycle-library .lineage-row-detail {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  padding-right: 8px;
+  border-left: 2px solid var(--accent);
+  margin-left: 8px;
+  margin-bottom: 6px;
+}
+
+/* MCP discovered_tools per-tool expansion. */
+.loomcycle-library .def-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.loomcycle-library .def-tool-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.loomcycle-library .def-tool-pill {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+}
+.loomcycle-library .def-tool-pill:hover {
+  border-color: var(--accent);
+}
+.loomcycle-library .def-tool-caret {
+  font-size: 9px;
+  color: var(--muted);
+}
+.loomcycle-library .def-tool-detail {
+  padding-left: 16px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.loomcycle-library .def-tool-desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.loomcycle-library .def-tool-name {
+  font-size: 11px;
+}
+.loomcycle-library .def-tool-empty {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  padding: 4px 0;
+}
+.loomcycle-library .def-tool-empty code {
+  font-style: normal;
+  font-size: 11px;
+  background: var(--bg-soft);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+/* ============================================================
+   Import modal (RFC AU)
+   ============================================================ */
+.loomcycle-library .import-preview-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.loomcycle-library .import-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--bg-soft);
+}
+.loomcycle-library .import-row-blocked {
+  opacity: 0.55;
+}
+.loomcycle-library .import-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.loomcycle-library .import-name-input {
+  flex: 1 1 160px;
+  min-width: 120px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-soft-2);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.loomcycle-library .import-action-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.loomcycle-library .import-action-create {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.loomcycle-library .import-action-fork {
+  color: var(--running);
+  border-color: var(--running);
+}
+.loomcycle-library .import-action-blocked {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.loomcycle-library .import-row-note {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.loomcycle-library .import-row-warning {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--running);
+}
+.loomcycle-library .import-result-ok {
+  color: var(--accent);
+  font-weight: 700;
+}
+.loomcycle-library .import-result-error {
+  color: var(--danger);
+  font-weight: 700;
+}
+.loomcycle-library .import-result-skipped,
+.loomcycle-library .import-result-pending {
+  color: var(--fg-soft);
+  font-weight: 700;
+}

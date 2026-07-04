@@ -1,11 +1,7 @@
 import { useMemo, useState } from "react";
 
-import {
-  createDef,
-  forkDef,
-  type LibraryEntry,
-  type ServerCapabilities,
-} from "../api";
+import type { LibraryEntry, ServerCapabilities } from "../types";
+import { useLibraryData } from "../lib/dataLayer";
 import {
   detectKind,
   parseSource,
@@ -48,6 +44,7 @@ interface RowResult {
 // via the existing create/fork endpoints. All parsing is client-side
 // (claudeImport.ts); the server 422s remain authoritative.
 export default function ImportModal(props: ImportModalProps) {
+  const data = useLibraryData();
   const [step, setStep] = useState<Step>("source");
   const [text, setText] = useState("");
   const [filename, setFilename] = useState<string | undefined>(undefined);
@@ -120,9 +117,9 @@ export default function ImportModal(props: ImportModalProps) {
         // Imported defs are promoted (active) immediately — the operator
         // imported them to use them.
         if (row.action === "fork") {
-          await forkDef(kind, row.candidate.name, row.candidate.overlay, true, row.parentDefId);
+          await data.forkDef(kind, row.candidate.name, row.candidate.overlay, true, row.parentDefId);
         } else {
-          await createDef(kind, row.candidate.name, row.candidate.overlay, true);
+          await data.createDef(kind, row.candidate.name, row.candidate.overlay, true);
         }
         next[i] = { status: "ok" };
       } catch (e) {

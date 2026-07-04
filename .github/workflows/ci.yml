@@ -189,6 +189,13 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # @loomcycle/library (RFC AY) is consumed from SOURCE via a Vite alias, so the
+      # web typecheck/build compiles the package's TSX and must resolve its
+      # react / js-yaml / @loomcycle/client imports from packages/library/node_modules
+      # (gitignored → absent on checkout). Install it before the web steps.
+      - name: Install @loomcycle/library deps
+        working-directory: packages/library
+        run: npm ci
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test

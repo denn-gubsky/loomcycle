@@ -1,0 +1,91 @@
+name: Publish @loomcycle/library to npm
+
+# The @loomcycle/library React component (RFC AY) is versioned INDEPENDENTLY of
+# the Go binary + the @loomcycle/client SDK (each host pins its own client), so
+# it publishes on its OWN tag namespace `library-v*` (e.g. `library-v0.1.0`) —
+# mirroring the python adapter's `python-v*` pattern, NOT the binary's `v*`.
+#
+# Safety: the workflow HARD-FAILS if packages/library/package.json's version
+# doesn't match the tag (a dedicated tag should always match — a mismatch is a
+# mistake, surfaced loudly, npm untouched).
+#
+# Auth: npm Trusted Publisher (OIDC) — no NPM_TOKEN secret. Before the FIRST
+# publish the operator must register the trusted publisher at
+# https://www.npmjs.com/settings/loomcycle/packages (or the package's Access tab
+# once it exists) with GitHub repository `denn-gubsky/loomcycle` and workflow
+# filename `publish-library.yml`. `id-token: write` mints the OIDC token npm
+# exchanges for a short-lived publish token. (A brand-new scoped package's first
+# OIDC publish requires the org/package trusted-publisher config to exist first;
+# otherwise seed the first version with a one-off `npm publish` using a granular
+# token, then all subsequent releases go through this workflow.)
+#
+# Inputs reaching `run` steps are limited to GITHUB_REF_NAME (a git tag — git
+# rejects metacharacters in ref names) and constants; the tag is routed through
+# `env:` per the GitHub workflow-injection guidance.
+on:
+  push:
+    tags:
+      - "library-v*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish @loomcycle/library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: packages/library/package-lock.json
+
+      - name: Upgrade npm CLI for Trusted Publisher OIDC support
+        # Trusted Publishing needs npm CLI 11.5.1+ for the GitHub Actions → npm
+        # OIDC handshake; Node 20 ships npm 10.x which silently falls back to a
+        # NODE_AUTH_TOKEN .npmrc lookup and emits a misleading 404.
+        run: npm install -g npm@latest
+
+      - name: Verify package version matches tag
+        working-directory: packages/library
+        # Strip the `library-v` prefix — npm versions don't carry it. A dedicated
+        # tag should always match the package version; a mismatch is a mistake.
+        env:
+          TAG_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          PKG_VER=$(node -p "require('./package.json').version")
+          TAG_VER="${TAG_REF#library-v}"
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "::error::packages/library/package.json version ($PKG_VER) does not match tag ($TAG_VER). Bump the package.json to $TAG_VER and re-tag, or fix the tag."
+            exit 1
+          fi
+          echo "::notice::Publishing @loomcycle/library@$PKG_VER (tag $TAG_REF)"
+
+      - name: Install
+        working-directory: packages/library
+        run: npm ci
+
+      - name: Build
+        working-directory: packages/library
+        run: npm run build:lib
+
+      - name: Test
+        working-directory: packages/library
+        run: npm test
+
+      - name: Publish
+        working-directory: packages/library
+        # --access public for the scoped package; --provenance is free with OIDC
+        # (SLSA build attestation → the "Provenance" badge). prepack rebuilds
+        # dist from a clean tree, so the published tarball is fresh regardless.
+        # No NODE_AUTH_TOKEN — setup-node negotiates OIDC via the id-token perm.
+        run: npm publish --access public --provenance
