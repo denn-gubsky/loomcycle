@@ -185,6 +185,10 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
 	}
+	// RFC AX: capture the authoring principal's operator-key restriction (server
+	// authority — unconditional so the overlay can't set it) so the scheduler
+	// stamps the fired run with the creator's grant.
+	def.OperatorKeyRestricted = operatorKeyRestrictedFromCtx(ctx, s.Cfg)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -331,6 +335,9 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
 	}
+	// RFC AX: re-capture the forking principal's operator-key restriction (server
+	// authority) — a fork is a new version, its authority is the forker's grant.
+	def.OperatorKeyRestricted = operatorKeyRestrictedFromCtx(ctx, s.Cfg)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
@@ -916,6 +923,12 @@ type mergedScheduleDef struct {
 	// TenantID is the tenant the fired run EXECUTES as (RFC N follow-up).
 	// Flows to RunInput.TenantID. Per-fork tenant falls out of the overlay.
 	TenantID string `json:"tenant_id,omitempty"`
+	// OperatorKeyRestricted is the RFC AX negative permission bit CAPTURED from
+	// the authoring principal at create/fork (server authority, NOT overlay-set).
+	// The scheduler copies it into RunInput so a fired run keeps its creator's
+	// restriction (anti-bypass). NOT part of any content hash (schedules have no
+	// content_sha256); omitempty keeps gate-off def bodies byte-identical.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 }
 
 // mergedSchedulePromptSeg mirrors config.ScheduledRunSegment with JSON tags.

@@ -926,6 +926,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE runs ADD COLUMN cost_currency TEXT`,
 		`ALTER TABLE runs ADD COLUMN credential_source TEXT`,
 		`ALTER TABLE runs ADD COLUMN credential_scope_id TEXT`,
+		// RFC AX — the negative operator-key permission bit (0 = allowed). Stamped
+		// at CreateRun from the principal + gate; read back on resume/restore so a
+		// re-dispatched run keeps its restriction. 0 on legacy rows (fail-open).
+		`ALTER TABLE runs ADD COLUMN operator_key_restricted INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1163,8 +1167,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -1177,6 +1181,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		pcVal,
 		nilIfEmpty(identity.IdempotencyKey),
 		boolToInt(identity.Interactive),
+		boolToInt(identity.OperatorKeyRestricted),
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -1193,21 +1198,22 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		return store.Run{}, err
 	}
 	return store.Run{
-		ID:             id,
-		SessionID:      sessionID,
-		Status:         store.RunRunning,
-		StartedAt:      now,
-		AgentID:        identity.AgentID,
-		ParentAgentID:  identity.ParentAgentID,
-		ParentRunID:    identity.ParentRunID,
-		UserID:         identity.UserID,
-		TenantID:       identity.TenantID,
-		UserTier:       identity.UserTier,
-		AgentDefID:     identity.AgentDefID,
-		Model:          identity.Model,
-		ParentContext:  identity.ParentContext.Clone(),
-		IdempotencyKey: identity.IdempotencyKey,
-		Interactive:    identity.Interactive,
+		ID:                    id,
+		SessionID:             sessionID,
+		Status:                store.RunRunning,
+		StartedAt:             now,
+		AgentID:               identity.AgentID,
+		ParentAgentID:         identity.ParentAgentID,
+		ParentRunID:           identity.ParentRunID,
+		UserID:                identity.UserID,
+		TenantID:              identity.TenantID,
+		UserTier:              identity.UserTier,
+		AgentDefID:            identity.AgentDefID,
+		Model:                 identity.Model,
+		ParentContext:         identity.ParentContext.Clone(),
+		IdempotencyKey:        identity.IdempotencyKey,
+		Interactive:           identity.Interactive,
+		OperatorKeyRestricted: identity.OperatorKeyRestricted,
 	}, nil
 }
 
@@ -1815,6 +1821,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var idempotencyKey sql.NullString
 	var tenantID sql.NullString
 	var interactive sql.NullInt64
+	var operatorKeyRestricted sql.NullInt64
 	var cost sql.NullFloat64
 	var costCurrency, credentialSource, credentialScopeID sql.NullString
 	var sessAgent sql.NullString
@@ -1827,7 +1834,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
 		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &tenantID,
-		&interactive,
+		&interactive, &operatorKeyRestricted,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&sessAgent,
 	); err != nil {
@@ -1890,6 +1897,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		r.TenantID = tenantID.String
 	}
 	r.Interactive = interactive.Valid && interactive.Int64 != 0
+	r.OperatorKeyRestricted = operatorKeyRestricted.Valid && operatorKeyRestricted.Int64 != 0
 	if cost.Valid {
 		v := cost.Float64
 		r.Cost = &v
@@ -1924,7 +1932,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
 		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.tenant_id,
-		r.interactive,
+		r.interactive, r.operator_key_restricted,
 		r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		s.agent`
 
@@ -2877,15 +2885,15 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
-			user_tier, agent_def_id, pause_state, parent_context, interactive
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
 		nilIfEmpty(r.AgentID), nilIfEmpty(r.ParentAgentID), nilIfEmpty(r.ParentRunID),
 		nilIfEmpty(r.UserID), lastHbNs,
 		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState, pcVal,
-		boolToInt(r.Interactive),
+		boolToInt(r.Interactive), boolToInt(r.OperatorKeyRestricted),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

@@ -27,6 +27,14 @@ const (
 	ScopeChannelPublish = "channel:publish"
 	ScopeChannelRead    = "channel:read"
 
+	// ScopeProvidersOperatorKey (RFC AX) gates whether a run may fall back to
+	// the operator's HOST provider API key. It is tenant-implied (below), so
+	// substrate:admin and substrate:tenant retain operator-key access. It exists
+	// so an operator running LOOMCYCLE_OPERATOR_KEY_RESTRICTION can mint granular
+	// tokens that OMIT this scope, forcing that tenant to bring its own key
+	// (RFC AR CredentialDef). Absent the deployment gate the scope is inert.
+	ScopeProvidersOperatorKey = "providers:operator-key"
+
 	// NOTE: memory:read / memory:write are intentionally NOT in the
 	// catalog. They were inert — grantable but enforced by no route: the
 	// HTTP memory surface (/v1/_memory/*) is operator-admin, and
@@ -41,12 +49,13 @@ const (
 // scopeCatalog is the closed set — every entry is enforced by at least
 // one route in requiredScopeFor. A map for O(1) validation.
 var scopeCatalog = map[string]struct{}{
-	ScopeAdmin:          {},
-	ScopeTenant:         {},
-	ScopeRunsCreate:     {},
-	ScopeRunsRead:       {},
-	ScopeChannelPublish: {},
-	ScopeChannelRead:    {},
+	ScopeAdmin:                {},
+	ScopeTenant:               {},
+	ScopeRunsCreate:           {},
+	ScopeRunsRead:             {},
+	ScopeChannelPublish:       {},
+	ScopeChannelRead:          {},
+	ScopeProvidersOperatorKey: {},
 }
 
 // tenantImplied is the set ScopeTenant satisfies. A tenant operator covers
@@ -55,11 +64,12 @@ var scopeCatalog = map[string]struct{}{
 // plane: minting, runtime admin, cross-tenant). Confinement to the principal's
 // tenant is enforced per-handler, NOT here.
 var tenantImplied = map[string]struct{}{
-	ScopeTenant:         {},
-	ScopeRunsCreate:     {},
-	ScopeRunsRead:       {},
-	ScopeChannelPublish: {},
-	ScopeChannelRead:    {},
+	ScopeTenant:               {},
+	ScopeRunsCreate:           {},
+	ScopeRunsRead:             {},
+	ScopeChannelPublish:       {},
+	ScopeChannelRead:          {},
+	ScopeProvidersOperatorKey: {},
 }
 
 // ValidScope reports whether s is in the closed catalog.
@@ -99,4 +109,23 @@ func HasScope(granted []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// OperatorKeyRestricted reports whether a run under principal p must be denied
+// the operator's host provider key (RFC AX §2). It is a NEGATIVE bit stored as
+// false = allowed, so every unstamped / default path fails OPEN — the deliberate
+// backward-safety trade (a granular token minted before the scope existed must
+// not silently lose operator-key access on upgrade).
+//
+// "Restricted" ≝ gate on ∧ principal present ∧ non-legacy ∧ non-admin ∧
+// ¬HasScope(providers:operator-key). Admin is covered because HasScope treats
+// substrate:admin as satisfying every scope; substrate:tenant is covered because
+// the scope is tenant-implied — so both pass (not restricted). ok is the
+// PrincipalFromContext presence bool (false = open mode → never restricted);
+// gateOn is cfg.Env.OperatorKeyRestriction.
+func OperatorKeyRestricted(p Principal, ok bool, gateOn bool) bool {
+	if !ok || !gateOn || p.Legacy || HasScope(p.Scopes, ScopeProvidersOperatorKey) {
+		return false
+	}
+	return true
 }

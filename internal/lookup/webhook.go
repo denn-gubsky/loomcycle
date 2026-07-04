@@ -109,6 +109,9 @@ type SubstrateWebhookDef struct {
 	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
 	SyncResponse           SubstrateWebhookSyncResp  `json:"sync_response,omitempty"`
 	OnComplete             []config.ScheduledRunHook `json:"on_complete,omitempty"`
+	// OperatorKeyRestricted (RFC AX) mirrors mergedWebhookDef — captured from the
+	// authoring principal, projected onto config.Webhook for the receiver.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 }
 
 // SubstrateWebhookAuth mirrors config.WebhookAuth.
@@ -167,6 +170,7 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 			Enabled:   s.SyncResponse.Enabled,
 			TimeoutMs: s.SyncResponse.TimeoutMs,
 		},
-		OnComplete: s.OnComplete,
+		OnComplete:            s.OnComplete,
+		OperatorKeyRestricted: s.OperatorKeyRestricted,
 	}
 }

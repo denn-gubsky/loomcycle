@@ -2266,6 +2266,12 @@ export const TOKEN_SCOPES = [
   "runs:read",
   "channel:publish",
   "channel:read",
+  // RFC AX: grants the run the operator's HOST provider API key. Tenant-implied
+  // (substrate:tenant already covers it), so it only matters on a GRANULAR token
+  // when the deployment sets LOOMCYCLE_OPERATOR_KEY_RESTRICTION — OMIT it there to
+  // force that tenant to bring its own key (an RFC AR CredentialDef). Inert when
+  // the gate is off.
+  "providers:operator-key",
 ] as const;
 
 // ---- Routing view (GET /v1/_routing) ----

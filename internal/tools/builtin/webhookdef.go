@@ -158,6 +158,10 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
 	}
+	// RFC AX: capture the authoring principal's operator-key restriction (server
+	// authority — unconditional so the payload/overlay can't set it) so the
+	// webhook receiver stamps the fired run with the creator's grant.
+	def.OperatorKeyRestricted = operatorKeyRestrictedFromCtx(ctx, s.Cfg)
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
@@ -298,6 +302,9 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
 	}
+	// RFC AX: re-capture the forking principal's operator-key restriction (server
+	// authority) — a fork is a new version, its authority is the forker's grant.
+	def.OperatorKeyRestricted = operatorKeyRestrictedFromCtx(ctx, s.Cfg)
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: marshal: %s", err)), nil
@@ -707,6 +714,12 @@ type mergedWebhookDef struct {
 	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
 	SyncResponse           mergedWebhookSyncResp     `json:"sync_response,omitempty"`
 	OnComplete             []config.ScheduledRunHook `json:"on_complete,omitempty"`
+	// OperatorKeyRestricted is the RFC AX bit CAPTURED from the authoring
+	// principal at create/fork (server authority, NOT payload/overlay-set); the
+	// webhook receiver copies it into RunInput so a fired run keeps its creator's
+	// restriction. No content_sha256 for webhooks; omitempty keeps gate-off
+	// bodies byte-identical.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 }
 
 // mergedWebhookAuth mirrors config.WebhookAuth.

@@ -35,32 +35,39 @@ import (
 func FrontierAuthenticator(
 	authConfigured func(context.Context) bool,
 	resolve func(context.Context, string) (auth.Principal, bool),
+	operatorKeyGateOn bool,
 ) Authenticator {
-	return func(h http.Header) (string, bool) {
+	return func(h http.Header) (string, bool, bool) {
 		ctx := context.Background()
 		// Per-request open-mode check: no auth configured ⇒ anonymous, matching
 		// HTTP. Evaluated every call so a runtime-minted admin token flips A2A
-		// closed without a restart.
+		// closed without a restart. Open mode is never restricted (fail-open).
 		if authConfigured == nil || !authConfigured(ctx) {
-			return "anonymous", true
+			return "anonymous", false, true
 		}
 		got := h.Get("Authorization")
 		const pfx = "Bearer "
 		if len(got) <= len(pfx) || !strings.EqualFold(got[:len(pfx)], pfx) {
-			return "", false
+			return "", false, false
 		}
 		if resolve == nil {
-			return "", false
+			return "", false, false
 		}
 		p, ok := resolve(ctx, got[len(pfx):])
 		if !ok {
-			return "", false
+			return "", false, false
 		}
+		// RFC AX: derive the operator-key restriction from the peer's OWN
+		// resolved scopes — the SAME auth.OperatorKeyRestricted used on the
+		// HTTP/gRPC planes, so there's one source of truth. A granular A2A peer
+		// that lacks providers:operator-key is restricted; a legacy peer / one
+		// holding the scope / the gate-off case all fail open (false).
+		restricted := auth.OperatorKeyRestricted(p, ok, operatorKeyGateOn)
 		// Attribution name only. Preserve the legacy peer's historical
 		// "a2a-peer" name; attribute operator-token peers by their subject.
 		if p.Legacy || p.Subject == "" {
-			return "a2a-peer", true
+			return "a2a-peer", restricted, true
 		}
-		return p.Subject, true
+		return p.Subject, restricted, true
 	}
 }

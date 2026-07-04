@@ -111,6 +111,21 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 		req.MaxTokens = llmGatewayDefaultMaxTokens
 	}
 
+	// RFC AX (fail-closed): the gateway calls provider.Call directly and does NOT
+	// wire the RFC AR credential-override path, so a restricted principal has no
+	// way to bring its own key here — it would spend the operator's key. Both run
+	// enforcement layers (credential-aware routing + the driver backstop) are on
+	// the agent-run path, not this bypass, so refuse at the choke point shared by
+	// /v1/_llm/chat + /v1/chat/completions, both stream and non-stream, before any
+	// bytes are written (a proper 403, which a mid-stream SSE refusal can't give).
+	// Gate-off ⇒ operatorKeyRestrictedForCtx is always false ⇒ byte-identical for
+	// every existing token. BYO-key gateway support (a restricted tenant presenting
+	// its own CredentialDef on the gateway) is a separate future enhancement.
+	if s.operatorKeyRestrictedForCtx(r.Context()) {
+		writeJSONError(w, http.StatusForbidden, "operator_key_restricted", operatorKeyRestrictedMsg)
+		return gatewayDispatch{}, false
+	}
+
 	requestID := newRequestID()
 	startedAt := time.Now()
 

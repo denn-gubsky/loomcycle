@@ -304,6 +304,28 @@ func (s *Server) applyPrincipal(ctx context.Context, wireTenant, wireUser string
 	return tenant, subject
 }
 
+// operatorKeyRestrictedForCtx computes the RFC AX restriction bit from the LIVE
+// principal on ctx and the deployment gate — the run-start path for surfaces
+// that carry an auth.Principal (HTTP, and gRPC/MCP/connector via applyPrincipal).
+// Fail-open: no principal (open mode) / legacy / gate-off / scope-present all
+// yield false (operator key allowed). See auth.OperatorKeyRestricted.
+func (s *Server) operatorKeyRestrictedForCtx(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return auth.OperatorKeyRestricted(p, ok, s.cfg.Env.OperatorKeyRestriction)
+}
+
+// operatorKeyRestrictedOrCaptured is the RunOnce variant: use the live principal
+// when one is on ctx (gRPC/MCP/connector), else fall back to the bit CAPTURED on
+// a trigger def by a non-principal path (scheduler/webhook/A2A supply it via
+// RunInput.OperatorKeyRestricted). RFC AX §2 anti-bypass: a restricted tenant's
+// captured grant must ride the trigger def since no token is present at fire time.
+func (s *Server) operatorKeyRestrictedOrCaptured(ctx context.Context, captured bool) bool {
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		return auth.OperatorKeyRestricted(p, ok, s.cfg.Env.OperatorKeyRestriction)
+	}
+	return captured
+}
+
 // sessionOwnershipOK reports whether the ctx principal may continue or read
 // sess. A continuation runs under / a transcript read exposes the SESSION'S
 // history, so the gate keeps a caller from acting on a session OUTSIDE ITS

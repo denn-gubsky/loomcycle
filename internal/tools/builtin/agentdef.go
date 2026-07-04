@@ -181,6 +181,21 @@ func defCallerIsAdmin(ctx context.Context) bool {
 	return ok && auth.HasScope(p.Scopes, auth.ScopeAdmin)
 }
 
+// operatorKeyRestrictedFromCtx computes the RFC AX operator-key restriction for
+// the principal AUTHORING a trigger def, from the live ctx principal + the
+// deployment gate. It is SERVER authority — a run-triggering def (Schedule /
+// Webhook / A2A) captures it so the scheduler/webhook/A2A executor can stamp the
+// fired run without a token on ctx (anti-bypass: a restricted principal can't
+// launder an unrestricted run through a trigger). The model must NOT be able to
+// set this via the overlay, so write sites stamp it unconditionally after
+// applying the overlay. Fail-open (false) when the gate is off / no principal /
+// legacy / scope-present, matching auth.OperatorKeyRestricted.
+func operatorKeyRestrictedFromCtx(ctx context.Context, cfg *config.Config) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	gate := cfg != nil && cfg.Env.OperatorKeyRestriction
+	return auth.OperatorKeyRestricted(p, ok, gate)
+}
+
 func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("create: missing required field: name"), nil

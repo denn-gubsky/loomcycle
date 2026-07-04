@@ -135,6 +135,41 @@ func (e *Engine) Resolve(ctx context.Context, tenantID, agentName, userID, name 
 	return Resolved{}, false, nil
 }
 
+// HasKey reports whether a credential named `name` exists in ANY scope visible
+// to (tenantID, agentName, userID), using the SAME agent > user > tenant
+// precedence as Resolve — but a METADATA-ONLY presence check: it calls
+// CredentialDefGet and NEVER decrypts (no backend.Resolve), so RFC AX Layer-1
+// credential-aware routing can test provider keyability without touching any
+// plaintext. Respects CanResolve (no KEK ⇒ false ⇒ nothing is tenant-keyable,
+// the correct restricted-run default). agentName / userID may be "" (that scope
+// is skipped). Returns (false, nil) when absent from every visible scope; a
+// store fault other than not-found propagates.
+func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name string) (bool, error) {
+	if !e.CanResolve() {
+		return false, nil
+	}
+	buckets := []struct{ scope, id string }{
+		{"agent", agentName},
+		{"user", userID},
+		{"tenant", ""},
+	}
+	for _, b := range buckets {
+		if b.scope != "tenant" && b.id == "" {
+			continue // no identity for this scope on the run
+		}
+		_, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				continue // not in this scope — try the next
+			}
+			return false, err
+		}
+		return true, nil // present in this scope — no decrypt needed
+	}
+	return false, nil
+}
+
 func (e *Engine) backendFor(name string) (Backend, error) {
 	switch name {
 	case BackendInline:

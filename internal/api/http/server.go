@@ -125,6 +125,15 @@ type Server struct {
 	// after construction. Reads run identity from the ctx it's given.
 	credResolver providers.CredentialResolver
 
+	// credKeyable is the RFC AX Layer-1 metadata-only keyability probe: does
+	// (tenant, agent, user) have its OWN CredentialDef for env-var name? It backs
+	// the credential-aware routing filter built for a restricted run in
+	// resolveAgentDef. Wired via SetCredKeyable (mirrors credResolver); nil ⇒ no
+	// provider is tenant-keyable (so a restricted run refuses unless it routes to
+	// a keyless provider). Called in the SERVER before Resolve — the lock-free
+	// resolver never does credential-store I/O.
+	credKeyable func(ctx context.Context, tenantID, agentName, userID, name string) bool
+
 	// limits is the RFC AW per-scope token-budget tracker: month-to-date
 	// counters + cached soft/hard ceilings, checked at admission and
 	// incremented from recordCallUsage. Always non-nil after New() (a nil store
@@ -811,6 +820,14 @@ func (s *Server) SetResolver(r *resolve.Resolver) { s.resolver = r }
 // key over the operator host key. Nil ⇒ overrides disabled.
 func (s *Server) SetCredentialResolver(r providers.CredentialResolver) { s.credResolver = r }
 
+// SetCredKeyable wires the RFC AX Layer-1 keyability probe (metadata-only:
+// does (tenant, agent, user) have its OWN CredentialDef for env-var name?). The
+// Server uses it to build a restricted run's credential-aware routing filter
+// before resolution. Nil ⇒ no provider is tenant-keyable.
+func (s *Server) SetCredKeyable(fn func(ctx context.Context, tenantID, agentName, userID, name string) bool) {
+	s.credKeyable = fn
+}
+
 // markStalledFn returns a closure suitable for loop.RunOptions.MarkStalled.
 // The loop invokes the closure with the LIVE (provider, model) for the
 // current iteration — which is meaningful when v0.8.2 fallback switched
@@ -893,6 +910,14 @@ func resolveErrorToStatus(err error) int {
 	case errors.Is(err, resolve.ErrTierUnavailable),
 		errors.Is(err, resolve.ErrPinUnavailable):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, resolve.ErrOperatorKeyRestricted),
+		errors.Is(err, resolve.ErrTierAgentNotAvailable):
+		// RFC AX §5: the operator-key restriction is a POLICY refusal (the
+		// principal may not spend the operator's key). ErrTierAgentNotAvailable
+		// is the sibling tier-policy refusal ("agent not available for this
+		// user_tier") — its docstring always said 403 but it silently fell to
+		// the 400 default here; folded in so both policy refusals return 403.
+		return http.StatusForbidden
 	case errors.Is(err, resolve.ErrUnknownAgent),
 		errors.Is(err, runner.ErrUnknownAgent):
 		return http.StatusBadRequest
@@ -902,6 +927,24 @@ func resolveErrorToStatus(err error) int {
 		// config issues that deserve to surface as bad-request.
 		return http.StatusBadRequest
 	}
+}
+
+// operatorKeyRestrictedMsg is the operator-facing refusal (RFC AX §5) shared by
+// every surface that denies a restricted principal the operator's provider key.
+// It names the two ways out — bring your own key or hold the scope — without
+// leaking any config detail.
+const operatorKeyRestrictedMsg = "this principal may not use the operator's provider API keys; bring your own provider key (RFC AR CredentialDef) or grant the providers:operator-key scope"
+
+// writeResolveError surfaces a resolver error to the HTTP client. The RFC AX
+// operator-key refusal gets a typed JSON body (code operator_key_restricted) so
+// adapters can branch on it — mirroring the token_limit_exceeded shape. Every
+// other resolver error keeps the historical plain-text http.Error surface.
+func writeResolveError(w http.ResponseWriter, err error) {
+	if errors.Is(err, resolve.ErrOperatorKeyRestricted) {
+		writeJSONError(w, http.StatusForbidden, "operator_key_restricted", operatorKeyRestrictedMsg)
+		return
+	}
+	http.Error(w, err.Error(), resolveErrorToStatus(err))
 }
 
 // writeQuotaError maps a concurrency semaphore error to HTTP 429. Two
@@ -958,7 +1001,7 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 // has a user_tiers block; otherwise the resolver operates without an
 // overlay (v0.7.x behaviour). Unknown names are rejected upstream
 // before this is called.
-func (s *Server) resolveAgent(ctx context.Context, tenantID, agentName, userTier string) (providerID, model, effort string, err error) {
+func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, userTier string, restricted bool) (providerID, model, effort string, err error) {
 	// RFC N: resolve at the RUN's authoritative tenant (threaded by the
 	// caller — effectiveTenantID / req.TenantID / sess.TenantID), NOT a
 	// ctx-derived or empty tenant. This is the provider/model resolution +
@@ -970,7 +1013,7 @@ func (s *Server) resolveAgent(ctx context.Context, tenantID, agentName, userTier
 	if !ok {
 		return "", "", "", fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
 	}
-	return s.resolveAgentDef(def, agentName, userTier)
+	return s.resolveAgentDef(ctx, def, tenantID, userID, agentName, userTier, restricted)
 }
 
 // lookupAgent delegates to internal/lookup.Agent — the canonical
@@ -1012,7 +1055,7 @@ func (s *Server) lookupAgent(ctx context.Context, tenantID, name string) (config
 // static yaml. Without this, a forked sub-agent runs against the
 // static model — silently defeating the whole point of def_id
 // pinning.
-func (s *Server) resolveAgentDef(def config.AgentDef, agentName, userTier string) (providerID, model, effort string, err error) {
+func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenantID, userID, agentName, userTier string, restricted bool) (providerID, model, effort string, err error) {
 	hasPin := def.Provider != "" || def.Model != ""
 	hasTier := def.Tier != ""
 
@@ -1035,6 +1078,15 @@ func (s *Server) resolveAgentDef(def config.AgentDef, agentName, userTier string
 			Models:    convertConfigCandidates(def.Models, s.cfg.Models),
 			UserTier:  s.userTierOverlay(userTier),
 		}
+		// RFC AX Layer 1: a restricted run resolves only to providers the tenant
+		// can key itself. Build the filter HERE (credential-store I/O in the
+		// server, not the lock-free resolver), then hand it to Resolve. An
+		// UNRESTRICTED run leaves KeyableProviders nil — zero overhead, unchanged
+		// path (gate-off ⇒ byte-identical). The pin path below never filters (a
+		// pinned agent bypasses routing; the driver backstop guards it).
+		if restricted {
+			req.KeyableProviders = s.keyableProvidersFor(ctx, req, tenantID, agentName, userID)
+		}
 		dec, rerr := s.resolver.Resolve(req)
 		if rerr != nil {
 			return "", "", "", rerr
@@ -1055,6 +1107,37 @@ func (s *Server) resolveAgentDef(def config.AgentDef, agentName, userTier string
 	// agent can declare effort and the driver will translate it
 	// where supported. Empty when not declared.
 	return providerID, model, def.Effort, nil
+}
+
+// keyableProvidersFor builds the RFC AX Layer-1 credential-aware routing filter
+// for a restricted run: the set of provider IDs the run's tenant/user can key
+// itself. It walks req's config cascade (resolver.Cascade — req carries NO
+// filter yet, so this sees every candidate) and, per unique provider, keeps it
+// when it needs no operator key (KeyEnvName "" — ollama-local/code-js/mock) OR
+// the tenant/user has an own CredentialDef for its key env-var (credKeyable, a
+// metadata-only check). Returns a non-nil map even when empty — Resolve reads
+// non-nil as "restricted", so an empty set yields ErrOperatorKeyRestricted
+// rather than an availability outage. All credential-store I/O happens here, in
+// the server, keeping internal/resolve lock-free + credential-agnostic.
+func (s *Server) keyableProvidersFor(ctx context.Context, req resolve.AgentRequest, tenantID, agentName, userID string) map[string]bool {
+	set := map[string]bool{}
+	seen := map[string]bool{}
+	for _, c := range s.resolver.Cascade(req) {
+		if seen[c.Provider] {
+			continue
+		}
+		seen[c.Provider] = true
+		env := ""
+		if p, perr := s.providers.Get(c.Provider); perr == nil {
+			if kp, ok := p.(providers.KeyedProvider); ok {
+				env = kp.KeyEnvName()
+			}
+		}
+		if env == "" || (s.credKeyable != nil && s.credKeyable(ctx, tenantID, agentName, userID, env)) {
+			set[c.Provider] = true
+		}
+	}
+	return set
 }
 
 // userTierOverlay builds the resolver's UserTierOverlay from
@@ -1678,7 +1761,7 @@ func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (strin
 // On no-more-candidates the closure returns an error — the loop
 // then surfaces the ORIGINAL provider error to the caller (the
 // fallback path is terminal for this run).
-func (s *Server) fallbackForRun(tenantID, agentName, userTier string) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
+func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, restricted bool) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
 	overlay := s.userTierOverlay(userTier)
 	if overlay == nil || !overlay.FallbackOnError {
 		return loop.FallbackPolicy{}, nil
@@ -1701,8 +1784,9 @@ func (s *Server) fallbackForRun(tenantID, agentName, userTier string) (loop.Fall
 		// (RFC N — captured tenantID, not a ctx-derived/empty tenant). The
 		// resolver's stall flag we just set excludes the failed pair; the
 		// next non-stalled candidate in the user_tier's priority is what
-		// we get back.
-		newProviderID, newModel, newEffort, err := s.resolveAgent(ctx, tenantID, agentName, userTier)
+		// we get back. RFC AX: carry the SAME restriction so a restricted run
+		// can't fall back to a provider it can't key.
+		newProviderID, newModel, newEffort, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, restricted)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -1809,6 +1893,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		defer releaseLock()
 	}
 
+	// RFC AX: use the live principal when one is on ctx (gRPC/MCP/connector);
+	// else fall back to the bit CAPTURED on the trigger def and supplied via
+	// RunInput (scheduler/webhook/A2A have no principal at fire time). A
+	// continuation recomputes from the presenting principal (current token is
+	// authority), matching handleMessages.
+	operatorKeyRestricted := s.operatorKeyRestrictedOrCaptured(ctx, in.OperatorKeyRestricted)
+
 	if effectiveAgentName == "" {
 		return fmt.Errorf("%w: agent is required", runner.ErrInvalidArgument)
 	}
@@ -1824,7 +1915,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// from the v0.8.15 fallback above are NOT in that map. Pass the
 	// already-resolved AgentDef through resolveAgentDef instead (same
 	// path the v0.8.5 sub-agent overlay uses).
-	providerID, model, effort, err := s.resolveAgentDef(agentDef, effectiveAgentName, in.UserTier)
+	providerID, model, effort, err := s.resolveAgentDef(ctx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
 	if err != nil {
 		return err // already wrapped with runner.Err* sentinel
 	}
@@ -1921,7 +2012,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2023,14 +2114,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// identity (makeRecordingEmit is built before WithRunIdentity below) and
 	// both consumers stamp the SAME value.
 	rid := tools.RunIdentityValue{
-		UserID:          effectiveUserID,
-		TenantID:        effectiveTenantID, // RFC L: authoritative tenant (memory tenancy key)
-		AgentID:         agentID,
-		RootRunID:       runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
-		UserTier:        in.UserTier,
-		UserBearer:      in.UserBearer,      // v0.8.x: per-run MCP bearer
-		UserCredentials: in.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:   in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+		UserID:                effectiveUserID,
+		TenantID:              effectiveTenantID, // RFC L: authoritative tenant (memory tenancy key)
+		AgentID:               agentID,
+		RootRunID:             runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
+		UserTier:              in.UserTier,
+		UserBearer:            in.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials:       in.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:         in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+		OperatorKeyRestricted: operatorKeyRestricted,
 	}
 	emit := s.makeRecordingEmit(ctx, runID, rid, sessionID, func(ev providers.Event) {
 		if cb.OnEvent != nil {
@@ -2052,6 +2144,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
+	// RFC AX: mirror the negative permission bit onto ctx for the stage-2
+	// driver backstop (drivers import providers, not auth/tools).
+	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !operatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	// Memory tool policy: agent name + per-agent scope allowlist +
@@ -2105,7 +2200,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveAgentName, in.UserTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -3103,6 +3198,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// tenant-scoped dynamic agent as "unknown agent" (RFC N runtime QA BUG-1).
 	req.TenantID, req.UserID = s.applyPrincipal(r.Context(), req.TenantID, req.UserID)
 
+	// RFC AX: compute the operator-key restriction from the live principal +
+	// the deployment gate, once, so the run identity / row / ctx all agree.
+	// Fail-open when the gate is off or no principal is present (stage 1 threads
+	// it; enforcement is stage 2).
+	operatorKeyRestricted := s.operatorKeyRestrictedForCtx(r.Context())
+
 	// Existence-check the agent at the run's authoritative tenant.
 	agentDef, ok := s.lookupAgent(r.Context(), req.TenantID, req.Agent)
 	if !ok {
@@ -3143,9 +3244,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// (req.TenantID / req.UserID were made authoritative above via
 	// applyPrincipal — fairness key, session tenant, run-row attribution,
 	// and threaded RunIdentity all derive from them.)
-	providerID, model, effort, err := s.resolveAgent(r.Context(), req.TenantID, req.Agent, req.UserTier)
+	providerID, model, effort, err := s.resolveAgent(r.Context(), req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	if err != nil {
-		http.Error(w, err.Error(), resolveErrorToStatus(err))
+		writeResolveError(w, err)
 		return
 	}
 	provider, err := s.providers.Get(providerID)
@@ -3280,7 +3381,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -3443,14 +3544,15 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// Hoisted above the recording emit so usage is attributed under the run's
 	// true identity (see makeRecordingEmit) and WithRunIdentity below reuses it.
 	rid := tools.RunIdentityValue{
-		UserID:          req.UserID,
-		TenantID:        req.TenantID, // RFC L: authoritative tenant (memory tenancy key)
-		AgentID:         agentID,
-		RootRunID:       runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
-		UserTier:        req.UserTier,
-		UserBearer:      req.UserBearer,      // v0.8.x: per-run MCP bearer
-		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+		UserID:                req.UserID,
+		TenantID:              req.TenantID, // RFC L: authoritative tenant (memory tenancy key)
+		AgentID:               agentID,
+		RootRunID:             runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
+		UserTier:              req.UserTier,
+		UserBearer:            req.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials:       req.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:         req.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+		OperatorKeyRestricted: operatorKeyRestricted,
 	}
 	// Persist under runCtx so events survive a client disconnect on an
 	// interactive run (runCtx tracks the request for a normal run).
@@ -3478,6 +3580,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
+	// RFC AX: mirror the negative permission bit onto ctx (drivers import
+	// providers, not auth/tools) so the stage-2 driver backstop can read it.
+	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !operatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	// Stash the caller's host policy so any sub-agents spawned by the
 	// Agent tool inherit the same allowed_hosts / WebSearchFilter
@@ -3519,7 +3624,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// minutes → presumed dead). Cheap (~10–100 calls per run).
 	heartbeat := s.makeHeartbeat(runID)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.Agent, req.UserTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	runOpts := loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -3775,9 +3880,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if body.ParentContext.IsZero() {
 		body.ParentContext = nil
 	}
-	providerID, model, effort, err := s.resolveAgent(r.Context(), sess.TenantID, sess.Agent, body.UserTier)
+	// RFC AX: recompute the operator-key restriction from the PRESENTING
+	// principal (the current token is authority on a continuation — a documented
+	// decision, not the original run's bit). Computed here so credential-aware
+	// routing (resolveAgent) and the fallback cascade both honor it.
+	operatorKeyRestricted := s.operatorKeyRestrictedForCtx(r.Context())
+	providerID, model, effort, err := s.resolveAgent(r.Context(), sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
 	if err != nil {
-		http.Error(w, err.Error(), resolveErrorToStatus(err))
+		writeResolveError(w, err)
 		return
 	}
 	provider, err := s.providers.Get(providerID)
@@ -3877,14 +3987,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// inherited from the session (set at original creation). user_tier
 	// is per-request (v0.8.2) — a user upgrading mid-session sees
 	// the new tier applied immediately on this continuation.
+	// operatorKeyRestricted was computed above from the presenting principal.
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
-		AgentID:       agentID,
-		UserID:        sess.UserID,
-		TenantID:      sess.TenantID, // RFC L: continuation inherits the session's authoritative tenant
-		UserTier:      body.UserTier,
-		Model:         model,
-		ReplicaID:     s.replicaID,
-		ParentContext: body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
+		AgentID:               agentID,
+		UserID:                sess.UserID,
+		TenantID:              sess.TenantID, // RFC L: continuation inherits the session's authoritative tenant
+		UserTier:              body.UserTier,
+		Model:                 model,
+		ReplicaID:             s.replicaID,
+		ParentContext:         body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
+		OperatorKeyRestricted: operatorKeyRestricted,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -3976,14 +4088,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Hoisted above the recording emit so usage is attributed under the run's
 	// true identity (see makeRecordingEmit) and WithRunIdentity below reuses it.
 	rid := tools.RunIdentityValue{
-		UserID:          sess.UserID,
-		TenantID:        sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
-		AgentID:         agentID,
-		RootRunID:       run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
-		UserTier:        body.UserTier,
-		UserBearer:      body.UserBearer,      // v0.8.x: per-run MCP bearer
-		UserCredentials: body.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:   body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+		UserID:                sess.UserID,
+		TenantID:              sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
+		AgentID:               agentID,
+		RootRunID:             run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
+		UserTier:              body.UserTier,
+		UserBearer:            body.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials:       body.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:         body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
+		OperatorKeyRestricted: operatorKeyRestricted,
 	}
 	emit := s.makeRecordingEmit(r.Context(), run.ID, rid, id, stream.send)
 	// RFC AW: emit any soft budget crossings found at admission so the warning
@@ -4001,6 +4114,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
+	// RFC AX: mirror the negative permission bit onto ctx for the stage-2
+	// driver backstop (drivers import providers, not auth/tools).
+	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !operatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	// Sub-agents spawned by this continuation must inherit the
 	// caller-authoritative host narrowing, same as runRequest +
@@ -4044,7 +4160,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer deregGate()
 	// RFC X Phase 3: expose the gate to the Agent tool (parallel_spawn parent park).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
-	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.Agent, body.UserTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -4827,16 +4943,21 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		def = applyAgentDefOverlay(def, row.Definition)
 	}
 
-	// v0.8.2: inherit parent's user_tier via ctx. The Agent built-in
-	// tool can't pass it explicitly (the tool's input schema is
-	// caller-authoritative). Reading from ctx keeps the same tier
+	// Read parent's identity from ctx to inherit user_id, tenant, user_tier, and
+	// the RFC AX operator-key restriction, and to pin parent_agent_id on the
+	// sub-run. tools.RunIdentity returns zero value if the parent didn't set it —
+	// sub-agents spawned from callers that didn't supply user_id naturally
+	// inherit empty. v0.8.2: reading user_tier from ctx keeps the same tier
 	// policy + fallback posture applied to the whole sub-run tree.
-	parentTier := tools.RunIdentity(ctx).UserTier
+	parentIdentity := tools.RunIdentity(ctx)
+	parentTier := parentIdentity.UserTier
 
 	// Route through resolveAgentDef so an overlay's Model/Tier/Provider/
 	// Effort actually take effect. resolveAgent re-reads cfg.Agents and
-	// would silently discard the fork's values.
-	providerID, model, effort, err := s.resolveAgentDef(def, name, parentTier)
+	// would silently discard the fork's values. RFC AX: a child INHERITS the
+	// parent's operator-key restriction — it can't escape by spawning, so
+	// credential-aware routing applies to the sub-run too.
+	providerID, model, effort, err := s.resolveAgentDef(ctx, def, parentIdentity.TenantID, parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve sub-agent %q model: %w", name, err)
 	}
@@ -4844,12 +4965,6 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	if err != nil {
 		return "", "", fmt.Errorf("provider for sub-agent %q: %w", name, err)
 	}
-
-	// Read parent's identity from ctx to inherit user_id and pin
-	// parent_agent_id on the sub-run. tools.RunIdentity returns zero
-	// value if the parent didn't set it — sub-agents spawned from
-	// callers that didn't supply user_id naturally inherit empty.
-	parentIdentity := tools.RunIdentity(ctx)
 
 	// Generate a fresh agent_id for the sub-run. Always generated;
 	// callers can't override (the sub is loomcycle-controlled).
@@ -4879,6 +4994,9 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// the propagation seam — remove it and child run rows lose their
 		// link back to the user-initiated request.
 		ParentContext: parentIdentity.ParentContext.Clone(),
+		// RFC AX: a child INHERITS the parent's operator-key restriction — it
+		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
+		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, parentIdentity.TenantID, parentIdentity.UserID, subIdentity)
 	if err != nil {
@@ -5042,6 +5160,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
 		UserCredentials: parentIdentity.UserCredentials,       // v1.x RFC F: credentials map inherited identically
 		ParentContext:   parentIdentity.ParentContext.Clone(), // v0.12.x: tracking lineage flows to grandchildren too
+		// RFC AX: inherit the parent's operator-key restriction (a child cannot
+		// escape). The providers ctx value inherits automatically via
+		// subRunCtx←ctx (same as WithCredentialResolver), so no re-stamp needed.
+		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
 	}
 	// Sub-emit records to the sub's transcript only — the parent's SSE
 	// stream is fwd=no-op so sub events don't bleed into the parent's
@@ -5137,7 +5259,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// that itself parallel_spawns) can park mid-tool-call too.
 	subCtx = tools.WithPauseGate(subCtx, subGate)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), name, parentTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -5868,7 +5990,9 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	if !ok {
 		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "agent_gone", msg: "the run's agent no longer exists"}
 	}
-	providerID, model, _, rerr := s.resolveAgentDef(agentDef, run.Agent, run.UserTier)
+	// RFC AX: a restricted run's compaction summary call must also route only to
+	// tenant-keyable providers (never the operator's key).
+	providerID, model, _, rerr := s.resolveAgentDef(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if rerr != nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusInternalServerError, msg: "resolve provider/model: " + rerr.Error()}
 	}
@@ -5901,7 +6025,18 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	if !splitOK {
 		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"}, nil
 	}
-	summary, serr := loop.Summarize(ctx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
+	// RFC AX: compaction summarizes via a provider.Call made OUTSIDE the run loop,
+	// so the summary ctx must carry the same credential context a run's loopCtx does
+	// (mirrors resume.go). Without WithOperatorKeyAllowed the driver backstop is
+	// inert (fail-open) and a restricted run's summary would spend the operator's
+	// key — Layer-1 routing above skips PINNED agents, so this Layer-2 stamp is the
+	// guarantee; and without the resolver/identity a restricted tenant's OWN key
+	// would be ignored (mis-attributed + wrongly refused).
+	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
+	summCtx = providers.WithOperatorKeyAllowed(summCtx, !run.OperatorKeyRestricted)
+	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID})
+	summCtx = tools.WithAgentName(summCtx, run.Agent)
+	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
 	if serr != nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusBadGateway, msg: "summarize: " + serr.Error()}
 	}

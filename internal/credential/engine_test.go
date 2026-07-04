@@ -96,6 +96,50 @@ func TestEngine_MissAndFailClosed(t *testing.T) {
 	}
 }
 
+// RFC AX: HasKey is a metadata-only presence check reusing Resolve's
+// agent>user>tenant precedence — it reports whether a credential named `name`
+// exists in ANY scope visible to (tenant, agent, user), WITHOUT decrypting.
+func TestEngine_HasKey_PrecedenceAndFastPath(t *testing.T) {
+	e := newEngine(t, testKey(1))
+	ctx := context.Background()
+	put := func(scope, scopeID string) {
+		if _, err := e.PutInline(ctx, Identity{TenantID: "t", Scope: scope, ScopeID: scopeID, Name: "ANTHROPIC_API_KEY"}, "sk-x", nil); err != nil {
+			t.Fatalf("put %s/%s: %v", scope, scopeID, err)
+		}
+	}
+
+	// (1) Tenant-scope credential is visible to any user of the tenant.
+	put("tenant", "")
+	if ok, err := e.HasKey(ctx, "t", "some-agent", "some-user", "ANTHROPIC_API_KEY"); err != nil || !ok {
+		t.Errorf("tenant-scope key: HasKey = (%v, %v), want (true, nil)", ok, err)
+	}
+	// A different tenant sees nothing (isolation).
+	if ok, _ := e.HasKey(ctx, "other", "", "", "ANTHROPIC_API_KEY"); ok {
+		t.Error("HasKey leaked a credential across tenants")
+	}
+	// An absent name is false.
+	if ok, _ := e.HasKey(ctx, "t", "", "", "OPENAI_API_KEY"); ok {
+		t.Error("HasKey reported an absent credential as present")
+	}
+
+	// (2) Agent/user-scoped credential is detected under the specific scope only.
+	put("user", "alice")
+	if ok, _ := e.HasKey(ctx, "t", "", "alice", "ANTHROPIC_API_KEY"); !ok {
+		t.Error("user-scope key not detected for its own user")
+	}
+	put("agent", "breeder")
+	if ok, _ := e.HasKey(ctx, "t", "breeder", "", "ANTHROPIC_API_KEY"); !ok {
+		t.Error("agent-scope key not detected for its own agent")
+	}
+
+	// (3) CanResolve fast-path: a KEK-less engine can key nothing (the correct
+	// restricted-run default) — returns false without touching the store.
+	disabled := newEngine(t, "")
+	if ok, err := disabled.HasKey(ctx, "t", "", "", "ANTHROPIC_API_KEY"); err != nil || ok {
+		t.Errorf("no-KEK engine: HasKey = (%v, %v), want (false, nil)", ok, err)
+	}
+}
+
 func TestEngine_ResolveIsTenantIsolated(t *testing.T) {
 	e := newEngine(t, testKey(1))
 	ctx := context.Background()

@@ -218,6 +218,12 @@ export default function TokenManager() {
         </div>
         <fieldset className="token-scopes">
           <legend>scopes</legend>
+          <p className="settings-muted">
+            <code>providers:operator-key</code> lets the token spend the operator's
+            provider API keys. It only bites when the deployment runs{" "}
+            <code>LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1</code>: omit it on a granular
+            token to force that tenant to bring its own key (an RFC AR credential).
+          </p>
           {TOKEN_SCOPES.map((s) => (
             <label key={s} className="scope-check">
               <input

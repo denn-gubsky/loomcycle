@@ -265,6 +265,39 @@ func TestFallback_PermanentError_PropagatesRegardlessOfPolicy(t *testing.T) {
 	}
 }
 
+// TestFallback_OperatorKeyForbidden_NotCascaded pins the RFC AX Layer-2
+// invariant at the loop: a restricted run's driver refusal
+// (providers.ErrOperatorKeyForbidden) is classified non-retryable, so
+// tryProviderFallback must NOT cascade it across providers (which would burn the
+// identical refusal on each). The error propagates as the run's terminal error.
+func TestFallback_OperatorKeyForbidden_NotCascaded(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "anthropic",
+		errors: []error{providers.ErrOperatorKeyForbidden},
+	}
+	reResolveCalls := 0
+	opts := RunOptions{
+		Provider:       failing,
+		Model:          "claude-sonnet-4-6",
+		MaxIterations:  5,
+		Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent:        func(ev providers.Event) {},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "high"},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			reResolveCalls++
+			t.Error("ReResolve was called for an operator-key refusal — should NOT happen")
+			return nil, "", "", nil
+		},
+	}
+	_, err := Run(context.Background(), opts)
+	if !errors.Is(err, providers.ErrOperatorKeyForbidden) {
+		t.Fatalf("err = %v, want ErrOperatorKeyForbidden to propagate", err)
+	}
+	if reResolveCalls != 0 {
+		t.Errorf("ReResolve called %d times; want 0 (policy refusal, not retryable)", reResolveCalls)
+	}
+}
+
 // TestFallback_AnthropicToOther_EmitsCacheInvalidated — when the
 // failing provider is anthropic and the new one isn't, the loop
 // must emit EventCacheInvalidated alongside EventProviderFallback.

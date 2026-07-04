@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -1254,6 +1255,13 @@ func mapRunnerErr(err error) error {
 		// Per-scope token budget hard cap reached (RFC AW). ResourceExhausted
 		// mirrors the HTTP 429 refusal + the backpressure/quota flavors above.
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, resolve.ErrOperatorKeyRestricted),
+		errors.Is(err, providers.ErrOperatorKeyForbidden):
+		// RFC AX: the run's principal may not spend the operator's provider key
+		// and has no keyable provider of its own (routing refusal) or reached
+		// the driver backstop on a pinned agent. PermissionDenied mirrors the
+		// HTTP 403; the message names the way out (own key / the scope).
+		return status.Error(codes.PermissionDenied, err.Error())
 	default:
 		return status.Errorf(codes.Internal, "runner: %v", err)
 	}

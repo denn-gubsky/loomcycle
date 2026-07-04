@@ -241,6 +241,54 @@ func TestHandleCompactRun_TerminalPersistsMarker(t *testing.T) {
 	}
 }
 
+// TestCompact_RestrictedRunDeniesOperatorKey (RFC AX): a restricted run's
+// compaction summary is a provider.Call made OUTSIDE the run loop; it must run
+// under a ctx where OperatorKeyAllowed is false, so the driver backstop denies
+// the operator's key. Fail-before: compactRunWithSource called loop.Summarize
+// with an unstamped ctx → OperatorKeyAllowed defaulted TRUE → the summary spent
+// the operator's key (a full bypass for a pinned restricted run).
+func TestCompact_RestrictedRunDeniesOperatorKey(t *testing.T) {
+	srv, prov := compactFixture(t)
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "compactor", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The RESTRICTED bit rides the run row (set at run-start under the gate); the
+	// compaction path reads it back from the row, so set it directly here.
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_r", UserID: "alice", Model: "stub-model", OperatorKeyRestricted: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uinput := func(text string) []loop.PromptSegment {
+		return []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: text}}}}
+	}
+	for i := 1; i <= 8; i++ {
+		appendResumeEvent(t, srv, run.ID, "user_input", uinput(fmt.Sprintf("question %d", i)))
+		appendResumeEvent(t, srv, run.ID, "text", providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d", i)})
+		appendResumeEvent(t, srv, run.ID, "done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"})
+	}
+	if err := srv.store.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := srv.CompactRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("CompactRun: %v", err)
+	}
+	if !res.Compacted {
+		t.Fatalf("expected compaction to run (marker); got %+v", res)
+	}
+	if prov.calls.Load() == 0 {
+		t.Fatal("summary provider was never called")
+	}
+	if prov.lastOpKeyAllowed.Load() {
+		t.Error("compaction summary ran with OperatorKeyAllowed=true; a restricted run must deny the operator's key (Layer-2 backstop would be inert)")
+	}
+}
+
 // TestHandleCompactRun_NoopWhenShort: a conversation below the threshold is a
 // no-op (no model call, no marker).
 func TestHandleCompactRun_NoopWhenShort(t *testing.T) {

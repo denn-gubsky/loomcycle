@@ -265,6 +265,14 @@ type RunInput struct {
 	// Compaction is an optional per-RUN context-compaction override, merged PER
 	// FIELD over the agent's own Compaction. nil = inherit the agent's entirely.
 	Compaction *config.Compaction
+
+	// OperatorKeyRestricted is the RFC AX negative permission bit for the
+	// NON-principal trigger paths (scheduler / webhook / A2A), which have no
+	// auth.Principal on ctx. Those paths capture the creating principal's grant
+	// on the trigger def and pass it here so RunOnce can stamp the run without a
+	// live token. false = allowed (fail-open); the principal-on-ctx paths ignore
+	// this field and compute restriction from the live principal instead.
+	OperatorKeyRestricted bool
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

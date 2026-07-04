@@ -61,6 +61,15 @@ var (
 	// this to 403 Forbidden with a typed error code so the client
 	// can render an "upgrade your tier to use this agent" message.
 	ErrTierAgentNotAvailable = errors.New("agent not available for user_tier")
+
+	// ErrOperatorKeyRestricted is returned by Resolve (RFC AX) when a
+	// restricted run's KeyableProviders filter removes EVERY tier candidate —
+	// the run's principal may not use the operator's key AND the tenant/user has
+	// no own credential for any provider in the tier's cascade. Like
+	// ErrTierAgentNotAvailable it is a POLICY refusal (not a transient outage),
+	// so the wire layer maps it to 403; distinct so the client can render a
+	// "bring your own key" message rather than "upgrade your tier".
+	ErrOperatorKeyRestricted = errors.New("run restricted: no provider the tenant can key")
 )
 
 // Decision is the resolver's output: which (provider, model) the loop
@@ -113,6 +122,21 @@ type AgentRequest struct {
 	// Empty intersection → ErrTierAgentNotAvailable (operator policy
 	// refusal — not a transient outage).
 	UserTier *UserTierOverlay
+
+	// KeyableProviders is the RFC AX Layer-1 credential-aware routing filter for
+	// a RESTRICTED run: the set of provider IDs the run's tenant/user can key
+	// itself (a keyless provider, OR one whose key env-var has a tenant/user
+	// CredentialDef). NIL = unrestricted (the common path — zero overhead, no
+	// filtering). Non-nil: Resolve / Cascade SKIP any candidate whose provider
+	// is absent from the set; when the filter removes every candidate, Resolve
+	// returns ErrOperatorKeyRestricted (a policy refusal). The server
+	// pre-computes this (all credential-store I/O stays OUT of the lock-free
+	// resolver) by walking Cascade + testing each candidate's KeyEnvName.
+	//
+	// The pin path (resolvePin) does NOT consult this filter — a pinned agent
+	// bypasses candidate selection, so its restricted-run guarantee lives in the
+	// driver backstop (providers.ErrOperatorKeyForbidden), not here.
+	KeyableProviders map[string]bool
 }
 
 // UserTierOverlay carries the per-request user-tier policy. Built by
@@ -412,11 +436,22 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	// sawKeyable tracks whether ANY candidate survived the RFC AX Layer-1
+	// KeyableProviders filter — used to distinguish "restricted run has no
+	// tenant-keyable provider" (a policy refusal) from a plain availability
+	// outage below.
+	sawKeyable := false
 	for _, providerID := range priority {
 		for _, cand := range candidates {
 			if cand.Provider != providerID {
 				continue
 			}
+			// RFC AX Layer 1: a restricted run skips any provider it can't key
+			// itself, so resolution never lands on the operator's key.
+			if !keyable(req, cand.Provider) {
+				continue
+			}
+			sawKeyable = true
 			if r.isAvailableLocked(cand.Provider, cand.Model) {
 				return Decision{
 					Provider: cand.Provider,
@@ -426,8 +461,22 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 			}
 		}
 	}
+	// RFC AX: a non-nil filter that removed EVERY candidate is a policy refusal
+	// (the tenant can key none of the tier's providers), not a transient outage.
+	if req.KeyableProviders != nil && !sawKeyable {
+		return Decision{}, fmt.Errorf("%w: agent %q tier %q (none of the tier's providers are tenant-keyable)",
+			ErrOperatorKeyRestricted, req.Name, req.Tier)
+	}
 	return Decision{}, fmt.Errorf("%w: agent %q tier %q (no reachable provider with a non-stalled model)",
 		ErrTierUnavailable, req.Name, req.Tier)
+}
+
+// keyable reports whether provider passes req's RFC AX Layer-1 filter: always
+// true when KeyableProviders is nil (unrestricted — the common path), else true
+// only when the precomputed keyable set contains provider. Pure (reads only the
+// immutable request), so it needs no lock.
+func keyable(req AgentRequest, provider string) bool {
+	return req.KeyableProviders == nil || req.KeyableProviders[provider]
 }
 
 // resolvePin consults the matrix for the explicit pin and returns
@@ -470,6 +519,11 @@ func (r *Resolver) Cascade(req AgentRequest) []Candidate {
 	}
 	out := make([]Candidate, 0, len(candidates))
 	for _, p := range priority {
+		// RFC AX: apply the IDENTICAL Layer-1 filter Resolve uses, so the routing
+		// view a restricted consumer sees can't diverge from what actually runs.
+		if !keyable(req, p) {
+			continue
+		}
 		for _, c := range candidates {
 			if c.Provider == p {
 				out = append(out, c)

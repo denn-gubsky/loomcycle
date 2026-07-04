@@ -114,6 +114,12 @@ type SubstrateScheduleDef struct {
 	OnComplete             []SubstrateScheduleHook `json:"on_complete,omitempty"`
 	Metadata               map[string]any          `json:"metadata,omitempty"`
 	TenantID               string                  `json:"tenant_id,omitempty"`
+	// OperatorKeyRestricted (RFC AX) mirrors mergedScheduleDef so the def
+	// round-trips losslessly through the lookup. NOTE: the scheduler fire path
+	// reads it via scheduler.scheduleDef (unmarshalDef → buildRunInput), NOT via
+	// ToConfigDef — so config.ScheduledRun deliberately carries no such field.
+	// Present here only to keep the three JSON mirrors drift-parity-clean.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 }
 
 // SubstratePromptSegment mirrors config.ScheduledRunSegment with
