@@ -692,6 +692,12 @@ func isTenantConfinedDefPath(path string) bool {
 		// tools (resolve scope from the operator-trust ctx + tenant-stamp via
 		// RunIdentity). Same posture as _volumedef: ScopeTenant, no /names.
 		"/v1/_path", "/v1/_document",
+		// RFC AR secure credential store — scope-aware, tenant-isolated
+		// (scope_id derived from the operator-trust ctx's authoritative
+		// tenant/subject, never the wire; fail-closed without
+		// LOOMCYCLE_SECRET_KEY). Same posture as _path/_document: ScopeTenant,
+		// no /names route.
+		"/v1/_credentialdef",
 	} {
 		if path == fam || path == fam+"/names" {
 			return true

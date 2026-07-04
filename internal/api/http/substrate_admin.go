@@ -119,6 +119,23 @@ func (s *Server) handleSubstrateDocument(w http.ResponseWriter, r *http.Request)
 	s.dispatchSubstrateCtx(w, r, "Document", s.Document, s.substrateBrowseCtxFn(r))
 }
 
+// handleSubstrateCredentialDef serves POST /v1/_credentialdef.
+// RFC AR secure per-tenant credential store. Bearer-authed; tenant-confined
+// (ScopeTenant via isTenantConfinedDefPath). Uses the USER-aware ctx
+// (substrateAdminUserCtx) so a scope:"user" op keys on the principal's OWN
+// subject — the same user-scope id an agent run for this principal uses
+// (auth.applyPrincipal derives user_id from principal.Subject) — and a
+// scope:"tenant" op stamps the principal's authoritative tenant. Identity comes
+// from the operator-trust ctx, NEVER the wire (the tool reads RunIdentity, not
+// the request body). It uses substrateAdminUserCtx (not substrateBrowseCtxFn) on
+// purpose: credentials are confined to the caller's OWN subject — there is no
+// cross-subject ?scope_id= browse for secrets. SECURITY: the create op carries a
+// plaintext `value`; this handler adds NO logging of the body or value (the tool
+// masks the value from the transcript and never echoes it in get/list output).
+func (s *Server) handleSubstrateCredentialDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrateCtx(w, r, "CredentialDef", s.CredentialDef, substrateAdminUserCtx)
+}
+
 // dispatchSubstrate is the shared body of the substrate-def handlers.
 // connectorFn is the Connector method (already a method value bound to the
 // Server). toolName is the label used in error envelopes. The def-tools scope

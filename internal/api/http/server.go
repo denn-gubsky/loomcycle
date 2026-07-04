@@ -2491,6 +2491,14 @@ func (s *Server) Mux() http.Handler {
 	// the wire. Same dispatch shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_path", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstratePath))))
 	mux.Handle("POST /v1/_document", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocument))))
+	// RFC AR secure credential store (the Web UI Settings → Credentials panel's
+	// ingress). Bearer-authed; tenant-confined (ScopeTenant via
+	// isTenantConfinedDefPath) — the tool derives scope_id from the operator-trust
+	// ctx (the caller's authoritative tenant/subject), NEVER the wire. Uses the
+	// USER-aware ctx so a scope:"user" op keys on the principal's own subject, the
+	// same user-scope id an agent run for this principal uses. Same dispatch shape
+	// as the Path/Document endpoints.
+	mux.Handle("POST /v1/_credentialdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateCredentialDef))))
 	// RFC AH Phase 4 (Web UI) — two ADDITIVE read-only views of the volume
 	// universe. Tenant-confined (ScopeTenant via isTenantConfinedDefPath):
 	// statics are shown to all (the shared bind floor), dynamic + ephemeral

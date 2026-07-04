@@ -25,6 +25,12 @@ type routingResponse struct {
 	Admin       bool              `json:"admin"`
 	Providers   []routingProvider `json:"providers,omitempty"` // admin-only
 	UserTiers   []routingUserTier `json:"user_tiers"`
+	// OperatorKeyRestricted is true when the RFC AX operator-key gate
+	// (LOOMCYCLE_OPERATOR_KEY_RESTRICTION) is ON and this caller is a restricted
+	// (non-admin) tenant — the cascade below has then been filtered to providers
+	// the tenant can key itself (needs no operator key, or has an own
+	// CredentialDef for it). Lets the UI show a "bring-your-own-key" note.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 }
 
 type routingProvider struct {
@@ -88,16 +94,54 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 
 	tierNames := s.routingTierNames()
 
-	resp := routingResponse{GeneratedAt: time.Now().UTC(), Admin: admin}
+	// RFC AX operator-key gate: when LOOMCYCLE_OPERATOR_KEY_RESTRICTION is ON and
+	// this is a non-admin (tenant) caller, filter the advertised cascade to
+	// providers the tenant can actually reach at run time — otherwise it would see
+	// a candidate it would be refused with ErrOperatorKeyRestricted. gate-off ⇒
+	// off; admin/legacy/open (admin==true) ⇒ off (unchanged, show all).
+	//
+	// NOTE: keyed off (gate && !admin), NOT operatorKeyRestrictedForCtx, on
+	// purpose. That helper returns false for a substrate:tenant principal because
+	// ScopeProvidersOperatorKey is tenant-implied (auth.tenantImplied) — and since
+	// /v1/_routing is gated at ScopeTenant, EVERY non-admin caller reaching this
+	// handler holds substrate:tenant, so the helper would never fire here (dead
+	// filter). This predicate meets the two documented criteria (admin ⇒ off,
+	// gate-off ⇒ off) while actually filtering the tenant view.
+	restricted := s.cfg.Env.OperatorKeyRestriction && !admin
+	var restrictTenant, restrictUser string
+	if restricted {
+		if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+			restrictTenant, restrictUser = p.TenantID, p.Subject
+		}
+	}
+
+	resp := routingResponse{GeneratedAt: time.Now().UTC(), Admin: admin, OperatorKeyRestricted: restricted}
 	for _, ut := range utNames {
 		overlay := s.userTierOverlay(ut)
 		rut := routingUserTier{Name: ut}
 		for _, tier := range tierNames {
-			casc := s.resolver.Cascade(resolve.AgentRequest{Name: "routing-view", Tier: tier, UserTier: overlay})
+			req := resolve.AgentRequest{Name: "routing-view", Tier: tier, UserTier: overlay}
+			casc := s.resolver.Cascade(req)
+			// Keyability is provider-based (KeyEnvName + own CredentialDef),
+			// independent of rank. keyableProvidersFor walks this same cascade, so
+			// the set is exactly the providers appearing here the tenant can key
+			// (agent="" — routing has no agent, so only tenant/user creds count).
+			// An empty set ⇒ the tier renders no candidates, the true picture of
+			// what the tenant may run.
+			var keyable map[string]bool
+			if restricted {
+				keyable = s.keyableProvidersFor(r.Context(), req, restrictTenant, "", restrictUser)
+			}
 			rt := routingTier{Tier: tier}
 			selectedMarked := false
-			for i, c := range casc {
-				rc := routingCandidate{Provider: c.Provider, Model: c.Model, Primary: i == 0}
+			for _, c := range casc {
+				if restricted && !keyable[c.Provider] {
+					continue
+				}
+				// Primary = first entry in the (post-filter) displayed cascade. For
+				// an unrestricted caller nothing is filtered, so this equals the
+				// old i==0 (byte-identical response).
+				rc := routingCandidate{Provider: c.Provider, Model: c.Model, Primary: len(rt.Cascade) == 0}
 				if admin {
 					av, stalled, rateLimited, reachable := availStatus(snap, c.Provider, c.Model)
 					sel := av && !selectedMarked
