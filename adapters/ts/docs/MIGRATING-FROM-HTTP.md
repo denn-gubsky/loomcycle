@@ -55,7 +55,7 @@ const resp = await fetch(`${baseUrl}/v1/runs`, {
   body: JSON.stringify({
     agent: "qa-agent",
     segments,
-    allowed_tools: tools,
+    tools: tools,
     user_id: userId,
   }),
 });
@@ -68,7 +68,7 @@ if (!resp.ok) throw new Error(`run failed: ${resp.status}`);
 for await (const ev of client.runStreaming({
   agent: "qa-agent",
   segments,
-  allowedTools: tools,
+  tools: tools,
   userId,
 })) {
   // typed AgentEvent — switch on ev.type
@@ -88,14 +88,14 @@ for await (const ev of client.runStreaming({
 fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
   method: "POST",
   headers: { /* ... */ },
-  body: JSON.stringify({ segments, allowed_tools, agent_id }),
+  body: JSON.stringify({ segments, tools, agent_id }),
 });
 
 // After
 client.continueSession({
   sessionId,
   segments,
-  allowedTools,
+  tools,
   agentId,           // optional pin to a specific running agent
 });
 ```

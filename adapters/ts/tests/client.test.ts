@@ -32,7 +32,7 @@ describe("runStreaming", () => {
     for await (const ev of client.runStreaming({
       agent: "qa-agent",
       segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
-      allowedTools: ["Read"],
+      tools: ["Read"],
     })) {
       events.push(ev);
     }
@@ -51,7 +51,7 @@ describe("runStreaming", () => {
     expect(body).toEqual({
       agent: "qa-agent",
       segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
-      allowed_tools: ["Read"],
+      tools: ["Read"],
     });
   });
 

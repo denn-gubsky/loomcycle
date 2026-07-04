@@ -191,7 +191,7 @@ export interface PromptSegment {
 export interface RunOptions {
   agent: string;
   segments: PromptSegment[];
-  allowedTools?: string[];
+  tools?: string[];
   /** Per-request URL allowlist (v0.3.3+). Three-state on the wire:
    *  - omitted / `undefined` — no narrowing (operator's static list applies).
    *  - `null` — same as omitted (pass-through; convenience for callers
@@ -345,7 +345,7 @@ export interface ContinueOptions {
   /** Required — the session to continue. */
   sessionId: string;
   segments: PromptSegment[];
-  allowedTools?: string[];
+  tools?: string[];
   /** Per-call URL allowlist. Same three-state semantics as
    *  RunOptions.allowedHosts — continuations re-supply the list each
    *  time rather than inheriting from the seed run. */
@@ -1505,7 +1505,7 @@ export interface AgentDefVerifyResult {
 
 /** Response shape for `SkillDef verify`. Same semantics as
  *  AgentDefVerifyResult; the per-skill content basis is just
- *  smaller (name + description + body + allowed_tools). */
+ *  smaller (name + description + body + tools). */
 export interface SkillDefVerifyResult {
   matches: boolean;
   current_sha256: string;
@@ -1626,7 +1626,7 @@ export interface AgentDefOverlay {
   max_iterations?: number;
   max_concurrent_children?: number;
   system_prompt?: string;
-  allowed_tools?: string[];
+  tools?: string[];
   skills?: string[];
   memory_scopes?: string[];
   memory_quota_bytes?: number;
@@ -1652,8 +1652,8 @@ export interface EnsureCodeAgentOptions {
    *  is stable across restarts — that's what lets loomcycle dedup the
    *  re-registration. */
   code: string;
-  /** The agent's allowed_tools ceiling (must be a subset of the caller's). */
-  allowedTools?: string[];
+  /** The agent's tools ceiling (must be a subset of the caller's). */
+  tools?: string[];
   /** Per-user tier policy name (mutually exclusive with `model` in practice). */
   tier?: string;
   /** Pin a concrete model id (overrides tier resolution). */
@@ -1716,7 +1716,7 @@ export interface LibraryAgentDefinition {
   max_iterations?: number;
   system_prompt?: string;
   system_prompt_base?: string;
-  allowed_tools?: string[];
+  tools?: string[];
   skills?: string[];
   providers?: string[];
   /** Per-tier candidate list. Server-side opaque shape — kept as
@@ -1730,13 +1730,13 @@ export interface LibraryAgentDefinition {
 export interface LibrarySkillDefinition {
   body?: string;
   description?: string;
-  allowed_tools?: string[];
+  tools?: string[];
 }
 
 /** Static-side MCP server definition body. Mirrors
  *  internal/api/http.marshalStaticMCPServer (transport + url + headers
  *  for http/streamable-http; command/args/env/pool_size for stdio;
- *  allowed_tools narrowing; discovered_tools cached from the pool
+ *  tools narrowing; discovered_tools cached from the pool
  *  inspector when ready). */
 export interface LibraryMcpServerDefinition {
   transport?: "http" | "streamable-http" | "stdio";
@@ -1746,7 +1746,7 @@ export interface LibraryMcpServerDefinition {
   args?: string[];
   env?: Record<string, string>;
   pool_size?: number;
-  allowed_tools?: string[];
+  tools?: string[];
   /** Substrate-mirror shape of the pool's PeekTools snapshot.
    *  Omitted when the pool inspector returns nil (init pending or
    *  failed) — re-check after pool init completes. */
