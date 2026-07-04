@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,5 +87,40 @@ func TestUsageReport_Endpoint(t *testing.T) {
 	defer bad.Body.Close()
 	if bad.StatusCode != 400 {
 		t.Errorf("bad group_by status = %d, want 400", bad.StatusCode)
+	}
+}
+
+// TestUsageReport_EmptyRowsIsArrayNotNull guards the Web-UI crash: a no-usage
+// window must serialize `"rows":[]`, not `"rows":null` (a Go nil slice). The UI
+// types rows as an array and does `resp.rows.length`; a null crashed the page to
+// a blank overlay. Asserts the RAW body — decoding into the struct would coerce
+// null→nil and hide the regression (len(nil)==0 either way).
+func TestUsageReport_EmptyRowsIsArrayNotNull(t *testing.T) {
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "usage_empty.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 2, MaxQueueDepth: 2, QueueTimeoutMS: 500}}
+	cfg.Env.AuthToken = "" // open mode → admin
+	srv := New(cfg, &stubResolver{p: &scriptedProvider{}}, []tools.Tool{}, concurrency.New(2, 2, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/_usage?group_by=tenant,source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), `"rows":null`) {
+		t.Fatalf(`empty report serialized "rows":null (crashes the Web UI); want "rows":[]. body=%s`, body)
+	}
+	if !strings.Contains(string(body), `"rows":[]`) {
+		t.Fatalf(`empty report must serialize "rows":[]; body=%s`, body)
 	}
 }

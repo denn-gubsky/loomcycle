@@ -93,6 +93,14 @@ func (s *Server) handleUsageReport(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	// A Go nil slice marshals to JSON `null`, but the wire contract (and every
+	// client's type, e.g. the Web UI's `rows: UsageAggregate[]`) is a JSON array.
+	// Normalize an empty result to `[]` so a no-usage window (a fresh deploy, or a
+	// tenant with no spend yet) doesn't send `"rows": null` — which crashed the
+	// Web UI's `resp.rows.length`.
+	if rows == nil {
+		rows = []store.UsageAggregate{}
+	}
 	resp := usageReportResponse{GroupBy: groupNames, Rows: rows}
 	if !query.From.IsZero() {
 		resp.From = query.From.Format(time.RFC3339)
