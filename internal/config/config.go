@@ -1733,6 +1733,13 @@ type Webhook struct {
 	PayloadMapping map[string]string   `json:"payload_mapping,omitempty" yaml:"payload_mapping"`
 	SyncResponse   WebhookSyncResponse `json:"sync_response,omitempty" yaml:"sync_response"`
 	OnComplete     []ScheduledRunHook  `json:"on_complete,omitempty" yaml:"on_complete"`
+	// OperatorKeyRestricted is the RFC AX negative permission bit. For a DYNAMIC
+	// WebhookDef it is CAPTURED from the authoring principal (server authority);
+	// the receiver copies it into RunInput so the fired run keeps its creator's
+	// operator-key restriction. A static operator-authored yaml webhook leaves it
+	// false (the operator is unrestricted). Flows write→read→consumer alongside
+	// TenantID; drift-tested against mergedWebhookDef / SubstrateWebhookDef.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty" yaml:"operator_key_restricted"`
 }
 
 // WebhookAuth declares how inbound webhook requests are authenticated.
@@ -1969,7 +1976,14 @@ type Env struct {
 	// when a bearer is rejected. Off by default; the wire 401 stays
 	// opaque regardless (no oracle) — this only affects local logs.
 	AuthVerbose bool
-	DataDir     string
+	// OperatorKeyRestriction (LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1) is the
+	// RFC AX deployment gate. Default OFF ⇒ byte-identical behavior for every
+	// existing token (a granular token minted before providers:operator-key
+	// existed keeps operator-key access). When ON, a run whose principal lacks
+	// the scope is restricted from the operator's host provider key. Stage 1
+	// only THREADS the resulting bit; enforcement lands in stage 2.
+	OperatorKeyRestriction bool
+	DataDir                string
 	// HTTPHostAllowlist is the comma-separated list of hostnames the
 	// HTTP and WebFetch tools may reach. Empty = both tools refuse all
 	// calls. Suffix-matched: an entry "example.com" matches both
@@ -2808,6 +2822,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		SecretKeyPrevious:         os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"),
 		AuditLogPath:              os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
 		AuthVerbose:               os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
+		OperatorKeyRestriction:    os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
 		DataDir:                   getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
 		HTTPHostAllowlist:         splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist:  splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),

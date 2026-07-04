@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -60,7 +61,7 @@ func TestResolveAgentDef_TierCandidateAliasExpands(t *testing.T) {
 			"low": {{Provider: "ollama-local", Model: "local-gemma"}},
 		},
 	}
-	prov, model, _, err := s.resolveAgentDef(def, "code-reviewer", "")
+	prov, model, _, err := s.resolveAgentDef(context.Background(), def, "", "", "code-reviewer", "", false)
 	if err != nil {
 		t.Fatalf("resolveAgentDef returned error: %v", err)
 	}

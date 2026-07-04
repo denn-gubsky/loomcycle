@@ -435,6 +435,10 @@ func (e *Executor) buildRunInput(ctx context.Context, execCtx *a2asrv.ExecutorCo
 		TenantID: p.TenantID,
 		UserID:   p.UserID,
 		Segments: []loop.PromptSegment{{Role: "user", Content: blocks}},
+		// RFC AX anti-bypass: carry the operator-key restriction the frontier
+		// interceptor derived from THIS peer's own scopes, so a restricted A2A
+		// peer's run is restricted at admission (RunOnce reads this off RunInput).
+		OperatorKeyRestricted: OperatorKeyRestrictedFrom(ctx),
 	}, nil
 }
 

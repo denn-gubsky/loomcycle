@@ -258,6 +258,12 @@ type Run struct {
 	// semantics. false on legacy rows + batch runs.
 	Interactive bool `json:"interactive,omitempty"`
 
+	// OperatorKeyRestricted is the RFC AX negative permission bit (RFC AX §2):
+	// true = this run may NOT use the operator's host provider key. Persisted to
+	// runs.operator_key_restricted and restored on resume. false = allowed (the
+	// zero value), so legacy rows + every unstamped path fail OPEN.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
+
 	// --- RFC AV: per-run cost + credential-source summary. ---
 	// Cost is nil when the run was never priced (legacy rows, or an unknown
 	// model absent from the pricing table). CredentialSource is the primary key
@@ -571,6 +577,13 @@ type RunIdentity struct {
 	// re-dispatches with the correct park-at-end_turn (vs run-to-completion)
 	// semantics. false = batch run (the default).
 	Interactive bool
+
+	// OperatorKeyRestricted is the RFC AX negative permission bit captured on
+	// the run at creation and persisted to runs.operator_key_restricted, so a
+	// resumed / snapshot-restored run reconstructs its restriction without the
+	// original principal on ctx. Additive; false on legacy rows + every path
+	// that doesn't stamp it (fail-open, matching the scope's default-off gate).
+	OperatorKeyRestricted bool
 }
 
 // ParentContext is the typed caller-tracking lineage attached to a run

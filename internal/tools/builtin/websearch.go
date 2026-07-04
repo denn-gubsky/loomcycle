@@ -101,12 +101,12 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	// RFC AR: a tenant/user credential named BRAVE_API_KEY overrides the
 	// operator host key for that run (scope precedence agent > user > tenant),
 	// so a tenant can search on its own Brave quota; the host key is the
-	// fallback. The key stays runtime-side — never surfaced to the model.
-	apiKey := s.APIKey
-	if k, ok := providers.ResolveCredential(ctx, "BRAVE_API_KEY"); ok {
-		apiKey = k
-	}
-	if apiKey == "" {
+	// fallback. RFC AX: a RESTRICTED run with no override gets
+	// ErrOperatorKeyForbidden (never the host key) — treated here as the
+	// existing empty-key refusal, so a restricted WebSearch call refuses
+	// cleanly. The key stays runtime-side — never surfaced to the model.
+	apiKey, _, _, err := providers.ResolveKeyOrOperator(ctx, "BRAVE_API_KEY", s.APIKey)
+	if err != nil || apiKey == "" {
 		return tools.Result{Text: "WebSearch requires BRAVE_API_KEY; refusing", IsError: true}, nil
 	}
 	max := args.MaxResults

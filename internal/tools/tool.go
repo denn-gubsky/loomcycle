@@ -427,6 +427,15 @@ type RunIdentityValue struct {
 	// to keep this struct cycle-free — same reason RunIdentityValue and
 	// store.RunIdentity are separate structs.
 	ParentContext *store.ParentContext
+
+	// OperatorKeyRestricted is the RFC AX negative permission bit: true =
+	// this run may NOT fall back to the operator's host provider key. false
+	// (the zero value) = allowed, so every unstamped path fails OPEN. Computed
+	// once at run-start from the principal + the deployment gate, carried here
+	// so it survives to resolution/drivers and INHERITS to sub-agents unchanged
+	// (a child cannot escape its parent's restriction). Stage 1 only threads
+	// it; enforcement (resolver routing + driver backstop) lands in stage 2.
+	OperatorKeyRestricted bool
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The

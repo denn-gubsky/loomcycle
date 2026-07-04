@@ -36,7 +36,8 @@ user/tenant by editing the request body.
 
 `substrate:admin` (superuser — satisfies every scope), `substrate:tenant`
 (tenant operator — RFC AF), `runs:create`, `runs:read`, `channel:publish`,
-`channel:read`. Every catalog scope is enforced by at least one route —
+`channel:read`, `providers:operator-key` (RFC AX — may spend the operator's
+host provider key; tenant-implied). Every catalog scope is enforced by at least one route —
 operators can't invent scope names, and the catalog intentionally excludes
 scopes no route checks (a scope that enforces nothing is a false
 limitation). The default at create is `["substrate:admin"]`, so a first
@@ -59,6 +60,20 @@ at boot) with `--scopes substrate:tenant` instead of handing it admin.
 Confinement is automatic — a non-admin principal's def writes are stamped
 with its authoritative tenant, cross-tenant reads return an opaque 404, and
 a tenant-registered hook fires only on that tenant's runs.
+
+**`providers:operator-key`** (RFC AX) gates whether a run may fall back to the
+operator's HOST provider API key. It is **tenant-implied** — `substrate:admin`
+and `substrate:tenant` (and the legacy `LOOMCYCLE_AUTH_TOKEN`) already have it —
+and **inert unless** the deployment sets `LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1`.
+To make a tenant pay its own way on a restricting deployment: (1) set the gate;
+(2) mint that tenant's principals with granular scopes that OMIT this one (and
+`substrate:*`), e.g. `--scopes runs:create,runs:read`; (3) give the tenant its
+own provider key (an RFC AR CredentialDef named after the key env-var). A
+restricted run then routes only to providers the tenant can key itself and is
+refused **403** `operator_key_restricted` (gRPC `PermissionDenied`) if none —
+never touching the operator's key. Because it's tenant-implied, a
+`substrate:tenant` token can't itself be restricted; restriction is expressed
+with granular tokens (the confined-API-consumer shape anyway).
 
 ## Managing tokens
 

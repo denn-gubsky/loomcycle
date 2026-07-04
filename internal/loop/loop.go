@@ -1463,8 +1463,13 @@ outerLoop:
 			// to the right method.
 			//
 			// ctx errors are user-side cancellation, not provider
-			// faults — don't pollute the matrix on either path.
-			if ctx.Err() == nil {
+			// faults — don't pollute the matrix on either path. RFC AX: an
+			// operator-key refusal is a PER-RUN policy decision (this restricted
+			// run may not use the operator key), not a model outage — marking the
+			// (provider, model) stalled would poison the shared availability
+			// matrix and wrongly exclude the model from OTHER (non-restricted)
+			// runs for the probe interval. Skip matrix feedback for it.
+			if ctx.Err() == nil && !errors.Is(err, providers.ErrOperatorKeyForbidden) {
 				if providers.IsRateLimit(err) {
 					if opts.MarkRateLimited != nil {
 						opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)

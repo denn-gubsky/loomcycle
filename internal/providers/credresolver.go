@@ -1,6 +1,23 @@
 package providers
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrOperatorKeyForbidden is the RFC AX Layer-2 backstop refusal: a RESTRICTED
+// run (OperatorKeyAllowed(ctx)==false) reached a driver's key-fallback with no
+// own credential override for the requested key, so it must NOT touch the
+// operator's host key. Returned by ResolveKeyOrOperator and propagated by each
+// driver's Call as a fatal, NON-retryable error (classified permanent in
+// errclass.go so tryProviderFallback treats it as terminal rather than
+// cascading the same refusal across providers).
+//
+// This backstop is MANDATORY, not optional hardening: the restriction bit fails
+// open (WithOperatorKeyAllowed defaults true when absent), and credential-aware
+// routing (Layer 1) skips pinned agents, so only this driver-level refusal
+// guarantees a restricted run never spends the operator's key.
+var ErrOperatorKeyForbidden = errors.New("operator key forbidden for restricted run (RFC AX)")
 
 // credResolverKey is the ctx key for the per-run credential resolver.
 type credResolverKey struct{}
@@ -65,4 +82,54 @@ func ResolveCredential(ctx context.Context, name string) (string, bool) {
 		return "", false
 	}
 	return res.Value, true
+}
+
+// operatorKeyAllowedKey is the ctx key for the RFC AX operator-key permission,
+// mirrored here (drivers import providers, not auth/tools) as a ctx value so a
+// driver's key-fallback path can consult it without an import cycle.
+type operatorKeyAllowedKey struct{}
+
+// WithOperatorKeyAllowed stamps whether the run on this ctx may fall back to the
+// operator's host provider key (RFC AX). The run-launch sites set it from the
+// negative permission bit (allowed = !OperatorKeyRestricted) right beside
+// WithCredentialResolver, so it flows to every provider Call + tool Execute.
+// Stage 1 only threads it; the driver backstop that reads it lands in stage 2.
+func WithOperatorKeyAllowed(ctx context.Context, allowed bool) context.Context {
+	return context.WithValue(ctx, operatorKeyAllowedKey{}, allowed)
+}
+
+// OperatorKeyAllowed reports whether the run may use the operator's host key. It
+// DEFAULTS TO TRUE when absent (fail-open) — the same backward-safety posture as
+// the negative bit itself: an un-stamped path (open mode, legacy, a missed
+// stamp) keeps operator-key access.
+func OperatorKeyAllowed(ctx context.Context) bool {
+	allowed, ok := ctx.Value(operatorKeyAllowedKey{}).(bool)
+	if !ok {
+		return true
+	}
+	return allowed
+}
+
+// ResolveKeyOrOperator is the single choke point every LLM driver + WebSearch
+// uses to pick the API key for a call under RFC AR (tenant override) + RFC AX
+// (operator-key restriction). name is the well-known env-var name of the key
+// (e.g. "ANTHROPIC_API_KEY"); operatorKey is the driver's host key. Precedence:
+//
+//   - a tenant/user override for name exists  → use it (source = its scope);
+//   - no override + the run may use the operator key → the operator's host key
+//     (source "operator");
+//   - no override + the run is RESTRICTED → ErrOperatorKeyForbidden (never the
+//     operator key).
+//
+// The returned source/scopeID ride the per-call Usage so the server can
+// attribute spend (RFC AV). It reads the run identity + the operator-key
+// permission from ctx, so it works uniformly across every transport.
+func ResolveKeyOrOperator(ctx context.Context, name, operatorKey string) (key, source, scopeID string, err error) {
+	if r, ok := ResolveCredentialFull(ctx, name); ok {
+		return r.Value, r.Scope, r.ScopeID, nil
+	}
+	if OperatorKeyAllowed(ctx) {
+		return operatorKey, "operator", "", nil
+	}
+	return "", "", "", ErrOperatorKeyForbidden
 }

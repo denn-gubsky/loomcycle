@@ -48,6 +48,23 @@ type Provider interface {
 	ListModels(ctx context.Context) ([]string, error)
 }
 
+// KeyedProvider is an OPTIONAL interface an LLM provider implements when it
+// authenticates inference with an operator API key that a tenant can override
+// via its own CredentialDef (RFC AR) — and that a restricted run (RFC AX)
+// therefore must be able to key itself. KeyEnvName returns the well-known
+// env-var NAME the driver's key resolution uses (the SAME literal its resolveKey
+// passes to ResolveKeyOrOperator, e.g. "ANTHROPIC_API_KEY").
+//
+// RFC AX Layer-1 credential-aware routing tests, per candidate provider, whether
+// the tenant/user has a CredentialDef for this name. A provider that needs no
+// operator key (ollama-local / code-js / mock) does NOT implement this interface
+// (type-assert miss → "" → always keyable): a restricted run may always route to
+// a keyless provider. The hosted ollama driver returns "" for its ollama-local
+// registration for the same reason.
+type KeyedProvider interface {
+	KeyEnvName() string
+}
+
 // ThinkingDowngrader is an OPTIONAL interface a Provider implements when its
 // thinking-class models require provider-produced reasoning state
 // (reasoning_content) on every assistant turn of the input history. DeepSeek's

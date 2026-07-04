@@ -64,6 +64,17 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RFC AX (fail-closed): the embedder authenticates with the operator's HOST
+	// key at construction and never consults the per-run operator-key bit (unlike
+	// the LLM drivers' ResolveKeyOrOperator backstop), so stamping the ctx would
+	// be inert here. Refuse a restricted principal outright rather than spend the
+	// operator's embedding budget. Gate-off ⇒ operatorKeyRestrictedForCtx is
+	// always false ⇒ byte-identical. BYO-embedder-key is a future enhancement.
+	if s.operatorKeyRestrictedForCtx(r.Context()) {
+		writeJSONError(w, http.StatusForbidden, "operator_key_restricted", operatorKeyRestrictedMsg)
+		return
+	}
+
 	texts, err := parseEmbeddingsInput(req.Input)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", err.Error())

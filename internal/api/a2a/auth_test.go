@@ -21,22 +21,56 @@ func TestFrontierAuthenticator_OperatorTokenOnlyIsGated(t *testing.T) {
 		}
 		return auth.Principal{}, false
 	}
-	authn := FrontierAuthenticator(authConfigured, resolve)
+	authn := FrontierAuthenticator(authConfigured, resolve, false)
 
 	// No credential → rejected (the interceptor turns this into ErrUnauthenticated).
-	if _, ok := authn(http.Header{}); ok {
+	if _, _, ok := authn(http.Header{}); ok {
 		t.Error("operator-token-only mode: missing bearer must be rejected, got ok=true (A2A open!)")
 	}
 	// Wrong credential → rejected.
 	bad := http.Header{"Authorization": []string{"Bearer nope"}}
-	if _, ok := authn(bad); ok {
+	if _, _, ok := authn(bad); ok {
 		t.Error("operator-token-only mode: invalid bearer must be rejected")
 	}
 	// Valid operator token → accepted, attributed by subject.
 	good := http.Header{"Authorization": []string{"Bearer lct_alice"}}
-	name, ok := authn(good)
+	name, _, ok := authn(good)
 	if !ok || name != "alice" {
 		t.Errorf("valid operator token: name=%q ok=%v, want (\"alice\", true)", name, ok)
+	}
+}
+
+// TestFrontierAuthenticator_RestrictionDerivedFromScopes pins the RFC AX
+// anti-bypass: with the gate ON, the frontier derives each peer's operator-key
+// restriction from its OWN resolved scopes — a granular peer lacking
+// providers:operator-key is restricted; a peer holding it (or the whole
+// substrate:tenant scope) is not. With the gate OFF nobody is restricted.
+func TestFrontierAuthenticator_RestrictionDerivedFromScopes(t *testing.T) {
+	resolve := func(_ context.Context, bearer string) (auth.Principal, bool) {
+		switch bearer {
+		case "granular": // runs:create only — no operator-key scope
+			return auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate}}, true
+		case "keyed": // explicitly granted the operator-key scope
+			return auth.Principal{TenantID: "acme", Subject: "cara", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeProvidersOperatorKey}}, true
+		}
+		return auth.Principal{}, false
+	}
+	hdr := func(b string) http.Header { return http.Header{"Authorization": []string{"Bearer " + b}} }
+	authConfigured := func(context.Context) bool { return true }
+
+	// Gate ON: granular peer is restricted; keyed peer is not.
+	on := FrontierAuthenticator(authConfigured, resolve, true)
+	if _, restricted, ok := on(hdr("granular")); !ok || !restricted {
+		t.Errorf("gate on, granular peer: (restricted=%v, ok=%v), want (true, true)", restricted, ok)
+	}
+	if _, restricted, ok := on(hdr("keyed")); !ok || restricted {
+		t.Errorf("gate on, keyed peer: (restricted=%v, ok=%v), want (false, true)", restricted, ok)
+	}
+
+	// Gate OFF: nobody is restricted (byte-identical to pre-RFC-AX).
+	off := FrontierAuthenticator(authConfigured, resolve, false)
+	if _, restricted, ok := off(hdr("granular")); !ok || restricted {
+		t.Errorf("gate off, granular peer: (restricted=%v, ok=%v), want (false, true)", restricted, ok)
 	}
 }
 
@@ -44,10 +78,10 @@ func TestFrontierAuthenticator_OperatorTokenOnlyIsGated(t *testing.T) {
 // open dev mode), the authenticator passes requests through as anonymous,
 // mirroring the HTTP authMiddleware.
 func TestFrontierAuthenticator_OpenModeAnonymous(t *testing.T) {
-	authn := FrontierAuthenticator(func(context.Context) bool { return false }, nil)
-	name, ok := authn(http.Header{})
-	if !ok || name != "anonymous" {
-		t.Errorf("open mode: name=%q ok=%v, want (\"anonymous\", true)", name, ok)
+	authn := FrontierAuthenticator(func(context.Context) bool { return false }, nil, true)
+	name, restricted, ok := authn(http.Header{})
+	if !ok || name != "anonymous" || restricted {
+		t.Errorf("open mode: name=%q restricted=%v ok=%v, want (\"anonymous\", false, true)", name, restricted, ok)
 	}
 }
 
@@ -62,9 +96,10 @@ func TestFrontierAuthenticator_LegacyPeerKeepsName(t *testing.T) {
 		}
 		return auth.Principal{}, false
 	}
-	authn := FrontierAuthenticator(func(context.Context) bool { return true }, resolve)
-	name, ok := authn(http.Header{"Authorization": []string{"Bearer legacy-secret"}})
-	if !ok || name != "a2a-peer" {
-		t.Errorf("legacy peer: name=%q ok=%v, want (\"a2a-peer\", true)", name, ok)
+	// Gate ON to also prove a legacy peer is never restricted (fail-open).
+	authn := FrontierAuthenticator(func(context.Context) bool { return true }, resolve, true)
+	name, restricted, ok := authn(http.Header{"Authorization": []string{"Bearer legacy-secret"}})
+	if !ok || name != "a2a-peer" || restricted {
+		t.Errorf("legacy peer: name=%q restricted=%v ok=%v, want (\"a2a-peer\", false, true)", name, restricted, ok)
 	}
 }

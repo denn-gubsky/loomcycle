@@ -199,6 +199,10 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		"on_complete":               true,
 		"metadata":                  true, // non-secret agent metadata (PR 2/2)
 		"tenant_id":                 true, // tenant the fired run executes as (RFC N follow-up)
+		// RFC AX: captured operator-key restriction (anti-bypass). Deliberately
+		// NOT on config.ScheduledRun — the scheduler fire path reads it via
+		// scheduler.scheduleDef (unmarshalDef→buildRunInput), not ToConfigDef.
+		"operator_key_restricted": true,
 	}
 	have := scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{}))
 	for tag := range want {

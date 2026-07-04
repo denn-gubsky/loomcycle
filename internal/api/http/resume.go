@@ -93,7 +93,9 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		s.flagRunUnresumable(run, fmt.Sprintf("agent %q no longer exists", run.Agent))
 		return fmt.Errorf("agent %q not found", run.Agent)
 	}
-	providerID, model, effort, rerr := s.resolveAgentDef(agentDef, run.Agent, run.UserTier)
+	// RFC AX: restore the operator-key restriction from the runs row so a resumed
+	// run's credential-aware routing matches the original admission.
+	providerID, model, effort, rerr := s.resolveAgentDef(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if rerr != nil {
 		s.flagRunUnresumable(run, fmt.Sprintf("resolve provider/model: %v", rerr))
 		return fmt.Errorf("resolve agent: %w", rerr)
@@ -238,6 +240,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		ParentContext: run.ParentContext,
 		// UserBearer / UserCredentials are intentionally absent — secrets are
 		// never snapshotted, so a resumed run cannot restore them.
+		// RFC AX: RESTORE the operator-key restriction from the persisted runs
+		// column — the original principal isn't on ctx for a resumed/crash-
+		// recovered run, so the durable bit is the authority.
+		OperatorKeyRestricted: run.OperatorKeyRestricted,
 	}
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.
@@ -247,6 +253,9 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	// RFC AR: honor a tenant/user provider-key override on the resumed run too.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
+	// RFC AX: mirror the restored negative permission bit onto ctx for the
+	// stage-2 driver backstop (drivers import providers, not auth/tools).
+	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !run.OperatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
 	loopCtx = tools.WithHostPolicy(loopCtx, tools.HostPolicyValue{}) // no caller narrowing snapshotted; operator floor applies
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
@@ -292,7 +301,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(run.ID)
-	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.Agent, run.UserTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	gate, deregGate := s.newPauseGate(run.ID)
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)

@@ -8,6 +8,8 @@ import (
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+
+	bridge "github.com/denn-gubsky/loomcycle/internal/a2a"
 )
 
 // TestPrincipalInterceptor_RejectsUnauthenticated pins the auth-enforcement
@@ -25,7 +27,7 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 
 	// Auth configured but the credential is rejected → ErrUnauthenticated,
 	// principal left unauthenticated.
-	denied := principalInterceptor{auth: func(http.Header) (string, bool) { return "", false }}
+	denied := principalInterceptor{auth: func(http.Header) (string, bool, bool) { return "", false, false }}
 	cc := newCtx()
 	if _, _, err := denied.Before(context.Background(), cc, &a2asrv.Request{}); !errors.Is(err, a2asdk.ErrUnauthenticated) {
 		t.Fatalf("Before err = %v, want ErrUnauthenticated", err)
@@ -36,13 +38,29 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 
 	// Auth configured and the credential is accepted → no error, principal
 	// stamped with the resolved name.
-	ok := principalInterceptor{auth: func(http.Header) (string, bool) { return "alice", true }}
+	ok := principalInterceptor{auth: func(http.Header) (string, bool, bool) { return "alice", false, true }}
 	cc = newCtx()
-	if _, _, err := ok.Before(context.Background(), cc, &a2asrv.Request{}); err != nil {
+	newCtxOut, _, err := ok.Before(context.Background(), cc, &a2asrv.Request{})
+	if err != nil {
 		t.Fatalf("Before err = %v, want nil on accepted auth", err)
 	}
 	if cc.User == nil || !cc.User.Authenticated || cc.User.Name != "alice" {
 		t.Errorf("User = %#v, want authenticated alice", cc.User)
+	}
+	// RFC AX: a non-restricted peer stamps restricted=false on the returned ctx.
+	if bridge.OperatorKeyRestrictedFrom(newCtxOut) {
+		t.Error("non-restricted peer must stamp OperatorKeyRestricted=false")
+	}
+
+	// A RESTRICTED peer → the returned ctx carries the bit for the executor.
+	restricted := principalInterceptor{auth: func(http.Header) (string, bool, bool) { return "bob", true, true }}
+	cc = newCtx()
+	rctx, _, err := restricted.Before(context.Background(), cc, &a2asrv.Request{})
+	if err != nil {
+		t.Fatalf("Before err = %v, want nil on accepted (restricted) auth", err)
+	}
+	if !bridge.OperatorKeyRestrictedFrom(rctx) {
+		t.Error("restricted peer must stamp OperatorKeyRestricted=true on the ctx")
 	}
 
 	// No authenticator (open/dev mode) → anonymous authenticated, no error.

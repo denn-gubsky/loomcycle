@@ -69,6 +69,30 @@ func RoutedTenantFrom(ctx context.Context) (string, bool) {
 	return t, ok
 }
 
+// operatorKeyRestrictedKeyType keys the RFC AX operator-key restriction bit the
+// A2A frontier interceptor derived from the authenticated peer's OWN scopes. The
+// interceptor stamps it on the request ctx (WithOperatorKeyRestricted); the
+// executor reads it in buildRunInput and copies it onto RunInput so a restricted
+// A2A peer can't launder an unrestricted run through the A2A trigger. Kept off
+// the SDK's CallContext.User (which carries only name/authenticated) — it's a
+// loomcycle policy bit, not an SDK auth attribute.
+type operatorKeyRestrictedKeyType struct{}
+
+// WithOperatorKeyRestricted stamps the RFC AX restriction bit onto ctx. The A2A
+// principal interceptor calls this from its Before with the value it derived
+// from the peer's resolved scopes; the returned ctx flows to the executor.
+func WithOperatorKeyRestricted(ctx context.Context, restricted bool) context.Context {
+	return context.WithValue(ctx, operatorKeyRestrictedKeyType{}, restricted)
+}
+
+// OperatorKeyRestrictedFrom returns the RFC AX restriction bit the interceptor
+// stamped, or false when absent (fail-open — matching the negative-bit posture:
+// an un-stamped path keeps operator-key access).
+func OperatorKeyRestrictedFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(operatorKeyRestrictedKeyType{}).(bool)
+	return v
+}
+
 // principalFromContext extracts the authenticated principal from the
 // SDK CallContext on ctx, combined with the request tenant. The tenant
 // argument is the SDK-carried value (SendMessageRequest.Tenant /

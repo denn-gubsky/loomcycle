@@ -70,6 +70,12 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 // — that's what makes the wrapper worth its weight.
 func (d *Driver) ID() string { return "deepseek" }
 
+// KeyEnvName reports the env-var name whose tenant/user credential can key this
+// provider (RFC AX Layer-1 routing). Delegates to the inner OpenAI driver, whose
+// SetKeyEnvName was pointed at "DEEPSEEK_API_KEY" in New — the same literal the
+// inner driver's resolveKey resolves.
+func (d *Driver) KeyEnvName() string { return d.inner.KeyEnvName() }
+
 // Capabilities reports the provider's MAXIMUM surface — what at
 // least one model on DeepSeek can do — not the per-model details.
 // The interface contract is per-provider, not per-model (see

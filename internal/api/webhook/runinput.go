@@ -174,6 +174,9 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		// attacker-influenceable payload). There is deliberately no
 		// payload_mapping / run_metadata path for tenant (RFC N follow-up).
 		TenantID: w.TenantID,
+		// RFC AX: the captured operator-key restriction — no principal is on ctx
+		// at delivery time, so the def's captured bit is authority (anti-bypass).
+		OperatorKeyRestricted: w.OperatorKeyRestricted,
 		// IdempotencyKey is set by the caller (deliverSpawn) to the
 		// delivery id, keeping this builder's signature focused on the
 		// Def + projected payload. See RFC H Decision 10 "Layer 2".

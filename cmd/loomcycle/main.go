@@ -1355,6 +1355,25 @@ func main() {
 		// (operator vs tenant/user spend) from the same resolve it uses for the key.
 		return providers.CredentialResolution{Value: res.Value, Scope: res.Scope, ScopeID: res.ScopeID}, true
 	})
+	// RFC AX Layer 1: a metadata-only keyability probe — does (tenant, agent,
+	// user) have its OWN CredentialDef for env-var `name`? Reuses Engine.Resolve's
+	// agent>user>tenant precedence but NEVER decrypts (no backend.Resolve), so
+	// building a restricted run's keyable-provider set costs at most three store
+	// metadata reads and touches no plaintext. Fast-path false when nothing can
+	// resolve (no KEK) — with no resolvable credentials no provider is
+	// tenant-keyable, the correct restricted-run posture. Wired onto the Server
+	// beside credResolver; consulted in the server BEFORE the lock-free resolver.
+	credKeyable := func(ctx context.Context, tenantID, agentName, userID, name string) bool {
+		if !credEngine.CanResolve() {
+			return false
+		}
+		ok, err := credEngine.HasKey(ctx, tenantID, agentName, userID, name)
+		if err != nil {
+			log.Printf("credential: keyable check %q failed for tenant=%s: %v", name, tenantID, err)
+			return false
+		}
+		return ok
+	}
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface
 	skillTool.Store = storeIface
@@ -1459,6 +1478,9 @@ func main() {
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
 	srv.SetCredentialResolver(credResolver)
+	// RFC AX: the keyability probe backs credential-aware routing for a
+	// restricted run (resolves only to providers the tenant can key itself).
+	srv.SetCredKeyable(credKeyable)
 
 	// RFC AA SQL Memory (Phase 1). Off by default; constructed only when the
 	// operator enables it. The manager hosts per-scope sqlite databases that
@@ -1811,7 +1833,9 @@ func main() {
 		// decision, evaluated per request. Previously this was gated on the
 		// legacy token alone, so an operator-token-only deployment left A2A
 		// unauthenticated (deps.Auth nil → anonymous-but-authenticated).
-		a2aAuth := a2aapi.FrontierAuthenticator(srv.AuthConfigured, srv.ResolvePrincipal)
+		// RFC AX: pass the deployment gate so the frontier derives each peer's
+		// operator-key restriction from its own scopes (anti-bypass for A2A).
+		a2aAuth := a2aapi.FrontierAuthenticator(srv.AuthConfigured, srv.ResolvePrincipal, cfg.Env.OperatorKeyRestriction)
 		a2aServer, err = a2aapi.New(context.Background(), a2aapi.Deps{
 			Cfg:   cfg,
 			Store: storeIface,

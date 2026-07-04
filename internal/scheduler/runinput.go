@@ -39,6 +39,9 @@ type scheduleDef struct {
 	OnComplete             []scheduleHook      `json:"on_complete,omitempty"`
 	Metadata               map[string]any      `json:"metadata,omitempty"`
 	TenantID               string              `json:"tenant_id,omitempty"`
+	// OperatorKeyRestricted is the RFC AX bit captured on the def at authoring;
+	// copied into RunInput so the fired run keeps the creator's restriction.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 }
 
 type schedulePromptSeg struct {
@@ -142,5 +145,8 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(form
 		// executes as this tenant, resolving its agents/skills/MCP and
 		// isolating memory/runs. "" = shared/default (RFC N follow-up).
 		TenantID: def.TenantID,
+		// RFC AX: carry the captured operator-key restriction into the run — no
+		// principal is on ctx at fire time, so the def's captured bit is authority.
+		OperatorKeyRestricted: def.OperatorKeyRestricted,
 	}
 }

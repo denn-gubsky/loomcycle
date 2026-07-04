@@ -20,16 +20,23 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
-// Authenticator authenticates an inbound A2A request from its headers
-// and returns the principal name to attach to the SDK CallContext. It
-// returns ("", false) for an unauthenticated request — the default-deny
+// Authenticator authenticates an inbound A2A request from its headers and
+// returns the principal name to attach to the SDK CallContext, plus the RFC AX
+// operator-key restriction derived from the peer's OWN resolved scopes. It
+// returns ("", _, false) for an unauthenticated request — the default-deny
 // posture is the caller's (the bridge treats an unauthenticated User as
 // anonymous run ownership; it does NOT widen any allowlist).
+//
+// restricted is meaningful only when ok is true; it is the single-resolve
+// derivation of "may this peer spend the operator's key" (fail-open: false in
+// open mode, for a legacy peer, when the gate is off, or when the peer holds
+// providers:operator-key). The interceptor stamps it on ctx so the executor's
+// buildRunInput can copy it onto RunInput — anti-bypass for the A2A trigger.
 //
 // This is the bearer-header check at the A2A frontier, reusing the same
 // constant-time comparison loomcycle's HTTP authMiddleware uses. It is
 // injected so tests can supply a deterministic fake.
-type Authenticator func(h http.Header) (name string, ok bool)
+type Authenticator func(h http.Header) (name string, restricted bool, ok bool)
 
 // CardAndRunStore is the narrow store surface the A2A server needs: the
 // active-server-card resolver path (lookup), the run-table reader the
@@ -413,6 +420,6 @@ func (s *Server) adminAuthed(r *http.Request) bool {
 		// authorized, matching authMiddleware's open-mode behaviour.
 		return true
 	}
-	_, ok := s.deps.Auth(r.Header)
+	_, _, ok := s.deps.Auth(r.Header)
 	return ok
 }

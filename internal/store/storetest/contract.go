@@ -98,6 +98,7 @@ func Run(t *testing.T, factory Factory) {
 		// before resume re-dispatches it). Plus runs.interactive round-trips.
 		{"SweepStaleRunsSkipsPaused", testSweepStaleRunsSkipsPaused},
 		{"CreateRunInteractiveRoundTrip", testCreateRunInteractiveRoundTrip},
+		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},
 		{"SetRunPauseStateMissingRunReturnsNotFound", testSetRunPauseStateMissingRunReturnsNotFound},
@@ -1900,6 +1901,31 @@ func testCreateRunInteractiveRoundTrip(t *testing.T, s store.Store) {
 	got, _ := s.GetRun(ctx, inter.ID)
 	if !got.Interactive {
 		t.Errorf("interactive run Interactive=false on read-back (did not persist)")
+	}
+}
+
+// RFC AX: the operator_key_restricted column round-trips on both backends —
+// false by default (fail-open), true when stamped, and it survives a fresh read
+// (so a resumed / snapshot-restored run reconstructs its restriction).
+func testCreateRunOperatorKeyRestrictedRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	allowed, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_ok_default"})
+	if allowed.OperatorKeyRestricted {
+		t.Errorf("default OperatorKeyRestricted = true, want false (fail-open)")
+	}
+	if got, _ := s.GetRun(ctx, allowed.ID); got.OperatorKeyRestricted {
+		t.Errorf("default run OperatorKeyRestricted = true on read-back, want false")
+	}
+
+	restricted, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_ok_restricted", OperatorKeyRestricted: true})
+	if !restricted.OperatorKeyRestricted {
+		t.Errorf("CreateRun returned OperatorKeyRestricted=false for a restricted run")
+	}
+	got, _ := s.GetRun(ctx, restricted.ID)
+	if !got.OperatorKeyRestricted {
+		t.Errorf("restricted run OperatorKeyRestricted=false on read-back (did not persist)")
 	}
 }
 

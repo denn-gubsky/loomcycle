@@ -116,6 +116,14 @@ func ClassifyError(err error) ErrorClass {
 	if err == nil {
 		return ErrorClassUnknown
 	}
+	// RFC AX Layer-2: a restricted run's operator-key refusal is a policy
+	// decision, not a transient outage. Classify it Permanent so
+	// tryProviderFallback (which cascades only Retryable/Deprecated) treats it
+	// as the run's terminal error rather than burning the identical refusal
+	// against every other provider in the cascade.
+	if errors.Is(err, ErrOperatorKeyForbidden) {
+		return ErrorClassPermanent
+	}
 	// Stream-idle deadline (v0.8.1 per-byte idle wrap) surfaces as
 	// "stream read: context deadline exceeded ...". errors.Is on the
 	// outer err DOES report DeadlineExceeded (the wrap chain), but

@@ -225,18 +225,30 @@ func (d *Driver) ID() string { return d.providerID }
 
 // resolveKey returns the Bearer key to authenticate an inference request AND
 // which credential scope it came from. On hosted "ollama" a tenant/user
-// credential named OLLAMA_API_KEY overrides the operator's host key (RFC AR);
-// "ollama-local" is unauthenticated local-network, so no override applies and
-// the source stays "operator". The source/scopeID ride the per-call Usage so
-// the server can attribute spend (RFC AV). Model-availability probes
-// (queryLoadedContext) stay on the operator key.
-func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string) {
+// credential named OLLAMA_API_KEY overrides the operator's host key (RFC AR),
+// and a RESTRICTED run with no override gets ErrOperatorKeyForbidden instead of
+// the host key (RFC AX) — Call aborts on it. "ollama-local" is unauthenticated
+// local-network: it has NO operator key to protect, so it is NEVER restricted —
+// it returns its (empty) key directly, bypassing the RFC AX backstop. The
+// source/scopeID ride the per-call Usage so the server can attribute spend
+// (RFC AV). Model-availability probes (queryLoadedContext) stay on the operator
+// key.
+func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string, err error) {
 	if d.providerID == "ollama" {
-		if r, ok := providers.ResolveCredentialFull(ctx, "OLLAMA_API_KEY"); ok {
-			return r.Value, r.Scope, r.ScopeID
-		}
+		return providers.ResolveKeyOrOperator(ctx, "OLLAMA_API_KEY", d.apiKey)
 	}
-	return d.apiKey, "operator", ""
+	return d.apiKey, "operator", "", nil
+}
+
+// KeyEnvName reports the env-var name whose tenant/user credential can key this
+// provider (RFC AX Layer-1 routing). Only the hosted "ollama" registration has
+// an operator key to protect; "ollama-local" returns "" so it is always keyable
+// (a restricted run may always route to a keyless local endpoint).
+func (d *Driver) KeyEnvName() string {
+	if d.providerID == "ollama" {
+		return "OLLAMA_API_KEY"
+	}
+	return ""
 }
 
 func (d *Driver) Capabilities() providers.Capabilities {
@@ -283,7 +295,13 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 
 	// RFC AR/AV: resolve the key + its owning scope ONCE per call (not per retry
 	// attempt) so the header uses it and the source rides the per-call Usage.
-	apiKey, credSource, credScopeID := d.resolveKey(ctx)
+	// RFC AX: a restricted hosted-ollama run with no override refuses here
+	// (never the host key); ollama-local never refuses (no key to protect).
+	apiKey, credSource, credScopeID, err := d.resolveKey(ctx)
+	if err != nil {
+		cancelStream()
+		return nil, err
+	}
 
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
 		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.

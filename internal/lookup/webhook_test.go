@@ -155,6 +155,7 @@ func TestWebhook_DriftDetection(t *testing.T) {
 		"payload_mapping":           true,
 		"sync_response":             true,
 		"on_complete":               true,
+		"operator_key_restricted":   true, // RFC AX: captured operator-key restriction (anti-bypass)
 	}
 	have := a2aJSONTagsOf(reflect.TypeOf(lookup.SubstrateWebhookDef{}))
 	assertTagSetsEqual(t, "SubstrateWebhookDef", want, have)

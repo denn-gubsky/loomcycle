@@ -82,14 +82,17 @@ func (d *Driver) ID() string { return "gemini" }
 // credential scope it came from. A tenant/user credential named GEMINI_API_KEY
 // overrides the operator's host key (RFC AR); source is "operator" when none
 // did. The source/scopeID ride the per-call Usage so the server can attribute
-// spend (RFC AV). Model-availability probes (fetchModels) stay on the host key
-// — which models are reachable is an operator concern.
-func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string) {
-	if r, ok := providers.ResolveCredentialFull(ctx, "GEMINI_API_KEY"); ok {
-		return r.Value, r.Scope, r.ScopeID
-	}
-	return d.apiKey, "operator", ""
+// spend (RFC AV). RFC AX: a RESTRICTED run with no override gets
+// ErrOperatorKeyForbidden instead of the host key — Call aborts on it.
+// Model-availability probes (fetchModels) stay on the host key — which models
+// are reachable is an operator concern.
+func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string, err error) {
+	return providers.ResolveKeyOrOperator(ctx, "GEMINI_API_KEY", d.apiKey)
 }
+
+// KeyEnvName reports the env-var name whose tenant/user credential can key this
+// provider (RFC AX Layer-1 routing). Same literal resolveKey resolves.
+func (d *Driver) KeyEnvName() string { return "GEMINI_API_KEY" }
 
 func (d *Driver) Capabilities() providers.Capabilities {
 	return providers.Capabilities{
@@ -131,7 +134,12 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 
 	// RFC AR/AV: resolve the key + its owning scope ONCE per call (not per retry
 	// attempt) so the header uses it and the source rides the per-call Usage.
-	apiKey, credSource, credScopeID := d.resolveKey(ctx)
+	// RFC AX: a restricted run with no override refuses here (never the host key).
+	apiKey, credSource, credScopeID, err := d.resolveKey(ctx)
+	if err != nil {
+		cancelStream()
+		return nil, err
+	}
 
 	url := d.baseURL + "/models/" + req.Model + ":streamGenerateContent?alt=sse"
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
