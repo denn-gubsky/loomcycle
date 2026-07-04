@@ -55,7 +55,7 @@
     "react-dom": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
-    "@loomcycle/client": "file:../../adapters/ts",
+    "@loomcycle/client": "^1.12.1",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
