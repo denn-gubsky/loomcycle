@@ -69,9 +69,9 @@ The bundled `loomcycle.yaml` walks every section in detail. Quick conceptual map
 - **`providers:`** — list of provider IDs the resolver may pick from (`anthropic`, `openai`, `deepseek`, `gemini`, `ollama`, `ollama-local`).
 - **`models:`** — per-tier candidate matrix. The resolver picks the first reachable candidate in each tier (`low` / `middle` / `high`).
 - **`user_tiers:`** — per-user-tier policy overlays. Defines provider priority + fallback behaviour per user class (free / pro / etc.).
-- **`agents:`** — named agent definitions. Each carries `model:` (or `tier:`), `system_prompt:`, `allowed_tools:`, `skills:`, `memory_scopes:`, etc.
+- **`agents:`** — named agent definitions. Each carries `model:` (or `tier:`), `system_prompt:`, `tools:`, `skills:`, `memory_scopes:`, etc.
 - **`channels:`** — declared inter-agent pub/sub channels. ACL is operator-controlled here.
-- **`mcp_servers:`** — declared MCP servers (HTTP / Streamable HTTP / stdio). Tools become callable from any agent's `allowed_tools:`.
+- **`mcp_servers:`** — declared MCP servers (HTTP / Streamable HTTP / stdio). Tools become callable from any agent's `tools:`.
 - **`storage:`** — backend selection + connection settings. SQLite by default; Postgres opt-in.
 - **`concurrency:`** — `max_concurrent_runs`, `max_queue_depth`, `queue_timeout_ms`, optional `max_concurrent_runs_per_user`.
 - **`memory:`** — Memory tool defaults, Vector Memory embedder selection.

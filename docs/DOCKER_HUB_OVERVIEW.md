@@ -113,7 +113,7 @@ The compose file documents the Postgres backend upgrade path (commented out by d
 - **`POST /v1/_llm/chat`** (v0.11.0+) — direct LLM gateway bypassing the agent loop. LangChain-friendly request / Anthropic-style response. Use this from n8n's AI Agent Chat Model slot or any LangChain `BaseChatModel`.
 - **Web UI at `/ui`** — admin console for runs, library (agents / skills / MCP servers), memory, snapshots, channels.
 - **Built-in tools** (default-deny; enable via env vars): Read, Write, Edit, Grep, Glob, NotebookEdit, HTTP, WebFetch, WebSearch, Bash, Agent (sub-agents), Skill, Memory, Channel, AgentDef, SkillDef, MCPServerDef, Evaluation, Interruption, Context.
-- **MCP integration** — stdio pool + Streamable HTTP. Mount MCP server tools into any agent's `allowed_tools`.
+- **MCP integration** — stdio pool + Streamable HTTP. Mount MCP server tools into any agent's `tools`.
 - **Resolver matrix** — multi-provider routing with per-user tier overlays, cascading fallback on retryable errors.
 
 ## First-run flow

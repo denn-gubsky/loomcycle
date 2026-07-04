@@ -111,7 +111,7 @@ def. Use this for **experimentation**:
 ```
 
 The sub-agent runs against the pinned def's system prompt and
-allowed_tools (within the operator's static ceiling). Useful for
+tools (within the operator's static ceiling). Useful for
 A/B-testing forks without flipping the live active pointer. See
 `help(topic="experimentation")` for the full pattern.
 

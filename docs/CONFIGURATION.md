@@ -173,7 +173,7 @@ concurrency:
 name: ats-filter
 description: Score CV bullets against a job posting; return JSON.
 tier: low
-allowed_tools: [Read]
+tools: [Read]
 ---
 You are an ATS filter...
 ```
@@ -187,7 +187,7 @@ You are an ATS filter...
 name: cv-rewriter
 description: Rewrites CV text in the user's voice.
 model: sonnet
-allowed_tools: [Read]
+tools: [Read]
 ---
 You rewrite text while preserving voice...
 ```
@@ -201,7 +201,7 @@ You rewrite text while preserving voice...
 name: cv-rewriter
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read]
+tools: [Read]
 ---
 ```
 
@@ -263,7 +263,7 @@ name: cv-adapter
 description: Adapts a CV to a target job posting.
 tier: middle
 providers: [anthropic]         # ← full replacement of provider_priority
-allowed_tools: [Read]
+tools: [Read]
 ---
 ```
 
@@ -282,7 +282,7 @@ models:
   high:
     - { provider: anthropic, model: claude-opus-4-7 }
     - { provider: anthropic, model: claude-sonnet-4-6 }   # fallback
-allowed_tools: [Read, WebFetch]
+tools: [Read, WebFetch]
 ---
 ```
 
@@ -617,9 +617,9 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 | `max_tokens` | int | Per-iteration assistant output cap | 0 = provider default. |
 | `sampling` | object | LLM sampling params | `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking. |
 | **Tool fields** | | | |
-| `allowed_tools` | `[]string` | Tool allowlist (loomcycle form) | Empty list = zero tools. Always wins over `tools:`. |
-| `tools` | string OR `[]string` | Claude-Code-compatible form | Comma-string or list. Tolerated for Claude-Code compatibility; `allowed_tools` takes precedence when both are set. |
-| `skills` | `[]string` | Skill bundle | Skills bundle a system-prompt fragment + tool allowlist contribution; skill's tools must be a subset of the agent's `allowed_tools`. |
+| `tools` | `[]string` | Tool allowlist (loomcycle form) | Empty list = zero tools. Always wins over `tools:`. |
+| `tools` | string OR `[]string` | Claude-Code-compatible form | Comma-string or list. Tolerated for Claude-Code compatibility; `tools` takes precedence when both are set. |
+| `skills` | `[]string` | Skill bundle | Skills bundle a system-prompt fragment + tool allowlist contribution; skill's tools must be a subset of the agent's `tools`. |
 | **System prompt** | | | |
 | (body) | string | Inline system prompt | Everything after the closing `---` line. |
 | `system_prompt_file` | string | External prompt path | Mutually exclusive with body. Useful for sharing prompts across agents. |
@@ -641,7 +641,7 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 name: feedback-triage
 description: Triage free-form feedback...
 tier: low
-allowed_tools: []
+tools: []
 ---
 ```
 
@@ -653,14 +653,14 @@ name: qa-agent
 description: Q&A answer generator for job applications.
 tools: mcp__jobs__getAgentContext
 tier: middle
-allowed_tools:
+tools:
   - mcp__jobs__getAgentContext
   - mcp__jobs__getApplication
   - mcp__jobs__postApplicationQaAnswers
 ---
 ```
 
-Note: `tools:` (the Claude-Code form) is present so the same file works in Claude Code, but `allowed_tools:` (the loomcycle form) takes precedence and is the authoritative list at runtime.
+Note: `tools:` (the Claude-Code form) is present so the same file works in Claude Code, but `tools:` (the loomcycle form) takes precedence and is the authoritative list at runtime.
 
 **Alias pin with skills** — privacy-sensitive agent locked to sonnet:
 
@@ -669,7 +669,7 @@ Note: `tools:` (the Claude-Code form) is present so the same file works in Claud
 name: cv-rewriter
 description: Rewrites CV or Cover Letter text...
 tools: mcp__jobs__getAgentContext
-allowed_tools:
+tools:
   - mcp__jobs__getAgentContext
   - Read
   - Skill
@@ -688,17 +688,17 @@ No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(a
 skills:
   voice-applier:
     description: Apply the house voice to drafted copy.   # informational
-    allowed_tools: [Read]     # must be a SUBSET of the bundling agent's allowed_tools
+    tools: [Read]     # must be a SUBSET of the bundling agent's tools
     body: |
       When rewriting, prefer active voice and short sentences …
 agents:
   cv-rewriter:
-    allowed_tools: [Read, Skill]
+    tools: [Read, Skill]
     skills: [voice-applier]   # references the inline skill by name (same field as before)
     model: sonnet
 ```
 
-An agent's `skills: [name]` resolves against the inline `skills:` map **first**, then `LOOMCYCLE_SKILLS_ROOT` (inline wins on a name collision); either source alone is fine — **no skills root is required** when every referenced skill is defined inline. Inline skills **merge by key across config layers** (§9e), exactly like `agents:` — so a bundled config layer can ship an agent *and* its skills together, and a later layer can override a skill by re-declaring its key. The same security invariant holds: a skill's `allowed_tools` must be ⊆ the bundling agent's, or config-load fails. (`SKILL.md` frontmatter uses the hyphenated `allowed-tools`; the inline map uses `allowed_tools` to match the rest of the loomcycle YAML.)
+An agent's `skills: [name]` resolves against the inline `skills:` map **first**, then `LOOMCYCLE_SKILLS_ROOT` (inline wins on a name collision); either source alone is fine — **no skills root is required** when every referenced skill is defined inline. Inline skills **merge by key across config layers** (§9e), exactly like `agents:` — so a bundled config layer can ship an agent *and* its skills together, and a later layer can override a skill by re-declaring its key. The same security invariant holds: a skill's `tools` must be ⊆ the bundling agent's, or config-load fails. (`SKILL.md` frontmatter uses the hyphenated `allowed-tools`; the inline map uses `tools` to match the rest of the loomcycle YAML.)
 
 **Multi-tool research agent**:
 
@@ -708,7 +708,7 @@ name: company-researcher
 description: Researches ONE company for a job application...
 tools: WebSearch, WebFetch, mcp__brave-search__brave_web_search
 tier: middle
-allowed_tools:
+tools:
   - WebSearch
   - WebFetch
   - mcp__brave-search__brave_web_search
@@ -719,7 +719,7 @@ Mix of built-in tools (WebSearch, WebFetch) and an MCP tool. Tier-driven resolut
 
 ### Claude-Code compatibility
 
-The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools` (comma-string), `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `sampling`, `skills`, `allowed_tools` (list form), `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. Keep your agents portable by including both `tools:` (Claude Code shape) and `allowed_tools:` (loomcycle shape) when you want the same file used in both.
+The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools` (comma-string), `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `sampling`, `skills`, `tools` (list form), `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. Keep your agents portable by including both `tools:` (Claude Code shape) and `tools:` (loomcycle shape) when you want the same file used in both.
 
 ### Operator-yaml `agents:` overlay
 
@@ -753,7 +753,7 @@ Single reference table:
 | Conflict | Winner | Where enforced |
 |---|---|---|
 | `tier:` AND (`provider:` / `model:`) both set | **Config-load fails** | `config.go:1985` |
-| `allowed_tools:` AND `tools:` both set | `allowed_tools:` wins | `loader.go:295` |
+| `tools:` AND `tools:` both set | `tools:` wins | `loader.go:295` |
 | Body AND `system_prompt_file:` both set | Setting either via YAML overlay clears the other | `config.go:1564` |
 | Agent `providers:` AND user_tier `provider_priority` both set | **Intersection** (agent-order); empty → `ErrTierAgentNotAvailable` | `matrix.go:440` |
 | Agent `models[tier]:` set | Replaces library `tiers[tier]` AND user_tier `tiers[tier]` for this agent | `matrix.go` candidate-list build |
@@ -938,12 +938,12 @@ volumes:
 - Each `path` **must already exist and be a directory** — validated at config-load (static volumes map existing infrastructure; the runtime never `mkdir`s them). Paths are resolved to absolute.
 - At most one volume may be `default: true` — it's the one a tool call uses when it omits the `volume` argument.
 
-**Per-agent `volumes:` binding** — which volumes an agent's tools may use, validated against the map above (exactly like `allowed_tools` against registered tools):
+**Per-agent `volumes:` binding** — which volumes an agent's tools may use, validated against the map above (exactly like `tools` against registered tools):
 
 ```yaml
 agents:
   ensemble-a-lead:
-    allowed_tools: [Read, Write, Edit, Glob, Grep, Bash, Agent]
+    tools: [Read, Write, Edit, Glob, Grep, Bash, Agent]
     volumes: [repo-a, shared-ro]   # confined to these; cannot touch default or repo-b
 ```
 
@@ -996,7 +996,7 @@ At most one volume may set `dynamic_root` (config-load error otherwise), and lik
 ```yaml
 agents:
   ensemble-launcher:
-    allowed_tools: [VolumeDef, Agent, Read, Write, Bash]
+    tools: [VolumeDef, Agent, Read, Write, Bash]
     volume_def_scopes: [any]        # may create/delete/purge any dynamic volume
     # volume_def_scopes: [named:repo-a]   # or only the named volume(s)
 ```
@@ -1156,7 +1156,7 @@ dir is a fatal error; an empty dir is fine.
 
 So `base` supplies the provider matrix, `document-agent` registers `doc-manager`
 with its skills, and your `--config` wins on anything it sets (e.g. retarget the
-agent's tier, narrow its `allowed_tools` — you can't *widen* it past the def's
+agent's tier, narrow its `tools` — you can't *widen* it past the def's
 ceiling, or swap a skill body by re-declaring its key). Selecting presets with
 **no config file at all** boots from the embedded base alone (the bare-start
 case). An unknown unit name is a **fatal** error listing the available names.
@@ -1176,7 +1176,7 @@ base. `document-agent` needs SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`) + a
 - [`.env.local.example`](../.env.local.example) + [`.env.insecure.example`](../.env.insecure.example) — the two env-file templates (secrets vs. non-secret config; see §9c). Every operational env var is documented inline in one or the other.
 - [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md) — MCP server configuration (deliberately out of scope for this doc).
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — broader runtime context, provider driver table, probe semantics.
-- [`docs/TOOLS.md`](TOOLS.md) — tool policy and built-in tool reference (the `allowed_tools` / `tools` axis).
+- [`docs/TOOLS.md`](TOOLS.md) — tool policy and built-in tool reference (the `tools` / `tools` axis).
 - [`docs/POSTGRES.md`](POSTGRES.md) — storage backend configuration.
 - [`docs/PLAN.md`](PLAN.md) — historical design rationale, including the v0.8.2 `user_tiers` RFC and the precedence design decisions.
 - [`examples/observability/`](../examples/observability/) — three drop-in observability profiles (Grafana+Tempo self-hosted / Honeycomb / Datadog) for sending loomcycle's OTEL traces + Prometheus metrics to your existing stack. Five-minute quickstart per profile.
@@ -1196,7 +1196,7 @@ Single jump-list of every file:line cited above. As of v0.8.16:
 | `system_prompt` / `system_prompt_file` mutual-exclusion clear | `internal/config/config.go:1564` |
 | Pin XOR Tier validation | `internal/config/config.go:1985` |
 | Frontmatter struct (every accepted field) | `internal/agents/loader.go:199` |
-| `tools` vs `allowed_tools` precedence | `internal/agents/loader.go:295` |
+| `tools` vs `tools` precedence | `internal/agents/loader.go:295` |
 | Resolver entry — `Resolve(req)` | `internal/resolve/matrix.go:281` |
 | `priorityFor` intersection logic | `internal/resolve/matrix.go:440` |
 | `resolvePin` (pin path) | `internal/resolve/matrix.go:293` |

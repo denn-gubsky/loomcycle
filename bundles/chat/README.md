@@ -52,5 +52,5 @@ Bash, Document, Memory, Path, Skill` (plus `Context`, auto-added).
 ## Overriding
 
 The operator overlay can re-declare any field (last layer wins per field) — swap
-the tier, change the model, adjust sampling, narrow `allowed_tools`. It cannot
-**widen** `allowed_tools` beyond what the bundle grants.
+the tier, change the model, adjust sampling, narrow `tools`. It cannot
+**widen** `tools` beyond what the bundle grants.

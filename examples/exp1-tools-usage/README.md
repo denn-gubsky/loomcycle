@@ -10,7 +10,7 @@ This is the simplest example: one agent, no channels/MCP/webhooks. Start here.
 
 ## What it demonstrates
 - Operator tool-enablement (env roots + `LOOMCYCLE_BASH_ENABLED`) ∩ the agent's
-  `allowed_tools` anchored allowlist.
+  `tools` anchored allowlist.
 - The sandbox path model: `Read`/`Write` resolve relative paths against the process
   CWD; `run.sh` launches from `./work`, so the Write base, Bash CWD, and the
   read/write roots all line up (no surprises).

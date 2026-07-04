@@ -26,12 +26,12 @@ raw `BEGIN`/`COMMIT`/`SAVEPOINT`, and multiple statements are refused.
 ## Capability gate (default-deny)
 SQL is OFF unless **both** hold: the operator enabled the subsystem
 (`sqlmem_enabled`) AND the agent declares `sql_scopes` — having `Memory` in
-`allowed_tools` is NOT enough. SQL is a distinct capability of the tool, gated
+`tools` is NOT enough. SQL is a distinct capability of the tool, gated
 separately:
 ```yaml
 agents:
   research-bot:
-    allowed_tools: [Memory]
+    tools: [Memory]
     sql_scopes: [agent, run]   # closed enum {agent,user,run}; empty => every SQL op refuses
 ```
 

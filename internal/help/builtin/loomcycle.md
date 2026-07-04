@@ -117,7 +117,7 @@ runs' `system_prompt` events shows the diff directly.
 Three Context ops are your map:
 
 ```
-{"op":"tools"}        → catalog of YOUR allowed_tools (post-filter)
+{"op":"tools"}        → catalog of YOUR tools (post-filter)
 {"op":"doc","name":X} → input schema + side_effect_class for tool X
 {"op":"permissions"}  → policy bundles that gate your behaviour
 ```

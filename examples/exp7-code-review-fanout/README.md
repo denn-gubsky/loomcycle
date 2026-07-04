@@ -36,7 +36,7 @@ in v0.32.0. See [the note below](#a-note-on-the-sandbox-origin--rfc-y).)
 
 | Primitive | Role |
 |---|---|
-| **`loomcycle import claude-code`** | bring a Claude Code `code-reviewer` agent + a `code-review` skill into loomcycle yaml (`tools`→`allowed_tools`, body→`system_prompt`, skill body bundled at load) |
+| **`loomcycle import claude-code`** | bring a Claude Code `code-reviewer` agent + a `code-review` skill into loomcycle yaml (`tools`→`tools`, body→`system_prompt`, skill body bundled at load) |
 | **`spawn_runs` (RFC Y, MCP/`POST /v1/runs:batch`)** | the **external fan-out** — ONE call spawns N runs server-side-concurrent, `mode:join` blocks until all settle, returns an index-aligned envelope (a per-child failure is captured in-envelope, never fails the batch) |
 | **`spawn_run` (MCP)** | the single consolidator run after the fan-out |
 | **`Memory` (user scope)** | the shared findings ledger — `review:<slice>:findings` per reviewer → `consolidated:report` |
@@ -149,7 +149,7 @@ They were imported into `loomcycle.yaml` with:
 ```bash
 loomcycle import claude-code --from=./claude-code-src --write --diff=./loomcycle.yaml --skills-dest=./skills
 ```
-The importer maps `tools`→`allowed_tools` and the body→`system_prompt`, and copies the skill to
+The importer maps `tools`→`tools` and the body→`system_prompt`, and copies the skill to
 `./skills/code-review/SKILL.md` (bundled into the reviewer's prompt at load via `LOOMCYCLE_SKILLS_ROOT`).
 Two manual touch-ups after import (both noted in `loomcycle.yaml`): the importer **drops the agent's
 `skills:` frontmatter**, so `skills:[code-review]` is re-attached; and `model: sonnet` (a Claude-Code

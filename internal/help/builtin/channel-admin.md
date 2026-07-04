@@ -27,7 +27,7 @@ Read this section before anything else.
 - **NOT a different channel namespace.** Publishes from external
   callers land on the SAME table rows as publishes from agents.
   Subscribers (agent or external) wake on the same `Bus.Notify`.
-- **NOT a per-agent escalation path.** No agent's `allowed_tools`
+- **NOT a per-agent escalation path.** No agent's `tools`
   includes this surface. It's reachable only via the operator's
   bearer token over HTTP / gRPC / MCP / TS adapter.
 - **NOT system-channel publishing.** Channels under `_system/*` keep

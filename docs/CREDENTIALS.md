@@ -31,7 +31,7 @@ backups; a restore re-provisions).
 ## Managing credentials (tenant)
 
 Via the `credentialdef` MCP meta-tool (thin client) or in-band
-(`allowed_tools:[CredentialDef]`). Ops: `create`, `get`, `list`, `delete`.
+(`tools:[CredentialDef]`). Ops: `create`, `get`, `list`, `delete`.
 `get`/`list` return **metadata only** — never a secret.
 
 ```jsonc

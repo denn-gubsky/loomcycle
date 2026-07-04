@@ -132,7 +132,7 @@ For each `(peer, expected_skill)` pair loomcycle synthesises one tool,
 `a2a__<peer>__<skill>` (e.g. `a2a__partner-research__research`), at
 boot — mirroring how an MCP server registers `mcp__<server>__<tool>`.
 An agent reaches the peer **only** by listing that tool (or an
-`a2a__<peer>__*` glob) in its `allowed_tools`; peer + skill identities
+`a2a__<peer>__*` glob) in its `tools`; peer + skill identities
 come solely from operator-registered sources, never from model text.
 A peer with no `expected_skills` registers no tool (and logs why).
 
@@ -275,7 +275,7 @@ a2a_agents:
 
 agents:
   orchestrator:
-    allowed_tools: [Read, a2a__partner-research__research]
+    tools: [Read, a2a__partner-research__research]
 ```
 
 The `orchestrator` agent can now call

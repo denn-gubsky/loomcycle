@@ -25,7 +25,7 @@ immediately.
 Read this section before anything else.
 
 - **NOT exposed to agents.** The `MCPServerDef` tool is auto-attached
-  to **zero** agents' `allowed_tools`. There is no per-agent
+  to **zero** agents' `tools`. There is no per-agent
   substrate surface for it (deliberate departure from AgentDef /
   SkillDef, which agents CAN use to fork themselves). Only operators
   reach it — via `POST /v1/_mcpserverdef`, the loomcycle MCP
@@ -133,7 +133,7 @@ Dispatch (above) is only half the story. For a model to *emit*
 `mcp__<server>__<tool>` as a structured call, that tool must be
 **advertised** in the run's tool spec — a Claude model only enters
 tool-calling mode when it is told ≥1 tool exists. So at run start,
-loomcycle expands the agent's `allowed_tools` against the dynamic
+loomcycle expands the agent's `tools` against the dynamic
 registry and advertises the matching servers' tools:
 
 - A server whose def carries cached `discovered_tools` is advertised
@@ -144,7 +144,7 @@ registry and advertises the matching servers' tools:
   so its tools are advertised this run, and the pool entry is left warm
   for the dispatch above.
 
-Without this, an agent whose `allowed_tools` is **only** a dynamic-MCP
+Without this, an agent whose `tools` is **only** a dynamic-MCP
 wildcard (e.g. `["mcp__telegram-dyn__*"]`) and that carries no native
 tool would have **zero** advertised tools: the model never enters
 tool-calling mode, emits the intended call as inert text, and the run

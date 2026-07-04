@@ -22,7 +22,7 @@ agents:
     provider: code-js
     # Canonical tool names. WebFetch is a loomcycle built-in;
     # mcp__jobs__ingestJobs is exposed by the jobs MCP server below.
-    allowed_tools: [WebFetch, Memory, mcp__jobs__ingestJobs]
+    tools: [WebFetch, Memory, mcp__jobs__ingestJobs]
     memory_scopes: [user]            # required for Memory.*
     allowed_hosts: ["*.example"]     # WebFetch host policy (operator floor)
     description: "Nightly ATS scrape across four job boards (deterministic, no LLM)."
