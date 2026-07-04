@@ -134,6 +134,11 @@ export default function UsageView() {
 
   const sourceGrouped = dims.has("source");
 
+  // The server sends `rows: []` for an empty window, but a Go nil slice can
+  // still arrive as JSON null; guard so a no-usage report never crashes the page
+  // on `.length`/`.map` (mirrors LimitsView's `resp.limits ?? []`).
+  const rows = resp?.rows ?? [];
+
   return (
     <div className="usage-view">
       <div className="usage-header">
@@ -232,7 +237,7 @@ export default function UsageView() {
         </div>
       )}
 
-      {resp && resp.rows.length > 0 && (
+      {rows.length > 0 && (
         <div className="usage-table-wrap">
           <table className="usage-table">
             <thead>
@@ -248,7 +253,7 @@ export default function UsageView() {
               </tr>
             </thead>
             <tbody>
-              {resp.rows.map((r, i) => (
+              {rows.map((r, i) => (
                 <tr key={i}>
                   {activeDims.map((d) => (
                     <td key={d.key} className={d.key === "source" ? `usage-src usage-src-${r.credential_source}` : ""}>
@@ -277,7 +282,7 @@ export default function UsageView() {
         </div>
       )}
 
-      {resp && resp.rows.length === 0 && (
+      {resp && rows.length === 0 && (
         <div className="empty">no usage in this window.</div>
       )}
     </div>
