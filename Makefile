@@ -58,6 +58,11 @@ build-ui:
 	# job fails on a dirty working tree; `npm install` would touch
 	# web/package-lock.json on any silent drift and break the release.
 	rm -rf internal/webui/dist/*
+	# @loomcycle/library (RFC AY) is consumed from SOURCE via a Vite alias, so the
+	# web build compiles the package's TSX and must resolve its react / js-yaml /
+	# @loomcycle/client imports. Those resolve from packages/library/node_modules,
+	# which is gitignored (absent on a fresh checkout / in CI) — install it first.
+	cd packages/library && npm ci --silent
 	cd web && npm ci --silent && npm run build
 	touch internal/webui/dist/.gitkeep
 
