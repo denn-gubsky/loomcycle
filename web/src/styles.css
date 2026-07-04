@@ -5529,6 +5529,37 @@ button.primary:disabled {
   align-items: center;
 }
 
+/* Credentials create form (RFC AR) — a single responsive row of name / value /
+   scope / submit that wraps on narrow viewports. */
+.cred-create {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--lc-space-2);
+  align-items: center;
+  margin: var(--lc-space-2) 0;
+}
+.cred-create input {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: var(--lc-text-sm);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  background: var(--lc-surface);
+  color: var(--lc-text);
+}
+.cred-create select {
+  padding: 6px 10px;
+  font-size: var(--lc-text-sm);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  background: var(--lc-surface);
+  color: var(--lc-text);
+}
+.cred-table {
+  margin-top: var(--lc-space-2);
+}
+
 /* Buttons */
 .primary-btn,
 .ghost-btn {

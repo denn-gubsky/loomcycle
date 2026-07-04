@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -98,6 +99,86 @@ func TestRouting_AdminSeesCascadeAndAvailability(t *testing.T) {
 	}
 	if len(resp.Providers) == 0 {
 		t.Error("admin response must include the active-providers header")
+	}
+}
+
+// routingForPrincipal is routingFor with a full principal (not just scopes) so a
+// test can supply a tenant + subject — the RFC AX keyable filter reads them.
+func routingForPrincipal(t *testing.T, srv *Server, p auth.Principal) routingResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/v1/_routing", nil)
+	req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+	rr := httptest.NewRecorder()
+	srv.handleRouting(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var resp routingResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body: %s", err, rr.Body.String())
+	}
+	return resp
+}
+
+// middleTier finds the "middle" tier in the (single library-mode) user tier.
+func middleTier(t *testing.T, resp routingResponse) *routingTier {
+	t.Helper()
+	if len(resp.UserTiers) == 0 {
+		t.Fatalf("no user_tiers in response")
+	}
+	for i := range resp.UserTiers[0].Tiers {
+		if resp.UserTiers[0].Tiers[i].Tier == "middle" {
+			return &resp.UserTiers[0].Tiers[i]
+		}
+	}
+	t.Fatalf("no middle tier in response")
+	return nil
+}
+
+// TestRouting_RestrictedTenantFilteredToKeyableProviders is the RFC AX routing-view
+// regression: with the operator-key gate ON, a non-admin caller's cascade is
+// filtered to providers the tenant can key itself. The one keyed provider survives
+// only when the tenant has a credential for its env-var; with nothing keyable the
+// tier renders empty (the true picture of what the tenant may run), and
+// operator_key_restricted flags the filtered view. Fails on the pre-filter handler,
+// which showed the keyed provider regardless. NOTE it fires for a substrate:tenant
+// principal (admin=false) even though that scope is tenant-IMPLIED
+// providers:operator-key — the view is keyed off (gate && !admin), NOT
+// auth.OperatorKeyRestricted (which would never fire here; see handleRouting).
+func TestRouting_RestrictedTenantFilteredToKeyableProviders(t *testing.T) {
+	tenant := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeTenant}}
+
+	// (a) tenant can key nothing (credKeyable nil) → the keyed provider is
+	// filtered out and the tier is empty.
+	srvNone, _ := operatorKeyTierServer(t, completingKeyed("KEYED_API_KEY", "", ""), true, nil)
+	respNone := routingForPrincipal(t, srvNone, tenant)
+	if !respNone.OperatorKeyRestricted {
+		t.Error("operator_key_restricted=false for a gate-on non-admin caller")
+	}
+	if mid := middleTier(t, respNone); len(mid.Cascade) != 0 {
+		t.Errorf("middle cascade = %+v, want 0 candidates (tenant can key nothing)", mid.Cascade)
+	}
+
+	// (b) tenant CAN key the provider → it survives the filter.
+	keyable := func(_ context.Context, _, _, _, name string) bool { return name == "KEYED_API_KEY" }
+	srvKey, _ := operatorKeyTierServer(t, completingKeyed("KEYED_API_KEY", "", ""), true, keyable)
+	respKey := routingForPrincipal(t, srvKey, tenant)
+	if mid := middleTier(t, respKey); len(mid.Cascade) != 1 || mid.Cascade[0].Provider != "keyed" {
+		t.Errorf("middle cascade = %+v, want the keyed provider kept", mid.Cascade)
+	}
+}
+
+// TestRouting_AdminUnaffectedByOperatorKeyGate: with the gate ON an admin still
+// sees the full cascade (no keyable filter) and operator_key_restricted stays
+// false — the filter is a tenant-only view.
+func TestRouting_AdminUnaffectedByOperatorKeyGate(t *testing.T) {
+	srv, _ := operatorKeyTierServer(t, completingKeyed("KEYED_API_KEY", "", ""), true, nil)
+	resp := routingForPrincipal(t, srv, auth.Principal{Scopes: []string{auth.ScopeAdmin}})
+	if resp.OperatorKeyRestricted {
+		t.Error("operator_key_restricted=true for an admin; the gate must not filter the admin view")
+	}
+	if mid := middleTier(t, resp); len(mid.Cascade) != 1 {
+		t.Errorf("admin middle cascade = %+v, want 1 candidate (unfiltered)", mid.Cascade)
 	}
 }
 

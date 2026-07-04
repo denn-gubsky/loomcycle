@@ -1,58 +1,81 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import {
+  CredentialMeta,
+  CredentialScope,
   HealthResponse,
   PresetUnit,
   RuntimeStateResponse,
+  createCredential,
+  deleteCredential,
   getEnvTemplate,
   getHealth,
   getRuntimeState,
+  listCredentials,
   listPresets,
   pauseRuntime,
   resumeRuntime,
   showPreset,
 } from "../api";
 import { usePrincipal } from "../components/Layout";
+import LimitsView from "./LimitsView";
+import RoutingView from "./RoutingView";
 import TokenManager from "../components/TokenManager";
 
-// SettingsView is the operator Settings hub (top-bar gear). It web-reaches the
-// critical `loomcycle` CLI surfaces so a no-shell deployment (TrueNAS — RFC AR)
-// stays operable: tenant/operator tokens (RFC L), the embedded config presets
-// (RFC AQ), runtime quiesce, and health. Admin-only — the gear is rendered for
-// is_admin in the Layout, and this view re-guards (a tenant that deep-links here
-// is told it's operator-only). Surfaces that already have their own pages
-// (snapshots, audit) are linked, not duplicated.
-type Section = "tokens" | "presets" | "runtime" | "health";
+// SettingsView is the Settings hub (top-bar gear). It web-reaches the critical
+// `loomcycle` CLI + tenant surfaces so a no-shell deployment (TrueNAS — RFC AR)
+// stays operable. Visible to admins AND substrate:tenant operators (the gear is
+// rendered for both in Layout); the tabs are filtered by scope:
+//   - tenant-visible (admin + substrate:tenant): credentials (enter your own
+//     provider API keys — RFC AR), limits (per-scope token budgets, RFC AW),
+//     routing (the resolved model cascade). Their data is tenant-scoped
+//     server-side — a tenant operator sees only its own tenant.
+//   - admin-only: tokens (minting, RFC L), presets (RFC AQ), runtime
+//     (pause/resume), health.
+// The backend gates every surface too (defence in depth). Surfaces with their
+// own pages (snapshots, audit) are linked, not duplicated.
+type Section =
+  | "credentials"
+  | "limits"
+  | "routing"
+  | "tokens"
+  | "presets"
+  | "runtime"
+  | "health";
 
-const SECTIONS: { id: Section; label: string }[] = [
-  { id: "tokens", label: "Tokens" },
-  { id: "presets", label: "Presets" },
-  { id: "runtime", label: "Runtime" },
-  { id: "health", label: "Health" },
+interface SectionDef {
+  id: Section;
+  label: string;
+  admin: boolean; // true = super-admin only
+}
+
+const SECTIONS: SectionDef[] = [
+  { id: "credentials", label: "Credentials", admin: false },
+  { id: "limits", label: "Limits", admin: false },
+  { id: "routing", label: "Routing", admin: false },
+  { id: "tokens", label: "Tokens", admin: true },
+  { id: "presets", label: "Presets", admin: true },
+  { id: "runtime", label: "Runtime", admin: true },
+  { id: "health", label: "Health", admin: true },
 ];
 
 export default function SettingsView() {
   const principal = usePrincipal();
-  const [section, setSection] = useState<Section>("tokens");
-
-  if (principal && !principal.is_admin) {
-    return (
-      <div className="settings-view">
-        <div className="settings-panel">
-          <h2>Settings</h2>
-          <p className="settings-muted">
-            Settings is operator-admin only. Sign in with an admin (root) token
-            to manage tokens, presets, and runtime.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // A null principal = open mode / pre-resolution → admin-equivalent (matches
+  // handleWhoami's open-mode synthetic admin). Layout only renders this view
+  // once the principal has resolved, so this reflects the real role.
+  const isAdmin = !principal || principal.is_admin;
+  const visible = SECTIONS.filter((s) => isAdmin || !s.admin);
+  // Default to the first tab the principal can see: tokens for an admin,
+  // credentials for a tenant operator.
+  const [section, setSection] = useState<Section>(
+    isAdmin ? "tokens" : "credentials",
+  );
 
   return (
     <div className="settings-view">
       <nav className="settings-tabs">
-        {SECTIONS.map((s) => (
+        {visible.map((s) => (
           <button
             key={s.id}
             type="button"
@@ -64,11 +87,213 @@ export default function SettingsView() {
         ))}
       </nav>
       <div className="settings-body">
+        {section === "credentials" && <CredentialsSection />}
+        {section === "limits" && <LimitsView />}
+        {section === "routing" && <RoutingView />}
         {section === "tokens" && <TokenManager />}
         {section === "presets" && <PresetsSection />}
         {section === "runtime" && <RuntimeSection />}
         {section === "health" && <HealthSection />}
       </div>
+    </div>
+  );
+}
+
+// ─── Credentials (RFC AR) ────────────────────────────────────────────────────
+
+// isCredStoreDisabled detects the fail-closed error surfaced when the operator
+// hasn't set LOOMCYCLE_SECRET_KEY (the inline backend is off). The server
+// returns the tool's error text verbatim inside the 422 envelope, so we match on
+// its stable markers.
+function isCredStoreDisabled(msg: string): boolean {
+  return (
+    msg.includes("LOOMCYCLE_SECRET_KEY") ||
+    msg.includes("no credential engine") ||
+    msg.includes("disabled")
+  );
+}
+
+// CredentialRow is a metadata row tagged with the scope it was listed under (the
+// API groups by scope; we merge tenant + user into one table).
+type CredentialRow = CredentialMeta & { _scope: CredentialScope };
+
+function CredentialsSection() {
+  const [rows, setRows] = useState<CredentialRow[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [disabled, setDisabled] = useState(false);
+  const [flash, setFlash] = useState<string | null>(null);
+  // Create form. `value` is write-only — cleared on submit (success OR failure)
+  // and never re-displayed.
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [scope, setScope] = useState<CredentialScope>("tenant");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setErr(null);
+    try {
+      // List BOTH scopes so the table shows the tenant-shared + own-user
+      // credentials together. list returns metadata only, never a value.
+      const [t, u] = await Promise.all([
+        listCredentials("tenant"),
+        listCredentials("user"),
+      ]);
+      setRows([
+        ...(t.credentials ?? []).map((c) => ({ ...c, _scope: "tenant" as const })),
+        ...(u.credentials ?? []).map((c) => ({ ...c, _scope: "user" as const })),
+      ]);
+      setDisabled(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (isCredStoreDisabled(msg)) setDisabled(true);
+      else setErr(msg);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const onCreate = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy || !name.trim() || !value) return;
+    setBusy(true);
+    setErr(null);
+    setFlash(null);
+    const created = name.trim();
+    try {
+      await createCredential({ scope, name: created, value });
+      setValue(""); // clear the secret immediately
+      setName("");
+      setFlash(`stored ${scope} credential "${created}"`);
+      setDisabled(false);
+      await refresh();
+    } catch (e2) {
+      setValue(""); // clear the secret even on failure — never retained
+      const msg = e2 instanceof Error ? e2.message : String(e2);
+      if (isCredStoreDisabled(msg)) setDisabled(true);
+      else setErr(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onDelete = async (r: CredentialRow) => {
+    if (
+      !confirm(
+        `Delete the ${r._scope} credential "${r.name}"? Anything referencing $cred:${r.name} will stop resolving.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteCredential({ scope: r._scope, name: r.name });
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <div className="settings-panel">
+      <h2>Credentials</h2>
+      <p className="settings-help">
+        Encrypted API credentials for this tenant (RFC AR). A stored secret is
+        referenced elsewhere as <code>$cred:&lt;name&gt;</code> in an MCP
+        server&apos;s env or headers, and the runtime binds it server-side — the
+        value is never shown again after you save it. Naming one after a provider
+        key env-var (e.g. <code>ANTHROPIC_API_KEY</code>,{" "}
+        <code>BRAVE_API_KEY</code>) overrides the operator&apos;s key for this
+        tenant&apos;s runs (RFC AR / AX). <strong>tenant</strong> scope is shared
+        across the tenant; <strong>user</strong> scope is private to your own
+        subject (per-user tokens, e.g. a personal Telegram bot token).
+      </p>
+
+      {disabled && (
+        <div className="settings-error">
+          The credential store is disabled. The operator must set{" "}
+          <code>LOOMCYCLE_SECRET_KEY</code> to enable encrypted credential
+          storage.
+        </div>
+      )}
+      {err && <div className="settings-error">{err}</div>}
+      {flash && <div className="settings-flash">{flash}</div>}
+
+      <form className="cred-create" onSubmit={onCreate}>
+        <input
+          type="text"
+          placeholder="name (e.g. ANTHROPIC_API_KEY)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <input
+          type="password"
+          placeholder="value (secret — write-only)"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          autoComplete="new-password"
+        />
+        <select
+          value={scope}
+          onChange={(e) => setScope(e.target.value as CredentialScope)}
+          title="tenant = shared; user = your own subject"
+        >
+          <option value="tenant">tenant</option>
+          <option value="user">user</option>
+        </select>
+        <button
+          type="submit"
+          className="primary-btn"
+          disabled={busy || !name.trim() || !value}
+        >
+          {busy ? "storing…" : "store"}
+        </button>
+      </form>
+
+      <table className="settings-table cred-table">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>scope</th>
+            <th>updated</th>
+            <th aria-label="actions" />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={4} className="settings-muted">
+                no credentials stored.
+              </td>
+            </tr>
+          ) : (
+            rows.map((r) => (
+              <tr key={`${r._scope}/${r.name}`}>
+                <td>
+                  <code>{r.name}</code>
+                </td>
+                <td>{r._scope}</td>
+                <td>
+                  {r.updated_at
+                    ? new Date(r.updated_at).toLocaleString()
+                    : "—"}
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="ghost-btn danger"
+                    onClick={() => void onDelete(r)}
+                  >
+                    delete
+                  </button>
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }

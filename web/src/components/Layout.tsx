@@ -8,7 +8,6 @@ import {
   Camera,
   Coins,
   FolderTree,
-  Gauge,
   HardDrive,
   Library,
   ListTree,
@@ -20,7 +19,6 @@ import {
   Play,
   Plug,
   Radio,
-  Route,
   ScrollText,
   Settings,
   Sun,
@@ -73,21 +71,14 @@ const NAV_ITEMS: NavItem[] = [
   // audit is tenant-visible (RFC AS): handleListEvents tenant-scopes the result
   // via the event's owning session, so a tenant sees only its own events.
   { to: "/audit", label: "audit", Icon: ScrollText, vis: "tenant" },
-  // routing: the provider/model cascade a consumer resolves to right now.
-  // Tenant-visible (RFC AS): GET /v1/_routing is ScopeTenant-gated and the
-  // handler strips live availability + the infra provider-header for a
-  // non-admin principal (config cascade only).
-  { to: "/routing", label: "routing", Icon: Route, vis: "tenant" },
   // usage: token/cost report. Tenant-visible (RFC AV): GET /v1/_usage is
   // ScopeTenant-gated and the handler tenant-scopes the aggregation (a tenant
   // operator sees only its own tenant's spend; admin sees all + ?tenant=).
   { to: "/usage", label: "usage", Icon: Coins, vis: "tenant" },
-  // limits: per-scope monthly token budgets (RFC AW). Tenant-visible: GET/PUT/
-  // DELETE /v1/_limits is ScopeTenant-gated and the handler tenant-scopes the
-  // rows + confines writes (a tenant operator manages only its own tenant +
-  // users; admin sees all + ?tenant=).
-  { to: "/limits", label: "limits", Icon: Gauge, vis: "tenant" },
   { to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
+  // NOTE: routing + limits moved OUT of the main nav INTO Settings tabs (the
+  // /routing + /limits routes still exist for deep links, but SettingsView is
+  // now the primary surface — see SettingsView's routing/limits tabs).
 ];
 
 // canSeeNav gates a nav item by the principal's role (RFC AS §4).
@@ -397,11 +388,13 @@ export default function Layout() {
               </form>
             )}
           </div>
-          {/* Settings hub — operator/admin-only gear, rightmost. Web-reaches the
-              critical CLI surfaces (tokens, presets, runtime, health) for no-shell
-              deployments (the TrueNAS RFC AR prerequisite). Hidden for tenants; the
-              page re-guards, and the backend gates each surface server-side. */}
-          {isAdmin && (
+          {/* Settings hub — rightmost gear. Web-reaches the critical CLI surfaces
+              for no-shell deployments (the TrueNAS RFC AR prerequisite). Visible to
+              admins AND substrate:tenant operators: a tenant needs Settings to enter
+              its own provider API keys (Credentials tab) and to see the tenant-scoped
+              limits/routing tabs. SettingsView filters the SECTIONS by scope, and the
+              backend gates each surface server-side (defence in depth). */}
+          {(isAdmin || hasTenantScope) && (
             <NavLink to="/settings" className="settings-gear" title="Settings" aria-label="Settings">
               <Settings size={16} />
             </NavLink>

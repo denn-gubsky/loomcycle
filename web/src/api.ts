@@ -2314,10 +2314,78 @@ export interface RoutingResponse {
   admin: boolean;
   providers?: RoutingProvider[]; // admin-only
   user_tiers: RoutingUserTier[];
+  /**
+   * RFC AX: true when the operator-key gate is ON and this (non-admin) tenant's
+   * cascade has been filtered to providers it can key itself (needs no operator
+   * key, or has an own CredentialDef). The UI shows a bring-your-own-key note.
+   */
+  operator_key_restricted?: boolean;
 }
 
 export function getRouting(): Promise<RoutingResponse> {
   return jsonFetch<RoutingResponse>("/v1/_routing");
+}
+
+// --- RFC AR: secure credential store (POST /v1/_credentialdef) ---
+
+// CredentialScope buckets a stored secret. tenant = shared across the tenant;
+// user = the calling principal's own subject (per-user tokens). The UI offers
+// tenant | user; scope_id is derived server-side from the authoritative
+// identity, never sent by the client.
+export type CredentialScope = "tenant" | "user";
+
+// CredentialMeta is one credential's METADATA — never the secret value (the API
+// returns none for list/get). Mirrors the tool's credentialMeta output.
+export interface CredentialMeta {
+  name: string;
+  scope: string;
+  backend?: string;
+  created_at?: string;
+  updated_at?: string;
+  expires_at?: string;
+  status?: string;
+}
+
+export interface CredentialListResponse {
+  scope: string;
+  credentials: CredentialMeta[];
+}
+
+// listCredentials returns metadata for the given scope (never a value).
+export function listCredentials(
+  scope: CredentialScope,
+): Promise<CredentialListResponse> {
+  return jsonFetch<CredentialListResponse>("/v1/_credentialdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "list", scope }),
+  });
+}
+
+// createCredential stores (or rotates) a secret. The plaintext `value` is
+// write-only: the server encrypts it, masks it from the transcript, and never
+// returns it. Returns the stored row's metadata.
+export function createCredential(input: {
+  scope: CredentialScope;
+  name: string;
+  value: string;
+}): Promise<CredentialMeta> {
+  return jsonFetch<CredentialMeta>("/v1/_credentialdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "create", ...input }),
+  });
+}
+
+export function deleteCredential(input: {
+  scope: CredentialScope;
+  name: string;
+}): Promise<{ name: string; scope: string; deleted: boolean }> {
+  return jsonFetch("/v1/_credentialdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "delete", ...input }),
+  });
 }
 
 // --- RFC AV: token-usage & cost report (GET /v1/_usage) ---
