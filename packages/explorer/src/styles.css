@@ -1,0 +1,767 @@
+/* @loomcycle/explorer styles. Everything is scoped under the component's
+   `.loomcycle-explorer` root so it can't leak into — or be clobbered by — the
+   host app. The palette lives on the root as CSS variables; light mode activates
+   when the root (via the `theme` prop) OR any ancestor carries
+   data-theme="light", so an app that themes <html> gets themed explorer for
+   free. Override any --var on `.loomcycle-explorer` to restyle.
+
+   The rules below use the loomcycle Web UI's alias token names
+   (--bg/--fg/--accent/… + the --lc-text-*/--lc-font-mono design tokens); those
+   are defined on the root here (dark default + light override) so the package is
+   self-contained — no external tokens.css. */
+
+.loomcycle-explorer {
+  /* dark palette (default) — resolved from the loomcycle --lc-* design tokens */
+  --bg: #0f1115;
+  --bg-soft: #161922;
+
+  --fg: #e6e6e6;
+  --fg-soft: #9aa0ad;
+  --fg-muted: #888888;
+
+  --border: #2a2e3a;
+  --accent: #56c596;
+  --running: #f0a040;
+  --failed: #ff5d68;
+  --danger: #cc3333;
+
+  --lc-font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+    "SF Mono", Menlo, Consolas, monospace;
+  --mono: var(--lc-font-mono);
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+
+  --lc-text-xs: 12px;
+  --lc-text-sm: 13px;
+  --lc-text-base: 14px;
+
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--lc-text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+  /* fill the host's slot; the host controls the surrounding layout */
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Light mode: the component root opts in via the `theme` prop, or inherits a
+   light ancestor (e.g. an app that sets data-theme on <html>). */
+.loomcycle-explorer[data-theme="light"],
+[data-theme="light"] .loomcycle-explorer {
+  --bg: #f5f6f8;
+  --bg-soft: #ffffff;
+
+  --fg: #1a1d24;
+  --fg-soft: #5a6270;
+  --fg-muted: #8a909c;
+
+  --border: #d7dbe2;
+  --accent: #2f9e6f;
+  --running: #b9740f;
+  --failed: #d23f4a;
+  --danger: #c0392b;
+
+  color-scheme: light;
+}
+
+/* ---- scoped base / utilities ---- */
+.loomcycle-explorer,
+.loomcycle-explorer *,
+.loomcycle-explorer *::before,
+.loomcycle-explorer *::after {
+  box-sizing: border-box;
+}
+.loomcycle-explorer button {
+  font: inherit;
+}
+.loomcycle-explorer code,
+.loomcycle-explorer pre {
+  font-family: var(--mono);
+  font-size: var(--lc-text-sm);
+}
+/* Text-like form controls get the themed look; the more-specific rules below
+   still win where they apply. */
+.loomcycle-explorer
+  input:where(
+    :not([type="checkbox"]):not([type="radio"]):not([type="file"]):not(
+        [type="range"]
+      ):not([type="color"])
+  ),
+.loomcycle-explorer textarea,
+.loomcycle-explorer select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: var(--lc-text-sm);
+}
+
+/* ---- empty / error banner ---- */
+.loomcycle-explorer .empty {
+  color: var(--fg-soft);
+  padding: 32px 16px;
+  text-align: center;
+}
+.loomcycle-explorer .error-banner {
+  background: rgba(255, 93, 104, 0.1);
+  border: 1px solid var(--failed);
+  color: var(--failed);
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin: 8px 0;
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+}
+
+/* ---- tree skeleton (Path tree + chunk tree) ---- */
+.loomcycle-explorer .tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.loomcycle-explorer .tree .children {
+  list-style: none;
+  margin: 0;
+  margin-left: 14px;
+  padding: 0;
+  padding-left: 12px;
+  border-left: 1px dashed var(--border);
+}
+.loomcycle-explorer .node {
+  margin: 2px 0;
+}
+/* Both explorer tree views (path rows + chunk rows) lay a row out as a
+   caret + a single name affordance — a flex line, not the agents-tree grid. */
+.loomcycle-explorer .node .row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.loomcycle-explorer .tree-caret {
+  background: transparent;
+  border: none;
+  color: var(--fg-soft);
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+  padding: 0;
+  user-select: none;
+  line-height: 1;
+}
+.loomcycle-explorer .tree-caret:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+.loomcycle-explorer .tree-caret:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+/* ============================================================
+   Splitter
+   ============================================================ */
+.loomcycle-explorer .splitter {
+  display: grid;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+}
+.loomcycle-explorer .splitter.dragging {
+  /* Suppress text-select highlighting during a drag. */
+  user-select: none;
+  cursor: col-resize;
+}
+.loomcycle-explorer .splitter > .splitter-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.loomcycle-explorer .splitter > .splitter-handle {
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+}
+.loomcycle-explorer .splitter > .splitter-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: var(--border);
+  transition: background 80ms ease;
+}
+.loomcycle-explorer .splitter > .splitter-handle:hover::before,
+.loomcycle-explorer .splitter.dragging > .splitter-handle::before {
+  background: var(--accent);
+}
+
+/* ============================================================
+   Modal base (PromptModal + ChunkEditorModal)
+   ============================================================ */
+.loomcycle-explorer .modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.loomcycle-explorer .modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: auto;
+}
+.loomcycle-explorer .modal h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+}
+.loomcycle-explorer .modal-context {
+  color: var(--fg-soft);
+  font-style: italic;
+  font-size: var(--lc-text-sm);
+  margin-bottom: 16px;
+}
+.loomcycle-explorer .modal-textarea {
+  width: 100%;
+  font-family: inherit;
+  font-size: var(--lc-text-base);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  margin-bottom: 16px;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.loomcycle-explorer .modal-err {
+  color: var(--failed);
+  font-size: var(--lc-text-sm);
+  margin-bottom: 12px;
+}
+.loomcycle-explorer .modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.loomcycle-explorer .modal-buttons button {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.loomcycle-explorer .modal-buttons button.primary {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+  border-radius: 4px;
+  padding: 8px 16px;
+}
+.loomcycle-explorer .modal-buttons button.danger {
+  background: var(--danger);
+  color: white;
+  border-color: var(--danger);
+  border-radius: 4px;
+  padding: 8px 16px;
+}
+.loomcycle-explorer .modal-buttons button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   Path console (RFC AL) — tree + toolbar + detail pane
+   ============================================================ */
+.loomcycle-explorer .paths-view {
+  height: 100%;
+  min-height: 0;
+}
+.loomcycle-explorer .paths-view .left,
+.loomcycle-explorer .paths-view .right {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  flex: 1;
+}
+.loomcycle-explorer .paths-view .left > .tree,
+.loomcycle-explorer .paths-view .left > .empty {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 8px 10px;
+}
+.loomcycle-explorer .paths-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.loomcycle-explorer .paths-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .paths-scope select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.loomcycle-explorer .paths-toolbar-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.loomcycle-explorer .paths-toolbar-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.loomcycle-explorer .paths-toolbar-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .paths-toolbar-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.loomcycle-explorer .paths-context {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-explorer .paths-err {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--failed);
+  font-size: var(--lc-text-sm);
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-explorer .path-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  min-width: 0;
+}
+.loomcycle-explorer .path-link:hover .path-name {
+  color: var(--accent);
+}
+.loomcycle-explorer .path-kind-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.loomcycle-explorer .path-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.loomcycle-explorer .path-implicit {
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+  opacity: 0.7;
+  font-style: italic;
+}
+
+/* Detail (right) pane. */
+.loomcycle-explorer .paths-detail {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 14px;
+}
+.loomcycle-explorer .paths-detail h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--lc-text-base);
+  margin: 0 0 14px;
+  flex-wrap: wrap;
+}
+.loomcycle-explorer .paths-detail h2 code {
+  font-family: var(--lc-font-mono);
+  font-size: var(--lc-text-sm);
+  word-break: break-all;
+}
+.loomcycle-explorer .paths-detail-kind {
+  text-transform: uppercase;
+  font-size: var(--lc-text-xs);
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .paths-detail-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0 0 16px;
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-explorer .paths-detail-meta dt {
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .paths-detail-meta dd {
+  margin: 0;
+  word-break: break-all;
+}
+.loomcycle-explorer .paths-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.loomcycle-explorer .paths-detail-actions button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.loomcycle-explorer .paths-detail-actions button:hover {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .paths-detail-actions button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.loomcycle-explorer .paths-readonly,
+.loomcycle-explorer .paths-note {
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+}
+
+/* Modal field label/input for the create/rename dialogs + chunk editor. */
+.loomcycle-explorer .path-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .path-modal-input {
+  font-family: inherit;
+  font-size: var(--lc-text-base);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  box-sizing: border-box;
+}
+
+/* ============================================================
+   Document viewer (RFC AK) — chunk tree + Markdown view + editor
+   ============================================================ */
+/* When a document is selected in the Path console, the right pane is a slim
+   action bar + the viewer filling the rest. */
+.loomcycle-explorer .paths-doc {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.loomcycle-explorer .paths-doc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.loomcycle-explorer .paths-doc-path {
+  font-family: var(--lc-font-mono);
+  font-size: var(--lc-text-sm);
+  word-break: break-all;
+  flex: 1;
+  min-width: 0;
+}
+.loomcycle-explorer .doc-viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.loomcycle-explorer .doc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.loomcycle-explorer .doc-title {
+  font-size: var(--lc-text-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.loomcycle-explorer .doc-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.loomcycle-explorer .doc-toolbar-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.loomcycle-explorer .doc-toolbar-actions button:hover {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .doc-toolbar-actions button.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.loomcycle-explorer .doc-mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.loomcycle-explorer .doc-mode-toggle button {
+  padding: 4px 10px;
+  border: none;
+  background: var(--bg);
+  color: var(--fg-soft);
+  cursor: pointer;
+}
+.loomcycle-explorer .doc-mode-toggle button.active {
+  background: var(--accent);
+  color: white;
+}
+.loomcycle-explorer .doc-split {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.loomcycle-explorer .doc-chunktree {
+  width: 40%;
+  max-width: 360px;
+  overflow: auto;
+  padding: 8px;
+  border-right: 1px solid var(--border);
+  min-height: 0;
+}
+.loomcycle-explorer .doc-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.loomcycle-explorer .doc-content-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-explorer .doc-content-head h3 {
+  margin: 0 0 6px;
+  font-size: var(--lc-text-base);
+}
+.loomcycle-explorer .doc-content-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.loomcycle-explorer .chunk-rev {
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .doc-content-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+/* Direct-child only, so the nested .doc-mode-toggle keeps its segmented look. */
+.loomcycle-explorer .doc-content-controls > button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+/* The selected-chunk view (chunk body OR assembled markdown) scrolls
+   independently of the fixed head — both modes can be long. */
+.loomcycle-explorer .doc-content-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 14px;
+}
+.loomcycle-explorer .doc-empty-body {
+  color: var(--fg-soft);
+  font-style: italic;
+}
+.loomcycle-explorer .chunk-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  min-width: 0;
+}
+.loomcycle-explorer .chunk-link:hover .chunk-title {
+  color: var(--accent);
+}
+.loomcycle-explorer .chunk-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.loomcycle-explorer .chunk-badge {
+  font-size: var(--lc-text-xs);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .chunk-badge.chunk-status {
+  border-style: dashed;
+}
+
+/* Chunk editor modal extras. */
+.loomcycle-explorer .modal.chunk-editor {
+  max-width: 720px;
+  width: 92vw;
+}
+.loomcycle-explorer .chunk-editor-row {
+  display: flex;
+  gap: 12px;
+}
+.loomcycle-explorer .chunk-editor-row .path-field {
+  flex: 1;
+}
+.loomcycle-explorer .chunk-body-input {
+  font-family: var(--lc-font-mono);
+}
+
+/* Minimal Markdown renderer output. */
+.loomcycle-explorer .md {
+  font-size: var(--lc-text-sm);
+  line-height: 1.55;
+  word-wrap: break-word;
+}
+.loomcycle-explorer .md h1,
+.loomcycle-explorer .md h2,
+.loomcycle-explorer .md h3,
+.loomcycle-explorer .md h4,
+.loomcycle-explorer .md h5,
+.loomcycle-explorer .md h6 {
+  margin: 0.8em 0 0.4em;
+  line-height: 1.25;
+}
+.loomcycle-explorer .md h1 {
+  font-size: 1.6em;
+}
+.loomcycle-explorer .md h2 {
+  font-size: 1.35em;
+}
+.loomcycle-explorer .md h3 {
+  font-size: 1.15em;
+}
+.loomcycle-explorer .md p {
+  margin: 0.5em 0;
+}
+.loomcycle-explorer .md ul,
+.loomcycle-explorer .md ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.loomcycle-explorer .md code {
+  font-family: var(--lc-font-mono);
+  font-size: 0.92em;
+  background: var(--bg-soft);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.loomcycle-explorer .md-pre {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow: auto;
+}
+.loomcycle-explorer .md-pre code {
+  background: none;
+  padding: 0;
+}
+.loomcycle-explorer .md blockquote {
+  margin: 0.5em 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .md a {
+  color: var(--accent);
+}
+
+/* ============================================================
+   Document Assistant slot (host-provided content; the package only
+   frames the panel — see DocumentViewer's renderAssistant prop).
+   ============================================================ */
+.loomcycle-explorer .doc-assistant {
+  flex: 0 0 auto;
+  max-height: 45%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  background: var(--bg-soft);
+}
