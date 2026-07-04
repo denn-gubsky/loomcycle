@@ -9,15 +9,14 @@ name: Publish @loomcycle/library to npm
 # doesn't match the tag (a dedicated tag should always match — a mismatch is a
 # mistake, surfaced loudly, npm untouched).
 #
-# Auth: npm Trusted Publisher (OIDC) — no NPM_TOKEN secret. Before the FIRST
-# publish the operator must register the trusted publisher at
-# https://www.npmjs.com/settings/loomcycle/packages (or the package's Access tab
-# once it exists) with GitHub repository `denn-gubsky/loomcycle` and workflow
-# filename `publish-library.yml`. `id-token: write` mints the OIDC token npm
-# exchanges for a short-lived publish token. (A brand-new scoped package's first
-# OIDC publish requires the org/package trusted-publisher config to exist first;
-# otherwise seed the first version with a one-off `npm publish` using a granular
-# token, then all subsequent releases go through this workflow.)
+# Auth: an npm automation token in the `NPM_TOKEN` repo secret. setup-node writes
+# it into ~/.npmrc (via NODE_AUTH_TOKEN below), so `npm publish` authenticates as
+# that token's account. This is the token path chosen for the FIRST publish of
+# this brand-new scoped package (OIDC Trusted Publishing can't bootstrap a package
+# that doesn't exist yet). Once @loomcycle/library exists on npm, the operator MAY
+# switch to OIDC Trusted Publishing (register the publisher on the package's
+# Access tab, drop the secret, add `id-token: write` + `--provenance`) — see the
+# @loomcycle/client publish-ts-adapter.yml workflow for that shape.
 #
 # Inputs reaching `run` steps are limited to GITHUB_REF_NAME (a git tag — git
 # rejects metacharacters in ref names) and constants; the tag is routed through
@@ -32,7 +31,6 @@ env:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   publish:
@@ -47,12 +45,6 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: packages/library/package-lock.json
-
-      - name: Upgrade npm CLI for Trusted Publisher OIDC support
-        # Trusted Publishing needs npm CLI 11.5.1+ for the GitHub Actions → npm
-        # OIDC handshake; Node 20 ships npm 10.x which silently falls back to a
-        # NODE_AUTH_TOKEN .npmrc lookup and emits a misleading 404.
-        run: npm install -g npm@latest
 
       - name: Verify package version matches tag
         working-directory: packages/library
@@ -84,8 +76,11 @@ jobs:
 
       - name: Publish
         working-directory: packages/library
-        # --access public for the scoped package; --provenance is free with OIDC
-        # (SLSA build attestation → the "Provenance" badge). prepack rebuilds
-        # dist from a clean tree, so the published tarball is fresh regardless.
-        # No NODE_AUTH_TOKEN — setup-node negotiates OIDC via the id-token perm.
-        run: npm publish --access public --provenance
+        # --access public for the scoped package. prepack rebuilds dist from a
+        # clean tree, so the published tarball is fresh regardless. NODE_AUTH_TOKEN
+        # is the NPM_TOKEN secret setup-node wired into ~/.npmrc. (--provenance is
+        # omitted: it requires OIDC/id-token, not token auth; add it if/when this
+        # switches to Trusted Publishing.)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
