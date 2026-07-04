@@ -6256,6 +6256,26 @@ button.primary:disabled {
   text-align: right;
   font-family: var(--mono);
 }
+/* Soft/hard editor: the input stacks over its live "= 5,000,000" recognition
+   hint. inline-flex so it sits inline among the add-form's other controls; the
+   hint only renders when there's something to show, so the extra row height is
+   transient. */
+.limits-amount {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.limits-amount-hint {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--fg-soft);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.limits-amount-hint.invalid {
+  color: var(--failed);
+}
 .limits-row-actions {
   display: flex;
   gap: 6px;

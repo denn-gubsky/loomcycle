@@ -6,6 +6,7 @@ import {
   listLimits,
   putLimit,
 } from "../api";
+import { amountHint, fmtTokens, parseTokenAmount } from "../lib/tokenAmount";
 
 // LimitsView — GET/PUT/DELETE /v1/_limits (RFC AW Phase 1).
 //
@@ -20,29 +21,49 @@ import {
 const SCOPES = ["operator", "tenant", "user"] as const;
 type Scope = (typeof SCOPES)[number];
 
-// fmtTokens mirrors UsageView's compact K/M formatter for the read-only `used`
-// column. The soft/hard editors show raw integers instead (you type into them).
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
-  return String(n);
-}
-
-// parseLimit converts an editor string to the wire value: empty = null (leave
-// the tier unset — no ceiling), otherwise a non-negative integer. type=number
-// inputs make a malformed entry near-impossible; a stray one coerces to null
-// (unset) rather than sending garbage, and the server also rejects negatives.
-function parseLimit(s: string): number | null {
-  const t = s.trim();
-  if (t === "") return null;
-  const n = Math.floor(Number(t));
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
 // rowKey uniquely identifies a budget row across tenants + scopes (an admin's
 // list can hold same-scope rows for many tenants).
 function rowKey(r: TokenLimit): string {
   return `${r.tenant_id ?? ""}|${r.scope}|${r.scope_id ?? ""}`;
+}
+
+// TokenAmountInput is the soft/hard ceiling editor: a text field (not type=number,
+// which rejects letters) that accepts a plain integer OR a shorthand — 500K, 5M,
+// 2G — and shows the exact value it resolves to as live feedback. parseTokenAmount
+// does the recognition on save; this only renders the input + the hint.
+function TokenAmountInput({
+  value,
+  onChange,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const hint = amountHint(value);
+  return (
+    <div className="limits-amount">
+      <input
+        className="limits-num"
+        type="text"
+        inputMode="text"
+        autoComplete="off"
+        spellCheck={false}
+        placeholder={placeholder}
+        title="A number or shorthand: 500K, 5M, 2G. Empty = unlimited."
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+      />
+      {hint && (
+        <span className={"limits-amount-hint" + (hint.invalid ? " invalid" : "")}>
+          {hint.text}
+        </span>
+      )}
+    </div>
+  );
 }
 
 export default function LimitsView() {
@@ -79,7 +100,9 @@ export default function LimitsView() {
           <p className="limits-sub">
             Per-scope monthly token budgets — a <code>soft</code> warning and a{" "}
             <code>hard</code> cap (the next run is refused once crossed). Set a
-            ceiling against each scope's live month-to-date usage.
+            ceiling against each scope's live month-to-date usage. Amounts accept{" "}
+            <code>K</code>/<code>M</code>/<code>G</code> shorthand (e.g.{" "}
+            <code>5M</code> = 5,000,000).
           </p>
         </div>
         <div className="limits-actions">
@@ -162,13 +185,20 @@ function LimitRow({
   }, [row.soft_limit, row.hard_limit]);
 
   const save = async () => {
+    // undefined = a non-empty entry that didn't parse (a typo); null = unset.
+    const softV = parseTokenAmount(soft);
+    const hardV = parseTokenAmount(hard);
+    if (softV === undefined || hardV === undefined) {
+      setErr("enter a number or shorthand like 500K, 5M, 2G");
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
       const body: LimitPutBody = {
         scope: row.scope,
-        soft_limit: parseLimit(soft),
-        hard_limit: parseLimit(hard),
+        soft_limit: softV,
+        hard_limit: hardV,
       };
       // tenant_id addresses the row's tenant (admin); harmlessly ignored for a
       // scoped operator (its own tenant is stamped server-side).
@@ -209,26 +239,18 @@ function LimitRow({
         <td className="limits-scopeid">{row.scope_id || "—"}</td>
         <td className="num">{fmtTokens(row.used)}</td>
         <td className="num">
-          <input
-            className="limits-num"
-            type="number"
-            min={0}
-            step={1000}
-            placeholder="∞"
+          <TokenAmountInput
             value={soft}
-            onChange={(e) => setSoft(e.target.value)}
+            onChange={setSoft}
+            placeholder="∞"
             disabled={busy}
           />
         </td>
         <td className="num">
-          <input
-            className="limits-num"
-            type="number"
-            min={0}
-            step={1000}
-            placeholder="∞"
+          <TokenAmountInput
             value={hard}
-            onChange={(e) => setHard(e.target.value)}
+            onChange={setHard}
+            placeholder="∞"
             disabled={busy}
           />
         </td>
@@ -279,13 +301,20 @@ function AddLimitForm({
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    // undefined = a non-empty entry that didn't parse (a typo); null = unset.
+    const softV = parseTokenAmount(soft);
+    const hardV = parseTokenAmount(hard);
+    if (softV === undefined || hardV === undefined) {
+      setErr("enter a number or shorthand like 500K, 5M, 2G");
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
       const body: LimitPutBody = {
         scope,
-        soft_limit: parseLimit(soft),
-        hard_limit: parseLimit(hard),
+        soft_limit: softV,
+        hard_limit: hardV,
       };
       if (scope !== "operator") {
         // Fall back to the admin tenant-focus box when the field is blank.
@@ -339,22 +368,8 @@ function AddLimitForm({
           onChange={(e) => setScopeId(e.target.value)}
         />
       )}
-      <input
-        type="number"
-        min={0}
-        step={1000}
-        placeholder="soft"
-        value={soft}
-        onChange={(e) => setSoft(e.target.value)}
-      />
-      <input
-        type="number"
-        min={0}
-        step={1000}
-        placeholder="hard"
-        value={hard}
-        onChange={(e) => setHard(e.target.value)}
-      />
+      <TokenAmountInput value={soft} onChange={setSoft} placeholder="soft" disabled={busy} />
+      <TokenAmountInput value={hard} onChange={setHard} placeholder="hard" disabled={busy} />
       <button type="submit" className="ghost-btn" disabled={busy}>
         {busy ? "…" : "add"}
       </button>
