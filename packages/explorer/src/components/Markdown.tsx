@@ -6,7 +6,7 @@ import { type ReactNode } from "react";
 // It covers the common block constructs (headings, paragraphs, fenced code,
 // blockquotes, ordered/unordered lists) and inline code/bold/italic/links;
 // anything unrecognized renders as escaped text. A viewer-grade subset of
-// CommonMark (RFC AM Phase 2), not a full implementation.
+// CommonMark (RFC AK/AM), not a full implementation.
 
 export default function Markdown({ source }: { source: string }) {
   return <div className="md">{renderBlocks(source)}</div>;

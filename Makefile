@@ -63,6 +63,9 @@ build-ui:
 	# @loomcycle/client imports. Those resolve from packages/library/node_modules,
 	# which is gitignored (absent on a fresh checkout / in CI) — install it first.
 	cd packages/library && npm ci --silent
+	# @loomcycle/explorer (RFC AZ) is consumed from SOURCE the same way — install
+	# its deps (packages/explorer/node_modules is gitignored) before the web build.
+	cd packages/explorer && npm ci --silent
 	cd web && npm ci --silent && npm run build
 	touch internal/webui/dist/.gitkeep
 

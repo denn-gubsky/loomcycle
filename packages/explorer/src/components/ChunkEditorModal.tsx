@@ -1,12 +1,13 @@
 import { useState, type FormEvent } from "react";
-import { type BrowseScope, type ChunkDetail, type DocScope, documentUpdateChunk } from "../api";
+import type { BrowseScope, ChunkDetail, DocScope } from "../types";
+import { useExplorerData } from "../lib/dataLayer";
 
 // ChunkEditorModal edits one chunk's content — title, type, status, Markdown
 // body, and (optional) typed fields as JSON. Save is an optimistic-concurrency
 // update_chunk carrying the chunk's revision; a stale revision returns a
 // "revision conflict" the modal surfaces with a reload hint. Structural edits
 // (reparent / reorder / link / delete) are NOT here — those are the
-// document-management agent's job (RFC AM Phase 3).
+// document-management agent's job.
 export interface ChunkEditorModalProps {
   chunk: ChunkDetail;
   scope: DocScope;
@@ -18,6 +19,7 @@ export interface ChunkEditorModalProps {
 }
 
 export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSaved }: ChunkEditorModalProps) {
+  const data = useExplorerData();
   const [title, setTitle] = useState(chunk.title);
   const [type, setType] = useState(chunk.type ?? "");
   const [status, setStatus] = useState(chunk.status ?? "");
@@ -51,7 +53,7 @@ export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSave
     }
     setBusy(true);
     try {
-      const updated = await documentUpdateChunk(chunk.id, chunk.revision, patch, scope, browse);
+      const updated = await data.documentUpdateChunk(chunk.id, chunk.revision, patch, scope, browse);
       onSaved(updated);
       onClose();
     } catch (ex) {

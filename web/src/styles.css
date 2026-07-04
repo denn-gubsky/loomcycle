@@ -4841,6 +4841,21 @@ button.primary:disabled {
  * .tree/.children/.tree-caret skeleton + the .modal-* anchors; only the
  * path-specific row layout, toolbar, and detail pane are new.
  * ─────────────────────────────────────────────────────────────────────────── */
+/* @loomcycle/explorer (RFC AZ) renders the Path console + Document viewer inside
+ * a `.loomcycle-explorer` root wrapper. Web consumes the package SOURCE but not
+ * its scoped styles.css, so this wrapper is otherwise unstyled here. The pre-
+ * package pages placed `.paths-view` / `.doc-viewer` as a DIRECT child of the
+ * viewport-bounded `.content`; the new wrapper would break `height:100%` on the
+ * full-height Splitter (it'd collapse to content height). Make the wrapper a
+ * transparent flex-fill pass-through so height resolves exactly as before —
+ * mirrors what the package's own scoped sheet does for external hosts. (Inert
+ * when the parent has no definite height, so it can't regress other layouts.) */
+.loomcycle-explorer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
 .paths-view {
   height: 100%;
   min-height: 0;

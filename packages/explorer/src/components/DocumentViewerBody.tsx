@@ -1,47 +1,74 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  type BrowseScope,
-  type ChunkDetail,
-  type ChunkRow,
-  type DocScope,
-  documentExportMd,
-  documentGetChunk,
-  documentQueryChunks,
-} from "../api";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import type {
+  AssistantContext,
+  BrowseScope,
+  ChunkDetail,
+  ChunkRow,
+  DocScope,
+  Principal,
+} from "../types";
+import { useExplorerData } from "../lib/dataLayer";
 import DocumentChunkTree, {
   buildChunkTree,
   findChunkNode,
   type ChunkNode,
 } from "./DocumentChunkTree";
 import ChunkEditorModal from "./ChunkEditorModal";
-import DocumentAssistantPanel from "./DocumentAssistantPanel";
 import Markdown from "./Markdown";
 
-// DocumentViewer is the RFC AM Phase 2 read-mostly surface for one chunked-
-// graph document. The chunk tree stays on the left for navigation; the right
-// pane renders the SELECTED chunk in one of two views, toggled per selection:
-//   - chunks   — the selected chunk's own body (structured, per-chunk).
+// DocumentViewerBody is the read-mostly surface for one chunked-graph document
+// (RFC AK). The chunk tree stays on the left for navigation; the right pane
+// renders the SELECTED chunk in one of two views, toggled per selection:
+//   - chunk    — the selected chunk's own body (structured, per-chunk).
 //   - markdown — the selected chunk + its sub-chunks assembled into one Markdown
 //                document. Selecting the ROOT chunk therefore renders the whole
 //                document; selecting a section renders just that part.
-// Structural editing (move / link / delete chunks) is deliberately NOT here —
-// it is the document-management agent's job (Phase 3).
-export interface DocumentViewerProps {
+// Structural editing (move / link / delete chunks) is deliberately NOT here.
+//
+// This is the context-consuming body: it reads the injected ExplorerDataLayer
+// via useExplorerData() and is embedded by both the standalone <DocumentViewer>
+// root and the <PathExplorer> tree — neither re-wraps it in a data provider.
+export interface DocumentViewerBodyProps {
   documentId: string;
   scope: DocScope;
   // titleHint shows immediately (e.g. the Path-tree name) until the root chunk
   // title loads.
   titleHint?: string;
   // browse (RFC AS) selects whose subject's document to read — threaded into the
-  // off-run /v1/_document calls as ?scope_id= / ?tenant=. Unset → the caller's
-  // own subject (default). The server re-authorizes it.
+  // off-run document calls. Unset → the caller's own subject (default).
   browse?: BrowseScope;
+  // principal — only `subject` is read; passed into the renderAssistant context.
+  principal?: Principal;
+  // renderAssistant — an OPTIONAL host-provided Document Assistant slot. When
+  // provided, an "assistant" toggle appears and this renders into the panel;
+  // when omitted, no assistant affordance is shown and no run-stream machinery
+  // is pulled in. The host owns the run: it reads {documentId, scope, subject}.
+  renderAssistant?: (ctx: AssistantContext) => ReactNode;
 }
 
 // View mode for the selected-chunk pane (not the whole document).
 type Mode = "chunks" | "markdown";
 
-export default function DocumentViewer({ documentId, scope, titleHint, browse }: DocumentViewerProps) {
+export default function DocumentViewerBody({
+  documentId,
+  scope,
+  titleHint,
+  browse: browseProp,
+  principal,
+  renderAssistant,
+}: DocumentViewerBodyProps) {
+  const data = useExplorerData();
+
+  // Memoize browse on its primitives so a parent passing an inline object
+  // literal (`browse={{scopeId}}`) doesn't churn the fetch effects every render.
+  const browse = useMemo<BrowseScope | undefined>(
+    () =>
+      browseProp && (browseProp.scopeId || browseProp.tenant)
+        ? { scopeId: browseProp.scopeId, tenant: browseProp.tenant }
+        : undefined,
+    [browseProp?.scopeId, browseProp?.tenant],
+  );
+
   const [chunks, setChunks] = useState<ChunkRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [selectedDetail, setSelectedDetail] = useState<ChunkDetail | null>(null);
@@ -53,8 +80,6 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
   const [reload, setReload] = useState(0);
   const [assistantOpen, setAssistantOpen] = useState(false);
 
-  // Stable refresh for the assistant panel (avoids re-firing its turn-boundary
-  // effect every render).
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
   const tree = useMemo(() => buildChunkTree(chunks), [chunks]);
@@ -73,7 +98,8 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    documentQueryChunks(documentId, scope, browse)
+    data
+      .documentQueryChunks(documentId, scope, browse)
       .then((resp) => {
         if (cancelled) return;
         const rows = resp.chunks ?? [];
@@ -85,7 +111,7 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
     return () => {
       cancelled = true;
     };
-  }, [documentId, scope, reload, browse]);
+  }, [data, documentId, scope, reload, browse]);
 
   // Reset selection + view when the document changes.
   useEffect(() => {
@@ -102,13 +128,14 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
       return;
     }
     let cancelled = false;
-    documentGetChunk(selectedId, scope, browse)
+    data
+      .documentGetChunk(selectedId, scope, browse)
       .then((d) => !cancelled && setSelectedDetail(d))
       .catch((e) => !cancelled && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       cancelled = true;
     };
-  }, [selectedId, scope, reload, browse]);
+  }, [data, selectedId, scope, reload, browse]);
 
   // Assemble the selected chunk + its sub-chunks into one Markdown string for the
   // markdown view (fetches each descendant's body; heading depth is relative to
@@ -128,7 +155,7 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
       n.children.forEach((c) => walk(c, depth + 1));
     };
     walk(node, 0);
-    Promise.all(items.map((it) => documentGetChunk(it.node.row.id, scope, browse)))
+    Promise.all(items.map((it) => data.documentGetChunk(it.node.row.id, scope, browse)))
       .then((details) => {
         if (cancelled) return;
         const md = items
@@ -144,7 +171,7 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
     return () => {
       cancelled = true;
     };
-  }, [mode, selectedId, tree, scope, reload, browse]);
+  }, [data, mode, selectedId, tree, scope, reload, browse]);
 
   const onSelect = useCallback((n: ChunkNode) => setSelectedId(n.row.id), []);
 
@@ -152,7 +179,7 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
   // metadata comments), independent of the selected-chunk view above.
   const download = useCallback(async () => {
     try {
-      const r = await documentExportMd(documentId, scope, true, browse);
+      const r = await data.documentExportMd(documentId, scope, true, browse);
       const blob = new Blob([r.markdown], { type: "text/markdown" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -163,7 +190,7 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
-  }, [documentId, scope, browse]);
+  }, [data, documentId, scope, browse]);
 
   return (
     <div className="doc-viewer">
@@ -175,14 +202,16 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
           <button type="button" onClick={() => void download()} title="Download the whole document as Markdown (.md)">
             ↓ .md
           </button>
-          <button
-            type="button"
-            className={assistantOpen ? "active" : ""}
-            onClick={() => setAssistantOpen((o) => !o)}
-            title="Document Assistant — instruct an agent to restructure/import/link chunks"
-          >
-            assistant
-          </button>
+          {renderAssistant && (
+            <button
+              type="button"
+              className={assistantOpen ? "active" : ""}
+              onClick={() => setAssistantOpen((o) => !o)}
+              title="Document Assistant — instruct an agent to restructure/import/link chunks"
+            >
+              assistant
+            </button>
+          )}
           <button type="button" onClick={refresh} title="Reload">
             ↻
           </button>
@@ -212,7 +241,7 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
                   <span className="chunk-rev">rev {selectedDetail.revision}</span>
                 </div>
                 <div className="doc-content-controls">
-                  {/* The chunks/markdown switch is per-selected-chunk: markdown
+                  {/* The chunk/markdown switch is per-selected-chunk: markdown
                       assembles this chunk + its sub-chunks (the root → the whole
                       document). */}
                   <div className="doc-mode-toggle">
@@ -263,19 +292,17 @@ export default function DocumentViewer({ documentId, scope, titleHint, browse }:
           )}
         </div>
       </div>
-      {assistantOpen && (
-        <DocumentAssistantPanel
-          documentId={documentId}
-          scope={scope}
-          selectedChunkId={selectedId}
-          chunks={chunks}
-          selectedChunk={selectedDetail}
-          onChanged={refresh}
-          onStopped={(e) => {
-            setAssistantOpen(false);
-            if (e) setErr("Assistant: " + e);
-          }}
-        />
+      {assistantOpen && renderAssistant && (
+        <div className="doc-assistant">
+          {renderAssistant({
+            documentId,
+            scope,
+            subject: principal?.subject,
+            // Pass the viewer's own reload so the injected assistant can refresh
+            // the tree + selected chunk after a turn mutates the document.
+            onChanged: refresh,
+          })}
+        </div>
       )}
       {editing && (
         <ChunkEditorModal

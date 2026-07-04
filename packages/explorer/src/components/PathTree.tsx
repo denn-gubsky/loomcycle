@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import type { PathEntry } from "../api";
+import type { PathEntry } from "../types";
 
-// PathTree renders the RFC AL dirent tree (RFC AM Web UI Phase 1). The Path
-// tool's `ls recursive` returns a FLAT list of dirents; buildPathTree
-// reconstructs the hierarchy, synthesizing intermediate `directory` nodes for
-// path segments that have no explicit dirent row (implicit dirs, S3-style).
-// Modeled on AgentsTree: a single expand Map owned by the tree, default-
-// expanded, click-to-select.
+// PathTree renders the RFC AL dirent tree. The Path tool's `ls recursive`
+// returns a FLAT list of dirents; buildPathTree reconstructs the hierarchy,
+// synthesizing intermediate `directory` nodes for path segments that have no
+// explicit dirent row (implicit dirs, S3-style). A single expand Map owned by
+// the tree, default-expanded, click-to-select.
 
 export interface PathNode {
   name: string;
