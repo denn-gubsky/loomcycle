@@ -122,12 +122,10 @@ func (s *Server) handleLimitPut(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if err := s.limits.ReloadLimits(r.Context()); err != nil {
-		// The row is persisted; a reload fault just means the cached ceiling
-		// lags until the next reload/seed. Log-and-continue (advisory).
-		writeJSONError(w, http.StatusInternalServerError, "internal", "limit stored but reload failed: "+err.Error())
-		return
-	}
+	// Reflect the persisted row into the live ceiling cache (O(1), can't fail),
+	// so the new budget is enforced immediately — no store re-read that could
+	// leave the row stored-but-unenforced.
+	s.limits.PutLimit(row)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(limitRowResponse{
@@ -160,10 +158,8 @@ func (s *Server) handleLimitDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if err := s.limits.ReloadLimits(r.Context()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", "limit deleted but reload failed: "+err.Error())
-		return
-	}
+	// Drop the ceiling from the live cache immediately (O(1), can't fail).
+	s.limits.DeleteLimit(scope, tenantID, scopeID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

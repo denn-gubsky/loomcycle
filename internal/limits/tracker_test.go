@@ -196,8 +196,10 @@ func TestTracker_MonthRolloverResets(t *testing.T) {
 	}
 }
 
-// TestTracker_ReloadLimits picks up a new ceiling without a re-seed of counters.
-func TestTracker_ReloadLimits(t *testing.T) {
+// TestTracker_PutDeleteLimit picks up / drops a ceiling in the live cache
+// without a re-seed of counters — the O(1) path the CRUD handlers use so a
+// persisted budget is never left stored-but-unenforced by a failed re-read.
+func TestTracker_PutDeleteLimit(t *testing.T) {
 	fs := &fakeStore{aggs: []store.UsageAggregate{agg("acme", "u1", 900, 0)}}
 	tr := New(fs)
 	if err := tr.Seed(context.Background()); err != nil {
@@ -206,11 +208,59 @@ func TestTracker_ReloadLimits(t *testing.T) {
 	if dec := tr.Check("acme", "u1"); !dec.Allowed {
 		t.Fatal("no rows yet → allowed")
 	}
-	fs.limits = []store.TokenLimitRow{{TenantID: "acme", Scope: "tenant", HardLimit: i64(800)}}
-	if err := tr.ReloadLimits(context.Background()); err != nil {
+	// PutLimit reflects a persisted ceiling into the cache immediately.
+	tr.PutLimit(store.TokenLimitRow{TenantID: "acme", Scope: "tenant", HardLimit: i64(800)})
+	if dec := tr.Check("acme", "u1"); dec.Allowed {
+		t.Fatal("after PutLimit the hard tier must refuse")
+	}
+	// DeleteLimit drops it again → unlimited.
+	tr.DeleteLimit("tenant", "acme", "")
+	if dec := tr.Check("acme", "u1"); !dec.Allowed {
+		t.Fatal("after DeleteLimit the scope must be unlimited again")
+	}
+}
+
+// TestTracker_OperatorCrossingRedactsFigures verifies the RFC AW cross-tenant
+// oracle fix: an operator-scope (platform-wide) budget crossing delivered over
+// a run channel carries NO used/limit numbers (they aggregate every tenant),
+// only a generic message — while a tenant/user scope keeps its own figures.
+func TestTracker_OperatorCrossingRedactsFigures(t *testing.T) {
+	fs := &fakeStore{
+		aggs:   []store.UsageAggregate{agg("acme", "u1", 900, 0)},
+		limits: []store.TokenLimitRow{{Scope: "operator", HardLimit: i64(800)}},
+	}
+	tr := New(fs)
+	if err := tr.Seed(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if dec := tr.Check("acme", "u1"); dec.Allowed {
-		t.Fatal("after ReloadLimits the hard tier must refuse")
+	dec := tr.Check("acme", "u1")
+	if dec.Allowed || dec.Refusal == nil {
+		t.Fatal("operator hard cap (800) < used (900) must refuse")
+	}
+	r := dec.Refusal
+	if r.Scope != "operator" {
+		t.Fatalf("refusal scope = %q, want operator", r.Scope)
+	}
+	if r.Used != 0 || r.Limit != 0 {
+		t.Fatalf("operator figures leaked to a tenant caller: used=%d limit=%d (want 0/0)", r.Used, r.Limit)
+	}
+	if r.ScopeID != "" {
+		t.Fatalf("operator scope_id leaked: %q", r.ScopeID)
+	}
+	// A tenant-scope refusal, by contrast, keeps its own (non-cross-tenant) figures.
+	fs2 := &fakeStore{
+		aggs:   []store.UsageAggregate{agg("acme", "u1", 900, 0)},
+		limits: []store.TokenLimitRow{{TenantID: "acme", Scope: "tenant", HardLimit: i64(800)}},
+	}
+	tr2 := New(fs2)
+	if err := tr2.Seed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d2 := tr2.Check("acme", "u1")
+	if d2.Allowed || d2.Refusal == nil || d2.Refusal.Scope != "tenant" {
+		t.Fatal("tenant hard cap must refuse with scope=tenant")
+	}
+	if d2.Refusal.Used != 900 || d2.Refusal.Limit != 800 {
+		t.Fatalf("tenant figures wrongly redacted: used=%d limit=%d (want 900/800)", d2.Refusal.Used, d2.Refusal.Limit)
 	}
 }
