@@ -1215,20 +1215,30 @@ export class LoomcycleClient {
    *
    *  Raises {@link SubstrateToolRefusedError} on tool-level refusals (bad
    *  path, rm of a non-empty path without recursive, etc.);
-   *  {@link InvalidArgumentError} on 400; {@link AuthError} on 401. */
+   *  {@link InvalidArgumentError} on 400; {@link AuthError} on 401.
+   *
+   *  `opts.scopeId` / `opts.tenant` are the RFC AS browse-by-subject overrides
+   *  (sent as `?scope_id=` / `?tenant=` query params — the server reads them
+   *  from the URL, not the body, and re-checks authorization: a tenant
+   *  principal's `tenant` is ignored, `scopeId` picks any subject it may see).
+   *  Omit both to browse your own subject (byte-identical to the pre-RFC-AS
+   *  request). */
   async path(
     input: PathToolInput,
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
   ): Promise<PathToolResponse> {
-    return postJSON<PathToolResponse>(this.ctx, "/v1/_path", input, opts);
+    return postJSON<PathToolResponse>(this.ctx, "/v1/_path", input, {
+      signal: opts?.signal,
+      query: browseQuery(opts),
+    });
   }
 
   /** Invoke the RFC AK Document tool over HTTP (`POST /v1/_document`). A
    *  chunked-graph document where each chunk is a first-class unit (UUID,
    *  hierarchy, type, fields, graph edges, Markdown body) that agents and
-   *  humans co-author. Op-discriminated (13 ops: document/chunk lifecycle,
-   *  edges, query_chunks, type defs). Scope agent/user (tenant deferred);
-   *  resolved server-side from the principal.
+   *  humans co-author. Op-discriminated (16 ops: document/chunk lifecycle,
+   *  set_path, edges, query_chunks, type defs, export_md/import_md). Scope
+   *  agent/user (tenant deferred); resolved server-side from the principal.
    *
    *  Requires SQL Memory enabled on the sidecar (`LOOMCYCLE_SQLMEM_ENABLED=1`)
    *  — the chunk-structure tables live there. Without it the call is refused
@@ -1236,12 +1246,18 @@ export class LoomcycleClient {
    *
    *  Response varies per op — `create_document` returns
    *  `{document_id, root_chunk_id, ...}`, `query_chunks` returns rows.
-   *  {@link InvalidArgumentError} on 400; {@link AuthError} on 401. */
+   *  {@link InvalidArgumentError} on 400; {@link AuthError} on 401.
+   *
+   *  `opts.scopeId` / `opts.tenant` are the RFC AS browse-by-subject overrides —
+   *  see {@link LoomcycleClient.path}. Omit both to browse your own subject. */
   async document(
     input: DocumentToolInput,
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
   ): Promise<DocumentToolResponse> {
-    return postJSON<DocumentToolResponse>(this.ctx, "/v1/_document", input, opts);
+    return postJSON<DocumentToolResponse>(this.ctx, "/v1/_document", input, {
+      signal: opts?.signal,
+      query: browseQuery(opts),
+    });
   }
 
   /** List the PERSISTENT volume universe for the caller's tenant — every
@@ -1976,6 +1992,21 @@ function channelOpPath(
     return `/v1/users/${encodeURIComponent(userId)}/channels/${enc}/${op}`;
   }
   return `/v1/_channels/${enc}/${op}`;
+}
+
+// browseQuery maps the RFC AS browse-by-subject opts to the wire query-param
+// names the off-run Path/Document endpoints read from the URL (scope_id /
+// tenant — matching web/src/api.ts:substratePost). Only set values are
+// included; postJSON drops the query entirely when the map is empty, so a
+// caller passing neither builds the same URL as before RFC AS.
+function browseQuery(opts?: {
+  scopeId?: string;
+  tenant?: string;
+}): Record<string, string> {
+  const q: Record<string, string> = {};
+  if (opts?.scopeId) q.scope_id = opts.scopeId;
+  if (opts?.tenant) q.tenant = opts.tenant;
+  return q;
 }
 
 

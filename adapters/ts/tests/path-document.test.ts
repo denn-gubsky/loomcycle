@@ -44,6 +44,30 @@ describe("path", () => {
     expect(headers.Authorization).toBe("Bearer test-bearer");
   });
 
+  it("appends scope_id + tenant as query params for browse-by-subject", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ path: "/", entries: [] })]);
+    await client.path(
+      { op: "ls", path: "/", scope: "user" },
+      { scopeId: "u1", tenant: "acme" },
+    );
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe(
+      "http://test-loomcycle:8787/v1/_path?scope_id=u1&tenant=acme",
+    );
+    // The browse override rides the URL, not the body.
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("ls");
+    expect(body.scope_id).toBeUndefined();
+    expect(body.tenant).toBeUndefined();
+  });
+
+  it("omits the query string entirely when no browse opts are given", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ path: "/", entries: [] })]);
+    await client.path({ op: "ls", path: "/", scope: "user" });
+    // Regression guard: no browse override → URL is exactly /v1/_path (no `?`).
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_path");
+  });
+
   it("raises SubstrateToolRefusedError on 422 with code=tool_refused", async () => {
     const refusalBody = JSON.stringify({
       code: "tool_refused",
@@ -108,6 +132,37 @@ describe("document", () => {
     );
     expect(body.revision).toBe(3);
     expect(body.fields.owner).toBe("alice");
+  });
+
+  it("posts export_md with include_metadata through verbatim", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ markdown: "# Launch plan\n" }),
+    ]);
+    const result = (await client.document({
+      op: "export_md",
+      document_id: "d1",
+      include_metadata: false,
+    })) as Record<string, unknown>;
+    expect(result.markdown).toBe("# Launch plan\n");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_document");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("export_md");
+    expect(body.document_id).toBe("d1");
+    // An explicit false must survive (distinct from unset).
+    expect(body.include_metadata).toBe(false);
+  });
+
+  it("appends scope_id + tenant as query params for browse-by-subject", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ document_id: "d1" })]);
+    await client.document(
+      { op: "get_document", id: "d1", scope: "user" },
+      { scopeId: "u1", tenant: "acme" },
+    );
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_document?scope_id=u1&tenant=acme",
+    );
   });
 
   it("raises UnavailableError on 503 (SQL Memory / connector unwired)", async () => {
