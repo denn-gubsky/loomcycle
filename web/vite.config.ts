@@ -1,5 +1,20 @@
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+
+// Consume @loomcycle/library from SOURCE (not its built dist) so this Vite
+// build compiles it as part of the SPA — no separate package build step in the
+// embed pipeline (make build-ui just runs this build). The package emits the
+// same class names as web's global styles.css, so we deliberately do NOT alias
+// in the package's own styles.css (see LibraryView.tsx). The styles alias is
+// kept as a defensive resolution target and MUST precede the bare-package key:
+// @rollup/plugin-alias matches a string key against `id === key || id starts
+// with key + "/"`, so the bare "@loomcycle/library" key would otherwise capture
+// "@loomcycle/library/styles.css" and rewrite it to "<index.ts>/styles.css".
+const webRoot = path.dirname(fileURLToPath(import.meta.url));
+const libSrc = path.resolve(webRoot, "../packages/library/src/index.ts");
+const libStyles = path.resolve(webRoot, "../packages/library/src/styles.css");
 
 // loomcycle UI build configuration.
 //
@@ -15,6 +30,23 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   base: "/ui/",
+  resolve: {
+    // Order matters: the more-specific "/styles.css" key must come first (see
+    // the note above the libSrc/libStyles definitions).
+    alias: {
+      "@loomcycle/library/styles.css": libStyles,
+      "@loomcycle/library": libSrc,
+    },
+    // We consume @loomcycle/library from SOURCE, which imports `react` /
+    // `react-dom` (and the JSX runtime). Because the package has its OWN
+    // node_modules (for its standalone build), Vite would otherwise resolve
+    // those bare imports to packages/library/node_modules — a SECOND React
+    // copy, whose hooks dispatcher is null in web's render tree
+    // ("Cannot read properties of null (reading 'useMemo')"). dedupe forces a
+    // single copy from web/node_modules. (@loomcycle/client too, for good
+    // measure — a duplicate is wasteful even if not fatal.)
+    dedupe: ["react", "react-dom", "react/jsx-runtime", "@loomcycle/client"],
+  },
   build: {
     // Output INTO the Go package that owns the go:embed declaration.
     // `internal/webui` is the only Go package allowed to reference
