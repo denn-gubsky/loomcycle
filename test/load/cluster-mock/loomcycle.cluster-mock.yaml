@@ -65,7 +65,7 @@ agents:
       to the single-replica mock-fallback config; the only difference is
       this loomcycle runs as one of N cluster replicas behind a load
       balancer sharing one Postgres.
-    allowed_tools: [Memory, Channel, Context]
+    tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
       publish: ["research-done/*"]
@@ -84,7 +84,7 @@ agents:
       replicas, so this subscribe must traverse the loomcycle.channel
       LISTEN/NOTIFY backplane to wake. That cross-replica delivery is
       exactly what the channel-fan-out scenario exercises.
-    allowed_tools: [Memory, Channel, Context]
+    tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
       publish: ["editing-done/*"]
@@ -101,7 +101,7 @@ agents:
       Mock evaluator agent. Same cross-replica subscribe semantics on
       editing-done/*. The deterministic score is unaffected by which
       replica or provider served any iteration.
-    allowed_tools: [Memory, Channel, Evaluation, Context]
+    tools: [Memory, Channel, Evaluation, Context]
     memory_scopes: [user]
     evaluation_scopes: [submit_any]
     channels:

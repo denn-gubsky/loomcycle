@@ -1,7 +1,7 @@
 ---
 name: semantic-chunking
 description: Split arbitrary prose or a Markdown file into a sensible chunk hierarchy in a chunked-graph Document.
-allowed_tools: [Document]
+tools: [Document]
 license: Apache-2.0
 ---
 

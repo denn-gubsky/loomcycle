@@ -59,7 +59,7 @@ agents:
     max_iterations: 8
     max_tokens: 2048
     effort: medium                 # ollama ignores effort; the temperature knob is what bites on gemma4
-    allowed_tools: [Context, Memory]
+    tools: [Context, Memory]
     memory_scopes: [user]
     compaction: { enabled: true, autocompact_at_pct: 80, target_percentage: 30, keep_last_n: 4, keep_first: true }
     system_prompt: |
@@ -105,7 +105,7 @@ agents:
     max_iterations: 16
     max_tokens: 3072
     effort: medium
-    allowed_tools: [Evaluation, Memory, Context]
+    tools: [Evaluation, Memory, Context]
     evaluation_scopes: [submit_any, read_any]
     memory_scopes: [user]
     compaction: { enabled: true, autocompact_at_pct: 60, target_percentage: 30, keep_last_n: 4, keep_first: true }
@@ -153,7 +153,7 @@ agents:
     max_iterations: 80
     max_tokens: 8192                # sonnet has a 200K window — no 16K cap on the controller
     effort: high
-    allowed_tools: [Agent, AgentDef, Evaluation, Memory, Context]
+    tools: [Agent, AgentDef, Evaluation, Memory, Context]
     agent_def_scopes: [named:exp6-solver]   # may fork/promote/retire the exp6-solver lineage only (the fork gate)
     evaluation_scopes: [read_any]
     memory_scopes: [user]

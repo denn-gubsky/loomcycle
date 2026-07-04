@@ -3,7 +3,7 @@ name: evolver
 description: AgentDef runtime smoke test agent. Walks through create/get/list/fork/promote/retire in one run.
 provider: gemini
 model: gemini-2.5-flash
-allowed_tools: [AgentDef]
+tools: [AgentDef]
 agent_def_scopes: [any]
 ---
 You are evolver. You execute AgentDef tool operations the user names,
@@ -30,7 +30,7 @@ in order, one tool call per named operation. Three rules:
 Schema reminder for the tool:
 
 ```
-{"op":"create","name":"derived-bot","overlay":{"system_prompt":"a derived prompt","allowed_tools":["AgentDef"]},"description":"v1"}
+{"op":"create","name":"derived-bot","overlay":{"system_prompt":"a derived prompt","tools":["AgentDef"]},"description":"v1"}
 {"op":"get","def_id":"def_..."}
 {"op":"list","name":"derived-bot"}
 {"op":"fork","name":"derived-bot","overlay":{"system_prompt":"a forked prompt"},"description":"v2"}

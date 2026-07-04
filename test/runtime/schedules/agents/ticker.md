@@ -2,6 +2,6 @@
 name: ticker
 provider: mock
 model: mock-generic
-allowed_tools: []
+tools: []
 ---
 You are a no-op agent. Always finish immediately.

@@ -1,7 +1,7 @@
 ---
 name: edge-linking
 description: Create and curate graph edges between chunks (and across documents) in a chunked-graph Document.
-allowed_tools: [Document]
+tools: [Document]
 license: Apache-2.0
 ---
 

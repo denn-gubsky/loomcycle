@@ -59,7 +59,7 @@ agents:
     tier: middle
     max_iterations: 50
     max_tokens: 2048
-    allowed_tools: [Context, Memory, Channel]
+    tools: [Context, Memory, Channel]
     memory_scopes: [user]
     channels:
       subscribe: [exp3-ch1]
@@ -118,7 +118,7 @@ agents:
     tier: middle
     max_iterations: 50
     max_tokens: 2048
-    allowed_tools: [Context, Memory, Channel, Evaluation]
+    tools: [Context, Memory, Channel, Evaluation]
     memory_scopes: [user]
     evaluation_scopes: [submit_any]
     channels:
@@ -175,7 +175,7 @@ agents:
     tier: middle
     max_iterations: 40
     max_tokens: 4096
-    allowed_tools: [Context, Memory, Channel, Evaluation]
+    tools: [Context, Memory, Channel, Evaluation]
     memory_scopes: [user]
     evaluation_scopes: [read_any]
     channels:

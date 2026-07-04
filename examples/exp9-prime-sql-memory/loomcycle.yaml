@@ -80,7 +80,7 @@ agents:
     tier: middle
     max_iterations: 20
     max_tokens: 4096
-    allowed_tools: [Context, Bash, Memory, Channel]
+    tools: [Context, Bash, Memory, Channel]
     sql_scopes: [user]
     memory_scopes: [user]
     volumes: [default]
@@ -133,7 +133,7 @@ agents:
     tier: middle
     max_iterations: 20
     max_tokens: 4096
-    allowed_tools: [Context, Bash, Memory, Channel]
+    tools: [Context, Bash, Memory, Channel]
     sql_scopes: [user]
     memory_scopes: [user]
     volumes: [default]

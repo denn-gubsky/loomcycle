@@ -113,7 +113,7 @@ agents:
         3. Call Channel.publish with: channel="research-done/c{N}",
            message={"circuit_id":"c{N}"} (same circuit_id).
         4. Stop. Do not narrate. Do not summarise what you did.
-    allowed_tools: [Memory, Channel, Context]
+    tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
       publish: ["research-done/*"]
@@ -164,7 +164,7 @@ agents:
       Do NOT say "waiting for next step" or "ready for instructions"
       or anything similar — those phrases end the run prematurely.
       Do NOT narrate progress. Just emit the next tool call.
-    allowed_tools: [Memory, Channel, Context]
+    tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
       publish: ["editing-done/*"]
@@ -219,7 +219,7 @@ agents:
       Do NOT say "waiting for next step" or "ready for instructions"
       or anything similar — those phrases end the run prematurely.
       Do NOT narrate progress. Just emit the next tool call.
-    allowed_tools: [Memory, Channel, Evaluation, Context]
+    tools: [Memory, Channel, Evaluation, Context]
     memory_scopes: [user]
     # submit_any is needed because the evaluator is a SIBLING of the
     # editor (different agent, no parent/child relationship). The

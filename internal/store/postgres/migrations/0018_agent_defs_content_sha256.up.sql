@@ -1,7 +1,7 @@
 -- 0018_agent_defs_content_sha256.up.sql — v0.9.x content signing.
 --
 -- Adds a deterministic SHA-256 hash of every agent_def's content-
--- bearing fields (system_prompt, allowed_tools, skills, max_tokens,
+-- bearing fields (system_prompt, tools, skills, max_tokens,
 -- max_iterations, etc.) computed by internal/agents.Sign. Operators
 -- with Docker-bundled agents use this to ask "is my bundle's source
 -- file identical to what's deployed?" without fetching the full

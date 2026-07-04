@@ -1,7 +1,7 @@
 id: mid-08-format-switching
 tier: middle
 description: Two-prompt sequence inside one run. First answer in prose, then re-render same content as JSON. Tests format flexibility.
-allowed_tools: []
+tools: []
 max_turns: 2
 input_text: |
   First, write a short professional summary (3-4 sentences) of this

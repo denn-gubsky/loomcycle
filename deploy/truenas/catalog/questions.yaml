@@ -403,7 +403,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_BASHBOX_ENABLED
             label: LOOMCYCLE_BASHBOX_ENABLED
-            description: 'An alternative to Bash: a real sandbox (the pure-Go `gbash` engine) that spawns NO OS process, roots every path at the agent''s mounted volume, and has NO network. Unlike Bash it HONORS read-only volumes (writes hit an in-RAM overlay, never the host). Opt-in, then grant per agent via `allowed_tools: [Bashbox]`. gbash is alpha — the per-agent gate is the escape hatch. Defaults OFF. (example: 1)'
+            description: 'An alternative to Bash: a real sandbox (the pure-Go `gbash` engine) that spawns NO OS process, roots every path at the agent''s mounted volume, and has NO network. Unlike Bash it HONORS read-only volumes (writes hit an in-RAM overlay, never the host). Opt-in, then grant per agent via `tools: [Bashbox]`. gbash is alpha — the per-agent gate is the escape hatch. Defaults OFF. (example: 1)'
             schema:
               type: string
               default: ""

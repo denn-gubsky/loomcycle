@@ -1,7 +1,7 @@
 id: mid-04-tool-routing
 tier: middle
 description: Two tasks; each is plausibly served by one specific tool. Correct routing means web search for live data, MCP getResearch for stored data. Tests judgment about which tool fits which task.
-allowed_tools: ["mcp__brave-search__brave_web_search", "mcp__jobs__getResearch"]
+tools: ["mcp__brave-search__brave_web_search", "mcp__jobs__getResearch"]
 max_turns: 6
 input_text: |
   Task A: What is the latest stable Go version released? (Live web

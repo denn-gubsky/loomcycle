@@ -1,7 +1,7 @@
 id: mid-05-long-context-fidelity
 tier: middle
 description: 25KB inline context with 3 specific facts buried. Tests recall fidelity at middle-tier context lengths.
-allowed_tools: []
+tools: []
 max_turns: 2
 input_text: |
   Read the following candidate background carefully. There are three

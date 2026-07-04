@@ -1,7 +1,7 @@
 id: low-04-batched-ingest
 tier: low
 description: Codifies the deepseek-v4-pro 659s incident from 2026-05-09. Given 25 URLs upfront, the model must batch them into ~3 postSearchIngest calls (the route supports multiple batches; one giant call is what caused the production timeout).
-allowed_tools: ["mcp__jobs__postSearchIngest"]
+tools: ["mcp__jobs__postSearchIngest"]
 max_turns: 8
 input_text: |
   You have 25 job posting URLs to ingest. Call `mcp__jobs__postSearchIngest`

@@ -1,7 +1,7 @@
 id: mid-06-self-correction
 tier: middle
 description: First patchApplication call uses uppercase status (rejected by enum); pass = retry with the corrected lowercase value on turn 2. Real schema enforcement; no contrived error mode.
-allowed_tools: ["mcp__jobs__patchApplication"]
+tools: ["mcp__jobs__patchApplication"]
 max_turns: 4
 input_text: |
   Call `mcp__jobs__patchApplication` for application id

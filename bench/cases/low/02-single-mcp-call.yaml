@@ -1,7 +1,7 @@
 id: low-02-single-mcp-call
 tier: low
 description: Call mcp__jobs__getAgentContext exactly once with empty args (the tool takes no parameters — user identity is derived from the bearer token). Tests schema-correct tool invocation against the real MCP contract.
-allowed_tools: ["mcp__jobs__getAgentContext"]
+tools: ["mcp__jobs__getAgentContext"]
 max_turns: 4
 input_text: |
   Call the jobs MCP server's `getAgentContext` tool to load this run's

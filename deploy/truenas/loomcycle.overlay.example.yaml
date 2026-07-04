@@ -30,7 +30,7 @@ volumes:
 # agents:
 #   my-agent:
 #     tier: middle
-#     allowed_tools: [Read, Write, Edit, Grep, Glob]
+#     tools: [Read, Write, Edit, Grep, Glob]
 #     volumes: [work]
 #     system_prompt: |
 #       …

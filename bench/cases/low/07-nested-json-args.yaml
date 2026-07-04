@@ -1,7 +1,7 @@
 id: low-07-nested-json-args
 tier: low
 description: "Call patchApplication, which requires a nested top-level shape of id + body (where body is itself an object of fields). Tests the model's ability to construct correct nested-JSON tool args (vs flattening or stringifying)."
-allowed_tools: ["mcp__jobs__patchApplication"]
+tools: ["mcp__jobs__patchApplication"]
 max_turns: 4
 input_text: |
   Call `mcp__jobs__patchApplication` for application id

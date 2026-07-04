@@ -42,7 +42,7 @@ agents:
     tier: middle            # claude-sonnet-4-6 (OAuth) → deepseek-v4-pro fallback
     max_tokens: 8192
     effort: medium
-    allowed_tools: [Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch]
+    tools: [Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch]
     system_prompt: |
       You are code-guru, a principal-level software engineer (Python, Go,
       C/C++, JavaScript, shell) running inside a loomcycle sandbox with

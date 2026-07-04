@@ -1,7 +1,7 @@
 id: low-03-multi-turn-search-and-ingest
 tier: low
 description: "Two-turn loop. Search Brave for jobs, then call postSearchIngest once with the matches. Tests multi-turn tool use against the actual postSearchIngest schema (body shape: date + matches)."
-allowed_tools: ["mcp__brave-search__brave_web_search", "mcp__jobs__postSearchIngest"]
+tools: ["mcp__brave-search__brave_web_search", "mcp__jobs__postSearchIngest"]
 max_turns: 6
 input_text: |
   Workflow:

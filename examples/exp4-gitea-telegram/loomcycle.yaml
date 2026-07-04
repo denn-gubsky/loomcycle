@@ -54,7 +54,7 @@ agents:
     tier: middle
     max_iterations: 60
     max_tokens: 8192
-    allowed_tools: [Bash, Read, Write, Edit, Channel, "mcp__gitea__*"]
+    tools: [Bash, Read, Write, Edit, Channel, "mcp__gitea__*"]
     channels:
       subscribe: [exp4-tasks]
     system_prompt: |
@@ -84,7 +84,7 @@ agents:
     tier: middle
     max_iterations: 40
     max_tokens: 8192
-    allowed_tools: [Bash, "mcp__gitea__*"]
+    tools: [Bash, "mcp__gitea__*"]
     system_prompt: |
       You are the REVIEWER, spawned by a Gitea `pull_request` webhook. The webhook
       JSON is in your prompt — parse it.
@@ -112,7 +112,7 @@ agents:
     tier: middle
     max_iterations: 30
     max_tokens: 4096
-    allowed_tools: ["mcp__gitea__*", "mcp__telegram__*", Channel]
+    tools: ["mcp__gitea__*", "mcp__telegram__*", Channel]
     channels:
       publish: [exp4-tasks]
     system_prompt: |

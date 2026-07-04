@@ -1,7 +1,7 @@
 id: low-08-websearch-summarize-json
 tier: low
 description: WebSearch + structural output combined. Search a query, summarize the top 3 results in a fixed JSON schema.
-allowed_tools: ["mcp__brave-search__brave_web_search"]
+tools: ["mcp__brave-search__brave_web_search"]
 max_turns: 4
 input_text: |
   Search Brave for "Go programming language official documentation"

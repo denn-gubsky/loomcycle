@@ -31,7 +31,7 @@ user_tiers:
 agents:
   demo:
     tier: low
-    allowed_tools: [Read, Memory]
+    tools: [Read, Memory]
     memory_scopes: [agent, user]
     system_prompt: |
       You are a friendly demo agent. Respond briefly. Use the Memory

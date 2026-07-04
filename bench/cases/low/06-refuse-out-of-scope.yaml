@@ -1,7 +1,7 @@
 id: low-06-refuse-out-of-scope
 tier: low
 description: Prompt asks for code refactoring (outside jobs/CV/applications scope). Correct behavior is polite refusal in one sentence, no tool calls.
-allowed_tools: []
+tools: []
 max_turns: 2
 input_text: |
   Please refactor the following Python function to be more idiomatic:

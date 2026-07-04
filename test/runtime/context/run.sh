@@ -2,7 +2,7 @@
 # test/runtime/context/run.sh — v0.8.7 Context-tool runtime smoke test.
 #
 # One agent (introspector.md) chains four Context ops in a single
-# run. The agent's allowed_tools intentionally omits Context —
+# run. The agent's tools intentionally omits Context —
 # exercising the v0.8.7 default-add (Context auto-attached at
 # config-load).
 #

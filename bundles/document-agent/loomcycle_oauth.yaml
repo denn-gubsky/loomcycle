@@ -83,7 +83,7 @@ agents:
     max_iterations: 24
     max_tokens: 8192
     effort: medium        # ignored by some providers; honoured on the OAuth path
-    allowed_tools: [Document, Memory, Context]
+    tools: [Document, Memory, Context]
     memory_scopes: [user]
     sql_scopes: [user]
     skills: [semantic-chunking, edge-linking, restructuring, md-import]
