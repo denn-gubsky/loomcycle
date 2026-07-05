@@ -1180,34 +1180,29 @@ func OperatorTokenDefPolicy(ctx context.Context) OperatorTokenDefPolicyValue {
 	return v
 }
 
-// ctxKeySkillDefPolicy carries the v0.8.22 SkillDef-tool capability
-// gate. Mirrors AgentDefPolicy shape, sans the SelfName field —
-// skills have no agent identity so a "self" scope is meaningless.
-type ctxKeySkillDefPolicy struct{}
+// ctxKeySkillPolicy carries the RFC BA per-agent skill access policy — the
+// agent's `skills:` pattern allowlist, governing skill listing, use (Skill
+// invoke), and authoring (SkillDef create/fork/list/get) uniformly.
+type ctxKeySkillPolicy struct{}
 
-// SkillDefPolicyValue is the per-agent SkillDef-tool access policy.
+// SkillPolicyValue is the per-agent skill access policy (RFC BA).
 //
-//   - Scopes is the operator-yaml skill_def_scopes list. Closed set:
-//     "any" / "descendants" / "named:<skill-name>". Empty =
-//     default-deny.
-//
-// `descendants` is reserved for symmetry with AgentDefPolicy and
-// currently behaves equivalent to "any" pending lineage-walk
-// implementation (same v0.9.x TODO as AgentDef).
-type SkillDefPolicyValue struct {
-	Scopes []string
+//   - Patterns is the operator-yaml `skills:` pattern allowlist evaluated by
+//     internal/skillmatch (`doc/*`/`+doc/*` allow, `-doc/*`/`-*` deny). Empty =
+//     allow ALL (the RFC BA default); `-*` = deny all.
+type SkillPolicyValue struct {
+	Patterns []string
 }
 
-// WithSkillDefPolicy attaches the policy to ctx.
-func WithSkillDefPolicy(ctx context.Context, p SkillDefPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeySkillDefPolicy{}, p)
+// WithSkillPolicy attaches the policy to ctx.
+func WithSkillPolicy(ctx context.Context, p SkillPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeySkillPolicy{}, p)
 }
 
-// SkillDefPolicy returns the policy from ctx. Zero value = no
-// access (default-deny — the tool refuses every mutation op until
-// scopes are explicitly granted via yaml).
-func SkillDefPolicy(ctx context.Context) SkillDefPolicyValue {
-	v, _ := ctx.Value(ctxKeySkillDefPolicy{}).(SkillDefPolicyValue)
+// SkillPolicy returns the policy from ctx. Zero value (nil Patterns) = allow
+// all — the RFC BA default when nothing was stamped (open mode / admin paths).
+func SkillPolicy(ctx context.Context) SkillPolicyValue {
+	v, _ := ctx.Value(ctxKeySkillPolicy{}).(SkillPolicyValue)
 	return v
 }
 

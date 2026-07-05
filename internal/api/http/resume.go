@@ -292,7 +292,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
-	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
+	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))

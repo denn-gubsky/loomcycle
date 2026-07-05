@@ -157,7 +157,7 @@ func (s *SkillDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
-	policy := tools.SkillDefPolicy(ctx)
+	policy := tools.SkillPolicy(ctx)
 
 	switch in.Op {
 	case "create":
@@ -183,7 +183,7 @@ func (s *SkillDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 
 // ---- create ----
 
-func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
+func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("create: missing required field: name"), nil
 	}
@@ -262,7 +262,7 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyVa
 
 // ---- fork ----
 
-func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
+func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("fork: missing required field: name"), nil
 	}
@@ -412,7 +412,7 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 
 // ---- get / list ----
 
-func (s *SkillDef) execGet(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
+func (s *SkillDef) execGet(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
 	if in.DefID == "" {
 		return errResult("get: missing required field: def_id"), nil
 	}
@@ -438,7 +438,7 @@ func (s *SkillDef) execGet(ctx context.Context, policy tools.SkillDefPolicyValue
 	return okJSON(skillDefRowResponse(row, false))
 }
 
-func (s *SkillDef) execList(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
+func (s *SkillDef) execList(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("list: missing required field: name"), nil
 	}
@@ -465,7 +465,7 @@ func (s *SkillDef) execList(ctx context.Context, policy tools.SkillDefPolicyValu
 
 // ---- retire / promote ----
 
-func (s *SkillDef) execRetire(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
+func (s *SkillDef) execRetire(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
 	if in.DefID == "" {
 		return errResult("retire: missing required field: def_id"), nil
 	}
@@ -495,7 +495,7 @@ func (s *SkillDef) execRetire(ctx context.Context, policy tools.SkillDefPolicyVa
 	return okJSON(map[string]any{"def_id": in.DefID, "retired": *in.Retired})
 }
 
-func (s *SkillDef) execPromote(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
+func (s *SkillDef) execPromote(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
 	if in.DefID == "" {
 		return errResult("promote: missing required field: def_id"), nil
 	}
@@ -524,7 +524,7 @@ func (s *SkillDef) execPromote(ctx context.Context, policy tools.SkillDefPolicyV
 // execVerify — see agentdef.go execVerify for full doc. Same shape
 // for skills: caller passes name + content_sha256 from a local
 // hash, tool reads the active row + answers matches.
-func (s *SkillDef) execVerify(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
+func (s *SkillDef) execVerify(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("verify: missing required field: name"), nil
 	}
@@ -559,32 +559,17 @@ func (s *SkillDef) execVerify(ctx context.Context, policy tools.SkillDefPolicyVa
 
 // ---- helpers ----
 
-// checkScopeForName enforces the agent's skill_def_scopes against a
-// proposed (name, def_id) target. Default-deny when policy.Scopes
-// is empty. Same shape as AgentDef.checkScopeForName minus the
-// "self" branch.
-func (s *SkillDef) checkScopeForName(policy tools.SkillDefPolicyValue, name, _ string) error {
-	if len(policy.Scopes) == 0 {
-		return fmt.Errorf("SkillDef tool: agent has no skill_def_scopes (default-deny); add `skill_def_scopes: [...]` to the agent yaml")
+// checkScopeForName enforces the agent's RFC BA `skills:` pattern allowlist
+// against a proposed skill name (used by create/fork/get/list/retire/promote/
+// verify). Empty allowlist = ALLOW (the RFC BA default: create-anywhere /
+// list-all); `-*` denies everything; a whitelist permits only matching names.
+// Authoring additionally requires the agent to hold the SkillDef tool + the
+// tools ⊆ subset check (assertToolsSubset).
+func (s *SkillDef) checkScopeForName(policy tools.SkillPolicyValue, name, _ string) error {
+	if skillmatch.Allowed(policy.Patterns, name) {
+		return nil
 	}
-	for _, sc := range policy.Scopes {
-		switch sc {
-		case "any":
-			return nil
-		case "descendants":
-			// KNOWN GAP (TODO v0.9.x): equivalent to "any" pending
-			// lineage-walk implementation. Mirror of the AgentDef
-			// caveat — same defer for the same reason.
-			return nil
-		default:
-			if strings.HasPrefix(sc, "named:") {
-				if strings.TrimPrefix(sc, "named:") == name {
-					return nil
-				}
-			}
-		}
-	}
-	return fmt.Errorf("SkillDef tool: name %q not in this agent's skill_def_scopes (%v)", name, policy.Scopes)
+	return fmt.Errorf("SkillDef tool: skill %q is not permitted by this agent's `skills:` allowlist (%v)", name, policy.Patterns)
 }
 
 // buildDefinition takes the base definition (parent's JSON for

@@ -65,9 +65,7 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
 	})
-	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
-		Scopes: []string{"any"},
-	})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{}) // RFC BA: nil patterns = allow all skills
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,

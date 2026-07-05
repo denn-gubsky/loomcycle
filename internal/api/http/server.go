@@ -1266,10 +1266,10 @@ func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName st
 		}
 }
 
-// skillDefPolicyForAgent returns the v0.8.22 SkillDef policy for
+// skillPolicyForAgent returns the v0.8.22 SkillDef policy for
 // one agent. Default-deny: empty SkillDefScopes → no SkillDef ops.
-func (s *Server) skillDefPolicyForAgent(agentDef config.AgentDef) tools.SkillDefPolicyValue {
-	return tools.SkillDefPolicyValue{Scopes: agentDef.SkillDefScopes}
+func (s *Server) skillPolicyForAgent(agentDef config.AgentDef) tools.SkillPolicyValue {
+	return tools.SkillPolicyValue{Patterns: agentDef.Skills}
 }
 
 // volumeDefPolicyForAgent returns the RFC AH Phase 2a VolumeDef policy
@@ -2157,7 +2157,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
-	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
+	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
@@ -3594,7 +3594,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
-	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
+	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
@@ -4131,7 +4131,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
-	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
+	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
@@ -5223,7 +5223,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// parent's.
 	subADPolicy, subEvPolicy := s.substratePoliciesForAgent(def, name)
 	subCtx = tools.WithAgentDefPolicy(subCtx, subADPolicy)
-	subCtx = tools.WithSkillDefPolicy(subCtx, s.skillDefPolicyForAgent(def))
+	subCtx = tools.WithSkillPolicy(subCtx, s.skillPolicyForAgent(def))
 	subCtx = tools.WithVolumeDefPolicy(subCtx, s.volumeDefPolicyForAgent(def))
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(def))
