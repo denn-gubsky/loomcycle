@@ -8,6 +8,33 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.13.1
+
+**🩹 WebUI patch — `allowed_tools` residual cleanup + tenant routing/credentials
+polish.** Server + WebUI only; the TS/Python adapters are unchanged at 1.13.0.
+
+- **`allowed_tools` → `tools` residual cleanup (WebUI).** The v1.13.0 rename left
+  internal camelCase `allowedTools` identifiers in the Library edit modal (React
+  state/props + the `lib-allowed-tools` DOM id) and a local var in `claudeImport`;
+  renamed to `tools` / `lib-tools`. The web build also pinned `@loomcycle/client`
+  at 1.12.1, so the SPA bundled that old client's `allowedTools`→`allowed_tools`
+  wire-mapping (dead code); web now bundles `@loomcycle/client` 1.13.0 so a clean
+  build carries no `allowed_tools` string. The visible field label was already
+  "tools" (RFC AY). (#661)
+- **Settings → Routing shows live availability to tenants.** The routing view
+  computed provider availability only for admins; it now shows per-candidate
+  availability (reachable / stalled / rate-limited / selected) to tenants too, plus
+  the active-providers header — filtered to the tenant's keyable providers when the
+  deployment runs `LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1` (RFC AX). The raw provider
+  `last_error` stays admin-only (it can leak operator infra detail). (#662)
+- **Settings → Credentials key-name combobox.** The credential name field is now an
+  editable `<datalist>` dropdown of the known provider/tool key env-var names
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`,
+  `OLLAMA_API_KEY`, `BRAVE_API_KEY`; per `docs/CREDENTIALS.md`), still accepting any
+  custom `$cred:` label. (#662)
+
+---
+
 ## What's in v1.13.0
 
 **⚠️ Breaking — the tool-allowlist key is renamed `allowed_tools` → `tools`.**
