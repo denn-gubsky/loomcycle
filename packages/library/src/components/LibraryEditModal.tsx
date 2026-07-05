@@ -124,7 +124,7 @@ export default function LibraryEditModal({
   const [codeBody, setCodeBody] = useState(
     pickString(forkSource?.definition, "code_body"),
   );
-  const [allowedTools, setAllowedTools] = useState(
+  const [tools, setTools] = useState(
     pickStringArray(forkSource?.definition, "tools").join(", "),
   );
   const [agentSkills, setAgentSkills] = useState(
@@ -219,7 +219,7 @@ export default function LibraryEditModal({
   const [skillBody, setSkillBody] = useState<string>(
     pickString(forkSource?.definition, "body"),
   );
-  const [skillAllowedTools, setSkillAllowedTools] = useState<string>(
+  const [skillTools, setSkillTools] = useState<string>(
     pickStringArray(forkSource?.definition, "tools").join(", "),
   );
 
@@ -391,8 +391,8 @@ export default function LibraryEditModal({
       // hash-significant). Omit when empty so a fork of an LLM agent
       // doesn't write a "" body.
       if (codeBody.trim()) ov.code_body = codeBody;
-      const tools = parseCommaList(allowedTools);
-      if (tools.length > 0) ov.tools = tools;
+      const toolsList = parseCommaList(tools);
+      if (toolsList.length > 0) ov.tools = toolsList;
       const sk = parseCommaList(agentSkills);
       if (sk.length > 0) ov.skills = sk;
       const provs = parseCommaList(agentProviders);
@@ -466,8 +466,8 @@ export default function LibraryEditModal({
     if (kind === "skill") {
       const ov: Record<string, unknown> = { body: skillBody };
       if (description.trim()) ov.description = description.trim();
-      const tools = parseCommaList(skillAllowedTools);
-      if (tools.length > 0) ov.tools = tools;
+      const toolsList = parseCommaList(skillTools);
+      if (toolsList.length > 0) ov.tools = toolsList;
       return ov;
     }
     // mcp-server
@@ -615,8 +615,8 @@ export default function LibraryEditModal({
             setSystemPrompt={setSystemPrompt}
             codeBody={codeBody}
             setCodeBody={setCodeBody}
-            allowedTools={allowedTools}
-            setAllowedTools={setAllowedTools}
+            tools={tools}
+            setTools={setTools}
             agentSkills={agentSkills}
             setAgentSkills={setAgentSkills}
             maxTokens={maxTokens}
@@ -671,8 +671,8 @@ export default function LibraryEditModal({
 
         {kind === "skill" && (
           <SkillFields
-            allowedTools={skillAllowedTools}
-            setAllowedTools={setSkillAllowedTools}
+            tools={skillTools}
+            setTools={setSkillTools}
             body={skillBody}
             setBody={setSkillBody}
             submitting={submitting}
@@ -749,8 +749,8 @@ interface AgentFieldsProps {
   setSystemPrompt: (v: string) => void;
   codeBody: string;
   setCodeBody: (v: string) => void;
-  allowedTools: string;
-  setAllowedTools: (v: string) => void;
+  tools: string;
+  setTools: (v: string) => void;
   agentSkills: string;
   setAgentSkills: (v: string) => void;
   maxTokens: string;
@@ -909,17 +909,17 @@ function AgentFields(props: AgentFieldsProps) {
       )}
 
       <div className="library-form-row">
-        <label htmlFor="lib-allowed-tools">
+        <label htmlFor="lib-tools">
           tools
           <span className="library-modal-field-hint">
             {" "}— comma-separated tool names (Read, WebFetch, Memory…)
           </span>
         </label>
         <input
-          id="lib-allowed-tools"
+          id="lib-tools"
           type="text"
-          value={props.allowedTools}
-          onChange={(e) => props.setAllowedTools(e.target.value)}
+          value={props.tools}
+          onChange={(e) => props.setTools(e.target.value)}
           disabled={props.submitting}
           placeholder="Read, WebFetch, Memory, Channel"
         />
@@ -1306,8 +1306,8 @@ function AgentAdvancedOverlay(props: {
 }
 
 function SkillFields(props: {
-  allowedTools: string;
-  setAllowedTools: (v: string) => void;
+  tools: string;
+  setTools: (v: string) => void;
   body: string;
   setBody: (v: string) => void;
   submitting: boolean;
@@ -1324,8 +1324,8 @@ function SkillFields(props: {
         <input
           id="lib-skill-tools"
           type="text"
-          value={props.allowedTools}
-          onChange={(e) => props.setAllowedTools(e.target.value)}
+          value={props.tools}
+          onChange={(e) => props.setTools(e.target.value)}
           disabled={props.submitting}
           placeholder="WebFetch, Read"
         />
