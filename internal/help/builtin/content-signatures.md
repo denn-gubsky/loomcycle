@@ -42,14 +42,15 @@ Excluded from both (would defeat the "did the content change?" point):
 `def_id`, `version`, `parent_def_id`, `created_at`, `created_by_*`,
 `retired`, `bootstrapped_from_static`.
 
-Also explicitly excluded from the AgentDef hash: `channels`,
-`agent_def_scopes`, `skill_def_scopes`, `evaluation_scopes`. These
-exist on the operator-yaml loader path but DO NOT round-trip through
-`AgentDef set` / `fork` — they're operator-yaml-only ACL declarations
-the substrate doesn't persist in the `agent_defs` row. If they
-participated in the hash, a YAML-loaded agent and the same agent
-pushed via the substrate would hash differently and the whole
-comparison would falsely report drift.
+Also excluded from the AgentDef hash: the `*_def_scopes` gates
+(`agent_def_scopes`, …) — operator-yaml-only ACL declarations the
+substrate doesn't persist in the `agent_defs` row, so hashing them
+would make a YAML-loaded agent and the same agent pushed via the
+substrate falsely report drift. The `skills:` field is likewise
+excluded (RFC BA): even though it round-trips through `AgentDef set`,
+it is a per-agent skill-access ACL (authority) — not authored content
+— so two agents differing only in their `skills:` allowlist hash
+identically.
 
 ## Hash format
 

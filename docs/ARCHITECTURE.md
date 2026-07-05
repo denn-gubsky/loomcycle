@@ -308,15 +308,15 @@ Recursion is depth-capped at 16 by default (`MaxAgentDepth` on the `AgentTool`).
 
 References: `internal/tools/builtin/agent.go` (the tool), `internal/api/http/server.go runSubAgent` (the runner), `internal/tools/tool.go` (`HostPolicy` / `RunIdentity` ctx helpers).
 
-## Skills (Approach A + SkillDef substrate)
+## Skills (on-demand, RFC BA)
 
-`internal/skills/` — at config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` is read and parsed. Agents that list a skill in their YAML `skills: [voice-applier, position-relevance-filtering]` block get the skill's body **concatenated into their system prompt** — cacheable, baked into the agent's runtime view of the world. The skill's `allowed-tools` declared in its frontmatter must be a subset of the agent's `tools`; mismatches are rejected at config-load.
+`internal/skills/` — at boot, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` (including nested `/`-grouped dirs like `doc/redactor/SKILL.md`) is read and parsed into a shared registry, joined by inline per-agent `skills:` YAML and the `skill_defs` substrate. Skills are loaded **on demand** via the `Skill` tool — NOT concatenated into the system prompt (RFC BA retired the config-load bundling of "Approach A").
 
-This is "Approach A" in the skills design — static bundling at config-load.
+An agent's `skills:` field is a **pattern allowlist** (`internal/skillmatch/`), not a bundle list: an ordered set of `/`-globs with an optional `+`/`-` sign that governs which skills the agent may **list, use, and author** (empty = allow all, `-*` = deny all). Every agent that may use a skill gets the `Skill` tool auto-added; a whitelist also injects a short per-run "skills available" note. The `Skill` tool enforces the allowlist on `op=list`/`op=invoke`, plus the invariant that a skill's `allowed-tools`/`tools` must be a subset of the invoking agent's `tools`.
 
-**SkillDef substrate (v0.8.22)** adds the dynamic counterpart: versioned skill definitions stored in `skill_defs` with active-pointer overlay (parallel to AgentDef). The model can author / fork / promote skills via the `SkillDef` built-in (`set`, `get`, `list`, `activate`, `fork`); the resolver overlay (`server.go resolveSkillBodiesForRun`) prefers an active DB row over the on-disk SKILL.md when one exists. The v0.9.1 `system_prompt` event carries a `skill_def_ids` map (skill name → resolved def_id) so operators can audit exactly which version of each skill the agent received.
+**SkillDef substrate (v0.8.22)** is the runtime-mutable counterpart: versioned skill definitions stored in `skill_defs` with an active-pointer overlay (parallel to AgentDef). The model authors / forks / promotes skills via the `SkillDef` built-in, gated by the same `skills:` allowlist; the `Skill` tool prefers an active DB row over the on-disk SKILL.md when one exists.
 
-References: `internal/skills/` (loader), `internal/tools/builtin/skill.go` (static-bundle dispatcher), `internal/tools/builtin/skilldef.go` (5-op dynamic tool), `internal/api/http/server.go resolveSkillBodiesForRun` (overlay resolution).
+References: `internal/skills/` (loader), `internal/skillmatch/` (allowlist + name/pattern grammar), `internal/tools/builtin/skill.go` (list/invoke), `internal/tools/builtin/skilldef.go` (authoring), `internal/config/config.go addSkillToolDefaults` (auto-add).
 
 ## LocalAPI gateway (scaffolded; not the v0.4 integration vehicle)
 

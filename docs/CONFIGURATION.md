@@ -619,7 +619,7 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 | **Tool fields** | | | |
 | `tools` | `[]string` | Tool allowlist (loomcycle form) | Empty list = zero tools. Always wins over `tools:`. |
 | `tools` | string OR `[]string` | Claude-Code-compatible form | Comma-string or list. Tolerated for Claude-Code compatibility; `tools` takes precedence when both are set. |
-| `skills` | `[]string` | Skill bundle | Skills bundle a system-prompt fragment + tool allowlist contribution; skill's tools must be a subset of the agent's `tools`. |
+| `skills` | `[]string` | Skill access allowlist (RFC BA) | Pattern allowlist governing which skills the agent may list / use / author (on-demand via the `Skill` tool — NOT bundled into the prompt). Entries are `/`-globs with an optional `+`/`-` sign: `doc/*` allow, `-doc/secret` deny, `-*` deny all. Empty/absent = allow all. The `Skill` tool is auto-added unless `skills: [-*]`. |
 | **System prompt** | | | |
 | (body) | string | Inline system prompt | Everything after the closing `---` line. |
 | `system_prompt_file` | string | External prompt path | Mutually exclusive with body. Useful for sharing prompts across agents. |
@@ -688,17 +688,17 @@ No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(a
 skills:
   voice-applier:
     description: Apply the house voice to drafted copy.   # informational
-    tools: [Read]     # must be a SUBSET of the bundling agent's tools
+    tools: [Read]     # must be a SUBSET of the invoking agent's tools (enforced at invoke)
     body: |
       When rewriting, prefer active voice and short sentences …
 agents:
   cv-rewriter:
-    tools: [Read, Skill]
-    skills: [voice-applier]   # references the inline skill by name (same field as before)
+    tools: [Read]              # `Skill` is auto-added (RFC BA)
+    skills: [voice-applier]    # allowlist: this agent may list/use/author `voice-applier`
     model: sonnet
 ```
 
-An agent's `skills: [name]` resolves against the inline `skills:` map **first**, then `LOOMCYCLE_SKILLS_ROOT` (inline wins on a name collision); either source alone is fine — **no skills root is required** when every referenced skill is defined inline. Inline skills **merge by key across config layers** (§9e), exactly like `agents:` — so a bundled config layer can ship an agent *and* its skills together, and a later layer can override a skill by re-declaring its key. The same security invariant holds: a skill's `tools` must be ⊆ the bundling agent's, or config-load fails. (`SKILL.md` frontmatter uses the hyphenated `allowed-tools`; the inline map uses `tools` to match the rest of the loomcycle YAML.)
+Inline skills join the on-demand catalog alongside `LOOMCYCLE_SKILLS_ROOT` (inline wins on a name collision); either source alone is fine — **no skills root is required** when every skill is defined inline. Inline skills **merge by key across config layers** (§9e), exactly like `agents:` — so a bundled config layer can ship an agent *and* its skills together, and a later layer can override a skill by re-declaring its key. The agent's `skills:` field is a **pattern allowlist** (RFC BA), not a bundle list: it governs which skills the agent may list / use / author. Bodies are loaded on demand via the `Skill` tool, never baked into the prompt. The security invariant holds at **invoke time**: a skill's `tools` must be ⊆ the invoking agent's, or the load is refused. (`SKILL.md` frontmatter uses the hyphenated `allowed-tools`; the inline map uses `tools` to match the rest of the loomcycle YAML.)
 
 **Multi-tool research agent**:
 
