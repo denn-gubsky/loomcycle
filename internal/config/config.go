@@ -18,8 +18,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
-	"github.com/denn-gubsky/loomcycle/internal/skills"
-	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
 
 // Config is the top-level YAML structure plus env-derived fields.
@@ -3594,17 +3592,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 
-	// resolveSkills MUST come after env loading (it needs SkillsRoot)
-	// AND after resolveSystemPromptFiles (skill bodies append onto
-	// SystemPrompt — file-loaded prompts have to land first).
-	if err := resolveSkills(cfg); err != nil {
-		return nil, err
-	}
+	// RFC BA: skills are on-demand (loaded via the Skill tool), not bundled
+	// into the prompt. Auto-add the Skill tool to every agent that may use a
+	// skill so on-demand access is the default. No skills-root/prompt work
+	// here anymore — the SkillsRoot registry is loaded once at boot in
+	// cmd/loomcycle (shared with the Skill/SkillDef tools + the Library).
+	addSkillToolDefaults(cfg)
 
-	// v0.8.7 default-add: every agent gets Context auto-appended to
-	// its tools unless `disable_context: true` is set. Runs
-	// after resolveSkills so skill-driven Tools widening has
-	// already taken effect.
+	// v0.8.7 default-add: every agent gets Context auto-appended to its tools
+	// unless `disable_context: true` is set.
 	addContextToolDefaults(cfg)
 
 	if err := validate(cfg); err != nil {
@@ -4274,89 +4270,41 @@ type SkillSpec struct {
 	Body        string   `yaml:"body"`
 }
 
-// resolveSkills bundles skill bodies into agent system prompts and
-// validates each skill's allowed-tools is a subset of the bundling
-// agent's tools. Static bundling — see Approach A in
-// doc-internal/skills-design.md.
+// addSkillToolDefaults auto-appends the "Skill" tool to every agent that may
+// use any skill, so RFC BA on-demand skill access is the default — an agent
+// with NO `skills:` field (the default = all allowed), a whitelist, or a
+// blacklist all get the tool. Mirror of addContextToolDefaults. Skipped ONLY
+// for `skills: [-*]` (a deny-all allowlist → no skill access at all). No-op
+// when "Skill" is already listed (case-insensitive, so a lowercase typo
+// doesn't double-add and confuse the case-sensitive per-run dispatcher).
 //
-// Errors:
-//   - an agent references a skill defined in NEITHER the top-level `skills:`
-//     map NOR LOOMCYCLE_SKILLS_ROOT (silent drop would produce agents whose
-//     prompts reference skills the runtime never loaded; loud failure forces
-//     the operator to fix the config). An unset/empty skills root is NOT an
-//     error on its own — inline `skills:` can satisfy an agent entirely.
-//   - skills root set but unreadable / not a directory
-//   - skill demands a tool the agent doesn't grant (security invariant)
-//
-// SECURITY: the subset check uses internal/tools/policy.matches so
-// glob rules on either side compose correctly. Examples:
-//   - skill `[Read]`, agent `[Read, HTTP]` → OK (literal match)
-//   - skill `[mcp__brave__search]`, agent `[mcp__brave__*]` → OK
-//     (skill literal matched by agent glob, narrowing is fine)
-//   - skill `[mcp__brave__*]`, agent `[mcp__brave__search]` → ERROR
-//     (skill demands broader access than agent grants)
-//   - skill `[Edit]`, agent `[Read]` → ERROR (skill widens)
-func resolveSkills(cfg *Config) error {
-	// Build the skill registry from two sources: the LOOMCYCLE_SKILLS_ROOT
-	// directory (file-backed SKILL.md; an empty root yields an empty set, no
-	// error) and the top-level `skills:` map (inline, merged across config
-	// layers by key like `agents:`). Inline definitions OVERLAY the root on a
-	// name collision — config is authoritative. An agent's skills may thus be
-	// satisfied entirely from inline defs with no skills root set.
-	set, err := skills.LoadSet(cfg.Env.SkillsRoot)
-	if err != nil {
-		return fmt.Errorf("load skills: %w", err)
-	}
-	for skillName, spec := range cfg.Skills {
-		set.Add(&skills.Skill{
-			Name:        skillName,
-			Description: spec.Description,
-			Tools:       spec.Tools,
-			Body:        spec.Body,
-		})
-	}
+// RFC BA changed `skills:` from an exact-name BUNDLE list (whose bodies were
+// concatenated onto SystemPrompt here) into a pattern ALLOWLIST that is
+// authority, not content: it is EXCLUDED from the content hash and NOT baked
+// into the prompt. Skill bodies are loaded on demand via the Skill tool; the
+// optional whitelist NOTE is injected at run-start (api/http applySkillNote),
+// never persisted — so two agents differing only in their skills: patterns
+// hash identically. Per-skill tool-subset enforcement moved to Skill invoke +
+// SkillDef authorship (a pattern allowlist can't be resolved to a concrete
+// skill set at config-load).
+func addSkillToolDefaults(cfg *Config) {
 	for name, def := range cfg.Agents {
-		if len(def.Skills) == 0 {
+		if skillmatch.DeniesAll(def.Skills) {
 			continue
 		}
-		// Capture the base (pre-skill-bake) prompt so v0.8.22 SkillDef
-		// per-run resolution can rebuild from it when a DB-active row
-		// shadows the static body.
-		def.SystemPromptBase = def.SystemPrompt
-		// Build agent rule set once per agent.
-		agentSet := make(map[string]bool, len(def.Tools))
+		already := false
 		for _, t := range def.Tools {
-			agentSet[t] = true
+			if strings.EqualFold(t, "Skill") {
+				already = true
+				break
+			}
 		}
-		for _, skillName := range def.Skills {
-			sk, ok := set.Get(skillName)
-			if !ok {
-				return fmt.Errorf("agent %q: unknown skill %q — define it under the top-level `skills:` map or as a SKILL.md under LOOMCYCLE_SKILLS_ROOT (%q)", name, skillName, cfg.Env.SkillsRoot)
-			}
-			// SECURITY: enforce skill.allowed-tools ⊆ agent.tools.
-			var widening []string
-			for _, t := range sk.Tools {
-				if !policy.Matches(t, agentSet) {
-					widening = append(widening, t)
-				}
-			}
-			if len(widening) > 0 {
-				return fmt.Errorf(
-					"agent %q: skill %q requires tools %v not granted by the agent's tools — skills may not widen the agent's tool set",
-					name, skillName, widening,
-				)
-			}
-			// Append. Use a separator only if there is already content
-			// in the system prompt; first skill on a prompt-less agent
-			// becomes the prompt without a leading "---".
-			if def.SystemPrompt != "" {
-				def.SystemPrompt += "\n\n---\n\n"
-			}
-			def.SystemPrompt += sk.Body
+		if already {
+			continue
 		}
+		def.Tools = append(def.Tools, "Skill")
 		cfg.Agents[name] = def
 	}
-	return nil
 }
 
 // splitCSV trims whitespace and drops empties from a comma-separated env value.
@@ -4977,6 +4925,14 @@ func validate(c *Config) error {
 		for i, sc := range agent.SkillDefScopes {
 			if err := validateSkillDefScope(sc); err != nil {
 				return fmt.Errorf("agent %q: skill_def_scopes[%d]: %w", name, i, err)
+			}
+		}
+		// RFC BA: validate the `skills:` pattern allowlist (globs + optional
+		// +/- sign). A malformed entry (bad char, `..`, empty) fails loud at
+		// load rather than silently mis-gating skill access at runtime.
+		for i, sc := range agent.Skills {
+			if err := skillmatch.ValidatePattern(sc); err != nil {
+				return fmt.Errorf("agent %q: skills[%d]: %w", name, i, err)
 			}
 		}
 		// VolumeDef tool (RFC AH Phase 2a): validate volume_def_scopes

@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
+	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -1311,60 +1312,34 @@ type runPromptProvenance struct {
 // Second return value is the per-run provenance (skillName → active
 // SkillDef def_id) for callers emitting the v0.9.x `system_prompt`
 // transcript event. Empty when no DB-active rows were used.
-func (s *Server) resolveSkillBodiesForRun(ctx context.Context, tenantID string, agentDef config.AgentDef) (config.AgentDef, runPromptProvenance) {
+func (s *Server) resolveSkillBodiesForRun(_ context.Context, _ string, agentDef config.AgentDef) (config.AgentDef, runPromptProvenance) {
+	// RFC BA: skills are on-demand (loaded via the Skill tool), no longer
+	// baked into the prompt. This function no longer resolves/bakes bodies; it
+	// injects only the ephemeral (per-run, never persisted) "skills available"
+	// note when `skills:` is a WHITELIST (names specific permitted patterns).
+	// For the absent/empty (all) or blacklist cases no note is added — the
+	// Skill tool is in the agent's tool list, so the model discovers via
+	// Skill(op=list). The provenance return is retained for the system_prompt
+	// transcript event but is always empty now (no substrate body baking).
 	var prov runPromptProvenance
-	if len(agentDef.Skills) == 0 || s.store == nil {
+	if !skillmatch.HasPositive(agentDef.Skills) {
 		return agentDef, prov
 	}
-	// Resolve each skill via the canonical lookup chain (substrate →
-	// static). lookup.Skill returns Source="substrate" when a DB-active
-	// row resolved + Source="static" when falling back to the boot
-	// SkillsRoot bundle.
-	resolutions := make(map[string]lookup.SkillResolution, len(agentDef.Skills))
-	activeDefIDs := make(map[string]string, len(agentDef.Skills))
-	anySubstrate := false
-	// RFC N: tenant is an EXPLICIT argument, not ctx-derived — mirrors
-	// lookupAgent (FIX 2). At the run-creation entry sites the run's
-	// authoritative tenant (effectiveTenantID / sess.TenantID) is already
-	// computed BEFORE WithRunIdentity is stamped on ctx, so deriving it
-	// from tenantFromCtx(ctx) here would resolve skills at the WRONG tenant
-	// for non-HTTP-principal spawn surfaces (A2A / scheduler / webhook /
-	// MCP spawn_run / gRPC-legacy) while memory + sub-agents use the run's
-	// tenant. The sub-agent call (runSubAgent) passes tenantFromCtx(ctx)
-	// since the parent's RunIdentity already carries the tenant. A token
-	// only sees its own tenant's promotions + the shared base. "" = shared.
-	for _, skillName := range agentDef.Skills {
-		sr, ok := lookup.Skill(ctx, s.store, s.skillSet, tenantID, skillName)
-		if !ok {
+	allow := make([]string, 0, len(agentDef.Skills))
+	for _, e := range agentDef.Skills {
+		t := strings.TrimSpace(e)
+		if t == "" || strings.HasPrefix(t, "-") {
 			continue
 		}
-		resolutions[skillName] = sr
-		if sr.Source == "substrate" {
-			activeDefIDs[skillName] = sr.DefID
-			anySubstrate = true
-		}
+		allow = append(allow, strings.TrimPrefix(t, "+"))
 	}
-	// Fast path: when no substrate-active row contributed, the
-	// boot-time bake of agentDef.SystemPrompt already reflects the
-	// static skill bodies — return unchanged.
-	if !anySubstrate {
-		return agentDef, prov
-	}
-	prov.SkillDefIDs = activeDefIDs
-	// Slow path: rebuild SystemPrompt from base + per-skill body so
-	// substrate overrides land in place of the static bake.
+	note := "Skills available on demand (matching: " + strings.Join(allow, ", ") +
+		"). Use the `Skill` tool: `{\"op\":\"list\"}` to discover them (optional `pattern`), `{\"name\":\"<skill>\"}` to load one into context."
 	rebuilt := agentDef
-	rebuilt.SystemPrompt = agentDef.SystemPromptBase
-	for _, skillName := range agentDef.Skills {
-		sr, ok := resolutions[skillName]
-		if !ok || strings.TrimSpace(sr.Body) == "" {
-			continue
-		}
-		if rebuilt.SystemPrompt != "" {
-			rebuilt.SystemPrompt += "\n\n---\n\n"
-		}
-		rebuilt.SystemPrompt += sr.Body
+	if rebuilt.SystemPrompt != "" {
+		rebuilt.SystemPrompt += "\n\n---\n\n"
 	}
+	rebuilt.SystemPrompt += note
 	return rebuilt, prov
 }
 
