@@ -259,9 +259,7 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: substrateAdminAgentName,
 	})
-	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
-		Scopes: []string{"any"},
-	})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{}) // RFC BA: nil patterns = allow all skills
 	// VolumeDef (RFC AH Phase 2a): "any" scope so the HTTP-admin caller can
 	// create/delete/purge any dynamic volume name (operator trust).
 	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{
