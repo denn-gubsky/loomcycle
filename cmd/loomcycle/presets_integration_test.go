@@ -24,9 +24,11 @@ func layersFor(t *testing.T, names ...string) []config.Layer {
 }
 
 // TestEmbedded_DocumentAgentResolvesWithInlineSkills is the RFC AQ §7 Phase-1
-// headline: selecting `base,document-agent` registers doc-manager AND bakes its
-// four inline skills into the system prompt with NO LOOMCYCLE_SKILLS_ROOT set —
-// the bundle is a pure config layer.
+// headline, updated for RFC BA on-demand skills: selecting `base,document-agent`
+// registers doc-manager AND carries its four inline skills in cfg.Skills (the
+// on-demand catalog) with NO LOOMCYCLE_SKILLS_ROOT — the bundle is a pure config
+// layer. The bodies are loaded via the Skill tool at runtime, NOT baked into the
+// prompt; the agent gets the auto-added Skill tool.
 func TestEmbedded_DocumentAgentResolvesWithInlineSkills(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "") // no skills directory — inline only
 
@@ -38,11 +40,27 @@ func TestEmbedded_DocumentAgentResolvesWithInlineSkills(t *testing.T) {
 	if !ok {
 		t.Fatalf("doc-manager not registered (agents: %v)", agentNames(cfg))
 	}
-	// All four skill bodies must be baked into the prompt.
-	for _, marker := range []string{"Semantic chunking", "Edge linking", "Restructuring", "Markdown import"} {
-		if !strings.Contains(dm.SystemPrompt, marker) {
-			t.Errorf("doc-manager system prompt missing skill content %q", marker)
+	// All four skills are registered in the on-demand catalog (cfg.Skills),
+	// with their bodies intact for the Skill tool to load.
+	for _, name := range []string{"semantic-chunking", "edge-linking", "restructuring", "md-import"} {
+		sk, ok := cfg.Skills[name]
+		if !ok {
+			t.Errorf("inline skill %q missing from cfg.Skills", name)
+			continue
 		}
+		if strings.TrimSpace(sk.Body) == "" {
+			t.Errorf("inline skill %q has an empty body", name)
+		}
+	}
+	// On-demand: the skill bodies are NOT baked into the agent prompt.
+	for _, marker := range []string{"Semantic chunking", "Edge linking", "Markdown import"} {
+		if strings.Contains(dm.SystemPrompt, marker) {
+			t.Errorf("skill body %q must not be baked into the prompt (RFC BA on-demand)", marker)
+		}
+	}
+	// The agent's whitelist gets the auto-added Skill tool for on-demand loading.
+	if !hasToolPreset(dm.Tools, "Skill") {
+		t.Errorf("doc-manager should get the auto-added Skill tool; tools=%v", dm.Tools)
 	}
 	// base supplied the middle tier the agent declares.
 	if _, ok := cfg.Tiers["middle"]; !ok {
@@ -51,8 +69,8 @@ func TestEmbedded_DocumentAgentResolvesWithInlineSkills(t *testing.T) {
 }
 
 // TestEmbedded_OperatorOverridesBundleSkill: an operator's later inline skill of
-// the same name wins (RFC AN merge-by-key), so the override is just re-declaring
-// the key — no skills root, no fork.
+// the same name wins (RFC AN merge-by-key) in the on-demand catalog cfg.Skills,
+// so the override is just re-declaring the key — no skills root, no fork.
 func TestEmbedded_OperatorOverridesBundleSkill(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 
@@ -68,13 +86,26 @@ skills:
 	if err != nil {
 		t.Fatalf("LoadLayers with override: %v", err)
 	}
-	dm := cfg.Agents["doc-manager"]
-	if !strings.Contains(dm.SystemPrompt, "OVERRIDDEN RESTRUCTURING BODY") {
-		t.Errorf("operator override of the restructuring skill did not win")
+	sk, ok := cfg.Skills["restructuring"]
+	if !ok {
+		t.Fatalf("restructuring skill missing from cfg.Skills")
 	}
-	if strings.Contains(dm.SystemPrompt, "deliberately has no drag-edit") {
-		t.Errorf("the original restructuring body should be gone after override")
+	if !strings.Contains(sk.Body, "OVERRIDDEN RESTRUCTURING BODY") {
+		t.Errorf("operator override of the restructuring skill did not win; body=%q", sk.Body)
 	}
+	if strings.Contains(sk.Body, "deliberately has no drag-edit") {
+		t.Errorf("the original restructuring body should be gone after override; body=%q", sk.Body)
+	}
+}
+
+// hasToolPreset reports whether tools contains name.
+func hasToolPreset(tools []string, name string) bool {
+	for _, t := range tools {
+		if t == name {
+			return true
+		}
+	}
+	return false
 }
 
 // TestEmbedded_BundleAloneDegradesGracefully: document-agent WITHOUT base still

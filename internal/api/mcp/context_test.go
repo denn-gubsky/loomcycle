@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -90,11 +91,13 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 		t.Errorf("HistoryPolicy.Scopes empty; Context.history would refuse")
 	}
 
-	// SkillDefPolicy: empty Scopes ⇒ MCP `skilldef` meta-tool refuses
-	// every op.
-	skp := tools.SkillDefPolicy(ctx)
-	if len(skp.Scopes) == 0 {
-		t.Errorf("SkillDefPolicy.Scopes empty; all SkillDef ops via MCP would fail")
+	// SkillPolicy (RFC BA): the operator ctx grants FULL skill authority,
+	// which is now an EMPTY pattern allowlist (empty = allow all). The old
+	// semantics were inverted — empty used to mean default-deny. Assert the
+	// stamped policy allows an arbitrary name (i.e. it is not a deny-all).
+	skp := tools.SkillPolicy(ctx)
+	if skillmatch.DeniesAll(skp.Patterns) || !skillmatch.Allowed(skp.Patterns, "any-skill") {
+		t.Errorf("operator SkillPolicy must allow all skills; got patterns %v", skp.Patterns)
 	}
 
 	// ScheduleDefPolicy: empty Scopes ⇒ MCP `scheduledef` meta-tool

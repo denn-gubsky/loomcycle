@@ -294,31 +294,23 @@ agents:
 	}
 }
 
-// Skills support — Approach A.
+// Skills support — RFC BA on-demand model.
 //
-// The bundling path is operator-driven: each agent's `skills:` YAML
-// field names skills under LOOMCYCLE_SKILLS_ROOT, and config-load
-// concatenates the parsed bodies onto SystemPrompt. The security
-// invariant is that skill `allowed-tools` ⊆ agent `tools` —
-// a skill may never widen the agent's tool set.
+// `skills:` is a pattern ALLOWLIST (not a bundle list). Config-load no longer
+// resolves skill names against LOOMCYCLE_SKILLS_ROOT nor bakes bodies into the
+// prompt — bodies are loaded on demand via the Skill tool (auto-added by
+// addSkillToolDefaults). Config-load's only skills job is to VALIDATE each
+// allowlist entry is a well-formed pattern. The old bundling / widening / no-
+// root / unknown-skill config-load tests were removed with that behavior; the
+// tool-subset (widening) check now lives at Skill invoke (see
+// internal/tools/builtin/skill_test.go) and the auto-add + on-demand semantics
+// in skills_inline_test.go.
 
-// Happy path: agent lists two skills; both bodies land in the agent's
-// system prompt in declaration order, separated by "---" markers. The
-// agent's existing system_prompt comes first, skills append after.
-func TestSkillsBundledIntoSystemPrompt(t *testing.T) {
-	root := t.TempDir()
-	skillsRoot := filepath.Join(root, "skills")
-	for _, sk := range []struct{ name, body string }{
-		{"voice-applier", "VOICE BODY"},
-		{"cv-voice-applier", "CV VOICE BODY"},
-	} {
-		dir := filepath.Join(skillsRoot, sk.name)
-		os.MkdirAll(dir, 0o755)
-		os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(
-			"---\nname: "+sk.name+"\nallowed-tools:\n  - Read\n---\n"+sk.body,
-		), 0o600)
-	}
-	yamlPath := filepath.Join(root, "c.yaml")
+// A bare `skills:` allowlist of valid patterns loads clean AND yields the
+// auto-added Skill tool (no SkillsRoot needed — the field is authority, not a
+// bundle to resolve).
+func TestSkillsAllowlistLoadsAndAutoAddsSkillTool(t *testing.T) {
+	yamlPath := filepath.Join(t.TempDir(), "c.yaml")
 	os.WriteFile(yamlPath, []byte(`
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
@@ -326,225 +318,44 @@ agents:
     model: claude-sonnet-4-6
     system_prompt: "You are CV adapter."
     tools: [Read, HTTP]
-    skills: [voice-applier, cv-voice-applier]
+    skills: [doc/*, -secret/*]
 `), 0o600)
 
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", skillsRoot)
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 	cfg, err := Load(yamlPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	prompt := cfg.Agents["cv-adapter"].SystemPrompt
-	wantPrefix := "You are CV adapter."
-	if !strings.HasPrefix(prompt, wantPrefix) {
-		t.Errorf("prompt should start with the agent's own prompt: %q", prompt)
+	def := cfg.Agents["cv-adapter"]
+	// On-demand: the prompt is the agent's own; no skill bodies baked in.
+	if def.SystemPrompt != "You are CV adapter." {
+		t.Errorf("SystemPrompt = %q, want the agent's own prompt (no baking)", def.SystemPrompt)
 	}
-	if !strings.Contains(prompt, "VOICE BODY") {
-		t.Error("voice-applier body missing")
-	}
-	if !strings.Contains(prompt, "CV VOICE BODY") {
-		t.Error("cv-voice-applier body missing")
-	}
-	// Order: voice-applier before cv-voice-applier (declaration order).
-	if strings.Index(prompt, "VOICE BODY") > strings.Index(prompt, "CV VOICE BODY") {
-		t.Error("skills should append in declaration order")
+	if !hasTool(def.Tools, "Skill") {
+		t.Errorf("a whitelisting agent should get the auto-added Skill tool; tools=%v", def.Tools)
 	}
 }
 
-// SECURITY: a skill demanding a tool the agent doesn't have must fail
-// config-load. This is the core "skill cannot widen agent's tool set"
-// guarantee — silent acceptance would let an operator drop in a skill
-// that the agent's prompt now references but that the runtime can't
-// satisfy, leading to either tool-not-found errors mid-run or worse,
-// the model trying alternative paths to accomplish what the skill
-// prescribed.
-func TestSkillCannotWidenAgentTools(t *testing.T) {
-	root := t.TempDir()
-	skillsRoot := filepath.Join(root, "skills")
-	dir := filepath.Join(skillsRoot, "writer-skill")
-	os.MkdirAll(dir, 0o755)
-	// Skill demands Write; agent only grants Read.
-	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(
-		"---\nname: writer-skill\nallowed-tools:\n  - Read\n  - Write\n---\nbody",
-	), 0o600)
-	yamlPath := filepath.Join(root, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  reader:
-    model: claude-sonnet-4-6
-    tools: [Read]
-    skills: [writer-skill]
-`), 0o600)
-
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", skillsRoot)
-	_, err := Load(yamlPath)
-	if err == nil {
-		t.Fatal("expected error when skill demands a tool the agent doesn't have")
-	}
-	if !strings.Contains(err.Error(), "Write") || !strings.Contains(err.Error(), "may not widen") {
-		t.Errorf("error should name the offending tool and explain the rule: %v", err)
-	}
-}
-
-// EMPIRICAL PROOF that the security check is load-bearing: rebuild the
-// same config with the agent ALSO granted Write, and the skill is
-// accepted. If this test starts passing while TestSkillCannotWidenAgentTools
-// still fails, the rule is being enforced.
-func TestSkillToolsAcceptedWhenAgentGrants(t *testing.T) {
-	root := t.TempDir()
-	skillsRoot := filepath.Join(root, "skills")
-	dir := filepath.Join(skillsRoot, "writer-skill")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(
-		"---\nname: writer-skill\nallowed-tools:\n  - Read\n  - Write\n---\nbody",
-	), 0o600)
-	yamlPath := filepath.Join(root, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  writer:
-    model: claude-sonnet-4-6
-    tools: [Read, Write, Edit]
-    skills: [writer-skill]
-`), 0o600)
-
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", skillsRoot)
-	if _, err := Load(yamlPath); err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-}
-
-// Glob handling: skill demands a literal MCP tool covered by the
-// agent's wildcard. policy.Matches handles the literal-vs-glob check.
-func TestSkillLiteralToolCoveredByAgentGlob(t *testing.T) {
-	root := t.TempDir()
-	skillsRoot := filepath.Join(root, "skills")
-	dir := filepath.Join(skillsRoot, "search-skill")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(
-		"---\nname: search-skill\nallowed-tools:\n  - mcp__brave__search\n---\nbody",
-	), 0o600)
-	yamlPath := filepath.Join(root, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  searcher:
-    model: claude-sonnet-4-6
-    tools: ["mcp__brave__*"]
-    skills: [search-skill]
-`), 0o600)
-
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", skillsRoot)
-	if _, err := Load(yamlPath); err != nil {
-		t.Errorf("agent glob should cover skill literal: %v", err)
-	}
-}
-
-// Reverse case: skill claims a wildcard the agent has not declared.
-// The agent's narrower-than-wildcard literals shouldn't match the
-// skill's broader glob. This is the "skill widens via glob" attempt.
-func TestSkillBroadGlobNotCoveredByAgentLiterals(t *testing.T) {
-	root := t.TempDir()
-	skillsRoot := filepath.Join(root, "skills")
-	dir := filepath.Join(skillsRoot, "broad-skill")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(
-		"---\nname: broad-skill\nallowed-tools:\n  - \"mcp__brave__*\"\n---\nbody",
-	), 0o600)
-	yamlPath := filepath.Join(root, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  narrow:
-    model: claude-sonnet-4-6
-    tools: [mcp__brave__search]
-    skills: [broad-skill]
-`), 0o600)
-
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", skillsRoot)
-	if _, err := Load(yamlPath); err == nil {
-		t.Fatal("agent literal should NOT cover skill's broader glob")
-	}
-}
-
-// Misconfiguration: agent lists skills but LOOMCYCLE_SKILLS_ROOT is
-// unset. Silent drop would produce an agent whose prompt references
-// a skill that was never loaded — exactly the failure mode this whole
-// feature exists to fix. Fail loudly.
-func TestSkillsListedWithoutRootErrors(t *testing.T) {
+// A malformed `skills:` allowlist entry (glob grammar violation — a `..`
+// segment) fails config-load loudly. Reverting the skillmatch.ValidatePattern
+// loop in validate() lets this through.
+func TestSkillsAllowlistRejectsBadPattern(t *testing.T) {
 	yamlPath := filepath.Join(t.TempDir(), "c.yaml")
 	os.WriteFile(yamlPath, []byte(`
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
-  cv-adapter:
+  bad:
     model: claude-sonnet-4-6
-    tools: [Read]
-    skills: [voice-applier]
+    skills: ["doc/../escape"]
 `), 0o600)
 
-	// Explicitly clear the env (other tests may have set it).
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 	_, err := Load(yamlPath)
-	if err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_SKILLS_ROOT") {
-		t.Errorf("expected LOOMCYCLE_SKILLS_ROOT-not-set error, got %v", err)
-	}
-}
-
-// Unknown skill name: surface the agent and the missing name so the
-// operator knows exactly what to fix.
-func TestUnknownSkillErrors(t *testing.T) {
-	root := t.TempDir()
-	skillsRoot := filepath.Join(root, "skills")
-	os.MkdirAll(skillsRoot, 0o755)
-	yamlPath := filepath.Join(root, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  cv-adapter:
-    model: claude-sonnet-4-6
-    tools: [Read]
-    skills: [does-not-exist]
-`), 0o600)
-
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", skillsRoot)
-	_, err := Load(yamlPath)
 	if err == nil {
-		t.Fatal("expected unknown-skill error")
+		t.Fatal("expected error for a malformed skills: pattern")
 	}
-	if !strings.Contains(err.Error(), "does-not-exist") {
-		t.Errorf("error should name the missing skill: %v", err)
-	}
-}
-
-// Skills with empty allowed-tools (a body-only "guidance" skill that
-// makes no tool demands) attach to any agent regardless of the agent's
-// tools — there's nothing to intersect.
-func TestSkillWithNoToolsAttachesToAnyAgent(t *testing.T) {
-	root := t.TempDir()
-	skillsRoot := filepath.Join(root, "skills")
-	dir := filepath.Join(skillsRoot, "guidance")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(
-		"---\nname: guidance\ndescription: just guidance\n---\nGUIDANCE BODY",
-	), 0o600)
-	yamlPath := filepath.Join(root, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  toolless:
-    model: claude-sonnet-4-6
-    tools: []
-    skills: [guidance]
-`), 0o600)
-
-	t.Setenv("LOOMCYCLE_SKILLS_ROOT", skillsRoot)
-	cfg, err := Load(yamlPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !strings.Contains(cfg.Agents["toolless"].SystemPrompt, "GUIDANCE BODY") {
-		t.Error("guidance skill body should attach")
+	if !strings.Contains(err.Error(), "skills") {
+		t.Errorf("error should name the skills field: %v", err)
 	}
 }
 
@@ -1045,10 +856,11 @@ agents:
 	if def.MaxTokens != 24576 {
 		t.Errorf("MaxTokens = %d, want 24576 (yaml override)", def.MaxTokens)
 	}
-	// v0.8.7 default-add: Context appended automatically.
-	wantTools := []string{"Read", "Edit", "Context"}
-	if len(def.Tools) != 3 || def.Tools[0] != "Read" || def.Tools[1] != "Edit" || def.Tools[2] != "Context" {
-		t.Errorf("Tools = %v, want %v (yaml override + Context auto-add)", def.Tools, wantTools)
+	// Auto-adds: Skill (RFC BA on-demand default) then Context (v0.8.7), in
+	// that pipeline order, appended after the yaml-override tools.
+	wantTools := []string{"Read", "Edit", "Skill", "Context"}
+	if len(def.Tools) != 4 || def.Tools[0] != "Read" || def.Tools[1] != "Edit" || def.Tools[2] != "Skill" || def.Tools[3] != "Context" {
+		t.Errorf("Tools = %v, want %v (yaml override + Skill + Context auto-add)", def.Tools, wantTools)
 	}
 	if def.SystemPrompt != "prompt body\n" {
 		t.Errorf("SystemPrompt = %q, want body from MD", def.SystemPrompt)
@@ -1316,7 +1128,10 @@ agents:
 // body. Confirms ordering — discovery happens before
 // resolveSystemPromptFiles + resolveSkills, so the discovered prompt
 // + the skill body both feed into the same downstream pipeline.
-func TestDiscoverAgents_DiscoveredSkillsBundleCorrectly(t *testing.T) {
+// RFC BA: a discovered MD agent's `skills:` allowlist round-trips as authority
+// (not a bundle). The skill body is NOT baked into the prompt; instead the
+// agent gets the auto-added Skill tool and loads the body on demand at runtime.
+func TestDiscoverAgents_SkillsAllowlistRoundTripsOnDemand(t *testing.T) {
 	tmp := t.TempDir()
 	agentsDir := filepath.Join(tmp, "agents")
 	if err := os.Mkdir(agentsDir, 0o755); err != nil {
@@ -1354,12 +1169,20 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	prompt := cfg.Agents["uses-skill"].SystemPrompt
-	if !strings.Contains(prompt, "agent prompt body") {
-		t.Errorf("merged prompt missing agent body: %q", prompt)
+	def := cfg.Agents["uses-skill"]
+	if !strings.Contains(def.SystemPrompt, "agent prompt body") {
+		t.Errorf("prompt missing agent body: %q", def.SystemPrompt)
 	}
-	if !strings.Contains(prompt, "SKILL HELPER BODY") {
-		t.Errorf("merged prompt missing skill body: %q", prompt)
+	// On-demand: the skill body must NOT be baked into the config-load prompt.
+	if strings.Contains(def.SystemPrompt, "SKILL HELPER BODY") {
+		t.Errorf("skill body must not be baked at config-load (RFC BA on-demand): %q", def.SystemPrompt)
+	}
+	// The allowlist round-trips and the Skill tool is auto-added.
+	if len(def.Skills) != 1 || def.Skills[0] != "helper" {
+		t.Errorf("skills allowlist = %v, want [helper]", def.Skills)
+	}
+	if !hasTool(def.Tools, "Skill") {
+		t.Errorf("agent should get the auto-added Skill tool; tools=%v", def.Tools)
 	}
 }
 
@@ -1435,11 +1258,11 @@ agents:
 		t.Fatalf("Load: %v", err)
 	}
 	got := cfg.Agents["narrow"].Tools
-	// v0.8.7 default-add: empty-list yaml override clears the
-	// discovered list, then Context is appended by the default-add
-	// pass — so [Context] is the expected post-load shape, not [].
-	if len(got) != 1 || got[0] != "Context" {
-		t.Errorf("Tools = %v; expected [Context] (yaml [] cleared discovered + Context auto-added)", got)
+	// Default-adds: empty-list yaml override clears the discovered list, then
+	// the auto-add passes append Skill (RFC BA — no `skills:` = allow all) then
+	// Context — so [Skill, Context] is the expected post-load shape, not [].
+	if len(got) != 2 || got[0] != "Skill" || got[1] != "Context" {
+		t.Errorf("Tools = %v; expected [Skill, Context] (yaml [] cleared discovered + Skill/Context auto-added)", got)
 	}
 }
 
