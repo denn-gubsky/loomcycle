@@ -8,6 +8,34 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.14.1
+
+**🩹 Bundle patch — the shipped `document-agent` bundle adopts RFC BA `doc/*` grouping.**
+A follow-up to v1.14.0 that makes the flagship bundle demonstrate the new skills
+model instead of using flat names:
+
+- **Skills grouped under `doc/*`** (#666). The four document skills move to the
+  `doc/*` domain in both forms the bundle ships as — the standalone
+  `bundles/document-agent/skills/<name>/SKILL.md` dirs become
+  `skills/doc/<name>/SKILL.md` (nested-dir loader → name `doc/<name>`, with each
+  SKILL.md frontmatter `name:` updated to the relative path per RFC BA), and the
+  embedded `cmd/loomcycle/embedded/bundles/document-agent.yaml` inline `skills:`
+  keys are renamed to match. Sibling cross-references in the skill bodies are
+  repointed to the `doc/<name>` names the agent now invokes.
+- **`doc-manager` `skills: [doc/*]`.** The allowlist collapses from four restated
+  names to a single domain pattern — the agent lists / uses / authors the whole
+  `doc/*` group and picks up any future doc skill for free. Because `skills:` is
+  excluded from `content_sha256` (RFC BA), the agent's content hash is unchanged.
+- **Local-first default routing.** The standalone `document-agent` + `chat` bundle
+  yamls now prefer local models: `provider_priority: [ollama-local, deepseek,
+  anthropic]`, a `models:` alias block, tier candidates `local-medium → deepseek-pro
+  → sonnet`, and `autocompact_at_pct` lowered 80→60 for tighter local-context runs.
+
+No wire/schema change, no DB migration. **Binary + embedded WebUI only; TS/Python
+adapters unchanged at 1.13.0.**
+
+---
+
 ## What's in v1.14.0
 
 **⚠️ Breaking — RFC BA: skills go on-demand + one `skills:` pattern allowlist.**
