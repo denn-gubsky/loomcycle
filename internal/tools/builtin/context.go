@@ -532,7 +532,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 			"subscribe": chPol.Subscribe,
 		},
 		"agent_def_scopes":  adPol.Scopes,
-		"skills":           sdPol.Patterns,
+		"skills":            sdPol.Patterns,
 		"evaluation_scopes": evPol.Scopes,
 		"history_scope":     histPol.Scopes,
 	}

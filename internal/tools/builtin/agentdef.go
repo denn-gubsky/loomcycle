@@ -1136,13 +1136,13 @@ func signFromMergedDef(name string, def mergedDef) string {
 		Tools:                 def.Tools,
 		// RFC BA: skills: is the agent's pattern-allowlist ACL (authority, not
 		// content) — excluded from content_sha256 like the *_def_scopes gates.
-		SystemPrompt: def.SystemPrompt,
-		Providers:             def.Providers,
-		Models:                models,
-		MemoryScopes:          def.MemoryScopes,
-		MemoryQuotaBytes:      def.MemoryQuotaBytes,
-		MemoryBackend:         def.MemoryBackend,
-		EvaluationScopes:      def.EvaluationScopes,
+		SystemPrompt:     def.SystemPrompt,
+		Providers:        def.Providers,
+		Models:           models,
+		MemoryScopes:     def.MemoryScopes,
+		MemoryQuotaBytes: def.MemoryQuotaBytes,
+		MemoryBackend:    def.MemoryBackend,
+		EvaluationScopes: def.EvaluationScopes,
 	}
 	// F14: include the interactive/multi-agent ACLs in the hash so a fork
 	// that changes ONLY channels/interruption/evaluation_scopes mints a new
