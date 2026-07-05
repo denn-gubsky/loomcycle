@@ -14,16 +14,17 @@ import (
 // provider/model cascade a consumer would hit (top → fallbacks), so an operator
 // can see which providers/models runs resolve to right now.
 //
-// Two views by principal (RFC AS posture):
-//   - admin: live availability per candidate (reachable/stalled/rate-limited),
-//     which entry is currently SELECTED (first available = what runs now), plus
-//     an active-providers header.
-//   - substrate:tenant: the config cascade only (provider/model per tier,
-//     `primary` = the configured top). No provider reachability / infra detail.
+// Both principals get live availability per candidate + an active-providers
+// header — a tenant needs to see which of its providers are actually up right
+// now (RFC AX bring-your-own-key visibility). They differ in two ways:
+//   - admin: the FULL provider set, with the raw last_error string per provider.
+//   - substrate:tenant: last_error is redacted (it can leak operator infra
+//     detail), and when the operator-key gate restricts this tenant the cascade
+//     and header are filtered to providers the tenant can key itself.
 type routingResponse struct {
 	GeneratedAt time.Time         `json:"generated_at"`
 	Admin       bool              `json:"admin"`
-	Providers   []routingProvider `json:"providers,omitempty"` // admin-only
+	Providers   []routingProvider `json:"providers,omitempty"`
 	UserTiers   []routingUserTier `json:"user_tiers"`
 	// OperatorKeyRestricted is true when the RFC AX operator-key gate
 	// (LOOMCYCLE_OPERATOR_KEY_RESTRICTION) is ON and this caller is a restricted
@@ -37,6 +38,8 @@ type routingProvider struct {
 	Provider  string `json:"provider"`
 	Reachable bool   `json:"reachable"`
 	Excluded  bool   `json:"excluded"`
+	// LastError is the raw provider probe error — admin-only (redacted to "" for
+	// a tenant, since it can leak operator infra detail).
 	LastError string `json:"last_error,omitempty"`
 }
 
@@ -55,7 +58,7 @@ type routingCandidate struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	Primary  bool   `json:"primary"` // first in config order (the configured top)
-	// Admin-only live-availability fields (nil/omitted for a tenant view).
+	// Live-availability fields — populated for ALL principals (admin + tenant).
 	Available   *bool `json:"available,omitempty"`
 	Selected    *bool `json:"selected,omitempty"` // first AVAILABLE — what runs now
 	Stalled     *bool `json:"stalled,omitempty"`
@@ -64,17 +67,18 @@ type routingCandidate struct {
 }
 
 // handleRouting serves GET /v1/_routing. Tenant-readable (see requiredScopeFor):
-// a substrate:tenant operator gets the config cascade; an admin (or legacy/open)
-// additionally gets live availability + the active-providers header.
+// every principal gets the cascade + live availability + the active-providers
+// header; a non-admin has last_error redacted, and a gate-restricted tenant sees
+// only the providers it can key itself.
 func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 	if s.resolver == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "resolver_unavailable",
 			"resolver not configured; the server is in degraded startup mode")
 		return
 	}
-	// Admin ⇒ full view (availability + infra). A non-admin principal
-	// (substrate:tenant) ⇒ config cascade only. Open mode (no principal stamped)
-	// is dev/admin, so it gets the full view.
+	// admin gates last_error exposure (raw provider errors can leak infra detail)
+	// and disables the operator-key keyable filter. Open mode (no principal
+	// stamped) is dev/admin, so it gets the full view.
 	admin := true
 	if p, ok := auth.PrincipalFromContext(r.Context()); ok {
 		admin = auth.HasScope(p.Scopes, auth.ScopeAdmin)
@@ -116,6 +120,13 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := routingResponse{GeneratedAt: time.Now().UTC(), Admin: admin, OperatorKeyRestricted: restricted}
+	// When restricted, the active-providers header is filtered to the union of
+	// the tenant's keyable providers across all tiers (never advertise a provider
+	// it can't use). nil ⇒ unrestricted (the header lists every snapshot provider).
+	var keyableUnion map[string]bool
+	if restricted {
+		keyableUnion = map[string]bool{}
+	}
 	for _, ut := range utNames {
 		overlay := s.userTierOverlay(ut)
 		rut := routingUserTier{Name: ut}
@@ -131,6 +142,9 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 			var keyable map[string]bool
 			if restricted {
 				keyable = s.keyableProvidersFor(r.Context(), req, restrictTenant, "", restrictUser)
+				for p := range keyable {
+					keyableUnion[p] = true
+				}
 			}
 			rt := routingTier{Tier: tier}
 			selectedMarked := false
@@ -139,21 +153,21 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				// Primary = first entry in the (post-filter) displayed cascade. For
-				// an unrestricted caller nothing is filtered, so this equals the
-				// old i==0 (byte-identical response).
+				// an unrestricted caller nothing is filtered, so this equals i==0.
 				rc := routingCandidate{Provider: c.Provider, Model: c.Model, Primary: len(rt.Cascade) == 0}
-				if admin {
-					av, stalled, rateLimited, reachable := availStatus(snap, c.Provider, c.Model)
-					sel := av && !selectedMarked
-					if sel {
-						selectedMarked = true
-					}
-					rc.Available = &av
-					rc.Selected = &sel
-					rc.Stalled = &stalled
-					rc.RateLimited = &rateLimited
-					rc.Reachable = &reachable
+				// WHY availability for all principals: a tenant needs to see which
+				// of its (keyable) providers are up right now (RFC AX). Only the raw
+				// last_error string stays admin-only — redacted in the header below.
+				av, stalled, rateLimited, reachable := availStatus(snap, c.Provider, c.Model)
+				sel := av && !selectedMarked
+				if sel {
+					selectedMarked = true
 				}
+				rc.Available = &av
+				rc.Selected = &sel
+				rc.Stalled = &stalled
+				rc.RateLimited = &rateLimited
+				rc.Reachable = &reachable
 				rt.Cascade = append(rt.Cascade, rc)
 			}
 			rut.Tiers = append(rut.Tiers, rt)
@@ -161,21 +175,26 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 		resp.UserTiers = append(resp.UserTiers, rut)
 	}
 
-	if admin {
-		provNames := make([]string, 0, len(snap))
-		for p := range snap {
-			provNames = append(provNames, p)
+	// Active-providers header — shown to every principal. WHY the admin split:
+	// reachable/excluded status is tenant-safe visibility, but the raw last_error
+	// string can leak operator infra detail (DSNs, internal hostnames, upstream
+	// bodies), so it is populated for admins only. Restricted ⇒ list only the
+	// tenant's keyable providers.
+	provNames := make([]string, 0, len(snap))
+	for p := range snap {
+		if restricted && !keyableUnion[p] {
+			continue
 		}
-		sort.Strings(provNames)
-		for _, p := range provNames {
-			a := snap[p]
-			resp.Providers = append(resp.Providers, routingProvider{
-				Provider:  p,
-				Reachable: a.Reachable,
-				Excluded:  a.Excluded,
-				LastError: a.LastError,
-			})
+		provNames = append(provNames, p)
+	}
+	sort.Strings(provNames)
+	for _, p := range provNames {
+		a := snap[p]
+		rp := routingProvider{Provider: p, Reachable: a.Reachable, Excluded: a.Excluded}
+		if admin {
+			rp.LastError = a.LastError
 		}
+		resp.Providers = append(resp.Providers, rp)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
