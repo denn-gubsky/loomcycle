@@ -307,7 +307,6 @@ func TestAgent_DriftDetection(t *testing.T) {
 		// F14 closure) so a runtime-authored meta-agent can fork/schedule others.
 		"agent_def_scopes":           true,
 		"schedule_def_scopes":        true,
-		"skill_def_scopes":           true,
 		"a2a_server_card_def_scopes": true,
 		"a2a_agent_def_scopes":       true,
 		// RFC AH Phase 2a — the dynamic-volume slice of the F40 closure.

@@ -872,9 +872,10 @@ func main() {
 	allTools = append(allTools, agentDefTool)
 
 	// SkillDef tool (v0.8.22). Mirror of AgentDef for runtime skill
-	// mutation. Same default-deny gate (skill_def_scopes yaml). Set
-	// is shared with the SkillTool above so static-name guard +
-	// fork-bootstrap see the same static skills.
+	// mutation. Authoring is gated by the agent's RFC BA `skills:`
+	// pattern allowlist (via SkillPolicy). Set is shared with the
+	// SkillTool above so static-name guard + fork-bootstrap see the
+	// same static skills.
 	skillDefTool := &builtin.SkillDef{
 		Set:                 skillSet,
 		MaxBodyBytes:        cfg.Env.SkillDefMaxBodyBytes,

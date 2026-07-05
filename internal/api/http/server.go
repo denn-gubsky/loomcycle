@@ -1266,8 +1266,10 @@ func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName st
 		}
 }
 
-// skillPolicyForAgent returns the v0.8.22 SkillDef policy for
-// one agent. Default-deny: empty SkillDefScopes → no SkillDef ops.
+// skillPolicyForAgent returns the RFC BA skill-access policy for one agent —
+// its `skills:` pattern allowlist, which governs listing, use (Skill invoke),
+// and authoring (SkillDef create/fork). Empty patterns = allow all (the RFC BA
+// default); `-*` = deny all.
 func (s *Server) skillPolicyForAgent(agentDef config.AgentDef) tools.SkillPolicyValue {
 	return tools.SkillPolicyValue{Patterns: agentDef.Skills}
 }

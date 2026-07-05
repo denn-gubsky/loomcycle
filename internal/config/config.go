@@ -917,24 +917,18 @@ type AgentDef struct {
 	// per-agent webhook_def_scopes yaml field was parsed but never read. Per
 	// CLAUDE.md "no backward-compat shims for unused code", deleted.)
 
-	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
-	// Default-deny when empty. Mirrors AgentDefScopes minus the
-	// "self" scope (skills have no agent identity, so "self" is
-	// meaningless for them). Closed set:
-	//
-	//   - "named:<skill-name>" → may operate on the specified single
-	//                            skill name (multi-entry)
-	//   - "descendants"        → may operate on any skill def whose
-	//                            lineage chain traces back to one
-	//                            the agent created (TODO v0.9.x —
-	//                            currently equivalent to "any")
-	//   - "any"                → unrestricted (operator-blessed
-	//                            orchestrator privilege)
+	// SkillDefScopes is a REMOVED-field tombstone (RFC BA). The old
+	// `skill_def_scopes` SkillDef capability gate (v0.8.22) is gone —
+	// skill authoring is now governed by the unified `skills:` pattern
+	// allowlist (see internal/skillmatch). This field exists ONLY so
+	// config-load can DETECT a stale `skill_def_scopes:` key and reject
+	// it with a migration error (validate()); it is never consumed at
+	// runtime and is deliberately absent from merge/overlay/hash.
 	SkillDefScopes []string `yaml:"skill_def_scopes"`
 
 	// VolumeDefScopes is the RFC AH Phase 2a VolumeDef tool capability
-	// gate. Default-deny when empty. Mirrors SkillDefScopes (no "self" —
-	// a volume has no agent identity). Closed set:
+	// gate. Default-deny when empty. No "self" (a volume has no agent
+	// identity). Closed set:
 	//
 	//   - "named:<volume-name>" → may create/delete/purge the named
 	//                             single volume (multi-entry)
@@ -4066,7 +4060,6 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 			Subscribe: d.Channels.Subscribe,
 		},
 		AgentDefScopes:   d.AgentDefScopes,
-		SkillDefScopes:   d.SkillDefScopes,
 		VolumeDefScopes:  d.VolumeDefScopes,
 		EvaluationScopes: d.EvaluationScopes,
 		// F14: an MD-declared `interruption:` block now flows to config
@@ -4185,9 +4178,6 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.AgentDefScopes != nil {
 		out.AgentDefScopes = override.AgentDefScopes
-	}
-	if override.SkillDefScopes != nil {
-		out.SkillDefScopes = override.SkillDefScopes
 	}
 	if override.VolumeDefScopes != nil {
 		out.VolumeDefScopes = override.VolumeDefScopes
@@ -4479,26 +4469,9 @@ func validateAgentDefScope(sc string) error {
 	return fmt.Errorf("unknown scope %q (want one of: self, descendants, any, or \"named:<name>\")", sc)
 }
 
-// validateSkillDefScope mirrors validateAgentDefScope minus "self"
-// (skills have no agent identity).
-func validateSkillDefScope(sc string) error {
-	switch sc {
-	case "descendants", "any":
-		return nil
-	}
-	if strings.HasPrefix(sc, "named:") {
-		ref := strings.TrimPrefix(sc, "named:")
-		if ref == "" {
-			return fmt.Errorf("skill_def_scopes: \"named:\" requires a non-empty skill name (e.g. \"named:karpathy-guidelines\")")
-		}
-		return nil
-	}
-	return fmt.Errorf("unknown scope %q (want one of: descendants, any, or \"named:<skill-name>\")", sc)
-}
-
 // validateVolumeDefScope checks one entry in an agent's
-// volume_def_scopes list (RFC AH Phase 2a). Closed set, mirroring
-// skill_def_scopes minus "descendants" (volumes have no lineage):
+// volume_def_scopes list (RFC AH Phase 2a). Closed set (volumes have
+// no lineage, so no "descendants"):
 //
 //   - "any"
 //   - "named:<volume-name>" where <volume-name> is non-empty
@@ -4919,13 +4892,11 @@ func validate(c *Config) error {
 				return fmt.Errorf("agent %q: agent_def_scopes[%d]: %w", name, i, err)
 			}
 		}
-		// SkillDef tool (v0.8.22): validate skill_def_scopes entries.
-		// Closed set: "descendants" / "named:<skill-name>" / "any".
-		// No "self" — skills have no agent identity.
-		for i, sc := range agent.SkillDefScopes {
-			if err := validateSkillDefScope(sc); err != nil {
-				return fmt.Errorf("agent %q: skill_def_scopes[%d]: %w", name, i, err)
-			}
+		// RFC BA: `skill_def_scopes` is REMOVED — skill authoring is now
+		// governed by the unified `skills:` pattern allowlist. Reject a stale
+		// key loudly rather than silently ignoring an operator's intended gate.
+		if len(agent.SkillDefScopes) > 0 {
+			return fmt.Errorf("agent %q: `skill_def_scopes` was removed (RFC BA) — express skill-authoring limits as `skills:` patterns instead (e.g. skills: [doc/*] to allow authoring only doc/* skills, skills: [-*] to forbid all)", name)
 		}
 		// RFC BA: validate the `skills:` pattern allowlist (globs + optional
 		// +/- sign). A malformed entry (bad char, `..`, empty) fails loud at

@@ -233,9 +233,10 @@ type SubstrateAgentDef struct {
 	// F14 closure, so a runtime-authored meta-agent's fork/schedule/etc.
 	// authority survives the round-trip instead of defaulting to deny. The
 	// drift test pins parity with builtin.mergedDef.
+	// (The SkillDef def-scope gate was removed in RFC BA — see builtin.mergedDef;
+	// the drift test pins that this struct stays in parity.)
 	AgentDefScopes         []string `json:"agent_def_scopes,omitempty"`
 	ScheduleDefScopes      []string `json:"schedule_def_scopes,omitempty"`
-	SkillDefScopes         []string `json:"skill_def_scopes,omitempty"`
 	A2AServerCardDefScopes []string `json:"a2a_server_card_def_scopes,omitempty"`
 	A2AAgentDefScopes      []string `json:"a2a_agent_def_scopes,omitempty"`
 	// VolumeDefScopes (RFC AH Phase 2a) — the dynamic-volume slice of the
@@ -278,7 +279,6 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		// runtime-authored meta-agent's AgentDef/Schedule/etc. scopes apply.
 		AgentDefScopes:         s.AgentDefScopes,
 		ScheduleDefScopes:      s.ScheduleDefScopes,
-		SkillDefScopes:         s.SkillDefScopes,
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
