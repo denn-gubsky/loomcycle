@@ -268,7 +268,8 @@ func TestSkillTool_ResolvesDBActiveOverStatic(t *testing.T) {
 	ctx := tools.WithAgentTools(context.Background(), []string{"Read"})
 
 	skillDefTool := &SkillDef{Store: s, Set: set}
-	dctx := tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{Scopes: []string{"any"}})
+	// RFC BA: an empty allowlist = allow all (create-anywhere), the old ["any"].
+	dctx := tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{})
 	dctx = tools.WithRunIdentity(dctx, tools.RunIdentityValue{AgentID: "a_seed"})
 	res, _ := skillDefTool.Execute(dctx, json.RawMessage(`{"op":"fork","name":"shared-skill","overlay":{"body":"DB BODY"},"promote":true}`))
 	if res.IsError {
@@ -317,7 +318,8 @@ func TestSkillTool_SubstrateOnlyHintsAtAvailable(t *testing.T) {
 	// Seed two skills via SkillDef create + promote. Mirrors the
 	// substrate write path JobEmber uses on first boot.
 	ctx := tools.WithAgentTools(context.Background(), []string{"Read"})
-	dctx := tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{Scopes: []string{"any"}})
+	// RFC BA: an empty allowlist = allow all (create-anywhere), the old ["any"].
+	dctx := tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{})
 	dctx = tools.WithRunIdentity(dctx, tools.RunIdentityValue{AgentID: "a_seed"})
 	skillDefTool := &SkillDef{Store: store, Set: emptySet}
 	for _, name := range []string{"position-relevance-filtering", "voice-applier"} {

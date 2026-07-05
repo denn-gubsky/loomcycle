@@ -12,8 +12,9 @@ import (
 
 // skillDefFixture builds a SkillDef tool over in-memory SQLite +
 // a skills.Set with one static skill ("karpathy-guidelines"). The
-// ctx carries a permissive policy (scopes=["any"]); per-test code
-// overrides for scope-specific cases.
+// ctx carries a permissive RFC BA allowlist (empty patterns = allow
+// all — create-anywhere); per-test code overrides for allowlist-
+// specific cases.
 func skillDefFixture(t *testing.T) (*SkillDef, context.Context, func()) {
 	t.Helper()
 	s, err := sqlite.Open(":memory:")
@@ -36,7 +37,7 @@ func skillDefFixture(t *testing.T) (*SkillDef, context.Context, func()) {
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	ctx = tools.WithAgentTools(ctx, []string{"Read", "WebFetch", "SkillDef"})
-	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{}) // empty = allow all
 	return tool, ctx, func() { _ = s.Close() }
 }
 
@@ -138,61 +139,90 @@ func TestSkillDefTool_ToolsCannotWiden(t *testing.T) {
 	}
 }
 
-func TestSkillDefTool_ScopeNamedGrant(t *testing.T) {
+// RFC BA: a WHITELIST allowlist (a positive pattern) permits only matching
+// names. Authoring the whitelisted name is allowed; a non-matching name is
+// refused. Replaces the old exact `named:` scope grant.
+func TestSkillDefTool_WhitelistGrant(t *testing.T) {
 	tool, _, cleanup := skillDefFixture(t)
 	defer cleanup()
 
-	// Override the policy: only named:karpathy-guidelines.
+	// Whitelist exactly karpathy-guidelines.
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	ctx = tools.WithAgentTools(ctx, []string{"Read", "WebFetch"})
-	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{Scopes: []string{"named:karpathy-guidelines"}})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"karpathy-guidelines"}})
 
-	// In-scope: fork the named skill.
+	// In-allowlist: fork the whitelisted skill.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"karpathy-guidelines","overlay":{"body":"forked"}}`))
 	if res.IsError {
-		t.Errorf("named scope grant should permit; got %s", res.Text)
+		t.Errorf("whitelist should permit the matching name; got %s", res.Text)
 	}
-	// Out of scope: create a new name.
+	// Out of allowlist: create a non-matching name.
 	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"different-skill","overlay":{"body":"x"}}`))
 	if !res.IsError {
-		t.Errorf("named scope should deny different name; got %s", res.Text)
+		t.Errorf("whitelist should deny a non-matching name; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "allowlist") {
+		t.Errorf("refusal should mention the allowlist; got %s", res.Text)
 	}
 }
 
-func TestSkillDefTool_DefaultDenyWithNoScopes(t *testing.T) {
+// RFC BA: a glob whitelist (`doc/*`) permits only matching grouped names.
+func TestSkillDefTool_WhitelistGlobGrant(t *testing.T) {
 	tool, _, cleanup := skillDefFixture(t)
 	defer cleanup()
 
-	// ctx WITHOUT WithSkillDefPolicy → empty scopes → default-deny.
+	ctx := tools.WithAgentName(context.Background(), "researcher")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
+	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
+
+	// Matching group → create allowed.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"doc/summarizer","overlay":{"body":"x"}}`))
+	if res.IsError {
+		t.Errorf("doc/* should permit doc/summarizer; got %s", res.Text)
+	}
+	// Different group → refused.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"marketing/seo","overlay":{"body":"x"}}`))
+	if !res.IsError {
+		t.Errorf("doc/* should deny marketing/seo; got %s", res.Text)
+	}
+}
+
+// RFC BA: an EMPTY allowlist = allow all (create-anywhere) — the inverse of the
+// old default-deny-when-no-scopes behaviour. This is the documented default so
+// an agent with no `skills:` field can still author.
+func TestSkillDefTool_NoPolicyAllowsCreate(t *testing.T) {
+	tool, _, cleanup := skillDefFixture(t)
+	defer cleanup()
+
+	// ctx WITHOUT WithSkillPolicy → zero-value policy → empty patterns → allow.
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	ctx = tools.WithAgentTools(ctx, []string{"Read"})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"any-skill","overlay":{"body":"x"}}`))
-	if !res.IsError {
-		t.Fatalf("no scopes should refuse; got %s", res.Text)
-	}
-	if !strings.Contains(res.Text, "default-deny") {
-		t.Errorf("refusal should mention default-deny; got %s", res.Text)
+	if res.IsError {
+		t.Fatalf("empty allowlist should allow create-anywhere; got %s", res.Text)
 	}
 }
 
-func TestSkillDefTool_DescendantsScopeIsCurrentlyEquivalentToAny(t *testing.T) {
+// RFC BA: `skills: [-*]` denies EVERY name, so no authoring is permitted.
+func TestSkillDefTool_DenyAllRefusesCreate(t *testing.T) {
 	tool, _, cleanup := skillDefFixture(t)
 	defer cleanup()
 
-	// "descendants" is documented as equivalent to "any" pending
-	// lineage-walk implementation (TODO v0.9.x). Pin the current
-	// behaviour so a future tightening doesn't accidentally regress.
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentTools(ctx, []string{"Read", "WebFetch"})
-	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{Scopes: []string{"descendants"}})
+	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"-*"}})
 
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"unrelated-skill","overlay":{"body":"x"}}`))
-	if res.IsError {
-		t.Errorf("descendants scope should grant (currently == any); got %s", res.Text)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"any-skill","overlay":{"body":"x"}}`))
+	if !res.IsError {
+		t.Fatalf("`-*` deny-all should refuse create; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "allowlist") {
+		t.Errorf("refusal should mention the allowlist; got %s", res.Text)
 	}
 }
 
