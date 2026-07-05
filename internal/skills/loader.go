@@ -170,14 +170,21 @@ func LoadSet(root string) (*Set, error) {
 }
 
 // frontmatter is the strict subset of YAML keys we read out of a
-// SKILL.md. The tool list keeps the hyphenated `allowed-tools` key to
-// match the Claude Code on-disk convention — it is a stable import
-// alias that maps into the canonical Tools field (loomcycle's own
-// inline `skills:` yaml uses `tools`).
+// SKILL.md. The canonical tool-requirement key is `tools` (matching the
+// agent frontmatter + the inline `skills:` yaml since the allowed_tools→
+// tools rename). The hyphenated `allowed-tools` key is kept as the Claude
+// Code skill-import alias so imported CC skills keep working; `tools`
+// wins when both are present.
+//
+// Previously this read ONLY `allowed-tools`, so a SKILL.md declaring its
+// requirement with `tools:` (as loomcycle's own bundle/example skills do)
+// had that requirement silently dropped when loaded via a skills root —
+// the gap this closes.
 type frontmatter struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Tools       []string `yaml:"allowed-tools"`
+	Name         string   `yaml:"name"`
+	Description  string   `yaml:"description"`
+	Tools        []string `yaml:"tools"`
+	AllowedTools []string `yaml:"allowed-tools"`
 }
 
 // parseSkill splits raw bytes into frontmatter + body. The frontmatter
@@ -223,7 +230,12 @@ func parseSkill(raw []byte) (*Skill, error) {
 	}
 	sk.Name = fm.Name
 	sk.Description = fm.Description
+	// Canonical `tools` wins; fall back to the Claude Code `allowed-tools`
+	// import alias when `tools` is absent.
 	sk.Tools = fm.Tools
+	if sk.Tools == nil {
+		sk.Tools = fm.AllowedTools
+	}
 	sk.Body = body
 	return sk, nil
 }

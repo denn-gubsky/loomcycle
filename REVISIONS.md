@@ -22,8 +22,12 @@ Clean cutover — no dual-key deprecation window (pre-production; per the repo's
 no-backward-compat rule). This is a breaking **wire + YAML + content-hash** change:
 
 - **YAML / agent `.md` / overlay:** `allowed_tools:` → `tools:` everywhere. The
-  hyphenated `allowed-tools` SKILL.md frontmatter key is unchanged — it stays a
-  Claude Code import alias that maps into the canonical `tools`.
+  skill loader now reads the canonical `tools` key from SKILL.md frontmatter —
+  previously it read ONLY the hyphenated `allowed-tools`, so a `tools:`
+  requirement loaded via a skills root was silently dropped; `allowed-tools`
+  stays as the Claude Code import fallback (`tools` wins when both are present).
+  This ACTIVATES the skill⊆agent tool enforcement for `.md`-declared
+  requirements (loomcycle's own bundles are already consistent).
 - **Wire:** the gRPC `RunRequest` / `ContinueRequest` field is renamed
   `allowed_tools` → `tools` (field NUMBERS unchanged); the HTTP + MCP request
   bodies and the `spawn_run` / `spawn_runs` / `register_agent` schemas use `tools`.
