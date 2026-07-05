@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"gopkg.in/yaml.v3"
 )
 
@@ -107,14 +108,18 @@ func (s *Set) Names() []string {
 	return out
 }
 
-// LoadSet walks root, parses every <name>/SKILL.md, and returns the
-// populated registry. Empty root returns a non-nil empty Set so callers
-// can always Get(); a missing root directory is an error (it almost
-// certainly means the operator misconfigured LOOMCYCLE_SKILLS_ROOT).
+// LoadSet walks root recursively, parses every SKILL.md it finds, and
+// returns the populated registry keyed by the skill's `/`-grouped name.
+// Empty root returns a non-nil empty Set so callers can always Get(); a
+// missing root directory is an error (it almost certainly means the operator
+// misconfigured LOOMCYCLE_SKILLS_ROOT).
 //
-// Subdirectories without a SKILL.md are skipped silently — they may be
-// auxiliary content (e.g. a `references/` folder a skill body links to)
-// that operators stage alongside the skill itself.
+// RFC BA `/`-grouping: a skill's name is the directory path of its SKILL.md
+// RELATIVE to root (`root/doc/redactor/SKILL.md` → `doc/redactor`). Nested
+// dirs let operators namespace skills (`doc/*`, `marketing/*`); the flat
+// `root/foo/SKILL.md` → `foo` layout still works unchanged. Directories
+// without a SKILL.md are traversed (their descendants may hold skills) or
+// skipped as auxiliary content (e.g. a `references/` folder a skill links to).
 func LoadSet(root string) (*Set, error) {
 	set := &Set{skills: map[string]*Skill{}}
 	if root == "" {
@@ -127,44 +132,50 @@ func LoadSet(root string) (*Set, error) {
 	if !st.IsDir() {
 		return nil, fmt.Errorf("skills root %s: not a directory", root)
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, fmt.Errorf("read skills root %s: %w", root, err)
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		// Reject names that could escape the root if a future caller
-		// constructs a path from them. Belt-and-braces — ReadDir
-		// doesn't return entries with "/" in the name, but nothing
-		// stops a creative filename so we sanity-check.
-		if strings.ContainsAny(name, "/\\") || name == "." || name == ".." {
-			return nil, fmt.Errorf("invalid skill name %q under %s", name, root)
-		}
-		path := filepath.Join(root, name, "SKILL.md")
-		fi, err := os.Stat(path)
-		if err != nil || fi.IsDir() {
-			continue
-		}
-		raw, err := os.ReadFile(path)
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
+			return err
 		}
-		sk, err := parseSkill(raw)
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
+		if d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+		// name = the SKILL.md's parent directory relative to root, `/`-joined.
+		rel, rerr := filepath.Rel(root, filepath.Dir(path))
+		if rerr != nil {
+			return fmt.Errorf("skills root %s: relativize %s: %w", root, path, rerr)
+		}
+		if rel == "." {
+			// A SKILL.md directly at root has no name — skip.
+			return nil
+		}
+		name := filepath.ToSlash(rel)
+		// Escape-prevention + `/`-grammar. rel from a real path under root
+		// can't traverse out, but validate anyway so a hand-crafted symlink
+		// or odd filename fails loud rather than minting a weird name.
+		if verr := skillmatch.ValidateName(name); verr != nil {
+			return fmt.Errorf("skills root %s: %w", root, verr)
+		}
+		raw, rderr := os.ReadFile(path)
+		if rderr != nil {
+			return fmt.Errorf("read %s: %w", path, rderr)
+		}
+		sk, perr := parseSkill(raw)
+		if perr != nil {
+			return fmt.Errorf("parse %s: %w", path, perr)
 		}
 		sk.Path = path
-		// The directory name is the canonical address. If frontmatter
-		// declares a different name, that's drift the operator should
-		// notice and fix; refusing to load is loud and unambiguous.
+		// The relative directory path is the canonical address. If frontmatter
+		// declares a different name, that's drift the operator should notice
+		// and fix; refusing to load is loud and unambiguous.
 		if sk.Name != "" && sk.Name != name {
-			return nil, fmt.Errorf("skill %s: frontmatter name %q != directory name %q", path, sk.Name, name)
+			return fmt.Errorf("skill %s: frontmatter name %q != directory path %q", path, sk.Name, name)
 		}
 		sk.Name = name
 		set.skills[name] = sk
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
 	}
 	return set, nil
 }
