@@ -154,11 +154,11 @@ export function parseSkillMarkdown(
     warnings.push("body is large (>100KB) — may exceed the operator's LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES cap.");
   }
 
-  const allowedTools = coerceStringList(fm["allowed-tools"] ?? fm.tools);
+  const tools = coerceStringList(fm["allowed-tools"] ?? fm.tools);
   const overlay: Record<string, unknown> = { body };
   const description = typeof fm.description === "string" ? fm.description.trim() : "";
   if (description) overlay.description = description;
-  if (allowedTools.length > 0) overlay.tools = allowedTools;
+  if (tools.length > 0) overlay.tools = tools;
 
   return {
     candidate: {
