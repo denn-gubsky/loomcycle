@@ -12,11 +12,18 @@
 //
 // What gets hashed (content-only — NOT metadata or identity):
 //
-//	name, description, system_prompt, tools, skills, model,
+//	name, description, system_prompt, tools, model,
 //	provider, tier, effort, sampling, max_tokens, max_iterations,
 //	max_concurrent_children, code_body, providers, models, memory_scopes,
 //	memory_quota_bytes, memory_backend, channels, evaluation_scopes,
 //	interruption
+//
+// RFC BA — `skills:` is EXCLUDED. It was repurposed from an exact-name
+// bundle list (content) into a per-agent pattern ALLOWLIST (authority: an
+// ACL governing which skills the agent may list/use/author). Authority is
+// not content — hashing it would make two agents that differ only in their
+// skill-access policy mint distinct content hashes, and it does not describe
+// the agent's authored behavior. This matches the *_def_scopes exclusion.
 //
 // Explicitly excluded (would defeat the "did the content change?"
 // question): def_id, version, parent_def_id, created_at,
@@ -47,8 +54,8 @@
 //     (since Go 1.12) — these two properties give us a deterministic
 //     byte sequence without an external JCS library.
 //   - Empty slices and maps normalise to nil before encoding so the
-//     `omitempty` tags collapse them out. An agent with `skills: []`
-//     hashes identically to one with no `skills` key at all.
+//     `omitempty` tags collapse them out. An agent with `tools: []`
+//     hashes identically to one with no `tools` key at all.
 //   - system_prompt is trimmed of trailing whitespace; CR/LF line
 //     endings normalise to LF. (Editor drift is the biggest unforced-
 //     error source — operators who edit MDs in Windows-line-ending
@@ -129,9 +136,11 @@ type AgentContent struct {
 	// content_sha256. Pointer + omitempty so a no-sampling agent omits the key
 	// and hashes byte-identical to pre-feature rows; normalize() collapses an
 	// all-nil pointer back to nil. Tag "sampling" sorts between providers and
-	// skills.
+	// system_prompt.
+	//
+	// (RFC BA: `skills:` is deliberately NOT a field here — it is the agent's
+	// pattern-allowlist ACL, excluded from the hash. See the package doc.)
 	Sampling     *Sampling `json:"sampling,omitempty"`
-	Skills       []string  `json:"skills,omitempty"`
 	SystemPrompt string    `json:"system_prompt,omitempty"`
 	Tier         string    `json:"tier,omitempty"`
 	// Tools is the agent's tool allowlist (the capability ceiling). Tag
@@ -183,9 +192,6 @@ func normalize(c *AgentContent) {
 	}
 	if len(c.Providers) == 0 {
 		c.Providers = nil
-	}
-	if len(c.Skills) == 0 {
-		c.Skills = nil
 	}
 	if len(c.Models) == 0 {
 		c.Models = nil
@@ -265,7 +271,6 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		MaxIterations:         a.MaxIterations,
 		MaxConcurrentChildren: a.MaxConcurrentChildren,
 		Tools:                 a.Tools,
-		Skills:                a.Skills,
 		SystemPrompt:          a.SystemPrompt,
 		Providers:             a.Providers,
 		Models:                a.Models,
