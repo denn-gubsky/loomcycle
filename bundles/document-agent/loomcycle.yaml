@@ -40,7 +40,7 @@ agents:
     tools: [Document, Memory, Context]
     memory_scopes: [user]
     sql_scopes: [user]
-    skills: [semantic-chunking, edge-linking, restructuring, md-import]
+    skills: [doc/*]
     system_prompt: |
       You are DOC-MANAGER, a co-author of chunked-graph Documents (RFC AK). You
       turn an operator's plain-text instructions into Document tool calls — the

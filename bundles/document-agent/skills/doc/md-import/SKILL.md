@@ -1,5 +1,5 @@
 ---
-name: md-import
+name: doc/md-import
 description: Import a Markdown file into a chunked-graph Document — deterministic round-trip vs semantic chunking.
 tools: [Document]
 license: Apache-2.0
@@ -26,7 +26,7 @@ fields, and remaps the edge graph. Chunks get fresh ids.
 If the Markdown has no `loom` metadata (a hand-written file, pasted notes), do
 NOT use `import_md` blindly — its chunk boundaries are the heading lines, so a
 body containing `##` lines would be re-chunked. Instead apply the
-**semantic-chunking** skill: read the structure and `create_chunk` each piece
+**doc/semantic-chunking** skill: read the structure and `create_chunk` each piece
 with a good title.
 
 ## After importing

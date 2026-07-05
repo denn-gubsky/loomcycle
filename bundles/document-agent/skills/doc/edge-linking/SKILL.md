@@ -1,5 +1,5 @@
 ---
-name: edge-linking
+name: doc/edge-linking
 description: Create and curate graph edges between chunks (and across documents) in a chunked-graph Document.
 tools: [Document]
 license: Apache-2.0
@@ -26,4 +26,4 @@ parent/child hierarchy can't express.
 ## Notes
 - Edges are directional (`from → to`). State the direction back to the operator.
 - Don't use an edge where a parent/child move is what's meant — see the
-  restructuring skill.
+  doc/restructuring skill.

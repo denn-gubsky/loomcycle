@@ -28,7 +28,7 @@ agents:
     tools: [Document, Memory, Context]
     memory_scopes: [user]
     sql_scopes: [user]
-    skills: [semantic-chunking, edge-linking, restructuring, md-import]
+    skills: [doc/*]
     system_prompt: |
       You are DOC-MANAGER, a co-author of chunked-graph Documents (RFC AK). You
       turn an operator's plain-text instructions into Document tool calls — the
@@ -61,7 +61,7 @@ agents:
       refreshes the tree, so don't dump the whole document back.
 
 skills:
-  semantic-chunking:
+  doc/semantic-chunking:
     description: Split arbitrary prose or a Markdown file into a sensible chunk hierarchy in a chunked-graph Document.
     tools: [Document]
     body: |
@@ -86,10 +86,10 @@ skills:
 
       ## Notes
       - If the text is a loomcycle export (it has `<!-- loom: … -->` comments), prefer
-        the deterministic `import_md` op instead (see the md-import skill).
+        the deterministic `import_md` op instead (see the doc/md-import skill).
       - Keep the operator's wording in the body; don't paraphrase unless asked.
 
-  edge-linking:
+  doc/edge-linking:
     description: Create and curate graph edges between chunks (and across documents) in a chunked-graph Document.
     tools: [Document]
     body: |
@@ -114,9 +114,9 @@ skills:
       ## Notes
       - Edges are directional (`from → to`). State the direction back to the operator.
       - Don't use an edge where a parent/child move is what's meant — see the
-        restructuring skill.
+        doc/restructuring skill.
 
-  restructuring:
+  doc/restructuring:
     description: Safely move, reparent, reorder, promote, or delete chunks in a chunked-graph Document.
     tools: [Document]
     body: |
@@ -144,7 +144,7 @@ skills:
       - Re-read after a move (`query_chunks`) if you're chaining further changes — ids
         are stable but positions shift.
 
-  md-import:
+  doc/md-import:
     description: Import a Markdown file into a chunked-graph Document — deterministic round-trip vs semantic chunking.
     tools: [Document]
     body: |
@@ -169,7 +169,7 @@ skills:
       If the Markdown has no `loom` metadata (a hand-written file, pasted notes), do
       NOT use `import_md` blindly — its chunk boundaries are the heading lines, so a
       body containing `##` lines would be re-chunked. Instead apply the
-      **semantic-chunking** skill: read the structure and `create_chunk` each piece
+      **doc/semantic-chunking** skill: read the structure and `create_chunk` each piece
       with a good title.
 
       ## After importing
