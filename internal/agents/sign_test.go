@@ -253,18 +253,17 @@ func TestFromYAMLAgent_EvaluationScopesAndInterruptionAffectHash(t *testing.T) {
 }
 
 func TestFromYAMLAgent_ToolCapabilityScopesStillIgnored(t *testing.T) {
-	// agent_def_scopes / skill_def_scopes gate which substrate tools the
-	// agent may CALL; they are NOT part of its authored definition and do
+	// The *_def_scopes gates (agent_def_scopes, …) govern which substrate tools
+	// the agent may CALL; they are NOT part of its authored definition and do
 	// NOT round-trip through AgentDef set, so they MUST stay out of the hash
 	// (else a yaml-loaded agent and its substrate copy diverge).
 	bare := FromYAMLAgent(&Agent{Name: "x"})
 	withScopes := FromYAMLAgent(&Agent{
 		Name:           "x",
 		AgentDefScopes: []string{"self"},
-		SkillDefScopes: []string{"descendants"},
 	})
 	if Sign(bare) != Sign(withScopes) {
-		t.Error("agent_def_scopes/skill_def_scopes leaked into hash — yaml vs substrate would falsely report drift")
+		t.Error("agent_def_scopes leaked into hash — yaml vs substrate would falsely report drift")
 	}
 }
 

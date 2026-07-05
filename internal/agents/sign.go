@@ -26,7 +26,7 @@
 // Also excluded — the *tool-capability* ACLs that gate which substrate
 // tools an agent may CALL but are NOT part of its authored definition:
 //
-//	agent_def_scopes, skill_def_scopes
+//	agent_def_scopes (and the other *_def_scopes gates)
 //
 // These are operator-yaml-only declarations resolved at boot; the in-DB
 // agent_defs row never stores them, so hashing them would make a
@@ -244,8 +244,8 @@ func normalizeText(s string) string {
 // load + CLI `hash agent` subcommand path). F14: channels /
 // evaluation_scopes / interruption now DO round-trip through `AgentDef
 // set` (they live in mergedDef → the agent_defs.definition JSONB), so they
-// are part of the hash on both paths. The *Scopes ACLs
-// (agent_def_scopes / skill_def_scopes) and Path still do not round-trip
+// are part of the hash on both paths. The *_def_scopes ACLs
+// (agent_def_scopes, …) and Path still do not round-trip
 // and stay excluded — see the package doc. The channels/interruption
 // pointers are nil when empty so a no-ACL agent hashes exactly as before
 // (normalize() also collapses an all-empty pointer defensively).

@@ -890,9 +890,10 @@ type mergedDef struct {
 	// forks/promotes/schedules other agents) comes back default-deny and can't
 	// author anything. NOT part of content_sha256 (the *Scopes ACLs are
 	// deliberately excluded from agents.AgentContent — authority, not content).
+	// (The SkillDef def-scope gate was removed in RFC BA — skill authoring is
+	// governed by the unified `skills:` pattern allowlist, not a def-scope gate.)
 	AgentDefScopes         []string `json:"agent_def_scopes,omitempty"`
 	ScheduleDefScopes      []string `json:"schedule_def_scopes,omitempty"`
-	SkillDefScopes         []string `json:"skill_def_scopes,omitempty"`
 	A2AServerCardDefScopes []string `json:"a2a_server_card_def_scopes,omitempty"`
 	A2AAgentDefScopes      []string `json:"a2a_agent_def_scopes,omitempty"`
 	// VolumeDefScopes is the RFC AH Phase 2a slice of the F40 closure —
@@ -1000,9 +1001,6 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.ScheduleDefScopes != nil {
 		d.ScheduleDefScopes = ov.ScheduleDefScopes
 	}
-	if ov.SkillDefScopes != nil {
-		d.SkillDefScopes = ov.SkillDefScopes
-	}
 	if ov.A2AServerCardDefScopes != nil {
 		d.A2AServerCardDefScopes = ov.A2AServerCardDefScopes
 	}
@@ -1069,7 +1067,6 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		// capability gates, so a fork of it inherits them.
 		AgentDefScopes:         s.AgentDefScopes,
 		ScheduleDefScopes:      s.ScheduleDefScopes,
-		SkillDefScopes:         s.SkillDefScopes,
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,

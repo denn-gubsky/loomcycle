@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -137,5 +138,28 @@ skills:
 `)}
 	if _, err := LoadLayers(layer); err == nil {
 		t.Fatalf("a `..` inline skill name should fail config-load")
+	}
+}
+
+// RFC BA removed `skill_def_scopes`. A stale key in an agent must fail config-
+// load with a migration message pointing at `skills:` — NOT be silently
+// ignored (which would drop the operator's intended authoring gate). Reverting
+// the tombstone reject in validate() lets this load, breaking the test.
+func TestLoadLayers_RejectsRemovedSkillDefScopes(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	layer := Layer{Name: "test", Data: []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  breeder:
+    model: claude-sonnet-4-6
+    tools: [SkillDef]
+    skill_def_scopes: [any]
+`)}
+	_, err := LoadLayers(layer)
+	if err == nil {
+		t.Fatalf("a stale `skill_def_scopes:` key must fail config-load")
+	}
+	if !strings.Contains(err.Error(), "skill_def_scopes") || !strings.Contains(err.Error(), "skills:") {
+		t.Errorf("error should name the removed key + point at `skills:`; got: %v", err)
 	}
 }
