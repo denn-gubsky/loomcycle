@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -186,6 +187,11 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyVa
 	if in.Name == "" {
 		return errResult("create: missing required field: name"), nil
 	}
+	// RFC BA: enforce the `/`-grouped name grammar (rejects `..`, glob chars,
+	// leading/trailing/double slash) before the allowlist gate + store write.
+	if err := skillmatch.ValidateName(in.Name); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	if err := s.checkScopeForName(policy, in.Name, ""); err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -259,6 +265,10 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyVa
 func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("fork: missing required field: name"), nil
+	}
+	// RFC BA: same `/`-grouped name grammar as create.
+	if err := skillmatch.ValidateName(in.Name); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 
 	// Resolve the parent. Three paths, mirroring AgentDef:

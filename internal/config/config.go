@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
@@ -4724,6 +4725,15 @@ func validate(c *Config) error {
 	}
 	if c.Concurrency.MaxQueueDepth < 0 {
 		return fmt.Errorf("concurrency.max_queue_depth must be >= 0")
+	}
+	// RFC BA: inline skill names (top-level `skills:` map keys) share the
+	// `/`-grouped grammar with SkillsRoot dir names + SkillDef create/fork
+	// targets. Validate here so a malformed inline key (glob char, `..`,
+	// leading/trailing slash) fails loud at load, not at first Skill call.
+	for name := range c.Skills {
+		if err := skillmatch.ValidateName(name); err != nil {
+			return fmt.Errorf("skills: inline skill %q: %w", name, err)
+		}
 	}
 	// Library-level provider priority — validate every entry is a
 	// known provider name. Empty list is fine (resolver falls back

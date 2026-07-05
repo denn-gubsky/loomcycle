@@ -247,6 +247,58 @@ func TestLoadSet_CRLFLineEndings(t *testing.T) {
 	}
 }
 
+// RFC BA: a SKILL.md nested under a group directory loads with its
+// `/`-grouped name = the path relative to root. A flat sibling still loads
+// with its bare name, so grouped + flat coexist.
+func TestLoadSet_NestedGroupedName(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "doc", "redactor")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "SKILL.md"), []byte("redactor body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	flat := filepath.Join(root, "seo")
+	os.MkdirAll(flat, 0o755)
+	os.WriteFile(filepath.Join(flat, "SKILL.md"), []byte("seo body\n"), 0o600)
+
+	set, err := LoadSet(root)
+	if err != nil {
+		t.Fatalf("LoadSet: %v", err)
+	}
+	if sk, ok := set.Get("doc/redactor"); !ok {
+		t.Error("doc/redactor not loaded under its grouped name")
+	} else if !strings.Contains(sk.Body, "redactor body") {
+		t.Errorf("doc/redactor body = %q", sk.Body)
+	}
+	if _, ok := set.Get("seo"); !ok {
+		t.Error("flat seo not loaded alongside the grouped skill")
+	}
+	// The intermediate group dir itself has no SKILL.md → not a skill.
+	if _, ok := set.Get("doc"); ok {
+		t.Error("group dir doc must not be a skill (no SKILL.md)")
+	}
+}
+
+// RFC BA: a nested SKILL.md whose frontmatter name disagrees with its
+// relative directory path is a loud drift error, now compared against the
+// full `/`-grouped path (not just the leaf dir).
+func TestLoadSet_NestedFrontmatterNameMismatch(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "doc", "redactor")
+	os.MkdirAll(nested, 0o755)
+	// Frontmatter says "redactor" but the path is "doc/redactor".
+	content := "---\nname: redactor\n---\nbody\n"
+	os.WriteFile(filepath.Join(nested, "SKILL.md"), []byte(content), 0o600)
+
+	if _, err := LoadSet(root); err == nil {
+		t.Fatal("expected frontmatter-name != directory-path error")
+	} else if !strings.Contains(err.Error(), "doc/redactor") {
+		t.Errorf("error should cite the grouped path, got %v", err)
+	}
+}
+
 // Get() and Names() are safe on a nil receiver. The config layer holds
 // a *Set that may be nil when LOOMCYCLE_SKILLS_ROOT is unset; callers
 // shouldn't have to check before every lookup.
