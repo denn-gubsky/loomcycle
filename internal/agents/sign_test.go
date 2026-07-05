@@ -41,7 +41,6 @@ func TestSign_DeterministicAcrossCalls(t *testing.T) {
 		Name:         "researcher",
 		SystemPrompt: "be thorough",
 		Tools:        []string{"WebFetch", "Read"},
-		Skills:       []string{"summariser"},
 		MaxTokens:    8192,
 	}
 	h1 := Sign(c)
@@ -264,6 +263,32 @@ func TestFromYAMLAgent_ToolCapabilityScopesStillIgnored(t *testing.T) {
 	})
 	if Sign(bare) != Sign(withScopes) {
 		t.Error("agent_def_scopes leaked into hash — yaml vs substrate would falsely report drift")
+	}
+}
+
+// RFC BA: `skills:` is a pattern ALLOWLIST (authority, not content) and is
+// EXCLUDED from the content hash — two agents differing ONLY in their skills:
+// allowlist must hash identically. Reverting the AgentContent.Skills removal
+// (re-adding it to the hash basis + FromYAMLAgent) breaks this.
+func TestFromYAMLAgent_SkillsAllowlistExcludedFromHash(t *testing.T) {
+	bare := FromYAMLAgent(&Agent{Name: "x", SystemPrompt: "do the thing"})
+	withSkills := FromYAMLAgent(&Agent{
+		Name:         "x",
+		SystemPrompt: "do the thing",
+		Skills:       []string{"doc/*", "-secret/*"},
+	})
+	if Sign(bare) != Sign(withSkills) {
+		t.Error("skills: allowlist leaked into the content hash — it is authority (an ACL), not content")
+	}
+	// And a DIFFERENT allowlist must also hash identically (the field never
+	// contributes, regardless of value).
+	other := FromYAMLAgent(&Agent{
+		Name:         "x",
+		SystemPrompt: "do the thing",
+		Skills:       []string{"-*"},
+	})
+	if Sign(bare) != Sign(other) {
+		t.Error("a different skills: allowlist changed the hash — skills must not be hashed at all")
 	}
 }
 

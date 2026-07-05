@@ -1134,8 +1134,9 @@ func signFromMergedDef(name string, def mergedDef) string {
 		UnboundedIterations:   def.UnboundedIterations,
 		MaxConcurrentChildren: def.MaxConcurrentChildren,
 		Tools:                 def.Tools,
-		Skills:                def.Skills,
-		SystemPrompt:          def.SystemPrompt,
+		// RFC BA: skills: is the agent's pattern-allowlist ACL (authority, not
+		// content) — excluded from content_sha256 like the *_def_scopes gates.
+		SystemPrompt: def.SystemPrompt,
 		Providers:             def.Providers,
 		Models:                models,
 		MemoryScopes:          def.MemoryScopes,
