@@ -5,6 +5,10 @@
 # bundle is just a config layer that defines an agent AND its skills — no skills
 # directory, no LOOMCYCLE_SKILLS_ROOT. Selected via `LOOMCYCLE_PRESETS=…,document-agent`.
 #
+# RFC BA: the agent's `skills:` list is a pattern allowlist (it may list/use/author
+# exactly these four). Skills load ON DEMAND via the `Skill` tool (auto-added) — the
+# bodies below are the catalog, not baked into the system prompt.
+#
 # This bundle carries NO provider matrix: the agent declares `tier: middle`, so a
 # `middle` tier must come from another layer (select `base` alongside it, or your
 # own config). It also needs SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1) — Documents

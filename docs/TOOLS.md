@@ -48,8 +48,8 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + a bound **rw** volume    |
 | `Bashbox`   | `LOOMCYCLE_BASHBOX_ENABLED=1` + a bound volume (**ro or rw** — a true in-process sandbox) |
 | `Agent`     | Always registered (server-internal); per-agent `tools` controls who can spawn. |
-| `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` list). v0.8.22+ also consults the `skill_defs` store for DB-active overrides. |
-| `SkillDef`  | Always registered (v0.8.22). Per-agent `skill_def_scopes:` YAML gate (default-deny); no extra env var. Storage shared with the rest of the substrate. |
+| `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` map, or the `skill_defs` substrate). Auto-added to every agent that may use a skill (RFC BA); loads bodies on demand. Gated by the agent's `skills:` pattern allowlist. |
+| `SkillDef`  | Always registered (v0.8.22). Authoring gated by the agent's `skills:` pattern allowlist (RFC BA — empty = allow all, `-*` = deny all); no extra env var. Storage shared with the rest of the substrate. |
 | `VolumeDef` | Always registered (RFC AH Phase 2a/2b). Per-agent `volume_def_scopes:` YAML gate (default-deny) for create/delete/purge; get/list are tenant-scoped reads. `create {ephemeral:true}` provisions a run-scoped volume auto-purged at top-level-run completion. Requires a static volume marked `dynamic_root: true`. Storage shared with the rest of the substrate. |
 | `Memory`    | Storage backend (SQLite default; Postgres opt-in) + per-agent `memory_scopes:` allowlist. |
 | `Document`  | Always registered (RFC AK Phase 1). Per-agent `tools:[Document]`. **Requires SQL Memory** (`LOOMCYCLE_SQLMEM_ENABLED=1`). Chunked-graph documents: chunk **bodies+fields** in Memory (keyed by UUID), **structure** (hierarchy/type/status/edges/type-schemas) in SQL Memory (4 tables). 13 ops (document/chunk lifecycle, edges, `query_chunks` with structured filters + `under_path` Path join + a validator-gated `sql:` escape hatch, type defs). Optimistic `revision` on update; delete cascades descendants + their Memory bodies. Names documents in the Path tree (`create_document path:`). Scope **agent/user** (tenant deferred); tenant-isolated via the SQL Memory scope key. |
@@ -264,28 +264,53 @@ The `Agent` built-in lets a parent agent spawn a child run by name:
 
 References: `internal/tools/builtin/agent.go`, `internal/api/http/server.go runSubAgent`, `internal/api/http/agent_subagent_test.go`.
 
-## The `Skill` tool — Approach A (static bundling, shipped) and Approach B (dynamic, scaffolded)
+## The `Skill` tool — on-demand skills with a per-agent allowlist (RFC BA)
 
-**Approach A — static bundling (active in v0.4.0).**
+Skills are loaded **on demand** via the `Skill` tool, not bundled into the
+system prompt. Skill sources are the filesystem (`LOOMCYCLE_SKILLS_ROOT`, with
+nested `/`-grouped dirs like `<root>/doc/redactor/SKILL.md`), inline per-agent
+YAML (`skills:` map), and the runtime `skill_defs` substrate — assembled into one
+catalog the tool serves.
 
-At config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` is read. Agents that list a skill in their YAML get the skill's body **concatenated into their system prompt** as a cacheable trusted-text block:
+**`skills:` is a pattern ALLOWLIST**, not a bundle list. It governs which skills
+the agent may **list, use (invoke), and author (SkillDef)** — one policy for all
+three. Entry forms: `pat`/`+pat` (allow), `-pat` (deny), where `pat` is a
+`/`-segmented glob (`doc/*`, `marketing/**`, exact `seo`). Evaluation: a name is
+allowed iff (there is a positive entry it matches, or there are none) AND no
+negative matches. **Empty/absent `skills:` = allow all**; `-*` = allow nothing.
 
 ```yaml
 agents:
-  cv-adapter:
+  doc-manager:
     model: smart
-    tools: [Read, Write]
-    skills: [voice-applier, cv-voice-applier]   # bodies merged into system prompt at config-load
-    system_prompt_file: prompts/cv-adapter.md
+    tools: [Document]          # `Skill` is auto-added unless skills: [-*]
+    skills: [doc/*, -doc/secret]   # may list/use/author doc/* except doc/secret
 ```
 
-Constraint: each skill's frontmatter declares its own `allowed-tools`; this list must be a **subset** of the agent's `tools`. Mismatches are rejected at config-load with a clear error. This prevents skills from advertising tools the agent can't actually invoke.
+Every agent that may use any skill gets the `Skill` tool auto-added (mirror of
+the `Context` auto-add); only `skills: [-*]` skips it. When `skills:` is a
+whitelist, a short per-run note names the permitted patterns.
 
-**Approach B — dynamic Skill tool (placeholder).**
+Wire shape (op-discriminated; `op` defaults to `invoke` for back-compat):
 
-The `Skill` built-in is registered when `LOOMCYCLE_SKILLS_ROOT` is set; the model can call it with `{"name": "voice-applier"}` to load a skill mid-conversation. In v0.4.0 the tool returns "unknown skill" — full Approach B implementation is v1.0 work. The hook is in place so prompts that reference the dynamic Skill tool can be authored today; they degrade gracefully (the tool reports the skill isn't available, the model continues without).
+```jsonc
+{
+  "op":      "invoke" | "list",   // default invoke
+  "name":    "doc/redactor",       // op=invoke: the skill to load
+  "pattern": "doc/*"               // op=list: optional /-glob filter
+}
+```
 
-References: `internal/skills/`, `internal/tools/builtin/skill.go`.
+- `op=list` → the catalog **visible to this agent** = assembled catalog ∩ the
+  agent's `skills:` allowlist ∩ optional `pattern`, as `[{name, description}]`.
+- `op=invoke` (or a bare `{name}`) → the skill body as a tool_result, refused if
+  the name is outside the allowlist.
+
+Constraint (unchanged): a skill's own `allowed-tools`/`tools` must be a **subset**
+of the invoking agent's `tools`; a widening skill is refused at invoke time.
+
+References: `internal/skills/` (loader), `internal/skillmatch/` (allowlist +
+name/pattern validation), `internal/tools/builtin/skill.go`.
 
 ## The `Memory` tool — persistent agent-scoped storage (v0.8.0)
 
@@ -661,7 +686,7 @@ What works with what (Gemini added in v0.7.2 alongside the existing four backend
 | `WebSearch`                | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `Bash`                     | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `Agent` (sub-agents)       | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `Skill` (Approach A)       | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `Skill` (on-demand)        | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (scaffolded — for future OpenAPI-without-MCP-server consumers) |
 | MCP tools (stdio + HTTP)   | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Native cache_control       | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -887,7 +912,7 @@ agents:
       max_pending: 1         # per-run cap; 0 = use operator default
 ```
 
-Default-deny: missing the `interruption` block means every op returns `is_error` with a clear "not enabled" refusal. Same shape as `memory_scopes` / `agent_def_scopes` / `skill_def_scopes` / `evaluation_scopes`.
+Default-deny: missing the `interruption` block means every op returns `is_error` with a clear "not enabled" refusal. Same shape as `memory_scopes` / `agent_def_scopes` / `evaluation_scopes`.
 
 ### Operator config
 

@@ -50,21 +50,14 @@ may NARROW but never widen, same rule as `AgentDef`.
 
 ## How the body lands in the model
 
-Two consumption paths:
-
-**Approach A — baked into the system prompt.** When the skill
-name is in the agent's `skills:` yaml list, the loomcycle
-run-creation handler resolves `SkillDefGetActive(name)` at
-session start. A DB-active row's body OVERRIDES the static
-SKILL.md body for the duration of that run. The next run picks
-up the latest active row; existing in-flight runs keep their
-locked system prompt — there is no mid-run skill body swap.
-
-**Approach B — via the `Skill` tool.** When the agent calls
-`Skill({"name": "..."})`, the tool consults
-`SkillDefGetActive(name)` first; falls back to the static
-SKILL.md body on miss. Same DB-first semantics as Approach A,
-but per-call.
+Skills are loaded **on demand** (RFC BA) — never baked into the
+system prompt. When the agent calls `Skill({"name": "..."})`
+(or `Skill({"op":"list"})` to discover), the tool consults
+`SkillDefGetActive(name)` first and falls back to the static
+SKILL.md body on miss (DB-first). The `Skill` tool is auto-added
+to every agent whose `skills:` allowlist permits any skill. A
+promoted new version is picked up by the next `Skill` invoke; an
+in-flight call already loaded keeps the body it read.
 
 ## The fork-and-promote loop
 
@@ -83,37 +76,35 @@ promotion). When satisfied:
 {"op":"promote", "def_id":"sdf_v2_abc..."}
 ```
 
-New runs of any agent that lists `voice-applier` in its `skills:`
-now get the v2 body baked into their system prompt.
+Any agent that lists `voice-applier` in its `skills:` allowlist
+now loads the v2 body when it next invokes the `Skill` tool.
 
-## Scope policy
+## Authoring gate
 
-The yaml gate is `skill_def_scopes` (mirror of
-`agent_def_scopes`). Default-deny:
+Authoring is gated by the same `skills:` **pattern allowlist**
+(RFC BA) that governs listing + use — one policy for all three.
+The agent must also hold the `SkillDef` tool. Empty/absent
+`skills:` = author anywhere; `-*` = author nothing.
 
 ```yaml
 agents:
   curator:
-    skills: [voice-applier, cv-voice-applier]
     tools: [Read, Skill, SkillDef]
-    skill_def_scopes:
-      - named:voice-applier      # may fork/promote this skill
-      - named:cv-voice-applier   # ...and this one
+    skills:
+      - voice-applier      # may list/use/author exactly these two
+      - cv-voice-applier
 ```
 
-Closed set: `any` / `named:<skill-name>` / `descendants`. No
-`self` scope — skills have no agent identity, so a "self"
-constraint is meaningless.
+Entries are `/`-globs with an optional `+`/`-` sign: `doc/*`
+allows the whole `doc/` group, `-doc/secret` carves one out.
 
 ## When NOT to use SkillDef
 
 - The skill body is stable. Plain `SKILL.md` checked into the
   operator's repo is simpler than a versioned DB row.
-- You want to A/B test the skill across agents in the SAME run.
-  Approach A locks the body at session start, so two sub-agents
-  spawned in the same call would both see the same active body.
-  For mid-run A/B, use Approach B and pass the desired version
-  as an explicit parameter.
+- You want to A/B test two versions in the SAME run. The active
+  pointer is per-name, so both branches see the same active body.
+  Fork both, then have each sub-agent load its intended `def_id`.
 
 ## Cross-references
 
@@ -121,5 +112,5 @@ constraint is meaningless.
   cousin for whole-agent evolution.
 - `help(topic="scopes")` — agent vs user scope across Memory +
   Channel + DefScopes.
-- `Context.permissions` — surfaces the active `skill_def_scopes`
+- `Context.permissions` — surfaces the active `skills` allowlist
   for the calling agent.

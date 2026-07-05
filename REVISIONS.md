@@ -8,6 +8,40 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## Unreleased
+
+**⚠️ Breaking — RFC BA: skills go on-demand + one `skills:` pattern allowlist.**
+The skills model changed: skill bodies are **no longer bundled** into the system
+prompt at config-load. Instead every agent that may use a skill gets the `Skill`
+tool auto-added (mirror of the `Context` auto-add) and loads bodies **on demand**
+(`Skill(op=list)` to discover, `Skill(name=…)` to load). The `Skill` tool is now
+op-discriminated (`{op?: invoke|list, name?, pattern?}`; a bare `{name}` still
+invokes).
+
+- **`skills:` is now a pattern ALLOWLIST**, not an exact-name bundle list. It
+  governs listing, use (invoke), AND authoring (SkillDef create/fork) uniformly.
+  Entries are `/`-globs with an optional `+`/`-` sign (`doc/*`, `-doc/secret`,
+  `-*`). Empty/absent = allow all; `-*` = allow nothing. `skills: [a, b]` that
+  used to bundle `a` and `b` now *limits* the agent to authoring/using `a` and
+  `b` and loads their bodies on demand.
+- **Skill names may be `/`-grouped** (`doc/redactor`) — nested `SkillsRoot`
+  dirs, inline `skills:` keys, and SkillDef create/fork targets all share the
+  grammar (segments of `[A-Za-z0-9_-]+`, no `.`/`..`).
+- **`skill_def_scopes` is REMOVED.** A config with `skill_def_scopes:` on any
+  agent now **fails to load** with a migration error — re-express the intent as
+  `skills:` patterns (`skills: [doc/*]` to author only `doc/*`, `skills: [-*]` to
+  forbid all authoring). Pre-production clean cutover, no deprecation shim
+  (mirrors the recent `allowed_tools`→`tools` rename).
+- **`skills:` leaves `content_sha256`.** It is now authority (an ACL), not
+  authored content — like the `*_def_scopes` gates. Existing agents that declared
+  `skills:` get a new content hash on next boot (re-hashed; pre-production).
+
+`Context op=permissions` now reports the effective `skills` allowlist (was
+`skill_def_scopes`). The `skills:` wire shape (`string[]` in the AgentDef
+overlay) is unchanged, so the TS/Python adapters need no bump; only the field's
+*meaning* changed. The bundled `document-agent` is unaffected in behavior — its
+four skills are the on-demand catalog and it gets the auto-added `Skill` tool.
+
 ## What's in v1.13.1
 
 **🩹 WebUI patch — `allowed_tools` residual cleanup + tenant routing/credentials

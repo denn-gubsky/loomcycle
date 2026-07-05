@@ -929,7 +929,9 @@ function AgentFields(props: AgentFieldsProps) {
         <label htmlFor="lib-skills">
           skills
           <span className="library-modal-field-hint">
-            {" "}— comma-separated skill names to bake into system_prompt
+            {" "}— pattern allowlist for on-demand skills (governs list / use /
+            author): e.g. <code>doc/*</code> allows only doc/* skills,{" "}
+            <code>-*</code> forbids all. Empty = allow all.
           </span>
         </label>
         <input
@@ -938,7 +940,7 @@ function AgentFields(props: AgentFieldsProps) {
           value={props.agentSkills}
           onChange={(e) => props.setAgentSkills(e.target.value)}
           disabled={props.submitting}
-          placeholder="briefing-format, citation-style"
+          placeholder="doc/*, -doc/secret"
         />
       </div>
 
