@@ -13,10 +13,11 @@ bundles/document-agent/
 ├── loomcycle.yaml                 # the doc-manager agent (single-provider)
 ├── loomcycle_oauth.yaml           # OAuth-FIRST variant (subscription → fallbacks)
 ├── skills/
-│   ├── semantic-chunking/SKILL.md # split prose into a chunk hierarchy
-│   ├── edge-linking/SKILL.md      # create/curate graph edges
-│   ├── restructuring/SKILL.md     # move/reorder/promote/delete chunks
-│   └── md-import/SKILL.md         # import_md (round-trip) vs semantic import
+│   └── doc/                       # the `doc/*` skill group (RFC BA /-grouping)
+│       ├── semantic-chunking/SKILL.md # → doc/semantic-chunking: split prose into a chunk hierarchy
+│       ├── edge-linking/SKILL.md      # → doc/edge-linking: create/curate graph edges
+│       ├── restructuring/SKILL.md     # → doc/restructuring: move/reorder/promote/delete chunks
+│       └── md-import/SKILL.md         # → doc/md-import: import_md (round-trip) vs semantic import
 ├── examples/
 │   └── sample-plan.md             # a plain .md to try the Assistant on
 └── README.md
@@ -45,7 +46,8 @@ loomcycle --config bundles/document-agent/loomcycle.yaml
    (Or copy the `agents: doc-manager` block into your config by hand if you'd
    rather keep one file.)
 2. Point `LOOMCYCLE_SKILLS_ROOT` at this bundle's `skills/` (or copy them into
-   your skills root) so the four skills resolve.
+   your skills root) so the four `doc/*` skills resolve (nested dirs → the
+   `doc/` name group; `doc-manager` is scoped to `skills: [doc/*]`).
 3. Ensure `LOOMCYCLE_SQLMEM_ENABLED=1`.
 4. The agent only needs a `middle` tier to resolve — when layered, it uses your
    config's routing (last wins).

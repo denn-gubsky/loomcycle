@@ -42,7 +42,7 @@ func TestEmbedded_DocumentAgentResolvesWithInlineSkills(t *testing.T) {
 	}
 	// All four skills are registered in the on-demand catalog (cfg.Skills),
 	// with their bodies intact for the Skill tool to load.
-	for _, name := range []string{"semantic-chunking", "edge-linking", "restructuring", "md-import"} {
+	for _, name := range []string{"doc/semantic-chunking", "doc/edge-linking", "doc/restructuring", "doc/md-import"} {
 		sk, ok := cfg.Skills[name]
 		if !ok {
 			t.Errorf("inline skill %q missing from cfg.Skills", name)
@@ -76,7 +76,7 @@ func TestEmbedded_OperatorOverridesBundleSkill(t *testing.T) {
 
 	overlay := config.Layer{Name: "operator", Data: []byte(`
 skills:
-  restructuring:
+  doc/restructuring:
     tools: [Document]
     body: |
       OVERRIDDEN RESTRUCTURING BODY
@@ -86,7 +86,7 @@ skills:
 	if err != nil {
 		t.Fatalf("LoadLayers with override: %v", err)
 	}
-	sk, ok := cfg.Skills["restructuring"]
+	sk, ok := cfg.Skills["doc/restructuring"]
 	if !ok {
 		t.Fatalf("restructuring skill missing from cfg.Skills")
 	}

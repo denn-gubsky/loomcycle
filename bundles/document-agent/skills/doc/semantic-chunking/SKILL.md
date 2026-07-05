@@ -1,5 +1,5 @@
 ---
-name: semantic-chunking
+name: doc/semantic-chunking
 description: Split arbitrary prose or a Markdown file into a sensible chunk hierarchy in a chunked-graph Document.
 tools: [Document]
 license: Apache-2.0
@@ -26,5 +26,5 @@ chunks — do NOT dump it into one giant chunk.
 
 ## Notes
 - If the text is a loomcycle export (it has `<!-- loom: … -->` comments), prefer
-  the deterministic `import_md` op instead (see the md-import skill).
+  the deterministic `import_md` op instead (see the doc/md-import skill).
 - Keep the operator's wording in the body; don't paraphrase unless asked.
