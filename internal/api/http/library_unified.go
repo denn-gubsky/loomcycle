@@ -176,10 +176,10 @@ func (s *Server) handleListLibrarySkills(w http.ResponseWriter, r *http.Request)
 	}
 	for name, spec := range s.cfg.Skills {
 		staticSkills[name] = &skills.Skill{
-			Name:         name,
-			Description:  spec.Description,
-			AllowedTools: spec.AllowedTools,
-			Body:         spec.Body,
+			Name:        name,
+			Description: spec.Description,
+			Tools:       spec.Tools,
+			Body:        spec.Body,
 		}
 	}
 
@@ -317,7 +317,7 @@ type staticAgentDefJSON struct {
 	MaxConcurrentChildren int                               `json:"max_concurrent_children,omitempty"`
 	SystemPrompt          string                            `json:"system_prompt,omitempty"`
 	SystemPromptBase      string                            `json:"system_prompt_base,omitempty"`
-	AllowedTools          []string                          `json:"allowed_tools,omitempty"`
+	Tools                 []string                          `json:"tools,omitempty"`
 	Skills                []string                          `json:"skills,omitempty"`
 	Providers             []string                          `json:"providers,omitempty"`
 	Models                map[string][]config.TierCandidate `json:"models,omitempty"`
@@ -342,7 +342,7 @@ func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
 		MaxConcurrentChildren: def.MaxConcurrentChildren,
 		SystemPrompt:          def.SystemPrompt,
 		SystemPromptBase:      def.SystemPromptBase,
-		AllowedTools:          def.AllowedTools,
+		Tools:                 def.Tools,
 		Skills:                def.Skills,
 		Providers:             def.Providers,
 		Models:                def.Models,
@@ -358,9 +358,9 @@ func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
 }
 
 type staticSkillJSON struct {
-	Body         string   `json:"body,omitempty"`
-	Description  string   `json:"description,omitempty"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
+	Body        string   `json:"body,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
 }
 
 // marshalStaticSkill projects the loader's Skill struct (which carries
@@ -371,9 +371,9 @@ func marshalStaticSkill(sk *skills.Skill) json.RawMessage {
 		return nil
 	}
 	b, err := json.Marshal(staticSkillJSON{
-		Body:         sk.Body,
-		Description:  sk.Description,
-		AllowedTools: sk.AllowedTools,
+		Body:        sk.Body,
+		Description: sk.Description,
+		Tools:       sk.Tools,
 	})
 	if err != nil {
 		return nil
@@ -385,7 +385,7 @@ func marshalStaticSkill(sk *skills.Skill) json.RawMessage {
 // that mirrors the substrate's mcp_server_defs.definition JSON
 // (transport / url / headers / discovered_tools) plus the stdio-only
 // fields the substrate refuses (command / args / env / pool_size).
-// AllowedTools is the operator's narrowing filter on tool exposure.
+// Tools is the operator's narrowing filter on tool exposure.
 //
 // discoveredTools is the marshaled JSON from PeekTools; nil = absent
 // (init pending or failed). When non-nil it's already in the
@@ -399,7 +399,7 @@ func marshalStaticMCPServer(srv config.MCPServer, discoveredTools json.RawMessag
 		Args            []string          `json:"args,omitempty"`
 		Env             map[string]string `json:"env,omitempty"`
 		PoolSize        int               `json:"pool_size,omitempty"`
-		AllowedTools    []string          `json:"allowed_tools,omitempty"`
+		Tools           []string          `json:"tools,omitempty"`
 		DiscoveredTools json.RawMessage   `json:"discovered_tools,omitempty"`
 	}
 	b, err := json.Marshal(staticMCPJSON{
@@ -410,7 +410,7 @@ func marshalStaticMCPServer(srv config.MCPServer, discoveredTools json.RawMessag
 		Args:            srv.Args,
 		Env:             srv.Env,
 		PoolSize:        srv.PoolSize,
-		AllowedTools:    srv.AllowedTools,
+		Tools:           srv.Tools,
 		DiscoveredTools: discoveredTools,
 	})
 	if err != nil {

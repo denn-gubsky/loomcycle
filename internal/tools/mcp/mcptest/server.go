@@ -80,7 +80,7 @@ type Option func(*Server)
 
 // WithToolName overrides the default "check_user" tool name. Used by
 // the compound test to expose tools with distinct mcp__ names so the
-// agent's allowed_tools list can route to specific servers.
+// agent's tools list can route to specific servers.
 func WithToolName(name string) Option {
 	return func(s *Server) { s.toolName = name }
 }

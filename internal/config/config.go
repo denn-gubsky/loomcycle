@@ -163,7 +163,7 @@ type Config struct {
 
 	// Volumes is the RFC AH registry of named filesystem volumes — the
 	// universe of ro/rw roots an AgentDef may bind to (the filesystem
-	// analog of "registered tools" for allowed_tools). Each entry's `path`
+	// analog of "registered tools" for tools). Each entry's `path`
 	// MUST already exist and be a directory (validated at config-load; the
 	// runtime never mkdir's a static volume); at most one entry may be
 	// `default: true`.
@@ -223,7 +223,7 @@ type Config struct {
 
 	// Warnings holds non-fatal config advisories accumulated during
 	// validate() — surfaced once at boot by main.go (log "config: WARNING:
-	// …"), never returned over the wire. Today: the "tool is in allowed_tools
+	// …"), never returned over the wire. Today: the "tool is in tools
 	// but its capability gate is unset, so every call default-denies" footgun
 	// (e.g. Memory without memory_scopes — F21). Not in YAML.
 	Warnings []string `yaml:"-"`
@@ -697,7 +697,7 @@ type AgentDef struct {
 	// frontmatter, etc. The frontmatter is loaded verbatim; if you
 	// want to strip it, use SystemPrompt + a preprocessor.
 	SystemPromptFile string   `yaml:"system_prompt_file"`
-	AllowedTools     []string `yaml:"allowed_tools"`
+	Tools            []string `yaml:"tools"`
 	// Skills lists skill names (each = a subdirectory under
 	// LOOMCYCLE_SKILLS_ROOT containing SKILL.md) whose bodies are
 	// concatenated onto SystemPrompt at config-load. Approach A in
@@ -706,7 +706,7 @@ type AgentDef struct {
 	// cache-write cost once per 5-min TTL.
 	//
 	// SECURITY: each named skill's allowed-tools frontmatter must be a
-	// SUBSET of this agent's AllowedTools. resolveSkills enforces this
+	// SUBSET of this agent's Tools. resolveSkills enforces this
 	// at config-load — a skill may only narrow, never widen, the tool
 	// set the operator granted to the agent.
 	Skills []string `yaml:"skills"`
@@ -799,7 +799,7 @@ type AgentDef struct {
 	// names of top-level `volumes:` entries the agent's file/exec tools
 	// (Read/Write/Edit/Glob/Grep/Bash/NotebookEdit) may resolve paths
 	// against. Validated at config-load to reference declared volumes
-	// (mirrors how allowed_tools validates against registered tools). An
+	// (mirrors how tools validates against registered tools). An
 	// agent that declares NO volumes is implicitly bound to [default]
 	// (backward-compatible). An agent that declares volumes is confined
 	// to EXACTLY those — it does NOT implicitly also get `default`.
@@ -826,7 +826,7 @@ type AgentDef struct {
 
 	// MemoryScopes is the v0.8.0 Memory tool scope allowlist. Empty
 	// = no Memory access (the default-deny invariant — even if
-	// `Memory` is in AllowedTools, agents without an explicit
+	// `Memory` is in Tools, agents without an explicit
 	// memory_scopes list see refused calls). Currently accepts
 	// "agent" and "user"; forward-compatible for "session" / "tenant"
 	// when those scopes ship.
@@ -842,7 +842,7 @@ type AgentDef struct {
 	// SqlScopes is the RFC AA SQL Memory ACL — the closed set of
 	// per-scope sqlite databases the agent may run sql_query / sql_exec
 	// against. Empty = NO SQL access (the default-deny invariant: even
-	// with Memory in allowed_tools, an agent without sql_scopes sees its
+	// with Memory in tools, an agent without sql_scopes sees its
 	// SQL ops refused). Closed enum {agent, user, run}:
 	//
 	//   - "agent" → this agent's durable DB (tenant-keyed, cross-run)
@@ -869,14 +869,14 @@ type AgentDef struct {
 	// per-side (publish / subscribe) allowlists naming channels the
 	// agent may post to or read from. Entries may use a trailing
 	// "/*" wildcard (`findings/*` matches `findings/alpha` but NOT
-	// `findings`). Same trust model as AllowedTools / MemoryScopes —
+	// `findings`). Same trust model as Tools / MemoryScopes —
 	// operator-yaml is the floor; the model can never enlarge its
 	// own access. Sub-agents inherit the parent's ACL via ctx.
 	Channels AgentChannelACL `yaml:"channels"`
 
 	// AgentDefScopes is the v0.8.5 AgentDef tool capability gate.
 	// Default-deny when empty. Mirrors MemoryScopes' shape — having
-	// AgentDef in allowed_tools is necessary but not sufficient; this
+	// AgentDef in tools is necessary but not sufficient; this
 	// list narrows which mutation paths the agent can take. Closed
 	// set:
 	//
@@ -989,14 +989,14 @@ type AgentDef struct {
 	HistoryScope []string `yaml:"history_scope"`
 
 	// DisableContext opts the agent OUT of the v0.8.7 default-add
-	// behaviour. Normally every agent's allowed_tools is augmented
+	// behaviour. Normally every agent's tools is augmented
 	// with "Context" at config-load — introspection is foundational
 	// for self-evolving agents and missing it is a footgun. Operators
 	// running airgapped or strictly-deterministic agents can set
 	// `disable_context: true` to skip the default-add for that agent.
 	//
 	// Note: this only controls the AUTO-ADD. If an operator explicitly
-	// lists "Context" in allowed_tools, that wins regardless of this
+	// lists "Context" in tools, that wins regardless of this
 	// flag (explicit beats default).
 	DisableContext bool `yaml:"disable_context"`
 
@@ -1819,11 +1819,11 @@ type MCPServer struct {
 	URL       string            `yaml:"url"`     // http
 	Headers   map[string]string `yaml:"headers"` // http
 	PoolSize  int               `yaml:"pool_size"`
-	// AllowedTools narrows which of the server's discovered tools are
+	// Tools narrows which of the server's discovered tools are
 	// exposed to agents. Empty (default) = expose every tool the server
 	// advertises via tools/list. Use this to opt out of expensive or
 	// unwanted tools without forking the MCP server itself.
-	AllowedTools []string `yaml:"allowed_tools"`
+	Tools []string `yaml:"tools"`
 }
 
 // Concurrency caps for the runtime.
@@ -2037,7 +2037,7 @@ type Env struct {
 	// volume, and has no network. Unlike Bash it HONORS read-only volumes
 	// (writes hit an in-RAM overlay, never the host). Defaults to false;
 	// enable with LOOMCYCLE_BASHBOX_ENABLED=1. gbash is alpha — the per-agent
-	// allowed_tools gate is the escape hatch.
+	// tools gate is the escape hatch.
 	BashboxEnabled bool
 	// BashboxFallbackCommands is the operator allowlist of host commands that
 	// gbash does NOT implement (e.g. git, gh) and that may ESCAPE the Bashbox
@@ -2292,7 +2292,7 @@ type Env struct {
 
 	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
 	// registered agents may include Bash/Write/Edit in their
-	// allowed_tools. Default false: those three are stripped from
+	// tools. Default false: those three are stripped from
 	// any register_agent request, matching the v0.8.7/v0.8.8
 	// default-deny pattern for new tool surfaces. Env:
 	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS.
@@ -3601,8 +3601,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	}
 
 	// v0.8.7 default-add: every agent gets Context auto-appended to
-	// its allowed_tools unless `disable_context: true` is set. Runs
-	// after resolveSkills so skill-driven AllowedTools widening has
+	// its tools unless `disable_context: true` is set. Runs
+	// after resolveSkills so skill-driven Tools widening has
 	// already taken effect.
 	addContextToolDefaults(cfg)
 
@@ -3613,7 +3613,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 }
 
 // addContextToolDefaults appends "Context" to every agent's
-// AllowedTools unless DisableContext is set (or "Context" is already
+// Tools unless DisableContext is set (or "Context" is already
 // listed). v0.8.7 introspection is foundational for self-evolving
 // agents; missing it is a footgun. Operators with airgapped agents
 // opt out per-agent via `disable_context: true`.
@@ -3623,9 +3623,9 @@ func addContextToolDefaults(cfg *Config) {
 			continue
 		}
 		alreadyHas := false
-		for _, t := range def.AllowedTools {
+		for _, t := range def.Tools {
 			// Case-insensitive match. An operator's lowercase
-			// `allowed_tools: [context]` is a typo, not an explicit
+			// `tools: [context]` is a typo, not an explicit
 			// listing — but case-sensitive eq would let the typo
 			// double-add (yielding [context, Context]) and confuse
 			// the per-run dispatcher's case-sensitive registry
@@ -3638,7 +3638,7 @@ func addContextToolDefaults(cfg *Config) {
 		if alreadyHas {
 			continue
 		}
-		def.AllowedTools = append(def.AllowedTools, "Context")
+		def.Tools = append(def.Tools, "Context")
 		cfg.Agents[name] = def
 	}
 }
@@ -4049,7 +4049,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Code:             d.Code,
 		SystemPrompt:     d.SystemPrompt,
 		SystemPromptFile: d.SystemPromptFile,
-		AllowedTools:     d.AllowedTools,
+		Tools:            d.Tools,
 		Skills:           d.Skills,
 		MaxTokens:        d.MaxTokens,
 		MaxIterations:    d.MaxIterations,
@@ -4100,7 +4100,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 // base's value carries through.
 //
 // Slices/maps: yaml.Unmarshal produces nil for absent keys and
-// non-nil-empty for explicit empty entries (`allowed_tools: []`).
+// non-nil-empty for explicit empty entries (`tools: []`).
 // We treat nil as "absent in yaml — keep discovered" and non-nil as
 // "explicit override — take yaml". This lets ops zero-out a list by
 // writing the empty form in yaml.
@@ -4138,8 +4138,8 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 		out.SystemPromptFile = override.SystemPromptFile
 		out.SystemPrompt = ""
 	}
-	if override.AllowedTools != nil {
-		out.AllowedTools = override.AllowedTools
+	if override.Tools != nil {
+		out.Tools = override.Tools
 	}
 	if override.Skills != nil {
 		out.Skills = override.Skills
@@ -4262,20 +4262,20 @@ func resolveSystemPromptFiles(cfg *Config, configPath string) error {
 // `skills:` map. It mirrors a SKILL.md loaded from LOOMCYCLE_SKILLS_ROOT but is
 // defined in YAML: the map key is the skill name an agent's `skills: [name]`
 // references; Body is the markdown bundled onto the agent's system_prompt at
-// config-load; AllowedTools is the skill's tool requirement, which resolveSkills
-// enforces is a SUBSET of the bundling agent's allowed_tools (a skill may never
-// widen the agent's tool set). Uses the underscore `allowed_tools` key to match
-// the rest of the loomcycle YAML (the SKILL.md frontmatter uses hyphenated
-// `allowed-tools`).
+// config-load; Tools is the skill's tool requirement, which resolveSkills
+// enforces is a SUBSET of the bundling agent's tools (a skill may never
+// widen the agent's tool set). Uses the canonical `tools` key to match
+// the rest of the loomcycle YAML (the SKILL.md frontmatter keeps the
+// hyphenated `allowed-tools` as a Claude Code import alias).
 type SkillSpec struct {
-	Description  string   `yaml:"description"`
-	AllowedTools []string `yaml:"allowed_tools"`
-	Body         string   `yaml:"body"`
+	Description string   `yaml:"description"`
+	Tools       []string `yaml:"tools"`
+	Body        string   `yaml:"body"`
 }
 
 // resolveSkills bundles skill bodies into agent system prompts and
 // validates each skill's allowed-tools is a subset of the bundling
-// agent's allowed_tools. Static bundling — see Approach A in
+// agent's tools. Static bundling — see Approach A in
 // doc-internal/skills-design.md.
 //
 // Errors:
@@ -4308,10 +4308,10 @@ func resolveSkills(cfg *Config) error {
 	}
 	for skillName, spec := range cfg.Skills {
 		set.Add(&skills.Skill{
-			Name:         skillName,
-			Description:  spec.Description,
-			AllowedTools: spec.AllowedTools,
-			Body:         spec.Body,
+			Name:        skillName,
+			Description: spec.Description,
+			Tools:       spec.Tools,
+			Body:        spec.Body,
 		})
 	}
 	for name, def := range cfg.Agents {
@@ -4323,8 +4323,8 @@ func resolveSkills(cfg *Config) error {
 		// shadows the static body.
 		def.SystemPromptBase = def.SystemPrompt
 		// Build agent rule set once per agent.
-		agentSet := make(map[string]bool, len(def.AllowedTools))
-		for _, t := range def.AllowedTools {
+		agentSet := make(map[string]bool, len(def.Tools))
+		for _, t := range def.Tools {
 			agentSet[t] = true
 		}
 		for _, skillName := range def.Skills {
@@ -4332,16 +4332,16 @@ func resolveSkills(cfg *Config) error {
 			if !ok {
 				return fmt.Errorf("agent %q: unknown skill %q — define it under the top-level `skills:` map or as a SKILL.md under LOOMCYCLE_SKILLS_ROOT (%q)", name, skillName, cfg.Env.SkillsRoot)
 			}
-			// SECURITY: enforce skill.allowed-tools ⊆ agent.allowed_tools.
+			// SECURITY: enforce skill.allowed-tools ⊆ agent.tools.
 			var widening []string
-			for _, t := range sk.AllowedTools {
+			for _, t := range sk.Tools {
 				if !policy.Matches(t, agentSet) {
 					widening = append(widening, t)
 				}
 			}
 			if len(widening) > 0 {
 				return fmt.Errorf(
-					"agent %q: skill %q requires tools %v not granted by the agent's allowed_tools — skills may not widen the agent's tool set",
+					"agent %q: skill %q requires tools %v not granted by the agent's tools — skills may not widen the agent's tool set",
 					name, skillName, widening,
 				)
 			}
@@ -4603,7 +4603,7 @@ func validateAgentChannelEntry(declared map[string]Channel, entry string) error 
 // unit-testable; the caller (validate) accumulates these onto Config.Warnings.
 func agentGateWarnings(name string, a AgentDef) []string {
 	has := func(tool string) bool {
-		for _, t := range a.AllowedTools {
+		for _, t := range a.Tools {
 			if t == tool {
 				return true
 			}
@@ -4612,22 +4612,22 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	}
 	var w []string
 	if has("Memory") && len(a.MemoryScopes) == 0 {
-		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Memory but memory_scopes is empty — every Memory op will default-deny; add memory_scopes: [agent] and/or [user]", name))
+		w = append(w, fmt.Sprintf("agent %q: tools includes Memory but memory_scopes is empty — every Memory op will default-deny; add memory_scopes: [agent] and/or [user]", name))
 	}
 	if has("Evaluation") && len(a.EvaluationScopes) == 0 {
-		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Evaluation but evaluation_scopes is empty — every Evaluation op will default-deny; add evaluation_scopes", name))
+		w = append(w, fmt.Sprintf("agent %q: tools includes Evaluation but evaluation_scopes is empty — every Evaluation op will default-deny; add evaluation_scopes", name))
 	}
 	if has("Channel") && len(a.Channels.Publish) == 0 && len(a.Channels.Subscribe) == 0 {
-		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Channel but channels.publish and channels.subscribe are both empty — every Channel op will default-deny", name))
+		w = append(w, fmt.Sprintf("agent %q: tools includes Channel but channels.publish and channels.subscribe are both empty — every Channel op will default-deny", name))
 	}
 	if has("Interruption") && !a.Interruption.Enabled {
-		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Interruption but interruption.enabled is false — every Interruption op will refuse; set interruption.enabled: true", name))
+		w = append(w, fmt.Sprintf("agent %q: tools includes Interruption but interruption.enabled is false — every Interruption op will refuse; set interruption.enabled: true", name))
 	}
 	return w
 }
 
 // sqlMemConfigWarnings returns the non-fatal advisory when an agent is
-// configured for RFC AA SQL Memory (Memory in allowed_tools + a non-empty
+// configured for RFC AA SQL Memory (Memory in tools + a non-empty
 // sql_scopes) but the subsystem is disabled at the storage layer — the agent
 // boots, but every sql_query/sql_exec refuses with "not enabled". Kept pure +
 // separate from agentGateWarnings because it needs the storage flag, not just
@@ -4635,7 +4635,7 @@ func agentGateWarnings(name string, a AgentDef) []string {
 // runtime, not flagged here.
 func sqlMemConfigWarnings(name string, a AgentDef, sqlMemEnabled bool) []string {
 	has := func(tool string) bool {
-		for _, t := range a.AllowedTools {
+		for _, t := range a.Tools {
 			if t == tool {
 				return true
 			}
@@ -4874,7 +4874,7 @@ func validate(c *Config) error {
 		}
 		// Memory tool: validate memory_scopes are known scope strings.
 		// Empty memory_scopes is not an ERROR (it just means no Memory
-		// access), but if the agent ALSO lists Memory in allowed_tools the
+		// access), but if the agent ALSO lists Memory in tools the
 		// tool default-denies every call — a silent-ish footgun surfaced as a
 		// boot warning below (F21). Non-empty must be a subset of {agent, user}.
 		for i, sc := range agent.MemoryScopes {
@@ -4891,7 +4891,7 @@ func validate(c *Config) error {
 			}
 		}
 		// RFC AH Phase 1: a per-agent `volumes` binding must reference a
-		// declared top-level `volumes:` entry (mirrors how allowed_tools
+		// declared top-level `volumes:` entry (mirrors how tools
 		// validates against registered tools — operator-yaml is the floor,
 		// the model can never enlarge its own filesystem access). An agent
 		// that declares NO volumes is implicitly bound to [default] and so
@@ -4901,7 +4901,7 @@ func validate(c *Config) error {
 				return fmt.Errorf("agent %q: volumes[%d]: unknown volume %q (declare it in the top-level volumes: map)", name, i, vn)
 			}
 		}
-		// Non-fatal: "tool in allowed_tools but its capability gate is unset"
+		// Non-fatal: "tool in tools but its capability gate is unset"
 		// advisories (Memory/memory_scopes, Evaluation/evaluation_scopes,
 		// Channel/channels, Interruption/interruption.enabled). Accumulated and
 		// logged once at boot, never fatal — an operator may legitimately list a

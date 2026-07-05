@@ -1,7 +1,7 @@
 ---
 name: restructuring
 description: Safely move, reparent, reorder, promote, or delete chunks in a chunked-graph Document.
-allowed_tools: [Document]
+tools: [Document]
 license: Apache-2.0
 ---
 

@@ -711,7 +711,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		Agent:           req.GetAgent(),
 		SessionID:       req.GetSessionId(),
 		Segments:        req.GetSegments(),
-		AllowedTools:    req.GetAllowedTools(),
+		Tools:           req.GetTools(),
 		AllowedHosts:    req.GetAllowedHosts(),
 		WebSearchFilter: req.GetWebSearchFilter(),
 		UserID:          req.GetUserId(),
@@ -746,7 +746,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		// existing session per the HTTP wire's messagesRequest contract.
 		SessionID:       req.GetSessionId(),
 		Segments:        req.GetSegments(),
-		AllowedTools:    req.GetAllowedTools(),
+		Tools:           req.GetTools(),
 		AllowedHosts:    req.GetAllowedHosts(),
 		WebSearchFilter: req.GetWebSearchFilter(),
 		AgentID:         req.GetAgentId(),
@@ -828,7 +828,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		SessionID:       req.GetSessionId(),
 		TenantID:        req.GetTenantId(),
 		Segments:        segmentsFromProto(req.GetSegments()),
-		AllowedTools:    req.GetAllowedTools(),
+		Tools:           req.GetTools(),
 		WebSearchFilter: req.GetWebSearchFilter(),
 		UserID:          req.GetUserId(),
 		AgentID:         req.GetAgentId(),
@@ -978,7 +978,7 @@ type runInputProtoArgs struct {
 	Agent           string
 	SessionID       string
 	Segments        []*loomcyclepb.PromptSegment
-	AllowedTools    []string
+	Tools           []string
 	AllowedHosts    *loomcyclepb.HostAllowlist
 	WebSearchFilter string
 	UserID          string
@@ -999,7 +999,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		Agent:           a.Agent,
 		SessionID:       a.SessionID,
 		Segments:        segmentsFromProto(a.Segments),
-		AllowedTools:    a.AllowedTools,
+		Tools:           a.Tools,
 		WebSearchFilter: a.WebSearchFilter,
 		UserID:          a.UserID,
 		AgentID:         a.AgentID,

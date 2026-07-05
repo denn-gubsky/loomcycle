@@ -1,7 +1,7 @@
 id: mid-02-cv-rewrite-faithful
 tier: middle
 description: Rewrite a CV bullet to match a JD without inventing experience. Tests semantic content quality and hallucination resistance.
-allowed_tools: []
+tools: []
 max_turns: 2
 input_text: |
   Rewrite the CV bullet below to better target the JD. Keep it factually

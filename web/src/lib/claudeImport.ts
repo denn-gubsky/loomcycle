@@ -94,9 +94,9 @@ export function rewriteEnvRefs(value: string): {
 interface SkillFrontmatter {
   name?: string;
   description?: string;
-  // Claude Code uses the hyphenated key; loomcycle's overlay uses underscore.
+  // Claude Code uses the hyphenated key; loomcycle's canonical key is `tools`.
   "allowed-tools"?: unknown;
-  allowed_tools?: unknown;
+  tools?: unknown;
 }
 
 function coerceStringList(v: unknown): string[] {
@@ -154,11 +154,11 @@ export function parseSkillMarkdown(
     warnings.push("body is large (>100KB) — may exceed the operator's LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES cap.");
   }
 
-  const allowedTools = coerceStringList(fm["allowed-tools"] ?? fm.allowed_tools);
+  const allowedTools = coerceStringList(fm["allowed-tools"] ?? fm.tools);
   const overlay: Record<string, unknown> = { body };
   const description = typeof fm.description === "string" ? fm.description.trim() : "";
   if (description) overlay.description = description;
-  if (allowedTools.length > 0) overlay.allowed_tools = allowedTools;
+  if (allowedTools.length > 0) overlay.tools = allowedTools;
 
   return {
     candidate: {

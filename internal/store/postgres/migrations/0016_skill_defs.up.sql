@@ -3,7 +3,7 @@
 -- Mirror of 0006_agent_defs against skills. The store stays
 -- content-agnostic — the `definition` column carries the JSON-
 -- encoded skill body + metadata (body / description /
--- allowed_tools); the tool layer at internal/tools/builtin/skilldef.go
+-- tools); the tool layer at internal/tools/builtin/skilldef.go
 -- owns the schema for that JSON.
 --
 -- Invariants mirrored from agent_defs:

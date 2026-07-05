@@ -1,7 +1,7 @@
 id: mid-01-read-reason-write
 tier: middle
 description: Full MCP read-reason-write cycle. Fetch an application, choose a status based on its content, patch it back. Uses the real {id, body} schema.
-allowed_tools: ["mcp__jobs__getApplication", "mcp__jobs__patchApplication"]
+tools: ["mcp__jobs__getApplication", "mcp__jobs__patchApplication"]
 max_turns: 6
 input_text: |
   Application id "bench-app-fixture-100" needs its `status` field

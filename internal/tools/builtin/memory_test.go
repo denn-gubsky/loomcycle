@@ -150,7 +150,7 @@ func TestMemoryTool_ScopeNotInPolicyRefused(t *testing.T) {
 func TestMemoryTool_NoPolicyMeansNoAccess(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
-	// Strip policy entirely — agent has Memory in allowed_tools but
+	// Strip policy entirely — agent has Memory in tools but
 	// no memory_scopes — this simulates the "tool granted but no
 	// scopes configured" misconfiguration.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{})

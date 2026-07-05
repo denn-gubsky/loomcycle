@@ -93,7 +93,7 @@ agents:
     description: "Heavy-volume coding-task agent for load testing"
     provider: anthropic-oauth-dev
     model: claude-sonnet-4-6
-    allowed_tools:
+    tools:
       - Read
       - Write
       - Edit

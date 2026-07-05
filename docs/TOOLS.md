@@ -1,6 +1,6 @@
 # Tools and tool policy
 
-loomcycle exposes tools to agents through a **two-layer default-deny model**: every tool is disabled at the operator layer until env-configured, and every agent gets zero tools at the agent layer until `allowed_tools` is set in YAML. Both layers must say "yes" before a tool reaches the model.
+loomcycle exposes tools to agents through a **two-layer default-deny model**: every tool is disabled at the operator layer until env-configured, and every agent gets zero tools at the agent layer until `tools` is set in YAML. Both layers must say "yes" before a tool reaches the model.
 
 This document explains the model end-to-end and what it means for operators wiring up new agents or new tools.
 
@@ -11,13 +11,13 @@ This document explains the model end-to-end and what it means for operators wiri
 │ Layer 1 — Operator (server-wide)                             │
 │   Built-ins refuse every call when their env is unset.       │
 │   MCP servers must be declared in mcp_servers in YAML, with  │
-│   optional per-server allowed_tools narrowing.               │
+│   optional per-server tools narrowing.               │
 └──────────────────────┬───────────────────────────────────────┘
                        │ (registered + enabled tools)
                        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ Layer 2 — Agent (per-run)                                    │
-│   Agent's allowed_tools in YAML lists the names exposed.     │
+│   Agent's tools in YAML lists the names exposed.     │
 │   Empty / missing list → zero tools, full stop.              │
 │   Caller's request body may further narrow (intersection).   │
 └──────────────────────┬───────────────────────────────────────┘
@@ -47,17 +47,17 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `WebSearch` | `BRAVE_API_KEY=...`                                   |
 | `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + a bound **rw** volume    |
 | `Bashbox`   | `LOOMCYCLE_BASHBOX_ENABLED=1` + a bound volume (**ro or rw** — a true in-process sandbox) |
-| `Agent`     | Always registered (server-internal); per-agent `allowed_tools` controls who can spawn. |
+| `Agent`     | Always registered (server-internal); per-agent `tools` controls who can spawn. |
 | `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` list). v0.8.22+ also consults the `skill_defs` store for DB-active overrides. |
 | `SkillDef`  | Always registered (v0.8.22). Per-agent `skill_def_scopes:` YAML gate (default-deny); no extra env var. Storage shared with the rest of the substrate. |
 | `VolumeDef` | Always registered (RFC AH Phase 2a/2b). Per-agent `volume_def_scopes:` YAML gate (default-deny) for create/delete/purge; get/list are tenant-scoped reads. `create {ephemeral:true}` provisions a run-scoped volume auto-purged at top-level-run completion. Requires a static volume marked `dynamic_root: true`. Storage shared with the rest of the substrate. |
 | `Memory`    | Storage backend (SQLite default; Postgres opt-in) + per-agent `memory_scopes:` allowlist. |
-| `Document`  | Always registered (RFC AK Phase 1). Per-agent `allowed_tools:[Document]`. **Requires SQL Memory** (`LOOMCYCLE_SQLMEM_ENABLED=1`). Chunked-graph documents: chunk **bodies+fields** in Memory (keyed by UUID), **structure** (hierarchy/type/status/edges/type-schemas) in SQL Memory (4 tables). 13 ops (document/chunk lifecycle, edges, `query_chunks` with structured filters + `under_path` Path join + a validator-gated `sql:` escape hatch, type defs). Optimistic `revision` on update; delete cascades descendants + their Memory bodies. Names documents in the Path tree (`create_document path:`). Scope **agent/user** (tenant deferred); tenant-isolated via the SQL Memory scope key. |
-| `Path`      | Always registered (RFC AL). Per-agent `allowed_tools:[Path]`. A Unix-like VFS (`resolve`/`ls`/`stat`/`mkdir`/`mv`/`rm`) over the `dirents` runtime-store table, naming Memory entries / Volume mounts / Documents by tenant-rooted, scope-aware (agent/user/tenant) paths. Resources keep native ids; a dirent is a name, not an authority grant. Paths reject `..`; tenant-isolated. Resources opt in via `Memory.set path:` / `VolumeDef.create mount_at:` / `Document.create_document path:`. |
+| `Document`  | Always registered (RFC AK Phase 1). Per-agent `tools:[Document]`. **Requires SQL Memory** (`LOOMCYCLE_SQLMEM_ENABLED=1`). Chunked-graph documents: chunk **bodies+fields** in Memory (keyed by UUID), **structure** (hierarchy/type/status/edges/type-schemas) in SQL Memory (4 tables). 13 ops (document/chunk lifecycle, edges, `query_chunks` with structured filters + `under_path` Path join + a validator-gated `sql:` escape hatch, type defs). Optimistic `revision` on update; delete cascades descendants + their Memory bodies. Names documents in the Path tree (`create_document path:`). Scope **agent/user** (tenant deferred); tenant-isolated via the SQL Memory scope key. |
+| `Path`      | Always registered (RFC AL). Per-agent `tools:[Path]`. A Unix-like VFS (`resolve`/`ls`/`stat`/`mkdir`/`mv`/`rm`) over the `dirents` runtime-store table, naming Memory entries / Volume mounts / Documents by tenant-rooted, scope-aware (agent/user/tenant) paths. Resources keep native ids; a dirent is a name, not an authority grant. Paths reject `..`; tenant-isolated. Resources opt in via `Memory.set path:` / `VolumeDef.create mount_at:` / `Document.create_document path:`. |
 
 Bash has additional warnings: it is **not a true sandbox** even when enabled. Run loomcycle inside a container or VM if Bash is exposed to untrusted prompts. See `internal/tools/builtin/bash.go` for the full warning.
 
-`Bashbox` is the **true in-process sandbox** alternative to `Bash` (RFC AJ): it runs the command via gbash (pure-Go), spawning **no OS process**, rooting all paths at the mounted volume, with **no network**. Because the isolation is real, it **honors read-only volumes** — a `ro` binding mounts under an in-RAM write overlay, so writes succeed in-run but never touch the host (`Bash`, which cannot enforce ro, refuses a `ro` volume). Prefer `Bashbox` over `Bash` for untrusted prompts or read-only work; use `Bash` only when you need an actual host binary. It bundles the pure-Go `awk`/`jq` contrib commands on top of gbash's coreutils builtins (~97% `/bin/sh` parity; `git`/network are absent by default). gbash is alpha and pinned; the per-agent `allowed_tools` gate is the escape hatch. See the `bashbox` help topic.
+`Bashbox` is the **true in-process sandbox** alternative to `Bash` (RFC AJ): it runs the command via gbash (pure-Go), spawning **no OS process**, rooting all paths at the mounted volume, with **no network**. Because the isolation is real, it **honors read-only volumes** — a `ro` binding mounts under an in-RAM write overlay, so writes succeed in-run but never touch the host (`Bash`, which cannot enforce ro, refuses a `ro` volume). Prefer `Bashbox` over `Bash` for untrusted prompts or read-only work; use `Bash` only when you need an actual host binary. It bundles the pure-Go `awk`/`jq` contrib commands on top of gbash's coreutils builtins (~97% `/bin/sh` parity; `git`/network are absent by default). gbash is alpha and pinned; the per-agent `tools` gate is the escape hatch. See the `bashbox` help topic.
 
 **Host-command fallback (RFC AJ §13, operator opt-in).** Commands gbash doesn't implement (`git`, `gh`, …) normally fail. An operator can allowlist specific ones to run on the **real host shell** via `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` — **only** those names escape the sandbox; every other command stays sandboxed (so `git status; curl …` runs git on the host but `curl` in the sandbox — no smuggling). Credentials reach those commands via `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GH_TOKEN,HOME,SSH_AUTH_SOCK` (injected only into the host child, never the sandbox env — the model can't read them via `env`). Fallback **requires a read-write volume** (a host process can't honor the read-only overlay → a fallback command on a `ro` volume refuses), runs with the working directory mapped to the host path for the script's cwd (containment-checked), and inherently has host filesystem + network. Off by default; a loud boot warning fires when configured.
 
@@ -98,10 +98,10 @@ mcp_servers:
     env: { BRAVE_API_KEY: "${BRAVE_API_KEY}" }
     # Operator-level filter: only these of the server's tools are
     # registered AT ALL. Others are invisible to every agent.
-    allowed_tools: [brave_web_search]
+    tools: [brave_web_search]
 ```
 
-Without `allowed_tools` on the server entry, every tool the server advertises is registered. With it, only the listed tools are registered, and the rest are dropped before any agent can ever request them.
+Without `tools` on the server entry, every tool the server advertises is registered. With it, only the listed tools are registered, and the rest are dropped before any agent can ever request them.
 
 ## Layer 2 — agent-side: exposing tools
 
@@ -111,7 +111,7 @@ Each agent definition lists which tools it can access. The list is **anchored**:
 agents:
   cv-adapter:
     model: smart
-    allowed_tools:
+    tools:
       - Read
       - Edit
       - "mcp__brave-search__*"   # glob — every brave-search tool that's registered
@@ -119,13 +119,13 @@ agents:
 
   ats-filter:
     model: local
-    allowed_tools: [Read]         # only reads files
+    tools: [Read]         # only reads files
 ```
 
-If you forget `allowed_tools`, the agent gets zero tools. The startup log will warn:
+If you forget `tools`, the agent gets zero tools. The startup log will warn:
 
 ```
-note: agent "myagent" has no allowed_tools — it will see zero tools (intentional default-deny; add allowed_tools to its YAML to expose tools)
+note: agent "myagent" has no tools — it will see zero tools (intentional default-deny; add tools to its YAML to expose tools)
 ```
 
 This is a feature, not a bug. New agents start with no privileges; you grant them.
@@ -136,13 +136,13 @@ Entries ending in `*` match by prefix. The canonical use is exposing all tools f
 
 ### Caller-side narrowing
 
-The HTTP request can carry `allowed_tools` in the body to further narrow the agent's set on a single run:
+The HTTP request can carry `tools` in the body to further narrow the agent's set on a single run:
 
 ```http
 POST /v1/runs
 {
   "agent": "cv-adapter",
-  "allowed_tools": ["Read"],         // narrowing — only Read for THIS run
+  "tools": ["Read"],         // narrowing — only Read for THIS run
   "segments": [...]
 }
 ```
@@ -213,7 +213,7 @@ Continuations on `/v1/sessions/{id}/messages` re-supply `allowed_hosts` and `web
 | Situation                                                 | Result                                |
 |-----------------------------------------------------------|---------------------------------------|
 | Agent bound to no (rw) `volumes:` volume                  | `Write`/`Edit`/`Bash`/etc. refuse with a clear "no filesystem volume available" message. |
-| Agent omits `allowed_tools`                               | The model sees zero tools.            |
+| Agent omits `tools`                               | The model sees zero tools.            |
 | Agent includes a tool the operator hasn't enabled         | The tool is registered (visible) but every call refuses. |
 | Caller's request lists a tool the agent doesn't allow     | That tool is silently dropped from the run's set. |
 | Agent globs `mcp__foo__*` but no such server is declared  | No tools — server isn't registered.   |
@@ -244,7 +244,7 @@ The `Agent` built-in lets a parent agent spawn a child run by name:
 {"name": "researcher", "prompt": "Investigate X and return JSON …"}
 ```
 
-**Auto-registration.** Unlike other built-ins, `Agent` is registered automatically by the HTTP server (it has to close over the server's own sub-run runner). It still respects per-agent `allowed_tools` — only agents that list `Agent` in their YAML can spawn children.
+**Auto-registration.** Unlike other built-ins, `Agent` is registered automatically by the HTTP server (it has to close over the server's own sub-run runner). It still respects per-agent `tools` — only agents that list `Agent` in their YAML can spawn children.
 
 **What the child inherits from the parent (via ctx):**
 
@@ -254,7 +254,7 @@ The `Agent` built-in lets a parent agent spawn a child run by name:
 
 **What the child does NOT inherit:**
 
-- Tool allowlist — the child's `allowed_tools` is its YAML definition, narrowed only by the operator's enabled set. Parents cannot widen.
+- Tool allowlist — the child's `tools` is its YAML definition, narrowed only by the operator's enabled set. Parents cannot widen.
 - Session — sub-agents get a fresh session.
 - Tenant — inherited only for `user_id` purposes; multi-tenant isolation rules apply equally.
 
@@ -274,12 +274,12 @@ At config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKI
 agents:
   cv-adapter:
     model: smart
-    allowed_tools: [Read, Write]
+    tools: [Read, Write]
     skills: [voice-applier, cv-voice-applier]   # bodies merged into system prompt at config-load
     system_prompt_file: prompts/cv-adapter.md
 ```
 
-Constraint: each skill's frontmatter declares its own `allowed-tools`; this list must be a **subset** of the agent's `allowed_tools`. Mismatches are rejected at config-load with a clear error. This prevents skills from advertising tools the agent can't actually invoke.
+Constraint: each skill's frontmatter declares its own `allowed-tools`; this list must be a **subset** of the agent's `tools`. Mismatches are rejected at config-load with a clear error. This prevents skills from advertising tools the agent can't actually invoke.
 
 **Approach B — dynamic Skill tool (placeholder).**
 
@@ -339,12 +339,12 @@ Two scopes ship in v0.8.0:
 ```yaml
 agents:
   cv-adapter:
-    allowed_tools: [Memory, Read, Write]
+    tools: [Memory, Read, Write]
     memory_scopes: [agent, user]            # which scopes this agent may use
     memory_quota_bytes: 5_000_000           # per-(scope, scope_id) override (default 1 MB)
 ```
 
-`memory_scopes` is a default-deny allowlist. An agent with `Memory` in `allowed_tools` but no `memory_scopes` sees a refusal on every Memory call.
+`memory_scopes` is a default-deny allowlist. An agent with `Memory` in `tools` but no `memory_scopes` sees a refusal on every Memory call.
 
 `memory_quota_bytes` overrides the global `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` for this agent only. Use higher caps for memory-heavy agents; lower for noisy agents you want kept in check.
 
@@ -644,7 +644,7 @@ At config-load, loomcycle parses the spec and registers one tool per operation. 
 
 **Why this matters when it lands.** Today an agent prompt has to spell out `GET http://localhost:3000/api/agent/context` as a string the model writes. The model occasionally invents wrong hostnames or paths (the cv-batch-adapter cv-adapter children burned all their iterations guessing hostnames in May 2026). With LocalAPI: the model sees a typed tool `jobs__getAgentContext` with parameter docs, and the URL string is loomcycle's responsibility, not the model's.
 
-**Allowlist behaviour.** LocalAPI tools are subject to the same default-deny: agents must list them in `allowed_tools` (glob `jobs__*` works). The HTTP destination (`base_url`) is NOT subject to `LOOMCYCLE_HTTP_HOST_ALLOWLIST` — operator opting into a `local_api` entry is the explicit grant.
+**Allowlist behaviour.** LocalAPI tools are subject to the same default-deny: agents must list them in `tools` (glob `jobs__*` works). The HTTP destination (`base_url`) is NOT subject to `LOOMCYCLE_HTTP_HOST_ALLOWLIST` — operator opting into a `local_api` entry is the explicit grant.
 
 **No SSRF defense for `base_url`.** LocalAPI is for trusted internal APIs only. If you need allowlisted external HTTP access from agents, use the `HTTP` / `WebFetch` built-ins, which carry the full SSRF protection.
 
@@ -751,7 +751,7 @@ DELETE /v1/hooks/{id}          // remove a registration
 
 ### Trust-boundary invariants
 
-- Hooks run **after** the policy layer (`allowed_tools` / `allowed_hosts`). Hooks may narrow further or rewrite content. The **only** exception is the per-call host-widening capability below, which requires explicit operator opt-in.
+- Hooks run **after** the policy layer (`tools` / `allowed_hosts`). Hooks may narrow further or rewrite content. The **only** exception is the per-call host-widening capability below, which requires explicit operator opt-in.
 - Hooks **cannot** tear down the agent run. The worst they can do is short-circuit one tool call with a synthetic `IsError: true` result.
 - Webhook payloads include `agent_id` and `user_id` for correlation but **do NOT** include the agent's prompt or message history.
 
@@ -880,7 +880,7 @@ The agent-facing tool surface is identical across all three; only the resolve pa
 ```yaml
 agents:
   batch-processor:
-    allowed_tools: [Read, Memory, Interruption, Context]
+    tools: [Read, Memory, Interruption, Context]
     interruption:
       enabled: true
       kinds: [question]      # v0.8.16 only value; future: "pause", "approval"

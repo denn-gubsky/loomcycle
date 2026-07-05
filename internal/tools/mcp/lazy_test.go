@@ -219,12 +219,12 @@ func TestLazyResolver_HandshakeFails(t *testing.T) {
 	}
 }
 
-// TestLazyResolver_OperatorAllowedToolsFilter verifies that the per-
-// server allowed_tools yaml setting is respected on the lazy path
+// TestLazyResolver_OperatorToolsFilter verifies that the per-
+// server tools yaml setting is respected on the lazy path
 // just as it would be at boot. Without this, an operator who
 // excluded "expensive_tool" from a server's discovered set would
 // suddenly see it become callable after a boot-skip recovery.
-func TestLazyResolver_OperatorAllowedToolsFilter(t *testing.T) {
+func TestLazyResolver_OperatorToolsFilter(t *testing.T) {
 	plan := newBuildPlan()
 	plan.tools["jobs"] = []ToolDescriptor{
 		{Name: "safe_tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -232,7 +232,7 @@ func TestLazyResolver_OperatorAllowedToolsFilter(t *testing.T) {
 	}
 	pool := NewPool(plan.build, nil, nil)
 	r := NewLazyResolver(pool, &config.Config{
-		MCPServers: map[string]config.MCPServer{"jobs": {AllowedTools: []string{"safe_tool"}}},
+		MCPServers: map[string]config.MCPServer{"jobs": {Tools: []string{"safe_tool"}}},
 	}, nil, nil, 0)
 
 	// safe_tool resolves

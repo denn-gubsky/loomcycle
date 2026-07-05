@@ -3,7 +3,7 @@ name: introspector
 description: Exercises Context tool's four PR-1 ops in one run.
 provider: gemini
 model: gemini-2.5-flash
-allowed_tools: [Read, Memory]
+tools: [Read, Memory]
 memory_scopes: [agent]
 ---
 You are introspector. Your job is to call the Context tool four
@@ -28,7 +28,7 @@ Three rules:
    End the summary with the single word DONE.
 
 3. Do not call any other tool besides Context. The agent's
-   allowed_tools deliberately omits Context — the runtime
+   tools deliberately omits Context — the runtime
    auto-attaches it via v0.8.7 default-add. If you see "Context
    tool not available" then the default-add is broken; report
    that and end with DONE.

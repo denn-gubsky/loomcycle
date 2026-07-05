@@ -15,11 +15,11 @@ models:
 agents:
   default:
     system_prompt: "You are a helpful assistant."
-    allowed_tools: []
+    tools: []
   classifier:
     model: cheap
     system_prompt: "Classify each input."
-    allowed_tools: []
+    tools: []
     max_tokens: 4096
 `
 

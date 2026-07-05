@@ -8,6 +8,36 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## Unreleased
+
+**⚠️ Breaking — the tool-allowlist key is renamed `allowed_tools` → `tools`.**
+The agent-config tool allowlist was spelled two ways: `allowed_tools` (loomcycle's
+canonical field) and `tools` (a Claude Code frontmatter alias that collapsed into
+it at load). That concept duplication also spanned the four gate layers — agent
+ceiling, per-run caller filter, MCP-server filter, skill list. All four now use one
+canonical key, **`tools`**, which also aligns the agent field natively with Claude
+Code agent frontmatter.
+
+Clean cutover — no dual-key deprecation window (pre-production; per the repo's
+no-backward-compat rule). This is a breaking **wire + YAML + content-hash** change:
+
+- **YAML / agent `.md` / overlay:** `allowed_tools:` → `tools:` everywhere. The
+  hyphenated `allowed-tools` SKILL.md frontmatter key is unchanged — it stays a
+  Claude Code import alias that maps into the canonical `tools`.
+- **Wire:** the gRPC `RunRequest` / `ContinueRequest` field is renamed
+  `allowed_tools` → `tools` (field NUMBERS unchanged); the HTTP + MCP request
+  bodies and the `spawn_run` / `spawn_runs` / `register_agent` schemas use `tools`.
+- **Content hashes:** the AgentDef / SkillDef `content_sha256` changes (the
+  canonical JSON key changed), so dev/test def rows re-hash on next boot.
+- **Adapters:** `@loomcycle/client` renames the `allowedTools` option to `tools`;
+  the Python client renames the `allowed_tools=` keyword to `tools=`. Adapter
+  package versions are unchanged pending a coordinated release.
+
+Downstream consumers (e.g. `jobs-search-agent`) that send `allowed_tools` on run
+requests must switch to `tools` after upgrading.
+
+---
+
 ## What's in v1.12.1
 
 **🧩 `@loomcycle/client` 1.12.1 — Path/Document browse-by-subject + the full

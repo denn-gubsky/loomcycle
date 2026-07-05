@@ -68,7 +68,7 @@ func TestDynamicToolsForRun_HandshakesReferencedEmptyCache(t *testing.T) {
 		"/search": json.RawMessage(`{"transport":"stdio"}`), // no discovered_tools → empty cache
 	}}
 
-	want := map[string]bool{"search": true} // agent's allowed_tools referenced mcp__search__*
+	want := map[string]bool{"search": true} // agent's tools referenced mcp__search__*
 	out := mcp.DynamicToolsForRun(context.Background(), pool, reg, reader, "", want, 5*time.Second, nil)
 	if len(out) != 1 {
 		t.Fatalf("want 1 handshaked+advertised tool, got %d", len(out))

@@ -27,7 +27,7 @@ import (
 // Documents are deferred (SQL Memory has no tenant scope). Tenant ISOLATION for
 // agent/user docs comes free via the SQL Memory ScopeKey.Tenant axis.
 //
-// Gated by allowed_tools:[Document]. Requires SQL Memory enabled
+// Gated by tools:[Document]. Requires SQL Memory enabled
 // (LOOMCYCLE_SQLMEM_ENABLED=1) — the structure tables live there.
 type Document struct {
 	Store  store.Store

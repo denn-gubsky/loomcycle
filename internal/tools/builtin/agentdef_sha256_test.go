@@ -38,7 +38,7 @@ func TestAgentDefTool_ForkSameOverlayProducesSameHash(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
-	overlay := `{"op":"fork","name":"researcher","overlay":{"system_prompt":"same","allowed_tools":["Read"]}}`
+	overlay := `{"op":"fork","name":"researcher","overlay":{"system_prompt":"same","tools":["Read"]}}`
 
 	res1, _ := tool.Execute(ctx, json.RawMessage(overlay))
 	if res1.IsError {

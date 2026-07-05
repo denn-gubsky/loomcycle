@@ -382,18 +382,18 @@ func runOneCase(ctx context.Context, cli *runner.Client, judge grader.Judge,
 	defer cancel()
 
 	start := time.Now()
-	// Per-case allowed_tools narrowing: pass the case-declared
-	// allow-list as the per-run AllowedTools. When the case declares
-	// `allowed_tools: []` this disables tools entirely for the run.
+	// Per-case tools narrowing: pass the case-declared
+	// allow-list as the per-run Tools. When the case declares
+	// `tools: []` this disables tools entirely for the run.
 	// When non-empty, loomcycle intersects with the registered
 	// dynamic-agent allowlist (which is the union of all cases'
 	// tools, since one agent serves all cases at a tier).
 	result, err := cli.SpawnRun(runCtx, runner.SpawnRunArgs{
-		Agent:        agentName,
-		Segments:     []runner.PromptSegment{runner.UserTextSegment(c.InputText)},
-		UserID:       "bench-user-fixture-001",
-		UserTier:     userTier,
-		AllowedTools: c.AllowedTools,
+		Agent:    agentName,
+		Segments: []runner.PromptSegment{runner.UserTextSegment(c.InputText)},
+		UserID:   "bench-user-fixture-001",
+		UserTier: userTier,
+		Tools:    c.Tools,
 	})
 	o.DurationMS = time.Since(start).Milliseconds()
 	if err != nil {
@@ -529,7 +529,7 @@ func registerForTier(ctx context.Context, cli *runner.Client,
 	err := cli.RegisterAgent(regCtx, runner.RegisterAgentArgs{
 		Name:         name,
 		SystemPrompt: sysPrompt,
-		AllowedTools: allowedTools,
+		Tools:        allowedTools,
 		Provider:     provider,
 		Model:        model,
 		Tier:         tier,
@@ -556,7 +556,7 @@ func allowedToolsUnion(allCases []cases.Case, tier string) []string {
 		if c.Tier != tier {
 			continue
 		}
-		for _, t := range c.AllowedTools {
+		for _, t := range c.Tools {
 			seen[t] = true
 		}
 	}

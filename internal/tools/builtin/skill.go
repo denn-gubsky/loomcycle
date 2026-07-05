@@ -36,7 +36,7 @@ import (
 //
 // Both approaches share the same `internal/skills` loader and the
 // same intersection-check semantics — a skill's `allowed-tools` must
-// be a subset of the bundling/calling agent's `allowed_tools`.
+// be a subset of the bundling/calling agent's `tools`.
 //
 // Wire shape:
 //
@@ -45,7 +45,7 @@ import (
 //	}
 //
 // SECURITY: subset enforcement happens HERE, at tool-call time, against
-// the agent's effective allowed_tools (which the tool receives via the
+// the agent's effective tools (which the tool receives via the
 // AgentTools field at construction). A skill that demands a tool the
 // current agent doesn't have is refused with an IsError tool_result —
 // matching the config-load behaviour for static bundling.
@@ -55,7 +55,7 @@ type SkillTool struct {
 	// (config-load bundling) so a skill change is visible to both
 	// paths after a SIGHUP/restart.
 	//
-	// The calling agent's effective allowed_tools is NOT a field —
+	// The calling agent's effective tools is NOT a field —
 	// it varies per request and is read from ctx via tools.AgentTools.
 	// The HTTP server attaches it before invoking the loop.
 	Set *skills.Set
@@ -80,7 +80,7 @@ const skillInputSchema = `{
 const skillDescription = `Load a named skill's body and return it as the tool_result. ` +
 	`Skills are domain-specific instruction sets stored under LOOMCYCLE_SKILLS_ROOT (frontmatter + markdown). ` +
 	`Use when the model needs a specific extension that wasn't pre-bundled into its system prompt. ` +
-	`The skill's allowed-tools must be a subset of the calling agent's allowed_tools — refusals are surfaced as is_error.`
+	`The skill's allowed-tools must be a subset of the calling agent's tools — refusals are surfaced as is_error.`
 
 type skillInput struct {
 	Name string `json:"name"`
@@ -99,7 +99,7 @@ func (s *SkillTool) InputSchema() json.RawMessage { return json.RawMessage(skill
 //
 // Resolution order (v0.8.22):
 //  1. SkillDefGetActive(name) — DB-promoted active definition wins
-//     when the Store is wired. Body + allowed_tools come from the
+//     when the Store is wired. Body + tools come from the
 //     DB row.
 //  2. Set.Get(name) — fall back to the static filesystem-loaded
 //     SKILL.md.
@@ -120,7 +120,7 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return tools.Result{IsError: true, Text: err.Error()}, nil
 	}
 
-	// SECURITY: enforce skill.allowed-tools ⊆ agent.allowed_tools at
+	// SECURITY: enforce skill.allowed-tools ⊆ agent.tools at
 	// tool-call time. Mirrors the config-load check in resolveSkills.
 	// Agent tools are pulled from ctx (see tools.WithAgentTools) so
 	// the SkillTool struct stays per-server, not per-run.
@@ -129,7 +129,7 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return tools.Result{
 			IsError: true,
 			Text: fmt.Sprintf(
-				"skill %q (%s) requires tools %v not granted by this agent's allowed_tools — skills cannot widen the agent's tool set",
+				"skill %q (%s) requires tools %v not granted by this agent's tools — skills cannot widen the agent's tool set",
 				in.Name, source, widening,
 			),
 		}, nil
@@ -138,7 +138,7 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	return tools.Result{Text: body}, nil
 }
 
-// resolveSkill looks up a skill by name. Returns (body, allowed_tools,
+// resolveSkill looks up a skill by name. Returns (body, tools,
 // source, err) where `source` is "skill_def" or "static" for the
 // resolution branch — useful for operator diagnostics in widening
 // refusals.
@@ -159,7 +159,7 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 				// rather than silently emitting an empty tool_result.
 				return "", nil, "", fmt.Errorf("skill %q: active def %s has empty body", name, row.DefID)
 			}
-			return def.Body, def.AllowedTools, "skill_def", nil
+			return def.Body, def.Tools, "skill_def", nil
 		}
 		var nf *store.ErrNotFound
 		if !errors.As(err, &nf) {
@@ -215,7 +215,7 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 		}
 		return "", nil, "", fmt.Errorf("unknown skill %q%s", name, hint)
 	}
-	return sk.Body, sk.AllowedTools, "static", nil
+	return sk.Body, sk.Tools, "static", nil
 }
 
 // skillToolsExceedingAgent returns the subset of skill tools that the

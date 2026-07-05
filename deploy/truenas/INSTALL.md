@@ -183,7 +183,7 @@ services:
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
       OLLAMA_BASE_URL: http://TRUENAS_SCALE_HOST:11434
 
-      # --- shell tools (opt-in; grant per agent via allowed_tools) ---
+      # --- shell tools (opt-in; grant per agent via tools) ---
       # Bashbox: in-process gbash sandbox (no OS process, rooted at the agent's
       # rw volume, no network). The safe default.
       LOOMCYCLE_BASHBOX_ENABLED: "1"

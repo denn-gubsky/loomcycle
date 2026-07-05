@@ -30,7 +30,7 @@
 #   loomcycle import claude-code --from=./claude-code-src --write --diff=./loomcycle.yaml --skills-dest=./skills
 # (claude-code-src/ is a normal `.claude`-layout dir — agents/ + skills/ — renamed only because the
 #  loomcycle repo gitignores `.claude/`; the importer reads the structure, not the dir name).
-# (tools→allowed_tools, body→system_prompt). The importer drops the agent's `skills:` frontmatter
+# (tools→tools, body→system_prompt). The importer drops the agent's `skills:` frontmatter
 # ("no loomcycle equivalent"), so `skills:[code-review]` is re-attached here, and `model: sonnet`
 # (a Claude-Code alias) is replaced with `tier: middle`. The agent below is the post-import result.
 
@@ -73,7 +73,7 @@ agents:
     effort: medium
     skills: [code-review]     # re-attached (the importer drops the agent's `skills:` frontmatter)
     memory_scopes: [user]
-    allowed_tools: [Read, Grep, Glob, Memory, Context]   # READ-ONLY — no Bash/Write
+    tools: [Read, Grep, Glob, Memory, Context]   # READ-ONLY — no Bash/Write
     system_prompt: |2
       You are an expert CODE REVIEWER (read-only) working one slice of a Go repository. The repo is
       cloned inside your sandbox read-root: **your cwd IS the read-root**, and the repo lives at
@@ -118,7 +118,7 @@ agents:
     max_iterations: 12
     max_tokens: 8192
     effort: high
-    allowed_tools: [Memory, Context]
+    tools: [Memory, Context]
     memory_scopes: [user]
     system_prompt: |
       You are EXP7-CONSOLIDATOR. Ten read-only `code-reviewer` agents were just fanned out (via the

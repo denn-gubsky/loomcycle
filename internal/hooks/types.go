@@ -6,7 +6,7 @@
 //
 // Trust model:
 //
-//   - Hooks run AFTER the policy layer (allowed_tools / allowed_hosts).
+//   - Hooks run AFTER the policy layer (tools / allowed_hosts).
 //     They may narrow the call further (deny / rewrite) but cannot widen
 //     past what the operator's static config permits. This is a
 //     non-negotiable invariant of the seam.

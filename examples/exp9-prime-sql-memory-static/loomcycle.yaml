@@ -48,7 +48,7 @@ agents:
   exp9-static-coder:
     provider: code-js
     run_timeout_seconds: 60
-    allowed_tools: [Bash, Memory, Channel]
+    tools: [Bash, Memory, Channel]
     sql_scopes: [user]
     memory_scopes: [user]
     volumes: [default]
@@ -101,7 +101,7 @@ agents:
   exp9-static-validator:
     provider: code-js
     run_timeout_seconds: 420
-    allowed_tools: [Memory, Channel]
+    tools: [Memory, Channel]
     sql_scopes: [user]
     memory_scopes: [user]
     channels:

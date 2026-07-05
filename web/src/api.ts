@@ -2015,7 +2015,7 @@ export interface StartRunRequest {
   // omit => no host narrowing; [] => deny all; non-empty => intersection
   allowed_hosts?: string[];
   web_search_filter?: "drop" | "keep";
-  allowed_tools?: string[];
+  tools?: string[];
   metadata?: Record<string, unknown>;
   // interactive: start a PERSISTENT run that parks for operator steering at
   // end_turn instead of terminating (the interactive terminal session mode).
@@ -2041,8 +2041,8 @@ export function startRun(req: StartRunRequest, h: RunStreamHandlers): Promise<vo
   if (req.user_tier) body.user_tier = req.user_tier;
   if (req.allowed_hosts !== undefined) body.allowed_hosts = req.allowed_hosts;
   if (req.web_search_filter) body.web_search_filter = req.web_search_filter;
-  if (req.allowed_tools && req.allowed_tools.length > 0)
-    body.allowed_tools = req.allowed_tools;
+  if (req.tools && req.tools.length > 0)
+    body.tools = req.tools;
   if (req.metadata) body.metadata = req.metadata;
   if (req.interactive) body.interactive = true;
   return streamSSE("/v1/runs", body, h);

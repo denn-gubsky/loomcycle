@@ -1,7 +1,7 @@
 id: mid-03-qa-batch
 tier: middle
 description: Answer 5 employer questions consistent with a single CV. Tests structured-content output + cross-question consistency.
-allowed_tools: []
+tools: []
 max_turns: 2
 input_text: |
   Candidate CV summary:

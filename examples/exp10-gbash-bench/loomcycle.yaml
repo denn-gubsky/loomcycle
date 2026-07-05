@@ -30,7 +30,7 @@ agents:
   exp10-bash-agent:
     provider: code-js
     run_timeout_seconds: 120
-    allowed_tools: [Bash, VolumeDef]
+    tools: [Bash, VolumeDef]
     volumes: [default, dynamic-root]
     volume_def_scopes: [any]
     code: |
@@ -93,7 +93,7 @@ agents:
   exp10-bashbox-agent:
     provider: code-js
     run_timeout_seconds: 120
-    allowed_tools: [Bashbox, VolumeDef]
+    tools: [Bashbox, VolumeDef]
     volumes: [default, dynamic-root]
     volume_def_scopes: [any]
     code: |

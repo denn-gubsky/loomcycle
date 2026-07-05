@@ -59,7 +59,7 @@ func TestEmbedded_OperatorOverridesBundleSkill(t *testing.T) {
 	overlay := config.Layer{Name: "operator", Data: []byte(`
 skills:
   restructuring:
-    allowed_tools: [Document]
+    tools: [Document]
     body: |
       OVERRIDDEN RESTRUCTURING BODY
 `)}

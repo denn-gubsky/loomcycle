@@ -106,7 +106,7 @@ agents:
     # (3) interruption — let the operator answer the agent's questions inline.
     interruption: { enabled: true }
 
-    allowed_tools: [Read, Write, Edit, Grep, Glob, Bash, Context]
+    tools: [Read, Write, Edit, Grep, Glob, Bash, Context]
     system_prompt: |
       You are an interactive coding agent running on a local model. Read
       before you edit; make surgical changes; verify with Bash. Pass file

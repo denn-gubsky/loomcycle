@@ -39,7 +39,7 @@ that `Bash` is not a sandbox).
 Opt-in, exactly like `Bash`:
 
 1. **Per deployment:** `LOOMCYCLE_BASHBOX_ENABLED=1`.
-2. **Per agent:** add `Bashbox` to the agent's `allowed_tools`.
+2. **Per agent:** add `Bashbox` to the agent's `tools`.
 
 An agent still needs a bound `volumes:` volume (sandbox-by-default applies —
 no volume, no filesystem). Unlike `Bash`, the bound volume may be `ro`.
@@ -92,5 +92,5 @@ enabled.
 
 gbash is **alpha** and pinned to an exact version in loomcycle's `go.mod`. The
 opt-in posture is the escape hatch: if a gbash bug surfaces, drop `Bashbox`
-from the agent's `allowed_tools` (or unset the env flag) and fall back to the
+from the agent's `tools` (or unset the env flag) and fall back to the
 file tools or `Bash`.

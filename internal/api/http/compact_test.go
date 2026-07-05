@@ -111,7 +111,7 @@ func compactFixture(t *testing.T) (*Server, *scriptedProvider) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"compactor": {Provider: "scripted", Model: "stub-model", AllowedTools: []string{}},
+			"compactor": {Provider: "scripted", Model: "stub-model", Tools: []string{}},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
 	}

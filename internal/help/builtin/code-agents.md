@@ -42,13 +42,13 @@ fails **at startup**, not at the first scheduled fire.
 agents:
   nightly-scrape:
     provider: code-js
-    allowed_tools: [WebFetch, Memory, mcp__jobs__ingestJobs]  # canonical tool names
+    tools: [WebFetch, Memory, mcp__jobs__ingestJobs]  # canonical tool names
     memory_scopes: [user]                                     # required to use Memory.*
     allowed_hosts: ["*.example"]                              # WebFetch host policy
     description: "Deterministic ATS scrape — no LLM."
 ```
 
-`allowed_tools` uses **canonical** tool names (capitalized, same as LLM
+`tools` uses **canonical** tool names (capitalized, same as LLM
 agents); the JS surface naming is in **The JS-side tool API** below.
 
 ## Writing a code-agent
@@ -78,7 +78,7 @@ next call. You never see the replay — calls just look synchronous.
 
 ## The JS-side tool API
 
-Only the tools in the agent's `allowed_tools` are bound — **any** allowed
+Only the tools in the agent's `tools` are bound — **any** allowed
 tool, built-in or MCP, is callable. A tool you didn't allow is not a
 "permission denied"; it simply **does not exist** in scope
 (`ReferenceError`). Default-deny by construction.
@@ -92,13 +92,13 @@ tool, built-in or MCP, is callable. A tool you didn't allow is not a
 | `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |
 
 > **Naming.** You reference a tool in JS by its **exact canonical name** —
-> the same string you put in `allowed_tools` and that every other agent uses
+> the same string you put in `tools` and that every other agent uses
 > (CamelCase: `Memory`, `WebFetch`, `Read`, …). There is no casing
 > translation. The only distinction is shape: the three multi-op meta-tools
 > (`Memory`, `Channel`, `Agent`) are **objects** with a method per op
 > (`Memory.get(...)`); every other tool is a **flat function**
 > (`WebFetch({url})`, `mcp__jobs__ingestJobs({…})`). A name not in
-> `allowed_tools` simply isn't defined → `ReferenceError`. `Memory.*`
+> `tools` simply isn't defined → `ReferenceError`. `Memory.*`
 > additionally needs `memory_scopes` declared (`[agent]` / `[user]`), and
 > `WebFetch`/`HTTP` obey the agent's `allowed_hosts` — exactly as for LLM
 > agents.
@@ -120,14 +120,14 @@ A tool the loop returns as an error surfaces as a **catchable** JS
 goja's capability surface IS the boundary. There is **no** ambient `fetch`
 / XHR, no direct filesystem, no `require`, no `setTimeout` / `setInterval`.
 `eval` and the `Function` constructor are deleted from the runtime before
-your code runs. Capabilities reach the JS **only** as `allowed_tools`
+your code runs. Capabilities reach the JS **only** as `tools`
 bindings dispatched by the loop: outbound HTTP via the `WebFetch` / `HTTP`
 built-ins (or an MCP server) under the agent's `allowed_hosts`; filesystem
 via the `Read` tool with operator-configured roots; time-based scheduling
-via ScheduleDef. A capability not in `allowed_tools` is simply absent.
+via ScheduleDef. A capability not in `tools` is simply absent.
 
 > The sandbox protects loomcycle from the *runtime* handing the JS more
-> capability than `allowed_tools` granted. It does **not** protect you
+> capability than `tools` granted. It does **not** protect you
 > from your own code's logic — that is the operator's trust posture, the
 > same as the Bash tool.
 

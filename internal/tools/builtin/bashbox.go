@@ -52,10 +52,10 @@ import (
 //     process can't honor the ro overlay) and is off by default.
 //
 // Opt-in like Bash: Enabled=false refuses every call; enable per deployment
-// with LOOMCYCLE_BASHBOX_ENABLED=1 and per agent via allowed_tools:[Bashbox].
+// with LOOMCYCLE_BASHBOX_ENABLED=1 and per agent via tools:[Bashbox].
 //
 // gbash is alpha (pinned in go.mod). The opt-in posture is the escape hatch:
-// if a gbash bug surfaces, drop Bashbox from the agent's allowed_tools.
+// if a gbash bug surfaces, drop Bashbox from the agent's tools.
 //
 // Stateless per call (matches Bash's per-call os/exec): each Execute builds a
 // fresh runtime and runs one script in a fresh session — no cross-call state,

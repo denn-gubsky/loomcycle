@@ -94,7 +94,7 @@ describe("agentDef", () => {
       op: "create",
       name: "coordinator",
       overlay: {
-        allowed_tools: ["Channel", "Evaluation", "Interruption"],
+        tools: ["Channel", "Evaluation", "Interruption"],
         evaluation_scopes: ["submit_self", "read_any"],
         channels: { publish: ["findings"], subscribe: ["tasks"] },
         interruption: { enabled: true, kinds: ["question"], max_pending: 3 },
@@ -618,7 +618,7 @@ describe("ensureCodeAgent (v0.19.0, RFC J)", () => {
     const r = await client.ensureCodeAgent({
       name: "research-batch",
       code: "function run(input){ return {final_text: '{}'}; }",
-      allowedTools: ["Agent"],
+      tools: ["Agent"],
       description: "deterministic batch orchestrator",
     });
     expect(r).toEqual({ name: "research-batch", defId: "adf_1", version: 1, changed: true });
@@ -630,7 +630,7 @@ describe("ensureCodeAgent (v0.19.0, RFC J)", () => {
     expect(body.name).toBe("research-batch");
     expect(body.overlay.provider).toBe("code-js");
     expect(body.overlay.code_body).toContain("function run(input)");
-    expect(body.overlay.allowed_tools).toEqual(["Agent"]);
+    expect(body.overlay.tools).toEqual(["Agent"]);
     expect(body.description).toBe("deterministic batch orchestrator");
   });
 

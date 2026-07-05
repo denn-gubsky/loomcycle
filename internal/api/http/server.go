@@ -176,7 +176,7 @@ type Server struct {
 	// dynamicTools, when set, returns the substrate-registered tools
 	// (dynamic MCP servers' discovered tools + A2A peer skills) that were
 	// NOT in the boot-time s.tools set. Folded into the per-run candidate
-	// set BEFORE the allowed_tools filter, so a tool registered post-boot
+	// set BEFORE the tools filter, so a tool registered post-boot
 	// is both ADVERTISED in the run's catalog and dispatchable — symmetric
 	// with boot-registered tools, no restart needed. nil-safe (tests +
 	// deployments without the substrate); wired in main.go.
@@ -189,7 +189,7 @@ type Server struct {
 	// MCP tool set. The caller passes the run's authoritative tenant.
 	//
 	// F33: wantServers is the set of dynamic MCP servers the run references
-	// (from its allowed_tools). The enumerator advertises cached tools for all
+	// (from its tools). The enumerator advertises cached tools for all
 	// servers, but only handshakes a referenced server whose cache is empty.
 	dynamicTools func(ctx context.Context, tenantID string, wantServers map[string]bool) []tools.Tool
 
@@ -376,7 +376,7 @@ type Server struct {
 // cmd/loomcycle/main.go) because its SubAgentRunner closes over the
 // Server's own runSubAgent method — we'd otherwise have a chicken-and-
 // egg between tool list and Server. Per-agent allow-list still gates
-// access (an agent without "Agent" in `allowed_tools` won't see it).
+// access (an agent without "Agent" in `tools` won't see it).
 //
 // The cancel registry is also constructed here. It's always present
 // (empty if no run has started) so handler code can call its methods
@@ -502,7 +502,7 @@ func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 // SetDynamicToolEnumerator installs the optional post-boot tool advertiser.
 // fn returns the substrate-registered tools (dynamic MCP + A2A) currently
 // available for the passed tenant; the run-creation path folds them into the
-// candidate set before the allowed_tools filter, so post-boot registrations
+// candidate set before the tools filter, so post-boot registrations
 // are advertised to the model without a restart. Nil-safe; wired in main.go
 // after the registries + pool are built.
 //
@@ -510,7 +510,7 @@ func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 // than deriving it from ctx — see candidateTools.
 //
 // F33: fn also takes wantServers — the set of dynamic MCP server names this run
-// references via its allowed_tools. The enumerator advertises every server's
+// references via its tools. The enumerator advertises every server's
 // CACHED tools regardless, but only HANDSHAKES a referenced server whose cache
 // is empty, so a dynamic-MCP-only agent sees its tools at run start (not just on
 // a first call that, with nothing advertised, the model never makes).
@@ -519,7 +519,7 @@ func (s *Server) SetDynamicToolEnumerator(fn func(ctx context.Context, tenantID 
 }
 
 // candidateTools returns the boot-time tool set plus any post-boot
-// substrate-registered tools, so the per-run allowed_tools filter (and thus
+// substrate-registered tools, so the per-run tools filter (and thus
 // the advertised catalog) sees dynamically-registered tools. The boot set is
 // the floor; a dynamic tool that duplicates a boot-set name collapses in
 // filterTools's by-name map (last writer wins; both wrap the same upstream).
@@ -529,7 +529,7 @@ func (s *Server) SetDynamicToolEnumerator(fn func(ctx context.Context, tenantID 
 // is stamped on ctx, so a ctx-derived tenant would be "" for non-HTTP-principal
 // spawn surfaces — and the run would advertise the wrong tenant's MCP tools.
 //
-// F33: agentAllowed is the agent's declared allowed_tools. We derive the set of
+// F33: agentAllowed is the agent's declared tools. We derive the set of
 // dynamic MCP servers it references (referencedDynamicMCPServers) and hand it to
 // the enumerator so a referenced server with no cached tools is handshaked and
 // advertised at run start.
@@ -548,7 +548,7 @@ func (s *Server) candidateTools(ctx context.Context, tenantID string, agentAllow
 }
 
 // referencedDynamicMCPServers extracts the set of MCP server names an agent's
-// allowed_tools patterns reference, for the F33 run-start handshake. A pattern
+// tools patterns reference, for the F33 run-start handshake. A pattern
 // of the shape `mcp__<server>__<tool>` or the wildcard `mcp__<server>__*`
 // contributes <server>; any other pattern (a native tool, a bare `*`, an
 // `a2a__…` peer) contributes nothing — those don't gate on dynamic MCP
@@ -1553,11 +1553,11 @@ func (s *Server) childVolumePolicy(ctx context.Context, parentVol tools.VolumePo
 // onto a static cfg.Agents entry, producing the effective AgentDef
 // for one sub-run. Mirrors the mutable-subset list maintained by the
 // AgentDef tool's `mergedDef`: provider, model, tier, effort,
-// max_tokens, max_iterations, system_prompt, allowed_tools, skills,
+// max_tokens, max_iterations, system_prompt, tools, skills,
 // providers, models, memory_scopes, memory_quota_bytes. Substrate policy fields
 // (agent_def_scopes, evaluation_scopes) are NOT overlaid — they stay
 // with the static yaml so the operator's substrate-capability gate
-// can't be widened by a fork. AllowedTools narrowing is enforced at
+// can't be widened by a fork. Tools narrowing is enforced at
 // AgentDef.create/fork time (the tool refuses widening); here we
 // simply trust the persisted row.
 //
@@ -1580,7 +1580,7 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		MaxIterations       int                               `json:"max_iterations,omitempty"`
 		UnboundedIterations bool                              `json:"unbounded_iterations,omitempty"`
 		SystemPrompt        string                            `json:"system_prompt,omitempty"`
-		AllowedTools        []string                          `json:"allowed_tools,omitempty"`
+		Tools               []string                          `json:"tools,omitempty"`
 		Skills              []string                          `json:"skills,omitempty"`
 		Providers           []string                          `json:"providers,omitempty"`
 		Models              map[string][]config.TierCandidate `json:"models,omitempty"`
@@ -1635,8 +1635,8 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	if ov.SystemPrompt != "" {
 		out.SystemPrompt = ov.SystemPrompt
 	}
-	if ov.AllowedTools != nil {
-		out.AllowedTools = ov.AllowedTools
+	if ov.Tools != nil {
+		out.Tools = ov.Tools
 	}
 	if ov.Skills != nil {
 		out.Skills = ov.Skills
@@ -1970,7 +1970,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// tenant (effectiveTenantID), not the ctx tenant — WithRunIdentity
 	// isn't stamped yet, so for non-HTTP-principal spawn surfaces the ctx
 	// tenant is "" and the run would not see its OWN dynamic MCP tools.
-	allowedTools := filterTools(s.candidateTools(ctx, effectiveTenantID, agentDef.AllowedTools), agentDef.AllowedTools, in.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(ctx, effectiveTenantID, agentDef.Tools), agentDef.Tools, in.Tools)
 	var hostPolicy tools.HostPolicyValue
 	if in.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -2969,8 +2969,8 @@ type runRequest struct {
 	// segment. Segments wins when both are present. It exists because callers
 	// naturally send {"prompt":"..."}; without the field Go silently dropped
 	// it, leaving an empty messages array (Anthropic 400; DeepSeek silent).
-	Prompt       string   `json:"prompt,omitempty"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
+	Prompt string   `json:"prompt,omitempty"`
+	Tools  []string `json:"tools,omitempty"`
 	// AllowedHosts narrows the HTTP/WebFetch/WebSearch host allowlist
 	// for THIS run only. nil/omitted = no narrowing (operator's static
 	// list applies). Empty array `[]` = deny all (every network call
@@ -3331,7 +3331,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// vs the wire tenant), which would advertise the wrong tenant's MCP tools
 	// for an open-mode run. Consistent with the agent existence-check +
 	// resolveAgent on this path.
-	allowedTools := filterTools(s.candidateTools(r.Context(), req.TenantID, agentDef.AllowedTools), agentDef.AllowedTools, req.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(r.Context(), req.TenantID, agentDef.Tools), agentDef.Tools, req.Tools)
 	// Per-run host narrowing for HTTP/WebFetch/WebSearch. Behaviour
 	// depends on LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE — see NarrowHosts
 	// doc comment. In caller-authoritative mode we ALWAYS call so the
@@ -3736,8 +3736,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 // only accepts new segments — agent / model / tools come from the session's
 // existing config (looked up by session.Agent → cfg.Agents).
 type messagesRequest struct {
-	Segments     []loop.PromptSegment `json:"segments"`
-	AllowedTools []string             `json:"allowed_tools,omitempty"`
+	Segments []loop.PromptSegment `json:"segments"`
+	Tools    []string             `json:"tools,omitempty"`
 	// AllowedHosts and WebSearchFilter mirror runRequest — see there
 	// for the full semantics. Per-call: continuations re-supply the
 	// list each time rather than inheriting from the seed call. This
@@ -3944,7 +3944,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// authoritative tenant (the same value the continuation run uses), not
 	// the ctx tenant — the ownership gate above already proved the caller
 	// is entitled to this session.
-	allowedTools := filterTools(s.candidateTools(r.Context(), sess.TenantID, agentDef.AllowedTools), agentDef.AllowedTools, body.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(r.Context(), sess.TenantID, agentDef.Tools), agentDef.Tools, body.Tools)
 	var hostPolicy tools.HostPolicyValue
 	if body.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -4893,11 +4893,11 @@ func secretEnvValues(environ []string) map[string]string {
 // session+run for the sub-execution, drives loop.Run with the
 // sub-agent's full declared tool set, and returns the FinalText.
 //
-// Trust model: the sub-agent's `allowed_tools` is the SOLE authority on
+// Trust model: the sub-agent's `tools` is the SOLE authority on
 // its tool surface. Parent and child are both operator-vetted YAML
 // definitions; neither widens nor narrows the other. The Agent tool's
 // availability to the parent is the gate (a parent without "Agent" in
-// its allowed_tools cannot call this in the first place).
+// its tools cannot call this in the first place).
 //
 // Sub-runs are persisted as their OWN sessions for replayability. The
 // parent's transcript records only the tool_call (with input) and
@@ -4929,7 +4929,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	}
 
 	// v0.8.5 substrate: when defID is set, overlay the named def's
-	// mutable fields (system_prompt, allowed_tools, model, tier,
+	// mutable fields (system_prompt, tools, model, tier,
 	// effort, max_tokens, memory_scopes, etc.) over the static
 	// cfg.Agents entry for this single sub-run. Name mismatch is a
 	// hard refuse — pinning across names would let a parent bypass
@@ -5123,7 +5123,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// RFC N FIX 2-mcp: sub-agents run with the parent's RunIdentity already
 	// on ctx, so tenantFromCtx returns the run's authoritative tenant —
 	// the sub-agent advertises the same tenant's MCP tools as its parent.
-	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.AllowedTools), def.AllowedTools, nil)
+	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.Tools), def.Tools, nil)
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static
 	// HTTPHostAllowlist — which typically doesn't include localhost
@@ -5181,7 +5181,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 
 	// Sub-run gets ITS OWN agent tools attached to ctx — the parent's
 	// tool list does not leak to the child (and vice versa). This
-	// matches the trust model: each agent's allowed_tools is its own
+	// matches the trust model: each agent's tools is its own
 	// authority for any subset checks done inside its run.
 	//
 	// The sub's run identity is also threaded through ctx so a
@@ -5192,7 +5192,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
 	// memory_scopes do NOT cascade. This matches the existing
-	// `allowed_tools` model: a child's surface is its own yaml's
+	// `tools` model: a child's surface is its own yaml's
 	// authority. Cross-agent state-sharing is what the `user` scope
 	// is for; sub-agents that share state with their parent simply
 	// both list `user` (or `agent` keyed by a shared name) in their

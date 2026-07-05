@@ -299,7 +299,7 @@ agents:
 // The bundling path is operator-driven: each agent's `skills:` YAML
 // field names skills under LOOMCYCLE_SKILLS_ROOT, and config-load
 // concatenates the parsed bodies onto SystemPrompt. The security
-// invariant is that skill `allowed-tools` ⊆ agent `allowed_tools` —
+// invariant is that skill `allowed-tools` ⊆ agent `tools` —
 // a skill may never widen the agent's tool set.
 
 // Happy path: agent lists two skills; both bodies land in the agent's
@@ -325,7 +325,7 @@ agents:
   cv-adapter:
     model: claude-sonnet-4-6
     system_prompt: "You are CV adapter."
-    allowed_tools: [Read, HTTP]
+    tools: [Read, HTTP]
     skills: [voice-applier, cv-voice-applier]
 `), 0o600)
 
@@ -373,7 +373,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   reader:
     model: claude-sonnet-4-6
-    allowed_tools: [Read]
+    tools: [Read]
     skills: [writer-skill]
 `), 0o600)
 
@@ -405,7 +405,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   writer:
     model: claude-sonnet-4-6
-    allowed_tools: [Read, Write, Edit]
+    tools: [Read, Write, Edit]
     skills: [writer-skill]
 `), 0o600)
 
@@ -431,7 +431,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   searcher:
     model: claude-sonnet-4-6
-    allowed_tools: ["mcp__brave__*"]
+    tools: ["mcp__brave__*"]
     skills: [search-skill]
 `), 0o600)
 
@@ -458,7 +458,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   narrow:
     model: claude-sonnet-4-6
-    allowed_tools: [mcp__brave__search]
+    tools: [mcp__brave__search]
     skills: [broad-skill]
 `), 0o600)
 
@@ -479,7 +479,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   cv-adapter:
     model: claude-sonnet-4-6
-    allowed_tools: [Read]
+    tools: [Read]
     skills: [voice-applier]
 `), 0o600)
 
@@ -503,7 +503,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   cv-adapter:
     model: claude-sonnet-4-6
-    allowed_tools: [Read]
+    tools: [Read]
     skills: [does-not-exist]
 `), 0o600)
 
@@ -519,7 +519,7 @@ agents:
 
 // Skills with empty allowed-tools (a body-only "guidance" skill that
 // makes no tool demands) attach to any agent regardless of the agent's
-// allowed_tools — there's nothing to intersect.
+// tools — there's nothing to intersect.
 func TestSkillWithNoToolsAttachesToAnyAgent(t *testing.T) {
 	root := t.TempDir()
 	skillsRoot := filepath.Join(root, "skills")
@@ -534,7 +534,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   toolless:
     model: claude-sonnet-4-6
-    allowed_tools: []
+    tools: []
     skills: [guidance]
 `), 0o600)
 
@@ -579,7 +579,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   ok:
     model: claude-sonnet-4-6
-    allowed_tools: [Memory]
+    tools: [Memory]
     memory_scopes: [agent, user]
     memory_quota_bytes: 5000000
 `), 0o600)
@@ -606,7 +606,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   bad:
     model: claude-sonnet-4-6
-    allowed_tools: [Memory]
+    tools: [Memory]
     sql_scopes: [bogus]
 `), 0o600)
 	_, err := Load(yamlPath)
@@ -628,7 +628,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   ok:
     model: claude-sonnet-4-6
-    allowed_tools: [Memory]
+    tools: [Memory]
     sql_scopes: [agent, run]
     sql_quota_bytes: 1048576
 `), 0o600)
@@ -674,14 +674,14 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 // TestSqlMemConfigWarnings_FlagsDisabledSubsystem confirms the boot warning
 // fires when sql_scopes is set + Memory is allowed but the subsystem is off.
 func TestSqlMemConfigWarnings_FlagsDisabledSubsystem(t *testing.T) {
-	a := AgentDef{AllowedTools: []string{"Memory"}, SqlScopes: []string{"agent"}}
+	a := AgentDef{Tools: []string{"Memory"}, SqlScopes: []string{"agent"}}
 	if w := sqlMemConfigWarnings("x", a, false); len(w) != 1 {
 		t.Fatalf("expected 1 warning when subsystem disabled, got %v", w)
 	}
 	if w := sqlMemConfigWarnings("x", a, true); len(w) != 0 {
 		t.Fatalf("expected 0 warnings when subsystem enabled, got %v", w)
 	}
-	// No Memory in allowed_tools → no warning even if sql_scopes set.
+	// No Memory in tools → no warning even if sql_scopes set.
 	b := AgentDef{SqlScopes: []string{"agent"}}
 	if w := sqlMemConfigWarnings("x", b, false); len(w) != 0 {
 		t.Fatalf("expected 0 warnings without Memory tool, got %v", w)
@@ -702,7 +702,7 @@ memory_backends:
 agents:
   ok:
     model: claude-sonnet-4-6
-    allowed_tools: [Memory]
+    tools: [Memory]
     memory_scopes: [agent]
     memory_backend: team-store
 `), 0o600)
@@ -728,7 +728,7 @@ memory_backends:
 agents:
   oops:
     model: claude-sonnet-4-6
-    allowed_tools: [Memory]
+    tools: [Memory]
     memory_scopes: [agent]
     memory_backend: tema-store
 `), 0o600)
@@ -779,7 +779,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   dynamic-ref:
     model: claude-sonnet-4-6
-    allowed_tools: [Memory]
+    tools: [Memory]
     memory_scopes: [agent]
     memory_backend: created-at-runtime
 `), 0o600)
@@ -802,7 +802,7 @@ memory_backends:
 agents:
   literal:
     model: claude-sonnet-4-6
-    allowed_tools: [Memory]
+    tools: [Memory]
     memory_scopes: [agent]
     memory_backend: inprocess
 `), 0o600)
@@ -1003,7 +1003,7 @@ func writeAgentMD(t *testing.T, dir, name, content string) {
 
 // TestDiscoverAgents_DiscoveryAndYAMLMerge: an MD provides the base
 // AgentDef; a yaml entry with the same name overrides per-field
-// (allowed_tools changes, tier added, model from MD survives because
+// (tools changes, tier added, model from MD survives because
 // yaml leaves it zero). Headline scenario for the operator pain this
 // feature solves — single source of truth in the MD with targeted
 // per-environment overrides in yaml.
@@ -1028,7 +1028,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   foo:
     max_tokens: 24576
-    allowed_tools: [Read, Edit]
+    tools: [Read, Edit]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1047,8 +1047,8 @@ agents:
 	}
 	// v0.8.7 default-add: Context appended automatically.
 	wantTools := []string{"Read", "Edit", "Context"}
-	if len(def.AllowedTools) != 3 || def.AllowedTools[0] != "Read" || def.AllowedTools[1] != "Edit" || def.AllowedTools[2] != "Context" {
-		t.Errorf("AllowedTools = %v, want %v (yaml override + Context auto-add)", def.AllowedTools, wantTools)
+	if len(def.Tools) != 3 || def.Tools[0] != "Read" || def.Tools[1] != "Edit" || def.Tools[2] != "Context" {
+		t.Errorf("Tools = %v, want %v (yaml override + Context auto-add)", def.Tools, wantTools)
 	}
 	if def.SystemPrompt != "prompt body\n" {
 		t.Errorf("SystemPrompt = %q, want body from MD", def.SystemPrompt)
@@ -1165,7 +1165,7 @@ func TestDiscoverAgents_DiscoveryOnly(t *testing.T) {
 name: alpha
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read]
+tools: [Read]
 ---
 alpha body
 `)
@@ -1173,7 +1173,7 @@ alpha body
 name: beta
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read, Edit]
+tools: [Read, Edit]
 ---
 beta body
 `)
@@ -1213,7 +1213,7 @@ agents:
   qa:
     model: claude-sonnet-4-6
     system_prompt: "You are QA."
-    allowed_tools: [Read]
+    tools: [Read]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1244,7 +1244,7 @@ func TestDiscoverAgents_MergePinAndTierConflict(t *testing.T) {
 name: conflict
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read]
+tools: [Read]
 ---
 body
 `)
@@ -1283,7 +1283,7 @@ func TestDiscoverAgents_YAMLSystemPromptFileWins(t *testing.T) {
 name: doc
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read]
+tools: [Read]
 ---
 discovered body that should be overridden
 `)
@@ -1337,7 +1337,7 @@ SKILL HELPER BODY`), 0o600); err != nil {
 name: uses-skill
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read]
+tools: [Read]
 skills: [helper]
 ---
 agent prompt body`)
@@ -1380,7 +1380,7 @@ func TestDiscoverAgents_NoYAMLPath(t *testing.T) {
 name: solo
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read]
+tools: [Read]
 ---
 solo body
 `)
@@ -1399,7 +1399,7 @@ solo body
 }
 
 // TestDiscoverAgents_EmptyYAMLListClearsDiscovered: the merger's
-// nil-vs-empty-slice contract — yaml `allowed_tools: []` actively
+// nil-vs-empty-slice contract — yaml `tools: []` actively
 // zero-outs a discovered list, vs yaml omitting the field entirely
 // (which keeps discovered). Pins gopkg.in/yaml.v3's nil/non-nil-empty
 // distinction so a future yaml lib upgrade that breaks this surfaces
@@ -1415,7 +1415,7 @@ func TestDiscoverAgents_EmptyYAMLListClearsDiscovered(t *testing.T) {
 name: narrow
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read, Edit, mcp__jobs__getAgentContext]
+tools: [Read, Edit, mcp__jobs__getAgentContext]
 ---
 body
 `)
@@ -1424,7 +1424,7 @@ body
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   narrow:
-    allowed_tools: []
+    tools: []
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1434,12 +1434,12 @@ agents:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	got := cfg.Agents["narrow"].AllowedTools
+	got := cfg.Agents["narrow"].Tools
 	// v0.8.7 default-add: empty-list yaml override clears the
 	// discovered list, then Context is appended by the default-add
 	// pass — so [Context] is the expected post-load shape, not [].
 	if len(got) != 1 || got[0] != "Context" {
-		t.Errorf("AllowedTools = %v; expected [Context] (yaml [] cleared discovered + Context auto-added)", got)
+		t.Errorf("Tools = %v; expected [Context] (yaml [] cleared discovered + Context auto-added)", got)
 	}
 }
 
@@ -1462,7 +1462,7 @@ func TestDiscoverAgents_YAMLInlinePromptOverridesMDFile(t *testing.T) {
 name: doc
 provider: anthropic
 model: claude-sonnet-4-6
-allowed_tools: [Read]
+tools: [Read]
 system_prompt_file: from-file.md
 ---
 `)
@@ -1621,7 +1621,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   qa:
     model: claude-sonnet-4-6
-    allowed_tools: [Read]
+    tools: [Read]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1636,9 +1636,9 @@ agents:
 
 // ---- v0.8.7 Context default-add ----
 
-// TestContextAutoAddedToAllowedTools: every agent gets Context
-// appended to allowed_tools at config-load.
-func TestContextAutoAddedToAllowedTools(t *testing.T) {
+// TestContextAutoAddedToTools: every agent gets Context
+// appended to tools at config-load.
+func TestContextAutoAddedToTools(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
 	if err := os.WriteFile(yamlPath, []byte(`
@@ -1646,7 +1646,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   worker:
     model: claude-sonnet-4-6
-    allowed_tools: [Read]
+    tools: [Read]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1656,14 +1656,14 @@ agents:
 	}
 	def := cfg.Agents["worker"]
 	hasContext := false
-	for _, tool := range def.AllowedTools {
+	for _, tool := range def.Tools {
 		if tool == "Context" {
 			hasContext = true
 			break
 		}
 	}
 	if !hasContext {
-		t.Errorf("Context not auto-added to allowed_tools; got %v", def.AllowedTools)
+		t.Errorf("Context not auto-added to tools; got %v", def.Tools)
 	}
 }
 
@@ -1677,7 +1677,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   airgapped:
     model: claude-sonnet-4-6
-    allowed_tools: [Read]
+    tools: [Read]
     disable_context: true
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -1687,9 +1687,9 @@ agents:
 		t.Fatalf("Load: %v", err)
 	}
 	def := cfg.Agents["airgapped"]
-	for _, tool := range def.AllowedTools {
+	for _, tool := range def.Tools {
 		if tool == "Context" {
-			t.Errorf("Context auto-added despite disable_context=true; got %v", def.AllowedTools)
+			t.Errorf("Context auto-added despite disable_context=true; got %v", def.Tools)
 		}
 	}
 }
@@ -1706,7 +1706,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   lower:
     model: claude-sonnet-4-6
-    allowed_tools: [Read, context]
+    tools: [Read, context]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1716,13 +1716,13 @@ agents:
 	}
 	def := cfg.Agents["lower"]
 	count := 0
-	for _, tool := range def.AllowedTools {
+	for _, tool := range def.Tools {
 		if strings.EqualFold(tool, "Context") {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Errorf("Context appears %d times (case-insensitive); want exactly 1 — got %v", count, def.AllowedTools)
+		t.Errorf("Context appears %d times (case-insensitive); want exactly 1 — got %v", count, def.Tools)
 	}
 }
 
@@ -1736,7 +1736,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   explicit:
     model: claude-sonnet-4-6
-    allowed_tools: [Read, Context]
+    tools: [Read, Context]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1746,7 +1746,7 @@ agents:
 	}
 	def := cfg.Agents["explicit"]
 	count := 0
-	for _, tool := range def.AllowedTools {
+	for _, tool := range def.Tools {
 		if tool == "Context" {
 			count++
 		}
@@ -1765,7 +1765,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   bad:
     model: claude-sonnet-4-6
-    allowed_tools: [Read]
+    tools: [Read]
     history_scope: [nonsense]
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -1784,7 +1784,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   good:
     model: claude-sonnet-4-6
-    allowed_tools: [Read]
+    tools: [Read]
     history_scope: [self, any, "named:friend"]
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -2643,15 +2643,15 @@ func TestAgentGateWarnings(t *testing.T) {
 		agent AgentDef
 		want  []string // expected substrings, in order (nil = no warnings)
 	}{
-		{"memory no scopes", AgentDef{AllowedTools: []string{"Read", "Memory"}}, []string{"memory_scopes is empty"}},
-		{"memory with scopes", AgentDef{AllowedTools: []string{"Memory"}, MemoryScopes: []string{"user"}}, nil},
-		{"memory tool absent", AgentDef{AllowedTools: []string{"Read"}}, nil},
-		{"eval no scopes", AgentDef{AllowedTools: []string{"Evaluation"}}, []string{"evaluation_scopes is empty"}},
-		{"channel no acl", AgentDef{AllowedTools: []string{"Channel"}}, []string{"channels.publish and channels.subscribe are both empty"}},
-		{"channel publish-only is fine", AgentDef{AllowedTools: []string{"Channel"}, Channels: AgentChannelACL{Publish: []string{"x"}}}, nil},
-		{"interruption disabled", AgentDef{AllowedTools: []string{"Interruption"}}, []string{"interruption.enabled is false"}},
-		{"interruption enabled", AgentDef{AllowedTools: []string{"Interruption"}, Interruption: AgentInterruptionACL{Enabled: true}}, nil},
-		{"multiple gates, deterministic order", AgentDef{AllowedTools: []string{"Memory", "Evaluation"}}, []string{"memory_scopes is empty", "evaluation_scopes is empty"}},
+		{"memory no scopes", AgentDef{Tools: []string{"Read", "Memory"}}, []string{"memory_scopes is empty"}},
+		{"memory with scopes", AgentDef{Tools: []string{"Memory"}, MemoryScopes: []string{"user"}}, nil},
+		{"memory tool absent", AgentDef{Tools: []string{"Read"}}, nil},
+		{"eval no scopes", AgentDef{Tools: []string{"Evaluation"}}, []string{"evaluation_scopes is empty"}},
+		{"channel no acl", AgentDef{Tools: []string{"Channel"}}, []string{"channels.publish and channels.subscribe are both empty"}},
+		{"channel publish-only is fine", AgentDef{Tools: []string{"Channel"}, Channels: AgentChannelACL{Publish: []string{"x"}}}, nil},
+		{"interruption disabled", AgentDef{Tools: []string{"Interruption"}}, []string{"interruption.enabled is false"}},
+		{"interruption enabled", AgentDef{Tools: []string{"Interruption"}, Interruption: AgentInterruptionACL{Enabled: true}}, nil},
+		{"multiple gates, deterministic order", AgentDef{Tools: []string{"Memory", "Evaluation"}}, []string{"memory_scopes is empty", "evaluation_scopes is empty"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2678,7 +2678,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   porous:
     model: claude-sonnet-4-6
-    allowed_tools: [Read, Memory]
+    tools: [Read, Memory]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}

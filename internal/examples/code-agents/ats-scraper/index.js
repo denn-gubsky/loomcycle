@@ -8,7 +8,7 @@
 // Every tool here is real: WebFetch is a loomcycle built-in;
 // mcp__jobs__ingestJobs is exposed by jobs-search-agent's own /api/mcp route
 // (the loomcycle MCP-server integration pattern). All are gated by the agent's
-// allowed_tools and dispatched by the loop — WebFetch's host allowlist and the
+// tools and dispatched by the loop — WebFetch's host allowlist and the
 // MCP server's ${run.credentials.jobs} bearer apply unchanged.
 //
 // Tool calls are written synchronously (const x = WebFetch(...)); the loop

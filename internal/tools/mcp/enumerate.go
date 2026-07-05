@@ -40,13 +40,13 @@ type ActiveDefReader interface {
 // Per server (reg.NamesForTenant: the tenant's own names + shared "" names):
 //   - If the active def carries cached discovered_tools → advertise them
 //     directly. No handshake — this is the fast path and stays the common case.
-//   - Else if the server is REFERENCED by this run's allowed_tools (wantServers)
+//   - Else if the server is REFERENCED by this run's tools (wantServers)
 //     → handshake ONCE (bounded by handshakeTimeout) via the pool to fetch
 //     tools/list, advertise the result, and leave the pool entry warm for the
 //     subsequent Execute. This is F33: a dynamic server whose discovery was
 //     best-effort-skipped or failed at registration (an unreachable peer, a
 //     `discover:false` create, or a def that exceeded the size cap) otherwise
-//     advertises ZERO tools, so an agent whose allowed_tools is only that
+//     advertises ZERO tools, so an agent whose tools is only that
 //     server's wildcard never enters tool-calling mode and emits its call as
 //     inert text.
 //   - Else (empty cache AND not referenced) → skip. We never handshake a server

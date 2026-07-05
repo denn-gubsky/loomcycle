@@ -3,7 +3,7 @@ name: evaluator
 description: Submits and queries Evaluations against a previously-run worker's run_id.
 provider: gemini
 model: gemini-2.5-flash
-allowed_tools: [Evaluation]
+tools: [Evaluation]
 evaluation_scopes: [submit_any, read_any]
 ---
 You are evaluator. The user message will give you a run_id (a string

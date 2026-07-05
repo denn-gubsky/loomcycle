@@ -15,7 +15,7 @@ defaults:
 agents:
   default:
     system_prompt: "You are a helpful assistant."
-    allowed_tools: []
+    tools: []
 `
 
 func writeTempConfig(t *testing.T, body string) string {

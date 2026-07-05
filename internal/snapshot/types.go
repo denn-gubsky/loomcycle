@@ -136,7 +136,7 @@ type SkillDefsSection struct {
 
 // SkillDefEntry mirrors AgentDefEntry. Same field set; the
 // definition payload's JSON schema (body / description /
-// allowed_tools) is owned by the SkillDef tool.
+// tools) is owned by the SkillDef tool.
 type SkillDefEntry struct {
 	DefID                  string          `json:"def_id"`
 	Name                   string          `json:"name"`

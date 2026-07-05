@@ -644,7 +644,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	// Non-fatal config advisories (e.g. an agent with Memory in allowed_tools
+	// Non-fatal config advisories (e.g. an agent with Memory in tools
 	// but no memory_scopes — the tool would default-deny every call, F21).
 	// Surfaced once at boot so a silent-ish partial misconfig is visible.
 	for _, warn := range cfg.Warnings {
@@ -990,7 +990,7 @@ func main() {
 		log.Printf("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
 	}
 	if cfg.Env.BashboxEnabled {
-		log.Printf("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha; gate per agent via allowed_tools.")
+		log.Printf("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha; gate per agent via tools.")
 		if len(cfg.Env.BashboxFallbackCommands) > 0 {
 			log.Printf("WARNING: Bashbox host-command fallback is enabled (LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=%s). These commands ESCAPE the sandbox and run on the real host shell (with host filesystem + network) — only allowlist commands you trust, and only enable for trusted prompts. Fallback requires a read-write volume.", strings.Join(cfg.Env.BashboxFallbackCommands, ","))
 		}
@@ -998,14 +998,14 @@ func main() {
 		log.Printf("note: Bashbox tool is registered but disabled — set LOOMCYCLE_BASHBOX_ENABLED=1 to enable (in-process sandbox; see docs)")
 	}
 
-	// Per-agent tool policy is default-deny: an agent with no allowed_tools
+	// Per-agent tool policy is default-deny: an agent with no tools
 	// in YAML gets ZERO tools at the dispatcher. Warn at startup so
 	// operators don't discover this only when an agent inexplicably can't
 	// do anything. We log per-agent rather than once so the operator sees
 	// which definitions are affected.
 	for name, def := range cfg.Agents {
-		if len(def.AllowedTools) == 0 {
-			log.Printf("note: agent %q has no allowed_tools — it will see zero tools (intentional default-deny; add allowed_tools to its YAML to expose tools)", name)
+		if len(def.Tools) == 0 {
+			log.Printf("note: agent %q has no tools — it will see zero tools (intentional default-deny; add tools to its YAML to expose tools)", name)
 		}
 	}
 
@@ -1130,7 +1130,7 @@ func main() {
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	}
 
-	// Initialise each server, apply per-server allowed_tools filter, and
+	// Initialise each server, apply per-server tools filter, and
 	// register the resulting tools alongside the built-ins.
 	//
 	// Budget: 30s SHARED across all servers, not per-server. With many
@@ -1168,7 +1168,7 @@ func main() {
 				log.Printf("mcp[%s]: skipped — %v", name, err)
 				continue
 			}
-			filtered := applyAllowedToolsFilter(descs, srv.AllowedTools)
+			filtered := applyToolsFilter(descs, srv.Tools)
 			for _, d := range filtered {
 				allTools = append(allTools, mcp.NewTool(mcpPool, name, d))
 			}
@@ -1190,7 +1190,7 @@ func main() {
 	// In a server environment where peers (jobs-search-web, other MCP
 	// services) restart independently, that's recurring operational
 	// pain. See internal/tools/mcp/lazy.go for the state machine. Membership +
-	// per-server allowed_tools resolve through the shared lookup.MCPServer
+	// per-server tools resolve through the shared lookup.MCPServer
 	// (static cfg.MCPServers → dynamic registry), so cfg + the registry are
 	// passed straight through.
 	mcpLazyResolver := mcp.NewLazyResolver(mcpPool, cfg, dynamicMCPRegistry, func(server string, count int) {
@@ -1449,7 +1449,7 @@ func main() {
 	// v1.x RFC G — outbound A2A: register one synthetic
 	// `a2a__<peer>__<skill>` tool per (operator-registered peer,
 	// expected_skill) pair, mirroring the static MCP registration above.
-	// They land in allTools and are filtered per-agent by `allowed_tools`
+	// They land in allTools and are filtered per-agent by `tools`
 	// exactly like `mcp__<server>__<tool>` tools. Gated behind the same
 	// LOOMCYCLE_A2A_ENABLED master switch as the server surface: with A2A
 	// disabled, no outbound tools are registered. The per-call resolver is
@@ -1687,7 +1687,7 @@ func main() {
 	// (dynamic MCP servers' discovered tools + A2A peer skills) so a run's
 	// catalog includes them WITHOUT a restart — symmetric with boot-time
 	// tools. Run-creation folds this into the candidate set before the
-	// allowed_tools filter. MCP: each dynamic-registry server's persisted
+	// tools filter. MCP: each dynamic-registry server's persisted
 	// discovered_tools (set by rediscover). A2A: re-enumerate static +
 	// substrate (the static dups collapse in the by-name filter).
 	//
@@ -3278,8 +3278,8 @@ func runAdvisoryGatedSweeper(
 // so the pool's build callback + the boot rehydrator can resolve through
 // the shared lookup.MCPServer chain (RFC N). The dynamic registry stores
 // mcp.DynamicMCPServerSpec; lookup wants the uniform lookup.MCPServerSpec.
-// A dynamic spec carries no operator allowed_tools (the substrate doesn't
-// record a narrowing), so AllowedTools stays nil = allow-all.
+// A dynamic spec carries no operator tools (the substrate doesn't
+// record a narrowing), so Tools stays nil = allow-all.
 type mcpLookupView struct{ reg *mcp.DynamicRegistry }
 
 func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
@@ -3365,11 +3365,11 @@ func expandedStdioEnv(envMap map[string]string) []string {
 	return env
 }
 
-// applyAllowedToolsFilter — thin wrapper over mcp.ApplyAllowedToolsFilter.
+// applyToolsFilter — thin wrapper over mcp.ApplyToolsFilter.
 // Lives in the mcp package so both the boot-time path here and the
 // lazy-retry path (mcp.LazyResolver) share one implementation.
-func applyAllowedToolsFilter(descs []mcp.ToolDescriptor, allowed []string) []mcp.ToolDescriptor {
-	return mcp.ApplyAllowedToolsFilter(descs, allowed)
+func applyToolsFilter(descs []mcp.ToolDescriptor, allowed []string) []mcp.ToolDescriptor {
+	return mcp.ApplyToolsFilter(descs, allowed)
 }
 
 // bootstrapMemoryEntries walks cfg.Memory.Entries and writes any

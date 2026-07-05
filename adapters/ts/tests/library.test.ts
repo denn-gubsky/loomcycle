@@ -28,7 +28,7 @@ describe("listLibraryAgents", () => {
               provider: "anthropic",
               model: "claude-opus-4-7",
               tier: "research",
-              allowed_tools: ["WebSearch", "Read"],
+              tools: ["WebSearch", "Read"],
               skills: ["literature-review"],
             },
           },
@@ -66,7 +66,7 @@ describe("listLibraryAgents", () => {
     expect(result.entries).toHaveLength(3);
     expect(result.entries[0]!.name).toBe("researcher");
     expect(result.entries[0]!.source).toBe("static-only");
-    expect(result.entries[0]!.static_definition?.allowed_tools).toEqual([
+    expect(result.entries[0]!.static_definition?.tools).toEqual([
       "WebSearch",
       "Read",
     ]);
@@ -134,7 +134,7 @@ describe("listLibrarySkills", () => {
             version_count: 0,
             static_definition: {
               description: "Survey academic sources",
-              allowed_tools: ["WebSearch", "WebFetch"],
+              tools: ["WebSearch", "WebFetch"],
               body: "## Literature review skill\n...",
             },
           },
@@ -166,7 +166,7 @@ describe("listLibraryMcpServers", () => {
             static_definition: {
               transport: "streamable-http",
               url: "http://localhost:3000/api/mcp",
-              allowed_tools: ["getAgentContext", "patchApplication"],
+              tools: ["getAgentContext", "patchApplication"],
               discovered_tools: [{ name: "getAgentContext", description: "..." }],
             },
           },

@@ -23,7 +23,7 @@ func TestApplyAgentDefOverlay_Empty(t *testing.T) {
 		Provider:     "anthropic",
 		Model:        "claude-haiku-4-5",
 		SystemPrompt: "you are a helpful agent",
-		AllowedTools: []string{"Read", "Write"},
+		Tools:        []string{"Read", "Write"},
 	}
 	got := applyAgentDefOverlay(base, json.RawMessage{})
 	if !reflect.DeepEqual(got, base) {
@@ -62,23 +62,23 @@ func TestApplyAgentDefOverlay_MemoryBackendAndQuota(t *testing.T) {
 	}
 }
 
-func TestApplyAgentDefOverlay_SystemPromptAndAllowedTools(t *testing.T) {
+func TestApplyAgentDefOverlay_SystemPromptAndTools(t *testing.T) {
 	base := config.AgentDef{
 		Provider:     "anthropic",
 		Model:        "claude-haiku-4-5",
 		SystemPrompt: "static prompt",
-		AllowedTools: []string{"Read", "Write"},
+		Tools:        []string{"Read", "Write"},
 	}
 	def := json.RawMessage(`{
 		"system_prompt": "forked prompt",
-		"allowed_tools": ["Read"]
+		"tools": ["Read"]
 	}`)
 	got := applyAgentDefOverlay(base, def)
 	if got.SystemPrompt != "forked prompt" {
 		t.Errorf("system_prompt = %q, want forked prompt", got.SystemPrompt)
 	}
-	if !reflect.DeepEqual(got.AllowedTools, []string{"Read"}) {
-		t.Errorf("allowed_tools = %v, want [Read]", got.AllowedTools)
+	if !reflect.DeepEqual(got.Tools, []string{"Read"}) {
+		t.Errorf("tools = %v, want [Read]", got.Tools)
 	}
 	// Untouched: provider, model.
 	if got.Provider != "anthropic" || got.Model != "claude-haiku-4-5" {
@@ -184,13 +184,13 @@ func TestApplyAgentDefOverlay_NilSlicesKeepBase(t *testing.T) {
 	// Absent slice keys in JSON decode to nil, which the overlay must
 	// treat as "keep base", not "zero out base".
 	base := config.AgentDef{
-		AllowedTools: []string{"Read", "Write"},
-		Skills:       []string{"position-relevance"},
+		Tools:  []string{"Read", "Write"},
+		Skills: []string{"position-relevance"},
 	}
 	def := json.RawMessage(`{"system_prompt": "new prompt"}`)
 	got := applyAgentDefOverlay(base, def)
-	if !reflect.DeepEqual(got.AllowedTools, base.AllowedTools) {
-		t.Errorf("AllowedTools drifted on partial overlay: %v", got.AllowedTools)
+	if !reflect.DeepEqual(got.Tools, base.Tools) {
+		t.Errorf("Tools drifted on partial overlay: %v", got.Tools)
 	}
 	if !reflect.DeepEqual(got.Skills, base.Skills) {
 		t.Errorf("Skills drifted on partial overlay: %v", got.Skills)

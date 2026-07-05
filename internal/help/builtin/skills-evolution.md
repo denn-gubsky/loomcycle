@@ -38,14 +38,14 @@ not Hermes).
 ```
 {"body": "## skill markdown body",
  "description": "what this skill is for",
- "allowed_tools": ["Read", "WebFetch"]}
+ "tools": ["Read", "WebFetch"]}
 ```
 
 `body` is required on `create` / `fork` (empty / whitespace-only
 is rejected — a zero-body skill is silent prompt corruption).
 
-`allowed_tools` is the per-skill tool ceiling. It must be a
-SUBSET of the calling agent's effective `allowed_tools` — skills
+`tools` is the per-skill tool ceiling. It must be a
+SUBSET of the calling agent's effective `tools` — skills
 may NARROW but never widen, same rule as `AgentDef`.
 
 ## How the body lands in the model
@@ -95,7 +95,7 @@ The yaml gate is `skill_def_scopes` (mirror of
 agents:
   curator:
     skills: [voice-applier, cv-voice-applier]
-    allowed_tools: [Read, Skill, SkillDef]
+    tools: [Read, Skill, SkillDef]
     skill_def_scopes:
       - named:voice-applier      # may fork/promote this skill
       - named:cv-voice-applier   # ...and this one

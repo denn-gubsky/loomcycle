@@ -439,12 +439,12 @@ mcp_servers:
     headers:
       Authorization: "Bearer ${run.user_bearer}"
     # Optional: operator-level filter — registers ONLY these tools
-    # even if your server advertises more. Per-agent allowed_tools
+    # even if your server advertises more. Per-agent tools
     # narrows further on top of this.
-    allowed_tools: [patchApplication, getAgentContext]
+    tools: [patchApplication, getAgentContext]
 ```
 
-Restart loomcycle. At startup, loomcycle's pool (`internal/tools/mcp/pool.go:46`) connects, runs `initialize` + `tools/list`, applies `allowed_tools` if set, and registers each tool as `mcp__myapi__<toolName>`. The `mcp__server__tool` naming is at `pool.go:293`; `sanitiseServerName` (`:343`) handles edge cases like spaces in server names.
+Restart loomcycle. At startup, loomcycle's pool (`internal/tools/mcp/pool.go:46`) connects, runs `initialize` + `tools/list`, applies `tools` if set, and registers each tool as `mcp__myapi__<toolName>`. The `mcp__server__tool` naming is at `pool.go:293`; `sanitiseServerName` (`:343`) handles edge cases like spaces in server names.
 
 ### Step 5: Allow the tools per agent
 
@@ -454,7 +454,7 @@ Agents only see tools they've explicitly allowed. In the agent's frontmatter:
 ---
 name: my-agent
 tier: middle
-allowed_tools:
+tools:
   - mcp__myapi__patchApplication
   - mcp__myapi__getAgentContext
 ---
@@ -482,7 +482,7 @@ POST /v1/runs
 | Loomcycle log: `mcp http: ${run.user_bearer} unresolved for header...` | caller forgot to pass `user_bearer` and you used the strict form | either pass the bearer or switch yaml to the `:-FALLBACK` form |
 | MCP server tool not in registry at boot | server unreachable at startup; loomcycle logged "skipped" | first agent call that needs the tool triggers lazy retry (`internal/tools/mcp/lazy.go:60–182`) — peer restarts no longer require a loomcycle restart (v0.8.1+) |
 | All MCP calls error mid-session with 404 | server invalidated the session; loomcycle marks the client dead | next call triggers a fresh handshake automatically — no action needed |
-| Operator yaml `allowed_tools` filter excludes a tool | name mismatch | tool names are case-sensitive; check the server's `tools/list` output |
+| Operator yaml `tools` filter excludes a tool | name mismatch | tool names are case-sensitive; check the server's `tools/list` output |
 
 ---
 
@@ -528,7 +528,7 @@ mcp_servers:
       Authorization: "Bearer ${run.user_bearer}"
 ```
 
-Tools registered: `mcp__jobs__getAgentContext`, `mcp__jobs__patchApplication`, `mcp__jobs__postSearchIngest`, and 14 others. Each is referenced by name in the relevant agent's `allowed_tools`.
+Tools registered: `mcp__jobs__getAgentContext`, `mcp__jobs__patchApplication`, `mcp__jobs__postSearchIngest`, and 14 others. Each is referenced by name in the relevant agent's `tools`.
 
 **End-to-end:** jobs-search-web's user submits a run → POST /v1/runs with `user_bearer = <their per-user API token>` → loomcycle attaches to ctx → agent loop emits `mcp__jobs__patchApplication` tool call → MCP client substitutes the bearer into the `Authorization` header → jobs-search-web's `/api/mcp/route.ts` validates the token, resolves the user, runs the tool, which itself fetches a loopback PATCH on `/api/applications/...` with the same bearer → loopback PATCH authorizes as the same user → response bubbles back → loomcycle folds tool_result into the conversation → LLM continues.
 

@@ -197,14 +197,14 @@ Produces:
 agents:
   coder:
     model: claude-sonnet-4-6
-    allowed_tools: [Read, Write, Edit]
+    tools: [Read, Write, Edit]
     system_prompt: |
       ...
   # description: Daily scheduler for job pipelines
   # credentials: jobs
   jobs-scheduler:
     model: claude-sonnet-4-6
-    allowed_tools: [Read, mcp__jobs__getAgentContext]
+    tools: [Read, mcp__jobs__getAgentContext]
     schedule_def_scopes: ["any"]
     system_prompt: |
       ...

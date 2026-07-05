@@ -43,8 +43,8 @@ func TestLoadSet_Basic(t *testing.T) {
 	if sk.Description != "Apply voice rules to prose." {
 		t.Errorf("Description = %q", sk.Description)
 	}
-	if len(sk.AllowedTools) != 3 || sk.AllowedTools[0] != "Read" {
-		t.Errorf("AllowedTools = %v", sk.AllowedTools)
+	if len(sk.Tools) != 3 || sk.Tools[0] != "Read" {
+		t.Errorf("Tools = %v", sk.Tools)
 	}
 	if !strings.HasPrefix(sk.Body, "\n# voice-applier") {
 		t.Errorf("Body = %q (expected to start with body markdown after closing ---)", sk.Body)
@@ -96,7 +96,7 @@ func TestLoadSet_NameMismatch(t *testing.T) {
 }
 
 // A SKILL.md with no frontmatter is body-only. Name falls back to the
-// directory name. AllowedTools defaults to nil (skill needs no tools).
+// directory name. Tools defaults to nil (skill needs no tools).
 func TestLoadSet_NoFrontmatter(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "raw-skill")
@@ -115,8 +115,8 @@ func TestLoadSet_NoFrontmatter(t *testing.T) {
 	if sk.Body != body {
 		t.Errorf("Body = %q", sk.Body)
 	}
-	if sk.AllowedTools != nil {
-		t.Errorf("AllowedTools = %v, want nil", sk.AllowedTools)
+	if sk.Tools != nil {
+		t.Errorf("Tools = %v, want nil", sk.Tools)
 	}
 }
 
@@ -180,8 +180,8 @@ func TestLoadSet_CRLFLineEndings(t *testing.T) {
 	if !ok {
 		t.Fatal("windows-skill not loaded")
 	}
-	if len(sk.AllowedTools) != 1 || sk.AllowedTools[0] != "Read" {
-		t.Errorf("AllowedTools = %v", sk.AllowedTools)
+	if len(sk.Tools) != 1 || sk.Tools[0] != "Read" {
+		t.Errorf("Tools = %v", sk.Tools)
 	}
 	if !strings.Contains(sk.Body, "body") {
 		t.Errorf("Body = %q", sk.Body)

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestReferencedDynamicMCPServers covers the allowed_tools → server-set parsing
+// TestReferencedDynamicMCPServers covers the tools → server-set parsing
 // that scopes the F33 run-start handshake.
 func TestReferencedDynamicMCPServers(t *testing.T) {
 	cases := []struct {

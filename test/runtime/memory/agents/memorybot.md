@@ -3,7 +3,7 @@ name: memorybot
 description: Two-run Memory smoke test agent. Writes on the first call, reads on the second.
 provider: gemini
 model: gemini-2.5-flash
-allowed_tools: [Memory]
+tools: [Memory]
 memory_scopes: [agent, user]
 ---
 You are memorybot. You execute Memory operations the user describes,

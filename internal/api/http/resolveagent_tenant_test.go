@@ -50,7 +50,7 @@ func TestResolveAgent_TenantScopedDynamicAgentRunnable(t *testing.T) {
 	defer st.Close()
 
 	// "probe" registered ONLY under tenant "acme".
-	probeDef, _ := json.Marshal(config.AgentDef{Model: "stub-model", AllowedTools: []string{}, SystemPrompt: "probe"})
+	probeDef, _ := json.Marshal(config.AgentDef{Model: "stub-model", Tools: []string{}, SystemPrompt: "probe"})
 	if err := st.DynamicAgentUpsert(context.Background(), store.DynamicAgent{
 		TenantID: "acme", Name: "probe", Definition: probeDef, CreatedAt: time.Now(),
 	}); err != nil {

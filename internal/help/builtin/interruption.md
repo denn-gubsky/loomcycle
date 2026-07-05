@@ -65,7 +65,7 @@ Default-deny. Operator yaml grants:
 ```yaml
 agents:
   batch-processor:
-    allowed_tools: [Interruption, ...]
+    tools: [Interruption, ...]
     interruption:
       enabled: true
       kinds: [question]    # v0.8.16 only valid value

@@ -77,7 +77,7 @@ agents:
     max_iterations: 25
     max_tokens: 4096
     effort: medium
-    allowed_tools: [Context, WebFetch, HTTP, Memory]
+    tools: [Context, WebFetch, HTTP, Memory]
     memory_scopes: [user]
     system_prompt: |
       You are an RSS COLLECTOR in a periodic AI-news digest pipeline. You run once
@@ -106,7 +106,7 @@ agents:
     max_iterations: 30
     max_tokens: 4096
     effort: medium
-    allowed_tools: [Context, Channel, Memory, "mcp__telegram__*"]
+    tools: [Context, Channel, Memory, "mcp__telegram__*"]
     memory_scopes: [user]
     channels:
       subscribe: [exp5-pings]

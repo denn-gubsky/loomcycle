@@ -25,7 +25,7 @@ own scope/tenant check still applies. So the risk Path introduces is
 
 ## Surface
 
-One tool, `Path`, gated by per-agent `allowed_tools: [Path]`. Six ops:
+One tool, `Path`, gated by per-agent `tools: [Path]`. Six ops:
 
 | op        | what it does |
 |-----------|--------------|
@@ -103,7 +103,7 @@ await client.path({ op: "mv", scope: "user", path: "/docs/launch", to: "/archive
 - **`rm` is dirent-only** — it removes the *name*, not the backing resource
   (the Memory entry / Volume / Document survives and can be re-named). The
   `resource_too` flag (cascade-delete the resource) is **not supported in v1**.
-- **No per-agent `path_scopes` ACL yet** — in v1, `allowed_tools: [Path]`
+- **No per-agent `path_scopes` ACL yet** — in v1, `tools: [Path]`
   grants all three scopes. Because a dirent is a name and not an authority
   grant, the exposure is integrity, not confidentiality; a finer ACL is a
   follow-up.

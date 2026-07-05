@@ -1,7 +1,7 @@
 id: low-05-schema-error-recovery
 tier: low
 description: Trigger a schema validation error on patchApplication's `status` field (enum-constrained), then verify the model self-corrects. Tests recovery vs doom-loop on real schema enforcement.
-allowed_tools: ["mcp__jobs__patchApplication"]
+tools: ["mcp__jobs__patchApplication"]
 max_turns: 4
 input_text: |
   Call `mcp__jobs__patchApplication` for application id

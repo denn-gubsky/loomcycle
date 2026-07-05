@@ -29,12 +29,12 @@ user_tiers:
     max_fallback_attempts: 3
 
 agents:
-  # Interruption needs BOTH allowed_tools:[Interruption] AND interruption.enabled:true
-  # (the per-agent opt-in). allowed_tools alone makes the tool refuse with
+  # Interruption needs BOTH tools:[Interruption] AND interruption.enabled:true
+  # (the per-agent opt-in). tools alone makes the tool refuse with
   # "not enabled for this agent".
   yesno-agent:
     tier: middle
-    allowed_tools: [Interruption]
+    tools: [Interruption]
     interruption:
       enabled: true
     system_prompt: |

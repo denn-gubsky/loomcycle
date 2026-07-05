@@ -93,7 +93,7 @@ agents:
       mock-researcher model; the mock driver synthesises a 2-step
       sequence (Memory.set, Channel.publish) without reading this
       prompt. See internal/providers/mock/driver.go scriptResearcher.
-    allowed_tools: [Memory, Channel, Context]
+    tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
       publish: ["research-done/*"]
@@ -109,7 +109,7 @@ agents:
       (Channel.subscribe → Memory.get → Memory.set → Context.self →
       Channel.publish). See internal/providers/mock/driver.go
       scriptEditor for the per-step shapes.
-    allowed_tools: [Memory, Channel, Context]
+    tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
       publish: ["editing-done/*"]
@@ -129,7 +129,7 @@ agents:
       reproducible. See internal/providers/mock/driver.go
       scriptEvaluator for the FSM and deriveScore for the score
       function.
-    allowed_tools: [Memory, Channel, Evaluation, Context]
+    tools: [Memory, Channel, Evaluation, Context]
     memory_scopes: [user]
     # Same submit_any as the real-provider yaml — the evaluator is
     # a SIBLING (not a parent/child) of the editor, which the

@@ -12,7 +12,7 @@ import (
 // F14: an agent authored via `agentdef create` with the full capability set
 // (channels / evaluation_scopes / max_iterations / interruption) must
 // round-trip the whole config through the substrate persist → resolve path —
-// not just allowed_tools. Before the mergedDef + SubstrateAgentDef additions,
+// not just tools. Before the mergedDef + SubstrateAgentDef additions,
 // these fields were silently dropped at persist/read, so an MCP-authored agent
 // could never be a complete interactive/multi-agent agent.
 func TestAgentDefTool_CreateWithCapabilityFields_RoundTrips(t *testing.T) {
@@ -23,7 +23,7 @@ func TestAgentDefTool_CreateWithCapabilityFields_RoundTrips(t *testing.T) {
 
 	overlay := `{"op":"create","name":"complete-agent","promote":true,"overlay":{
 		"system_prompt":"coordinate the loop",
-		"allowed_tools":["Memory","Channel","Evaluation","Interruption"],
+		"tools":["Memory","Channel","Evaluation","Interruption"],
 		"memory_scopes":["user"],
 		"evaluation_scopes":["submit_self","read_any"],
 		"max_iterations":42,

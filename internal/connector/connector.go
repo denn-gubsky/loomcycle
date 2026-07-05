@@ -85,7 +85,7 @@ type Connector interface {
 
 	// RegisterAgent adds a dynamic agent that survives until its TTL
 	// expires (or until UnregisterAgent is called). Returns the
-	// effective AgentDescriptor — note allowed_tools may have been
+	// effective AgentDescriptor — note tools may have been
 	// stripped if Bash/Write/Edit were requested without the
 	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS opt-in.
 	RegisterAgent(ctx context.Context, req RegisterAgentRequest) (AgentDescriptor, error)
@@ -131,7 +131,7 @@ type Connector interface {
 	// Path — RFC AL Unix-like VFS over the dirents runtime-store table.
 	// Op-discriminated (resolve / ls / stat / mkdir / mv / rm). Scope-aware
 	// (agent / user / tenant) and tenant-isolated; gated purely by the
-	// agent's allowed_tools (a dirent is a name, not an authority grant — no
+	// agent's tools (a dirent is a name, not an authority grant — no
 	// separate scope policy). Reachable via POST /v1/_path, the gRPC Path RPC,
 	// the LoomCycle MCP meta-tool `path`, and the TS/Python adapters'
 	// client.path() — all dispatch through this single Connector method.
@@ -140,7 +140,7 @@ type Connector interface {
 	// Document — RFC AK chunked-graph documents. Op-discriminated (13 ops:
 	// document/chunk lifecycle, edges, query_chunks, type defs). Scope-aware
 	// (agent / user; tenant deferred) and tenant-isolated via the SQL Memory
-	// scope key; gated by the agent's allowed_tools. Requires SQL Memory.
+	// scope key; gated by the agent's tools. Requires SQL Memory.
 	// Reachable via POST /v1/_document, the gRPC Document RPC, the LoomCycle
 	// MCP meta-tool `document`, and the TS/Python adapters' client.document()
 	// — all dispatch through this single Connector method.
@@ -227,7 +227,7 @@ type Connector interface {
 	// stamps the caller's authoritative tenant, and for scope=user the caller's
 	// OWN subject (per-user tokens). get/list return metadata only — never a
 	// secret. Reachable via the MCP meta-tool `credentialdef` and in-band
-	// (allowed_tools:[CredentialDef]); dispatches through this single method.
+	// (tools:[CredentialDef]); dispatches through this single method.
 	CredentialDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---

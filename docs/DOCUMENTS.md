@@ -32,7 +32,7 @@ enabled** (`LOOMCYCLE_SQLMEM_ENABLED=1`); without it the tool refuses.
 
 ## Surface
 
-One tool, `Document`, gated by per-agent `allowed_tools: [Document]`. 15 ops:
+One tool, `Document`, gated by per-agent `tools: [Document]`. 15 ops:
 
 | group | ops |
 |-------|-----|

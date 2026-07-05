@@ -16,7 +16,7 @@ import (
 
 // F11/F14: a dynamic agent registered over MCP (RegisterAgent) must carry the
 // full capability set — channels / evaluation_scopes / max_iterations /
-// interruption — not just allowed_tools, so it can be a complete interactive /
+// interruption — not just tools, so it can be a complete interactive /
 // multi-agent agent. Before the connector + connector_impl additions these
 // fields never reached the persisted config.AgentDef.
 func TestRegisterAgent_CapabilityFields_RoundTrip(t *testing.T) {
@@ -37,7 +37,7 @@ func TestRegisterAgent_CapabilityFields_RoundTrip(t *testing.T) {
 	if _, err := srv.RegisterAgent(ctx, connector.RegisterAgentRequest{
 		Name:             "complete-dyn",
 		SystemPrompt:     "coordinate",
-		AllowedTools:     []string{"Memory", "Channel", "Evaluation", "Interruption"},
+		Tools:            []string{"Memory", "Channel", "Evaluation", "Interruption"},
 		Provider:         "stub",
 		Model:            "stub-model",
 		MemoryScopes:     []string{"user"},

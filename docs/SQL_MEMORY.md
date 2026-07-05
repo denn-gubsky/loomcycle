@@ -16,7 +16,7 @@ files, code execution, or the operational DB) and **resource exhaustion**.
 
 ## Surface
 
-Two `Memory` ops (the `Memory` tool must be in the agent's `allowed_tools`):
+Two `Memory` ops (the `Memory` tool must be in the agent's `tools`):
 
 - `op: "sql_exec"` — one DDL/DML statement (`CREATE TABLE`/`INSERT`/`UPDATE`/
   `DELETE`/…), `args` for `?`/`$1` bind params; returns `{rows_affected,
@@ -47,7 +47,7 @@ SQL is exposed as ops on the existing `Memory` tool rather than as a dedicated
 `Sql` tool — a deliberate choice (RFC AA Phase 3f). The one real argument for a
 separate tool is gating granularity, and **`sql_scopes` already provides it**:
 SQL is off unless the agent declares `sql_scopes` (below), so `Memory` in
-`allowed_tools` grants the key/value + memory-layer ops *without* SQL — the
+`tools` grants the key/value + memory-layer ops *without* SQL — the
 separation a distinct tool would give, without a second wire surface duplicating
 the scope-resolution, audit, and ACL machinery. SQL also shares the Memory
 primitive's scope model (`agent`/`user`/`run`, tenant-keyed), so it belongs with
@@ -59,7 +59,7 @@ speculatively now.
 
 SQL Memory is **off** unless the operator enables the subsystem *and* the agent
 declares which scopes it may touch (the RFC W capability-gate pattern — having
-`Memory` in `allowed_tools` is **not** sufficient):
+`Memory` in `tools` is **not** sufficient):
 
 ```yaml
 # loomcycle.yaml
@@ -68,7 +68,7 @@ storage:
 
 agents:
   research-bot:
-    allowed_tools: [Memory, Read, Grep]
+    tools: [Memory, Read, Grep]
     sql_scopes: [agent, run]      # closed enum {agent,user,run}; empty => every SQL op refuses
     sql_quota_bytes: 52428800     # optional per-agent override of the global quota
 ```

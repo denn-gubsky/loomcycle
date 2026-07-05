@@ -22,7 +22,7 @@ type peerLister interface {
 // servers register one `mcp__<server>__<tool>` tool per discovered
 // remote tool at boot (see cmd/loomcycle/main.go's mcpPool init loop).
 // The returned tools are appended to the global tool set and then
-// filtered per-agent by `allowed_tools` exactly like MCP tools — an
+// filtered per-agent by `tools` exactly like MCP tools — an
 // agent reaches an A2A peer only by listing `a2a__<peer>__<skill>` (or a
 // `a2a__<peer>__*` glob) in its allowlist.
 //

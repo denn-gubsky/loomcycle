@@ -230,24 +230,23 @@ Body.
 	}
 }
 
-func TestWalkAgents_AllowedToolsWinsOverTools(t *testing.T) {
+// TestWalkAgents_ToolsCommaStringForm: the single canonical `tools` key
+// also accepts Claude Code's comma-string form and coerces it into the
+// emitted tools list (the array form is covered above).
+func TestWalkAgents_ToolsCommaStringForm(t *testing.T) {
 	root := t.TempDir()
-	writeAgent(t, root, "both", `---
-name: both
-tools: "ShouldNotAppear"
-allowed_tools:
-  - Read
-  - Write
+	writeAgent(t, root, "comma", `---
+name: comma
+tools: Read, Write, Edit
 ---
 Body.
 `)
 	report, _ := Walk(root, WalkOptions{})
 	a := report.Agents[0]
-	if strings.Contains(a.YAMLFragment, "ShouldNotAppear") {
-		t.Errorf("tools should be overridden by allowed_tools:\n%s", a.YAMLFragment)
-	}
-	if !strings.Contains(a.YAMLFragment, "- Read") || !strings.Contains(a.YAMLFragment, "- Write") {
-		t.Errorf("expected allowed_tools entries:\n%s", a.YAMLFragment)
+	for _, tool := range []string{"Read", "Write", "Edit"} {
+		if !strings.Contains(a.YAMLFragment, "- "+tool) {
+			t.Errorf("expected tool %q in fragment:\n%s", tool, a.YAMLFragment)
+		}
 	}
 }
 

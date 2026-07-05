@@ -1,7 +1,7 @@
 ---
 name: md-import
 description: Import a Markdown file into a chunked-graph Document — deterministic round-trip vs semantic chunking.
-allowed_tools: [Document]
+tools: [Document]
 license: Apache-2.0
 ---
 

@@ -48,7 +48,7 @@ var userIDRe = regexp.MustCompile(`user_id=([A-Za-z0-9_-]+)`)
 func scriptMCPCaller(step int, mcpTools []string, userID string) []providers.Event {
 	if len(mcpTools) == 0 {
 		return []providers.Event{
-			textEvent("no mcp tools in allowed_tools — nothing to call"),
+			textEvent("no mcp tools in tools — nothing to call"),
 			{Type: providers.EventDone, StopReason: "end_turn"},
 		}
 	}

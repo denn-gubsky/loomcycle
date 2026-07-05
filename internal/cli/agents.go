@@ -68,7 +68,7 @@ func runAgentsList(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, "agent %q: %v", name, err)
 		}
-		tools := strings.Join(def.AllowedTools, ",")
+		tools := strings.Join(def.Tools, ",")
 		if tools == "" {
 			tools = "(none)"
 		}
@@ -115,7 +115,7 @@ func runAgentsListJSON(stdout, stderr io.Writer, cfg *config.Config, names []str
 		fmt.Fprintf(stdout, "    \"model\": %s,\n", jsonString(model))
 		fmt.Fprintf(stdout, "    \"max_tokens\": %d,\n", def.MaxTokens)
 		fmt.Fprintf(stdout, "    \"system_prompt_file\": %s,\n", jsonString(def.SystemPromptFile))
-		fmt.Fprintf(stdout, "    \"tools\": %s,\n", jsonStringArray(def.AllowedTools))
+		fmt.Fprintf(stdout, "    \"tools\": %s,\n", jsonStringArray(def.Tools))
 		fmt.Fprintf(stdout, "    \"skills\": %s\n", jsonStringArray(def.Skills))
 		if i+1 < len(names) {
 			fmt.Fprintln(stdout, "  },")

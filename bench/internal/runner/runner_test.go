@@ -171,7 +171,7 @@ func TestClient_RegisterAgent_SendsBearerAndSessionHeader(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := c.RegisterAgent(ctx, RegisterAgentArgs{
-		Name: "bench-agent", SystemPrompt: "sp", AllowedTools: []string{"Read"},
+		Name: "bench-agent", SystemPrompt: "sp", Tools: []string{"Read"},
 	})
 	if err != nil {
 		t.Fatalf("RegisterAgent: %v", err)

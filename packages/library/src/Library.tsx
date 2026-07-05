@@ -272,7 +272,7 @@ function LibraryBody({
     const definition: Record<string, unknown> = { model: "local-medium" };
     if (seed.skills.length > 0) definition.skills = seed.skills;
     const allowed = seed.mcpServers.map((s) => `mcp__${s}__*`);
-    if (allowed.length > 0) definition.allowed_tools = allowed;
+    if (allowed.length > 0) definition.tools = allowed;
     setImportOpen(false);
     setModal({
       kind: "agent",
@@ -438,7 +438,7 @@ function LibraryBody({
 interface AgentDefBody {
   system_prompt?: string;
   code_body?: string;
-  allowed_tools?: string[];
+  tools?: string[];
   description?: string;
   tier?: string;
   provider?: string;
@@ -471,11 +471,11 @@ function renderAgentDefinition(row: DefRow) {
           <pre className="def-prompt mono">{body.code_body}</pre>
         </div>
       )}
-      {body.allowed_tools && body.allowed_tools.length > 0 && (
+      {body.tools && body.tools.length > 0 && (
         <div className="def-field">
-          <span className="def-field-label">allowed_tools</span>
+          <span className="def-field-label">tools</span>
           <div className="def-pill-row">
-            {body.allowed_tools.map((t) => (
+            {body.tools.map((t) => (
               <span key={t} className="def-pill mono">{t}</span>
             ))}
           </div>
@@ -508,7 +508,7 @@ function renderAgentDefinition(row: DefRow) {
 interface SkillDefBody {
   body?: string;
   description?: string;
-  allowed_tools?: string[];
+  tools?: string[];
 }
 
 function renderSkillDefinition(row: DefRow) {
@@ -527,11 +527,11 @@ function renderSkillDefinition(row: DefRow) {
           <pre className="def-prompt mono">{body.body}</pre>
         </div>
       )}
-      {body.allowed_tools && body.allowed_tools.length > 0 && (
+      {body.tools && body.tools.length > 0 && (
         <div className="def-field">
-          <span className="def-field-label">allowed_tools</span>
+          <span className="def-field-label">tools</span>
           <div className="def-pill-row">
-            {body.allowed_tools.map((t) => (
+            {body.tools.map((t) => (
               <span key={t} className="def-pill mono">{t}</span>
             ))}
           </div>
@@ -561,7 +561,7 @@ interface MCPServerDefBody {
   args?: string[];
   env?: Record<string, string>;
   pool_size?: number;
-  allowed_tools?: string[];
+  tools?: string[];
   /**
    * Cached tools/list result. Shape mirrors the substrate's
    * mcp_server_defs.definition `discovered_tools` field —
@@ -618,11 +618,11 @@ function renderMcpDefinition(row: DefRow) {
           </pre>
         </div>
       )}
-      {body.allowed_tools && body.allowed_tools.length > 0 && (
+      {body.tools && body.tools.length > 0 && (
         <div className="def-field">
-          <span className="def-field-label">allowed_tools</span>
+          <span className="def-field-label">tools</span>
           <div className="def-pill-row">
-            {body.allowed_tools.map((t) => (
+            {body.tools.map((t) => (
               <span key={t} className="def-pill mono">{t}</span>
             ))}
           </div>

@@ -102,7 +102,7 @@ loomcycle consumes that MCP server like any other MCP upstream.
 4. Set `LOOMCYCLE_N8N_MCP_TOKEN` in `.env.local` with the
    bearer n8n minted.
 5. Grant the agent permission to call the tool — its
-   `allowed_tools` block lists `mcp__n8n-mailgun__send` (or
+   `tools` block lists `mcp__n8n-mailgun__send` (or
    whatever your workflow's MCP Server Trigger names the
    operation).
 

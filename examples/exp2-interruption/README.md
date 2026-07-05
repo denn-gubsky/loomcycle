@@ -7,8 +7,8 @@ one-line output: `RESULT: PROCEED` (Yes) or `RESULT: ABORT` (No).
 
 ## What it demonstrates
 - The Interruption primitive: an agent pausing for human input mid-run.
-- The two-part gate: `allowed_tools:[Interruption]` **and** `interruption.enabled:true`
-  (allowed_tools alone makes the tool refuse).
+- The two-part gate: `tools:[Interruption]` **and** `interruption.enabled:true`
+  (tools alone makes the tool refuse).
 - **Same-runtime resolve:** the resolve hits the runtime that owns the run, so the
   blocked loop wakes immediately (no cross-process bus issue).
 - Routing fallback: Anthropic OAuth (sonnet) → deepseek-v4-pro.

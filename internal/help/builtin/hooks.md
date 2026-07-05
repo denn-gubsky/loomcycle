@@ -104,7 +104,7 @@ registration time.
 ## Per-call host-widening (the one audited exception)
 
 By default a hook can only **narrow** a call — it cannot reach past the
-operator's static `allowed_hosts`/`allowed_tools` floor (CLAUDE.md trust
+operator's static `allowed_hosts`/`tools` floor (CLAUDE.md trust
 rule). The single exception is a `pre` hook's `allow_hosts`, and it is
 **off unless the operator opts the hook's owner in**:
 

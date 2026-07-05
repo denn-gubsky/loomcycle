@@ -109,7 +109,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// Tools + dispatcher. No per-run host narrowing: the caller's allowed_hosts
 	// was a call-time input, never snapshotted — the operator's static floor
 	// (applied inside the tools) is what remains.
-	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.AllowedTools), agentDef.AllowedTools, nil)
+	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.Tools), agentDef.Tools, nil)
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// Re-derive the system prompt (skill bodies baked in) from the current

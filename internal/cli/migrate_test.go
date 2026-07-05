@@ -84,7 +84,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   default:
     system_prompt: "x"
-    allowed_tools: []
+    tools: []
 storage:
   backend: postgres
   pg_dsn: from-yaml
@@ -103,7 +103,7 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   default:
     system_prompt: "x"
-    allowed_tools: []
+    tools: []
 `)
 	_, err = loadPgDSN(yamlPath2, "")
 	if err == nil {

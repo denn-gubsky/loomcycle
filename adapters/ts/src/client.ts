@@ -165,7 +165,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
     agent: opts.agent,
     segments: opts.segments,
   };
-  if (opts.allowedTools !== undefined) body.allowed_tools = opts.allowedTools;
+  if (opts.tools !== undefined) body.tools = opts.tools;
   if (opts.allowedHosts !== undefined && opts.allowedHosts !== null) {
     body.allowed_hosts = opts.allowedHosts;
   }
@@ -245,7 +245,7 @@ export class LoomcycleClient {
     const body: Record<string, unknown> = {
       segments: opts.segments,
     };
-    if (opts.allowedTools !== undefined) body.allowed_tools = opts.allowedTools;
+    if (opts.tools !== undefined) body.tools = opts.tools;
     if (opts.allowedHosts !== undefined && opts.allowedHosts !== null) {
       body.allowed_hosts = opts.allowedHosts;
     }
@@ -920,7 +920,7 @@ export class LoomcycleClient {
     callOpts?: { signal?: AbortSignal },
   ): Promise<EnsureCodeAgentResult> {
     const overlay: AgentDefOverlay = { provider: "code-js", code_body: opts.code };
-    if (opts.allowedTools) overlay.allowed_tools = opts.allowedTools;
+    if (opts.tools) overlay.tools = opts.tools;
     if (opts.tier) overlay.tier = opts.tier;
     if (opts.model) overlay.model = opts.model;
     const input: SubstrateToolInput = { op: "create", name: opts.name, overlay };
@@ -949,7 +949,7 @@ export class LoomcycleClient {
   /** Invoke the v0.9.x MCPServerDef substrate tool over HTTP.
    *  Dynamic MCP server registration — register an HTTP /
    *  Streamable-HTTP MCP server at runtime so its tools become
-   *  callable from any agent's `allowed_tools` list without a yaml
+   *  callable from any agent's `tools` list without a yaml
    *  edit + restart.
    *
    *  Operator-admin-only: this endpoint requires the bearer token.

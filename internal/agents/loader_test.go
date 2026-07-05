@@ -41,7 +41,7 @@ You are an ATS-filter agent.
 	writeFile(t, dir, "cv-adapter.md", `---
 name: cv-adapter
 description: CV adapter
-allowed_tools: [Read, mcp__jobs__patchApplication]
+tools: [Read, mcp__jobs__patchApplication]
 provider: anthropic
 model: claude-sonnet-4-6
 ---
@@ -77,8 +77,8 @@ Body for cv-adapter.
 		t.Errorf("MaxIterations = %d, want 64", a.MaxIterations)
 	}
 	wantTools := []string{"Read", "mcp__jobs__getAgentContext", "Skill"}
-	if !reflect.DeepEqual(a.AllowedTools, wantTools) {
-		t.Errorf("AllowedTools = %v, want %v", a.AllowedTools, wantTools)
+	if !reflect.DeepEqual(a.Tools, wantTools) {
+		t.Errorf("Tools = %v, want %v", a.Tools, wantTools)
 	}
 	if !reflect.DeepEqual(a.Skills, []string{"position-relevance-filtering"}) {
 		t.Errorf("Skills = %v, want [position-relevance-filtering]", a.Skills)
@@ -101,8 +101,8 @@ Body for cv-adapter.
 		t.Errorf("Model = %q, want claude-sonnet-4-6", b.Model)
 	}
 	wantBT := []string{"Read", "mcp__jobs__patchApplication"}
-	if !reflect.DeepEqual(b.AllowedTools, wantBT) {
-		t.Errorf("AllowedTools = %v, want %v", b.AllowedTools, wantBT)
+	if !reflect.DeepEqual(b.Tools, wantBT) {
+		t.Errorf("Tools = %v, want %v", b.Tools, wantBT)
 	}
 }
 
@@ -192,9 +192,9 @@ func TestLoadSet_BodyOnly(t *testing.T) {
 	if a.SystemPrompt != "Just a plain prompt body, no frontmatter.\n" {
 		t.Errorf("SystemPrompt = %q, want full content", a.SystemPrompt)
 	}
-	if len(a.AllowedTools) != 0 || a.Model != "" || a.Tier != "" {
+	if len(a.Tools) != 0 || a.Model != "" || a.Tier != "" {
 		t.Errorf("expected zero values for non-name fields, got tools=%v model=%q tier=%q",
-			a.AllowedTools, a.Model, a.Tier)
+			a.Tools, a.Model, a.Tier)
 	}
 }
 
@@ -223,16 +223,21 @@ func TestParseToolList_CommaString(t *testing.T) {
 	}
 }
 
-// TestLoadSet_AllowedToolsWinsOverTools: when an MD has BOTH the loomcycle
-// `allowed_tools:` list AND the Claude Code `tools:` comma-string, the
-// list form wins (loomcycle is the consumer that demands precision).
-// This pins the documented precedence rule.
-func TestLoadSet_AllowedToolsWinsOverTools(t *testing.T) {
+// TestLoadSet_ToolsAcceptsListAndCommaString: the single canonical
+// `tools` key accepts BOTH the loomcycle list form and the Claude Code
+// comma-string form (the two shapes were merged onto one key). This
+// pins that both shapes coerce into Agent.Tools.
+func TestLoadSet_ToolsAcceptsListAndCommaString(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "dual.md", `---
-name: dual
+	writeFile(t, dir, "listform.md", `---
+name: listform
+tools: [X, Y]
+---
+body
+`)
+	writeFile(t, dir, "commaform.md", `---
+name: commaform
 tools: A, B, C
-allowed_tools: [X, Y]
 ---
 body
 `)
@@ -240,13 +245,19 @@ body
 	if err != nil {
 		t.Fatalf("LoadSet: %v", err)
 	}
-	a, ok := set.Get("dual")
+	list, ok := set.Get("listform")
 	if !ok {
-		t.Fatal("dual not found")
+		t.Fatal("listform not found")
 	}
-	want := []string{"X", "Y"}
-	if !reflect.DeepEqual(a.AllowedTools, want) {
-		t.Errorf("AllowedTools = %v, want %v (allowed_tools should win)", a.AllowedTools, want)
+	if want := []string{"X", "Y"}; !reflect.DeepEqual(list.Tools, want) {
+		t.Errorf("list form: Tools = %v, want %v", list.Tools, want)
+	}
+	comma, ok := set.Get("commaform")
+	if !ok {
+		t.Fatal("commaform not found")
+	}
+	if want := []string{"A", "B", "C"}; !reflect.DeepEqual(comma.Tools, want) {
+		t.Errorf("comma-string form: Tools = %v, want %v", comma.Tools, want)
 	}
 }
 
@@ -322,16 +333,16 @@ tools: Read
 	if a.SystemPrompt != "" {
 		t.Errorf("SystemPrompt = %q, want empty", a.SystemPrompt)
 	}
-	if !reflect.DeepEqual(a.AllowedTools, []string{"Read"}) {
-		t.Errorf("AllowedTools = %v, want [Read]", a.AllowedTools)
+	if !reflect.DeepEqual(a.Tools, []string{"Read"}) {
+		t.Errorf("Tools = %v, want [Read]", a.Tools)
 	}
 }
 
 // TestParseAgent_ToolsAsYAMLList: when the Claude Code `tools:` field is
 // itself a YAML list (some MDs in the wild do this even though the
 // canonical Claude Code shape is a comma-string), it should also be
-// accepted. Same outcome as if `allowed_tools` had been used — but
-// `allowed_tools` still wins if both are present.
+// accepted. Same outcome as if `tools` had been used — but
+// `tools` still wins if both are present.
 func TestParseAgent_ToolsAsYAMLList(t *testing.T) {
 	a, err := parseAgent([]byte(`---
 name: yaml-list
@@ -343,8 +354,8 @@ body
 		t.Fatalf("parseAgent: %v", err)
 	}
 	want := []string{"A", "B", "C"}
-	if !reflect.DeepEqual(a.AllowedTools, want) {
-		t.Errorf("AllowedTools = %v, want %v", a.AllowedTools, want)
+	if !reflect.DeepEqual(a.Tools, want) {
+		t.Errorf("Tools = %v, want %v", a.Tools, want)
 	}
 }
 

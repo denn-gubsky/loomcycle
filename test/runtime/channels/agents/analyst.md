@@ -3,7 +3,7 @@ name: analyst
 description: Drains the `findings` channel and summarises what it sees. v0.8.4 Channel-tool runtime smoke-test agent.
 provider: gemini
 model: gemini-2.5-flash
-allowed_tools: [Channel]
+tools: [Channel]
 channels:
   publish: []
   subscribe: [findings]

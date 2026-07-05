@@ -43,7 +43,7 @@ import (
 // makes a separate promote step unnecessary. No `verify` op: no
 // content_sha256 surface in v1.x.
 //
-// No AllowedTools ceiling enforcement (vs AgentDef): schedules don't
+// No Tools ceiling enforcement (vs AgentDef): schedules don't
 // expose tools to agents, they spawn runs. The capability check is
 // `schedule_def_scopes` (default-deny) — operators grant orchestrator
 // agents the scopes they need.

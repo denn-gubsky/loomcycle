@@ -89,7 +89,7 @@ agents:
       primary `mock` provider may inject 429s; the loop's
       retry_attempts:2 + fallback_on_error:true policy reroutes
       to mock-stable when retries exhaust.
-    allowed_tools: [Memory, Channel, Context]
+    tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
       publish: ["research-done/*"]
@@ -105,7 +105,7 @@ agents:
     system_prompt: |
       Mock editor agent (fallback-experiment yaml). Same retry +
       fallback semantics as the researcher.
-    allowed_tools: [Memory, Channel, Context]
+    tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
       publish: ["editing-done/*"]
@@ -123,7 +123,7 @@ agents:
       fallback semantics. The deterministic score is unaffected by
       provider routing — same editor_run_id → same score whether
       the call landed on mock or mock-stable.
-    allowed_tools: [Memory, Channel, Evaluation, Context]
+    tools: [Memory, Channel, Evaluation, Context]
     memory_scopes: [user]
     evaluation_scopes: [submit_any]
     channels:

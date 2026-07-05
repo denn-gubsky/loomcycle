@@ -170,7 +170,7 @@ func runHashSkill(args []string, stdout, stderr io.Writer) int {
 // at boot. config.Load applies two boot-time mutations the substrate
 // row also carries (resolveSkills bakes skill bodies into
 // SystemPrompt; addContextToolDefaults appends "Context" to
-// AllowedTools unless `disable_context: true`); we let those run here
+// Tools unless `disable_context: true`); we let those run here
 // so both paths produce identical AgentContent.
 //
 // Caveats:
@@ -218,7 +218,7 @@ func runHashAgentByName(name, cfgPath string, stdout, stderr io.Writer) int {
 		MaxTokens:             def.MaxTokens,
 		MaxIterations:         def.MaxIterations,
 		MaxConcurrentChildren: def.MaxConcurrentChildren,
-		AllowedTools:          def.AllowedTools,
+		Tools:                 def.Tools,
 		Skills:                def.Skills,
 		SystemPrompt:          def.SystemPrompt,
 		Providers:             def.Providers,

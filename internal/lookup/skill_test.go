@@ -22,9 +22,9 @@ import (
 // drift test catches that intent.
 func TestSkill_DriftDetection(t *testing.T) {
 	want := map[string]bool{
-		"body":          true,
-		"description":   true,
-		"allowed_tools": true,
+		"body":        true,
+		"description": true,
+		"tools":       true,
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateSkillDef{}))
 	for tag := range want {

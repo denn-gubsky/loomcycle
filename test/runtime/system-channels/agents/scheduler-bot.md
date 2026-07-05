@@ -3,7 +3,7 @@ name: scheduler-bot
 description: Channel-tool runtime test agent. Publishes to `findings` with optional deliver_at, then subscribes.
 provider: gemini
 model: gemini-2.5-flash
-allowed_tools: [Channel]
+tools: [Channel]
 channels:
   publish: [findings]
   subscribe: [findings]

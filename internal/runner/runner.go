@@ -133,9 +133,9 @@ type RunInput struct {
 	// does that internally.
 	Segments []loop.PromptSegment
 
-	// AllowedTools narrows the agent's tool surface for this call.
+	// Tools narrows the agent's tool surface for this call.
 	// Empty = use the agent's full configured allowlist.
-	AllowedTools []string
+	Tools []string
 
 	// AllowedHosts narrows HTTP / WebFetch / WebSearch host policy.
 	// Three states:

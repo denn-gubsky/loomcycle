@@ -17,4 +17,4 @@ agents:
     provider: code-js
     description: "Deterministic Memory round-trip via code-js (set/incr/get/list)."
     memory_scopes: [user, agent]
-    allowed_tools: [Memory]
+    tools: [Memory]

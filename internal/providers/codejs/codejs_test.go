@@ -296,9 +296,9 @@ func TestCodeJS_BuiltinTool_FlatCallable(t *testing.T) {
 	}
 }
 
-// Default-deny: a tool absent from allowed_tools (req.Tools) gets NO binding,
+// Default-deny: a tool absent from tools (req.Tools) gets NO binding,
 // so referencing it is a ReferenceError — not a permission error.
-func TestCodeJS_AllowedTools_DisallowedIsReferenceError(t *testing.T) {
+func TestCodeJS_Tools_DisallowedIsReferenceError(t *testing.T) {
 	root := writeAgent(t, "sneaky", `function run(){ Channel.publish({name:"x"}); return {final_text:"ok"}; }`)
 	p := newTestProvider(root)
 	// Only Memory is allowed; channel must not exist.
@@ -393,7 +393,7 @@ func TestCodeJS_AmbientDeterminism_StableAcrossReplays(t *testing.T) {
 }
 
 // Divergence guard: if a replay's tool-call sequence no longer matches the
-// recorded transcript (e.g. the agent's control flow changed, or allowed_tools
+// recorded transcript (e.g. the agent's control flow changed, or tools
 // changed mid-run), the run fails loud rather than feeding a mismatched result
 // into the JS. Forced here with a transcript whose first recorded call is
 // "Channel" while the JS calls "Memory" first.

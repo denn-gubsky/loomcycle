@@ -18,9 +18,9 @@ func TestSign_PrefixedHex(t *testing.T) {
 
 func TestSign_Deterministic(t *testing.T) {
 	c := SkillContent{
-		Name:         "summariser",
-		Body:         "Summarise the input concisely.",
-		AllowedTools: []string{"Read"},
+		Name:  "summariser",
+		Body:  "Summarise the input concisely.",
+		Tools: []string{"Read"},
 	}
 	if Sign(c) != Sign(c) {
 		t.Error("non-deterministic")
@@ -36,10 +36,10 @@ func TestSign_BodyChangeMovesHash(t *testing.T) {
 }
 
 func TestSign_NilEqualsEmptySlice(t *testing.T) {
-	a := Sign(SkillContent{Name: "x", AllowedTools: nil})
-	b := Sign(SkillContent{Name: "x", AllowedTools: []string{}})
+	a := Sign(SkillContent{Name: "x", Tools: nil})
+	b := Sign(SkillContent{Name: "x", Tools: []string{}})
 	if a != b {
-		t.Errorf("nil vs empty allowed_tools differ: %s vs %s", a, b)
+		t.Errorf("nil vs empty tools differ: %s vs %s", a, b)
 	}
 }
 
@@ -87,10 +87,10 @@ func TestFromSkill_DropsPath(t *testing.T) {
 
 func TestFromOverlay_RoundTripMatchesFromSkill(t *testing.T) {
 	skill := &Skill{
-		Name:         "summariser",
-		Description:  "shorten things",
-		Body:         "be brief",
-		AllowedTools: []string{"Read"},
+		Name:        "summariser",
+		Description: "shorten things",
+		Body:        "be brief",
+		Tools:       []string{"Read"},
 	}
 	hashFromSkill := Sign(FromSkill(skill))
 
@@ -98,7 +98,7 @@ func TestFromOverlay_RoundTripMatchesFromSkill(t *testing.T) {
 		"name": "summariser",
 		"description": "shorten things",
 		"body": "be brief",
-		"allowed_tools": ["Read"]
+		"tools": ["Read"]
 	}`)
 	parsed, _ := FromOverlay(overlay)
 	hashFromOverlay := Sign(parsed)

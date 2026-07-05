@@ -60,7 +60,7 @@ agents:
     max_iterations: 8
     max_tokens: 2048
     effort: medium
-    allowed_tools: [Context, Memory]
+    tools: [Context, Memory]
     memory_scopes: [user]
     system_prompt: |
       You are EXP6-SOLVER, a creative-reasoning agent with a fixed inborn personality.
@@ -96,7 +96,7 @@ agents:
     max_iterations: 16
     max_tokens: 3072
     effort: medium
-    allowed_tools: [Evaluation, Memory, Context]
+    tools: [Evaluation, Memory, Context]
     evaluation_scopes: [submit_any, read_any]   # scores SIBLING solver runs → submit_any (submit_siblings is inert today)
     memory_scopes: [user]
     system_prompt: |
@@ -133,7 +133,7 @@ agents:
     max_iterations: 80
     max_tokens: 8192
     effort: high
-    allowed_tools: [Agent, AgentDef, Evaluation, Memory, Context]
+    tools: [Agent, AgentDef, Evaluation, Memory, Context]
     agent_def_scopes: [named:exp6-solver]   # may fork/promote/retire the exp6-solver lineage only
     evaluation_scopes: [read_any]            # reads scores; the advisor submits them
     memory_scopes: [user]

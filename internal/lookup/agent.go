@@ -208,7 +208,7 @@ type SubstrateAgentDef struct {
 	// Read-side normalizers fall back to SystemPrompt when this is
 	// empty (legacy rows that pre-date the write-side fix).
 	SystemPromptBase string                            `json:"system_prompt_base,omitempty"`
-	AllowedTools     []string                          `json:"allowed_tools,omitempty"`
+	Tools            []string                          `json:"tools,omitempty"`
 	Skills           []string                          `json:"skills,omitempty"`
 	Providers        []string                          `json:"providers,omitempty"`
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
@@ -263,7 +263,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		RunTimeoutSeconds:     s.RunTimeoutSeconds,
 		SystemPrompt:          s.SystemPrompt,
 		SystemPromptBase:      s.SystemPromptBase,
-		AllowedTools:          s.AllowedTools,
+		Tools:                 s.Tools,
 		Skills:                s.Skills,
 		Providers:             s.Providers,
 		Models:                s.Models,

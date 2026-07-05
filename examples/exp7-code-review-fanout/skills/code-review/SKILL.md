@@ -2,7 +2,7 @@
 name: code-review
 description: How to review a slice of a code repository with high precision — confidence-scored findings, project-guideline compliance, and Karpathy behavioral guidelines (simplicity, surgical scope, surfaced assumptions). Use when reviewing or auditing source files.
 license: MIT
-allowed_tools: [Read, Grep, Glob]
+tools: [Read, Grep, Glob]
 ---
 
 # Code Review

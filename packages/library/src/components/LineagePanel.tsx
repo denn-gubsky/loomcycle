@@ -31,7 +31,7 @@ export interface LineagePanelProps {
   // the operator can size them independently).
   splitterStorageKey: string;
   // Kind-specific renderer for the version's Definition JSON shape.
-  // Used by Agents (system_prompt + allowed_tools) / Skills (body) /
+  // Used by Agents (system_prompt + tools) / Skills (body) /
   // MCP Servers (url + headers + discovered_tools).
   renderDefinition: (row: DefRow) => React.ReactNode;
   // v0.10.4 — admin mutation callbacks. When wired, the right pane

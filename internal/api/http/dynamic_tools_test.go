@@ -22,7 +22,7 @@ func (n namedTool) Execute(context.Context, json.RawMessage) (tools.Result, erro
 
 // TestCandidateTools_AdvertisesDynamicTools pins post-boot tool advertising:
 // a substrate-registered tool returned by the dynamic enumerator is folded
-// into the per-run candidate set, so the allowed_tools filter advertises it
+// into the per-run candidate set, so the tools filter advertises it
 // to the model without a restart — but only when the agent allows it.
 func TestCandidateTools_AdvertisesDynamicTools(t *testing.T) {
 	// New auto-appends the built-in Agent tool, so the boot set is N≥1.
@@ -38,14 +38,14 @@ func TestCandidateTools_AdvertisesDynamicTools(t *testing.T) {
 		t.Fatalf("with enumerator: %d candidate tools, want base+1 (%d)", len(cand), base+1)
 	}
 
-	// Advertised when the agent's allowed_tools permits it.
+	// Advertised when the agent's tools permits it.
 	if got := toolNames(filterTools(cand, []string{"mcp__jobs__getAgentContext"}, nil)); len(got) != 1 || got[0] != "mcp__jobs__getAgentContext" {
 		t.Errorf("dynamic tool not advertised when allowed; got %v", got)
 	}
 	// NOT advertised when the agent doesn't allow it — the allowlist still gates.
 	for _, n := range toolNames(filterTools(cand, []string{"Read"}, nil)) {
 		if n == "mcp__jobs__getAgentContext" {
-			t.Error("dynamic tool advertised despite not being in allowed_tools")
+			t.Error("dynamic tool advertised despite not being in tools")
 		}
 	}
 }

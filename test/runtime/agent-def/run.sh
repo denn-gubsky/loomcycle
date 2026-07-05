@@ -105,7 +105,7 @@ echo "[4/5] Running evolver (single chained run)..."
 
 PROMPT='Execute these six AgentDef operations in order. Each maps to one tool call.
 
-(1) create a new agent named "derived-bot" with overlay {"system_prompt":"a derived prompt","allowed_tools":["AgentDef"]} and description "v1".
+(1) create a new agent named "derived-bot" with overlay {"system_prompt":"a derived prompt","tools":["AgentDef"]} and description "v1".
 
 (2) get the def_id you just created. Read back the row.
 

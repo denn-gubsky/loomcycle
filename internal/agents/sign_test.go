@@ -40,7 +40,7 @@ func TestSign_DeterministicAcrossCalls(t *testing.T) {
 	c := AgentContent{
 		Name:         "researcher",
 		SystemPrompt: "be thorough",
-		AllowedTools: []string{"WebFetch", "Read"},
+		Tools:        []string{"WebFetch", "Read"},
 		Skills:       []string{"summariser"},
 		MaxTokens:    8192,
 	}
@@ -95,21 +95,21 @@ func TestSign_NameChangesHash(t *testing.T) {
 }
 
 func TestSign_NilEqualsEmptySlice(t *testing.T) {
-	// An agent with allowed_tools: [] hashes identically to one with
-	// no allowed_tools key at all. Operator-side semantics: "no tools"
+	// An agent with tools: [] hashes identically to one with
+	// no tools key at all. Operator-side semantics: "no tools"
 	// is "no tools" regardless of how the YAML expressed it.
-	a := Sign(AgentContent{Name: "x", AllowedTools: nil})
-	b := Sign(AgentContent{Name: "x", AllowedTools: []string{}})
+	a := Sign(AgentContent{Name: "x", Tools: nil})
+	b := Sign(AgentContent{Name: "x", Tools: []string{}})
 	if a != b {
-		t.Errorf("nil vs empty allowed_tools differ: %s vs %s", a, b)
+		t.Errorf("nil vs empty tools differ: %s vs %s", a, b)
 	}
 }
 
 func TestSign_OrderPreservedInArrays(t *testing.T) {
 	// Allowed_tools order is semantically meaningful (precedence in
 	// some operator scripts). Reordering MUST change the hash.
-	a := Sign(AgentContent{Name: "x", AllowedTools: []string{"A", "B"}})
-	b := Sign(AgentContent{Name: "x", AllowedTools: []string{"B", "A"}})
+	a := Sign(AgentContent{Name: "x", Tools: []string{"A", "B"}})
+	b := Sign(AgentContent{Name: "x", Tools: []string{"B", "A"}})
 	if a == b {
 		t.Error("array reordering didn't change the hash; semantics broken")
 	}
@@ -177,7 +177,7 @@ func TestFromYAMLAgent_RoundTrip(t *testing.T) {
 		Name:         "researcher",
 		Description:  "thorough investigator",
 		SystemPrompt: "be thorough",
-		AllowedTools: []string{"WebFetch", "Read"},
+		Tools:        []string{"WebFetch", "Read"},
 		Skills:       []string{"summariser"},
 		Tier:         "high",
 		Effort:       "medium",
@@ -302,12 +302,12 @@ func TestFromOverlay_ChannelsConvergeWithWritePath(t *testing.T) {
 }
 
 func TestFromOverlay_ParsesValidJSON(t *testing.T) {
-	overlay := json.RawMessage(`{"name":"x","system_prompt":"hi","allowed_tools":["Read"]}`)
+	overlay := json.RawMessage(`{"name":"x","system_prompt":"hi","tools":["Read"]}`)
 	c, err := FromOverlay(overlay)
 	if err != nil {
 		t.Fatalf("FromOverlay: %v", err)
 	}
-	if c.Name != "x" || c.SystemPrompt != "hi" || len(c.AllowedTools) != 1 {
+	if c.Name != "x" || c.SystemPrompt != "hi" || len(c.Tools) != 1 {
 		t.Errorf("FromOverlay lost data: %+v", c)
 	}
 }
@@ -336,7 +336,7 @@ func TestFromOverlay_RoundTripMatchesYAMLAgent(t *testing.T) {
 	agent := &Agent{
 		Name:         "researcher",
 		SystemPrompt: "be thorough",
-		AllowedTools: []string{"Read", "WebFetch"},
+		Tools:        []string{"Read", "WebFetch"},
 		MaxTokens:    8192,
 	}
 	hashFromYAML := Sign(FromYAMLAgent(agent))
@@ -344,7 +344,7 @@ func TestFromOverlay_RoundTripMatchesYAMLAgent(t *testing.T) {
 	overlay := json.RawMessage(`{
 		"name": "researcher",
 		"system_prompt": "be thorough",
-		"allowed_tools": ["Read", "WebFetch"],
+		"tools": ["Read", "WebFetch"],
 		"max_tokens": 8192
 	}`)
 	parsed, _ := FromOverlay(overlay)
@@ -404,10 +404,10 @@ func TestSign_KnownVector(t *testing.T) {
 	c := AgentContent{
 		Name:         "researcher",
 		SystemPrompt: "be thorough",
-		AllowedTools: []string{"WebFetch", "Read"},
+		Tools:        []string{"WebFetch", "Read"},
 		MaxTokens:    8192,
 	}
-	const want = "sha256:9c6a6098efbad0bdde2cd0c777a70d97b204125c37004b3f80a7f5734cde2c03"
+	const want = "sha256:e03953f0f2b43b6e9521b0c5e3f31cdddad6c3d3e907deb8172cd4c959de105e"
 	got := Sign(c)
 	if got != want {
 		t.Errorf("canonical encoding drift: got %s, want %s — update only with intent (bump every existing row + re-backfill)", got, want)

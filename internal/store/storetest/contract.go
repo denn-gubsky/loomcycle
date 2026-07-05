@@ -4780,7 +4780,7 @@ func testBackfillAgentDefSystemPromptBase(t *testing.T, s store.Store) {
 		DefID:       "spb-legacy",
 		Name:        "spb-legacy-name",
 		Description: "legacy",
-		Definition:  json.RawMessage(`{"system_prompt":"be helpful","allowed_tools":["Read"]}`),
+		Definition:  json.RawMessage(`{"system_prompt":"be helpful","tools":["Read"]}`),
 	}
 	if _, err := s.AgentDefCreate(ctx, legacy); err != nil {
 		t.Fatalf("create legacy: %v", err)
@@ -4802,7 +4802,7 @@ func testBackfillAgentDefSystemPromptBase(t *testing.T, s store.Store) {
 		DefID:       "spb-empty",
 		Name:        "spb-empty-name",
 		Description: "empty",
-		Definition:  json.RawMessage(`{"allowed_tools":["Read"]}`),
+		Definition:  json.RawMessage(`{"tools":["Read"]}`),
 	}
 	if _, err := s.AgentDefCreate(ctx, empty); err != nil {
 		t.Fatalf("create empty: %v", err)

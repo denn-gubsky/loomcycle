@@ -18,7 +18,7 @@ Pick **the gateway** (`POST /v1/_llm/chat`) when:
   per-user quota, one observability surface across providers — without
   paying the ~50-200 ms per-turn overhead of a full agent run.
 - The "agent" you'd otherwise declare would have `system_prompt: ""` +
-  `allowed_tools: []` — i.e. a passthrough shell with no actual loop
+  `tools: []` — i.e. a passthrough shell with no actual loop
   work.
 
 Pick **an agent run** (`POST /v1/runs`) when:

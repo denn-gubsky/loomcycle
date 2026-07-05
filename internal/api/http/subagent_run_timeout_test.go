@@ -73,10 +73,10 @@ func TestSubAgent_InheritsPerAgentRunTimeout(t *testing.T) {
 
 	cfg := makeBaseConfig()
 	cfg.Agents = map[string]config.AgentDef{
-		"parent": {Model: "stub-model", AllowedTools: []string{"Agent"}, SystemPrompt: "you are the parent"},
+		"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the parent"},
 		// No RunTimeoutSeconds on parent → its own Call sees 0 (the
 		// per-run knob is absent on the top-level test request too).
-		"child": {Model: "stub-model", AllowedTools: []string{}, SystemPrompt: "you are the child", RunTimeoutSeconds: childBudget},
+		"child": {Model: "stub-model", Tools: []string{}, SystemPrompt: "you are the child", RunTimeoutSeconds: childBudget},
 	}
 
 	prov := &runMetaCapturingProvider{

@@ -46,9 +46,9 @@ var agentDefNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 //	           lineage; resolver skips retired when picking active.
 //	promote  — set the active pointer for a name to a specific def_id.
 //
-// AllowedTools enforcement: forks may NARROW but NEVER widen. The
-// operator-blessed root (static cfg.Agents[name].AllowedTools if it
-// exists, else the v1 row's AllowedTools) is the permanent capability
+// Tools enforcement: forks may NARROW but NEVER widen. The
+// operator-blessed root (static cfg.Agents[name].Tools if it
+// exists, else the v1 row's Tools) is the permanent capability
 // ceiling. A fork that tries to add a tool not in the root is
 // rejected with a typed error.
 //
@@ -60,7 +60,7 @@ type AgentDef struct {
 	Store store.Store
 
 	// Cfg is the loaded operator config. Used to resolve the
-	// operator-blessed root (cfg.Agents[name]) for AllowedTools
+	// operator-blessed root (cfg.Agents[name]) for Tools
 	// ceiling enforcement and to refuse `create` over a static name.
 	Cfg *config.Config
 
@@ -81,7 +81,7 @@ type AgentDef struct {
 
 const agentDefDescription = `Author, fork, promote, retire, and inspect agent definitions at runtime. ` +
 	`Static <name>.md files remain the operator's immutable ground truth; this tool ` +
-	`produces the DERIVED layer of agent-authored versions. AllowedTools may be NARROWED ` +
+	`produces the DERIVED layer of agent-authored versions. Tools may be NARROWED ` +
 	`on forks but never WIDENED — operator-blessed root is the permanent capability ceiling. ` +
 	`Operations: create, fork, get, list, retire, promote.`
 
@@ -94,7 +94,7 @@ const agentDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of AgentDef for create/fork (snake_case keys). Common fields: provider, model, tier, effort, system_prompt, code_body, allowed_tools, skills, providers, models, max_tokens, max_iterations, max_concurrent_children, run_timeout_seconds, memory_scopes, memory_quota_bytes, memory_backend, retry_attempts. Interactive / multi-agent config also round-trips and is content-identifying: channels ({publish:[...],subscribe:[...]}), evaluation_scopes ([...]), interruption ({enabled,kinds:[...],max_pending}). Immutable / server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
+      "description": "Mutable subset of AgentDef for create/fork (snake_case keys). Common fields: provider, model, tier, effort, system_prompt, code_body, tools, skills, providers, models, max_tokens, max_iterations, max_concurrent_children, run_timeout_seconds, memory_scopes, memory_quota_bytes, memory_backend, retry_attempts. Interactive / multi-agent config also round-trips and is content-identifying: channels ({publish:[...],subscribe:[...]}), evaluation_scopes ([...]), interruption ({enabled,kinds:[...],max_pending}). Immutable / server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -216,22 +216,22 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	// AllowedTools ceiling on `create`: the caller's own effective
-	// allowed_tools is the ceiling for any new agent it mints. Without
-	// this check an agent with narrow allowed_tools could call
-	// `create` with overlay.allowed_tools = [the entire universe] and
+	// Tools ceiling on `create`: the caller's own effective
+	// tools is the ceiling for any new agent it mints. Without
+	// this check an agent with narrow tools could call
+	// `create` with overlay.tools = [the entire universe] and
 	// then spawn the resulting agent — a capability-escalation path.
 	// Mirror of the subset check in `fork`.
 	//
 	// AgentTools(ctx) returns nil in test contexts; we refuse to
-	// create with a non-empty AllowedTools overlay when the ceiling
+	// create with a non-empty Tools overlay when the ceiling
 	// is unknown rather than silently allowing widening.
 	callerTools := tools.AgentTools(ctx)
-	if len(def.AllowedTools) > 0 {
+	if len(def.Tools) > 0 {
 		if callerTools == nil {
-			return errResult("create: caller's effective allowed_tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening"), nil
+			return errResult("create: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening"), nil
 		}
-		if err := assertAllowedToolsSubset(def.AllowedTools, callerTools); err != nil {
+		if err := assertToolsSubset(def.Tools, callerTools); err != nil {
 			return errResult(fmt.Sprintf("create: %s", err)), nil
 		}
 	}
@@ -421,12 +421,12 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
-	// AllowedTools ceiling enforcement — fork may narrow, never widen.
-	root, err := a.resolveAllowedToolsRoot(ctx, in.Name, parent)
+	// Tools ceiling enforcement — fork may narrow, never widen.
+	root, err := a.resolveToolsRoot(ctx, in.Name, parent)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: resolve root: %s", err)), nil
 	}
-	if err := assertAllowedToolsSubset(def.AllowedTools, root); err != nil {
+	if err := assertToolsSubset(def.Tools, root); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := a.validateInlineCode("fork", def); err != nil {
@@ -704,20 +704,20 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 	return base, nil
 }
 
-// resolveAllowedToolsRoot returns the operator-blessed AllowedTools
+// resolveToolsRoot returns the operator-blessed Tools
 // ceiling for a name + parent chain. For names with a static MD,
-// that's cfg.Agents[name].AllowedTools — the operator's permanent
+// that's cfg.Agents[name].Tools — the operator's permanent
 // authority. For names that exist only in DB (created via `create`),
-// it's the v1 row's AllowedTools (the root of the DB-only lineage).
-func (a *AgentDef) resolveAllowedToolsRoot(ctx context.Context, name string, parent store.AgentDefRow) ([]string, error) {
+// it's the v1 row's Tools (the root of the DB-only lineage).
+func (a *AgentDef) resolveToolsRoot(ctx context.Context, name string, parent store.AgentDefRow) ([]string, error) {
 	if static, ok := a.Cfg.Agents[name]; ok {
-		return static.AllowedTools, nil
+		return static.Tools, nil
 	}
 	// Walk parent chain to the v1 row. Hard cap at 100 hops as a
 	// defense against cyclic / corrupt lineage. If we exhaust the cap
 	// without reaching the root (ParentDefID still non-empty), refuse
 	// rather than treat the mid-chain row as the ceiling — using a
-	// non-root row would silently weaken the AllowedTools security
+	// non-root row would silently weaken the Tools security
 	// invariant for sufficiently deep or cyclic chains.
 	cur := parent
 	const maxHops = 100
@@ -740,10 +740,10 @@ func (a *AgentDef) resolveAllowedToolsRoot(ctx context.Context, name string, par
 	if err := json.Unmarshal(cur.Definition, &rootDef); err != nil {
 		return nil, fmt.Errorf("parse root definition: %w", err)
 	}
-	return rootDef.AllowedTools, nil
+	return rootDef.Tools, nil
 }
 
-// assertAllowedToolsSubset returns nil iff every tool in `proposed`
+// assertToolsSubset returns nil iff every tool in `proposed`
 // also appears in `root`. Empty proposed = empty subset = OK (narrowing
 // to zero tools is allowed). Empty root = no permitted tools — proposed
 // must also be empty.
@@ -751,11 +751,11 @@ func (a *AgentDef) resolveAllowedToolsRoot(ctx context.Context, name string, par
 // Wildcard: a root containing "*" accepts any proposed list. Used by
 // the substrate-admin HTTP context (substrateAdminCtx) where the
 // operator's bearer-auth is the security boundary, not a per-agent
-// allowed_tools ceiling. Lineage roots (the v1 row's actual tool
+// tools ceiling. Lineage roots (the v1 row's actual tool
 // list) never contain "*" — they're real tool names persisted by an
 // earlier `create`, so the fork narrowing check at lines 305 / 328
 // is unaffected.
-func assertAllowedToolsSubset(proposed, root []string) error {
+func assertToolsSubset(proposed, root []string) error {
 	for _, t := range root {
 		if t == "*" {
 			return nil
@@ -767,7 +767,7 @@ func assertAllowedToolsSubset(proposed, root []string) error {
 	}
 	for _, t := range proposed {
 		if !rootSet[t] {
-			return fmt.Errorf("AllowedTools cannot widen — %q is not in the operator-blessed root %v", t, root)
+			return fmt.Errorf("Tools cannot widen — %q is not in the operator-blessed root %v", t, root)
 		}
 	}
 	return nil
@@ -860,7 +860,7 @@ type mergedDef struct {
 	// `lookup.NormalizeAgentDef` is defense-in-depth for legacy rows
 	// that pre-date this field. See PR #186 for the production bug.
 	SystemPromptBase string                            `json:"system_prompt_base,omitempty"`
-	AllowedTools     []string                          `json:"allowed_tools,omitempty"`
+	Tools            []string                          `json:"tools,omitempty"`
 	Skills           []string                          `json:"skills,omitempty"`
 	Providers        []string                          `json:"providers,omitempty"`
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
@@ -951,8 +951,8 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.SystemPromptBase != "" {
 		d.SystemPromptBase = ov.SystemPromptBase
 	}
-	if ov.AllowedTools != nil {
-		d.AllowedTools = ov.AllowedTools
+	if ov.Tools != nil {
+		d.Tools = ov.Tools
 	}
 	if ov.Skills != nil {
 		d.Skills = ov.Skills
@@ -1051,7 +1051,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		RunTimeoutSeconds:     s.RunTimeoutSeconds,
 		SystemPrompt:          s.SystemPrompt,
 		SystemPromptBase:      s.SystemPromptBase,
-		AllowedTools:          s.AllowedTools,
+		Tools:                 s.Tools,
 		Skills:                s.Skills,
 		Providers:             s.Providers,
 		Models:                s.Models,
@@ -1136,7 +1136,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 		MaxIterations:         def.MaxIterations,
 		UnboundedIterations:   def.UnboundedIterations,
 		MaxConcurrentChildren: def.MaxConcurrentChildren,
-		AllowedTools:          def.AllowedTools,
+		Tools:                 def.Tools,
 		Skills:                def.Skills,
 		SystemPrompt:          def.SystemPrompt,
 		Providers:             def.Providers,

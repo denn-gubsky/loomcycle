@@ -23,7 +23,7 @@ agents:
     provider: code-js
     description: "8 sequential atomic incrs on a shared agent-scope counter."
     memory_scopes: [agent]
-    allowed_tools: [Memory]
+    tools: [Memory]
 
   # overrun makes 25 sequential incrs — past the old 16-call default. A
   # code-agent is exempt from the cap, so the run COMPLETES (end_turn) with
@@ -32,7 +32,7 @@ agents:
     provider: code-js
     description: "25 sequential incrs — exceeds the old cap, now completes."
     memory_scopes: [agent]
-    allowed_tools: [Memory]
+    tools: [Memory]
 
   # runaway loops tool calls forever — only the run-level timeout stops it.
   # The suite sets a short LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS and
@@ -41,4 +41,4 @@ agents:
     provider: code-js
     description: "infinite tool-call loop — bounded only by the run timeout."
     memory_scopes: [agent]
-    allowed_tools: [Memory]
+    tools: [Memory]

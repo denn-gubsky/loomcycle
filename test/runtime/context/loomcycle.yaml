@@ -3,7 +3,7 @@
 # One agent (introspector) exercises four Context ops in one chained
 # run: self, tools, doc(name=Memory), permissions.
 #
-# The agent's allowed_tools intentionally OMITS Context — exercising
+# The agent's tools intentionally OMITS Context — exercising
 # the v0.8.7 default-add behaviour (Context auto-attached at
 # config-load).
 #

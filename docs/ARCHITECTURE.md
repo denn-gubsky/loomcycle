@@ -257,8 +257,8 @@ References: `internal/contextplugin/` (`Plugin`, `Registry`, `Apply`, `Build`), 
 The `Dispatcher` (`internal/tools/tool.go`) maps tool name → `Tool.Execute(ctx, input)`. The set of tools registered on the dispatcher for a given run is the **intersection** of:
 
 1. Operator's enabled built-ins + declared MCP tools + LocalAPI tools.
-2. Agent's `allowed_tools` (YAML).
-3. Caller's `allowed_tools` (request body).
+2. Agent's `tools` (YAML).
+3. Caller's `tools` (request body).
 
 Plus a per-run host narrowing (`HTTP`, `WebFetch`, `WebSearch`) via `builtin.NarrowHosts`, which replaces those tools in the per-run list with versions that have the caller's allowlist baked in.
 
@@ -310,7 +310,7 @@ References: `internal/tools/builtin/agent.go` (the tool), `internal/api/http/ser
 
 ## Skills (Approach A + SkillDef substrate)
 
-`internal/skills/` — at config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` is read and parsed. Agents that list a skill in their YAML `skills: [voice-applier, position-relevance-filtering]` block get the skill's body **concatenated into their system prompt** — cacheable, baked into the agent's runtime view of the world. The skill's `allowed-tools` declared in its frontmatter must be a subset of the agent's `allowed_tools`; mismatches are rejected at config-load.
+`internal/skills/` — at config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` is read and parsed. Agents that list a skill in their YAML `skills: [voice-applier, position-relevance-filtering]` block get the skill's body **concatenated into their system prompt** — cacheable, baked into the agent's runtime view of the world. The skill's `allowed-tools` declared in its frontmatter must be a subset of the agent's `tools`; mismatches are rejected at config-load.
 
 This is "Approach A" in the skills design — static bundling at config-load.
 
@@ -482,7 +482,7 @@ The companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` b
 
 **Streaming via notifications:** when the client opts in through `initialize.capabilities.loomcycle.runEvents=true`, `spawn_run` drives `runner.RunOnce` directly and emits `notifications/loomcycle/run_event` per provider event before returning the final response. Without opt-in, blocking-only Connector path. Both produce identical final `SpawnRunResult` shape.
 
-**Dynamic agents:** the new `dynamic_agents` table (SQLite + Postgres migration 0010) persists agents registered at runtime via `register_agent`. Periodic TTL sweeper (cadence: `LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS`, default 15 min) reclaims expired rows. Privileged builtins (Bash, Write, Edit) are stripped from `allowed_tools` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`. Static yaml-defined agents take precedence on name collision.
+**Dynamic agents:** the new `dynamic_agents` table (SQLite + Postgres migration 0010) persists agents registered at runtime via `register_agent`. Periodic TTL sweeper (cadence: `LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS`, default 15 min) reclaims expired rows. Privileged builtins (Bash, Write, Edit) are stripped from `tools` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`. Static yaml-defined agents take precedence on name collision.
 
 **Operator-policy ctx for MCP-direct builtin calls:** the underlying Memory / Channel / AgentDef / Evaluation / Context tools gate on per-agent policy values that don't exist for MCP-direct callers (no yaml agent definition behind a `tools/call`). `internal/api/mcp/context.go operatorCtx()` synthesises a permissive policy (all scopes allowed, `mcp-operator` synthetic agent name) before each builtin wrapper invocation. `TestOperatorCtx_AttachesAllRequiredPolicies` pins the contract — future tools growing policy gates force an update here.
 

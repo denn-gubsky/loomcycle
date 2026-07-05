@@ -21,11 +21,11 @@ func skillDefFixture(t *testing.T) (*SkillDef, context.Context, func()) {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	set := loadSetWithSkills(t, []struct {
-		Name         string
-		AllowedTools []string
-		Body         string
+		Name  string
+		Tools []string
+		Body  string
 	}{
-		{Name: "karpathy-guidelines", AllowedTools: []string{"Read", "WebFetch"}, Body: "STATIC SKILL BODY"},
+		{Name: "karpathy-guidelines", Tools: []string{"Read", "WebFetch"}, Body: "STATIC SKILL BODY"},
 	})
 	tool := &SkillDef{
 		Store:               s,
@@ -124,16 +124,16 @@ func TestSkillDefTool_ForkBootstrapsStaticBody(t *testing.T) {
 	}
 }
 
-func TestSkillDefTool_AllowedToolsCannotWiden(t *testing.T) {
+func TestSkillDefTool_ToolsCannotWiden(t *testing.T) {
 	tool, ctx, cleanup := skillDefFixture(t)
 	defer cleanup()
 
 	// Static root has [Read, WebFetch]. Try to fork adding "Write".
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"karpathy-guidelines","overlay":{"body":"x","allowed_tools":["Read","WebFetch","Write"]}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"karpathy-guidelines","overlay":{"body":"x","tools":["Read","WebFetch","Write"]}}`))
 	if !res.IsError {
-		t.Fatalf("fork widening allowed_tools should refuse; got %s", res.Text)
+		t.Fatalf("fork widening tools should refuse; got %s", res.Text)
 	}
-	if !strings.Contains(res.Text, "AllowedTools cannot widen") {
+	if !strings.Contains(res.Text, "Tools cannot widen") {
 		t.Errorf("refusal should mention widening; got %s", res.Text)
 	}
 }

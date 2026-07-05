@@ -58,7 +58,7 @@ func TestVersionSubcommand_DoesNotBootRuntime(t *testing.T) {
 	}
 }
 
-func TestApplyAllowedToolsFilter(t *testing.T) {
+func TestApplyToolsFilter(t *testing.T) {
 	descs := []mcp.ToolDescriptor{
 		{Name: "search"},
 		{Name: "fetch"},
@@ -94,7 +94,7 @@ func TestApplyAllowedToolsFilter(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := applyAllowedToolsFilter(descs, tc.allowed)
+			got := applyToolsFilter(descs, tc.allowed)
 			gotNames := make([]string, 0, len(got))
 			for _, d := range got {
 				gotNames = append(gotNames, d.Name)

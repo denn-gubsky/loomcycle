@@ -60,7 +60,7 @@ func TestDynamicAgent_RegisteredThenRun(t *testing.T) {
 	if _, err := srv.RegisterAgent(ctx, connector.RegisterAgentRequest{
 		Name:         "bench-dynamic-fixture",
 		SystemPrompt: "be brief",
-		AllowedTools: []string{"Read"},
+		Tools:        []string{"Read"},
 		Provider:     "stub",
 		Model:        "stub-model",
 		Description:  "regression fixture",

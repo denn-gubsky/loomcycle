@@ -27,7 +27,7 @@ mismatch does it push a new version.
 For an **AgentDef**:
 
 ```
-name, description, system_prompt, allowed_tools, skills, model,
+name, description, system_prompt, tools, skills, model,
 provider, tier, effort, max_tokens, max_iterations, providers,
 models, memory_scopes, memory_quota_bytes
 ```
@@ -35,7 +35,7 @@ models, memory_scopes, memory_quota_bytes
 For a **SkillDef**:
 
 ```
-name, description, body, allowed_tools
+name, description, body, tools
 ```
 
 Excluded from both (would defeat the "did the content change?" point):

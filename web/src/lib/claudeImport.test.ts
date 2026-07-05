@@ -64,13 +64,13 @@ describe("parseSkillMarkdown", () => {
     expect(candidate!.overlay).toEqual({
       body: "# Body\ninstructions here",
       description: "does a thing",
-      allowed_tools: ["WebFetch", "Read"],
+      tools: ["WebFetch", "Read"],
     });
   });
   it("normalizes CRLF and accepts allowed-tools as a comma string", () => {
     const md = `---\r\nname: s\r\nallowed-tools: WebFetch, Read\r\n---\r\nbody text`;
     const { candidate } = parseSkillMarkdown(md);
-    expect(candidate!.overlay.allowed_tools).toEqual(["WebFetch", "Read"]);
+    expect(candidate!.overlay.tools).toEqual(["WebFetch", "Read"]);
     expect(candidate!.overlay.body).toBe("body text");
   });
   it("treats a no-frontmatter file as body-only, using the fallback name", () => {

@@ -34,12 +34,12 @@ type MCPServerSpec struct {
 	Command string
 	Args    []string
 	Env     map[string]string
-	// AllowedTools is the operator's per-server tools/list narrowing (yaml
-	// `allowed_tools`); empty = allow all discovered tools. Only the STATIC
+	// Tools is the operator's per-server tools/list narrowing (yaml
+	// `tools`); empty = allow all discovered tools. Only the STATIC
 	// source carries it — a dynamically-registered (substrate) server has
 	// none, so all its discovered tools are allowed and the agent's own
-	// allowed_tools is the gate. Consumed by the MCP lazy tool resolver.
-	AllowedTools []string
+	// tools is the gate. Consumed by the MCP lazy tool resolver.
+	Tools []string
 	// Source — "static" or "dynamic". Useful for log lines + the
 	// /ui/library/mcp-servers page's badge.
 	Source string
@@ -80,7 +80,7 @@ type MCPServerSpec struct {
 //
 // Callers that need the full spec (transport/url/headers, or stdio
 // command/args/env) get it for any transport. Callers that need ONLY
-// membership + AllowedTools are
+// membership + Tools are
 // transport-agnostic and safe for any server — notably the MCP lazy tool
 // resolver (internal/tools/mcp/lazy.go), which delegates client
 // construction to the pool and consults this resolver purely to decide
@@ -100,11 +100,11 @@ func MCPServer(cfg *config.Config, dyn MCPDynamicRegistry, tenantID, name string
 	if cfg != nil {
 		if srv, ok := cfg.MCPServers[name]; ok {
 			return MCPServerSpec{
-				Transport:    srv.Transport,
-				URL:          srv.URL,
-				Headers:      srv.Headers,
-				AllowedTools: srv.AllowedTools,
-				Source:       "static",
+				Transport: srv.Transport,
+				URL:       srv.URL,
+				Headers:   srv.Headers,
+				Tools:     srv.Tools,
+				Source:    "static",
 			}, true
 		}
 	}

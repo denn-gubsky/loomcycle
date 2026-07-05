@@ -50,7 +50,7 @@ func (s *stubStore) AgentDefGetActive(_ context.Context, tenantID, name string) 
 // test. The two paths must stay in lockstep.
 func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 	// Seed agent — representative of a realistic content shape:
-	// non-trivial system_prompt, allowed_tools, skills, model+tier.
+	// non-trivial system_prompt, tools, skills, model+tier.
 	yamlAgent := config.AgentDef{
 		Provider:              "anthropic",
 		Model:                 "claude-sonnet-4-6",
@@ -60,7 +60,7 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 		MaxConcurrentChildren: 8,
 		SystemPrompt:          "You are a careful researcher. Ask questions before acting.",
 		SystemPromptBase:      "You are a careful researcher. Ask questions before acting.",
-		AllowedTools:          []string{"Read", "Memory", "Channel"},
+		Tools:                 []string{"Read", "Memory", "Channel"},
 		Skills:                []string{"voice-applier"},
 		MemoryScopes:          []string{"agent", "user"},
 		MemoryQuotaBytes:      65536,
@@ -82,7 +82,7 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 		MaxConcurrentChildren: yamlAgent.MaxConcurrentChildren,
 		SystemPrompt:          yamlAgent.SystemPrompt,
 		SystemPromptBase:      yamlAgent.SystemPromptBase,
-		AllowedTools:          yamlAgent.AllowedTools,
+		Tools:                 yamlAgent.Tools,
 		Skills:                yamlAgent.Skills,
 		MemoryScopes:          yamlAgent.MemoryScopes,
 		MemoryQuotaBytes:      yamlAgent.MemoryQuotaBytes,
@@ -130,8 +130,8 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 	if resolved.SystemPromptBase != yamlAgent.SystemPromptBase {
 		t.Errorf("SystemPromptBase mismatch:\n  yaml: %q\n  resolved: %q", yamlAgent.SystemPromptBase, resolved.SystemPromptBase)
 	}
-	if !reflect.DeepEqual(resolved.AllowedTools, yamlAgent.AllowedTools) {
-		t.Errorf("AllowedTools mismatch:\n  yaml: %v\n  resolved: %v", yamlAgent.AllowedTools, resolved.AllowedTools)
+	if !reflect.DeepEqual(resolved.Tools, yamlAgent.Tools) {
+		t.Errorf("Tools mismatch:\n  yaml: %v\n  resolved: %v", yamlAgent.Tools, resolved.Tools)
 	}
 	if !reflect.DeepEqual(resolved.Skills, yamlAgent.Skills) {
 		t.Errorf("Skills mismatch:\n  yaml: %v\n  resolved: %v", yamlAgent.Skills, resolved.Skills)
@@ -158,7 +158,7 @@ func TestAgent_LegacyRowGetsSystemPromptBaseFilledOnRead(t *testing.T) {
 	// Persist WITHOUT system_prompt_base (legacy shape).
 	defJSON, err := json.Marshal(map[string]any{
 		"system_prompt": "be helpful",
-		"allowed_tools": []string{"Read"},
+		"tools":         []string{"Read"},
 		"skills":        []string{"summariser"},
 	})
 	if err != nil {
@@ -291,7 +291,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"max_concurrent_children": true,
 		"system_prompt":           true,
 		"system_prompt_base":      true,
-		"allowed_tools":           true,
+		"tools":                   true,
 		"skills":                  true,
 		"providers":               true,
 		"models":                  true,

@@ -80,7 +80,7 @@ agents:
     tier: middle
     max_iterations: 30
     max_tokens: 4096
-    allowed_tools: [Context, VolumeDef, Bash, Agent, Memory]
+    tools: [Context, VolumeDef, Bash, Agent, Memory]
     volume_def_scopes: [any]
     memory_scopes: [user]
     volumes: [default, dynamic-root]
@@ -133,7 +133,7 @@ agents:
     max_tokens: 8192
     effort: medium
     memory_scopes: [user]
-    allowed_tools: [Context, Read, Grep, Glob, Memory]
+    tools: [Context, Read, Grep, Glob, Memory]
     system_prompt: |
       You are a READ-ONLY code reviewer for one slice of the loomcycle Go repository.
       Use Context op=self to confirm "lc-src" is in your bound volumes list and note its path.
@@ -176,7 +176,7 @@ agents:
     max_tokens: 8192
     effort: medium
     memory_scopes: [user]
-    allowed_tools: [Context, Memory, Write]
+    tools: [Context, Memory, Write]
     system_prompt: |
       You are the CONSOLIDATOR for exp8. Aggregate 8 code-review findings into a report.
       Slices: cmd, api, core, store, tools, mcp, provider, examples

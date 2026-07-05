@@ -42,7 +42,7 @@ import (
 //     handles concurrent-stampede coordination internally — the worst
 //     case is the calling goroutine waits for an in-flight init).
 //     On success, cache every tool the server exposes (after applying
-//     the operator's per-server allowed_tools filter) and dispatch the
+//     the operator's per-server tools filter) and dispatch the
 //     requested one. On failure, surface a clear error to the model
 //     naming the server's last-known unreachability reason.
 //
@@ -66,7 +66,7 @@ type LazyResolver struct {
 	// SHARED lookup.MCPServer resolver (NOT a private map): cfg.MCPServers
 	// is the static-yaml source, dynamicReg the runtime substrate the pool's
 	// build callback also uses. Routing membership + the per-server
-	// allowed_tools filter through lookup.MCPServer is what stops MCP from
+	// tools filter through lookup.MCPServer is what stops MCP from
 	// drifting static-only again (the bug fixed in #341) — every other
 	// substrate primitive already resolves through internal/lookup. May both
 	// be nil in tests; lookup.MCPServer is nil-safe.
@@ -88,7 +88,7 @@ type LazyResolver struct {
 	mu sync.Mutex
 	// RFC N: memo keyed by (tenant, server) → tool name → Tool. Two
 	// tenants registering the same server name with distinct URLs /
-	// allowed_tools get distinct memos (the pool is tenant-keyed too, so
+	// tools get distinct memos (the pool is tenant-keyed too, so
 	// the dispatched call dials the right tenant's URL). The shared/
 	// legacy tenant is the "" tenant key.
 	registered map[regKey]map[string]tools.Tool
@@ -97,8 +97,8 @@ type LazyResolver struct {
 // lookupDynView adapts *DynamicRegistry to lookup.MCPDynamicRegistry —
 // lookup returns a uniform lookup.MCPServerSpec, while the registry stores
 // the mcp-package DynamicMCPServerSpec. A dynamic spec carries no
-// allowed_tools (the substrate doesn't record an operator narrowing), so
-// the projected spec leaves AllowedTools nil = allow-all, matching the
+// tools (the substrate doesn't record an operator narrowing), so
+// the projected spec leaves Tools nil = allow-all, matching the
 // historical resolver behaviour.
 type lookupDynView struct{ reg *DynamicRegistry }
 
@@ -147,7 +147,7 @@ func (r *LazyResolver) Resolve(ctx context.Context, name string, input json.RawM
 	// MCP server.
 	tenant := tools.RunIdentity(ctx).TenantID
 	key := regKey{tenant, server}
-	// Membership + the operator's per-server allowed_tools filter both come
+	// Membership + the operator's per-server tools filter both come
 	// from the shared lookup.MCPServer resolver, which walks tenant-dynamic →
 	// static-yaml → shared-dynamic (same chain every other primitive uses). A
 	// name in no source falls through to the dispatcher's standard
@@ -189,7 +189,7 @@ func (r *LazyResolver) Resolve(ctx context.Context, name string, input json.RawM
 	}
 
 	// Apply the operator's per-server filter; build the tool map.
-	filtered := ApplyAllowedToolsFilter(descs, spec.AllowedTools)
+	filtered := ApplyToolsFilter(descs, spec.Tools)
 	toolMap := make(map[string]tools.Tool, len(filtered))
 	for _, d := range filtered {
 		t := NewTool(r.pool, server, d)
@@ -211,7 +211,7 @@ func (r *LazyResolver) Resolve(ctx context.Context, name string, input json.RawM
 	t, hit := toolMap[name]
 	if !hit {
 		return tools.Result{
-			Text:    fmt.Sprintf("tool not found: %s (mcp server %q is now reachable but does not expose this tool name; check the operator's allowed_tools filter)", name, server),
+			Text:    fmt.Sprintf("tool not found: %s (mcp server %q is now reachable but does not expose this tool name; check the operator's tools filter)", name, server),
 			IsError: true,
 		}, true
 	}

@@ -116,7 +116,7 @@ func TestSchedulerBearerCompound(t *testing.T) {
 		Agents: map[string]config.AgentDef{
 			"cascade-agent": {
 				Model: "mock-mcp-caller",
-				AllowedTools: []string{
+				Tools: []string{
 					"mcp__server_a__check_user",
 					"mcp__server_b__check_user",
 				},

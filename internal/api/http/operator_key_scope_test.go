@@ -217,7 +217,7 @@ func TestOperatorKeyScope_SubAgentInheritsRestriction(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
-			"parent": {Model: "stub-model", AllowedTools: []string{"Agent"}, SystemPrompt: "parent"},
+			"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "parent"},
 			"child":  {Model: "stub-model", SystemPrompt: "child"},
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
