@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -71,19 +73,22 @@ type SkillTool struct {
 const skillInputSchema = `{
   "type": "object",
   "properties": {
-    "name": {"type": "string", "description": "Skill name (a directory under LOOMCYCLE_SKILLS_ROOT containing SKILL.md)."}
+    "op": {"type": "string", "enum": ["invoke", "list"], "description": "invoke (default) loads a skill body by name; list enumerates the skills this agent may use."},
+    "name": {"type": "string", "description": "op=invoke: the skill name to load (supports /-grouped names like doc/redactor)."},
+    "pattern": {"type": "string", "description": "op=list: optional /-glob filter (e.g. doc/*, marketing/**)."}
   },
-  "required": ["name"],
   "additionalProperties": false
 }`
 
-const skillDescription = `Load a named skill's body and return it as the tool_result. ` +
-	`Skills are domain-specific instruction sets stored under LOOMCYCLE_SKILLS_ROOT (frontmatter + markdown). ` +
-	`Use when the model needs a specific extension that wasn't pre-bundled into its system prompt. ` +
-	`The skill's allowed-tools must be a subset of the calling agent's tools — refusals are surfaced as is_error.`
+const skillDescription = `Discover and load domain-specific instruction sets (skills) on demand. ` +
+	`op=list enumerates the skills you may use (optionally filtered by a /-glob pattern); ` +
+	`op=invoke (the default when only a name is given) loads a named skill's body as the tool_result. ` +
+	`Skills you may access are governed by the agent's skills: allowlist; a skill's tools must be a subset of yours (refusals are surfaced as is_error).`
 
 type skillInput struct {
-	Name string `json:"name"`
+	Op      string `json:"op"`
+	Name    string `json:"name"`
+	Pattern string `json:"pattern"`
 }
 
 // Name implements tools.Tool.
@@ -110,32 +115,93 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tools.Result{IsError: true, Text: fmt.Sprintf("invalid input JSON: %s", err)}, nil
 	}
-	in.Name = strings.TrimSpace(in.Name)
-	if in.Name == "" {
+	op := strings.TrimSpace(in.Op)
+	if op == "" {
+		op = "invoke" // back-compat: {"name": ...} with no op invokes.
+	}
+	policy := tools.SkillPolicy(ctx)
+	switch op {
+	case "list":
+		return s.execList(ctx, policy, strings.TrimSpace(in.Pattern))
+	case "invoke":
+		return s.execInvoke(ctx, policy, strings.TrimSpace(in.Name))
+	default:
+		return tools.Result{IsError: true, Text: fmt.Sprintf("Skill: unknown op %q (want \"invoke\" or \"list\")", op)}, nil
+	}
+}
+
+// execInvoke loads a named skill's body, gated by the agent's RFC BA `skills:`
+// allowlist and the skill-tools ⊆ agent-tools invariant.
+func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValue, name string) (tools.Result, error) {
+	if name == "" {
 		return tools.Result{IsError: true, Text: "missing required field: name"}, nil
 	}
-
-	body, allowedTools, source, err := s.resolveSkill(ctx, in.Name)
+	// RFC BA: the agent's `skills:` allowlist gates WHICH skills it may load.
+	if !skillmatch.Allowed(policy.Patterns, name) {
+		return tools.Result{IsError: true, Text: fmt.Sprintf("skill %q is not permitted by this agent's `skills:` allowlist", name)}, nil
+	}
+	body, allowedTools, source, err := s.resolveSkill(ctx, name)
 	if err != nil {
 		return tools.Result{IsError: true, Text: err.Error()}, nil
 	}
-
-	// SECURITY: enforce skill.allowed-tools ⊆ agent.tools at
-	// tool-call time. Mirrors the config-load check in resolveSkills.
-	// Agent tools are pulled from ctx (see tools.WithAgentTools) so
-	// the SkillTool struct stays per-server, not per-run.
+	// SECURITY: enforce skill.tools ⊆ agent.tools at tool-call time. Agent
+	// tools are read from ctx so the SkillTool struct stays per-server.
 	agentTools := tools.AgentTools(ctx)
 	if widening := skillToolsExceedingAgent(allowedTools, agentTools); len(widening) > 0 {
 		return tools.Result{
 			IsError: true,
 			Text: fmt.Sprintf(
 				"skill %q (%s) requires tools %v not granted by this agent's tools — skills cannot widen the agent's tool set",
-				in.Name, source, widening,
+				name, source, widening,
 			),
 		}, nil
 	}
-
 	return tools.Result{Text: body}, nil
+}
+
+// execList enumerates the skills this agent may use — the assembled catalog
+// (static Set + inline skills + the caller's tenant substrate SkillDefs)
+// filtered by the agent's `skills:` allowlist and an optional /-glob pattern.
+func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue, pattern string) (tools.Result, error) {
+	catalog := map[string]string{} // name → description
+	if s.Set != nil {
+		for _, n := range s.Set.Names() {
+			desc := ""
+			if sk, ok := s.Set.Get(n); ok {
+				desc = sk.Description
+			}
+			catalog[n] = desc
+		}
+	}
+	if s.Store != nil {
+		if rows, err := s.Store.SkillDefListNames(ctx); err == nil {
+			tid := tools.RunIdentity(ctx).TenantID
+			for _, r := range rows {
+				if r.TenantID != "" && r.TenantID != tid {
+					continue // RFC N: only the caller's tenant + the shared "" base.
+				}
+				if _, ok := catalog[r.Name]; !ok {
+					catalog[r.Name] = ""
+				}
+			}
+		}
+	}
+	type skillEntry struct {
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+	}
+	out := make([]skillEntry, 0, len(catalog))
+	for n, d := range catalog {
+		if !skillmatch.Allowed(policy.Patterns, n) {
+			continue
+		}
+		if pattern != "" && !skillmatch.Allowed([]string{pattern}, n) {
+			continue
+		}
+		out = append(out, skillEntry{Name: n, Description: d})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return okJSON(map[string]any{"skills": out})
 }
 
 // resolveSkill looks up a skill by name. Returns (body, tools,

@@ -719,6 +719,15 @@ func main() {
 	if cfg.Env.SkillsRoot != "" {
 		log.Printf("skills: loaded %d from %s", len(skillSet.Names()), cfg.Env.SkillsRoot)
 	}
+	// RFC BA: fold inline `skills:` yaml defs into the runtime set so they are
+	// invokable + listable on demand via the Skill tool. Before RFC BA the
+	// config-load resolveSkills bundled their bodies into prompts (and merged
+	// them into a throwaway set); now that bundling is gone, they must live in
+	// the runtime set the Skill/SkillDef tools + Library share. Inline wins on
+	// a name collision with a SkillsRoot skill (config is authoritative).
+	for name, spec := range cfg.Skills {
+		skillSet.Add(&skills.Skill{Name: name, Description: spec.Description, Tools: spec.Tools, Body: spec.Body})
+	}
 	// v0.8.8 help topics — bundled defaults overlaid with operator
 	// .md files from LOOMCYCLE_HELP_ROOT. Always non-nil after this
 	// load; bundled-only deployments get the default topic set.
