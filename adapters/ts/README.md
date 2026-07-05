@@ -297,7 +297,7 @@ const forked = (await client.agentDef({
 console.log(`forked def_id=${forked.def_id} hash=${forked.content_sha256}`);
 ```
 
-Operations on AgentDef: `create` / `fork` / `get` / `list` / `promote` / `retire` / **`verify`** (v0.9.x). SkillDef has the same set minus `retire`'s edge cases. See `internal/tools/builtin/agentdef.go` for the canonical input schema; each op enforces the agent's `agent_def_scopes` / `skill_def_scopes` capability gate from the operator yaml.
+Operations on AgentDef: `create` / `fork` / `get` / `list` / `promote` / `retire` / **`verify`** (v0.9.x). SkillDef has the same set minus `retire`'s edge cases. See `internal/tools/builtin/agentdef.go` for the canonical input schema; each op enforces the agent's capability gate from the operator yaml — `agent_def_scopes` for AgentDef, and (RFC BA / v1.14.0) the agent's `skills:` pattern allowlist for SkillDef (the former `skill_def_scopes` gate was removed).
 
 Refusals throw `SubstrateToolRefusedError` (a scope deny / empty body / allowed-tools widening); transport failures throw the usual typed errors (`AuthError`, `UnavailableError`, etc.).
 
