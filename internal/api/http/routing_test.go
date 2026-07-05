@@ -98,7 +98,17 @@ func TestRouting_AdminSeesCascadeAndAvailability(t *testing.T) {
 		t.Errorf("cascade[1] (anthropic, down) should be unavailable + not selected; got %+v", mid.Cascade[1])
 	}
 	if len(resp.Providers) == 0 {
-		t.Error("admin response must include the active-providers header")
+		t.Fatal("admin response must include the active-providers header")
+	}
+	// Admin sees the raw provider probe error (anthropic was seeded "probe failed").
+	var anthropic *routingProvider
+	for i := range resp.Providers {
+		if resp.Providers[i].Provider == "anthropic" {
+			anthropic = &resp.Providers[i]
+		}
+	}
+	if anthropic == nil || anthropic.LastError != "probe failed" {
+		t.Errorf("admin providers header must carry the raw last_error; got %+v", anthropic)
 	}
 }
 
@@ -159,12 +169,27 @@ func TestRouting_RestrictedTenantFilteredToKeyableProviders(t *testing.T) {
 		t.Errorf("middle cascade = %+v, want 0 candidates (tenant can key nothing)", mid.Cascade)
 	}
 
-	// (b) tenant CAN key the provider → it survives the filter.
+	// (b) tenant CAN key the provider → it survives the filter AND carries live
+	// availability (RFC AX visibility). The keyed provider is seeded reachable +
+	// listed, so it reads available + selected.
 	keyable := func(_ context.Context, _, _, _, name string) bool { return name == "KEYED_API_KEY" }
 	srvKey, _ := operatorKeyTierServer(t, completingKeyed("KEYED_API_KEY", "", ""), true, keyable)
 	respKey := routingForPrincipal(t, srvKey, tenant)
-	if mid := middleTier(t, respKey); len(mid.Cascade) != 1 || mid.Cascade[0].Provider != "keyed" {
-		t.Errorf("middle cascade = %+v, want the keyed provider kept", mid.Cascade)
+	mid := middleTier(t, respKey)
+	if len(mid.Cascade) != 1 || mid.Cascade[0].Provider != "keyed" {
+		t.Fatalf("middle cascade = %+v, want the keyed provider kept", mid.Cascade)
+	}
+	if mid.Cascade[0].Available == nil || !*mid.Cascade[0].Available ||
+		mid.Cascade[0].Selected == nil || !*mid.Cascade[0].Selected {
+		t.Errorf("restricted-tenant kept candidate must carry availability; got %+v", mid.Cascade[0])
+	}
+	// The (filtered) active-providers header is shown to the tenant with
+	// last_error redacted, and lists only the keyable provider.
+	if len(respKey.Providers) != 1 || respKey.Providers[0].Provider != "keyed" {
+		t.Fatalf("providers header = %+v, want just the keyable provider", respKey.Providers)
+	}
+	if respKey.Providers[0].LastError != "" {
+		t.Errorf("tenant provider header must redact last_error; got %q", respKey.Providers[0].LastError)
 	}
 }
 
@@ -182,35 +207,40 @@ func TestRouting_AdminUnaffectedByOperatorKeyGate(t *testing.T) {
 	}
 }
 
-// TestRouting_TenantGetsStrippedView: a substrate:tenant principal sees the
-// config cascade (provider/model per tier) but NOT the live availability fields
-// or the active-providers infra header.
-func TestRouting_TenantGetsStrippedView(t *testing.T) {
+// TestRouting_TenantSeesAvailabilityWithRedactedError: a substrate:tenant
+// principal now gets the SAME live availability an admin does (per-candidate
+// fields + the active-providers header), so it can see which providers are up —
+// but the raw last_error string is redacted, since it can leak operator infra
+// detail. Fails on the pre-change handler, which withheld availability + the
+// header from a tenant entirely.
+func TestRouting_TenantSeesAvailabilityWithRedactedError(t *testing.T) {
 	srv := routingTestServer(t)
 	resp := routingFor(t, srv, []string{auth.ScopeTenant})
 
 	if resp.Admin {
 		t.Error("admin=true for a tenant principal")
 	}
-	if len(resp.Providers) != 0 {
-		t.Errorf("tenant must not see the active-providers header; got %+v", resp.Providers)
+	mid := middleTier(t, resp)
+	if len(mid.Cascade) != 2 {
+		t.Fatalf("middle cascade = %+v, want 2 candidates", mid.Cascade)
 	}
-	var mid *routingTier
-	for i := range resp.UserTiers[0].Tiers {
-		if resp.UserTiers[0].Tiers[i].Tier == "middle" {
-			mid = &resp.UserTiers[0].Tiers[i]
-		}
-	}
-	if mid == nil || len(mid.Cascade) != 2 {
-		t.Fatalf("middle cascade = %+v, want 2 candidates", mid)
-	}
-	// Cascade (provider/model + primary) is present...
 	if mid.Cascade[0].Provider != "deepseek" || mid.Cascade[0].Model != "deepseek-v4-pro" {
 		t.Errorf("cascade[0] = %+v, want deepseek/deepseek-v4-pro", mid.Cascade[0])
 	}
-	// ...but the live-availability/infra fields are stripped.
-	if mid.Cascade[0].Available != nil || mid.Cascade[0].Selected != nil ||
-		mid.Cascade[0].Stalled != nil || mid.Cascade[0].Reachable != nil {
-		t.Errorf("tenant cascade must NOT carry availability/infra fields; got %+v", mid.Cascade[0])
+	// Cascade now carries live availability for a tenant too (deepseek is
+	// reachable + listed → available + selected).
+	if mid.Cascade[0].Available == nil || !*mid.Cascade[0].Available ||
+		mid.Cascade[0].Selected == nil || !*mid.Cascade[0].Selected {
+		t.Errorf("tenant cascade[0] (deepseek) should be available + selected; got %+v", mid.Cascade[0])
+	}
+	// The active-providers header is shown to the tenant...
+	if len(resp.Providers) == 0 {
+		t.Fatal("tenant response must include the active-providers header")
+	}
+	// ...but every last_error is redacted, even anthropic's real "probe failed".
+	for _, p := range resp.Providers {
+		if p.LastError != "" {
+			t.Errorf("tenant provider %q must have last_error redacted; got %q", p.Provider, p.LastError)
+		}
 	}
 }
