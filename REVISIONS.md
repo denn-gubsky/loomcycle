@@ -8,7 +8,7 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
-## Unreleased
+## What's in v1.13.0
 
 **⚠️ Breaking — the tool-allowlist key is renamed `allowed_tools` → `tools`.**
 The agent-config tool allowlist was spelled two ways: `allowed_tools` (loomcycle's
