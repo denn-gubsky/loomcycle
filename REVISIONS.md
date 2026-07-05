@@ -8,7 +8,7 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
-## Unreleased
+## What's in v1.14.0
 
 **⚠️ Breaking — RFC BA: skills go on-demand + one `skills:` pattern allowlist.**
 The skills model changed: skill bodies are **no longer bundled** into the system
