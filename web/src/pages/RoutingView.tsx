@@ -14,12 +14,11 @@ import {
 // their provider_priority / tier config before a consumer discovers it the
 // hard way.
 //
-// Two shapes, driven by the API (not a client-side role check): an admin
-// response carries live availability per candidate (which one is SELECTED —
-// the first reachable = what runs now) plus an active-providers header; a
-// substrate:tenant response is the config cascade only. The UI keys the
-// availability rendering off `resp.admin` AND field presence, so a stripped
-// tenant payload simply renders the cascade without dots.
+// Every principal gets live availability per candidate (which one is SELECTED
+// — the first reachable = what runs now) plus an active-providers header. The
+// UI renders those purely by FIELD PRESENCE, not a client-side role check: a
+// tenant's payload has last_error redacted and, under the operator-key gate, is
+// filtered to the providers it can key — the same fields, fewer rows.
 
 // tierOrder gives low/middle/high a stable visual rank; anything else sorts
 // after, preserving server order.
@@ -48,6 +47,15 @@ export default function RoutingView() {
   useEffect(() => {
     void fetchRouting();
   }, [fetchRouting]);
+
+  // Availability is present for every principal now (the backend populates it
+  // for admin + tenant alike). Render the dots + legend purely by field
+  // presence — a redacted/filtered tenant payload still shows what it has.
+  const hasAvailability =
+    (!!resp?.providers && resp.providers.length > 0) ||
+    !!resp?.user_tiers.some((ut) =>
+      ut.tiers.some((t) => t.cascade.some((c) => c.available !== undefined)),
+    );
 
   return (
     <div className="routing-view">
@@ -78,7 +86,7 @@ export default function RoutingView() {
 
       {err && <div className="err">{err}</div>}
 
-      {resp && resp.admin && resp.providers && resp.providers.length > 0 && (
+      {resp && resp.providers && resp.providers.length > 0 && (
         <div className="routing-providers">
           <span className="routing-providers-label">providers</span>
           {resp.providers.map((p) => {
@@ -104,7 +112,7 @@ export default function RoutingView() {
         </div>
       )}
 
-      {resp && resp.admin && (
+      {hasAvailability && (
         <div className="routing-legend">
           <span>
             <span className="routing-dot up" /> available
@@ -117,9 +125,10 @@ export default function RoutingView() {
         </div>
       )}
 
-      {resp && !resp.admin && (
+      {resp && resp.operator_key_restricted && (
         <p className="routing-tenant-note">
-          Configured cascade. Live provider reachability is available to admins.
+          Operator API keys are not available to your tenant — only providers you
+          have your own credentials for are shown.
         </p>
       )}
 
@@ -139,7 +148,7 @@ export default function RoutingView() {
               {[...ut.tiers]
                 .sort((a, b) => tierRank(a.tier) - tierRank(b.tier))
                 .map((t) => (
-                  <TierCard key={t.tier} tier={t} admin={resp.admin} />
+                  <TierCard key={t.tier} tier={t} />
                 ))}
             </div>
           </section>
@@ -152,7 +161,7 @@ export default function RoutingView() {
   );
 }
 
-function TierCard({ tier, admin }: { tier: RoutingTier; admin: boolean }) {
+function TierCard({ tier }: { tier: RoutingTier }) {
   return (
     <div className="routing-tier-card">
       <div className="routing-tier-title">{tier.tier}</div>
@@ -161,11 +170,7 @@ function TierCard({ tier, admin }: { tier: RoutingTier; admin: boolean }) {
       ) : (
         <ol className="routing-cascade">
           {tier.cascade.map((c, i) => (
-            <CandidateRow
-              key={`${c.provider}/${c.model}/${i}`}
-              c={c}
-              admin={admin}
-            />
+            <CandidateRow key={`${c.provider}/${c.model}/${i}`} c={c} />
           ))}
         </ol>
       )}
@@ -173,9 +178,10 @@ function TierCard({ tier, admin }: { tier: RoutingTier; admin: boolean }) {
   );
 }
 
-function CandidateRow({ c, admin }: { c: RoutingCandidate; admin: boolean }) {
-  // Availability dots only render when the field is present (admin payload).
-  const hasAvail = admin && c.available !== undefined;
+function CandidateRow({ c }: { c: RoutingCandidate }) {
+  // Availability dots render purely by field presence — the backend populates
+  // these for a tenant too now (admin only differs by seeing last_error).
+  const hasAvail = c.available !== undefined;
   const selected = c.selected === true;
   const rowClass = [
     "routing-cand",
