@@ -18,16 +18,36 @@
 # Swap the provider/tier below for your own routing; the agent only needs a
 # `middle` tier to resolve.
 
+models:
+  # — Anthropic (key: ANTHROPIC_API_KEY) —
+  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
+  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  # — DeepSeek — the cost floor (DEEPSEEK_API_KEY) —
+  deepseek-flash: { provider: deepseek, model: deepseek-v4-flash }
+  deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
+  # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
+  # Slow local models have their own knobs (num_ctx, header/idle timeouts,
+  # compaction tuning, unbounded interactive runs). See "Local models" in
+  # docs/CONFIGURATION.md and loomcycle.local-interactive.example.yaml.
+  local-small:  { provider: ollama-local, model: gemma4:9b }        # low tier
+  local-medium: { provider: ollama-local, model: qwen3.6:27b }      # middle tier
+  local-coder:  { provider: ollama-local, model: qwen3-coder-next } # high tier (coding)
+
 provider_priority:
+  - ollama-local
+  - deepseek
   - anthropic            # set ANTHROPIC_API_KEY, or swap for your provider
 
 tiers:
   middle:
-    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - local-medium
+    - deepseek-pro
+    - sonnet
 
 user_tiers:
   default:
-    provider_priority: [anthropic]
+    provider_priority: [ollama-local,deepseek,anthropic]
     fallback_on_error: true
     max_fallback_attempts: 2
 

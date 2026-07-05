@@ -78,7 +78,7 @@ agents:
       temperature: 0.7
     compaction:
       enabled: true
-      autocompact_at_pct: 80
+      autocompact_at_pct: 60
     system_prompt: |
       You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but
       you run entirely on the operator's LOCAL model (ollama-local) — nothing you
