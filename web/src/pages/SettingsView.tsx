@@ -117,6 +117,17 @@ function isCredStoreDisabled(msg: string): boolean {
 // API groups by scope; we merge tenant + user into one table).
 type CredentialRow = CredentialMeta & { _scope: CredentialScope };
 
+// well-known provider/tool key env-var names (mirror docs/CREDENTIALS.md);
+// free-form custom names (e.g. $cred: labels) are still allowed.
+const KNOWN_KEY_NAMES = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "GEMINI_API_KEY",
+  "OLLAMA_API_KEY",
+  "BRAVE_API_KEY",
+];
+
 function CredentialsSection() {
   const [rows, setRows] = useState<CredentialRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -222,12 +233,18 @@ function CredentialsSection() {
       <form className="cred-create" onSubmit={onCreate}>
         <input
           type="text"
+          list="cred-key-names"
           placeholder="name (e.g. ANTHROPIC_API_KEY)"
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoComplete="off"
           spellCheck={false}
         />
+        <datalist id="cred-key-names">
+          {KNOWN_KEY_NAMES.map((n) => (
+            <option key={n} value={n} />
+          ))}
+        </datalist>
         <input
           type="password"
           placeholder="value (secret — write-only)"
