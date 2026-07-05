@@ -51,6 +51,65 @@ func TestLoadSet_Basic(t *testing.T) {
 	}
 }
 
+// Regression: a SKILL.md that declares its tool requirement with the
+// canonical `tools` key (as loomcycle's own bundle/example skills do
+// since the allowed_tools→tools rename) must be honored. Before the fix
+// the loader read ONLY the kebab `allowed-tools`, so `tools:` was
+// silently dropped and the skill loaded with no requirement.
+func TestLoadSet_CanonicalToolsKey(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "edge-linking")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\n" +
+		"name: edge-linking\n" +
+		"description: Curate graph edges.\n" +
+		"tools: [Document]\n" +
+		"---\nbody\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	set, err := LoadSet(root)
+	if err != nil {
+		t.Fatalf("LoadSet: %v", err)
+	}
+	sk, ok := set.Get("edge-linking")
+	if !ok {
+		t.Fatalf("edge-linking not loaded; names=%v", set.Names())
+	}
+	if len(sk.Tools) != 1 || sk.Tools[0] != "Document" {
+		t.Errorf("Tools = %v, want [Document] (canonical `tools` key ignored)", sk.Tools)
+	}
+}
+
+// The canonical `tools` key wins over the Claude Code `allowed-tools`
+// import alias when both are present; with only the kebab alias, it is
+// still read (import compatibility).
+func TestLoadSet_ToolsWinsOverAllowedTools(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "dual")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\n" +
+		"name: dual\n" +
+		"tools: [Document]\n" +
+		"allowed-tools: [Read, Grep]\n" +
+		"---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	set, err := LoadSet(root)
+	if err != nil {
+		t.Fatalf("LoadSet: %v", err)
+	}
+	sk, _ := set.Get("dual")
+	if len(sk.Tools) != 1 || sk.Tools[0] != "Document" {
+		t.Errorf("Tools = %v, want [Document] (canonical `tools` should win over kebab `allowed-tools`)", sk.Tools)
+	}
+}
+
 // Empty SkillsRoot returns an empty (non-nil) Set so callers can Get()
 // without crashing. LOOMCYCLE_SKILLS_ROOT is optional; agents that
 // don't list skills should keep working.
