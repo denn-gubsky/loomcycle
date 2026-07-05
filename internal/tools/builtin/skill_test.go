@@ -378,3 +378,118 @@ func TestSkillTool_NoSourcesConfigured(t *testing.T) {
 		t.Errorf("error should also keep the static-path hint for legacy operators, got: %s", res.Text)
 	}
 }
+
+// ---- RFC BA: Skill tool allowlist gating (list + invoke) ----
+
+// listNames decodes a Skill op=list result into the sorted set of skill names.
+func listNames(t *testing.T, res tools.Result) []string {
+	t.Helper()
+	if res.IsError {
+		t.Fatalf("list returned IsError: %s", res.Text)
+	}
+	var out struct {
+		Skills []struct {
+			Name string `json:"name"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("decode list result %q: %v", res.Text, err)
+	}
+	names := make([]string, 0, len(out.Skills))
+	for _, s := range out.Skills {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
+func groupedSet(t *testing.T) *skills.Set {
+	return loadSetWithSkills(t, []struct {
+		Name  string
+		Tools []string
+		Body  string
+	}{
+		{Name: "doc/redactor", Body: "R"},
+		{Name: "doc/summarizer", Body: "S"},
+		{Name: "marketing/seo", Body: "M"},
+	})
+}
+
+// A whitelist (`skills: [doc/*]`) lists only the matching grouped skills — the
+// catalog ∩ allowlist. Reverting the allowlist filter in execList surfaces
+// marketing/seo, breaking this.
+func TestSkillTool_ListReturnsAllowlistIntersection(t *testing.T) {
+	tool := &SkillTool{Set: groupedSet(t)}
+	ctx := tools.WithSkillPolicy(context.Background(), tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list"}`))
+	got := listNames(t, res)
+	want := []string{"doc/redactor", "doc/summarizer"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("list = %v, want %v (only doc/* permitted)", got, want)
+	}
+}
+
+// A deny-all allowlist (`skills: [-*]`) lists nothing.
+func TestSkillTool_ListDenyAllReturnsEmpty(t *testing.T) {
+	tool := &SkillTool{Set: groupedSet(t)}
+	ctx := tools.WithSkillPolicy(context.Background(), tools.SkillPolicyValue{Patterns: []string{"-*"}})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list"}`))
+	if got := listNames(t, res); len(got) != 0 {
+		t.Errorf("list under -* = %v, want empty", got)
+	}
+}
+
+// An empty allowlist (allow all) plus an op=list `pattern` filters to the
+// pattern — catalog ∩ allowlist ∩ pattern.
+func TestSkillTool_ListPatternFilter(t *testing.T) {
+	tool := &SkillTool{Set: groupedSet(t)}
+	ctx := tools.WithSkillPolicy(context.Background(), tools.SkillPolicyValue{}) // allow all
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list","pattern":"marketing/*"}`))
+	got := listNames(t, res)
+	want := []string{"marketing/seo"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("list pattern=marketing/* = %v, want %v", got, want)
+	}
+}
+
+// Invoke refuses a name outside the agent's allowlist, before resolving/loading
+// its body. Reverting the skillmatch.Allowed gate in execInvoke lets the body
+// through.
+func TestSkillTool_InvokeRefusesNonAllowedName(t *testing.T) {
+	tool := &SkillTool{Set: groupedSet(t)}
+	ctx := tools.WithAgentTools(context.Background(), nil)
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
+
+	// doc/redactor is permitted → loads.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"doc/redactor"}`))
+	if res.IsError {
+		t.Errorf("doc/redactor is in the allowlist and should load: %s", res.Text)
+	}
+	// marketing/seo is NOT permitted → refused with an allowlist message, even
+	// though it exists in the catalog.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"name":"marketing/seo"}`))
+	if !res.IsError {
+		t.Errorf("marketing/seo is outside the allowlist and must be refused; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "allowlist") {
+		t.Errorf("refusal should mention the allowlist; got %s", res.Text)
+	}
+}
+
+// Back-compat: a bare `{name}` (no op) invokes, and an empty allowlist permits
+// any name — so a pre-RFC-BA caller with no skills: field keeps working.
+func TestSkillTool_InvokeBackCompatEmptyAllowlist(t *testing.T) {
+	tool := &SkillTool{Set: groupedSet(t)}
+	ctx := tools.WithAgentTools(context.Background(), nil)
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{}) // empty = allow all
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"marketing/seo"}`))
+	if res.IsError {
+		t.Errorf("empty allowlist should permit any name via bare {name}; got %s", res.Text)
+	}
+	if res.Text != "M" {
+		t.Errorf("body = %q, want M", res.Text)
+	}
+}
