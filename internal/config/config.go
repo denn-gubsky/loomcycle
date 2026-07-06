@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 )
 
@@ -64,6 +65,19 @@ type Config struct {
 	// stall. Empty = use the hardcoded default in
 	// internal/resolve/. Per-agent `providers:` fully replaces this.
 	ProviderPriority []string `yaml:"provider_priority"`
+
+	// SearchProviders declares the enabled web-search providers (RFC BB) +
+	// their per-provider settings (SearXNG base_url). A provider must be
+	// listed here to be usable; its operator API key comes from the env var
+	// the driver names (BRAVE_API_KEY / SERPER_API_KEY / EXA_API_KEY /
+	// TAVILY_API_KEY), overridable per-tenant via CredentialDef.
+	SearchProviders map[string]SearchProviderConfig `yaml:"search_providers"`
+
+	// SearchPriority is the global default fallback order the WebSearch tool
+	// walks when an agent declares no per-agent `search_providers:` list.
+	// Every entry must be an enabled SearchProviders key. Empty = the enabled
+	// set in map order (non-deterministic — set this for a stable cascade).
+	SearchPriority []string `yaml:"search_priority"`
 
 	// Tiers is the library-wide tier → ordered candidate list.
 	// Operator-editable so model wire aliases stay out of the
@@ -550,6 +564,30 @@ type TierCandidate struct {
 	Model    string `json:"model"    yaml:"model"`
 }
 
+// SearchProviderConfig is the per-provider settings block under
+// `search_providers:` (RFC BB). Most providers need no settings (the key comes
+// from the env var the driver names); SearXNG needs its self-hosted base_url.
+type SearchProviderConfig struct {
+	BaseURL string `json:"base_url,omitempty" yaml:"base_url"` // SearXNG only, e.g. http://searxng:8080
+}
+
+// SearchHostKey returns the operator host API key for a search-provider id
+// (from the env), or "" for a keyless (searxng) or unknown provider. The single
+// place the id → env-field mapping lives; the WebSearch tool wiring reads it.
+func (c *Config) SearchHostKey(id string) string {
+	switch id {
+	case "brave":
+		return c.Env.BraveAPIKey
+	case "serper":
+		return c.Env.SerperAPIKey
+	case "exa":
+		return c.Env.ExaAPIKey
+	case "tavily":
+		return c.Env.TavilyAPIKey
+	}
+	return ""
+}
+
 // UnmarshalYAML accepts a tier candidate written EITHER as a mapping
 // ({provider: X, model: Y}) or as a bare scalar string. A bare string is
 // taken as the model with an empty provider — the natural way to name a
@@ -812,6 +850,13 @@ type AgentDef struct {
 	// for this agent and ignores the library default. Has no
 	// effect on agents using the explicit Provider+Model pin.
 	Providers []string `yaml:"providers"`
+
+	// SearchProviders is the per-agent web-search fallback list (RFC BB) —
+	// the ordered providers the WebSearch tool tries. Empty = the library
+	// SearchPriority default. Full replacement, like Providers. Every entry
+	// must be an enabled top-level SearchProviders key. Content-identifying
+	// (kept in content_sha256, like Providers — it changes behaviour).
+	SearchProviders []string `yaml:"search_providers"`
 
 	// Models is the per-agent override of the library Tiers map
 	// (per-tier candidate lists). Same semantics as the library
@@ -2018,6 +2063,12 @@ type Env struct {
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
+	// Serper/Exa/Tavily host keys for the RFC BB search-provider catalog.
+	// Empty = that provider is unusable unless a tenant supplies its own via
+	// CredentialDef. All are auto-redacted by the *_API_KEY suffix rule.
+	SerperAPIKey string
+	ExaAPIKey    string
+	TavilyAPIKey string
 	// BashEnabled gates the Bash tool. Defaults to false. Even when
 	// true the tool is NOT a true sandbox — it restricts cwd, scrubs
 	// env, bounds output, and times out, but cannot prevent the spawned
@@ -2823,6 +2874,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		HTTPCallerAuthoritative:   os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
 		ResumeFanout:              os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		BraveAPIKey:               os.Getenv("BRAVE_API_KEY"),
+		SerperAPIKey:              os.Getenv("SERPER_API_KEY"),
+		ExaAPIKey:                 os.Getenv("EXA_API_KEY"),
+		TavilyAPIKey:              os.Getenv("TAVILY_API_KEY"),
 		BashEnabled:               os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashboxEnabled:            os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
 		BashboxFallbackCommands:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
@@ -3897,6 +3951,9 @@ func ExpandEnvAllowed(name string) bool {
 	}
 	switch name {
 	case "BRAVE_API_KEY",
+		"SERPER_API_KEY",
+		"EXA_API_KEY",
+		"TAVILY_API_KEY",
 		"GITHUB_TOKEN",
 		"SLACK_BOT_TOKEN",
 		"REDIS_URL":
@@ -4664,6 +4721,28 @@ func validate(c *Config) error {
 			return fmt.Errorf("provider_priority[%d]: unknown provider %q (want one of anthropic/openai/deepseek/gemini/ollama)", i, p)
 		}
 	}
+	// Search providers (RFC BB): validate the enabled set against the known
+	// drivers + SearXNG's required base_url, then the global priority. The
+	// enabled set is reused below to validate each agent's search_providers.
+	knownSearch := map[string]bool{}
+	for _, id := range search.KnownProviderIDs() {
+		knownSearch[id] = true
+	}
+	enabledSearch := map[string]bool{}
+	for id, spc := range c.SearchProviders {
+		if !knownSearch[id] {
+			return fmt.Errorf("search_providers: unknown provider %q (want one of %v)", id, search.KnownProviderIDs())
+		}
+		if id == "searxng" && strings.TrimSpace(spc.BaseURL) == "" {
+			return fmt.Errorf("search_providers.searxng: base_url is required for the self-hosted SearXNG provider")
+		}
+		enabledSearch[id] = true
+	}
+	for i, id := range c.SearchPriority {
+		if !enabledSearch[id] {
+			return fmt.Errorf("search_priority[%d]: %q is not an enabled search_providers entry", i, id)
+		}
+	}
 	// Library-level tier definitions.
 	for tierName, candidates := range c.Tiers {
 		if !validTierNames[tierName] {
@@ -4790,6 +4869,13 @@ func validate(c *Config) error {
 		for i, p := range agent.Providers {
 			if !validProviderIDs[p] {
 				return fmt.Errorf("agent %q: providers[%d]: unknown provider %q", name, i, p)
+			}
+		}
+		// Per-agent web-search fallback list (RFC BB) — every entry must be an
+		// enabled top-level search_providers key.
+		for i, id := range agent.SearchProviders {
+			if !enabledSearch[id] {
+				return fmt.Errorf("agent %q: search_providers[%d]: %q is not an enabled search_providers entry", name, i, id)
 			}
 		}
 		// Per-agent tier-candidate override.
