@@ -64,6 +64,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
+	"github.com/denn-gubsky/loomcycle/internal/search"
 	// Deterministic stub embedder for runtime tests; its init() registers the
 	// "stub" provider ONLY when LOOMCYCLE_EMBEDDER_STUB=1, so it is invisible
 	// to a production binary that never sets the flag.
@@ -766,6 +767,11 @@ func main() {
 		log.Printf("user_tiers: configured %d — %s", len(names), strings.Join(names, " / "))
 	}
 
+	// RFC BB: build the search-provider registry + resolver + operator host-key
+	// map for the WebSearch fallback circuit. Nil (no providers configured, and
+	// no BRAVE_API_KEY back-compat default) → WebSearch refuses "not configured".
+	searchRegistry, searchResolver, searchHostKeys := buildSearchProviders(cfg)
+
 	allTools := []tools.Tool{
 		// The file/exec tools resolve their sandbox root per-call from the
 		// run's VolumePolicy (RFC AH); an agent bound to no volume is refused
@@ -779,7 +785,7 @@ func main() {
 		&builtin.NotebookEdit{},
 		httpTool,
 		&builtin.WebFetch{HTTP: httpTool},
-		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
+		&builtin.WebSearch{Registry: searchRegistry, Resolver: searchResolver, HostKeys: searchHostKeys},
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled},
 		// Bashbox — a TRUE in-process sandbox (gbash): no OS process, paths
 		// rooted at the volume, no network, and read-only volumes are honored
@@ -990,8 +996,10 @@ func main() {
 	if len(cfg.Env.HTTPPrivateHostAllowlist) > 0 {
 		log.Printf("note: HTTP_PRIVATE_HOST_ALLOWLIST=%v — these hosts may resolve to private IPs (e.g. localhost callbacks)", cfg.Env.HTTPPrivateHostAllowlist)
 	}
-	if cfg.Env.BraveAPIKey == "" {
-		log.Printf("note: WebSearch tool is registered but disabled — set BRAVE_API_KEY to enable")
+	if searchRegistry == nil {
+		log.Printf("note: WebSearch tool is registered but disabled — configure search_providers (or set BRAVE_API_KEY for the default Brave provider)")
+	} else {
+		log.Printf("search: %d provider(s) configured; priority %v", len(searchRegistry.IDs()), searchResolver.Cascade(nil))
 	}
 	if cfg.Env.BashEnabled {
 		log.Printf("WARNING: Bash tool is enabled (LOOMCYCLE_BASH_ENABLED=1). This is NOT a true sandbox — run loomcycle inside a container or VM if you expose this to untrusted prompts.")
@@ -3484,4 +3492,49 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 	}
 	log.Printf("memory.entries: bootstrap complete — loaded=%d skipped=%d failed=%d elapsed=%s",
 		loaded, skipped, failed, time.Since(t0).Round(time.Millisecond))
+}
+
+// buildSearchProviders assembles the RFC BB search catalog from config: the
+// provider registry, the fallback resolver (explicit search_priority, else the
+// enabled set sorted for determinism), and the operator host-key map. Returns
+// (nil, nil, nil) when no providers are configured — WebSearch then refuses with
+// "not configured". config.Validate has already checked the enabled set, so a
+// BuildRegistry error here is a bug (logged, WebSearch disabled).
+//
+// Back-compat: pre-RFC-BB, WebSearch worked on BRAVE_API_KEY alone. With no
+// explicit search_providers, default to a single Brave provider when its key is
+// set so existing deployments keep working with no config change.
+func buildSearchProviders(cfg *config.Config) (*search.Registry, *search.Resolver, map[string]string) {
+	hostKeys := map[string]string{}
+	var specs []search.ProviderSpec
+	var ids []string
+	if len(cfg.SearchProviders) == 0 {
+		if cfg.Env.BraveAPIKey != "" {
+			specs = []search.ProviderSpec{{ID: "brave"}}
+			hostKeys["brave"] = cfg.Env.BraveAPIKey
+			ids = []string{"brave"}
+		}
+	} else {
+		for id, spc := range cfg.SearchProviders {
+			specs = append(specs, search.ProviderSpec{ID: id, BaseURL: spc.BaseURL})
+			if k := cfg.SearchHostKey(id); k != "" {
+				hostKeys[id] = k
+			}
+			ids = append(ids, id)
+		}
+	}
+	if len(specs) == 0 {
+		return nil, nil, nil
+	}
+	reg, err := search.BuildRegistry(specs)
+	if err != nil {
+		log.Printf("search: registry build error: %v (WebSearch disabled)", err)
+		return nil, nil, nil
+	}
+	priority := cfg.SearchPriority
+	if len(priority) == 0 {
+		sort.Strings(ids)
+		priority = ids
+	}
+	return reg, search.NewResolver(priority), hostKeys
 }

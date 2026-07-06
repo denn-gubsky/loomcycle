@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/search"
 )
 
 // TestWebSearch_Live exercises the real Brave Search API through
@@ -29,9 +31,15 @@ func TestWebSearch_Live(t *testing.T) {
 		t.Skip("BRAVE_API_KEY not set; skipping live Brave call")
 	}
 
+	reg, err := search.BuildRegistry([]search.ProviderSpec{{ID: "brave"}}) // real Brave endpoint
+	if err != nil {
+		t.Fatalf("BuildRegistry: %v", err)
+	}
 	tool := &WebSearch{
-		APIKey:  apiKey,
-		Timeout: 20 * time.Second,
+		Registry: reg,
+		Resolver: search.NewResolver([]string{"brave"}),
+		HostKeys: map[string]string{"brave": apiKey},
+		Timeout:  20 * time.Second,
 	}
 
 	// Three queries chosen to mirror what job-searcher actually

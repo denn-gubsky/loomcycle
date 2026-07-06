@@ -84,7 +84,7 @@ func TestNarrowHostsWebFetchInheritsNarrowing(t *testing.T) {
 // (WebFetch, which shares HTTP, is what the model uses to follow up).
 func TestNarrowHostsWebSearchDropDefault(t *testing.T) {
 	httpTool := &HTTP{HostAllowlist: []string{"x.example", "y.example"}}
-	ws := &WebSearch{APIKey: "k"}
+	ws := &WebSearch{}
 	out := NarrowHosts([]tools.Tool{httpTool, ws}, []string{"x.example"}, "", false)
 	// out[0] is the wrapped HTTP, out[1] is the wrapped WebSearch.
 	wrapped := out[1].(*WebSearch)
@@ -101,7 +101,7 @@ func TestNarrowHostsWebSearchDropDefault(t *testing.T) {
 
 func TestNarrowHostsWebSearchKeepExplicit(t *testing.T) {
 	httpTool := &HTTP{HostAllowlist: []string{"x.example"}}
-	ws := &WebSearch{APIKey: "k"}
+	ws := &WebSearch{}
 	out := NarrowHosts([]tools.Tool{httpTool, ws}, []string{"x.example"}, WebSearchFilterKeep, false)
 	wrapped := out[1].(*WebSearch)
 	if wrapped.FilterMode != WebSearchFilterKeep {
@@ -115,7 +115,7 @@ func TestNarrowHostsWebSearchKeepExplicit(t *testing.T) {
 // isn't there. The model couldn't fetch anything anyway (no WebFetch),
 // so this is the right answer.
 func TestNarrowHostsWebSearchWithoutHTTPGetsEmpty(t *testing.T) {
-	ws := &WebSearch{APIKey: "k"}
+	ws := &WebSearch{}
 	out := NarrowHosts([]tools.Tool{ws}, []string{"x.example"}, "", false)
 	wrapped := out[0].(*WebSearch)
 	if len(wrapped.AllowedHosts) != 0 {

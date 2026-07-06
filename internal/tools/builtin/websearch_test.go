@@ -8,21 +8,57 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/search"
 )
 
-func TestWebSearchRefusesWithoutAPIKey(t *testing.T) {
-	s := &WebSearch{}
+// braveWS builds a WebSearch whose only provider is Brave, pointed at a test
+// server — the single-provider shape that exercises the render/clamp/filter
+// behaviour the pre-RFC-BB tests covered. hostKey is the operator Brave key
+// (resolved via ResolveKeyOrOperator, so a ctx CredentialDef can override it).
+func braveWS(t *testing.T, endpoint, hostKey string) *WebSearch {
+	t.Helper()
+	reg, err := search.BuildRegistry([]search.ProviderSpec{
+		{ID: "brave", Options: []search.Option{search.WithEndpoint(endpoint)}},
+	})
+	if err != nil {
+		t.Fatalf("BuildRegistry: %v", err)
+	}
+	return &WebSearch{
+		Registry: reg,
+		Resolver: search.NewResolver([]string{"brave"}),
+		HostKeys: map[string]string{"brave": hostKey},
+	}
+}
+
+func TestWebSearchRefusesWhenUnconfigured(t *testing.T) {
+	s := &WebSearch{} // nil registry
 	res, err := s.Execute(context.Background(), json.RawMessage(`{"query":"x"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || !strings.Contains(res.Text, "BRAVE_API_KEY") {
-		t.Errorf("expected api-key refusal, got %q", res.Text)
+	if !res.IsError || !strings.Contains(res.Text, "not configured") {
+		t.Errorf("expected not-configured refusal, got %q", res.Text)
+	}
+}
+
+func TestWebSearchRefusesWithoutKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"web":{"results":[]}}`)
+	}))
+	defer srv.Close()
+	s := braveWS(t, srv.URL, "") // configured, but no operator key + no tenant cred
+	res, err := s.Execute(context.Background(), json.RawMessage(`{"query":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "no keyable") {
+		t.Errorf("expected no-keyable refusal, got %q", res.Text)
 	}
 }
 
 func TestWebSearchRefusesEmptyQuery(t *testing.T) {
-	s := &WebSearch{APIKey: "k"}
+	s := &WebSearch{} // the empty-query check precedes the registry check
 	res, err := s.Execute(context.Background(), json.RawMessage(`{"query":"   "}`))
 	if err != nil {
 		t.Fatal(err)
@@ -32,9 +68,9 @@ func TestWebSearchRefusesEmptyQuery(t *testing.T) {
 	}
 }
 
-// Plumb a fake Brave server. Verifies: token header is sent, count
-// comes from max_results, response is rendered in the documented
-// "[N] Title — URL\n   snippet" shape.
+// Plumb a fake Brave server. Verifies: token header is sent (resolved from the
+// operator key), count comes from max_results, response is rendered in the
+// documented "[N] Title — URL\n   snippet" shape.
 func TestWebSearchSuccessfulQuery(t *testing.T) {
 	var seenToken, seenQuery, seenCount string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +85,7 @@ func TestWebSearchSuccessfulQuery(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{APIKey: "secret123", Endpoint: srv.URL}
+	s := braveWS(t, srv.URL, "secret123")
 	body, _ := json.Marshal(map[string]any{"query": "what is foo", "max_results": 2})
 	res, err := s.Execute(context.Background(), body)
 	if err != nil {
@@ -58,7 +94,6 @@ func TestWebSearchSuccessfulQuery(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Text)
 	}
-
 	if seenToken != "secret123" {
 		t.Errorf("token header = %q, want secret123", seenToken)
 	}
@@ -68,7 +103,6 @@ func TestWebSearchSuccessfulQuery(t *testing.T) {
 	if seenCount != "2" {
 		t.Errorf("count = %q, want 2", seenCount)
 	}
-
 	want := "[1] Foo — https://foo.example/\n   about foo\n[2] Bar — https://bar.example/\n   about bar"
 	if res.Text != want {
 		t.Errorf("rendered output mismatch:\n got: %q\nwant: %q", res.Text, want)
@@ -84,7 +118,7 @@ func TestWebSearchHardMaxResultsCeiling(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{APIKey: "k", Endpoint: srv.URL}
+	s := braveWS(t, srv.URL, "k")
 	body, _ := json.Marshal(map[string]any{"query": "x", "max_results": 999})
 	_, _ = s.Execute(context.Background(), body)
 	if seenCount != "25" {
@@ -92,14 +126,9 @@ func TestWebSearchHardMaxResultsCeiling(t *testing.T) {
 	}
 }
 
-// Snippet truncation at 256 chars so a long Brave description can't blow
-// the model's context window.
-// Defence in depth: even if Brave returns more results than we asked
-// for (server bug or unexpected response shape), the rendering loop
-// must still cap at max. Without this clamp a misbehaving search
-// backend could blow the model's context window.
-func TestWebSearchClampsBraveOverflow(t *testing.T) {
-	// Hand-craft a response with 30 results.
+// Defence in depth: even if the provider returns more results than asked, the
+// rendering loop must still cap at max.
+func TestWebSearchClampsProviderOverflow(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString(`{"web":{"results":[`)
 	for i := 0; i < 30; i++ {
@@ -116,7 +145,7 @@ func TestWebSearchClampsBraveOverflow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{APIKey: "k", Endpoint: srv.URL}
+	s := braveWS(t, srv.URL, "k")
 	body, _ := json.Marshal(map[string]any{"query": "x", "max_results": 9999})
 	res, err := s.Execute(context.Background(), body)
 	if err != nil {
@@ -125,16 +154,13 @@ func TestWebSearchClampsBraveOverflow(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Text)
 	}
-	// The rendered output should have exactly 25 lines that start with "[" —
-	// one per result.
 	count := strings.Count(res.Text, "\n[")
-	// Number of [N] markers = newline-prefixed [ + the very first one.
 	if !strings.HasPrefix(res.Text, "[") {
 		t.Fatalf("output should start with [1] marker; got %q", res.Text[:min(len(res.Text), 80)])
 	}
 	count++
 	if count != 25 {
-		t.Errorf("rendered %d result blocks, want 25 (hard cap on Brave-side overflow)", count)
+		t.Errorf("rendered %d result blocks, want 25 (hard cap on provider-side overflow)", count)
 	}
 }
 
@@ -152,7 +178,7 @@ func TestWebSearchTruncatesLongSnippet(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{APIKey: "k", Endpoint: srv.URL}
+	s := braveWS(t, srv.URL, "k")
 	body, _ := json.Marshal(map[string]string{"query": "x"})
 	res, err := s.Execute(context.Background(), body)
 	if err != nil {
@@ -163,6 +189,7 @@ func TestWebSearchTruncatesLongSnippet(t *testing.T) {
 	}
 }
 
+// A provider error is surfaced (after the fallback circuit exhausts the cascade).
 func TestWebSearchSurfacesUpstreamError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(429)
@@ -170,7 +197,7 @@ func TestWebSearchSurfacesUpstreamError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{APIKey: "k", Endpoint: srv.URL}
+	s := braveWS(t, srv.URL, "k")
 	body, _ := json.Marshal(map[string]string{"query": "x"})
 	res, err := s.Execute(context.Background(), body)
 	if err != nil {
@@ -182,9 +209,6 @@ func TestWebSearchSurfacesUpstreamError(t *testing.T) {
 }
 
 // Per-run host narrowing — drop mode (default when AllowedHosts is set).
-// Brave returns three results across two hosts; AllowedHosts permits
-// only one host. The other host's result must be omitted, and indices
-// must renumber so the model sees [1] not [3].
 func TestWebSearchAllowedHostsDropMode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"web":{"results":[
@@ -195,12 +219,8 @@ func TestWebSearchAllowedHostsDropMode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{
-		APIKey:       "k",
-		Endpoint:     srv.URL,
-		AllowedHosts: []string{"allowed.example"},
-		// FilterMode unset → defaults to drop.
-	}
+	s := braveWS(t, srv.URL, "k")
+	s.AllowedHosts = []string{"allowed.example"} // FilterMode unset → drop
 	body, _ := json.Marshal(map[string]string{"query": "x"})
 	res, err := s.Execute(context.Background(), body)
 	if err != nil {
@@ -215,7 +235,6 @@ func TestWebSearchAllowedHostsDropMode(t *testing.T) {
 	if !strings.Contains(res.Text, "allowed.example/a") || !strings.Contains(res.Text, "allowed.example/c") {
 		t.Errorf("allowed hosts missing: %q", res.Text)
 	}
-	// Renumbering: only two results survive — should be [1] and [2], not [1] and [3].
 	if !strings.HasPrefix(res.Text, "[1]") {
 		t.Errorf("first result should be [1]; got prefix %q", res.Text[:min(len(res.Text), 50)])
 	}
@@ -228,9 +247,6 @@ func TestWebSearchAllowedHostsDropMode(t *testing.T) {
 }
 
 // Per-run host narrowing — keep mode (caller filters downstream).
-// Brave's full result set comes through unchanged; the model receives
-// every URL so it can reason about them. The contract: AllowedHosts
-// is informational here, NOT enforced.
 func TestWebSearchAllowedHostsKeepMode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"web":{"results":[
@@ -240,12 +256,9 @@ func TestWebSearchAllowedHostsKeepMode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{
-		APIKey:       "k",
-		Endpoint:     srv.URL,
-		AllowedHosts: []string{"allowed.example"},
-		FilterMode:   WebSearchFilterKeep,
-	}
+	s := braveWS(t, srv.URL, "k")
+	s.AllowedHosts = []string{"allowed.example"}
+	s.FilterMode = WebSearchFilterKeep
 	body, _ := json.Marshal(map[string]string{"query": "x"})
 	res, err := s.Execute(context.Background(), body)
 	if err != nil {
@@ -262,8 +275,7 @@ func TestWebSearchAllowedHostsKeepMode(t *testing.T) {
 	}
 }
 
-// Edge: AllowedHosts set, drop mode, ALL Brave results filtered out.
-// Should return "no results" (matching the empty-Brave-response shape).
+// AllowedHosts set, drop mode, ALL results filtered out → "no results".
 func TestWebSearchAllowedHostsDropAllFiltered(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"web":{"results":[
@@ -272,7 +284,8 @@ func TestWebSearchAllowedHostsDropAllFiltered(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{APIKey: "k", Endpoint: srv.URL, AllowedHosts: []string{"only.example"}}
+	s := braveWS(t, srv.URL, "k")
+	s.AllowedHosts = []string{"only.example"}
 	body, _ := json.Marshal(map[string]string{"query": "x"})
 	res, err := s.Execute(context.Background(), body)
 	if err != nil {
@@ -292,7 +305,7 @@ func TestWebSearchEmptyResults(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &WebSearch{APIKey: "k", Endpoint: srv.URL}
+	s := braveWS(t, srv.URL, "k")
 	body, _ := json.Marshal(map[string]string{"query": "obscure"})
 	res, err := s.Execute(context.Background(), body)
 	if err != nil {
