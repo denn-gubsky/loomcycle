@@ -108,6 +108,9 @@ allows the whole `doc/` group, `-doc/secret` carves one out.
 
 ## Cross-references
 
+- `help(topic="skills")` — how to USE skills (the `Skill` tool:
+  discover + load on demand + the `skills:` allowlist). Start there
+  if you just want to run a skill, not author one.
 - `help(topic="experimentation")` — the AgentDef + Evaluation
   cousin for whole-agent evolution.
 - `help(topic="scopes")` — agent vs user scope across Memory +

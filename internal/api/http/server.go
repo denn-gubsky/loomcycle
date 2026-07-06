@@ -1336,7 +1336,8 @@ func (s *Server) resolveSkillBodiesForRun(_ context.Context, _ string, agentDef 
 		allow = append(allow, strings.TrimPrefix(t, "+"))
 	}
 	note := "Skills available on demand (matching: " + strings.Join(allow, ", ") +
-		"). Use the `Skill` tool: `{\"op\":\"list\"}` to discover them (optional `pattern`), `{\"name\":\"<skill>\"}` to load one into context."
+		"). Use the `Skill` tool: `{\"op\":\"list\"}` to discover them (optional `pattern`), `{\"name\":\"<skill>\"}` to load one into context. " +
+		"For how skills work, call `Context` `{\"op\":\"help\",\"topic\":\"skills\"}`."
 	rebuilt := agentDef
 	if rebuilt.SystemPrompt != "" {
 		rebuilt.SystemPrompt += "\n\n---\n\n"
