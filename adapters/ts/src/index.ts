@@ -94,6 +94,14 @@
 export { LoomcycleClient } from "./client.js";
 export { InteractiveSession } from "./interactive.js";
 export type { InteractiveSessionOps } from "./interactive.js";
+export { ClientToolHost, clientToolsURL, CLIENT_TOOL_SUBPROTOCOL } from "./client-tools.js";
+export type {
+  ClientToolSchema,
+  ClientToolInvocation,
+  ConnectClientToolsOptions,
+  WebSocketLike,
+  WebSocketCtor,
+} from "./client-tools.js";
 
 export type {
   // Run lifecycle
