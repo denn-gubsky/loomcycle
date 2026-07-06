@@ -8,6 +8,29 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.15.1
+
+**🩹 Web-UI scroll fix + search polish.** A patch on the v1.15.0 search line:
+
+- **Library detail panel scrolls independently of the list** (#674). The
+  Splitter grid row was implicitly `auto` (content-sized), so both panes grew to
+  their content and the WHOLE view scrolled as one — selecting an agent low in
+  the list left its detail scrolled off-screen (a blank detail pane, obvious on a
+  substrate agent with a large `system_prompt`). `grid-template-rows: minmax(0, 1fr)`
+  bounds the row so the list + detail scroll independently (both `web/src` and the
+  `@loomcycle/library` sheet).
+- **`search_providers` documented in `loomcycle.example.yaml`** (#675) — the
+  RFC BB search section next to the LLM routing block, including the SearXNG
+  `base_url` + the required `formats: [html, json]` setting.
+- **Opt-in WebSearch provenance footer** (#676) — `LOOMCYCLE_WEBSEARCH_PROVENANCE=1`
+  appends `(via searxng)` (or `(via brave — searxng fell over)`) to a successful
+  result so a fallover is visible per query. Off by default (byte-identical output).
+
+Binary + embedded WebUI only; no wire/schema change, no DB migration; TS/Python
+adapters unchanged at 1.13.0.
+
+---
+
 ## What's in v1.15.0
 
 **🔎 RFC BB — first-class web-search providers with a fallback circuit.** Web
