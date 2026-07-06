@@ -36,6 +36,11 @@ import {
 } from "./fetch-helpers.js";
 import { parseSSE } from "./stream.js";
 import { InteractiveSession } from "./interactive.js";
+import {
+  ClientToolHost,
+  clientToolsURL,
+  type ConnectClientToolsOptions,
+} from "./client-tools.js";
 import type {
   Agent,
   AgentEvent,
@@ -660,6 +665,17 @@ export class LoomcycleClient {
    *  There is no token query-param fallback. */
   exportSnapshotURL(snapshotId: string): string {
     return `${this.ctx.baseUrl}/v1/_snapshots/${encodeURIComponent(snapshotId)}/export`;
+  }
+
+  /** Open a client-tool host (RFC BC): a persistent WebSocket over which this
+   *  client registers tools it runs on the user's machine + answers the
+   *  agent's tool calls. Returns a started {@link ClientToolHost}; call
+   *  `.close()` to stop. Uses the global WebSocket (browsers, Node 22+); pass
+   *  `WebSocketImpl` (e.g. the `ws` package) on older Node. */
+  connectClientTools(opts: ConnectClientToolsOptions): ClientToolHost {
+    const host = new ClientToolHost(clientToolsURL(this.ctx.baseUrl), this.ctx.authToken, opts);
+    host.start();
+    return host;
   }
 
   /** Restore from a same-instance snapshot id OR an inline

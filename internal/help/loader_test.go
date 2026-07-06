@@ -25,6 +25,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"a2a-integration",
 		"bashbox",
 		"channel-admin",
+		"client-tools",
 		"code-agents",
 		"compaction",
 		"content-signatures",
