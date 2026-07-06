@@ -1719,6 +1719,9 @@ export interface LibraryAgentDefinition {
   tools?: string[];
   skills?: string[];
   providers?: string[];
+  /** RFC BB: per-agent web-search fallback list — the ordered providers the
+   *  WebSearch tool tries (empty = the global search_priority default). */
+  search_providers?: string[];
   /** Per-tier candidate list. Server-side opaque shape — kept as
    *  Record<string, unknown> for forward-compat. */
   models?: Record<string, unknown>;
