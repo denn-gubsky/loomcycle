@@ -293,6 +293,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
+	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
+	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))

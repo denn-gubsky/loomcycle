@@ -119,12 +119,13 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	q := search.Query{Text: args.Query, MaxResults: max}
 
 	// The fallback circuit: walk the cascade, skip un-keyable / cooled-down
-	// providers, and fall over on a failed or empty result. Phase 1 uses the
-	// global cascade; Phase 3 threads the per-agent search_providers list.
+	// providers, and fall over on a failed or empty result. The per-agent
+	// search_providers list (RFC BB Phase 3, stamped on ctx at run-start)
+	// overrides the global order; nil/empty = the global search_priority.
 	var lastErr error
 	sawSuccess := false
 	attempted := 0
-	for _, id := range s.Resolver.Cascade(nil) {
+	for _, id := range s.Resolver.Cascade(tools.SearchProviders(ctx)) {
 		p, ok := s.Registry.Get(id)
 		if !ok {
 			continue // in the priority list but not built (shouldn't happen post-validate)

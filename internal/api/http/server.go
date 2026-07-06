@@ -2182,6 +2182,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
+	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
+	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
@@ -3619,6 +3621,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
+	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
+	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
@@ -4156,6 +4160,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
+	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
+	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
@@ -5248,6 +5254,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subADPolicy, subEvPolicy := s.substratePoliciesForAgent(def, name)
 	subCtx = tools.WithAgentDefPolicy(subCtx, subADPolicy)
 	subCtx = tools.WithSkillPolicy(subCtx, s.skillPolicyForAgent(def))
+	subCtx = tools.WithSearchProviders(subCtx, def.SearchProviders)
 	subCtx = tools.WithVolumeDefPolicy(subCtx, s.volumeDefPolicyForAgent(def))
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(def))
