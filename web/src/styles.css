@@ -2129,6 +2129,13 @@ button.primary:disabled {
   gap: 0;
   height: 100%;
   min-height: 0;
+  /* Bound the single grid row to the splitter's height (not content). Without
+   * this the implicit row is `auto` (content-sized), so each pane grows to its
+   * content and the WHOLE view scrolls as one — the list + detail move together
+   * and a selected agent's detail scrolls off-screen. minmax(0, 1fr) pins the
+   * row to the available height with a 0 floor, so each pane's own
+   * overflow-y:auto engages and the list + detail scroll INDEPENDENTLY. */
+  grid-template-rows: minmax(0, 1fr);
 }
 .splitter.dragging {
   /* Suppress text-select highlighting during a drag — without this

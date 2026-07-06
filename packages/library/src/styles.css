@@ -436,6 +436,11 @@
   gap: 0;
   height: 100%;
   min-height: 0;
+  /* Bound the single grid row to the splitter's height (not content) so each
+   * pane's own overflow-y:auto engages and the list + detail scroll
+   * INDEPENDENTLY. Without this the implicit `auto` row grows to content and the
+   * whole view scrolls as one, pushing a selected agent's detail off-screen. */
+  grid-template-rows: minmax(0, 1fr);
 }
 .loomcycle-library .splitter.dragging {
   /* Suppress text-select highlighting during a drag. */
