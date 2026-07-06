@@ -4109,6 +4109,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Tier:                  d.Tier,
 		Effort:                d.Effort,
 		Providers:             d.Providers,
+		SearchProviders:       d.SearchProviders,
 		MemoryScopes:          d.MemoryScopes,
 		MemoryQuotaBytes:      d.MemoryQuotaBytes,
 		MemoryBackend:         d.MemoryBackend,

@@ -222,6 +222,7 @@ func runHashAgentByName(name, cfgPath string, stdout, stderr io.Writer) int {
 		Skills:                def.Skills,
 		SystemPrompt:          def.SystemPrompt,
 		Providers:             def.Providers,
+		SearchProviders:       def.SearchProviders,
 		Models:                convertConfigModels(def.Models),
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,

@@ -251,6 +251,57 @@ func TestFromYAMLAgent_EvaluationScopesAndInterruptionAffectHash(t *testing.T) {
 	}
 }
 
+// RFC BB: search_providers is content-identifying (like providers) — a fork
+// that changes ONLY the web-search fallback list must mint a distinct hash,
+// while an empty/unset list stays byte-identical to a pre-feature row.
+func TestFromYAMLAgent_SearchProvidersAffectHash(t *testing.T) {
+	bare := FromYAMLAgent(&Agent{Name: "x"})
+	withSearch := FromYAMLAgent(&Agent{Name: "x", SearchProviders: []string{"brave", "google"}})
+	if Sign(bare) == Sign(withSearch) {
+		t.Error("search_providers did NOT affect the hash — a fork changing only it would be wrongly deduped")
+	}
+	// A different list must produce a different hash again (order-sensitive,
+	// like providers).
+	reordered := FromYAMLAgent(&Agent{Name: "x", SearchProviders: []string{"google", "brave"}})
+	if Sign(withSearch) == Sign(reordered) {
+		t.Error("reordered search_providers hashed identically — order must be significant")
+	}
+	// Backward-compat: an empty search_providers hashes like bare so no
+	// pre-feature row is invalidated.
+	empty := FromYAMLAgent(&Agent{Name: "x", SearchProviders: []string{}})
+	if Sign(bare) != Sign(empty) {
+		t.Error("empty search_providers changed the hash — would invalidate every pre-feature row")
+	}
+}
+
+// TestFromOverlay_RoundTripMatchesYAMLAgent_WithSearchProviders is the path-
+// convergence guarantee for RFC BB: the SAME search_providers reaching the
+// hash via the yaml/.md path (FromYAMLAgent) vs the substrate-read path
+// (FromOverlay, which json-unmarshals the persisted `search_providers`) MUST
+// hash identically. signFromMergedDef (the substrate WRITE producer) also maps
+// def.SearchProviders into the same AgentContent, so all three converge — a
+// static yaml agent and its substrate fork agree on content_sha256.
+func TestFromOverlay_RoundTripMatchesYAMLAgent_WithSearchProviders(t *testing.T) {
+	agent := &Agent{
+		Name:            "researcher",
+		SystemPrompt:    "be thorough",
+		SearchProviders: []string{"brave", "google"},
+	}
+	hashFromYAML := Sign(FromYAMLAgent(agent))
+
+	overlay := json.RawMessage(`{
+		"name": "researcher",
+		"system_prompt": "be thorough",
+		"search_providers": ["brave", "google"]
+	}`)
+	parsed, _ := FromOverlay(overlay)
+	hashFromOverlay := Sign(parsed)
+
+	if hashFromYAML != hashFromOverlay {
+		t.Errorf("search_providers: yaml path vs overlay path diverged:\n %s\n %s", hashFromYAML, hashFromOverlay)
+	}
+}
+
 func TestFromYAMLAgent_ToolCapabilityScopesStillIgnored(t *testing.T) {
 	// The *_def_scopes gates (agent_def_scopes, …) govern which substrate tools
 	// the agent may CALL; they are NOT part of its authored definition and do

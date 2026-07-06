@@ -85,6 +85,7 @@ type Agent struct {
 	SystemPrompt          string
 	SystemPromptFile      string
 	Providers             []string
+	SearchProviders       []string
 	Models                map[string][]TierCandidate
 	MemoryScopes          []string
 	MemoryQuotaBytes      int
@@ -298,6 +299,7 @@ type frontmatter struct {
 	MaxConcurrentChildren int                        `yaml:"max_concurrent_children"`
 	Skills                []string                   `yaml:"skills"`
 	Providers             []string                   `yaml:"providers"`
+	SearchProviders       []string                   `yaml:"search_providers"`
 	Models                map[string][]TierCandidate `yaml:"models"`
 	MemoryScopes          []string                   `yaml:"memory_scopes"`
 	MemoryQuotaBytes      int                        `yaml:"memory_quota_bytes"`
@@ -366,6 +368,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.MaxConcurrentChildren = fm.MaxConcurrentChildren
 	a.Skills = fm.Skills
 	a.Providers = fm.Providers
+	a.SearchProviders = fm.SearchProviders
 	a.Models = fm.Models
 	a.MemoryScopes = fm.MemoryScopes
 	a.MemoryQuotaBytes = fm.MemoryQuotaBytes

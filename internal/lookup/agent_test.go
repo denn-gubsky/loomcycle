@@ -294,6 +294,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"tools":                   true,
 		"skills":                  true,
 		"providers":               true,
+		"search_providers":        true, // RFC BB — per-agent web-search fallback list
 		"models":                  true,
 		"memory_scopes":           true,
 		"memory_quota_bytes":      true,
