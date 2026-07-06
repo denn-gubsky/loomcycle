@@ -94,6 +94,52 @@ func TestHandleClientTools_HelloRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCandidateTools_AdvertisesAndGatesClientTools(t *testing.T) {
+	reg := clienttools.NewRegistry(0)
+	key := clienttools.PrincipalKey{Tenant: "t1", Subject: "u1"}
+	silent := func(context.Context, any) error { return nil }
+	_, dereg, _ := reg.Register(key, []clienttools.ToolSchema{
+		{Name: "browser.read_page"}, {Name: "browser.click"},
+	}, silent)
+	defer dereg()
+
+	srv := &Server{}
+	srv.cfg = clientToolsTestConfig()
+	srv.clientTools = reg
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "t1", Subject: "u1"})
+
+	// candidateTools advertises the principal's client-tools (client: prefixed).
+	cands := srv.candidateTools(ctx, "t1", []string{"client:browser.*"})
+	names := map[string]bool{}
+	for _, tl := range cands {
+		names[tl.Name()] = true
+	}
+	if !names["client:browser.read_page"] || !names["client:browser.click"] {
+		t.Fatalf("candidateTools should advertise both client-tools; got %v", names)
+	}
+
+	// filterTools narrows to exactly what the agent grants.
+	filtered := filterTools(cands, []string{"client:browser.read_page"}, nil)
+	fnames := map[string]bool{}
+	for _, tl := range filtered {
+		fnames[tl.Name()] = true
+	}
+	if !fnames["client:browser.read_page"] {
+		t.Errorf("granted client:browser.read_page should survive filtering; got %v", fnames)
+	}
+	if fnames["client:browser.click"] {
+		t.Errorf("ungranted client:browser.click should be filtered out; got %v", fnames)
+	}
+
+	// A different principal sees no client-tools.
+	other := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "t1", Subject: "someone-else"})
+	for _, tl := range srv.candidateTools(other, "t1", []string{"client:browser.*"}) {
+		if len(tl.Name()) >= len(clienttools.ToolPrefix) && tl.Name()[:len(clienttools.ToolPrefix)] == clienttools.ToolPrefix {
+			t.Errorf("a different principal must not see client-tools; saw %q", tl.Name())
+		}
+	}
+}
+
 func TestHandleClientTools_DisabledWhenNoRegistry(t *testing.T) {
 	srv := &Server{}
 	srv.cfg = clientToolsTestConfig()
