@@ -49,6 +49,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"path",
 		"pause-resume-snapshot",
 		"scopes",
+		"search-providers",
 		"skills",
 		"skills-evolution",
 		"sqlite-vec",
