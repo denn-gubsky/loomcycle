@@ -1499,6 +1499,10 @@ func main() {
 	// RFC AX: the keyability probe backs credential-aware routing for a
 	// restricted run (resolves only to providers the tenant can key itself).
 	srv.SetCredKeyable(credKeyable)
+	// RFC BB: the search catalog for the routing view (GET /v1/_routing search
+	// block). Same registry/resolver the WebSearch tool uses; nil when no search
+	// providers are configured.
+	srv.SetSearchRouting(searchRegistry, searchResolver, searchHostKeys)
 
 	// RFC AA SQL Memory (Phase 1). Off by default; constructed only when the
 	// operator enables it. The manager hosts per-scope sqlite databases that
