@@ -8,6 +8,45 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.16.0
+
+**🔌 RFC BC — client-executed tools over a WebSocket (local tool host).** An agent
+can now invoke a tool that runs on the **user's own machine** — the open browser
+DOM, local files, a shell — over a persistent WebSocket the client opens to
+loomcycle. A client (a browser extension, a desktop app) connects to
+**`GET /v1/client-tools`**, registers the tools it provides (`hello`), and when a
+matching agent tool call arrives loomcycle routes it to that connection,
+**blocks**, and returns the reply as an ordinary `tools.Result` — the agent
+follows no protocol, it's a normal tool call. Supersedes the ad-hoc Channel-bridge
+pattern for client actuation.
+
+- **Runtime** (`internal/clienttools`) — a per-principal connection registry keyed
+  by `(tenant, subject)` + the invoke↔result delegate-and-block core (per-call
+  timeout, disconnect fails pending invokes so a run never hangs). Adds a
+  `coder/websocket` dependency (the runtime's first WebSocket).
+- **Endpoint** — `GET /v1/client-tools`, bearer-gated (`runs:create`); the bearer
+  rides the `Sec-WebSocket-Protocol` subprotocol (`bearer.<token>`) since browsers
+  can't set an Authorization header on a WebSocket.
+- **Dispatch** — a client-tool is advertised to the model as a `client:`-prefixed
+  tool (granted through the agent's normal `tools:` allowlist, e.g.
+  `client:browser.*`) and executes by delegating to the live connection. Its
+  routing key comes from `RunIdentity` — authoritative, never the wire — so a run
+  can only ever reach its own user's machine. Transcript `tool_call`/`tool_result`
+  come free.
+- **Adapter** — `@loomcycle/client` **1.16.0** gains `connectClientTools({tools,
+  onInvoke})` (a dependency-free `ClientToolHost`: the global WebSocket in
+  browsers / Node 22+, or an injected impl on older Node). Plus a `client-tools`
+  help topic + `LOOMCYCLE_CLIENT_TOOL_*` knobs.
+
+**Security floor:** a connection serves ONLY its own principal (no cross-user /
+cross-tenant / operator reach); the client decides what it exposes (least
+privilege + user-confirm client-side); client-tool output is **untrusted** (data,
+never instructions); a client-tool must be in the agent's `tools` allowlist.
+**Purely additive** — no existing tool/agent/wire changed. Shipped as RFC BC
+Phase 1 + adapter (#678). Python adapter is gRPC-only + unaffected (stays 1.13.0).
+
+---
+
 ## What's in v1.15.1
 
 **🩹 Web-UI scroll fix + search polish.** A patch on the v1.15.0 search line:
