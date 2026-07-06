@@ -8,6 +8,45 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.15.0
+
+**🔎 RFC BB — first-class web-search providers with a fallback circuit.** Web
+search is now a config-declared provider catalog like the LLM providers, not a
+single hardcoded Brave backend. A new `internal/search` connector defines a
+`Provider` interface with five built-in drivers — **Brave** / **Serper** /
+**Exa** / **Tavily** / **SearXNG** — each normalizing its JSON to a common
+`{title, url, snippet}`, behind a flat resolver (a global `search_priority:`
+order or a per-agent override, plus a last-outcome availability cooldown — no
+active probing of paid APIs). The `WebSearch` tool is generalized **in place**
+into a fallback circuit: it walks the cascade, resolves each provider's key via
+`ResolveKeyOrOperator` (a tenant CredentialDef of the provider's env-var name
+overrides the operator host key; RFC AX operator-key restriction honored), and
+on an error / rate-limit / empty result falls over to the next — the model sees
+the same numbered output regardless of which provider answered.
+
+- **Config** — `search_providers:` (enabled drivers + SearXNG `base_url`) +
+  `search_priority:` (global fallback order); a per-agent
+  `AgentDef.search_providers:` list (content-identifying, in `content_sha256`
+  like `providers:`, round-trips the substrate overlay); `SERPER_API_KEY` /
+  `EXA_API_KEY` / `TAVILY_API_KEY` operator host keys (auto-redacted).
+  **Back-compat:** with no `search_providers:` block WebSearch still defaults to
+  Brave when `BRAVE_API_KEY` is set — existing deployments need no change.
+- **Routing view** — a `search` block on `GET /v1/_routing` + a "search
+  providers" section on the Settings → Routing page: per-provider keyable /
+  available / **selected** (what runs now), same admin/tenant posture as the LLM
+  cascade (a restricted tenant sees only providers it can key; admin sees
+  `last_error`). The Credentials key-name combobox gains the search keys.
+- **Docs + adapter** — a `search-providers` help topic (aliases `search` /
+  `websearch`); the TS `@loomcycle/client` `LibraryAgentDefinition` gains
+  `search_providers?` (**1.15.0**). Python is gRPC-only + the AgentDef overlay is
+  opaque JSON, so it round-trips with no typed change (stays 1.13.0).
+
+No wire-protocol change — WebSearch's output is byte-identical; the routing
+`search` block + the config are additive. Shipped as RFC BB Phases 1–3 (#670,
+#671, #672).
+
+---
+
 ## What's in v1.14.1
 
 **🩹 Bundle patch — the shipped `document-agent` bundle adopts RFC BA `doc/*` grouping.**
