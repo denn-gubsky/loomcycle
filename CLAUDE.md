@@ -114,8 +114,17 @@ loomcycle and `jobs-search-agent` (its primary downstream consumer) are separate
 - **Agent prompt changes** (`.claude/agents/*.md` files in jobs-search-agent) are a jobs-search-agent concern; loomcycle is agent-agnostic.
 - **The TS adapter** (`adapters/ts/`) is published as `@loomcycle/client`. Changes to it require a version bump on the npm package. jobs-search-agent depends on a pinned version.
 
+## Project documentation & RFCs
+
+**RFCs and project design docs are authored INTO loomcycle as Documents via the MCP `document` tool — NOT as files in the `loomcycle-internal` Gitea repo.** (Superseded 2026-07: the old `~/work/loomcycle-internal/doc-internal/rfcs/` flow is retired for *new* docs.)
+
+- **Author an RFC:** `document op=import_md markdown:<full RFC markdown>` (headings become the chunk hierarchy) to create the doc, then `document op=set_path id:<document_id> path:/loomcycle/rfcs/<slug>` to name it in the Path tree. Project docs (design notes, PLANs) go under `/loomcycle/docs/<slug>` the same way.
+- **Read an RFC/doc:** `document op=get_document path:/loomcycle/rfcs/<slug>` (metadata) or `op=export_md` (full markdown); browse with `path op=ls path:/loomcycle/rfcs`.
+- **Still RFC-first:** a new wire / cross-transport / new-primitive feature still needs an RFC authored **and approved before implementation** — only the *storage location* changed (a loomcycle Document, not a Gitea file). Draft the design, confirm decisions with the user, write the RFC Document, gate the build on approval.
+- Legacy RFCs already under `loomcycle-internal/doc-internal/rfcs/` stay there for history; migrate opportunistically, don't bulk-move.
+
 ## When in doubt
 
 - Look at recent commits on `main` (`git log --oneline -20`) for the style of recent changes.
-- Read `~/work/loomcycle-internal/doc-internal/PLAN.md` "Decisions (locked)" section before introducing a new architectural pattern (lives in a separate operator-side repo).
+- Before introducing a new architectural pattern, read the relevant RFC/decision docs — now loomcycle Documents via the MCP `document` tool (`op=get_document path:/loomcycle/rfcs/<slug>`; `path op=ls path:/loomcycle/rfcs`). The legacy `~/work/loomcycle-internal/doc-internal/PLAN.md` still holds older decision history.
 - Ask the user. A 30-second clarification beats an hour of speculative refactor.
