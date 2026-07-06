@@ -130,6 +130,11 @@ type AgentContent struct {
 	Name                  string                     `json:"name,omitempty"`
 	Provider              string                     `json:"provider,omitempty"`
 	Providers             []string                   `json:"providers,omitempty"`
+	// SearchProviders is the per-agent web-search fallback list (RFC BB) —
+	// content-identifying like Providers (a fork that changes it must mint a
+	// distinct content_sha256). omitempty keeps pre-feature rows byte-stable;
+	// normalize() collapses an empty slice to nil.
+	SearchProviders []string `json:"search_providers,omitempty"`
 	// Sampling is the per-agent LLM sampling block (mirrors config.Sampling;
 	// the agents package stays config-free, so it's a local type). Content-
 	// identifying: a fork that only changes temperature must mint a distinct
@@ -192,6 +197,9 @@ func normalize(c *AgentContent) {
 	}
 	if len(c.Providers) == 0 {
 		c.Providers = nil
+	}
+	if len(c.SearchProviders) == 0 {
+		c.SearchProviders = nil
 	}
 	if len(c.Models) == 0 {
 		c.Models = nil
@@ -273,6 +281,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		Tools:                 a.Tools,
 		SystemPrompt:          a.SystemPrompt,
 		Providers:             a.Providers,
+		SearchProviders:       a.SearchProviders,
 		Models:                a.Models,
 		MemoryScopes:          a.MemoryScopes,
 		MemoryQuotaBytes:      a.MemoryQuotaBytes,

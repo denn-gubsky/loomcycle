@@ -172,6 +172,59 @@ func TestAgentDefTool_ForkMergesSamplingPerField(t *testing.T) {
 	}
 }
 
+// TestAgentDefTool_SearchProvidersRoundTrips pins the RFC BB read-side
+// projection: a substrate agent authored with search_providers resolves to a
+// config.AgentDef carrying the list, proving it survives
+// mergedDef → SubstrateAgentDef → ToConfigDef (a dropped adapter line silently
+// reverts the agent to the library web-search default at run time).
+func TestAgentDefTool_SearchProvidersRoundTrips(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"searcher","overlay":{`+
+		`"system_prompt":"search","search_providers":["brave","google"]}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	def, ok := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "", "searcher")
+	if !ok {
+		t.Fatal("searcher did not resolve via lookup.Agent")
+	}
+	if got := def.SearchProviders; len(got) != 2 || got[0] != "brave" || got[1] != "google" {
+		t.Errorf("SearchProviders = %v, want [brave google] — dropped in mergedDef → SubstrateAgentDef → ToConfigDef", got)
+	}
+}
+
+// TestAgentDefTool_SearchProvidersAffectContentSHA proves search_providers is
+// content-identifying end-to-end: a fork that changes ONLY the web-search
+// fallback list must mint a DIFFERENT content_sha256 than its parent (exercises
+// signFromMergedDef, the substrate WRITE hash producer). If the field were
+// dropped from AgentContent, the fork would dedup as identical content.
+func TestAgentDefTool_SearchProvidersAffectContentSHA(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"searcher","overlay":{"system_prompt":"search"}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	parentSHA, _ := decodeResult(t, res.Text)["content_sha256"].(string)
+
+	// Fork inheriting the parent, overlaying only search_providers.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"searcher","overlay":{"search_providers":["brave"]}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	forkSHA, _ := decodeResult(t, res.Text)["content_sha256"].(string)
+
+	if parentSHA == "" || forkSHA == "" {
+		t.Fatalf("missing content_sha256: parent=%q fork=%q", parentSHA, forkSHA)
+	}
+	if parentSHA == forkSHA {
+		t.Errorf("fork adding search_providers produced the SAME content_sha256 %q — it is not part of the hash basis", parentSHA)
+	}
+}
+
 func TestAgentDefTool_CreateNewName(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()

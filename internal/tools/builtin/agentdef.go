@@ -863,6 +863,7 @@ type mergedDef struct {
 	Tools            []string                          `json:"tools,omitempty"`
 	Skills           []string                          `json:"skills,omitempty"`
 	Providers        []string                          `json:"providers,omitempty"`
+	SearchProviders  []string                          `json:"search_providers,omitempty"`
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
@@ -961,6 +962,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.Providers != nil {
 		d.Providers = ov.Providers
 	}
+	if ov.SearchProviders != nil {
+		d.SearchProviders = ov.SearchProviders
+	}
 	if ov.Models != nil {
 		d.Models = ov.Models
 	}
@@ -1052,6 +1056,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Tools:                 s.Tools,
 		Skills:                s.Skills,
 		Providers:             s.Providers,
+		SearchProviders:       s.SearchProviders,
 		Models:                s.Models,
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
@@ -1138,6 +1143,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 		// content) — excluded from content_sha256 like the *_def_scopes gates.
 		SystemPrompt:     def.SystemPrompt,
 		Providers:        def.Providers,
+		SearchProviders:  def.SearchProviders,
 		Models:           models,
 		MemoryScopes:     def.MemoryScopes,
 		MemoryQuotaBytes: def.MemoryQuotaBytes,

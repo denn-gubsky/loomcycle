@@ -320,6 +320,7 @@ type staticAgentDefJSON struct {
 	Tools                 []string                          `json:"tools,omitempty"`
 	Skills                []string                          `json:"skills,omitempty"`
 	Providers             []string                          `json:"providers,omitempty"`
+	SearchProviders       []string                          `json:"search_providers,omitempty"`
 	Models                map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes          []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes      int                               `json:"memory_quota_bytes,omitempty"`
@@ -345,6 +346,7 @@ func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
 		Tools:                 def.Tools,
 		Skills:                def.Skills,
 		Providers:             def.Providers,
+		SearchProviders:       def.SearchProviders,
 		Models:                def.Models,
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,

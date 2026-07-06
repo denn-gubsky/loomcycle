@@ -207,10 +207,15 @@ type SubstrateAgentDef struct {
 	// substrate write path (commit 3 of this PR) persisted it.
 	// Read-side normalizers fall back to SystemPrompt when this is
 	// empty (legacy rows that pre-date the write-side fix).
-	SystemPromptBase string                            `json:"system_prompt_base,omitempty"`
-	Tools            []string                          `json:"tools,omitempty"`
-	Skills           []string                          `json:"skills,omitempty"`
-	Providers        []string                          `json:"providers,omitempty"`
+	SystemPromptBase string   `json:"system_prompt_base,omitempty"`
+	Tools            []string `json:"tools,omitempty"`
+	Skills           []string `json:"skills,omitempty"`
+	Providers        []string `json:"providers,omitempty"`
+	// SearchProviders mirrors config.AgentDef.SearchProviders (RFC BB) so a
+	// runtime-authored agent's web-search fallback list survives the substrate
+	// round-trip instead of being silently dropped before the run. Kept in sync
+	// with builtin.mergedDef (the drift test pins it).
+	SearchProviders  []string                          `json:"search_providers,omitempty"`
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
@@ -267,6 +272,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Tools:                 s.Tools,
 		Skills:                s.Skills,
 		Providers:             s.Providers,
+		SearchProviders:       s.SearchProviders,
 		Models:                s.Models,
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
