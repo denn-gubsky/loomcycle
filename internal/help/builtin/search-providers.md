@@ -78,6 +78,14 @@ health-probed), and which one is **selected** (the first available = what runs
 now). A restricted tenant sees only the providers it can key itself. Same data
 over `GET /v1/_routing` (the `search` block).
 
+## Which provider answered a query?
+
+The routing view's `selected` is the *current* pick — not necessarily what served
+a specific call (a fallover is otherwise invisible in the uniform output). Set
+`LOOMCYCLE_WEBSEARCH_PROVENANCE=1` to append a compact footer to each successful
+result: `(via searxng)`, or `(via brave — searxng fell over)` when earlier
+providers were tried and passed over. Off by default (byte-identical output).
+
 ## Provider-specific power features
 
 The fallback circuit is deliberately the lowest-common-denominator "web

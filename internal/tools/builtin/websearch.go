@@ -48,6 +48,13 @@ type WebSearch struct {
 	// non-matching results; WebSearchFilterKeep returns everything. Ignored
 	// when AllowedHosts is nil.
 	FilterMode string
+	// ShowProvenance appends a compact "(via <provider>)" footer to a successful
+	// result naming which provider answered (and any that fell over first), so
+	// operators/agents can see the effective engine per query — a fallover is
+	// otherwise invisible in the uniform output. Off by default (byte-identical
+	// output for parsers that don't want it); enabled by
+	// LOOMCYCLE_WEBSEARCH_PROVENANCE=1. RFC BB.
+	ShowProvenance bool
 }
 
 // FilterMode constants for WebSearch.FilterMode.
@@ -125,6 +132,7 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	var lastErr error
 	sawSuccess := false
 	attempted := 0
+	var passedOver []string // providers tried that didn't serve (errored or empty), for the provenance footer
 	for _, id := range s.Resolver.Cascade(tools.SearchProviders(ctx)) {
 		p, ok := s.Registry.Get(id)
 		if !ok {
@@ -150,6 +158,7 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		if err != nil {
 			s.Resolver.MarkOutcome(id, err)
 			lastErr = err
+			passedOver = append(passedOver, id)
 			log.Printf("websearch: provider %q failed: %v (falling over)", id, err)
 			continue
 		}
@@ -157,9 +166,14 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		sawSuccess = true
 		results := filterSearchHosts(res.Results, s.AllowedHosts, s.FilterMode)
 		if len(results) == 0 {
-			continue // empty (or filtered to empty) → try the next provider
+			passedOver = append(passedOver, id) // succeeded-but-empty → fell over
+			continue                            // empty (or filtered to empty) → try the next provider
 		}
-		return tools.Result{Text: renderSearchResults(results, max)}, nil
+		text := renderSearchResults(results, max)
+		if s.ShowProvenance {
+			text += "\n" + searchProvenance(id, passedOver)
+		}
+		return tools.Result{Text: text}, nil
 	}
 
 	switch {
@@ -206,4 +220,14 @@ func renderSearchResults(results []search.Result, max int) string {
 		fmt.Fprintf(&b, "[%d] %s — %s\n   %s\n", rendered, title, r.URL, desc)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// searchProvenance is the compact footer appended to a successful result when
+// ShowProvenance is on: "(via <provider>)", or "(via <provider> — <a>, <b> fell
+// over)" when earlier providers were tried and passed over (errored or empty).
+func searchProvenance(used string, passedOver []string) string {
+	if len(passedOver) == 0 {
+		return "(via " + used + ")"
+	}
+	return "(via " + used + " — " + strings.Join(passedOver, ", ") + " fell over)"
 }
