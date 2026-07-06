@@ -3,6 +3,7 @@ import {
   RoutingCandidate,
   RoutingResponse,
   RoutingTier,
+  SearchRoutingProvider,
   getRouting,
 } from "../api";
 
@@ -157,8 +158,64 @@ export default function RoutingView() {
       {resp && resp.user_tiers.length === 0 && (
         <div className="empty">no tiers configured.</div>
       )}
+
+      {resp && resp.search && resp.search.length > 0 && (
+        <section className="routing-usertier">
+          <h2>search providers</h2>
+          <div className="routing-tier-grid">
+            <div className="routing-tier-card">
+              <div className="routing-tier-title">web search</div>
+              <ol className="routing-cascade">
+                {resp.search.map((sp, i) => (
+                  <SearchRow key={`${sp.provider}/${i}`} sp={sp} />
+                ))}
+              </ol>
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   );
+}
+
+function SearchRow({ sp }: { sp: SearchRoutingProvider }) {
+  const hasAvail = sp.available !== undefined;
+  const selected = sp.selected === true;
+  const rowClass = [
+    "routing-cand",
+    selected ? "selected" : "",
+    hasAvail && !sp.available ? "unavail" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <li className={rowClass}>
+      <span className="routing-rank">{sp.primary ? "top" : "fallback"}</span>
+      {hasAvail && (
+        <span
+          className={`routing-dot ${sp.available ? "up" : "down"}`}
+          title={searchStatusText(sp)}
+          aria-hidden="true"
+        />
+      )}
+      <span className="routing-provider">{sp.provider}</span>
+      {sp.keyable === false && (
+        <span className="routing-model" title="no usable key for your scope">
+          no key
+        </span>
+      )}
+      {selected && <span className="routing-selected-badge">selected</span>}
+    </li>
+  );
+}
+
+// searchStatusText: a human hover string for a search provider's dot.
+function searchStatusText(sp: SearchRoutingProvider): string {
+  if (sp.keyable === false) return "no usable key for your scope";
+  if (sp.available) return "available";
+  if (sp.last_error) return `in cooldown: ${sp.last_error}`;
+  if (sp.reachable === false) return "in failure cooldown";
+  return "unavailable";
 }
 
 function TierCard({ tier }: { tier: RoutingTier }) {

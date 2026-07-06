@@ -2320,6 +2320,25 @@ export interface RoutingResponse {
    * key, or has an own CredentialDef). The UI shows a bring-your-own-key note.
    */
   operator_key_restricted?: boolean;
+  /**
+   * RFC BB: the web-search provider cascade — a single flat list (search has no
+   * tier/model dimension), each with keyability + live availability. Omitted
+   * when no search providers are configured.
+   */
+  search?: SearchRoutingProvider[];
+}
+
+// SearchRoutingProvider is one entry in the RFC BB search cascade: the ordered
+// web-search providers, each with whether this caller can key it + its live
+// availability. Rendered by field presence, like the LLM cascade.
+export interface SearchRoutingProvider {
+  provider: string;
+  primary: boolean; // first in the (post-filter) cascade
+  keyable?: boolean; // this caller has a usable key (operator/own-cred/keyless)
+  available?: boolean; // keyable AND not in a failure cooldown
+  selected?: boolean; // the first available provider — what runs now
+  reachable?: boolean; // not in a cooldown, regardless of key
+  last_error?: string; // admin-only
 }
 
 export function getRouting(): Promise<RoutingResponse> {
