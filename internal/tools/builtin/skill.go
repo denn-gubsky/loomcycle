@@ -83,7 +83,8 @@ const skillInputSchema = `{
 const skillDescription = `Discover and load domain-specific instruction sets (skills) on demand. ` +
 	`op=list enumerates the skills you may use (optionally filtered by a /-glob pattern); ` +
 	`op=invoke (the default when only a name is given) loads a named skill's body as the tool_result. ` +
-	`Skills you may access are governed by the agent's skills: allowlist; a skill's tools must be a subset of yours (refusals are surfaced as is_error).`
+	`Skills you may access are governed by the agent's skills: allowlist; a skill's tools must be a subset of yours (refusals are surfaced as is_error). ` +
+	`Full guide (on-demand model, skills: allowlist, /-grouping, authoring): call Context op=help topic=skills.`
 
 type skillInput struct {
 	Op      string `json:"op"`

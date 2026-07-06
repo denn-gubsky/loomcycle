@@ -56,21 +56,67 @@ type Topic struct {
 	// Path is the absolute path of the source .md for filesystem
 	// topics; empty for bundled.
 	Path string
+	// Aliases are extra lookup names that resolve to this topic
+	// (frontmatter `aliases:`). Lets a topic be found under the
+	// tool's own name when they differ — e.g. the `skills` topic
+	// aliased as `skill` so an agent probing `topic=Skill` (the
+	// Skill tool's name) resolves it. Canonical names always win
+	// over an alias.
+	Aliases []string
 }
 
 // Set is a name→Topic registry.
 type Set struct {
+	// topics is the canonical name→Topic map (case as authored),
+	// the source of truth for Names()/All() and override semantics.
 	topics map[string]*Topic
+	// index is a case-insensitive lookup over canonical names AND
+	// aliases (both lowercased), built once after load. Used only
+	// by Get for forgiving resolution; never iterated for listing.
+	index map[string]*Topic
 }
 
 // Get returns the named topic, or (nil, false) if absent. Safe on
-// nil receiver.
+// nil receiver. Resolution: exact canonical match first (fast path,
+// preserves historical behaviour), then a case-insensitive lookup
+// over canonical names and aliases — so `Skill`, `skill`, `Skills`
+// all resolve the `skills` topic.
 func (s *Set) Get(name string) (*Topic, bool) {
 	if s == nil {
 		return nil, false
 	}
-	t, ok := s.topics[name]
-	return t, ok
+	if t, ok := s.topics[name]; ok {
+		return t, true
+	}
+	if t, ok := s.index[strings.ToLower(strings.TrimSpace(name))]; ok {
+		return t, true
+	}
+	return nil, false
+}
+
+// reindex rebuilds the case-insensitive alias index from topics.
+// Called at the end of LoadSet, after any filesystem overlay, so
+// the index reflects the final topic set. Canonical names take
+// precedence over aliases (an alias never shadows a real topic).
+func (s *Set) reindex() {
+	idx := make(map[string]*Topic, len(s.topics)*2)
+	// Canonical names first so they win on any collision.
+	for name, t := range s.topics {
+		idx[strings.ToLower(name)] = t
+	}
+	for _, t := range s.topics {
+		for _, a := range t.Aliases {
+			key := strings.ToLower(strings.TrimSpace(a))
+			if key == "" {
+				continue
+			}
+			if _, taken := idx[key]; taken {
+				continue // don't let an alias shadow a canonical name
+			}
+			idx[key] = t
+		}
+	}
+	s.index = idx
 }
 
 // Names returns all topic names sorted lexicographically. Used by
@@ -153,6 +199,7 @@ func LoadSet(root string) (*Set, error) {
 
 	// Optionally overlay filesystem topics.
 	if root == "" {
+		set.reindex()
 		return set, nil
 	}
 	st, err := os.Stat(root)
@@ -204,6 +251,7 @@ func LoadSet(root string) (*Set, error) {
 		t.Source = "filesystem"
 		set.topics[t.Name] = t // override bundled if name matches
 	}
+	set.reindex()
 	return set, nil
 }
 
@@ -240,8 +288,9 @@ func parseTopic(data []byte, nameFromFile, path string) (*Topic, error) {
 	}
 
 	var fm struct {
-		Name        string `yaml:"name"`
-		Description string `yaml:"description"`
+		Name        string   `yaml:"name"`
+		Description string   `yaml:"description"`
+		Aliases     []string `yaml:"aliases"`
 	}
 	if err := yaml.Unmarshal([]byte(fmText), &fm); err != nil {
 		return nil, fmt.Errorf("frontmatter yaml: %w", err)
@@ -260,5 +309,6 @@ func parseTopic(data []byte, nameFromFile, path string) (*Topic, error) {
 		Description: fm.Description,
 		Content:     body,
 		Path:        path,
+		Aliases:     fm.Aliases,
 	}, nil
 }

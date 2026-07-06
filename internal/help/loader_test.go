@@ -49,6 +49,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"path",
 		"pause-resume-snapshot",
 		"scopes",
+		"skills",
 		"skills-evolution",
 		"sqlite-vec",
 		"subagents",
@@ -77,6 +78,64 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		if topic.Path != "" {
 			t.Errorf("bundled topic %q has Path=%q, want empty", n, topic.Path)
 		}
+	}
+}
+
+// TestGet_SkillsCaseInsensitiveAndAlias: RFC BA gave every agent the
+// `Skill` tool on demand, so agents probe `Context op=help topic=Skill`
+// (the tool's own name). Get must resolve the `skills` topic under the
+// tool name, any case, and the `skill` alias — the reported gap was
+// `topic="Skill"` → "not found".
+func TestGet_SkillsCaseInsensitiveAndAlias(t *testing.T) {
+	set, err := LoadSet("")
+	if err != nil {
+		t.Fatalf("LoadSet: %v", err)
+	}
+	for _, q := range []string{"skills", "Skills", "SKILLS", "Skill", "skill", " skill "} {
+		topic, ok := set.Get(q)
+		if !ok {
+			t.Errorf("Get(%q) not found; want the skills topic", q)
+			continue
+		}
+		if topic.Name != "skills" {
+			t.Errorf("Get(%q) resolved %q, want canonical \"skills\"", q, topic.Name)
+		}
+	}
+	// A miss is still a miss (the forgiving lookup must not become a
+	// fuzzy match that resolves anything).
+	if _, ok := set.Get("skillz"); ok {
+		t.Error("Get(\"skillz\") resolved; forgiving lookup must not fuzzy-match")
+	}
+	// An exact canonical name with a hyphen is unaffected.
+	if _, ok := set.Get("skills-evolution"); !ok {
+		t.Error("Get(\"skills-evolution\") should still resolve exactly")
+	}
+}
+
+// TestGet_AliasCanonicalPrecedence: an operator topic whose alias
+// collides with a real canonical name must NOT shadow that topic —
+// canonical always wins.
+func TestGet_AliasCanonicalPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	// Alias `scopes` (a bundled canonical name) from a different topic.
+	body := "---\nname: shadower\ndescription: tries to hijack `scopes`.\naliases: [scopes]\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "shadower.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set, err := LoadSet(dir)
+	if err != nil {
+		t.Fatalf("LoadSet: %v", err)
+	}
+	topic, ok := set.Get("scopes")
+	if !ok {
+		t.Fatal("Get(\"scopes\") not found")
+	}
+	if topic.Name != "scopes" {
+		t.Errorf("Get(\"scopes\") resolved %q — an alias shadowed the canonical topic", topic.Name)
+	}
+	// The aliasing topic still resolves under its own name.
+	if _, ok := set.Get("shadower"); !ok {
+		t.Error("Get(\"shadower\") should resolve its own canonical name")
 	}
 }
 
