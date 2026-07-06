@@ -24,7 +24,7 @@ func TestWebSearch_BraveKeyOverride(t *testing.T) {
 	input := json.RawMessage(`{"query":"hello"}`)
 
 	// (1) No override → host key on the wire.
-	ws := &WebSearch{APIKey: "host-key", Endpoint: srv.URL}
+	ws := braveWS(t, srv.URL, "host-key")
 	if res, err := ws.Execute(context.Background(), input); err != nil || res.IsError {
 		t.Fatalf("host-key call failed: err=%v res=%+v", err, res)
 	}
@@ -58,7 +58,7 @@ func TestWebSearch_RestrictedRunRefusesHostKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ws := &WebSearch{APIKey: "host-key", Endpoint: srv.URL}
+	ws := braveWS(t, srv.URL, "host-key")
 	input := json.RawMessage(`{"query":"x"}`)
 
 	restricted := providers.WithOperatorKeyAllowed(context.Background(), false)
@@ -95,7 +95,7 @@ func TestWebSearch_TenantKeyEnablesWithNoHostKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ws := &WebSearch{APIKey: "", Endpoint: srv.URL} // operator set no key
+	ws := braveWS(t, srv.URL, "") // operator set no key
 
 	// Without a tenant key the tool refuses (unchanged behavior).
 	if res, _ := ws.Execute(context.Background(), json.RawMessage(`{"query":"x"}`)); !res.IsError {
