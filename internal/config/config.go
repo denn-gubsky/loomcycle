@@ -2069,6 +2069,10 @@ type Env struct {
 	SerperAPIKey string
 	ExaAPIKey    string
 	TavilyAPIKey string
+	// WebSearchProvenance appends a "(via <provider>)" footer to a successful
+	// WebSearch result naming which search provider answered + any fallover
+	// (RFC BB). Off by default (byte-identical output); LOOMCYCLE_WEBSEARCH_PROVENANCE=1.
+	WebSearchProvenance bool
 	// BashEnabled gates the Bash tool. Defaults to false. Even when
 	// true the tool is NOT a true sandbox — it restricts cwd, scrubs
 	// env, bounds output, and times out, but cannot prevent the spawned
@@ -2877,6 +2881,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		SerperAPIKey:              os.Getenv("SERPER_API_KEY"),
 		ExaAPIKey:                 os.Getenv("EXA_API_KEY"),
 		TavilyAPIKey:              os.Getenv("TAVILY_API_KEY"),
+		WebSearchProvenance:       os.Getenv("LOOMCYCLE_WEBSEARCH_PROVENANCE") == "1",
 		BashEnabled:               os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashboxEnabled:            os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
 		BashboxFallbackCommands:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),

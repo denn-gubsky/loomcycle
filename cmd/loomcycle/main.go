@@ -785,7 +785,7 @@ func main() {
 		&builtin.NotebookEdit{},
 		httpTool,
 		&builtin.WebFetch{HTTP: httpTool},
-		&builtin.WebSearch{Registry: searchRegistry, Resolver: searchResolver, HostKeys: searchHostKeys},
+		&builtin.WebSearch{Registry: searchRegistry, Resolver: searchResolver, HostKeys: searchHostKeys, ShowProvenance: cfg.Env.WebSearchProvenance},
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled},
 		// Bashbox — a TRUE in-process sandbox (gbash): no OS process, paths
 		// rooted at the volume, no network, and read-only volumes are honored

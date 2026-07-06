@@ -102,6 +102,49 @@ func TestWebSearch_FallbackCircuit(t *testing.T) {
 	}
 }
 
+// TestWebSearch_Provenance: with ShowProvenance on, a successful result carries a
+// "(via <provider>)" footer — and names the providers that fell over first. Off
+// (default), the output is byte-identical (no footer).
+func TestWebSearch_Provenance(t *testing.T) {
+	braveErr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer braveErr.Close()
+	serperOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"organic":[{"title":"S","link":"https://s.example","snippet":"d"}]}`))
+	}))
+	defer serperOK.Close()
+
+	newWS := func(prov bool) *WebSearch {
+		reg, _ := search.BuildRegistry([]search.ProviderSpec{
+			{ID: "brave", Options: []search.Option{search.WithEndpoint(braveErr.URL)}},
+			{ID: "serper", Options: []search.Option{search.WithEndpoint(serperOK.URL)}},
+		})
+		return &WebSearch{Registry: reg, Resolver: search.NewResolver([]string{"brave", "serper"}),
+			HostKeys: map[string]string{"brave": "bk", "serper": "sk"}, ShowProvenance: prov}
+	}
+
+	// Off → no footer (byte-identical to the plain render).
+	res, _ := newWS(false).Execute(context.Background(), json.RawMessage(`{"query":"x"}`))
+	if strings.Contains(res.Text, "(via") {
+		t.Errorf("provenance OFF should add no footer; got %q", res.Text)
+	}
+
+	// On → footer names the winner + the fallover.
+	res, _ = newWS(true).Execute(context.Background(), json.RawMessage(`{"query":"x"}`))
+	if !strings.HasSuffix(res.Text, "(via serper — brave fell over)") {
+		t.Errorf("expected fallover provenance footer; got %q", res.Text)
+	}
+
+	// On, single-provider success (no fallover) → bare "(via serper)".
+	regSolo, _ := search.BuildRegistry([]search.ProviderSpec{{ID: "serper", Options: []search.Option{search.WithEndpoint(serperOK.URL)}}})
+	solo := &WebSearch{Registry: regSolo, Resolver: search.NewResolver([]string{"serper"}), HostKeys: map[string]string{"serper": "sk"}, ShowProvenance: true}
+	res, _ = solo.Execute(context.Background(), json.RawMessage(`{"query":"x"}`))
+	if !strings.HasSuffix(res.Text, "(via serper)") || strings.Contains(res.Text, "fell over") {
+		t.Errorf("expected bare '(via serper)' footer; got %q", res.Text)
+	}
+}
+
 // TestWebSearch_AllProvidersFail: when every provider errors, the tool surfaces
 // the last error (IsError) rather than a silent "no results".
 func TestWebSearch_AllProvidersFail(t *testing.T) {
