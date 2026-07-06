@@ -2073,6 +2073,15 @@ type Env struct {
 	// WebSearch result naming which search provider answered + any fallover
 	// (RFC BB). Off by default (byte-identical output); LOOMCYCLE_WEBSEARCH_PROVENANCE=1.
 	WebSearchProvenance bool
+	// Client-tool host (RFC BC) — the /v1/client-tools WebSocket over which a
+	// client registers + executes tools on the user's machine.
+	// ClientToolTimeoutMS bounds one delegate-and-block invoke (default 60000);
+	// ClientToolMaxBytes caps a single frame (default 1<<20, mirrors the request
+	// cap); ClientToolMaxConns caps concurrent connections per principal
+	// (default 8). All read from LOOMCYCLE_CLIENT_TOOL_*.
+	ClientToolTimeoutMS int
+	ClientToolMaxBytes  int64
+	ClientToolMaxConns  int
 	// BashEnabled gates the Bash tool. Defaults to false. Even when
 	// true the tool is NOT a true sandbox — it restricts cwd, scrubs
 	// env, bounds output, and times out, but cannot prevent the spawned
@@ -2882,6 +2891,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		ExaAPIKey:                 os.Getenv("EXA_API_KEY"),
 		TavilyAPIKey:              os.Getenv("TAVILY_API_KEY"),
 		WebSearchProvenance:       os.Getenv("LOOMCYCLE_WEBSEARCH_PROVENANCE") == "1",
+		ClientToolTimeoutMS:       getenvInt("LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS", 60000),
+		ClientToolMaxBytes:        int64(getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_BYTES", 1<<20)),
+		ClientToolMaxConns:        getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", 8),
 		BashEnabled:               os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashboxEnabled:            os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
 		BashboxFallbackCommands:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
@@ -4050,6 +4062,17 @@ func getenvBool(name string, dflt bool) bool {
 	default:
 		return dflt
 	}
+}
+
+// getenvInt reads a positive integer env var, falling back to dflt when unset,
+// unparseable, or non-positive.
+func getenvInt(name string, dflt int) int {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return dflt
 }
 
 // discoverAgents walks LOOMCYCLE_AGENTS_ROOT, parses each `<name>.md`
