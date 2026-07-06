@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/clienttools"
@@ -554,17 +555,39 @@ func (s *Server) SetDynamicToolEnumerator(fn func(ctx context.Context, tenantID 
 // the enumerator so a referenced server with no cached tools is handshaked and
 // advertised at run start.
 func (s *Server) candidateTools(ctx context.Context, tenantID string, agentAllowed []string) []tools.Tool {
-	if s.dynamicTools == nil {
+	var dyn []tools.Tool
+	if s.dynamicTools != nil {
+		dyn = s.dynamicTools(ctx, tenantID, referencedDynamicMCPServers(agentAllowed))
+	}
+	// RFC BC: advertise the connected principal's client-tools so the model sees
+	// them (filterTools then narrows to the agent's `client:*` grant). Delegating
+	// tools.Tools — Dispatcher.Execute calls their Execute directly, which routes
+	// to the live WebSocket. Empty when nothing is connected.
+	ct := clienttools.Candidates(s.clientTools, s.clientToolKey(ctx, tenantID),
+		time.Duration(s.cfg.Env.ClientToolTimeoutMS)*time.Millisecond)
+	if len(dyn) == 0 && len(ct) == 0 {
 		return s.tools
 	}
-	dyn := s.dynamicTools(ctx, tenantID, referencedDynamicMCPServers(agentAllowed))
-	if len(dyn) == 0 {
-		return s.tools
-	}
-	out := make([]tools.Tool, 0, len(s.tools)+len(dyn))
+	out := make([]tools.Tool, 0, len(s.tools)+len(dyn)+len(ct))
 	out = append(out, s.tools...)
 	out = append(out, dyn...)
+	out = append(out, ct...)
 	return out
+}
+
+// clientToolKey resolves the (tenant, subject) a run's client-tools are filed
+// under (RFC BC). Prefers RunIdentity when stamped (sub-agent / in-loop paths),
+// else the request principal (top-level run-start, before RunIdentity is set) —
+// both resolve to the same authoritative pair.
+func (s *Server) clientToolKey(ctx context.Context, tenantID string) clienttools.PrincipalKey {
+	if rid := tools.RunIdentity(ctx); rid.UserID != "" {
+		return clienttools.PrincipalKey{Tenant: rid.TenantID, Subject: rid.UserID}
+	}
+	subject := ""
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		subject = p.Subject
+	}
+	return clienttools.PrincipalKey{Tenant: tenantID, Subject: subject}
 }
 
 // referencedDynamicMCPServers extracts the set of MCP server names an agent's
