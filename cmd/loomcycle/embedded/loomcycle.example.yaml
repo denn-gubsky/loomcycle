@@ -172,6 +172,52 @@ user_tiers:
     provider_priority: [anthropic]
     fallback_on_error: false
 
+# ─── Search providers (RFC BB, v1.15.0) ───────────────────────────────
+# First-class web-search providers with a FALLBACK CIRCUIT — the search
+# analog of the LLM `provider_priority`/`tiers` above. The `WebSearch` tool
+# walks `search_priority:` (or an agent's own `search_providers:` override),
+# resolves each provider's key, and on an error / rate-limit / empty result
+# FALLS OVER to the next provider — the model sees the same title/URL/snippet
+# output regardless of which one answered.
+#
+# A provider is usable only when (1) listed here AND (2) keyable: its key
+# comes from the env var the driver names (see each line below), overridable
+# per-tenant by a CredentialDef of the SAME name (so a tenant searches on its
+# own quota). SearXNG is KEYLESS (self-hosted) and needs a `base_url`.
+#
+# Availability is tracked by last-outcome (a short cooldown after a failed
+# call) — paid APIs are NOT health-probed. See the Settings → Routing page
+# (per-provider keyable / available / SELECTED) and `loomcycle help
+# search-providers`.
+#
+# BACK-COMPAT: with NO `search_providers:` block, WebSearch defaults to Brave
+# when BRAVE_API_KEY is set — existing deployments need no change.
+search_providers:
+  brave: {}          # key: BRAVE_API_KEY   — Brave Search API (own index)
+  serper: {}         # key: SERPER_API_KEY  — cheap Google SERP JSON
+  # exa: {}          # key: EXA_API_KEY     — neural/semantic + generous free tier
+  # tavily: {}       # key: TAVILY_API_KEY  — RAG-tuned search
+  searxng:           # KEYLESS — self-hosted meta-search (aggregates 70+ engines)
+    # The SearXNG root URL, reachable from the loomcycle process (loomcycle
+    # appends /search and /healthz). Docker sibling → http://searxng:8080;
+    # host → http://host.docker.internal:8888; LAN/Tailscale → its URL. May be
+    # ${LOOMCYCLE_SEARXNG_BASE_URL}. SearXNG MUST enable the json format in its
+    # settings.yml (`search: { formats: [html, json] }`) or /search?format=json
+    # 403s. See `loomcycle help search-providers`.
+    base_url: "http://searxng:8080"
+
+# Global default fallback order — the cascade WebSearch walks when an agent
+# declares no per-agent `search_providers:`. Every entry must be an ENABLED
+# `search_providers:` key above. Empty = the enabled set in map order.
+search_priority: [serper, brave, searxng]
+
+# Per-agent override (a FULL replacement of search_priority; content-identifying,
+# in content_sha256 — a fork that changes only this mints a new version):
+#   agents:
+#     researcher:
+#       tools: [WebSearch]
+#       search_providers: [serper, exa]   # try Serper, then Exa; nothing else
+
 # ─── Channels (v0.8.4) ────────────────────────────────────────────────
 # Operator-declared inter-agent message channels. Agents publish JSON
 # payloads to a named channel; other agents subscribe to drain new
