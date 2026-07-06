@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
+	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -134,6 +135,16 @@ type Server struct {
 	// a keyless provider). Called in the SERVER before Resolve — the lock-free
 	// resolver never does credential-store I/O.
 	credKeyable func(ctx context.Context, tenantID, agentName, userID, name string) bool
+
+	// searchRegistry / searchResolver / searchHostKeys back the RFC BB search
+	// routing view (GET /v1/_routing → "search" block). searchHostKeys maps a
+	// provider id → its operator host key value (non-empty = the operator can
+	// key it); "" for a keyless provider. All nil when no search providers are
+	// configured. Wired via SetSearchRouting (main.go), mirroring the other
+	// optional deps; the WebSearch tool holds its own copies for the run path.
+	searchRegistry *search.Registry
+	searchResolver *search.Resolver
+	searchHostKeys map[string]string
 
 	// limits is the RFC AW per-scope token-budget tracker: month-to-date
 	// counters + cached soft/hard ceilings, checked at admission and
@@ -827,6 +838,16 @@ func (s *Server) SetCredentialResolver(r providers.CredentialResolver) { s.credR
 // before resolution. Nil ⇒ no provider is tenant-keyable.
 func (s *Server) SetCredKeyable(fn func(ctx context.Context, tenantID, agentName, userID, name string) bool) {
 	s.credKeyable = fn
+}
+
+// SetSearchRouting wires the RFC BB search catalog for the routing view (main.go
+// calls it after construction). hostKeys maps a provider id → its operator host
+// key value; a keyless provider (searxng) has no entry. All-nil = no search
+// providers configured (the "search" routing block is then omitted).
+func (s *Server) SetSearchRouting(reg *search.Registry, res *search.Resolver, hostKeys map[string]string) {
+	s.searchRegistry = reg
+	s.searchResolver = res
+	s.searchHostKeys = hostKeys
 }
 
 // markStalledFn returns a closure suitable for loop.RunOptions.MarkStalled.

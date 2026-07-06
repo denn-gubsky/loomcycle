@@ -46,6 +46,34 @@ func TestResolver_MarkOutcomeAvailability(t *testing.T) {
 	}
 }
 
+func TestResolver_Snapshot(t *testing.T) {
+	r := NewResolver([]string{"brave", "serper"})
+	// Fresh: everything reachable, no error.
+	snap := r.Snapshot()
+	if len(snap) != 2 || !snap["brave"].Reachable || snap["brave"].LastError != "" {
+		t.Fatalf("fresh snapshot = %+v", snap)
+	}
+	// A failure records reachable=false + the last error text.
+	r.MarkOutcome("serper", errors.New("429 rate limited"))
+	snap = r.Snapshot()
+	if snap["serper"].Reachable {
+		t.Error("serper should be unreachable after a failure")
+	}
+	if snap["serper"].LastError != "429 rate limited" {
+		t.Errorf("serper LastError = %q, want the failure text", snap["serper"].LastError)
+	}
+	if snap["serper"].StalledUntil.IsZero() {
+		t.Error("serper StalledUntil should be set")
+	}
+	if !snap["brave"].Reachable {
+		t.Error("brave should stay reachable")
+	}
+	// Snapshot only covers providers in the priority order.
+	if _, ok := r.Snapshot()["exa"]; ok {
+		t.Error("Snapshot should not include a provider outside the priority")
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -32,6 +33,26 @@ type routingResponse struct {
 	// the tenant can key itself (needs no operator key, or has an own
 	// CredentialDef for it). Lets the UI show a "bring-your-own-key" note.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
+
+	// Search is the RFC BB web-search provider cascade — a single flat list
+	// (search has no tier/model dimension), each with keyability + live
+	// availability. Omitted when no search providers are configured.
+	Search []searchRoutingProvider `json:"search,omitempty"`
+}
+
+// searchRoutingProvider is one entry in the search cascade for the routing view.
+type searchRoutingProvider struct {
+	Provider string `json:"provider"`
+	Primary  bool   `json:"primary"` // first in the (post-filter) cascade
+	// Keyable: this caller has a usable key (operator host key when allowed, an
+	// own CredentialDef, or the provider is keyless). Available: keyable AND not
+	// in a failure cooldown. Selected: the first available provider (what runs
+	// now). Reachable: not in a cooldown, regardless of key.
+	Keyable   *bool  `json:"keyable,omitempty"`
+	Available *bool  `json:"available,omitempty"`
+	Selected  *bool  `json:"selected,omitempty"`
+	Reachable *bool  `json:"reachable,omitempty"`
+	LastError string `json:"last_error,omitempty"` // admin-only
 }
 
 type routingProvider struct {
@@ -197,11 +218,70 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 		resp.Providers = append(resp.Providers, rp)
 	}
 
+	// RFC BB: the search-provider cascade — a flat list with keyability + live
+	// availability, same admin/tenant posture as the LLM cascade above (admin
+	// sees last_error; a restricted tenant sees only providers it can key).
+	if s.searchResolver != nil && s.searchRegistry != nil {
+		callerTenant, callerUser := "", ""
+		if !admin {
+			if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+				callerTenant, callerUser = p.TenantID, p.Subject
+			}
+		}
+		allowOperatorKey := !restricted // a restricted tenant can't spend the operator host key
+		snap := s.searchResolver.Snapshot()
+		selectedMarked := false
+		for _, id := range s.searchResolver.Cascade(nil) {
+			p, ok := s.searchRegistry.Get(id)
+			if !ok {
+				continue
+			}
+			keyable := s.searchProviderKeyable(r.Context(), id, p.KeyEnvName(), callerTenant, callerUser, allowOperatorKey)
+			if restricted && !keyable {
+				continue // a restricted tenant sees only providers it can key
+			}
+			av := snap[id]
+			available := keyable && av.Reachable
+			sel := available && !selectedMarked
+			if sel {
+				selectedMarked = true
+			}
+			reachable := av.Reachable
+			sp := searchRoutingProvider{
+				Provider:  id,
+				Primary:   len(resp.Search) == 0,
+				Keyable:   &keyable,
+				Available: &available,
+				Selected:  &sel,
+				Reachable: &reachable,
+			}
+			if admin {
+				sp.LastError = av.LastError
+			}
+			resp.Search = append(resp.Search, sp)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(resp)
+}
+
+// searchProviderKeyable reports whether this caller can supply a key for a
+// search provider: keyless (searxng) is always keyable; an operator host key
+// counts when allowed (a restricted tenant is denied it); otherwise the caller
+// must hold its own CredentialDef of the provider's env-var name (agent="" —
+// the routing view has no agent).
+func (s *Server) searchProviderKeyable(ctx context.Context, id, env, tenantID, userID string, allowOperatorKey bool) bool {
+	if env == "" {
+		return true
+	}
+	if allowOperatorKey && s.searchHostKeys[id] != "" {
+		return true
+	}
+	return s.credKeyable != nil && s.credKeyable(ctx, tenantID, "", userID, env)
 }
 
 // routingTierNames returns the configured tier names (keys of cfg.Tiers) in a
