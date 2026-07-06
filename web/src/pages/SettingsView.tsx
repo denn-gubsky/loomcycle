@@ -125,7 +125,11 @@ const KNOWN_KEY_NAMES = [
   "DEEPSEEK_API_KEY",
   "GEMINI_API_KEY",
   "OLLAMA_API_KEY",
+  // Web-search providers (RFC BB).
   "BRAVE_API_KEY",
+  "SERPER_API_KEY",
+  "EXA_API_KEY",
+  "TAVILY_API_KEY",
 ];
 
 function CredentialsSection() {
