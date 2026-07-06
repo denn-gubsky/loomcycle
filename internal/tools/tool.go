@@ -117,6 +117,23 @@ func AgentTools(ctx context.Context) []string {
 	return v
 }
 
+type ctxKeySearchProviders struct{}
+
+// WithSearchProviders attaches the agent's per-agent web-search fallback list
+// (RFC BB AgentDef.search_providers) to ctx. The HTTP server stamps it once per
+// run at every run-start site; the WebSearch tool reads it via SearchProviders
+// and passes it to the search resolver's Cascade (empty = the global default).
+func WithSearchProviders(ctx context.Context, providers []string) context.Context {
+	return context.WithValue(ctx, ctxKeySearchProviders{}, providers)
+}
+
+// SearchProviders returns the agent's per-agent web-search fallback list from
+// ctx, or nil (= use the global search_priority default) when not attached.
+func SearchProviders(ctx context.Context) []string {
+	v, _ := ctx.Value(ctxKeySearchProviders{}).([]string)
+	return v
+}
+
 // ctxKeyHostPolicy is the context key for the run's effective HTTP
 // host narrowing policy — what the CALLER (top-level: HTTP request
 // body; sub-agent: inherited from the parent's ctx) asked for in

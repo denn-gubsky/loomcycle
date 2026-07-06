@@ -9,7 +9,48 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/search"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// TestWebSearch_PerAgentProvidersOverride: the per-agent search_providers list
+// (RFC BB Phase 3, on ctx) overrides the global cascade — a provider absent from
+// the list is skipped even when it's the global primary.
+func TestWebSearch_PerAgentProvidersOverride(t *testing.T) {
+	braveHit, serperHit := 0, 0
+	brave := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		braveHit++
+		_, _ = w.Write([]byte(`{"web":{"results":[{"title":"B","url":"https://b.example","description":"d"}]}}`))
+	}))
+	defer brave.Close()
+	serper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serperHit++
+		_, _ = w.Write([]byte(`{"organic":[{"title":"S","link":"https://s.example","snippet":"d"}]}`))
+	}))
+	defer serper.Close()
+	reg, _ := search.BuildRegistry([]search.ProviderSpec{
+		{ID: "brave", Options: []search.Option{search.WithEndpoint(brave.URL)}},
+		{ID: "serper", Options: []search.Option{search.WithEndpoint(serper.URL)}},
+	})
+	// Global order is [brave, serper] — brave is primary.
+	ws := &WebSearch{Registry: reg, Resolver: search.NewResolver([]string{"brave", "serper"}),
+		HostKeys: map[string]string{"brave": "bk", "serper": "sk"}}
+
+	// Per-agent list = [serper] only → brave is skipped entirely.
+	ctx := tools.WithSearchProviders(context.Background(), []string{"serper"})
+	res, err := ws.Execute(ctx, json.RawMessage(`{"query":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "s.example") {
+		t.Errorf("expected serper's result (per-agent override), got %q", res.Text)
+	}
+	if braveHit != 0 {
+		t.Errorf("brave (global primary, absent from per-agent list) should not be hit; braveHit=%d", braveHit)
+	}
+	if serperHit != 1 {
+		t.Errorf("serper should be hit once; serperHit=%d", serperHit)
+	}
+}
 
 // TestWebSearch_FallbackCircuit is the RFC BB headline: the primary provider
 // errors, so WebSearch falls over to the next provider in the cascade and
