@@ -148,6 +148,17 @@ func extractBearer(r *http.Request) (string, bool) {
 	if c, err := r.Cookie(webui.SessionCookie); err == nil && c.Value != "" {
 		return c.Value, true
 	}
+	// WebSocket clients (browsers can't set an Authorization header on a
+	// WebSocket) carry the bearer as a Sec-WebSocket-Protocol entry of the form
+	// "bearer.<token>" (RFC BC). The app subprotocol is negotiated separately in
+	// the /v1/client-tools handler; this entry is never echoed back.
+	if protos := r.Header.Get("Sec-WebSocket-Protocol"); protos != "" {
+		for _, p := range strings.Split(protos, ",") {
+			if tok, ok := strings.CutPrefix(strings.TrimSpace(p), "bearer."); ok && tok != "" {
+				return tok, true
+			}
+		}
+	}
 	return "", false
 }
 
@@ -487,6 +498,13 @@ func requiredScopeFor(method, path string) string {
 	// can focus via ?tenant=). The UI's per-tenant workspace picker needs it.
 	case path == "/v1/_users":
 		return ""
+	// RFC BC: the client-tool host WebSocket. A client registers tools it runs on
+	// the user's own machine; the connection serves ONLY its own principal's runs
+	// (filed under (tenant, subject) from the bearer). Requires runs:create — you
+	// must be able to run agents to benefit, and it mirrors the steer /input gate.
+	// ScopeAdmin also satisfies it.
+	case path == "/v1/client-tools":
+		return auth.ScopeRunsCreate
 	// RFC AF: the tenant-confined substrate plane — def-authoring across the 8
 	// xxxDef families, INCLUDING /v1/_mcpserverdef (the "dynamic MCP tools
 	// ingestion" surface: a tenant registers an external MCP server and the

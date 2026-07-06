@@ -42,6 +42,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
+	"github.com/denn-gubsky/loomcycle/internal/clienttools"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
@@ -1503,6 +1504,14 @@ func main() {
 	// block). Same registry/resolver the WebSearch tool uses; nil when no search
 	// providers are configured.
 	srv.SetSearchRouting(searchRegistry, searchResolver, searchHostKeys)
+
+	// RFC BC: the client-tool host registry — live per-principal WebSocket
+	// connections over which a client executes tools on the user's machine. The
+	// /v1/client-tools handler registers connections here; the dispatch fallback
+	// (composed below) + candidateTools advertising read it. Always on (the
+	// endpoint is bearer-gated; an empty registry just serves no client-tools).
+	clientToolReg := clienttools.NewRegistry(cfg.Env.ClientToolMaxConns)
+	srv.SetClientTools(clientToolReg)
 
 	// RFC AA SQL Memory (Phase 1). Off by default; constructed only when the
 	// operator enables it. The manager hosts per-scope sqlite databases that

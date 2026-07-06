@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.3.1
+	github.com/coder/websocket v1.8.15
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/ewhauser/gbash v0.0.38
 	github.com/ewhauser/gbash/contrib/awk v0.0.38

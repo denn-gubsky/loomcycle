@@ -21,6 +21,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/clienttools"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -145,6 +146,13 @@ type Server struct {
 	searchRegistry *search.Registry
 	searchResolver *search.Resolver
 	searchHostKeys map[string]string
+
+	// clientTools is the RFC BC per-principal registry of live client-tool
+	// WebSocket connections (nil = the /v1/client-tools endpoint is disabled).
+	// The handler registers connections here; the run dispatch fallback +
+	// candidateTools advertising read it, keyed by (tenant, subject). Wired via
+	// SetClientTools (main.go).
+	clientTools *clienttools.Registry
 
 	// limits is the RFC AW per-scope token-budget tracker: month-to-date
 	// counters + cached soft/hard ceilings, checked at admission and
@@ -844,6 +852,11 @@ func (s *Server) SetCredKeyable(fn func(ctx context.Context, tenantID, agentName
 // calls it after construction). hostKeys maps a provider id → its operator host
 // key value; a keyless provider (searxng) has no entry. All-nil = no search
 // providers configured (the "search" routing block is then omitted).
+// SetClientTools wires the RFC BC client-tool registry (main.go calls it after
+// construction). Nil = the /v1/client-tools endpoint refuses + no client-tools
+// are advertised/dispatched.
+func (s *Server) SetClientTools(reg *clienttools.Registry) { s.clientTools = reg }
+
 func (s *Server) SetSearchRouting(reg *search.Registry, res *search.Resolver, hostKeys map[string]string) {
 	s.searchRegistry = reg
 	s.searchResolver = res
@@ -2652,6 +2665,10 @@ func (s *Server) Mux() http.Handler {
 	// Re-attach to a running (or finished) run's event stream — the operator
 	// leaves the interactive /run terminal and returns to the same live run.
 	mux.Handle("GET /v1/runs/{run_id}/stream", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunStream))))
+	// RFC BC: the client-tool host WebSocket. auth runs on the initial GET before
+	// the upgrade (authMiddleware wraps a plain handler), so the principal is on
+	// ctx by the time handleClientTools upgrades.
+	mux.Handle("GET /v1/client-tools", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleClientTools))))
 	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
 	// page (/ui with a ?token= query) is intentionally NOT
 	// auth-middleware-wrapped; it sets the cookie that the
