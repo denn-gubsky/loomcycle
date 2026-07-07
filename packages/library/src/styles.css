@@ -10,6 +10,14 @@
    light override) so the package is self-contained — no external tokens.css. */
 
 .loomcycle-library {
+  /* Fill the host container + propagate a definite height so the Splitter's
+   * grid row (grid-template-rows: minmax(0,1fr)) is bounded and the list +
+   * detail panes scroll independently. A host must give this element a bounded
+   * parent (the standard fill-the-container contract). */
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   /* dark palette (default) — resolved from the loomcycle --lc-* design tokens */
   --bg: #0f1115;
   --bg-soft: #161922;
@@ -505,7 +513,8 @@
 .loomcycle-library .library-view {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 .loomcycle-library .library-subtabs {
   display: flex;
