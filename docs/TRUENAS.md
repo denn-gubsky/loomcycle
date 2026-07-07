@@ -122,6 +122,16 @@ generate the `trains/` output, and point TrueNAS at the catalog.
 - TrueNAS dataset snapshots back up `data` + your agent datasets; that's orthogonal
   to loomcycle's own `/v1/_snapshots`.
 
+## Web search (SearXNG sidecar)
+
+For a free, self-hosted web-search provider, add a **SearXNG sidecar** on the same
+compose network as loomcycle — reachable in-network at `http://searxng:8080`, no
+host port. It's the same pattern on TrueNAS as anywhere else: a `searxng` service,
+a `searxng/settings.yml` with three required knobs (`secret_key`, `limiter: false`,
+`formats: [html, json]`), and `search_providers: { searxng: { base_url: … } }` +
+`search_priority:` in the overlay. Full recipe + verification: **[`docs/SEARCH.md`](SEARCH.md)**
+(the commented sidecar is in [`docker-compose.example.yaml`](../docker-compose.example.yaml)).
+
 ## Volumes → datasets (RFC AH)
 
 Each agent Volume is **a host dataset mounted into the container** + **a `volumes:`

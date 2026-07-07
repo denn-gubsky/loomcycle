@@ -48,6 +48,13 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Web-search provider keys (RFC BB) — set whichever you list under
+      # search_providers: in your yaml. SearXNG (below) is keyless. See
+      # docs/SEARCH.md.
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      # SERPER_API_KEY: ${SERPER_API_KEY:-}
+      # EXA_API_KEY: ${EXA_API_KEY:-}
+      # TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       # Bind to all interfaces inside the container so the port
       # mapping above works; the host port binds to 127.0.0.1 only.
       LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
@@ -76,3 +83,22 @@ services:
   # and to `depends_on:`:
   #   postgres:
   #     condition: service_healthy
+
+  # --- SearXNG (uncomment for a self-hosted, keyless web-search provider) ---
+  # A metasearch sidecar for the WebSearch tool (RFC BB). loomcycle reaches it
+  # in-network at http://searxng:8080 — no host port needed. Requires a
+  # searxng/settings.yml next to this file with THREE knobs (see docs/SEARCH.md):
+  #   server: { secret_key: "<openssl rand -hex 32>", limiter: false }
+  #   search: { formats: [html, json] }   # json is REQUIRED or /search 403s
+  # Then add to your loomcycle.yaml:
+  #   search_providers: { searxng: { base_url: "http://searxng:8080" } }
+  #   search_priority: [searxng]          # or [searxng, brave] for a fallback
+  # searxng:
+  #   image: searxng/searxng:latest
+  #   container_name: searxng
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./searxng:/etc/searxng:rw
+  #   environment:
+  #     SEARXNG_BASE_URL: http://searxng:8080/
+  #   # No ports: — only loomcycle needs to reach it, in-network.
