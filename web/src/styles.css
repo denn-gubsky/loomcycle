@@ -2647,10 +2647,23 @@ button.primary:disabled {
 }
 
 /* ---- Library page (top-level) ---- */
+/* The @loomcycle/library root. It MUST propagate a definite height down to
+ * .library-view → .library-content → .splitter, or the Splitter's grid row
+ * (grid-template-rows: minmax(0,1fr)) has no bounded height to resolve against,
+ * the panes grow to content, and the whole Library scrolls as ONE instead of
+ * the list + detail scrolling independently. The package's own styles.css sets
+ * only color vars here; the web app relies on this global sheet, so bound it. */
+.loomcycle-library {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .library-view {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 .library-subtabs {
   display: flex;
