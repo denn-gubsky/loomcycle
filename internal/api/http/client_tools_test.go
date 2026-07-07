@@ -62,7 +62,7 @@ func TestHandleClientTools_HelloRoundTrip(t *testing.T) {
 	hello := clienttools.HelloFrame{
 		Type:   clienttools.FrameHello,
 		Client: "test/1",
-		Tools:  []clienttools.ToolSchema{{Name: "browser.read_page", Description: "read the page"}},
+		Tools:  []clienttools.ToolSchema{{Name: "browser_read_page", Description: "read the page"}},
 	}
 	b, _ := json.Marshal(hello)
 	if err := c.Write(ctx, websocket.MessageText, b); err != nil {
@@ -81,8 +81,8 @@ func TestHandleClientTools_HelloRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &ok); err != nil {
 		t.Fatal(err)
 	}
-	if len(ok.Accepted) != 1 || ok.Accepted[0] != "browser.read_page" || ok.ConnectionID == "" {
-		t.Errorf("hello_ok = %+v, want accepted [browser.read_page] + a connection_id", ok)
+	if len(ok.Accepted) != 1 || ok.Accepted[0] != "browser_read_page" || ok.ConnectionID == "" {
+		t.Errorf("hello_ok = %+v, want accepted [browser_read_page] + a connection_id", ok)
 	}
 
 	// The connection is now in the registry under the principal key.
@@ -99,7 +99,7 @@ func TestCandidateTools_AdvertisesAndGatesClientTools(t *testing.T) {
 	key := clienttools.PrincipalKey{Tenant: "t1", Subject: "u1"}
 	silent := func(context.Context, any) error { return nil }
 	_, dereg, _ := reg.Register(key, []clienttools.ToolSchema{
-		{Name: "browser.read_page"}, {Name: "browser.click"},
+		{Name: "browser_read_page"}, {Name: "browser_click"},
 	}, silent)
 	defer dereg()
 
@@ -108,34 +108,79 @@ func TestCandidateTools_AdvertisesAndGatesClientTools(t *testing.T) {
 	srv.clientTools = reg
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "t1", Subject: "u1"})
 
-	// candidateTools advertises the principal's client-tools (client: prefixed).
-	cands := srv.candidateTools(ctx, "t1", []string{"client:browser.*"})
+	// candidateTools advertises the principal's client-tools (client__ prefixed).
+	cands := srv.candidateTools(ctx, "t1", []string{"client__browser_*"})
 	names := map[string]bool{}
 	for _, tl := range cands {
 		names[tl.Name()] = true
 	}
-	if !names["client:browser.read_page"] || !names["client:browser.click"] {
+	if !names["client__browser_read_page"] || !names["client__browser_click"] {
 		t.Fatalf("candidateTools should advertise both client-tools; got %v", names)
 	}
 
 	// filterTools narrows to exactly what the agent grants.
-	filtered := filterTools(cands, []string{"client:browser.read_page"}, nil)
+	filtered := filterTools(cands, []string{"client__browser_read_page"}, nil)
 	fnames := map[string]bool{}
 	for _, tl := range filtered {
 		fnames[tl.Name()] = true
 	}
-	if !fnames["client:browser.read_page"] {
-		t.Errorf("granted client:browser.read_page should survive filtering; got %v", fnames)
+	if !fnames["client__browser_read_page"] {
+		t.Errorf("granted client__browser_read_page should survive filtering; got %v", fnames)
 	}
-	if fnames["client:browser.click"] {
-		t.Errorf("ungranted client:browser.click should be filtered out; got %v", fnames)
+	if fnames["client__browser_click"] {
+		t.Errorf("ungranted client__browser_click should be filtered out; got %v", fnames)
 	}
 
 	// A different principal sees no client-tools.
 	other := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "t1", Subject: "someone-else"})
-	for _, tl := range srv.candidateTools(other, "t1", []string{"client:browser.*"}) {
+	for _, tl := range srv.candidateTools(other, "t1", []string{"client__browser_*"}) {
 		if len(tl.Name()) >= len(clienttools.ToolPrefix) && tl.Name()[:len(clienttools.ToolPrefix)] == clienttools.ToolPrefix {
 			t.Errorf("a different principal must not see client-tools; saw %q", tl.Name())
+		}
+	}
+}
+
+func TestHandleClientTools_RejectsWireUnsafeNames(t *testing.T) {
+	reg := clienttools.NewRegistry(0)
+	ts := clientToolsTestServer(t, reg, auth.Principal{TenantID: "t1", Subject: "u1"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, wsURL(ts.URL), &websocket.DialOptions{
+		Subprotocols: []string{clientToolSubprotocol},
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.CloseNow()
+
+	// One valid, one dotted (illegal) bare name. The dotted one is skipped at
+	// the hello boundary; only the valid one is accepted + registered.
+	hello := clienttools.HelloFrame{
+		Type: clienttools.FrameHello,
+		Tools: []clienttools.ToolSchema{
+			{Name: "browser_read_page"},
+			{Name: "browser.click"}, // illegal (dot) → skipped
+		},
+	}
+	b, _ := json.Marshal(hello)
+	if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ok clienttools.HelloOKFrame
+	if err := json.Unmarshal(data, &ok); err != nil {
+		t.Fatal(err)
+	}
+	if len(ok.Accepted) != 1 || ok.Accepted[0] != "browser_read_page" {
+		t.Errorf("only the wire-safe name should be accepted; got %v", ok.Accepted)
+	}
+	for _, s := range reg.Provides(clienttools.PrincipalKey{Tenant: "t1", Subject: "u1"}) {
+		if s.Name == "browser.click" {
+			t.Error("a dotted bare name must not be registered")
 		}
 	}
 }

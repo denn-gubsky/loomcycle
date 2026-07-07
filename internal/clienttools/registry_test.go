@@ -31,7 +31,7 @@ func TestRegistry_InvokeRoundTrip(t *testing.T) {
 	r := NewRegistry(0)
 	key := PrincipalKey{"t1", "u1"}
 	var c *Conn
-	conn, dereg, err := r.Register(key, []ToolSchema{{Name: "browser.read_page"}}, echoSender(&c, ""))
+	conn, dereg, err := r.Register(key, []ToolSchema{{Name: "browser_read_page"}}, echoSender(&c, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestRegistry_InvokeRoundTrip(t *testing.T) {
 	if r.Count() != 1 {
 		t.Fatalf("Count = %d, want 1", r.Count())
 	}
-	res, err := r.Invoke(context.Background(), key, "browser.read_page", json.RawMessage(`{"q":1}`), InvokeMeta{RunID: "r1"})
+	res, err := r.Invoke(context.Background(), key, "browser_read_page", json.RawMessage(`{"q":1}`), InvokeMeta{RunID: "r1"})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -55,15 +55,15 @@ func TestRegistry_NoClient(t *testing.T) {
 	key := PrincipalKey{"t1", "u1"}
 	// A connection exists but doesn't provide the tool → still ErrNoClient.
 	var c *Conn
-	conn, dereg, _ := r.Register(key, []ToolSchema{{Name: "browser.click"}}, echoSender(&c, ""))
+	conn, dereg, _ := r.Register(key, []ToolSchema{{Name: "browser_click"}}, echoSender(&c, ""))
 	c = conn
 	defer dereg()
 
-	if _, err := r.Invoke(context.Background(), key, "browser.read_page", nil, InvokeMeta{}); !errors.Is(err, ErrNoClient) {
+	if _, err := r.Invoke(context.Background(), key, "browser_read_page", nil, InvokeMeta{}); !errors.Is(err, ErrNoClient) {
 		t.Errorf("want ErrNoClient for an unprovided tool, got %v", err)
 	}
 	// A different principal → ErrNoClient.
-	if _, err := r.Invoke(context.Background(), PrincipalKey{"t1", "other"}, "browser.click", nil, InvokeMeta{}); !errors.Is(err, ErrNoClient) {
+	if _, err := r.Invoke(context.Background(), PrincipalKey{"t1", "other"}, "browser_click", nil, InvokeMeta{}); !errors.Is(err, ErrNoClient) {
 		t.Errorf("want ErrNoClient for a different principal, got %v", err)
 	}
 }
@@ -73,11 +73,11 @@ func TestRegistry_DisconnectFailsPending(t *testing.T) {
 	key := PrincipalKey{"t1", "u1"}
 	// A sender that never replies — the invoke blocks until dereg.
 	silent := func(context.Context, any) error { return nil }
-	_, dereg, _ := r.Register(key, []ToolSchema{{Name: "fs.read"}}, silent)
+	_, dereg, _ := r.Register(key, []ToolSchema{{Name: "fs_read"}}, silent)
 
 	got := make(chan error, 1)
 	go func() {
-		_, err := r.Invoke(context.Background(), key, "fs.read", nil, InvokeMeta{})
+		_, err := r.Invoke(context.Background(), key, "fs_read", nil, InvokeMeta{})
 		got <- err
 	}()
 	// Give the invoke time to register its pending waiter, then disconnect.
@@ -98,12 +98,12 @@ func TestRegistry_Timeout(t *testing.T) {
 	r := NewRegistry(0)
 	key := PrincipalKey{"t1", "u1"}
 	silent := func(context.Context, any) error { return nil }
-	_, dereg, _ := r.Register(key, []ToolSchema{{Name: "fs.read"}}, silent)
+	_, dereg, _ := r.Register(key, []ToolSchema{{Name: "fs_read"}}, silent)
 	defer dereg()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	_, err := r.Invoke(ctx, key, "fs.read", nil, InvokeMeta{})
+	_, err := r.Invoke(ctx, key, "fs_read", nil, InvokeMeta{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("want DeadlineExceeded, got %v", err)
 	}
@@ -113,14 +113,14 @@ func TestRegistry_MostRecentWins(t *testing.T) {
 	r := NewRegistry(0)
 	key := PrincipalKey{"t1", "u1"}
 	var c1, c2 *Conn
-	conn1, d1, _ := r.Register(key, []ToolSchema{{Name: "browser.read_page"}}, echoSender(&c1, "first"))
+	conn1, d1, _ := r.Register(key, []ToolSchema{{Name: "browser_read_page"}}, echoSender(&c1, "first"))
 	c1 = conn1
 	defer d1()
-	conn2, d2, _ := r.Register(key, []ToolSchema{{Name: "browser.read_page"}}, echoSender(&c2, "second"))
+	conn2, d2, _ := r.Register(key, []ToolSchema{{Name: "browser_read_page"}}, echoSender(&c2, "second"))
 	c2 = conn2
 	defer d2()
 
-	res, err := r.Invoke(context.Background(), key, "browser.read_page", nil, InvokeMeta{})
+	res, err := r.Invoke(context.Background(), key, "browser_read_page", nil, InvokeMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,16 +158,16 @@ func TestRegistry_ProvidesUnion(t *testing.T) {
 	r := NewRegistry(0)
 	key := PrincipalKey{"t1", "u1"}
 	silent := func(context.Context, any) error { return nil }
-	_, d1, _ := r.Register(key, []ToolSchema{{Name: "browser.read_page"}, {Name: "browser.click"}}, silent)
+	_, d1, _ := r.Register(key, []ToolSchema{{Name: "browser_read_page"}, {Name: "browser_click"}}, silent)
 	defer d1()
-	_, d2, _ := r.Register(key, []ToolSchema{{Name: "browser.navigate"}}, silent)
+	_, d2, _ := r.Register(key, []ToolSchema{{Name: "browser_navigate"}}, silent)
 	defer d2()
 
 	names := map[string]bool{}
 	for _, s := range r.Provides(key) {
 		names[s.Name] = true
 	}
-	for _, want := range []string{"browser.read_page", "browser.click", "browser.navigate"} {
+	for _, want := range []string{"browser_read_page", "browser_click", "browser_navigate"} {
 		if !names[want] {
 			t.Errorf("Provides union missing %q; got %v", want, names)
 		}
