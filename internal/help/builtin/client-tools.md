@@ -18,16 +18,16 @@ protocol — it's a normal tool call; the only new thing is *where* it runs.
   input_schema}` for each tool it provides.
 - loomcycle files the connection under the bearer's **(tenant, subject)** — the
   same identity a run carries — so a run and its user's connection meet on one key.
-- A client-tool appears to the agent under the **`client:` prefix**
-  (`browser.read_page` → `client:browser.read_page`), granted through the agent's
-  normal `tools:` allowlist (globs work: `client:browser.*`).
+- A client-tool appears to the agent under the **`client__` prefix**
+  (`browser_read_page` → `client__browser_read_page`), granted through the agent's
+  normal `tools:` allowlist (globs work: `client__browser_*`).
 
 ## Granting an agent client-tools
 
 ```yaml
 agents:
   page-assistant:
-    tools: [client:browser.*, WebFetch, Context]
+    tools: [client__browser_*, WebFetch, Context]
 ```
 
 An agent sees a client-tool only when **both** hold: its `tools:` grants the name,
@@ -41,15 +41,21 @@ error (`no client connection…` / `…disconnected` / `…timed out`), never a 
 import { LoomcycleClient } from "@loomcycle/client";
 const client = new LoomcycleClient({ baseUrl, authToken });
 const host = client.connectClientTools({
-  tools: [{ name: "browser.read_page", description: "Read the current page" }],
+  tools: [{ name: "browser_read_page", description: "Read the current page" }],
   onInvoke: async ({ tool, input }) => {
-    if (tool === "browser.read_page") return await readPage();
+    if (tool === "browser_read_page") return await readPage();
   },
 });
 // host.close() to stop. Browsers/Node 22+ use the global WebSocket; on older
 // Node pass WebSocketImpl (the `ws` package). The bearer rides the
 // Sec-WebSocket-Protocol subprotocol (browsers can't set an Authorization header).
 ```
+
+Tool names must be **identifier-safe**: a bare name is `[a-zA-Z0-9_-]` (no dots,
+no colons) and short enough that `client__` + name stays ≤ 64 chars — the exposed
+name (`client__browser_read_page`) must be a valid LLM function name. A name that
+isn't is **skipped** at `hello` (not registered, not offered); the `hello_ok`
+frame lists exactly the names that were accepted, so the client sees what stuck.
 
 ## Security
 

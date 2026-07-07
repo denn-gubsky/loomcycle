@@ -4,15 +4,43 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // ToolPrefix namespaces client-tools in an agent's `tools` allowlist + the tool
-// names the model sees — mirroring the `mcp__` convention. A client-registered
-// tool "browser.read_page" is granted/called as "client:browser.read_page".
-const ToolPrefix = "client:"
+// names the model sees — mirroring the `mcp__` convention. It MUST stay within
+// the LLM function-name character set (see MaxToolNameLen): a client-registered
+// tool "browser_read_page" is granted/called as "client__browser_read_page".
+//
+// `__` (not `:`) is deliberate: LLM function names must match
+// ^[a-zA-Z0-9_-]{1,64}$ (Anthropic + OpenAI enforce it; ollama's own tool-call
+// recovery rejects anything else). A colon or a dot reaches the wire unescaped
+// and the provider 400s / the model mangles the name — so both the prefix and
+// the client's bare names must be identifier-safe (validated at the WS hello
+// boundary via ValidBareName).
+const ToolPrefix = "client__"
+
+// MaxToolNameLen is the LLM function-name limit. The EXPOSED name
+// (ToolPrefix + bare name) must not exceed it, so ValidBareName bounds the bare
+// name at MaxToolNameLen-len(ToolPrefix).
+const MaxToolNameLen = 64
+
+var bareNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// ValidBareName reports whether a client-advertised bare tool name yields a
+// wire-safe exposed name: identifier chars only, and short enough that
+// ToolPrefix+name stays within MaxToolNameLen. The runtime validates every
+// hello-advertised name against this at the untrusted edge and skips the rest,
+// so an exposed client-tool name is ALWAYS a valid LLM function name.
+func ValidBareName(name string) bool {
+	if name == "" || len(ToolPrefix)+len(name) > MaxToolNameLen {
+		return false
+	}
+	return bareNameRe.MatchString(name)
+}
 
 // Candidates returns the tools.Tool set to advertise for a principal — one
 // delegating adapter per tool its live connections provide (empty when nothing

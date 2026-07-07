@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -78,17 +79,29 @@ func (s *Server) handleClientTools(w http.ResponseWriter, r *http.Request) {
 		return c.Write(sendCtx, websocket.MessageText, b)
 	}
 
-	conn, deregister, err := s.clientTools.Register(key, hello.Tools, send)
+	// Validate bare names at this untrusted edge (RFC BC): the exposed name is
+	// ToolPrefix+bare, which MUST be a valid LLM function name, so a bare name
+	// with an illegal char (`.`, `:`, …) or one too long is SKIPPED — never
+	// registered, never advertised. Only accepted names go to the registry + are
+	// reflected in hello_ok, so the client sees exactly what it can use. The
+	// registry stays name-agnostic; validation lives here at the boundary.
+	valid := make([]clienttools.ToolSchema, 0, len(hello.Tools))
+	accepted := make([]string, 0, len(hello.Tools))
+	for _, t := range hello.Tools {
+		if !clienttools.ValidBareName(t.Name) {
+			log.Printf("client-tools: skipping tool %q from %s — name must be [a-zA-Z0-9_-] and short enough for the client__ prefix (<=%d total)", t.Name, key.Subject, clienttools.MaxToolNameLen)
+			continue
+		}
+		valid = append(valid, t)
+		accepted = append(accepted, t.Name)
+	}
+
+	conn, deregister, err := s.clientTools.Register(key, valid, send)
 	if err != nil {
 		_ = c.Close(websocket.StatusTryAgainLater, "too many client-tool connections")
 		return
 	}
 	defer deregister() // fails any in-flight invokes so no run hangs
-
-	accepted := make([]string, 0, len(hello.Tools))
-	for _, t := range hello.Tools {
-		accepted = append(accepted, t.Name)
-	}
 	if err := send(ctx, clienttools.HelloOKFrame{
 		Type: clienttools.FrameHelloOK, ConnectionID: conn.ID(), Accepted: accepted,
 	}); err != nil {
