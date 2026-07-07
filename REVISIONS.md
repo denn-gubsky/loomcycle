@@ -8,6 +8,35 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.16.1
+
+**🩹 Client-tool patch — wire-safe names + the Library scroll fix that actually works.**
+
+- **Client-tool names are now valid LLM function names** (#680). v1.16.0 exposed
+  client-tools as `client:browser.read_page` — the `client:` prefix (colon) and a
+  dotted bare name both fall outside `[a-zA-Z0-9_-]{1,64}`, so the name reached the
+  provider unescaped and a client-tool was **uncallable end-to-end** (qwen mangled
+  it to `client` → `tool not found`; Anthropic/OpenAI would 400). Fix: `ToolPrefix`
+  `client:` → **`client__`** (mirrors `mcp__`), and advertised bare names are
+  validated at the WS `hello` boundary (`[a-zA-Z0-9_-]`, and `client__`+name ≤ 64)
+  — an invalid name is skipped, `hello_ok` reflects only what was accepted. Grants
+  become `client__browser_*` (was `client:browser.*`). A regression test now
+  asserts every exposed name is a valid function name. **loomboard (the first
+  consumer) hadn't shipped against v1.16.0 yet**, so this makes client-tools work
+  before first use; register underscore bare names + grant `client__browser_*`.
+- **Library list + detail scroll independently** (#681). The v1.15.1 fix bounded
+  the Splitter's grid row, but the `@loomcycle/library` root (`.loomcycle-library`)
+  had no height, so `.library-view`'s `height:100%` had no definite parent and the
+  whole Library still scrolled as one (a selection low in the agents list left its
+  detail off-screen). Completing the height chain — bound `.loomcycle-library` +
+  `.library-view` — makes each pane engage its own scroll. Applied to both the web
+  global sheet and the `@loomcycle/library` package sheet.
+
+Binary + embedded WebUI only; no wire/schema change, no DB migration; adapters
+unchanged (`@loomcycle/client` 1.16.0, Python 1.13.0).
+
+---
+
 ## What's in v1.16.0
 
 **🔌 RFC BC — client-executed tools over a WebSocket (local tool host).** An agent
