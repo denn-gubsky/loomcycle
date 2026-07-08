@@ -54,8 +54,9 @@ export interface LibraryEntry {
   active_def_id?: string;
   latest_version?: number;
   last_updated?: string;
-  /** Agents only (soft reclaim): live (non-retired) version count, and whether
-   *  the active pointer references a retired row. Absent for skills + mcp. */
+  /** Soft-reclaim status: live (non-retired) version count, and whether the
+   *  active pointer references a retired row. Populated for agents, skills, and
+   *  mcp-servers by the *ListNames summary queries; drives "Hide retired". */
   live_version_count?: number;
   active_retired?: boolean;
   /** Static-side definition payload (same JSON shape as the substrate body).

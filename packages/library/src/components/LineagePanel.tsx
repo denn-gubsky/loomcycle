@@ -73,6 +73,39 @@ export default function LineagePanel({
   const [selectedName, setSelectedName] = useState<string>(() =>
     entries.length > 0 ? entries[0]!.name : "",
   );
+
+  // List controls (per-tab: each sub-tab renders its own LineagePanel, so the
+  // filter/type/sort/hide-retired state is naturally independent per tab).
+  const [filterText, setFilterText] = useState("");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [hideRetired, setHideRetired] = useState(false);
+  const [sortMode, setSortMode] = useState<SortMode>("none");
+
+  // The list actually rendered = entries ∘ name-filter ∘ type-filter ∘
+  // hide-retired ∘ sort. Memoised so selecting a row (which changes
+  // selectedName) doesn't re-run the whole chain. "none" preserves the
+  // server's order (name ASC); the detail pane keeps showing a selected entry
+  // even when a filter hides it from the list (selectedEntry reads full entries).
+  const visibleEntries = useMemo(() => {
+    let out = entries.filter((e) => {
+      if (!nameMatches(e.name, filterText)) return false;
+      if (typeFilter === "dynamic" && !e.in_substrate) return false;
+      if (typeFilter === "static" && !e.in_static) return false;
+      if (hideRetired && entryRetired(e)) return false;
+      return true;
+    });
+    if (sortMode === "asc") {
+      out = [...out].sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sortMode === "desc") {
+      out = [...out].sort((a, b) => b.name.localeCompare(a.name));
+    } else if (sortMode === "type") {
+      // Group by source rank (static-only, both, dynamic-only), then name ASC.
+      out = [...out].sort(
+        (a, b) => sourceRank(a) - sourceRank(b) || a.name.localeCompare(b.name),
+      );
+    }
+    return out;
+  }, [entries, filterText, typeFilter, hideRetired, sortMode]);
   const [versions, setVersions] = useState<DefRow[]>([]);
   const [versionsErr, setVersionsErr] = useState<string | null>(null);
   const [versionsLoading, setVersionsLoading] = useState(false);
@@ -210,11 +243,62 @@ export default function LineagePanel({
       minLeftWidth={220}
       minRightWidth={320}
     >
-      <EntryList
-        entries={entries}
-        selectedName={selectedName}
-        onSelect={setSelectedName}
-      />
+      <div className="lineage-left">
+        <div className="lineage-toolbar">
+          <input
+            type="text"
+            className="lineage-filter-text"
+            placeholder="filter (doc/ = doc/*)…"
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            aria-label="Filter by name"
+          />
+          <div className="lineage-toolbar-row">
+            <select
+              className="lineage-toolbar-select"
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+              aria-label="Filter by type"
+              title="Show all, only dynamic (substrate), or only static entries"
+            >
+              <option value="all">All</option>
+              <option value="dynamic">Dynamic</option>
+              <option value="static">Static</option>
+            </select>
+            <select
+              className="lineage-toolbar-select"
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as SortMode)}
+              aria-label="Sort"
+              title="Sort order"
+            >
+              <option value="none">Sort: None</option>
+              <option value="type">Sort: Type</option>
+              <option value="asc">Sort: A → Z</option>
+              <option value="desc">Sort: Z → A</option>
+            </select>
+            <label className="lineage-toolbar-check" title="Hide retired / inactive entries">
+              <input
+                type="checkbox"
+                checked={hideRetired}
+                onChange={(e) => setHideRetired(e.target.checked)}
+              />
+              Hide retired
+            </label>
+          </div>
+        </div>
+        {visibleEntries.length === 0 ? (
+          <div className="lineage-list-empty">
+            No {kindLabel.toLowerCase()} match the current filter.
+          </div>
+        ) : (
+          <EntryList
+            entries={visibleEntries}
+            selectedName={selectedName}
+            onSelect={setSelectedName}
+          />
+        )}
+      </div>
       <div className="lineage-right">
         <div className="lineage-header">
           <h3>{selectedName}</h3>
@@ -268,6 +352,45 @@ export default function LineagePanel({
       </div>
     </Splitter>
   );
+}
+
+type TypeFilter = "all" | "dynamic" | "static";
+type SortMode = "none" | "type" | "asc" | "desc";
+
+// nameMatches implements the list filter. A trailing "/" or a "*" makes it a
+// PREFIX match (so "doc/" and "doc/*" both mean "names under the doc/ group");
+// any other text is a case-insensitive substring match.
+function nameMatches(name: string, filter: string): boolean {
+  const f = filter.trim().toLowerCase();
+  if (!f) return true;
+  const n = name.toLowerCase();
+  if (f.includes("*")) return n.startsWith(f.slice(0, f.indexOf("*")));
+  if (f.endsWith("/")) return n.startsWith(f);
+  return n.includes(f);
+}
+
+// entryRetired reports whether an entry should be hidden by "Hide retired": its
+// active def points at a retired row, OR it's a dynamic-only name whose every
+// version is retired (no active pointer, zero live versions) — the reclaimable
+// "inactive" state. A static (bundled/yaml) entry is never retired. The
+// live_version_count / active_retired fields are populated for agents, skills,
+// and mcp-servers by the *ListNames summary queries.
+function entryRetired(e: LibraryEntry): boolean {
+  if (e.active_retired) return true;
+  return (
+    e.in_substrate &&
+    !e.in_static &&
+    !e.active_def_id &&
+    (e.live_version_count ?? 0) === 0
+  );
+}
+
+// sourceRank orders entries for the "Type" sort: static-only, then both, then
+// dynamic-only.
+function sourceRank(e: LibraryEntry): number {
+  if (e.in_static && e.in_substrate) return 1; // both
+  if (e.in_static) return 0; // static-only
+  return 2; // dynamic-only
 }
 
 function newCtaLabel(kind: SubstrateKind): string {

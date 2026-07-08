@@ -552,12 +552,77 @@
 }
 
 /* ---- LineagePanel: list-left, lineage-right ---- */
+/* The left pane is a flex column: a fixed toolbar (filter / type / sort /
+   hide-retired) over a scrolling entry list. min-height:0 lets the list — not
+   the pane — own the overflow. */
+.loomcycle-library .lineage-left {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.loomcycle-library .lineage-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+.loomcycle-library .lineage-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.loomcycle-library .lineage-filter-text {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: var(--mono);
+  background: var(--bg-input);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.loomcycle-library .lineage-toolbar-select {
+  padding: 4px 6px;
+  font-size: 12px;
+  background: var(--bg-input);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.loomcycle-library .lineage-toolbar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-soft);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.loomcycle-library .lineage-list-empty {
+  padding: 16px 14px;
+  font-size: 12px;
+  color: var(--fg-soft);
+}
 .loomcycle-library .lineage-name-list {
   list-style: none;
   margin: 0;
   padding: 0;
   overflow-y: auto;
   height: 100%;
+}
+/* Inside the flex left-pane, the list flexes to fill the space below the
+   toolbar and owns the scroll (overriding the standalone height:100%). */
+.loomcycle-library .lineage-left .lineage-name-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 .loomcycle-library .lineage-name-row {
   border-bottom: 1px solid var(--border);
