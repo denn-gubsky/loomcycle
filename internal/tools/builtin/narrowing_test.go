@@ -50,6 +50,34 @@ func TestNarrowHostsCannotWidenOperatorList(t *testing.T) {
 	}
 }
 
+// Security invariant for the "*" allow-all sentinel: a CALLER passing "*"
+// must NOT widen a specific operator floor. intersectHosts keeps a caller
+// entry only if it matches the operator list; "*" matches "acme.com" under
+// neither exact nor suffix nor the sentinel rule (the sentinel fires only
+// when the OPERATOR list contains "*"), so caller "*" is dropped → empty →
+// deny-all. This is the "operator's static list is the floor" invariant.
+func TestNarrowHostsCallerWildcardCannotWidenFloor(t *testing.T) {
+	op := &HTTP{HostAllowlist: []string{"acme.com"}}
+	out := NarrowHosts([]tools.Tool{op}, []string{"*"}, "", false)
+	wrapped := out[0].(*HTTP)
+	if len(wrapped.HostAllowlist) != 0 {
+		t.Errorf("caller %q against operator floor %v must not widen; got %v", "*", op.HostAllowlist, wrapped.HostAllowlist)
+	}
+}
+
+// The complement: when the OPERATOR floor is "*" (allow-all), a caller can
+// still narrow to a specific host — that host survives the intersection
+// because hostAllowed(host, ["*"]) is true.
+func TestNarrowHostsOperatorWildcardFloorLetsCallerNarrow(t *testing.T) {
+	op := &HTTP{HostAllowlist: []string{"*"}}
+	out := NarrowHosts([]tools.Tool{op}, []string{"linkedin.com"}, "", false)
+	wrapped := out[0].(*HTTP)
+	want := []string{"linkedin.com"}
+	if !reflect.DeepEqual(wrapped.HostAllowlist, want) {
+		t.Errorf("operator %q floor should let caller narrow; got %v, want %v", "*", wrapped.HostAllowlist, want)
+	}
+}
+
 // Narrowing flows through WebFetch's HTTP backend. WebFetch wraps an
 // HTTP; the wrapper must narrow the inner HTTP without sharing state
 // with the original.

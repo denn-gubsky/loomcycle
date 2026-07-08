@@ -989,7 +989,13 @@ func main() {
 		log.Printf("note: file tools (Read/Write/Edit/Glob/Grep/Bash) require a `volumes:` binding — none configured; agents with no volume binding have no filesystem access")
 	}
 	if len(staticHosts) == 0 && !cfg.Env.HTTPCallerAuthoritative {
-		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable (or LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1 to delegate the allowlist to the caller)")
+		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable (a comma-separated host list, or `*` for all public hosts; or LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1 to delegate the allowlist to the caller)")
+	}
+	for _, h := range staticHosts {
+		if h == "*" {
+			log.Printf("note: LOOMCYCLE_HTTP_HOST_ALLOWLIST=* — HTTP + WebFetch may reach ANY public host; the dial-time guard still blocks private/loopback/link-local/metadata IPs (add specific internal hosts via LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST)")
+			break
+		}
 	}
 	if cfg.Env.HTTPCallerAuthoritative {
 		log.Printf("note: HTTP_CALLER_AUTHORITATIVE=1 — caller's allowed_hosts is the sole policy; operator's static list is fallback only")

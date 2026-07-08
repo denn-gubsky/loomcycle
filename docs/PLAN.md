@@ -735,6 +735,7 @@ YAML: every agent's `tools` lists only the network-restricted set (`HTTP` only w
 ```bash
 LOOMCYCLE_BASH_ENABLED=1                   # bash on (still NOT a real sandbox; container required)
 LOOMCYCLE_HTTP_HOST_ALLOWLIST=api.anthropic.com,api.brave.com,github.com,...
+# or LOOMCYCLE_HTTP_HOST_ALLOWLIST=*  # allow ALL public hosts (dial-time private-IP guard still applies)
 LOOMCYCLE_SKILLS_ROOT=/work/.claude/skills
 LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST=localhost,127.0.0.1
 ```
