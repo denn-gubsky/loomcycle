@@ -25,7 +25,7 @@ func layersFor(t *testing.T, names ...string) []config.Layer {
 
 // TestEmbedded_DocumentAgentResolvesWithInlineSkills is the RFC AQ §7 Phase-1
 // headline, updated for RFC BA on-demand skills: selecting `base,document-agent`
-// registers doc-manager AND carries its four inline skills in cfg.Skills (the
+// registers doc/manager AND carries its four inline skills in cfg.Skills (the
 // on-demand catalog) with NO LOOMCYCLE_SKILLS_ROOT — the bundle is a pure config
 // layer. The bodies are loaded via the Skill tool at runtime, NOT baked into the
 // prompt; the agent gets the auto-added Skill tool.
@@ -36,9 +36,9 @@ func TestEmbedded_DocumentAgentResolvesWithInlineSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLayers(base, document-agent): %v", err)
 	}
-	dm, ok := cfg.Agents["doc-manager"]
+	dm, ok := cfg.Agents["doc/manager"]
 	if !ok {
-		t.Fatalf("doc-manager not registered (agents: %v)", agentNames(cfg))
+		t.Fatalf("doc/manager not registered (agents: %v)", agentNames(cfg))
 	}
 	// All four skills are registered in the on-demand catalog (cfg.Skills),
 	// with their bodies intact for the Skill tool to load.
@@ -60,11 +60,11 @@ func TestEmbedded_DocumentAgentResolvesWithInlineSkills(t *testing.T) {
 	}
 	// The agent's whitelist gets the auto-added Skill tool for on-demand loading.
 	if !hasToolPreset(dm.Tools, "Skill") {
-		t.Errorf("doc-manager should get the auto-added Skill tool; tools=%v", dm.Tools)
+		t.Errorf("doc/manager should get the auto-added Skill tool; tools=%v", dm.Tools)
 	}
 	// base supplied the middle tier the agent declares.
 	if _, ok := cfg.Tiers["middle"]; !ok {
-		t.Errorf("base preset should supply the middle tier doc-manager needs")
+		t.Errorf("base preset should supply the middle tier doc/manager needs")
 	}
 }
 
@@ -109,7 +109,7 @@ func hasToolPreset(tools []string, name string) bool {
 }
 
 // TestEmbedded_BundleAloneDegradesGracefully: document-agent WITHOUT base still
-// registers doc-manager (no load error) — it's a registered-but-idle def absent a
+// registers doc/manager (no load error) — it's a registered-but-idle def absent a
 // middle tier, per the RFC's graceful-degradation note.
 func TestEmbedded_BundleAloneDegradesGracefully(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
@@ -118,8 +118,8 @@ func TestEmbedded_BundleAloneDegradesGracefully(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLayers(document-agent) alone should not error: %v", err)
 	}
-	if _, ok := cfg.Agents["doc-manager"]; !ok {
-		t.Fatalf("doc-manager should still be registered without base")
+	if _, ok := cfg.Agents["doc/manager"]; !ok {
+		t.Fatalf("doc/manager should still be registered without base")
 	}
 }
 

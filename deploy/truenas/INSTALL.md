@@ -256,5 +256,5 @@ Bump the image tag → new binary → refreshed embedded presets automatically; 
 | migrate `LOOMCYCLE_PG_DSN ... required` | The `env_file:` line is missing from the `loomcycle-migrate` service (it needs the DSNs too), or the path is wrong. |
 | Crash-loop ending `sqlmem audit: ... open /data: is a directory` | `LOOMCYCLE_AUDIT_LOG_PATH` must be a **file**, not the `/data` mount — set `/data/audit.log` (or remove the line; the audit log is optional). |
 | Documents fail with `sqlmem: provision scope: ... permission denied to create role` | The SQL-Memory DSN's role lacks `CREATEROLE` (it provisions a per-scope login role). Grant it: `ALTER ROLE loomcycle CREATEROLE;` (Phase 1 now creates the role with it). |
-| `doc-manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
+| `doc/manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |

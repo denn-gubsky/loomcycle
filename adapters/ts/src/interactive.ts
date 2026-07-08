@@ -16,7 +16,7 @@ export interface InteractiveSessionOps {
  *
  *  Typical loop:
  *  ```ts
- *  const sess = client.interactiveSession({ agent: "chat", segments: [...] });
+ *  const sess = client.interactiveSession({ agent: "chat/medium", segments: [...] });
  *  for await (const ev of sess.events()) {
  *    if (ev.type === "text") process.stdout.write(ev.text ?? "");
  *    if (ev.type === "awaiting_input") await sess.send(await prompt("you> "));

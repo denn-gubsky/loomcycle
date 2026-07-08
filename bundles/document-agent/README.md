@@ -1,6 +1,6 @@
 # document-agent bundle
 
-The **`doc-manager`** agent + document-management skills that power the loomcycle
+The **`doc/manager`** agent + document-management skills that power the loomcycle
 Web UI's **Document Assistant** (RFC AM Phase 3). Instead of a complex manual
 chunk-editing UI, the operator types plain-text instructions and this agent
 performs the structural work on a chunked-graph Document (RFC AK): semantic
@@ -10,7 +10,7 @@ This is a **first-class, reusable bundle** — not an `examples/` experiment.
 
 ```
 bundles/document-agent/
-├── loomcycle.yaml                 # the doc-manager agent (single-provider)
+├── loomcycle.yaml                 # the doc/manager agent (single-provider)
 ├── loomcycle_oauth.yaml           # OAuth-FIRST variant (subscription → fallbacks)
 ├── skills/
 │   └── doc/                       # the `doc/*` skill group (RFC BA /-grouping)
@@ -39,15 +39,15 @@ loomcycle --config bundles/document-agent/loomcycle.yaml
 **Register in your own deployment:**
 1. **Layer this bundle onto your config — no copy-paste** (RFC AN config
    layering): pass both files, your authoritative one **last** so your
-   providers/tiers/volumes win while the bundle contributes `doc-manager`:
+   providers/tiers/volumes win while the bundle contributes `doc/manager`:
    ```sh
    loomcycle --config bundles/document-agent/loomcycle.yaml --config your.yaml
    ```
-   (Or copy the `agents: doc-manager` block into your config by hand if you'd
+   (Or copy the `agents: doc/manager` block into your config by hand if you'd
    rather keep one file.)
 2. Point `LOOMCYCLE_SKILLS_ROOT` at this bundle's `skills/` (or copy them into
    your skills root) so the four `doc/*` skills resolve (nested dirs → the
-   `doc/` name group; `doc-manager` is scoped to `skills: [doc/*]`).
+   `doc/` name group; `doc/manager` is scoped to `skills: [doc/*]`).
 3. Ensure `LOOMCYCLE_SQLMEM_ENABLED=1`.
 4. The agent only needs a `middle` tier to resolve — when layered, it uses your
    config's routing (last wins).
@@ -64,14 +64,14 @@ loomcycle anthropic login
 loomcycle --config bundles/document-agent/loomcycle_oauth.yaml
 ```
 
-The Web UI Assistant targets the agent named **`doc-manager`** by default; if it
+The Web UI Assistant targets the agent named **`doc/manager`** by default; if it
 isn't registered, the Assistant panel shows a hint pointing here instead of a
 broken spawn.
 
 ## How the Assistant drives it
 
 When you open a Document in the Web UI and use the Assistant, the panel spawns a
-single **interactive** run of `doc-manager` and steers each instruction in,
+single **interactive** run of `doc/manager` and steers each instruction in,
 prefixed with a `[context]` block: the **first** turn carries the document
 **outline** (every chunk's title/type/status/id) plus the **selected chunk's
 full content**, so the agent is grounded immediately; later turns carry the live
@@ -108,7 +108,7 @@ Both resolve to `(acme, marketing)`; the external agent's `Document`/`Memory` wr
 
 ## Forward path
 
-The intent is for `doc-manager` to eventually be a **built-in-by-default** agent
+The intent is for `doc/manager` to eventually be a **built-in-by-default** agent
 — embedded in the binary and auto-registered with no operator config, the way
 Claude Code ships built-in agents/skills. That needs a built-in-agent mechanism
 loomcycle doesn't have yet; until then, this bundle is the source of truth and

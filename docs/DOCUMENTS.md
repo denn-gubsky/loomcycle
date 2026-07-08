@@ -143,7 +143,7 @@ node) and the `/documents/:id` deep link: a chunk sub-tree, a Markdown view, MD
 download, and a single-chunk content editor (body/fields, optimistic revision).
 Structural editing — restructuring, semantic import, linking — is done by the
 **Document Assistant** (the viewer's `assistant` toggle): you type instructions
-and the **`doc-manager`** agent performs the `Document` ops. That agent +
+and the **`doc/manager`** agent performs the `Document` ops. That agent +
 skills ship as the **[`bundles/document-agent/`](../bundles/document-agent/)**
 bundle; register it (see its README) for the Assistant to work — it degrades to
 a hint if absent. (RFC AM: Phase 1 = Path console, Phase 2 = viewer + `export_md`,

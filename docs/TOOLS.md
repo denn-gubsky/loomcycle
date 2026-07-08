@@ -283,7 +283,7 @@ negative matches. **Empty/absent `skills:` = allow all**; `-*` = allow nothing.
 
 ```yaml
 agents:
-  doc-manager:
+  doc/manager:
     model: smart
     tools: [Document]          # `Skill` is auto-added unless skills: [-*]
     skills: [doc/*, -doc/secret]   # may list/use/author doc/* except doc/secret

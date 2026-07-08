@@ -47,7 +47,7 @@ questions:
               - value: document-agent
                 description: document-agent — the Document Assistant (needs SQL Memory)
               - value: chat
-                description: chat — general chat agents (chat + chat-local; needs base)
+                description: chat — general chat agents (chat/medium + chat/local; needs base)
 
   # ── Secrets (private: UI-masked; written to container env, never a yaml layer) ─
   - variable: auth_token
