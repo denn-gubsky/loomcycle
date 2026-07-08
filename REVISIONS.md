@@ -8,6 +8,52 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.16.3
+
+**✨ Agent `/`-grouping + a Web UI Library filter/sort, plus a `*` host-allowlist
+allow-all.** Three additive changes on the v1.16 line.
+
+**1. `/`-grouped agent names (RFC BA convention extended to agents, #687).** Agent
+names may now be `/`-grouped (`doc/manager`, `chat/medium`) exactly as skill names
+became in RFC BA. A dedicated `agents.ValidateName` (segments of `[A-Za-z0-9_-]`
+joined by `/`; no leading/trailing/double slash, no `.`/`..`, no glob) validates
+the name at AgentDef create + **fork**, `RegisterAgent`, config-load (`agents:`
+keys were previously unvalidated), and the `/v1/agents/{agent_name}/channels`
+route. The agent *name* already flowed fine on every run path — `validIdent` only
+gates the server-generated `AgentID`, never the name — so admission / gRPC /
+sub-agent spawn were untouched. code-js's path floor now allows an interior `/`
+(`agent_code/doc/manager/index.js`) while still rejecting `..`/backslash escapes,
+with a resolved-path-under-CodeRoot assertion. The **bundled agents are renamed**:
+`chat`→`chat/medium`, `chat-local`→`chat/local`, `doc-manager`→`doc/manager`,
+`file-editor`→`doc/file-editor` (the bundle *selector* names `chat` /
+`document-agent` are unchanged; the starter-config example agents stay flat).
+⚠️ **A deployment that pins a bundled agent by its old name must update it** to the
+grouped name.
+
+**2. Library filter + sort + hide-retired (#688).** The Web UI Library gains a
+per-tab toolbar over the agents / skills / mcp-servers lists: a **name filter**
+(a trailing `/` or `*` is a prefix match, so `doc/` shows the `doc/` group; any
+other text is a substring), a **type** dropdown (All / Dynamic / Static), a
+**sort** dropdown (None / Type / A→Z / Z→A), and a **Hide-retired** checkbox. For
+Hide-retired to work beyond the agents tab, `live_version_count` / `active_retired`
+were added to the skills + mcp-server list summaries (both sqlite + postgres,
+mirroring the agent query) — additive JSON fields, previously omitted for those
+kinds. Pure frontend in `packages/library` otherwise (the embedded UI picks it up
+via the Vite source alias — no npm republish; `@loomcycle/client` stays 1.16.0).
+
+**3. `*` allow-all in the HTTP host allowlist (#686).** `LOOMCYCLE_HTTP_HOST_ALLOWLIST=*`
+is now an explicit allow-all sentinel: any hostname passes the name check. It lifts
+only the name layer — the dial-time IP guard (RFC1918 / loopback / link-local /
+metadata) still applies, so `*` means "all **public** hosts", never internal
+addresses (those stay opt-in via `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`). A caller
+can't use `*` to widen a narrower operator floor — the per-run intersection runs
+through the same matcher, so a caller `*` survives only when the operator floor is
+already `*`. Covers HTTP, WebFetch, and WebSearch result-filtering in one place;
+boot logs the allow-all posture.
+
+Binary + embedded WebUI only; no wire break, no DB migration, no adapter bump
+(TS `@loomcycle/client` 1.16.0 / Python 1.13.0 unchanged).
+
 ## What's in v1.16.2
 
 **🩹 Client-tool patch — accept cross-origin WebSocket handshakes.** The
