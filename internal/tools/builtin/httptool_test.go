@@ -141,6 +141,78 @@ func TestHTTPRejectsPrivateIPDespiteAllowlist(t *testing.T) {
 	}
 }
 
+// The "*" allow-all sentinel: an operator that sets
+// LOOMCYCLE_HTTP_HOST_ALLOWLIST=* accepts any hostname at the name layer.
+// Pure-matcher unit test.
+func TestHostAllowedWildcard(t *testing.T) {
+	if !hostAllowed("anything.example.com", []string{"*"}) {
+		t.Error(`"*" should allow any host`)
+	}
+	if !hostAllowed("random.tld", []string{"foo.com", "*"}) {
+		t.Error(`"*" anywhere in the list should allow any host`)
+	}
+	if hostAllowed("", []string{"*"}) {
+		t.Error("an empty host is never allowed, even under *")
+	}
+	// A literal "*" is the sentinel, never a suffix — it must NOT be treated
+	// as matching only hosts ending ".*" or exactly "*".
+	if !hostAllowed("deep.sub.domain.io", []string{"*"}) {
+		t.Error(`"*" should match arbitrarily deep subdomains`)
+	}
+}
+
+// The "*" sentinel widens ONLY the name layer (layer 1). The dial-time
+// IP guard (layer 2) still refuses private/loopback IPs, so "*" means
+// "all PUBLIC hosts", never "all addresses". Fail-before is impossible
+// (the guard is independent) but this pins the documented public-only
+// semantics against a future change that might route "*" past the dial
+// guard.
+func TestHTTPWildcardStillBlocksPrivateIP(t *testing.T) {
+	// AllowPrivateIPs stays false so the dial guard is live.
+	h := &HTTP{HostAllowlist: []string{"*"}}
+	body, _ := json.Marshal(map[string]string{
+		"method": "GET",
+		"url":    "http://localhost:1/", // loopback → guard must fire despite *
+	})
+	res, err := h.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("wildcard must not lift the private-IP guard; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "no public addresses") && !strings.Contains(res.Text, "private") {
+		t.Errorf("rejection should mention private/public; got %q", res.Text)
+	}
+}
+
+// The "*" sentinel does let an otherwise-unlisted PUBLIC-shaped host
+// through the name layer: with the IP guard disabled (as tests do for
+// loopback), a request to a host that is on no explicit allowlist entry
+// succeeds purely because of "*".
+func TestHTTPWildcardAllowsUnlistedHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "reached via wildcard")
+	}))
+	defer srv.Close()
+
+	// HostAllowlist is ONLY "*" — the httptest host is on no explicit entry.
+	// AllowPrivateIPs lets the loopback dial complete (the name layer is what
+	// we're exercising here).
+	h := &HTTP{HostAllowlist: []string{"*"}, AllowPrivateIPs: true}
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	res, err := h.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf(`"*" should admit an unlisted host at the name layer; got %q`, res.Text)
+	}
+	if !strings.Contains(res.Text, "reached via wildcard") {
+		t.Errorf("expected the server body; got %q", res.Text)
+	}
+}
+
 // Direct unit test on dialContext with a public-shaped hostname that
 // resolves entirely to private IPs — proves the guard is what stops
 // the dial, not the layer-1 allowlist exact-match path. Catches the

@@ -22,7 +22,10 @@ import (
 //
 //  1. **Hostname allowlist** (HostAllowlist). Suffix-matched: an entry
 //     "example.com" matches "example.com" and "api.example.com" but not
-//     "evil-example.com". Empty allowlist refuses every call.
+//     "evil-example.com". Empty allowlist refuses every call. A single "*"
+//     entry is the operator's explicit allow-all — any hostname passes the
+//     name check (but layer 2 below still applies, so it means all PUBLIC
+//     hosts, never private/loopback IPs).
 //
 //  2. **IP-level block at connect time** via Dialer.Control. Even if the
 //     hostname is allowlisted, the resolved IP is rejected if it falls in
@@ -35,7 +38,9 @@ import (
 // context propagation.
 type HTTP struct {
 	// HostAllowlist is the suffix-matched list of permitted hostnames.
-	// Required: empty allowlist rejects every call.
+	// Required: empty allowlist rejects every call. A single "*" entry means
+	// allow-all (any hostname) — the operator's explicit opt-out of the name
+	// floor; the IP-level dial guard still blocks private addresses.
 	HostAllowlist []string
 	// MaxRequestBytes caps the request body. Default 256 KiB.
 	MaxRequestBytes int64
@@ -264,6 +269,17 @@ func hostAllowed(host string, allowlist []string) bool {
 		entry = strings.ToLower(strings.TrimSuffix(entry, "."))
 		if entry == "" {
 			continue
+		}
+		// "*" is the operator's explicit allow-all sentinel: an operator that
+		// sets LOOMCYCLE_HTTP_HOST_ALLOWLIST=* accepts any hostname. This is
+		// the name-layer ONLY — the IP-level dial guard (layer 2) still
+		// rejects private/loopback/link-local/metadata IPs, so "*" means "all
+		// PUBLIC websites", not "all addresses". A caller cannot use "*" to
+		// widen a narrower operator floor: NarrowHosts intersects the caller's
+		// list against the operator's via this same matcher, so a caller "*"
+		// only survives when the operator floor already contains "*".
+		if entry == "*" {
+			return true
 		}
 		if host == entry {
 			return true

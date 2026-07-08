@@ -155,7 +155,9 @@ Use cases:
 
 ## Per-request URL allowlist (HTTP / WebFetch / WebSearch)
 
-The operator's `LOOMCYCLE_HTTP_HOST_ALLOWLIST` is a security floor — every host the agent might ever need to reach. For a single run, callers usually want to constrain further: this run is about scraping job listings from `linkedin.com` and `indeed.com`, that one is about reading from `bbc.co.uk`. Per-request narrowing exists for exactly this.
+The operator's `LOOMCYCLE_HTTP_HOST_ALLOWLIST` is a security floor — every host the agent might ever need to reach. It is a comma-separated suffix list (`example.com` matches `example.com` and `api.example.com`). A single `*` entry (`LOOMCYCLE_HTTP_HOST_ALLOWLIST=*`) is the operator's explicit **allow-all**: any hostname passes the name check. This lifts only the name layer — the dial-time IP guard still blocks private/loopback/link-local/metadata addresses, so `*` means "all **public** websites", never "all addresses"; expose specific internal hosts via `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`. A caller cannot use `*` to widen a narrower operator floor — the intersection below still applies.
+
+For a single run, callers usually want to constrain further: this run is about scraping job listings from `linkedin.com` and `indeed.com`, that one is about reading from `bbc.co.uk`. Per-request narrowing exists for exactly this.
 
 ```http
 POST /v1/runs
