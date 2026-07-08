@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -168,9 +169,15 @@ func (s *Server) handleListOperatorTokenDefNames(w http.ResponseWriter, r *http.
 // ordered by channel ASC. Drives the v0.9.x Web UI's per-agent
 // "channels this agent is subscribed to" sub-tab.
 func (s *Server) handleAgentChannels(w http.ResponseWriter, r *http.Request) {
+	// RFC BA agent grouping: names may be `/`-grouped (doc/manager). The Web UI
+	// percent-encodes the name (encodeURIComponent → doc%2Fmanager), which Go's
+	// ServeMux keeps within a single path segment and PathValue decodes back to
+	// "doc/manager" — so the path form carries a grouped name without a separate
+	// route. Validate with the same `/`-aware grammar the rest of the agent
+	// surface uses.
 	agentName := r.PathValue("agent_name")
-	if !validIdent(agentName) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_agent_name", `agent_name must match [A-Za-z0-9_-]{1,128}`)
+	if err := agents.ValidateName(agentName); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_agent_name", err.Error())
 		return
 	}
 	rows, err := s.store.ChannelListCursorsForScope(r.Context(), store.MemoryScopeAgent, agentName)

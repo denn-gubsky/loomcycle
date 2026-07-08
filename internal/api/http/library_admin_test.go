@@ -283,6 +283,45 @@ func TestAgentChannels_HappyPath(t *testing.T) {
 	}
 }
 
+// TestAgentChannels_SlashGroupedName (RFC BA agent grouping) verifies a
+// `/`-grouped agent name reaches the handler through the percent-encoded path
+// the Web UI sends (encodeURIComponent("doc/manager") = "doc%2Fmanager"): Go's
+// ServeMux keeps %2F within one path segment and PathValue decodes it, and the
+// handler now validates with the `/`-aware grammar (was validIdent, which 400'd
+// any `/`). Fail-before: on the old validIdent check this returns 400.
+func TestAgentChannels_SlashGroupedName(t *testing.T) {
+	srv, s, cleanup := libraryFixture(t)
+	defer cleanup()
+	ctx := t.Context()
+
+	const agentName = "doc/manager"
+	_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: "findings", Scope: store.MemoryScopeAgent, ScopeID: agentName,
+		Payload: []byte(`{}`),
+	}, 0)
+	time.Sleep(time.Microsecond)
+	_, next, _ := s.ChannelSubscribe(ctx, "findings", store.MemoryScopeAgent, agentName, "", 1)
+	_ = s.ChannelAck(ctx, "findings", store.MemoryScopeAgent, agentName, next)
+
+	// The Web UI encodes the name; the `/` becomes %2F in the path.
+	req := authedRequest("GET", "/v1/agents/doc%2Fmanager/channels", nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s (grouped agent name must reach the handler)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Channels []store.ChannelCursorEntry `json:"channels"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Channels) != 1 || resp.Channels[0].ScopeID != agentName {
+		t.Errorf("Channels = %+v, want one row for scope_id %q", resp.Channels, agentName)
+	}
+}
+
 // TestScopeNames (RFC AS Phase 1) unit-tests the shared tenant filter that
 // every /v1/_*def/names handler applies. Covers: all → passthrough (non-nil
 // even for a nil input); !all → keep only the caller's tenant; unknown tenant

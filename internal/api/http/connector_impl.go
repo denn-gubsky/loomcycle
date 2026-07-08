@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -332,8 +333,8 @@ func storeRunToConnector(r store.Run) connector.Run {
 // has set LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1. Collisions with
 // static agents (from yaml / discovery) are rejected.
 func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentRequest) (connector.AgentDescriptor, error) {
-	if !validDynamicAgentName(req.Name) {
-		return connector.AgentDescriptor{}, fmt.Errorf("invalid agent name %q: must match [A-Za-z0-9_-]{1,64}", req.Name)
+	if err := agents.ValidateName(req.Name); err != nil {
+		return connector.AgentDescriptor{}, fmt.Errorf("invalid agent name: %w", err)
 	}
 	if req.SystemPrompt == "" {
 		return connector.AgentDescriptor{}, fmt.Errorf("system_prompt required")
@@ -1079,27 +1080,6 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 }
 
 // --- Helpers ---
-
-// validDynamicAgentName matches [A-Za-z0-9_-]{1,64}. Stricter than
-// general identifiers because agent names appear in log lines, yaml
-// errors, and `mcp__loomcycle__spawn_run` parameters.
-func validDynamicAgentName(s string) bool {
-	if s == "" || len(s) > 64 {
-		return false
-	}
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '_', r == '-':
-			continue
-		default:
-			return false
-		}
-	}
-	return true
-}
 
 // stripPrivilegedTools removes Bash/Write/Edit from the requested
 // tools when the operator hasn't opted into privileged-tool
