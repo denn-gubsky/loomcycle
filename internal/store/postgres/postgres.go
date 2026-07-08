@@ -4116,13 +4116,16 @@ func (s *Store) SkillDefListNames(ctx context.Context) ([]store.SkillDefNameSumm
 		SELECT
 			d.tenant_id,
 			d.name,
-			COUNT(*)                  AS version_count,
-			MAX(d.version)            AS latest_version,
-			MAX(d.created_at)         AS last_updated,
-			COALESCE(a.def_id, '')    AS active_def_id
+			COUNT(*)                                  AS version_count,
+			COUNT(*) FILTER (WHERE d.retired = FALSE) AS live_version_count,
+			MAX(d.version)                            AS latest_version,
+			MAX(d.created_at)                         AS last_updated,
+			COALESCE(a.def_id, '')                    AS active_def_id,
+			COALESCE(ad.retired, FALSE)               AS active_retired
 		FROM skill_defs d
 		LEFT JOIN skill_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
-		GROUP BY d.tenant_id, d.name, a.def_id
+		LEFT JOIN skill_defs ad      ON ad.def_id = a.def_id
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired
 		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("skill_def list names: %w", err)
@@ -4132,7 +4135,7 @@ func (s *Store) SkillDefListNames(ctx context.Context) ([]store.SkillDefNameSumm
 	var out []store.SkillDefNameSummary
 	for rows.Next() {
 		var ns store.SkillDefNameSummary
-		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID, &ns.ActiveRetired); err != nil {
 			return nil, err
 		}
 		out = append(out, ns)
@@ -4373,13 +4376,16 @@ func (s *Store) MCPServerDefListNames(ctx context.Context) ([]store.MCPServerDef
 		SELECT
 			d.tenant_id,
 			d.name,
-			COUNT(*)                  AS version_count,
-			MAX(d.version)            AS latest_version,
-			MAX(d.created_at)         AS last_updated,
-			COALESCE(a.def_id, '')    AS active_def_id
+			COUNT(*)                                  AS version_count,
+			COUNT(*) FILTER (WHERE d.retired = FALSE) AS live_version_count,
+			MAX(d.version)                            AS latest_version,
+			MAX(d.created_at)                         AS last_updated,
+			COALESCE(a.def_id, '')                    AS active_def_id,
+			COALESCE(ad.retired, FALSE)               AS active_retired
 		FROM mcp_server_defs d
 		LEFT JOIN mcp_server_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
-		GROUP BY d.tenant_id, d.name, a.def_id
+		LEFT JOIN mcp_server_defs ad      ON ad.def_id = a.def_id
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired
 		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("mcp_server_def list names: %w", err)
@@ -4389,7 +4395,7 @@ func (s *Store) MCPServerDefListNames(ctx context.Context) ([]store.MCPServerDef
 	var out []store.MCPServerDefNameSummary
 	for rows.Next() {
 		var ns store.MCPServerDefNameSummary
-		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID, &ns.ActiveRetired); err != nil {
 			return nil, err
 		}
 		out = append(out, ns)
