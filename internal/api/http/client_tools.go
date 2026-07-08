@@ -40,6 +40,24 @@ func (s *Server) handleClientTools(w http.ResponseWriter, r *http.Request) {
 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{clientToolSubprotocol},
+		// NOTE: coder/websocket's AcceptOptions.InsecureSkipVerify is the
+		// WebSocket ORIGIN-CHECK skip on this handshake — it is NOT TLS
+		// verification (unfortunate name collision with tls.Config). No cert
+		// checking is affected. It accepts any Origin. coder/websocket defaults
+		// to same-origin-only (it 403s any handshake whose Origin host != Host) —
+		// a CSRF guard for COOKIE-authenticated sockets. It guards nothing here
+		// and blocks every real browser client, because:
+		//   1. This endpoint authenticates with a BEARER carried in
+		//      Sec-WebSocket-Protocol (or Authorization) — a cross-origin page
+		//      can't read the user's bearer, so it can't forge a connection.
+		//   2. The only cookie auth path (webui.SessionCookie) is SameSite=Strict,
+		//      so a browser never sends it on a cross-site handshake anyway.
+		// A browser CANNOT suppress Origin (the extension sends
+		// Origin: chrome-extension://<id>), and OriginPatterns can't enumerate
+		// ever-changing extension ids + arbitrary web origins — so allow-all +
+		// bearer auth is the correct posture. (This was masked because the
+		// endpoint was only ever tested with curl, which sends no Origin.)
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
 		return // Accept already wrote the handshake error

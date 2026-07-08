@@ -140,6 +140,44 @@ func TestCandidateTools_AdvertisesAndGatesClientTools(t *testing.T) {
 	}
 }
 
+// TestHandleClientTools_CrossOriginAccepted is the regression guard for the
+// Origin bug: a browser client (extension / web app) ALWAYS sends an Origin
+// header (host != loomcycle's Host), which coder/websocket's default same-origin
+// check would 403 — so every real browser was rejected while curl (no Origin)
+// sailed through. The handshake must SUCCEED with a cross-origin Origin, because
+// auth is a bearer in the subprotocol (unforgeable cross-origin) + a
+// SameSite=Strict cookie (never sent cross-site). Fail-before: drop
+// InsecureSkipVerify and this dial gets a 403.
+func TestHandleClientTools_CrossOriginAccepted(t *testing.T) {
+	reg := clienttools.NewRegistry(0)
+	ts := clientToolsTestServer(t, reg, auth.Principal{TenantID: "t1", Subject: "u1"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Simulate a browser: an Origin whose host is NOT the server's Host.
+	c, _, err := websocket.Dial(ctx, wsURL(ts.URL), &websocket.DialOptions{
+		Subprotocols: []string{clientToolSubprotocol},
+		HTTPHeader:   http.Header{"Origin": []string{"chrome-extension://abcdefghijklmnop"}},
+	})
+	if err != nil {
+		t.Fatalf("cross-origin handshake must be accepted (bearer auth, not cookie CSRF), got: %v", err)
+	}
+	defer c.CloseNow()
+
+	hello := clienttools.HelloFrame{Type: clienttools.FrameHello, Tools: []clienttools.ToolSchema{{Name: "browser_read_page"}}}
+	b, _ := json.Marshal(hello)
+	if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clienttools.TypeOf(data) != clienttools.FrameHelloOK {
+		t.Errorf("expected hello_ok on a cross-origin connection; got %s", data)
+	}
+}
+
 func TestHandleClientTools_RejectsWireUnsafeNames(t *testing.T) {
 	reg := clienttools.NewRegistry(0)
 	ts := clientToolsTestServer(t, reg, auth.Principal{TenantID: "t1", Subject: "u1"})
