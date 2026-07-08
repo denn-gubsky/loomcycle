@@ -2462,6 +2462,12 @@ type SkillDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// LiveVersionCount / ActiveRetired mirror AgentDefNameSummary — the
+	// soft-reclaim status the Web UI Library's "Hide retired" filter reads.
+	// LiveVersionCount is VersionCount minus retired rows; ActiveRetired is
+	// true when the active pointer references a retired row.
+	LiveVersionCount int  `json:"live_version_count"`
+	ActiveRetired    bool `json:"active_retired,omitempty"`
 }
 
 // SkillDefActiveEntry mirrors AgentDefActiveEntry. Pairs a skill
@@ -2519,6 +2525,10 @@ type MCPServerDefNameSummary struct {
 	// filter key the per-name GetActive call on this so a run only ever
 	// sees its own + shared MCP servers.
 	TenantID string `json:"tenant_id,omitempty"`
+	// LiveVersionCount / ActiveRetired mirror AgentDefNameSummary — the
+	// soft-reclaim status the Web UI Library's "Hide retired" filter reads.
+	LiveVersionCount int  `json:"live_version_count"`
+	ActiveRetired    bool `json:"active_retired,omitempty"`
 }
 
 // MCPServerDefActiveEntry mirrors AgentDefActiveEntry / SkillDefActiveEntry.

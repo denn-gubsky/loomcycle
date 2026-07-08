@@ -64,6 +64,53 @@ func decodeLibraryEntries(t *testing.T, rec *httptest.ResponseRecorder) []Librar
 	return resp.Entries
 }
 
+// TestUnifiedLibrary_Skills_SurfacesRetiredStatus verifies the skills library
+// endpoint carries live_version_count / active_retired (added so the Web UI
+// "Hide retired" filter works on the skills tab, not just agents). Seed two
+// versions with v1 retired + active pointing at the retired v1.
+func TestUnifiedLibrary_Skills_SurfacesRetiredStatus(t *testing.T) {
+	srv, s, cleanup := libraryUnifiedFixture(t, nil, nil)
+	defer cleanup()
+	ctx := t.Context()
+
+	if _, err := s.SkillDefCreate(ctx, store.SkillDefRow{
+		DefID: "sk1", Name: "voice", Version: 1,
+		Definition: []byte(`{"body":"v1"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SkillDefCreate(ctx, store.SkillDefRow{
+		DefID: "sk2", Name: "voice", Version: 2, ParentDefID: "sk1",
+		Definition: []byte(`{"body":"v2"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetRetired(ctx, "sk1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetActive(ctx, "", "voice", "sk1", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, authedRequest("GET", "/v1/_library/skills", nil))
+	entries := decodeLibraryEntries(t, rec)
+
+	if len(entries) != 1 || entries[0].Name != "voice" {
+		t.Fatalf("entries = %+v, want 1 entry 'voice'", entries)
+	}
+	e := entries[0]
+	if e.VersionCount != 2 {
+		t.Errorf("version_count = %d, want 2", e.VersionCount)
+	}
+	if e.LiveVersionCount != 1 {
+		t.Errorf("live_version_count = %d, want 1 (retired excluded)", e.LiveVersionCount)
+	}
+	if !e.ActiveRetired {
+		t.Errorf("active_retired = false, want true (active points at retired sk1)")
+	}
+}
+
 // TestUnifiedLibrary_Agents_StaticOnly — yaml-only entry, empty store.
 // Expect source=static-only, in_static=true, in_substrate=false,
 // version_count=0, static_definition non-nil.

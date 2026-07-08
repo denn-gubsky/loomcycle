@@ -212,6 +212,7 @@ func Run(t *testing.T, factory Factory) {
 		{"SkillDefAppendOnlyDefinition", testSkillDefAppendOnlyDefinition},
 		{"SkillDefActivePointerIdempotent", testSkillDefActivePointerIdempotent},
 		{"SkillDefRetireReversible", testSkillDefRetireReversible},
+		{"SkillDefListNamesLiveCount", testSkillDefListNamesLiveCount},
 		{"SkillDefStaticFallback", testSkillDefStaticFallback},
 		// RFC N — skill definition plane tenant isolation. Fails on the
 		// pre-migration single-`name`-PK schema (clobber); passes after.
@@ -224,6 +225,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MCPServerDefVersionMonotonic", testMCPServerDefVersionMonotonic},
 		{"MCPServerDefActivePointerIdempotent", testMCPServerDefActivePointerIdempotent},
 		{"MCPServerDefRetireReversible", testMCPServerDefRetireReversible},
+		{"MCPServerDefListNamesLiveCount", testMCPServerDefListNamesLiveCount},
 		// RFC N — MCP server definition plane tenant isolation. Fails on the
 		// pre-migration single-`name`-PK schema (clobber); passes after.
 		{"MCPServerDefTenantIsolation", testMCPServerDefTenantIsolation},
@@ -4551,6 +4553,93 @@ func testAgentDefListNamesLiveCount(t *testing.T, s store.Store) {
 	}
 	if sum.LiveVersionCount != 1 {
 		t.Errorf("LiveVersionCount = %d, want 1 (retired excluded)", sum.LiveVersionCount)
+	}
+}
+
+// testSkillDefListNamesLiveCount mirrors the agent live-count test for skills:
+// VersionCount counts every version, LiveVersionCount excludes retired, and
+// ActiveRetired is true when the active pointer references a retired def. Drives
+// the Web UI Library "Hide retired" filter for the skills tab.
+func testSkillDefListNamesLiveCount(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	v1, err := s.SkillDefCreate(ctx, mkSkillDef("slc-1", "slc-skill", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SkillDefCreate(ctx, mkSkillDef("slc-2", "slc-skill", v1.DefID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetRetired(ctx, v1.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	find := func() store.SkillDefNameSummary {
+		rows, lerr := s.SkillDefListNames(ctx)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		for _, r := range rows {
+			if r.Name == "slc-skill" && r.TenantID == "" {
+				return r
+			}
+		}
+		t.Fatal("slc-skill not in list")
+		return store.SkillDefNameSummary{}
+	}
+	sum := find()
+	if sum.VersionCount != 2 {
+		t.Errorf("VersionCount = %d, want 2 (retired rows still counted)", sum.VersionCount)
+	}
+	if sum.LiveVersionCount != 1 {
+		t.Errorf("LiveVersionCount = %d, want 1 (retired excluded)", sum.LiveVersionCount)
+	}
+	// Pointing active at the retired v1 surfaces ActiveRetired.
+	if err := s.SkillDefSetActive(ctx, "", "slc-skill", v1.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !find().ActiveRetired {
+		t.Errorf("ActiveRetired = false, want true (active points at a retired def)")
+	}
+}
+
+// testMCPServerDefListNamesLiveCount mirrors the skill/agent live-count test for
+// the mcp-servers tab.
+func testMCPServerDefListNamesLiveCount(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	v1, err := s.MCPServerDefCreate(ctx, mkMCPServerDef("mlc-1", "mlc-mcp", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MCPServerDefCreate(ctx, mkMCPServerDef("mlc-2", "mlc-mcp", v1.DefID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MCPServerDefSetRetired(ctx, v1.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	find := func() store.MCPServerDefNameSummary {
+		rows, lerr := s.MCPServerDefListNames(ctx)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		for _, r := range rows {
+			if r.Name == "mlc-mcp" && r.TenantID == "" {
+				return r
+			}
+		}
+		t.Fatal("mlc-mcp not in list")
+		return store.MCPServerDefNameSummary{}
+	}
+	sum := find()
+	if sum.VersionCount != 2 {
+		t.Errorf("VersionCount = %d, want 2 (retired rows still counted)", sum.VersionCount)
+	}
+	if sum.LiveVersionCount != 1 {
+		t.Errorf("LiveVersionCount = %d, want 1 (retired excluded)", sum.LiveVersionCount)
+	}
+	if err := s.MCPServerDefSetActive(ctx, "", "mlc-mcp", v1.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !find().ActiveRetired {
+		t.Errorf("ActiveRetired = false, want true (active points at a retired def)")
 	}
 }
 
