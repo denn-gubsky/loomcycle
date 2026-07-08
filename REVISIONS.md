@@ -8,6 +8,30 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.16.2
+
+**🩹 Client-tool patch — accept cross-origin WebSocket handshakes.** The
+`/v1/client-tools` endpoint rejected **every real browser client** with 403:
+`websocket.Accept` used coder/websocket's default same-origin check, which 403s
+any handshake whose `Origin` host ≠ `Host`. A browser always sends `Origin` (the
+loomboard extension sends `Origin: chrome-extension://<id>`) → 403; `curl` sends
+none → 101. So every test passed (curl) and every browser failed — the same
+"verified with curl, never a browser" gap as v1.16.1's wire-safe-name fix.
+
+Fix: set `AcceptOptions.InsecureSkipVerify` (coder/websocket's **Origin-check**
+skip — **not** TLS verification; unrelated to certs). Safe because the endpoint's
+auth can't be CSRF'd cross-origin: it authenticates with a **bearer** in
+`Sec-WebSocket-Protocol` (a cross-origin page can't read it), and the only cookie
+path is `SameSite=Strict` (never sent cross-site). The Origin check — a
+cookie-CSRF guard — therefore protected nothing here and only blocked legitimate
+browsers, which cannot suppress `Origin`. A regression test now drives a
+cross-origin `Origin` through the handshake (403 before the fix).
+
+This unblocks the loomboard extension end-to-end (#684). Binary + embedded WebUI
+only; no wire/schema change, no DB migration; adapters unchanged (1.16.0).
+
+---
+
 ## What's in v1.16.1
 
 **🩹 Client-tool patch — wire-safe names + the Library scroll fix that actually works.**
