@@ -87,16 +87,30 @@ func (c *compiler) load(name string) (*compiled, error) {
 		return nil, fmt.Errorf("code-agent: empty agent name (no RunMeta on ctx?)")
 	}
 	// Host-side containment floor (correct depth — rejects regardless of how
-	// the name reached us). The agent name becomes a path segment under
-	// CodeRoot; without this a name like "../../etc/cron.d/x" would
-	// filepath.Join-collapse out of CodeRoot and read/compile an arbitrary
-	// index.js anywhere on disk. The static .md loader applies the same check
-	// (internal/agents/loader.go:199); the AgentDef substrate create/fork path
-	// also validates the name, but this floor holds even if a caller forgets.
-	if strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
-		return nil, fmt.Errorf("code-agent %q: invalid agent name (must not contain a path separator or be \".\"/\"..\")", name)
+	// the name reached us). The agent name becomes a path under CodeRoot and
+	// MAY be `/`-grouped (doc/manager → agent_code/doc/manager/index.js, the RFC
+	// BA agent-grouping convention), so an interior `/` is allowed — but a `..`
+	// segment, a backslash, or an absolute/empty-segment name could
+	// filepath.Join-collapse out of CodeRoot and read an arbitrary index.js
+	// anywhere on disk. agents.ValidateName already forbids these at create/fork
+	// + config-load, but this floor holds even if a caller forgets: reject the
+	// escapes per-segment AND assert the resolved path stays under CodeRoot.
+	if strings.ContainsRune(name, '\\') || name == "." || name == ".." {
+		return nil, fmt.Errorf("code-agent %q: invalid agent name (must not contain a backslash or be \".\"/\"..\")", name)
+	}
+	for _, seg := range strings.Split(name, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return nil, fmt.Errorf("code-agent %q: invalid agent name (empty, \".\", or \"..\" path segment)", name)
+		}
 	}
 	path := c.agentFile(name)
+	// Defence in depth: the joined+cleaned entrypoint must remain under CodeRoot.
+	if absRoot, rerr := filepath.Abs(c.root); rerr == nil {
+		absPath, aerr := filepath.Abs(path)
+		if aerr != nil || !strings.HasPrefix(absPath, absRoot+string(os.PathSeparator)) {
+			return nil, fmt.Errorf("code-agent %q: resolved path escapes CodeRoot", name)
+		}
+	}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

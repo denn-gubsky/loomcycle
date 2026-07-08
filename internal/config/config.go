@@ -4866,6 +4866,13 @@ func validate(c *Config) error {
 		return err
 	}
 	for name, agent := range c.Agents {
+		// Agent names share the RFC BA `/`-grouped grammar with skill names
+		// (segments of [A-Za-z0-9_-] joined by `/`; no glob/`..`/leading slash),
+		// so a bundled/preset agent like `doc/manager` is valid but a malformed
+		// key (glob char, `..`) fails loud at load rather than at first spawn.
+		if err := agents.ValidateName(name); err != nil {
+			return fmt.Errorf("agents: %w", err)
+		}
 		// Tier-based resolution and explicit pin are mutually
 		// exclusive — pinning a model and asking for a tier is
 		// ambiguous, and silently picking one would surprise the
