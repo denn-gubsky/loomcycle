@@ -1,4 +1,4 @@
-# document-agent bundle — the `doc-manager` agent that powers the Web UI
+# document-agent bundle — the `doc/manager` agent that powers the Web UI
 # Document Assistant (RFC AM Phase 3).
 #
 # This is a first-class, reusable bundle (NOT an examples/ experiment). Two ways
@@ -7,7 +7,7 @@
 #        export LOOMCYCLE_SQLMEM_ENABLED=1
 #        export LOOMCYCLE_SKILLS_ROOT=bundles/document-agent/skills
 #        loomcycle --config bundles/document-agent/loomcycle.yaml
-#   2. Register it in your own deployment: copy the `agents: doc-manager` block
+#   2. Register it in your own deployment: copy the `agents: doc/manager` block
 #      (and point LOOMCYCLE_SKILLS_ROOT at this bundle's skills/, or copy the
 #      skills into your skills root). loomcycle has no built-in-agent mechanism
 #      yet (auto-registering this in the binary is a deferred follow-up), so the
@@ -52,7 +52,7 @@ user_tiers:
     max_fallback_attempts: 2
 
 agents:
-  doc-manager:
+  doc/manager:
     tier: middle
     max_iterations: 24
     max_tokens: 8192

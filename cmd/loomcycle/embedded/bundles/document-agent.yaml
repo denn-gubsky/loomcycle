@@ -1,6 +1,6 @@
 # RFC AQ embedded bundle: document-agent
 #
-# The `doc-manager` agent that powers the Web UI Document Assistant (RFC AM), with
+# The `doc/manager` agent that powers the Web UI Document Assistant (RFC AM), with
 # its four skills carried INLINE (top-level `skills:` map, loomcycle PR #559). A
 # bundle is just a config layer that defines an agent AND its skills — no skills
 # directory, no LOOMCYCLE_SKILLS_ROOT. Selected via `LOOMCYCLE_PRESETS=…,document-agent`.
@@ -12,7 +12,7 @@
 # This bundle carries NO provider matrix: the agent declares `tier: middle`, so a
 # `middle` tier must come from another layer (select `base` alongside it, or your
 # own config). It also needs SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1) — Documents
-# require it. Absent either, doc-manager is a registered-but-idle def and the Web
+# require it. Absent either, doc/manager is a registered-but-idle def and the Web
 # UI Assistant shows a hint rather than a broken spawn.
 #
 # The operator overlay can override any of this by re-declaring the key (last layer
@@ -20,7 +20,7 @@
 # It cannot WIDEN tools (the AgentDef capability ceiling is unchanged).
 
 agents:
-  doc-manager:
+  doc/manager:
     tier: middle
     max_iterations: 24
     max_tokens: 8192

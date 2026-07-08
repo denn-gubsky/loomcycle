@@ -1,6 +1,6 @@
 # document-agent bundle — OAuth-FIRST variant.
 #
-# Same `doc-manager` agent as loomcycle.yaml in this bundle, but the
+# Same `doc/manager` agent as loomcycle.yaml in this bundle, but the
 # reverse-engineered Anthropic subscription provider `anthropic-oauth-dev` is
 # FIRST in every provider_priority + tier candidate list; the API-key / cloud
 # providers below it are the fallback cascade. `fallback_on_error: true` rolls a
@@ -78,7 +78,7 @@ defaults:
   model: claude-sonnet-4-6
 
 agents:
-  doc-manager:
+  doc/manager:
     tier: middle          # → oauth-sonnet first, then deepseek/gemini/anthropic
     max_iterations: 24
     max_tokens: 8192

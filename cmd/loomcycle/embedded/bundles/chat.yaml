@@ -1,11 +1,11 @@
 # embedded bundle: chat
 # Two general-purpose conversational agents for direct chatting in the
 # interactive /run terminal:
-#   chat        — tier:middle (routes per your provider_priority; cloud-capable)
-#   chat-local  — pinned to the local middle model (ollama-local); never leaves the box
+#   chat/medium — tier:middle (routes per your provider_priority; cloud-capable)
+#   chat/local  — pinned to the local middle model (ollama-local); never leaves the box
 #
 # Selected via `LOOMCYCLE_PRESETS=…,chat`. This bundle carries NO provider matrix:
-# `chat` needs a `middle` tier and `chat-local` needs the `local-medium` alias from
+# `chat/medium` needs a `middle` tier and `chat/local` needs the `local-medium` alias from
 # another layer — select `base` alongside it (or supply your own).
 #
 # Requirements for the full toolset:
@@ -17,14 +17,14 @@
 #   - Document + Memory need LOOMCYCLE_SQLMEM_ENABLED=1 (Document is SQL-backed).
 #   - WebSearch needs BRAVE_API_KEY; WebFetch/WebSearch need LOOMCYCLE_HTTP_HOST_ALLOWLIST.
 #   - Bashbox needs LOOMCYCLE_BASHBOX_ENABLED=1; Bash needs LOOMCYCLE_BASH_ENABLED=1.
-#   - chat-local's large context window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
+#   - chat/local's large context window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
 #     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml.
 #
 # The operator overlay can override any field by re-declaring the key (last layer
 # wins per field). It cannot WIDEN tools (the AgentDef ceiling is unchanged).
 
 agents:
-  chat:
+  chat/medium:
     tier: middle
     effort: medium
     # max_tokens intentionally OMITTED — each provider applies its own default
@@ -65,7 +65,7 @@ agents:
         guessing.
       - When you act with a tool, briefly say what you did and what you found.
 
-  chat-local:
+  chat/local:
     model: local-medium                     # → ollama-local; local-only, no cloud fallback
     effort: medium
     # max_tokens OMITTED — ollama-local generates until the context window fills

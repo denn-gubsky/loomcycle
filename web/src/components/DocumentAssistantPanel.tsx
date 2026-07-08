@@ -7,7 +7,7 @@ import LiveRunPane from "./LiveRunPane";
 
 // DocumentAssistantPanel is the RFC AM Phase 3 Document Assistant: instead of a
 // manual structural-editing UI, the operator types instructions and a
-// `doc-manager` agent performs the Document ops (semantic import, move, link,
+// `doc/manager` agent performs the Document ops (semantic import, move, link,
 // delete). It reuses useRunStream + LiveRunPane wholesale.
 //
 // Lifecycle: lazy — the interactive run is spawned on the FIRST instruction
@@ -21,7 +21,7 @@ import LiveRunPane from "./LiveRunPane";
 // viewer shows. onChanged fires at each turn boundary to refresh; onStopped
 // fires when the run reaches a terminal state so the viewer closes the panel.
 
-const ASSISTANT_AGENT = "doc-manager";
+const ASSISTANT_AGENT = "doc/manager";
 // Cap the injected outline so a huge document can't blow up the first prompt.
 const MAX_OUTLINE_CHUNKS = 200;
 

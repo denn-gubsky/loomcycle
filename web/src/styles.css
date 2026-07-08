@@ -5376,7 +5376,7 @@ button.primary:disabled {
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
- * RFC AM Phase 3 — Document Assistant panel (a steered doc-manager run).
+ * RFC AM Phase 3 — Document Assistant panel (a steered doc/manager run).
  * ─────────────────────────────────────────────────────────────────────────── */
 .doc-toolbar-actions button.active {
   background: var(--accent);

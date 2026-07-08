@@ -564,7 +564,7 @@ agents:
   # Filesystem-only agent: can read/write/edit files but cannot reach
   # the network. Good for code-review or doc-editing flows where the
   # operator has staged inputs into LOOMCYCLE_WRITE_ROOT.
-  file-editor:
+  doc/file-editor:
     model: sonnet
     system_prompt: "You edit files in the configured sandbox. Never speculate about files you haven't read."
     tools: [Read, Write, Edit]
