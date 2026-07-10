@@ -123,6 +123,12 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureSkillDefActive(ctx, s, &envelope.Sections.SkillDefActive); err != nil {
 		return nil, nil, err
 	}
+	if err := captureTeamDefs(ctx, s, &envelope.Sections.TeamDefs); err != nil {
+		return nil, nil, err
+	}
+	if err := captureTeamDefActive(ctx, s, &envelope.Sections.TeamDefActive); err != nil {
+		return nil, nil, err
+	}
 	if err := captureMCPServerDefs(ctx, s, &envelope.Sections.MCPServerDefs); err != nil {
 		return nil, nil, err
 	}
@@ -277,6 +283,51 @@ func captureSkillDefActive(ctx context.Context, s store.Store, out *SkillDefActi
 	out.Entries = make([]SkillDefActiveEntry, 0, len(rows))
 	for _, r := range rows {
 		out.Entries = append(out.Entries, SkillDefActiveEntry{
+			Name:              r.Name,
+			DefID:             r.DefID,
+			PromotedAt:        r.PromotedAt,
+			PromotedByAgentID: r.PromotedByAgentID,
+		})
+	}
+	return nil
+}
+
+// captureTeamDefs mirrors captureSkillDefs against teamdefs.
+func captureTeamDefs(ctx context.Context, s store.Store, out *TeamDefsSection) error {
+	out.Version = SectionVersion
+	rows, err := s.SnapshotReadTeamDefs(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot teamdefs: %w", err)
+	}
+	out.Entries = make([]TeamDefEntry, 0, len(rows))
+	for _, r := range rows {
+		out.Entries = append(out.Entries, TeamDefEntry{
+			DefID:                  r.DefID,
+			Name:                   r.Name,
+			Version:                r.Version,
+			ParentDefID:            r.ParentDefID,
+			Definition:             r.Definition,
+			Description:            r.Description,
+			CreatedAt:              r.CreatedAt,
+			CreatedByAgentID:       r.CreatedByAgentID,
+			CreatedByRunID:         r.CreatedByRunID,
+			Retired:                r.Retired,
+			BootstrappedFromStatic: r.BootstrappedFromStatic,
+			ContentSHA256:          r.ContentSHA256,
+		})
+	}
+	return nil
+}
+
+func captureTeamDefActive(ctx context.Context, s store.Store, out *TeamDefActiveSection) error {
+	out.Version = SectionVersion
+	rows, err := s.SnapshotReadTeamDefActive(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot teamdef_active: %w", err)
+	}
+	out.Entries = make([]TeamDefActiveEntry, 0, len(rows))
+	for _, r := range rows {
+		out.Entries = append(out.Entries, TeamDefActiveEntry{
 			Name:              r.Name,
 			DefID:             r.DefID,
 			PromotedAt:        r.PromotedAt,

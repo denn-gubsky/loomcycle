@@ -14,6 +14,7 @@ func TestMigrate_SameVersionIdentity(t *testing.T) {
 	for _, section := range []string{
 		SectionAgentDefs, SectionAgentDefActive,
 		SectionSkillDefs, SectionSkillDefActive,
+		SectionTeamDefs, SectionTeamDefActive,
 		SectionMemory,
 		SectionChannels, SectionEvaluations, SectionPausedRuns,
 		SectionInteractionHistory,

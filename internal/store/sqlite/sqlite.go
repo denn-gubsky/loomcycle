@@ -362,6 +362,43 @@ func (s *Store) migrate(ctx context.Context) error {
 			tenant_id             TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY(tenant_id, name)
 		)`,
+		// TeamDef substrate — mirror of skill_defs with the same
+		// identity / lineage / promotion semantics. The `definition`
+		// column carries an opaque JSON workflow-graph blob (the store
+		// stays content-agnostic).
+		`CREATE TABLE IF NOT EXISTS teamdefs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES teamdefs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS teamdefs_by_name   ON teamdefs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS teamdefs_by_parent ON teamdefs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS teamdefs_by_run    ON teamdefs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// teamdefs_by_content_sha256 — see agent_defs_by_content_sha256 note above.
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// — two tenants own the same name independently. On a FRESH DB this
+		// CREATE applies the composite PK. See the skill_def_active note for
+		// the full SQLite upgrade caveat (teamdefs is a fresh table, so no
+		// upgrade path applies, but the pattern is identical).
+		`CREATE TABLE IF NOT EXISTS teamdef_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES teamdefs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)`,
 		// v0.9.x MCPServerDef substrate — third member of the
 		// AgentDef / SkillDef / MCPServerDef family. Mirror of the
 		// agent_defs / skill_defs schema; the definition JSONB carries
@@ -977,6 +1014,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		// v0.9.x upgrade path where the table exists without the column.
 		`CREATE INDEX IF NOT EXISTS agent_defs_by_content_sha256      ON agent_defs(content_sha256)      WHERE content_sha256 IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS skill_defs_by_content_sha256      ON skill_defs(content_sha256)      WHERE content_sha256 IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS teamdefs_by_content_sha256        ON teamdefs(content_sha256)        WHERE content_sha256 IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_content_sha256 ON mcp_server_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
 		// v0.8.6 channel_messages_by_visible — runs in addIndexes
 		// (NOT the earlier `stmts` loop) so the visible_at column
@@ -1048,6 +1086,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// fails even single-tenant. No dynamic_skills table to cover.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_skill_def_active_tenant_name    ON skill_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_skill_defs_tenant_name_version  ON skill_defs(tenant_id, name, version)`,
+		// Team plane — same ON CONFLICT(tenant_id, name) / UNIQUE(tenant_id,
+		// name, version) targets as the skill plane. teamdefs is a fresh
+		// table so these are redundant with its CREATE TABLE composite
+		// constraints, but kept for parity with the skill plane's pattern.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_teamdef_active_tenant_name     ON teamdef_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_teamdefs_tenant_name_version   ON teamdefs(tenant_id, name, version)`,
 		// MCP plane (RFC N FIX 5-mcp) — same in-place-upgrade gap.
 		// MCPServerDefSetActive does ON CONFLICT(tenant_id, name) on
 		// mcp_server_def_active and MCPServerDefCreate's version-bump inserts
@@ -2558,6 +2602,91 @@ func (s *Store) SnapshotReadSkillDefActive(ctx context.Context) ([]store.SkillDe
 	return out, rows.Err()
 }
 
+// SnapshotReadTeamDefs implements store.Store. Mirror of
+// SnapshotReadSkillDefs against the teamdefs table.
+func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT def_id, name, version, parent_def_id, definition, description,
+		        created_at, created_by_agent_id, created_by_run_id,
+		        retired, bootstrapped_from_static, tenant_id
+		 FROM teamdefs
+		 ORDER BY tenant_id ASC, name ASC, version ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read teamdefs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.TeamDefRow
+	for rows.Next() {
+		var (
+			r           store.TeamDefRow
+			createdNs   int64
+			parentDefID sql.NullString
+			description sql.NullString
+			createdBy   sql.NullString
+			createdRun  sql.NullString
+			definition  string
+			retiredInt  int
+			bootstrap   int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version, &parentDefID,
+			&definition, &description,
+			&createdNs, &createdBy, &createdRun,
+			&retiredInt, &bootstrap, &r.TenantID,
+		); err != nil {
+			return nil, fmt.Errorf("scan team_def: %w", err)
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdNs)
+		if parentDefID.Valid {
+			r.ParentDefID = parentDefID.String
+		}
+		if description.Valid {
+			r.Description = description.String
+		}
+		if createdBy.Valid {
+			r.CreatedByAgentID = createdBy.String
+		}
+		if createdRun.Valid {
+			r.CreatedByRunID = createdRun.String
+		}
+		r.Retired = retiredInt != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadTeamDefActive implements store.Store.
+func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefActiveEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
+		 FROM teamdef_active
+		 ORDER BY tenant_id ASC, name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read teamdef_active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.TeamDefActiveEntry
+	for rows.Next() {
+		var (
+			e          store.TeamDefActiveEntry
+			promotedNs int64
+			promoter   sql.NullString
+		)
+		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID); err != nil {
+			return nil, fmt.Errorf("scan teamdef_active: %w", err)
+		}
+		e.PromotedAt = time.Unix(0, promotedNs)
+		if promoter.Valid {
+			e.PromotedByAgentID = promoter.String
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SnapshotReadMCPServerDefs — v0.9.x mirror.
 func (s *Store) SnapshotReadMCPServerDefs(ctx context.Context) ([]store.MCPServerDefRow, error) {
 	rows, err := s.db.QueryContext(ctx,
@@ -3039,6 +3168,56 @@ func (s *Store) SnapshotRestoreSkillDefActive(ctx context.Context, e store.Skill
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore skill_def_active: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SnapshotRestoreTeamDef implements store.Store. Mirror of
+// SnapshotRestoreSkillDef against teamdefs.
+func (s *Store) SnapshotRestoreTeamDef(ctx context.Context, r store.TeamDefRow) (bool, error) {
+	if r.DefID == "" || r.Name == "" {
+		return false, fmt.Errorf("snapshot restore team_def: def_id and name required")
+	}
+	createdNs := r.CreatedAt.UnixNano()
+	if r.CreatedAt.IsZero() {
+		createdNs = time.Now().UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO teamdefs(
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
+		string(r.Definition), nilIfEmpty(r.Description),
+		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
+		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
+		nilIfEmpty(r.ContentSHA256), r.TenantID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore team_def: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SnapshotRestoreTeamDefActive implements store.Store. Mirror of
+// SnapshotRestoreSkillDefActive against teamdef_active.
+func (s *Store) SnapshotRestoreTeamDefActive(ctx context.Context, e store.TeamDefActiveEntry) (bool, error) {
+	if e.Name == "" || e.DefID == "" {
+		return false, fmt.Errorf("snapshot restore teamdef_active: name and def_id required")
+	}
+	promotedNs := e.PromotedAt.UnixNano()
+	if e.PromotedAt.IsZero() {
+		promotedNs = time.Now().UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO teamdef_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?, ?)`,
+		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore teamdef_active: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
@@ -4669,6 +4848,287 @@ func (s *Store) scanSkillDefRows(rows *sql.Rows) ([]store.SkillDefRow, error) {
 	for rows.Next() {
 		var (
 			r          store.SkillDefRow
+			definition string
+			createdAt  int64
+			retired    int
+			bootstrap  int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&createdAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&retired, &bootstrap,
+			&r.ContentSHA256,
+			&r.TenantID,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		r.Retired = retired != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- TeamDef substrate ----
+//
+// Direct mirror of the SkillDef methods above. Same per-name lock
+// for version monotonicity, same scan/select helpers, same error
+// surfaces. The only divergence is the table name and the typed
+// error (ErrTeamDefParentNotFound instead of ErrSkillDefParentNotFound).
+// If you fix a bug in one of these methods, fix it in the SkillDef
+// twin as well.
+
+func (s *Store) TeamDefCreate(ctx context.Context, row store.TeamDefRow) (store.TeamDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.TeamDefRow{}, fmt.Errorf("team_def: def_id + name required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return store.TeamDefRow{}, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return store.TeamDefRow{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM teamdefs WHERE def_id = ?`, row.ParentDefID).Scan(&n); err != nil {
+			return store.TeamDefRow{}, err
+		}
+		if n == 0 {
+			return store.TeamDefRow{}, store.ErrTeamDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM teamdefs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
+	).Scan(&maxVer); err != nil {
+		return store.TeamDefRow{}, err
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now()
+
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO teamdefs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
+		string(row.Definition), nilIfEmpty(row.Description),
+		row.CreatedAt.UnixNano(),
+		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		nilIfEmpty(row.ContentSHA256), row.TenantID,
+	); err != nil {
+		return store.TeamDefRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.TeamDefRow{}, err
+	}
+	committed = true
+	return row, nil
+}
+
+func (s *Store) TeamDefGet(ctx context.Context, defID string) (store.TeamDefRow, error) {
+	row, err := s.scanTeamDef(s.db.QueryRowContext(ctx, teamDefSelect+` WHERE def_id = ?`, defID))
+	if err == sql.ErrNoRows {
+		return store.TeamDefRow{}, &store.ErrNotFound{Kind: "team_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) TeamDefGetByNameVersion(ctx context.Context, name string, version int) (store.TeamDefRow, error) {
+	row, err := s.scanTeamDef(s.db.QueryRowContext(ctx, teamDefSelect+` WHERE name = ? AND version = ?`, name, version))
+	if err == sql.ErrNoRows {
+		return store.TeamDefRow{}, &store.ErrNotFound{Kind: "team_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) TeamDefListByName(ctx context.Context, name string) ([]store.TeamDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, teamDefSelect+` WHERE name = ? ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanTeamDefRows(rows)
+}
+
+func (s *Store) TeamDefListChildren(ctx context.Context, parentDefID string) ([]store.TeamDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, teamDefSelect+` WHERE parent_def_id = ? ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanTeamDefRows(rows)
+}
+
+func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummary, error) {
+	// RFC N: names are per-tenant; group by tenant_id so a name owned by
+	// N tenants yields N rows (one per tenant) rather than merging them.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.tenant_id,
+			d.name,
+			COUNT(*)                              AS version_count,
+			COUNT(*) FILTER (WHERE d.retired = 0) AS live_version_count,
+			MAX(d.version)                        AS latest_version,
+			MAX(d.created_at)                     AS last_updated,
+			COALESCE(a.def_id, '')                AS active_def_id,
+			COALESCE(ad.retired, 0)               AS active_retired
+		FROM teamdefs d
+		LEFT JOIN teamdef_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		LEFT JOIN teamdefs ad      ON ad.def_id = a.def_id
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired
+		ORDER BY d.tenant_id, d.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.TeamDefNameSummary
+	for rows.Next() {
+		var ns store.TeamDefNameSummary
+		var updatedAt int64
+		var activeRetired int
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID, &activeRetired); err != nil {
+			return nil, err
+		}
+		ns.LastUpdated = time.Unix(0, updatedAt)
+		ns.ActiveRetired = activeRetired != 0
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+// TeamDefSetActive UPSERTs the teamdef_active pointer for
+// (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// team AND the supplied tenant — a def can only be promoted within its
+// own tenant.
+func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM teamdefs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
+	if err == sql.ErrNoRows {
+		return &store.ErrNotFound{Kind: "team_def", ID: defID}
+	}
+	if err != nil {
+		return err
+	}
+	if rowName != name {
+		return fmt.Errorf("teamdef_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("teamdef_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO teamdef_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
+		    def_id               = excluded.def_id,
+		    promoted_at          = excluded.promoted_at,
+		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+	)
+	return err
+}
+
+func (s *Store) TeamDefGetActive(ctx context.Context, tenantID, name string) (store.TeamDefRow, error) {
+	var defID string
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM teamdef_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
+	if err == sql.ErrNoRows {
+		return store.TeamDefRow{}, &store.ErrNotFound{Kind: "teamdef_active", ID: name}
+	}
+	if err != nil {
+		return store.TeamDefRow{}, err
+	}
+	return s.TeamDefGet(ctx, defID)
+}
+
+func (s *Store) TeamDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE teamdefs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "team_def", ID: defID}
+	}
+	return nil
+}
+
+const teamDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static,
+	COALESCE(content_sha256, ''),
+	tenant_id
+FROM teamdefs`
+
+func (s *Store) scanTeamDef(row *sql.Row) (store.TeamDefRow, error) {
+	var (
+		out        store.TeamDefRow
+		definition string
+		createdAt  int64
+		retired    int
+		bootstrap  int
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&createdAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&retired, &bootstrap,
+		&out.ContentSHA256,
+		&out.TenantID,
+	)
+	if err != nil {
+		return store.TeamDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	out.CreatedAt = time.Unix(0, createdAt)
+	out.Retired = retired != 0
+	out.BootstrappedFromStatic = bootstrap != 0
+	return out, nil
+}
+
+func (s *Store) scanTeamDefRows(rows *sql.Rows) ([]store.TeamDefRow, error) {
+	var out []store.TeamDefRow
+	for rows.Next() {
+		var (
+			r          store.TeamDefRow
 			definition string
 			createdAt  int64
 			retired    int

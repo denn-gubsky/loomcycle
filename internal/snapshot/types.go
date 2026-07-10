@@ -69,6 +69,8 @@ type Sections struct {
 	AgentDefActive     AgentDefActiveSection      `json:"agent_def_active"`
 	SkillDefs          SkillDefsSection           `json:"skill_defs"`
 	SkillDefActive     SkillDefActiveSection      `json:"skill_def_active"`
+	TeamDefs           TeamDefsSection            `json:"team_defs"`
+	TeamDefActive      TeamDefActiveSection       `json:"team_def_active"`
 	MCPServerDefs      MCPServerDefsSection       `json:"mcp_server_defs"`
 	MCPServerDefActive MCPServerDefActiveSection  `json:"mcp_server_def_active"`
 	Memory             MemorySection              `json:"memory"`
@@ -160,6 +162,44 @@ type SkillDefActiveSection struct {
 }
 
 type SkillDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// TeamDefsSection mirrors SkillDefsSection.
+type TeamDefsSection struct {
+	Version string         `json:"version"`
+	Entries []TeamDefEntry `json:"entries"`
+}
+
+// TeamDefEntry mirrors SkillDefEntry. Same field set; the
+// definition payload (an opaque workflow graph) is owned by the
+// TeamDef tool.
+type TeamDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// ContentSHA256 — see AgentDefEntry.ContentSHA256.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+}
+
+// TeamDefActiveSection mirrors SkillDefActiveSection.
+type TeamDefActiveSection struct {
+	Version string               `json:"version"`
+	Entries []TeamDefActiveEntry `json:"entries"`
+}
+
+type TeamDefActiveEntry struct {
 	Name              string    `json:"name"`
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`

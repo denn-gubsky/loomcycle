@@ -43,6 +43,8 @@ type RestoreResult struct {
 	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
 	SkillDefsRestored          int      `json:"skill_defs_restored"`
 	SkillDefActiveRestored     int      `json:"skill_def_active_restored"`
+	TeamDefsRestored           int      `json:"team_defs_restored"`
+	TeamDefActiveRestored      int      `json:"team_def_active_restored"`
 	MCPServerDefsRestored      int      `json:"mcp_server_defs_restored"`
 	MCPServerDefActiveRestored int      `json:"mcp_server_def_active_restored"`
 	MemoryRestored             int      `json:"memory_restored"`
@@ -240,6 +242,60 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			if inserted {
 				result.SkillDefActiveRestored++
+			}
+		}
+	}
+
+	// team_defs — mirror of skill_defs restore
+	if rawSection, ok := sections[migrations.SectionTeamDefs]; ok {
+		var sec TeamDefsSection
+		if err := decodeWithMigration(migrations.SectionTeamDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			inserted, err := s.SnapshotRestoreTeamDef(ctx, store.TeamDefRow{
+				DefID:                  e.DefID,
+				Name:                   e.Name,
+				Version:                e.Version,
+				ParentDefID:            e.ParentDefID,
+				Definition:             e.Definition,
+				Description:            e.Description,
+				CreatedAt:              e.CreatedAt,
+				CreatedByAgentID:       e.CreatedByAgentID,
+				CreatedByRunID:         e.CreatedByRunID,
+				Retired:                e.Retired,
+				BootstrappedFromStatic: e.BootstrappedFromStatic,
+				ContentSHA256:          e.ContentSHA256,
+			})
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("team_def %s: %v", e.DefID, err))
+				continue
+			}
+			if inserted {
+				result.TeamDefsRestored++
+			}
+		}
+	}
+
+	// team_def_active (after team_defs for FK)
+	if rawSection, ok := sections[migrations.SectionTeamDefActive]; ok {
+		var sec TeamDefActiveSection
+		if err := decodeWithMigration(migrations.SectionTeamDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			inserted, err := s.SnapshotRestoreTeamDefActive(ctx, store.TeamDefActiveEntry{
+				Name:              e.Name,
+				DefID:             e.DefID,
+				PromotedAt:        e.PromotedAt,
+				PromotedByAgentID: e.PromotedByAgentID,
+			})
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("team_def_active %s: %v", e.Name, err))
+				continue
+			}
+			if inserted {
+				result.TeamDefActiveRestored++
 			}
 		}
 	}
