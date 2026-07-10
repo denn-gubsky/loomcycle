@@ -799,18 +799,46 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 	// tool with only the store + byte caps; the runner lives on the server, so
 	// inject it here (mirrors the AgentTool.Run closure above).
 	//
-	// NOT yet enforced on this path (tracked follow-ups): the agent-depth guard
-	// (it lives in AgentTool.Execute, which op=run bypasses) and RunOnce
-	// admission (RFC AW token budget + deriving the RFC AX operator-key
-	// restriction). A DIRECT op=run over HTTP/MCP therefore doesn't budget-gate
-	// or depth-bound its spawned tree — see the RFC AP review findings.
-	if td, ok := t.(*builtin.TeamDef); ok && td.Spawn == nil {
-		td.Spawn = func(ctx context.Context, name, prompt, defID string) (string, error) {
-			out, _, err := s.runSubAgent(ctx, name, prompt, defID)
-			return out, err
+	if td, ok := t.(*builtin.TeamDef); ok {
+		if td.Spawn == nil {
+			td.Spawn = func(ctx context.Context, name, prompt, defID string) (string, error) {
+				out, _, err := s.runSubAgent(ctx, name, prompt, defID)
+				return out, err
+			}
+		}
+		if td.Admit == nil {
+			td.Admit = s.admitTeamRun
 		}
 	}
 	s.teamDefTool = t
+}
+
+// admitTeamRun gates a `TeamDef op=run` once, before the walk. op=run is a
+// run-trigger reachable over HTTP /v1/_teamdef + the MCP teamdef meta-tool that
+// does NOT pass through RunOnce, so without this a direct call would spawn a
+// team's agents with none of RunOnce's admission. It enforces, and returns a ctx
+// the walk (and thus every spawned sub-run) runs under:
+//   - the agent-depth bound (op=run bypasses AgentTool.Execute's guard, so the
+//     walk counts as one nesting level — its agents + any nested op=run are
+//     bounded like sub-agents);
+//   - the RFC AW token-budget hard ceiling (refuse before spawning anything);
+//   - the RFC AX operator-key restriction (derived from the caller's principal,
+//     stamped on the RunIdentity + provider ctx so restricted callers can't fall
+//     back to the operator's keys through the spawned agents).
+func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
+	if builtin.AgentDepth(ctx) >= builtin.MaxAgentDepth {
+		return nil, fmt.Errorf("team run exceeds max agent depth %d (nested too deep)", builtin.MaxAgentDepth)
+	}
+	id := tools.RunIdentity(ctx)
+	if dec := s.limits.Check(id.TenantID, id.UserID); !dec.Allowed {
+		return nil, fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, dec.Refusal.Message)
+	}
+	restricted := s.operatorKeyRestrictedOrCaptured(ctx, id.OperatorKeyRestricted)
+	id.OperatorKeyRestricted = restricted
+	ctx = tools.WithRunIdentity(ctx, id)
+	ctx = providers.WithOperatorKeyAllowed(ctx, !restricted)
+	ctx = builtin.IncrementAgentDepth(ctx)
+	return ctx, nil
 }
 
 // SetA2AServerCardDefTool wires the v1.x RFC G A2AServerCardDef substrate

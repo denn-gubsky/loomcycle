@@ -54,10 +54,19 @@ type TeamDef struct {
 
 	// Spawn runs one of a team's agents and returns its output. It mirrors the
 	// Agent tool's SubAgentRunner exactly, so op=run reuses the existing
-	// sub-agent machinery (tenant/identity inheritance, recursion cap, cancel
-	// registry). Wired by the server via SetTeamDefTool; nil = op=run refuses
-	// with "not configured for execution" (authoring ops still work).
+	// sub-agent machinery (tenant/identity inheritance, cancel registry). Wired
+	// by the server via SetTeamDefTool; nil = op=run refuses with "not configured
+	// for execution" (authoring ops still work).
 	Spawn teamrun.SpawnFunc
+
+	// Admit, if set, gates op=run once before the walk: op=run is a run-trigger
+	// that does NOT pass through RunOnce, so without this a DIRECT HTTP/MCP call
+	// would spawn a team's agents with no RFC AW token-budget check, no RFC AX
+	// operator-key restriction, and no agent-depth bound. Admit enforces those
+	// and returns a ctx enriched with the restriction + an incremented depth for
+	// the walk (used for every spawned agent), or an error that aborts the run.
+	// nil = no admission (unit tests / authoring-only wiring).
+	Admit func(ctx context.Context) (context.Context, error)
 }
 
 const teamDefDescription = `Author, fork, promote, retire, and inspect team workflow definitions at runtime (RFC AP). ` +
@@ -536,8 +545,20 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return errResult(fmt.Sprintf("run: %s", err)), nil
 	}
 
+	// Run admission (op=run bypasses RunOnce): enforce the token budget +
+	// operator-key restriction + agent-depth bound, and walk under the enriched
+	// ctx so every spawned agent inherits them. A refusal (over budget / too
+	// deep) aborts before any agent is spawned.
+	walkCtx := ctx
+	if t.Admit != nil {
+		walkCtx, err = t.Admit(ctx)
+		if err != nil {
+			return errResult(fmt.Sprintf("run: %s", err)), nil
+		}
+	}
+
 	task := &teamrun.Task{Input: in.Input}
-	trace, walkErr := teamrun.Walk(ctx, def, task, teamrun.NewAgentRunner(t.Spawn))
+	trace, walkErr := teamrun.Walk(walkCtx, def, task, teamrun.NewAgentRunner(t.Spawn))
 
 	steps := make([]map[string]any, 0, len(trace))
 	for _, s := range trace {
