@@ -402,3 +402,68 @@ skills:
       The fallback runs real host `git`/`gh`, not a sandbox — only operate on the
       repo the human authorized. Never interpolate untrusted text into the command.
       Never print the token.
+
+  team/sqldata:
+    description: Accounting/data-team workspace — per-scope SQL Memory tables (ledgers, reconciliation) and reaching external SQL/Excel via Bashbox/MCP. No git, no PR.
+    tools: [Memory, Bashbox, Document]
+    body: |
+      # SQL / data workspace (accounting + data teams)
+
+      Use this for a team whose deliverable is DATA — a reconciled ledger, a report,
+      a populated table — not a code change. No repo, no PR.
+
+      ## Two backends, pick per the task
+      1. **In-runtime SQL Memory (RFC AA)** — the team's own per-scope SQL database
+         (needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the agent's `sql_scopes`). Handlers
+         run `Memory` sql_exec / sql_query against it: create tables, insert rows,
+         reconcile, aggregate. The scope (user/tenant) IS the shared workspace —
+         every handler you spawn in this run sees the same tables.
+         - Seed: `Memory op=sql_exec scope=user sql="CREATE TABLE IF NOT EXISTS …"`.
+         - Work: handlers sql_exec/sql_query; the orchestrator reads results to route.
+      2. **External SQL / Excel via Bashbox** — when the source of truth is outside
+         loomcycle (a warehouse, a `.xlsx`). Run a host CLI through Bashbox's
+         host-command fallback (operator allowlists e.g. `psql`, `duckdb`, a python
+         xlsx script; a DB token via the fallback env/cred allowlist), OR mount a
+         database MCP server and call its tools. Keep credentials in the fallback
+         cred allowlist (per-tenant) — never inline them.
+
+      ## Drive it
+      Represent each work-item as a Document chunk (status = the team's state) as
+      usual; the SQL tables / external system hold the data, the Document holds the
+      workflow + a summary. At the terminal state, the deliverable is the posted
+      table / emitted report — tell the human where it lives (the SQL scope, the
+      output file, the external system).
+
+      ## Safety
+      SQL Memory is scope-isolated (tenant/user). For external access via Bashbox,
+      only operator-allowlisted commands + creds reach the host — never interpolate
+      untrusted input into SQL or a shell command (parameterize / quote).
+
+  team/docboard:
+    description: Marketing/content-team workspace — the Document task board IS the deliverable. Draft, review, and finalize copy in chunks. No volume, no repo, no PR.
+    tools: [Document, WebSearch]
+    body: |
+      # Document-board workspace (marketing + content teams)
+
+      Use this for a team whose deliverable is WRITTEN CONTENT — a post, a brief, a
+      landing section, a plan. The Document task board is both the workflow AND the
+      deliverable: there is no repo, no volume, no PR.
+
+      ## Set up the board
+      `Document op=create_document title="<campaign/deliverable>"` (or bind one the
+      human names). Model the work as chunks — one per deliverable/section — and set
+      each chunk's `status` to the team's entry state.
+
+      ## Drive it
+      - Spawn the writer handler on the current chunk: it drafts into the chunk BODY
+        (`Document op=update_chunk`). Spawn the editor/reviewer next; it polishes in
+        place or returns pushback. Route the chunk's `status` per the TeamDef.
+      - Keep the brief + brand voice in the root chunk (or a pinned chunk) so every
+        handler reads the same guidance. Use WebSearch only to check facts.
+      - Multiple deliverables = multiple chunks; drive them independently (or fan out
+        with parallel handlers) — the board tracks each one's state.
+
+      ## Finish
+      The finished copy lives in the chunks. At the terminal state, tell the human
+      the document + which chunks are final; there's nothing to deploy — the board
+      is the product. (Export with `Document op=export_md` if they want the Markdown.)
