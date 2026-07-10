@@ -793,10 +793,17 @@ func (s *Server) SetScheduleDefTool(t tools.Tool) {
 // constructed alongside ScheduleDef in main.go.
 func (s *Server) SetTeamDefTool(t tools.Tool) {
 	// Wire execution into the tool: op=run walks a team's graph, spawning each
-	// state's agent via the same runSubAgent machinery the Agent tool uses
-	// (tenant/identity inheritance, recursion cap, cancel registry). main.go
-	// constructs the tool with only the store + byte caps; the runner lives on
-	// the server, so inject it here (mirrors the AgentTool.Run closure above).
+	// state's agent via the same runSubAgent path the Agent tool uses — it
+	// inherits the caller's tenant/identity + operator-key restriction from ctx
+	// RunIdentity and registers with the cancel registry. main.go constructs the
+	// tool with only the store + byte caps; the runner lives on the server, so
+	// inject it here (mirrors the AgentTool.Run closure above).
+	//
+	// NOT yet enforced on this path (tracked follow-ups): the agent-depth guard
+	// (it lives in AgentTool.Execute, which op=run bypasses) and RunOnce
+	// admission (RFC AW token budget + deriving the RFC AX operator-key
+	// restriction). A DIRECT op=run over HTTP/MCP therefore doesn't budget-gate
+	// or depth-bound its spawned tree — see the RFC AP review findings.
 	if td, ok := t.(*builtin.TeamDef); ok && td.Spawn == nil {
 		td.Spawn = func(ctx context.Context, name, prompt, defID string) (string, error) {
 			out, _, err := s.runSubAgent(ctx, name, prompt, defID)

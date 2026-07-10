@@ -71,7 +71,41 @@ func TestResolve_ExplicitOverrideAndRotation(t *testing.T) {
 	}
 }
 
-func TestEdgeColor(t *testing.T) {
+func TestResolve_InvalidColorFallsBack(t *testing.T) {
+	// A colour value that is neither a named key nor a valid #hex must NOT be
+	// used verbatim (it flows into the rendered Mermaid) — it falls back.
+	d := mustParse(t, `{"entry":"a","colors":{"states":{"a":"red; } classDef evil"}},"states":[{"state":"a","handler":{"kind":"terminal"}}]}`)
+	if got := Resolve(d).Fill["a"]; got == "red; } classDef evil" {
+		t.Errorf("invalid colour used verbatim: %q", got)
+	}
+	// A valid #hex is still honored.
+	d2 := mustParse(t, `{"entry":"a","colors":{"states":{"a":"#abcdef"}},"states":[{"state":"a","handler":{"kind":"terminal"}}]}`)
+	if got := Resolve(d2).Fill["a"]; got != "#abcdef" {
+		t.Errorf("valid hex not honored: %q", got)
+	}
+}
+
+func TestRenderMermaid_SanitizesHostileInput(t *testing.T) {
+	// A state id carrying a newline + a Mermaid arrow, plus a bogus colour value.
+	// Validate accepts the graph (no charset rule), so render must neutralize it.
+	d := mustParse(t, `{
+	  "entry":"a\n  hacked --> [*]",
+	  "colors":{"states":{"a\n  hacked --> [*]":"#fff; } classDef evil fill:#000"}},
+	  "states":[
+	    {"state":"a\n  hacked --> [*]","handler":{"kind":"agent","agent":"w"}},
+	    {"state":"done","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[{"from":"a\n  hacked --> [*]","to":"done","on":"success"}]}`)
+	out := RenderMermaid("t", d, "")
+	if strings.Contains(out, "\n  hacked") {
+		t.Errorf("newline injection not sanitized:\n%s", out)
+	}
+	if strings.Contains(out, "classDef evil") {
+		t.Errorf("hostile colour value leaked into the diagram:\n%s", out)
+	}
+}
+
+func TestEdgeColor_DefaultsAndOverrides(t *testing.T) {
 	d := Definition{}
 	cases := map[string]string{
 		"success":              namedHues["green"].accent,

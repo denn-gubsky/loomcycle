@@ -5611,6 +5611,26 @@ func testTeamDefContentSHA256RoundTrip(t *testing.T, s store.Store) {
 	if plain.ContentSHA256 != "" {
 		t.Errorf("hashless row: got %q, want empty", plain.ContentSHA256)
 	}
+
+	// The snapshot read must preserve content_sha256 — it feeds capture→restore,
+	// and dropping it here silently nulls the hash on every restore, breaking
+	// verify-or-fork for every restored team (no boot backfill recovers it).
+	snap, err := s.SnapshotReadTeamDefs(ctx)
+	if err != nil {
+		t.Fatalf("snapshot read: %v", err)
+	}
+	var found bool
+	for _, r := range snap {
+		if r.DefID == "td-hash" {
+			found = true
+			if r.ContentSHA256 != row.ContentSHA256 {
+				t.Errorf("snapshot read dropped ContentSHA256: got %q, want %q", r.ContentSHA256, row.ContentSHA256)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("snapshot read did not return td-hash")
+	}
 }
 
 // ---- v0.9.x MCPServerDef contract tests ----

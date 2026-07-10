@@ -82,7 +82,9 @@ func TestWalk_StartsAtEntryAndIsResumable(t *testing.T) {
 
 	// Empty State → starts at entry (a).
 	r1 := &fakeRunner{}
-	Walk(context.Background(), d, &Task{}, r1)
+	if _, err := Walk(context.Background(), d, &Task{}, r1); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
 	if len(r1.calls) == 0 || r1.calls[0] != "a" {
 		t.Errorf("empty task should start at entry a, ran %v", r1.calls)
 	}
@@ -90,7 +92,9 @@ func TestWalk_StartsAtEntryAndIsResumable(t *testing.T) {
 	// Preset State → resumes there (b), does NOT restart at entry. Proves the
 	// walk is resumable from a persisted chunk position.
 	r2 := &fakeRunner{}
-	Walk(context.Background(), d, &Task{State: "b"}, r2)
+	if _, err := Walk(context.Background(), d, &Task{State: "b"}, r2); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
 	if len(r2.calls) != 1 || r2.calls[0] != "b" {
 		t.Errorf("preset state=b should resume at b only, ran %v", r2.calls)
 	}

@@ -19,6 +19,12 @@ import (
 // omits max_iterations. Exceeding it fires an Interruption at run time.
 const DefaultMaxIterations = 10
 
+// MaxAllowedIterations is the upper bound accepted for a definition's
+// max_iterations. The cap is a safety net, not a schedule — an absurdly large
+// value would let one accepted TeamDef schedule billions of agent runs, so it is
+// rejected at create/fork rather than trusted.
+const MaxAllowedIterations = 1000
+
 // Handler kinds — the "who acts" bound to a state.
 const (
 	HandlerAgent        = "agent"        // a single AgentDef run

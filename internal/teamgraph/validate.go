@@ -32,6 +32,9 @@ func Validate(d Definition) error {
 	if d.MaxIterations < 0 {
 		return fmt.Errorf("team definition: max_iterations must be >= 0 (0 = default %d)", DefaultMaxIterations)
 	}
+	if d.MaxIterations > MaxAllowedIterations {
+		return fmt.Errorf("team definition: max_iterations %d exceeds the maximum %d", d.MaxIterations, MaxAllowedIterations)
+	}
 
 	// State ids: unique + non-empty; validate each handler.
 	states := make(map[string]State, len(d.States))
@@ -94,6 +97,15 @@ func Validate(d Definition) error {
 	for _, s := range d.States {
 		if !seen[s.ID] {
 			return fmt.Errorf("team definition: state %q is unreachable from entry %q", s.ID, d.Entry)
+		}
+	}
+
+	// A non-terminal state must have at least one outbound transition — else the
+	// walk enters it, runs its handler (spending a real agent call), and then
+	// dead-ends because no edge leaves it. Only a terminal state may have none.
+	for _, s := range d.States {
+		if s.Handler.Kind != HandlerTerminal && len(outbound[s.ID]) == 0 {
+			return fmt.Errorf("team definition: non-terminal state %q has no outbound transition (dead end)", s.ID)
 		}
 	}
 
