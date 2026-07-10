@@ -792,6 +792,17 @@ func (s *Server) SetScheduleDefTool(t tools.Tool) {
 // with "not configured". The tool only needs the store + byte caps, so it can be
 // constructed alongside ScheduleDef in main.go.
 func (s *Server) SetTeamDefTool(t tools.Tool) {
+	// Wire execution into the tool: op=run walks a team's graph, spawning each
+	// state's agent via the same runSubAgent machinery the Agent tool uses
+	// (tenant/identity inheritance, recursion cap, cancel registry). main.go
+	// constructs the tool with only the store + byte caps; the runner lives on
+	// the server, so inject it here (mirrors the AgentTool.Run closure above).
+	if td, ok := t.(*builtin.TeamDef); ok && td.Spawn == nil {
+		td.Spawn = func(ctx context.Context, name, prompt, defID string) (string, error) {
+			out, _, err := s.runSubAgent(ctx, name, prompt, defID)
+			return out, err
+		}
+	}
 	s.teamDefTool = t
 }
 

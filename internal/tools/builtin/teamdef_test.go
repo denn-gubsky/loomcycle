@@ -51,6 +51,121 @@ func createTeam(t *testing.T, tool *TeamDef, ctx context.Context, name, overlay 
 	return decodeResult(t, res.Text)
 }
 
+func TestTeamDefTool_Run_LinearTeam(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+
+	var spawned []string
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) {
+		spawned = append(spawned, agent)
+		return agent + "(" + input + ")", nil
+	}
+
+	createTeam(t, tool, ctx, "run-linear", `{
+	  "entry":"a",
+	  "states":[
+	    {"state":"a","handler":{"kind":"agent","agent":"agent-a"}},
+	    {"state":"b","handler":{"kind":"agent","agent":"agent-b"}},
+	    {"state":"done","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[
+	    {"from":"a","to":"b","on":"success"},
+	    {"from":"b","to":"done","on":"success"}
+	  ]}`)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"run-linear","input":"seed"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["status"] != "completed" {
+		t.Errorf("status = %v, want completed", out["status"])
+	}
+	if out["final_state"] != "done" {
+		t.Errorf("final_state = %v, want done", out["final_state"])
+	}
+	if out["final_output"] != "agent-b(agent-a(seed))" {
+		t.Errorf("final_output = %v, want agent-b(agent-a(seed)) (threaded)", out["final_output"])
+	}
+	if len(spawned) != 2 || spawned[0] != "agent-a" || spawned[1] != "agent-b" {
+		t.Errorf("spawned %v, want [agent-a agent-b]", spawned)
+	}
+	if steps, _ := out["steps"].([]any); len(steps) != 2 {
+		t.Errorf("steps len = %d, want 2", len(steps))
+	}
+}
+
+func TestTeamDefTool_Run_NotConfigured(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t) // fixture leaves Spawn nil
+	defer done()
+	createTeam(t, tool, ctx, "run-nocfg", `{
+	  "entry":"a",
+	  "states":[{"state":"a","handler":{"kind":"terminal"}}]}`)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"run-nocfg","input":"x"}`))
+	if !res.IsError || !strings.Contains(res.Text, "not configured for execution") {
+		t.Fatalf("run without a wired runner should error; got %q (isErr=%v)", res.Text, res.IsError)
+	}
+}
+
+func TestTeamDefTool_Run_IterationCap(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+
+	// a ⇄ b ping-pong on success (no terminal reachable) → the walk never
+	// converges and the per-state cap must fire.
+	createTeam(t, tool, ctx, "run-loop", `{
+	  "entry":"a",
+	  "max_iterations":2,
+	  "states":[
+	    {"state":"a","handler":{"kind":"agent","agent":"a"}},
+	    {"state":"b","handler":{"kind":"agent","agent":"b"}}
+	  ],
+	  "transitions":[
+	    {"from":"a","to":"b","on":"success"},
+	    {"from":"b","to":"a","on":"success"}
+	  ]}`)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"run-loop","input":"x"}`))
+	if res.IsError {
+		t.Fatalf("iteration cap should be a reported outcome, not a tool error: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["status"] != "iteration_cap" {
+		t.Errorf("status = %v, want iteration_cap", out["status"])
+	}
+	if out["capped_state"] != "a" {
+		t.Errorf("capped_state = %v, want a (entry entered first each cycle)", out["capped_state"])
+	}
+}
+
+func TestTeamDefTool_Run_UnknownTeam(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "", nil }
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"ghost","input":"x"}`))
+	if !res.IsError || !strings.Contains(res.Text, "not found") {
+		t.Fatalf("unknown team should be not-found; got %q (isErr=%v)", res.Text, res.IsError)
+	}
+}
+
+func TestTeamDefTool_Run_ParallelNotYetSupported(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "", nil }
+	createTeam(t, tool, ctx, "run-parallel", `{
+	  "entry":"fan",
+	  "states":[
+	    {"state":"fan","handler":{"kind":"parallel","agents":["x","y"],"consolidator":"c"}},
+	    {"state":"end","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[{"from":"fan","to":"end","on":"success"}]}`)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"run-parallel","input":"x"}`))
+	if !res.IsError || !strings.Contains(res.Text, "Phase 3") {
+		t.Fatalf("parallel handler should error as not-yet-supported; got %q (isErr=%v)", res.Text, res.IsError)
+	}
+}
+
 func TestTeamDefTool_RenderDiagram(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
