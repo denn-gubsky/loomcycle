@@ -220,6 +220,17 @@ func Run(t *testing.T, factory Factory) {
 		{"SkillDefContentSHA256RoundTrip", testSkillDefContentSHA256RoundTrip},
 		{"BackfillSkillDefContentSHA256", testBackfillSkillDefContentSHA256},
 		{"SkillDefSnapshotReadEmpty", testSkillDefSnapshotReadEmpty},
+		// TeamDef substrate — mirror of the SkillDef tests.
+		{"TeamDefCreateAndGet", testTeamDefCreateAndGet},
+		{"TeamDefVersionMonotonicUnderContention", testTeamDefVersionMonotonicUnderContention},
+		{"TeamDefActivePointerIdempotent", testTeamDefActivePointerIdempotent},
+		{"TeamDefRetireReversible", testTeamDefRetireReversible},
+		{"TeamDefListNamesLiveCount", testTeamDefListNamesLiveCount},
+		{"TeamDefStaticFallback", testTeamDefStaticFallback},
+		// RFC N — team definition plane tenant isolation. Fails on the
+		// pre-migration single-`name`-PK schema (clobber); passes after.
+		{"TeamDefTenantIsolation", testTeamDefTenantIsolation},
+		{"TeamDefContentSHA256RoundTrip", testTeamDefContentSHA256RoundTrip},
 		// v0.9.x MCPServerDef substrate — mirror of the AgentDef + SkillDef tests.
 		{"MCPServerDefCreateAndGet", testMCPServerDefCreateAndGet},
 		{"MCPServerDefVersionMonotonic", testMCPServerDefVersionMonotonic},
@@ -5317,6 +5328,288 @@ func testSkillDefSnapshotReadEmpty(t *testing.T, s store.Store) {
 	ptrs, _ = s.SnapshotReadSkillDefActive(ctx)
 	if len(ptrs) != 1 {
 		t.Errorf("after restore: %d pointers", len(ptrs))
+	}
+}
+
+// ---- TeamDef contract tests ----
+//
+// Direct mirror of the SkillDef tests above. Same invariants:
+// monotonic versioning under contention, idempotent active pointer,
+// reversible retire flag, per-tenant isolation, content-hash
+// round-trip. The Definition payload is an opaque workflow-graph blob.
+
+func mkTeamDef(id, name string, parent string) store.TeamDefRow {
+	return store.TeamDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"graph":{"nodes":["a"]},"description":"test row"}`),
+		Description: "test row",
+	}
+}
+
+// testTeamDefListNamesLiveCount mirrors the skill live-count test for teams:
+// VersionCount counts every version, LiveVersionCount excludes retired, and
+// ActiveRetired is true when the active pointer references a retired def. Drives
+// the Web UI Library "Hide retired" filter for the teams tab.
+func testTeamDefListNamesLiveCount(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	v1, err := s.TeamDefCreate(ctx, mkTeamDef("tlc-1", "tlc-team", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TeamDefCreate(ctx, mkTeamDef("tlc-2", "tlc-team", v1.DefID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TeamDefSetRetired(ctx, v1.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	find := func() store.TeamDefNameSummary {
+		rows, lerr := s.TeamDefListNames(ctx)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		for _, r := range rows {
+			if r.Name == "tlc-team" && r.TenantID == "" {
+				return r
+			}
+		}
+		t.Fatal("tlc-team not in list")
+		return store.TeamDefNameSummary{}
+	}
+	sum := find()
+	if sum.VersionCount != 2 {
+		t.Errorf("VersionCount = %d, want 2 (retired rows still counted)", sum.VersionCount)
+	}
+	if sum.LiveVersionCount != 1 {
+		t.Errorf("LiveVersionCount = %d, want 1 (retired excluded)", sum.LiveVersionCount)
+	}
+	// Pointing active at the retired v1 surfaces ActiveRetired.
+	if err := s.TeamDefSetActive(ctx, "", "tlc-team", v1.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !find().ActiveRetired {
+		t.Errorf("ActiveRetired = false, want true (active points at a retired def)")
+	}
+}
+
+func testTeamDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.TeamDefCreate(ctx, mkTeamDef("td-1", "team-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.TeamDefGet(ctx, "td-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "team-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("created_at not populated")
+	}
+}
+
+func testTeamDefVersionMonotonicUnderContention(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const G = 50
+	const Per = 5
+	var wg sync.WaitGroup
+	errs := make(chan error, G*Per)
+	for g := 0; g < G; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < Per; i++ {
+				id := fmt.Sprintf("td-%d-%d", g, i)
+				_, err := s.TeamDefCreate(ctx, mkTeamDef(id, "team-race", ""))
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("create error: %v", err)
+	}
+	rows, err := s.TeamDefListByName(ctx, "team-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != G*Per {
+		t.Fatalf("got %d versions, want %d", len(rows), G*Per)
+	}
+	versions := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		if versions[r.Version] {
+			t.Errorf("duplicate version %d", r.Version)
+		}
+		versions[r.Version] = true
+	}
+	for v := 1; v <= G*Per; v++ {
+		if !versions[v] {
+			t.Errorf("missing version %d", v)
+		}
+	}
+}
+
+func testTeamDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, err := s.TeamDefCreate(ctx, mkTeamDef("td-a", "team-promo", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.TeamDefCreate(ctx, mkTeamDef("td-b", "team-promo", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TeamDefSetActive(ctx, "", "team-promo", a.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TeamDefSetActive(ctx, "", "team-promo", b.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TeamDefSetActive(ctx, "", "team-promo", a.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.TeamDefGetActive(ctx, "", "team-promo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DefID != a.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, a.DefID)
+	}
+}
+
+func testTeamDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.TeamDefCreate(ctx, mkTeamDef("td-r-1", "team-retireagent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TeamDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.TeamDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("retire(true) didn't stick")
+	}
+	if err := s.TeamDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.TeamDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("retire(false) didn't reverse")
+	}
+	rows, _ := s.TeamDefListByName(ctx, "team-retireagent")
+	if len(rows) != 1 {
+		t.Errorf("list after retire toggle: got %d, want 1", len(rows))
+	}
+}
+
+func testTeamDefStaticFallback(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.TeamDefGetActive(ctx, "", "no-such-team-name")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("got %v, want *ErrNotFound", err)
+	}
+}
+
+// testTeamDefTenantIsolation pins the RFC N boundary: the SAME team
+// name registered under two tenants must resolve to each tenant's OWN
+// definition + active pointer — no cross-tenant clobber, no cross-tenant
+// read. Covers teamdefs + teamdef_active + the cross-tenant promote refusal.
+//
+// FAIL-BEFORE: on a single-`name`-PK schema (teamdef_active PK = (name),
+// teamdefs UNIQUE = (name, version)), tenant B's writes overwrite tenant
+// A's (last-writer-wins on the single global pointer), so the GetActive(A)
+// assertion reads back B's def_id and the test fails. The composite
+// (tenant_id, name) PK is what makes the two rows coexist.
+func testTeamDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "summarize-team"
+
+	aDef := mkTeamDef("tti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"body":"A"}`)
+	aRow, err := s.TeamDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+
+	bDef := mkTeamDef("tti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"body":"B"}`)
+	bRow, err := s.TeamDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.TeamDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.TeamDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.TeamDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"body":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s, want A's own def",
+			gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+
+	gotB, err := s.TeamDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"body":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s, want B's own def",
+			gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	// A def can only be promoted within its own tenant — promoting A's
+	// def under tenant-b must be refused.
+	if err := s.TeamDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
+	}
+}
+
+func testTeamDefContentSHA256RoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkTeamDef("td-hash", "team-alpha-hash", "")
+	row.ContentSHA256 = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	written, err := s.TeamDefCreate(ctx, row)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if written.ContentSHA256 != row.ContentSHA256 {
+		t.Errorf("write echo: got %q, want %q", written.ContentSHA256, row.ContentSHA256)
+	}
+	got, err := s.TeamDefGet(ctx, "td-hash")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ContentSHA256 != row.ContentSHA256 {
+		t.Errorf("get: ContentSHA256 = %q, want %q", got.ContentSHA256, row.ContentSHA256)
+	}
+
+	plain, err := s.TeamDefCreate(ctx, mkTeamDef("td-no-hash", "team-alpha-no-hash", ""))
+	if err != nil {
+		t.Fatalf("create no-hash: %v", err)
+	}
+	if plain.ContentSHA256 != "" {
+		t.Errorf("hashless row: got %q, want empty", plain.ContentSHA256)
 	}
 }
 

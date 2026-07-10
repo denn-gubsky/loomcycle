@@ -35,6 +35,8 @@ const (
 	SectionAgentDefActive     = "agent_def_active"
 	SectionSkillDefs          = "skill_defs"
 	SectionSkillDefActive     = "skill_def_active"
+	SectionTeamDefs           = "team_defs"
+	SectionTeamDefActive      = "team_def_active"
 	SectionMCPServerDefs      = "mcp_server_defs"
 	SectionMCPServerDefActive = "mcp_server_def_active"
 	SectionMemory             = "memory"
@@ -98,6 +100,8 @@ var registry = map[string]map[string]Migrator{
 	SectionAgentDefActive:     {"1.0": identityMigrator},
 	SectionSkillDefs:          {"1.0": identityMigrator},
 	SectionSkillDefActive:     {"1.0": identityMigrator},
+	SectionTeamDefs:           {"1.0": identityMigrator},
+	SectionTeamDefActive:      {"1.0": identityMigrator},
 	SectionMCPServerDefs:      {"1.0": identityMigrator},
 	SectionMCPServerDefActive: {"1.0": identityMigrator},
 	SectionMemory:             {"1.0": identityMigrator},

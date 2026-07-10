@@ -964,6 +964,15 @@ type Store interface {
 	// skill_def_active. Ordered by name ASC for determinism.
 	SnapshotReadSkillDefActive(ctx context.Context) ([]SkillDefActiveEntry, error)
 
+	// SnapshotReadTeamDefs returns every row in teamdefs across
+	// all names + versions. Ordered by (name ASC, version ASC) for
+	// snapshot determinism. Mirrors SnapshotReadSkillDefs.
+	SnapshotReadTeamDefs(ctx context.Context) ([]TeamDefRow, error)
+
+	// SnapshotReadTeamDefActive returns every row in
+	// teamdef_active. Ordered by name ASC for determinism.
+	SnapshotReadTeamDefActive(ctx context.Context) ([]TeamDefActiveEntry, error)
+
 	// SnapshotReadMCPServerDefs — v0.9.x mirror of SnapshotReadSkillDefs.
 	SnapshotReadMCPServerDefs(ctx context.Context) ([]MCPServerDefRow, error)
 
@@ -1051,6 +1060,14 @@ type Store interface {
 	// SnapshotRestoreSkillDefActive mirrors SnapshotRestoreAgentDefActive
 	// for skill_def_active. ON CONFLICT (tenant_id, name) DO NOTHING.
 	SnapshotRestoreSkillDefActive(ctx context.Context, entry SkillDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreTeamDef mirrors SnapshotRestoreSkillDef for
+	// teamdefs. Idempotent on def_id.
+	SnapshotRestoreTeamDef(ctx context.Context, r TeamDefRow) (bool, error)
+
+	// SnapshotRestoreTeamDefActive mirrors SnapshotRestoreSkillDefActive
+	// for teamdef_active. ON CONFLICT (tenant_id, name) DO NOTHING.
+	SnapshotRestoreTeamDefActive(ctx context.Context, entry TeamDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreMCPServerDef — v0.9.x mirror.
 	SnapshotRestoreMCPServerDef(ctx context.Context, r MCPServerDefRow) (bool, error)
@@ -1432,6 +1449,33 @@ type Store interface {
 	// tenantID "" = the shared/operator/legacy tenant.
 	SkillDefGetActive(ctx context.Context, tenantID, name string) (SkillDefRow, error)
 	SkillDefSetRetired(ctx context.Context, defID string, retired bool) error
+
+	// ---- TeamDef substrate ----
+	//
+	// Mirror of SkillDef* with the same invariants. Concurrency
+	// posture is identical: a per-name lock makes version monotonic
+	// across concurrent forks. The Definition payload is an opaque
+	// workflow-graph blob instead of a skill body — the store stays
+	// content-agnostic.
+
+	TeamDefCreate(ctx context.Context, row TeamDefRow) (TeamDefRow, error)
+	TeamDefGet(ctx context.Context, defID string) (TeamDefRow, error)
+	TeamDefGetByNameVersion(ctx context.Context, name string, version int) (TeamDefRow, error)
+	TeamDefListByName(ctx context.Context, name string) ([]TeamDefRow, error)
+	TeamDefListChildren(ctx context.Context, parentDefID string) ([]TeamDefRow, error)
+	TeamDefListNames(ctx context.Context) ([]TeamDefNameSummary, error)
+	// TeamDefSetActive UPSERTs the teamdef_active pointer for
+	// `(tenantID, name)`. RFC N: the active pointer is per-tenant, and a
+	// def can only be promoted within its own tenant — implementations
+	// refuse if the def's tenant_id ≠ tenantID. tenantID "" = the shared/
+	// operator/legacy tenant.
+	TeamDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// TeamDefGetActive returns the currently-active row for
+	// `(tenantID, name)`. Returns *ErrNotFound when no active pointer
+	// exists (the caller falls through to the static fallback). RFC N:
+	// tenantID "" = the shared/operator/legacy tenant.
+	TeamDefGetActive(ctx context.Context, tenantID, name string) (TeamDefRow, error)
+	TeamDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ---- v0.9.x MCPServerDef substrate ----
 	//
@@ -2482,6 +2526,71 @@ type SkillDefActiveEntry struct {
 	TenantID string `json:"tenant_id,omitempty"`
 }
 
+// ---- TeamDef substrate types ----
+//
+// Mirror of SkillDef* — same identity / lineage / provenance
+// semantics, but the Definition payload is an opaque workflow-graph
+// blob instead of a skill body. The store layer does NOT interpret
+// it.
+//
+// Identity, lineage, and provenance fields carry identical
+// invariants to SkillDefRow. See the AgentDefRow doc for full
+// detail — the comments below only call out team-specific quirks.
+type TeamDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// ContentSHA256 — see AgentDefRow.ContentSHA256. Same semantics.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. The UNIQUE constraint is (tenant_id, name,
+	// version), so two tenants own the same name+version independently.
+	// Deliberately NOT part of the content hash — tenant is operational
+	// identity, not content (same rule AgentDefRow follows), so two
+	// tenants forking the same body get the same content_sha256. Set from
+	// the authoritative principal at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// TeamDefNameSummary mirrors SkillDefNameSummary.
+type TeamDefNameSummary struct {
+	Name string `json:"name"`
+	// TenantID is the RFC N owning tenant. A name owned by N tenants
+	// yields N summary rows (one per tenant) — without grouping by tenant
+	// the listing would merge distinct tenants' versions under one name.
+	TenantID      string    `json:"tenant_id,omitempty"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+	// LiveVersionCount / ActiveRetired mirror AgentDefNameSummary — the
+	// soft-reclaim status the Web UI Library's "Hide retired" filter reads.
+	// LiveVersionCount is VersionCount minus retired rows; ActiveRetired is
+	// true when the active pointer references a retired row.
+	LiveVersionCount int  `json:"live_version_count"`
+	ActiveRetired    bool `json:"active_retired,omitempty"`
+}
+
+// TeamDefActiveEntry mirrors SkillDefActiveEntry. Pairs a team
+// name with the def_id currently promoted to active.
+type TeamDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// teamdef_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
 // ---- v0.9.x MCPServerDef substrate types ----
 //
 // Mirror of AgentDef* / SkillDef* with the same identity / lineage /
@@ -3044,6 +3153,10 @@ var ErrAgentDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "
 // ErrSkillDefParentNotFound mirrors ErrAgentDefParentNotFound for
 // the SkillDef substrate.
 var ErrSkillDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "skill_def: parent_def_id does not exist"}
+
+// ErrTeamDefParentNotFound mirrors ErrSkillDefParentNotFound for
+// the TeamDef substrate.
+var ErrTeamDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "team_def: parent_def_id does not exist"}
 
 // ErrMCPServerDefParentNotFound mirrors the AgentDef + SkillDef
 // pattern for the v0.9.x MCPServerDef substrate.
