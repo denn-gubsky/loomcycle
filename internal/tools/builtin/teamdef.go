@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -50,6 +51,13 @@ type TeamDef struct {
 
 	// MaxDescriptionBytes caps the free-text description field. 0 = no cap.
 	MaxDescriptionBytes int
+
+	// Spawn runs one of a team's agents and returns its output. It mirrors the
+	// Agent tool's SubAgentRunner exactly, so op=run reuses the existing
+	// sub-agent machinery (tenant/identity inheritance, recursion cap, cancel
+	// registry). Wired by the server via SetTeamDefTool; nil = op=run refuses
+	// with "not configured for execution" (authoring ops still work).
+	Spawn teamrun.SpawnFunc
 }
 
 const teamDefDescription = `Author, fork, promote, retire, and inspect team workflow definitions at runtime (RFC AP). ` +
@@ -58,12 +66,15 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`graph (dangling transition, parallel without a consolidator, unreachable state, …) is refused and persists ` +
 	`nothing. Colours are presentation-only and excluded from the content hash. Promotion is explicit — selection ` +
 	`is policy, not runtime. render_diagram generates a Mermaid stateDiagram-v2 (with the colour ` +
-	`scheme applied) for a team. Operations: create, fork, get, list, retire, promote, verify, render_diagram.`
+	`scheme applied) for a team. run walks a team's graph for a given input — each state's agent runs via the ` +
+	`sub-agent machinery, output threads to the next state, until a terminal state (Phase 1: single-agent linear ` +
+	`teams; parallel/consolidator + pushback routing are deferred). Operations: create, fork, get, list, retire, ` +
+	`promote, verify, render_diagram, run.`
 
 const teamDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","promote","verify","render_diagram"], "description": "Operation to perform."},
+    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","promote","verify","render_diagram","run"], "description": "Operation to perform."},
     "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify)."},
     "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire/promote)."},
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base)."},
@@ -84,7 +95,8 @@ const teamDefInputSchema = `{
     "retired":        {"type": "boolean", "description": "Required for retire — set true to retire, false to un-retire."},
     "content_sha256": {"type": "string", "description": "Input for op=verify — the local content hash to compare against the active row."},
     "format":         {"type": "string", "enum": ["mermaid","d2"], "description": "render_diagram output format (default mermaid; d2 is deferred)."},
-    "highlight_state": {"type": "string", "description": "render_diagram: optionally mark this state (e.g. a chunk's current state) with a bold outline."}
+    "highlight_state": {"type": "string", "description": "render_diagram: optionally mark this state (e.g. a chunk's current state) with a bold outline."},
+    "input":          {"type": "string", "description": "run: the initial input handed to the entry state's agent (the task/prompt the team works on)."}
   },
   "required": ["op"]
 }`
@@ -101,6 +113,7 @@ type teamDefInput struct {
 	ContentSHA256  string          `json:"content_sha256,omitempty"`  // input for op: verify
 	Format         string          `json:"format,omitempty"`          // render_diagram: mermaid (default) | d2
 	HighlightState string          `json:"highlight_state,omitempty"` // render_diagram: mark a state
+	Input          string          `json:"input,omitempty"`           // run: initial input to the entry state
 }
 
 // Name implements tools.Tool.
@@ -138,10 +151,12 @@ func (t *TeamDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return t.execVerify(ctx, in)
 	case "render_diagram":
 		return t.execRenderDiagram(ctx, in)
+	case "run":
+		return t.execRun(ctx, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote, verify, render_diagram)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote, verify, render_diagram, run)", in.Op)), nil
 	}
 }
 
@@ -472,6 +487,94 @@ func (t *TeamDef) execRenderDiagram(ctx context.Context, in teamDefInput) (tools
 		"def_id":  row.DefID,
 		"format":  "mermaid",
 		"diagram": diagram,
+	})
+}
+
+// ---- run ----
+
+// execRun walks a team's graph for a given input: it resolves the active (or
+// pinned) def in the caller's tenant, then runs each state's agent via the
+// injected Spawn (the exact sub-agent machinery), threading output → input,
+// until a terminal state. Phase 1 (RFC AP): single-agent linear teams — a
+// parallel/consolidator handler, or a pushback route (agent+consolidator), is a
+// loud not-yet-supported error rather than a silent success.
+//
+// The walk is ephemeral: the position isn't persisted to a Document chunk and a
+// cycle-cap overflow returns a clear error rather than raising an Interruption —
+// the chunk-backed persistent walk (with Interruption-on-cap) is a follow-up.
+func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, error) {
+	if t.Spawn == nil {
+		return errResult("run: this TeamDef tool is not configured for execution (no runner wired)"), nil
+	}
+
+	var row store.TeamDefRow
+	var err error
+	switch {
+	case in.DefID != "":
+		row, err = t.Store.TeamDefGet(ctx, in.DefID)
+		if err == nil && !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+			return errResult(fmt.Sprintf("run: def_id %q not found", in.DefID)), nil
+		}
+	case in.Name != "":
+		row, err = t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
+	default:
+		return errResult("run: provide `name` (active version) or `def_id`"), nil
+	}
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return errResult("run: team not found"), nil
+		}
+		return errResult(fmt.Sprintf("run: %s", err)), nil
+	}
+	if row.Retired {
+		return errResult(fmt.Sprintf("run: team %q is retired", row.Name)), nil
+	}
+
+	def, err := teamgraph.Parse(row.Definition)
+	if err != nil {
+		return errResult(fmt.Sprintf("run: %s", err)), nil
+	}
+
+	task := &teamrun.Task{Input: in.Input}
+	trace, walkErr := teamrun.Walk(ctx, def, task, teamrun.NewAgentRunner(t.Spawn))
+
+	steps := make([]map[string]any, 0, len(trace))
+	for _, s := range trace {
+		steps = append(steps, map[string]any{
+			"state":  s.State,
+			"agent":  s.Agent,
+			"edge":   s.Edge,
+			"next":   s.Next,
+			"output": s.Output,
+		})
+	}
+
+	if walkErr != nil {
+		var capErr *teamrun.ErrIterationCap
+		if errors.As(walkErr, &capErr) {
+			// Cap overflow is a first-class outcome, not a tool fault — report it
+			// with the trace so the caller sees how far the walk got.
+			return okJSON(map[string]any{
+				"name":            row.Name,
+				"def_id":          row.DefID,
+				"status":          "iteration_cap",
+				"capped_state":    capErr.State,
+				"max_iterations":  capErr.Max,
+				"iteration_count": capErr.Count,
+				"steps":           steps,
+			})
+		}
+		return errResult(fmt.Sprintf("run: %s", walkErr)), nil
+	}
+
+	return okJSON(map[string]any{
+		"name":         row.Name,
+		"def_id":       row.DefID,
+		"status":       "completed",
+		"final_state":  task.State,
+		"final_output": task.Input, // Walk threads the last handler's output here
+		"steps":        steps,
 	})
 }
 
