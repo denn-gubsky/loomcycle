@@ -773,6 +773,15 @@ func main() {
 	// no BRAVE_API_KEY back-compat default) → WebSearch refuses "not configured".
 	searchRegistry, searchResolver, searchHostKeys := buildSearchProviders(cfg)
 
+	// Bashbox is a named var so its CredResolve can be late-bound after the
+	// credential engine is constructed below (RFC BD per-tenant repo token).
+	bashboxTool := &builtin.Bashbox{
+		Enabled:              cfg.Env.BashboxEnabled,
+		FallbackCommands:     cfg.Env.BashboxFallbackCommands,
+		FallbackAllowedEnv:   cfg.Env.BashboxFallbackAllowedEnv,
+		FallbackAllowedCreds: cfg.Env.BashboxFallbackAllowedCreds,
+	}
+
 	allTools := []tools.Tool{
 		// The file/exec tools resolve their sandbox root per-call from the
 		// run's VolumePolicy (RFC AH); an agent bound to no volume is refused
@@ -790,12 +799,9 @@ func main() {
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled},
 		// Bashbox — a TRUE in-process sandbox (gbash): no OS process, paths
 		// rooted at the volume, no network, and read-only volumes are honored
-		// (writes hit an in-RAM overlay). Opt-in like Bash.
-		&builtin.Bashbox{
-			Enabled:            cfg.Env.BashboxEnabled,
-			FallbackCommands:   cfg.Env.BashboxFallbackCommands,
-			FallbackAllowedEnv: cfg.Env.BashboxFallbackAllowedEnv,
-		},
+		// (writes hit an in-RAM overlay). Opt-in like Bash. Constructed above so
+		// CredResolve can be late-bound after the credential engine exists.
+		bashboxTool,
 		// SkillTool's Store is late-bound below (so DB-active SkillDef
 		// rows override the static Set body). Nil-Store before
 		// late-binding falls back to the static Set; the assignment
@@ -1380,6 +1386,29 @@ func main() {
 		// (operator vs tenant/user spend) from the same resolve it uses for the key.
 		return providers.CredentialResolution{Value: res.Value, Scope: res.Scope, ScopeID: res.ScopeID}, true
 	})
+	// RFC BD: let a software team's Bashbox host-command fallback (git/gh) inject
+	// PER-TENANT credentials named in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS,
+	// resolved for the run's own identity (agent>user>tenant) — so a tenant's own
+	// GITHUB_TOKEN reaches git/gh instead of one shared operator host token. Only
+	// the operator-allowlisted names are injected; the value goes solely into the
+	// host child's env (registerSecret masks any transcript echo). Fails soft (no
+	// KEK / miss → the host-env fallback still applies).
+	bashboxTool.CredResolve = func(ctx context.Context, name string) (string, bool) {
+		if !credEngine.CanResolve() {
+			return "", false
+		}
+		ri := tools.RunIdentity(ctx)
+		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
+		if err != nil {
+			log.Printf("bashbox: credential resolve %q failed for tenant=%s: %v", name, ri.TenantID, err)
+			return "", false
+		}
+		if !found {
+			return "", false
+		}
+		registerSecret(res.Value)
+		return res.Value, true
+	}
 	// RFC AX Layer 1: a metadata-only keyability probe — does (tenant, agent,
 	// user) have its OWN CredentialDef for env-var `name`? Reuses Engine.Resolve's
 	// agent>user>tenant precedence but NEVER decrypts (no backend.Resolve), so

@@ -12,6 +12,70 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// TestBashbox_FallbackEnv_InjectsTenantCreds: the host-command fallback env
+// carries PATH + the host allowlist + per-tenant credentials (resolved from the
+// run's ctx identity), and a cred overrides a same-named host var. Tenant B
+// resolves a different token — proving resolution is ctx/tenant-scoped.
+func TestBashbox_FallbackEnv_InjectsTenantCreds(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TEST_HOSTVAR", "hostval")
+	t.Setenv("LOOMCYCLE_TEST_SHARED", "from-host")
+
+	b := &Bashbox{
+		FallbackAllowedEnv:   []string{"LOOMCYCLE_TEST_HOSTVAR", "LOOMCYCLE_TEST_SHARED"},
+		FallbackAllowedCreds: []string{"GITHUB_TOKEN", "LOOMCYCLE_TEST_SHARED"},
+		CredResolve: func(ctx context.Context, name string) (string, bool) {
+			ten := tools.RunIdentity(ctx).TenantID
+			switch name {
+			case "GITHUB_TOKEN":
+				return "tok-" + ten, true
+			case "LOOMCYCLE_TEST_SHARED":
+				return "from-cred", true
+			}
+			return "", false
+		},
+	}
+	envMap := func(ctx context.Context) map[string]string {
+		m := map[string]string{}
+		for _, kv := range b.fallbackEnv(ctx) {
+			if i := strings.IndexByte(kv, '='); i > 0 {
+				m[kv[:i]] = kv[i+1:]
+			}
+		}
+		return m
+	}
+
+	m := envMap(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme"}))
+	if _, ok := m["PATH"]; !ok {
+		t.Errorf("PATH should always pass")
+	}
+	if m["LOOMCYCLE_TEST_HOSTVAR"] != "hostval" {
+		t.Errorf("host allowlist var missing: %v", m)
+	}
+	if m["GITHUB_TOKEN"] != "tok-acme" {
+		t.Errorf("per-tenant cred = %q, want tok-acme", m["GITHUB_TOKEN"])
+	}
+	if m["LOOMCYCLE_TEST_SHARED"] != "from-cred" {
+		t.Errorf("cred must override same-named host var, got %q", m["LOOMCYCLE_TEST_SHARED"])
+	}
+
+	mb := envMap(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "beta"}))
+	if mb["GITHUB_TOKEN"] != "tok-beta" {
+		t.Errorf("tenant B cred = %q, want tok-beta (tenant isolation)", mb["GITHUB_TOKEN"])
+	}
+}
+
+// TestBashbox_FallbackEnv_NoResolverIsHostOnly: without CredResolve wired, the
+// declared cred names resolve to nothing (host env only) — byte-identical to the
+// pre-feature behavior.
+func TestBashbox_FallbackEnv_NoResolverIsHostOnly(t *testing.T) {
+	b := &Bashbox{FallbackAllowedCreds: []string{"GITHUB_TOKEN"}} // CredResolve nil
+	for _, kv := range b.fallbackEnv(context.Background()) {
+		if strings.HasPrefix(kv, "GITHUB_TOKEN=") {
+			t.Errorf("no CredResolve → creds must not resolve, got %q", kv)
+		}
+	}
+}
+
 // roCtx attaches a single READ-ONLY default volume rooted at root.
 func roCtx(root string) context.Context {
 	return ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true, ReadOnly: true})
