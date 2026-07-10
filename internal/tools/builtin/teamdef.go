@@ -57,12 +57,13 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`transitions gated by success/pushback/conditional). The graph is validated before any write — an invalid ` +
 	`graph (dangling transition, parallel without a consolidator, unreachable state, …) is refused and persists ` +
 	`nothing. Colours are presentation-only and excluded from the content hash. Promotion is explicit — selection ` +
-	`is policy, not runtime. Operations: create, fork, get, list, retire, promote, verify.`
+	`is policy, not runtime. render_diagram generates a Mermaid stateDiagram-v2 (with the colour ` +
+	`scheme applied) for a team. Operations: create, fork, get, list, retire, promote, verify, render_diagram.`
 
 const teamDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","promote","verify"], "description": "Operation to perform."},
+    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","promote","verify","render_diagram"], "description": "Operation to perform."},
     "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify)."},
     "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire/promote)."},
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base)."},
@@ -81,21 +82,25 @@ const teamDefInputSchema = `{
     "description":    {"type": "string", "description": "Free-text rationale for create/fork."},
     "promote":        {"type": "boolean", "description": "create defaults true, fork defaults false."},
     "retired":        {"type": "boolean", "description": "Required for retire — set true to retire, false to un-retire."},
-    "content_sha256": {"type": "string", "description": "Input for op=verify — the local content hash to compare against the active row."}
+    "content_sha256": {"type": "string", "description": "Input for op=verify — the local content hash to compare against the active row."},
+    "format":         {"type": "string", "enum": ["mermaid","d2"], "description": "render_diagram output format (default mermaid; d2 is deferred)."},
+    "highlight_state": {"type": "string", "description": "render_diagram: optionally mark this state (e.g. a chunk's current state) with a bold outline."}
   },
   "required": ["op"]
 }`
 
 type teamDefInput struct {
-	Op            string          `json:"op"`
-	Name          string          `json:"name,omitempty"`
-	DefID         string          `json:"def_id,omitempty"`
-	ParentDefID   string          `json:"parent_def_id,omitempty"`
-	Overlay       json.RawMessage `json:"overlay,omitempty"`
-	Description   string          `json:"description,omitempty"`
-	Promote       *bool           `json:"promote,omitempty"`
-	Retired       *bool           `json:"retired,omitempty"`
-	ContentSHA256 string          `json:"content_sha256,omitempty"` // input for op: verify
+	Op             string          `json:"op"`
+	Name           string          `json:"name,omitempty"`
+	DefID          string          `json:"def_id,omitempty"`
+	ParentDefID    string          `json:"parent_def_id,omitempty"`
+	Overlay        json.RawMessage `json:"overlay,omitempty"`
+	Description    string          `json:"description,omitempty"`
+	Promote        *bool           `json:"promote,omitempty"`
+	Retired        *bool           `json:"retired,omitempty"`
+	ContentSHA256  string          `json:"content_sha256,omitempty"`  // input for op: verify
+	Format         string          `json:"format,omitempty"`          // render_diagram: mermaid (default) | d2
+	HighlightState string          `json:"highlight_state,omitempty"` // render_diagram: mark a state
 }
 
 // Name implements tools.Tool.
@@ -131,10 +136,12 @@ func (t *TeamDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return t.execPromote(ctx, in)
 	case "verify":
 		return t.execVerify(ctx, in)
+	case "render_diagram":
+		return t.execRenderDiagram(ctx, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote, verify)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote, verify, render_diagram)", in.Op)), nil
 	}
 }
 
@@ -423,6 +430,48 @@ func (t *TeamDef) execVerify(ctx context.Context, in teamDefInput) (tools.Result
 		"version":        row.Version,
 		"name":           row.Name,
 		"deployed":       true,
+	})
+}
+
+// execRenderDiagram generates a diagram for a team — by def_id (a specific
+// version) or by name (the caller's-tenant active version). Read-only; RFC N
+// tenant isolation applies (a cross-tenant def_id is an opaque not-found). Only
+// Mermaid is supported today; format=d2 is deferred (RFC AP).
+func (t *TeamDef) execRenderDiagram(ctx context.Context, in teamDefInput) (tools.Result, error) {
+	if in.Format != "" && in.Format != "mermaid" {
+		return errResult(fmt.Sprintf("render_diagram: format %q is not supported (only mermaid; d2 is deferred)", in.Format)), nil
+	}
+	var row store.TeamDefRow
+	var err error
+	switch {
+	case in.DefID != "":
+		row, err = t.Store.TeamDefGet(ctx, in.DefID)
+		if err == nil && !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+			return errResult(fmt.Sprintf("render_diagram: def_id %q not found", in.DefID)), nil
+		}
+	case in.Name != "":
+		row, err = t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
+	default:
+		return errResult("render_diagram: provide `name` (active version) or `def_id`"), nil
+	}
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return errResult("render_diagram: team not found"), nil
+		}
+		return errResult(fmt.Sprintf("render_diagram: %s", err)), nil
+	}
+
+	def, err := teamgraph.Parse(row.Definition)
+	if err != nil {
+		return errResult(fmt.Sprintf("render_diagram: %s", err)), nil
+	}
+	diagram := teamgraph.RenderMermaid(row.Name, def, in.HighlightState)
+	return okJSON(map[string]any{
+		"name":    row.Name,
+		"def_id":  row.DefID,
+		"format":  "mermaid",
+		"diagram": diagram,
 	})
 }
 

@@ -51,6 +51,50 @@ func createTeam(t *testing.T, tool *TeamDef, ctx context.Context, name, overlay 
 	return decodeResult(t, res.Text)
 }
 
+func TestTeamDefTool_RenderDiagram(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+
+	createTeam(t, tool, ctx, "rd-team", `{
+	  "entry":"implementation",
+	  "states":[
+	    {"state":"implementation","handler":{"kind":"agent","agent":"code-guru"}},
+	    {"state":"review","handler":{"kind":"parallel","agents":["sec-rev","code-rev"],"wait":"all","consolidator":"rev-consol"}},
+	    {"state":"pr","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[
+	    {"from":"implementation","to":"review","on":"success"},
+	    {"from":"review","to":"pr","on":"success"},
+	    {"from":"review","to":"implementation","on":"pushback:code-fix"}
+	  ]}`)
+
+	// Render the active version by name, highlighting the current state.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"render_diagram","name":"rd-team","highlight_state":"review"}`))
+	if res.IsError {
+		t.Fatalf("render_diagram: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["format"] != "mermaid" {
+		t.Errorf("format = %v, want mermaid", out["format"])
+	}
+	diagram, _ := out["diagram"].(string)
+	for _, want := range []string{"stateDiagram-v2", "[*] --> implementation", "note right of review", "classDef c", "class review c", "_hl"} {
+		if !strings.Contains(diagram, want) {
+			t.Errorf("diagram missing %q\n---\n%s", want, diagram)
+		}
+	}
+
+	// d2 is deferred → clear error.
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"render_diagram","name":"rd-team","format":"d2"}`)); !res.IsError || !strings.Contains(res.Text, "d2") {
+		t.Errorf("format=d2 should error as deferred; got %q (isErr=%v)", res.Text, res.IsError)
+	}
+
+	// Unknown team → not found (no leak).
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"render_diagram","name":"ghost"}`)); !res.IsError || !strings.Contains(res.Text, "not found") {
+		t.Errorf("unknown team should be not-found; got %q (isErr=%v)", res.Text, res.IsError)
+	}
+}
+
 func TestTeamDefTool_CreateValidGraphPersists(t *testing.T) {
 	tool, ctx, cleanup := teamDefFixture(t)
 	defer cleanup()
