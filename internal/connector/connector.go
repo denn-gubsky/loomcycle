@@ -125,6 +125,17 @@ type Connector interface {
 	Channel(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	AgentDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	SkillDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
+	// TeamDef — RFC AP team-workflow substrate. Op-discriminated (create /
+	// fork / get / list / promote / retire / verify). The definition is a
+	// teamgraph state-machine (states + transitions), validated before any
+	// write; an invalid graph is refused and persists nothing. TENANT-CONFINED
+	// (ScopeTenant, like SkillDef): the tool stamps the caller's authoritative
+	// tenant + opaque-404s cross-tenant. Reachable via POST /v1/_teamdef admin
+	// endpoint + the LoomCycle MCP meta-tool `teamdef` (gRPC + adapter twins
+	// deferred to a follow-up). All dispatch through this single method.
+	TeamDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	Evaluation(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Context(ctx context.Context, input json.RawMessage) (ToolResult, error)
 

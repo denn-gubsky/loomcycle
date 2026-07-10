@@ -54,6 +54,9 @@ func substrateAdminFixture(t *testing.T) *httptest.Server {
 	// HTTP handler + Connector method look up. Without this call,
 	// POST /v1/_scheduledef returns "ScheduleDef: not configured".
 	srv.SetScheduleDefTool(&builtin.ScheduleDef{Store: st, Cfg: cfg})
+	// RFC AP TeamDef — same dedicated-slot wiring; without it POST /v1/_teamdef
+	// returns "TeamDef: not configured".
+	srv.SetTeamDefTool(&builtin.TeamDef{Store: st})
 	return httptest.NewServer(srv.Mux())
 }
 
@@ -80,6 +83,92 @@ func TestSubstrateAdmin_SkillDef_HappyPath(t *testing.T) {
 	}
 	if out["promoted"].(bool) != true {
 		t.Errorf("create default promote = false; want true")
+	}
+}
+
+// TestSubstrateAdmin_TeamDef_HappyPath drives a valid team-graph create through
+// POST /v1/_teamdef and asserts the row persists (RFC AP Phase 2).
+func TestSubstrateAdmin_TeamDef_HappyPath(t *testing.T) {
+	ts := substrateAdminFixture(t)
+	defer ts.Close()
+
+	body := `{"op":"create","name":"review-team","overlay":{` +
+		`"entry":"review",` +
+		`"states":[{"state":"review","handler":{"kind":"agent","agent":"reviewer"}},{"state":"done","handler":{"kind":"terminal"}}],` +
+		`"transitions":[{"from":"review","to":"done","on":"success"}]}}`
+	resp := postAdmin(t, ts, "/v1/_teamdef", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["name"] != "review-team" {
+		t.Errorf("name = %v, want review-team", out["name"])
+	}
+	if out["version"].(float64) != 1 {
+		t.Errorf("version = %v, want 1", out["version"])
+	}
+	if sha, _ := out["content_sha256"].(string); !strings.HasPrefix(sha, "sha256:") {
+		t.Errorf("content_sha256 = %q, want sha256:-prefixed", sha)
+	}
+}
+
+// TestSubstrateAdmin_TeamDef_InvalidGraph422 confirms an invalid graph surfaces
+// as a 422 tool_refused (dispatchSubstrate maps the tool's IsError to 422).
+func TestSubstrateAdmin_TeamDef_InvalidGraph422(t *testing.T) {
+	ts := substrateAdminFixture(t)
+	defer ts.Close()
+
+	body := `{"op":"create","name":"bad-team","overlay":{` +
+		`"entry":"review",` +
+		`"states":[{"state":"review","handler":{"kind":"agent","agent":"reviewer"}}],` +
+		`"transitions":[{"from":"review","to":"ghost","on":"success"}]}}`
+	resp := postAdmin(t, ts, "/v1/_teamdef", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != 422 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 422; body=%s", resp.StatusCode, raw)
+	}
+}
+
+// TestSubstrateAdmin_TeamDef_ListNames covers GET /v1/_teamdef/names.
+func TestSubstrateAdmin_TeamDef_ListNames(t *testing.T) {
+	ts := substrateAdminFixture(t)
+	defer ts.Close()
+
+	_ = postAdmin(t, ts, "/v1/_teamdef", `{"op":"create","name":"digest-team","overlay":{`+
+		`"entry":"a","states":[{"state":"a","handler":{"kind":"terminal"}}],"transitions":[]}}`)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/v1/_teamdef/names", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	var env struct {
+		Names []map[string]any `json:"names"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	found := false
+	for _, n := range env.Names {
+		if n["name"] == "digest-team" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("digest-team not in names list: %v", env.Names)
 	}
 }
 

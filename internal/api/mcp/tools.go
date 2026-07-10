@@ -225,6 +225,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("skilldef"),
 		},
 		{
+			Name:        "teamdef",
+			Description: "TeamDef tool ops (create/fork/get/list/promote/retire/verify). RFC AP team-workflow substrate — a state-machine graph (states + transitions) validated before any write; invalid graphs are refused. Colours are excluded from the content hash. Tenant-confined. Pass-through.",
+			InputSchema: builtinSchema("teamdef"),
+		},
+		{
 			Name:        "mcpserverdef",
 			Description: "MCPServerDef tool ops (create/fork/get/list/promote/retire/rediscover/verify). v0.9.x dynamic MCP server registration. Operator-admin-only — register HTTP / Streamable-HTTP MCP servers at runtime; stdio stays yaml. URL hostname must be in LOOMCYCLE_HTTP_HOST_ALLOWLIST. Pass-through.",
 			InputSchema: builtinSchema("mcpserverdef"),

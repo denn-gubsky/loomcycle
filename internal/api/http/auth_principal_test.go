@@ -230,6 +230,8 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/_agentdef", auth.ScopeTenant},
 		{"GET", "/v1/_agentdef/names", auth.ScopeTenant},
 		{"POST", "/v1/_skilldef", auth.ScopeTenant},
+		{"POST", "/v1/_teamdef", auth.ScopeTenant},
+		{"GET", "/v1/_teamdef/names", auth.ScopeTenant},
 		{"POST", "/v1/_mcpserverdef", auth.ScopeTenant},
 		{"GET", "/v1/_mcpserverdef/names", auth.ScopeTenant},
 		{"POST", "/v1/_scheduledef", auth.ScopeTenant},

@@ -699,7 +699,7 @@ func requiredScopeFor(method, path string) string {
 // + opaque-404), so opening these gates to ScopeTenant doesn't widen reach.
 func isTenantConfinedDefPath(path string) bool {
 	for _, fam := range []string{
-		"/v1/_agentdef", "/v1/_skilldef", "/v1/_mcpserverdef", "/v1/_scheduledef",
+		"/v1/_agentdef", "/v1/_skilldef", "/v1/_teamdef", "/v1/_mcpserverdef", "/v1/_scheduledef",
 		"/v1/_webhookdef", "/v1/_memorybackenddef", "/v1/_a2aagentdef", "/v1/_a2aservercarddef",
 		// RFC AH Phase 2a — the dynamic-volume substrate is tenant-confined
 		// (write-stamps the caller's tenant + opaque-404s cross-tenant), so
