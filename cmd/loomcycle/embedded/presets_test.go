@@ -50,6 +50,54 @@ func TestUnits_ParseAsYAML(t *testing.T) {
 	}
 }
 
+// TestBundle_AgentTeamsHasOrchestrator guards the RFC BD additions: the
+// agent-teams bundle must ship the team/orchestrator agent with
+// unbounded_iterations (so a long-lived team lead isn't cut off mid-workflow —
+// interactivity is a per-run flag, not an agent field) and the team/orchestrate +
+// team/repo skills. A silent drop would leave the bundle unable to run a team.
+func TestBundle_AgentTeamsHasOrchestrator(t *testing.T) {
+	data, err := Show("agent-teams")
+	if err != nil {
+		t.Fatalf("Show(agent-teams): %v", err)
+	}
+	var tree struct {
+		Agents map[string]struct {
+			UnboundedIterations bool     `yaml:"unbounded_iterations"`
+			Tools               []string `yaml:"tools"`
+		} `yaml:"agents"`
+		Skills map[string]any `yaml:"skills"`
+	}
+	if err := yaml.Unmarshal(data, &tree); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	orch, ok := tree.Agents["team/orchestrator"]
+	if !ok {
+		t.Fatalf("agent-teams bundle missing team/orchestrator agent")
+	}
+	if !orch.UnboundedIterations {
+		t.Errorf("team/orchestrator must set unbounded_iterations")
+	}
+	hasTool := func(want string) bool {
+		for _, tl := range orch.Tools {
+			if tl == want {
+				return true
+			}
+		}
+		return false
+	}
+	// The driver + workspace tools it can't do its job without.
+	for _, tl := range []string{"Agent", "Document", "TeamDef"} {
+		if !hasTool(tl) {
+			t.Errorf("team/orchestrator missing tool %q", tl)
+		}
+	}
+	for _, s := range []string{"team/orchestrate", "team/repo"} {
+		if _, ok := tree.Skills[s]; !ok {
+			t.Errorf("agent-teams bundle missing skill %q", s)
+		}
+	}
+}
+
 // TestResolveUnits_OrderAndUnknown: selection order is preserved (it becomes the
 // layer order), and an unknown name is a fatal error listing the available names.
 func TestResolveUnits_OrderAndUnknown(t *testing.T) {

@@ -1,16 +1,17 @@
 # agent-teams bundle
 
-Two authoring assistants for RFC AP **Agent Teams & Task Workflows**, plus the
+Agents for **building** and **running** agent teams (RFC AP + RFC BD), plus the
 `team/*` skills they use.
 
 | Agent | What it does |
 |-------|--------------|
 | `agent/assistant` | Helps you design + author a specialized **AgentDef** — the reusable building block a team routes between (role, least-privilege tools, tier, skills, scopes). |
-| `team/assistant`  | Assembles a **TeamDef** (a workflow state machine) from agents that *already exist*. It renders the Mermaid diagram, gets your sign-off, commits, and can `run` the team to test it. It does **not** create agents — it points you at `agent/assistant`. |
+| `team/assistant`  | Assembles a **TeamDef** (a workflow state machine) from agents that *already exist*. Renders the Mermaid diagram, gets your sign-off, commits, and can `TeamDef op=run` to test. Does **not** create agents — points you at `agent/assistant`. |
+| `team/orchestrator` | **(RFC BD) the LLM team lead + human contact point.** An interactive, steerable run that *drives* a team: reads the TeamDef as its map, moves a Document task board through the states, spawns each state's handler agent, decides routing, and — for software teams — sets up an ephemeral repo volume + opens a PR. |
 
-There is deliberately **no `team/orchestrator` agent**: walking a team's state
-graph is the runtime's job (`internal/teamrun`), exposed as **`TeamDef op=run`**.
-A deterministic state machine shouldn't be driven by an LLM.
+`team/orchestrator` complements the deterministic **`TeamDef op=run`** autopilot:
+op=run is headless/linear and code-driven; the orchestrator is intelligent,
+human-in-the-loop, and domain-general.
 
 ## Select it
 
@@ -18,13 +19,26 @@ A deterministic state machine shouldn't be driven by an LLM.
 LOOMCYCLE_PRESETS=base,agent-teams
 ```
 
-The bundle carries **no provider matrix** — both agents declare `tier: middle`,
-so select `base` (or your own config) alongside it to supply a `middle` tier.
+The bundle carries **no provider matrix** — agents declare `tier: middle`, so
+select `base` (or your own config) alongside it to supply a `middle` tier. Run
+`team/orchestrator` **interactively** (start it with `interactive:true` from the
+`/run` terminal) so it's your steerable contact point.
+
+### Software teams only (repo/PR)
+
+For a team whose deliverable is a code change (the `team/repo` skill), also set:
+`LOOMCYCLE_BASHBOX_ENABLED=1`, `git`+`gh` on the host image,
+`LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh`,
+`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the host
+env), and a volume marked `dynamic_root: true`. Marketing/accounting/research
+teams need none of this — the workspace is domain-pluggable (Documents, SQL
+Memory, or external SQL/Excel via Bashbox/MCP).
 
 ## What's inside
 
-- `loomcycle.yaml` — the bundle config: the two agents + the inline `team/structure`
-  and `team/workflow` skills. This mirrors the embedded copy at
+- `loomcycle.yaml` — the bundle config: the three agents + the inline
+  `team/structure`, `team/workflow`, `team/orchestrate`, and `team/repo` skills.
+  This mirrors the embedded copy at
   `cmd/loomcycle/embedded/bundles/agent-teams.yaml` (the one the binary ships);
   keep the two in sync.
 
