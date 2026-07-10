@@ -3,12 +3,15 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+type admitMarkerKey struct{}
 
 // A minimal valid team graph: entry state runs an agent, then a success edge
 // to a terminal state. Validates cleanly (entry resolves, unique states, valid
@@ -92,6 +95,71 @@ func TestTeamDefTool_Run_LinearTeam(t *testing.T) {
 	}
 	if steps, _ := out["steps"].([]any); len(steps) != 2 {
 		t.Errorf("steps len = %d, want 2", len(steps))
+	}
+}
+
+func TestTeamDefTool_Run_AdmitRefusalAbortsBeforeSpawn(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+
+	spawnCalled := false
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) {
+		spawnCalled = true
+		return "ok", nil
+	}
+	// Admit refuses (e.g. token budget exceeded / too deep) → the walk must not
+	// start and no agent may be spawned.
+	tool.Admit = func(c context.Context) (context.Context, error) {
+		return nil, errors.New("token budget exceeded: tenant acme over hard ceiling")
+	}
+	createTeam(t, tool, ctx, "admit-refuse", `{
+	  "entry":"a",
+	  "states":[
+	    {"state":"a","handler":{"kind":"agent","agent":"agent-a"}},
+	    {"state":"done","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[{"from":"a","to":"done","on":"success"}]}`)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"admit-refuse","input":"x"}`))
+	if !res.IsError || !strings.Contains(res.Text, "token budget exceeded") {
+		t.Fatalf("admission refusal should abort the run; got %q (isErr=%v)", res.Text, res.IsError)
+	}
+	if spawnCalled {
+		t.Errorf("no agent may be spawned when admission refuses")
+	}
+}
+
+func TestTeamDefTool_Run_AdmittedCtxFlowsToSpawn(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+
+	// Admit enriches the ctx; the Spawn closure must run under THAT ctx (proving
+	// the operator-key restriction / depth increment the real Admit stamps reach
+	// every spawned agent).
+	tool.Admit = func(c context.Context) (context.Context, error) {
+		return context.WithValue(c, admitMarkerKey{}, "admitted"), nil
+	}
+	sawMarker := false
+	tool.Spawn = func(c context.Context, agent, input, defID string) (string, error) {
+		if c.Value(admitMarkerKey{}) == "admitted" {
+			sawMarker = true
+		}
+		return "ok", nil
+	}
+	createTeam(t, tool, ctx, "admit-ctx", `{
+	  "entry":"a",
+	  "states":[
+	    {"state":"a","handler":{"kind":"agent","agent":"agent-a"}},
+	    {"state":"done","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[{"from":"a","to":"done","on":"success"}]}`)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"admit-ctx","input":"x"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	if !sawMarker {
+		t.Errorf("spawn did not run under the admitted ctx")
 	}
 }
 
