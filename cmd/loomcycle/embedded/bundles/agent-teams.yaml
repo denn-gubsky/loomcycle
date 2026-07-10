@@ -24,7 +24,11 @@
 #
 # This bundle carries NO provider matrix: agents declare `tier: middle`, so a
 # `middle` tier must come from another layer (select `base` alongside it, or your
-# own config). team/orchestrator additionally needs, for SOFTWARE teams only:
+# own config). team/orchestrator's `middle` tier should resolve to a model with a
+# ROOMY context window (>=32K) — it holds several skills + the transcript of
+# driving many agents; compaction manages it but can't invent window. For
+# ollama-local set LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX >= 32768.
+# team/orchestrator additionally needs, for SOFTWARE teams only:
 # `LOOMCYCLE_BASHBOX_ENABLED=1`, `git`/`gh` on the host image, a volume marked
 # `dynamic_root: true`, and the token wired through Bashbox's host-command
 # fallback — `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` +
@@ -130,6 +134,18 @@ agents:
     unbounded_iterations: true
     max_tokens: 8192
     effort: medium
+    # CONTEXT: the orchestrator holds several team/* skills AND the running
+    # transcript of driving many handler agents, so it needs a roomy context
+    # WINDOW — run it on a tier/model with at least ~32K context (max_tokens above
+    # is the per-turn OUTPUT cap, NOT the window; for ollama-local set
+    # LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX >= 32768). Compaction auto-summarizes the long
+    # driving transcript so a session never overflows: keep_first pins the human's
+    # task, keep_last_n keeps recent handler results + the current state verbatim,
+    # and it triggers at 80% of the window.
+    compaction:
+      enabled: true
+      keep_last_n: 8
+      autocompact_at_pct: 80
     # Tool CEILING (a team uses a subset). Agent = spawn handlers; Document = drive
     # the task board; TeamDef = read the map (+ op=run autopilot); Channel =
     # coordinate parallel branches; Interruption = ask the human; Context = self-
