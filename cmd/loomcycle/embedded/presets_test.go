@@ -64,6 +64,9 @@ func TestBundle_AgentTeamsHasOrchestrator(t *testing.T) {
 		Agents map[string]struct {
 			UnboundedIterations bool     `yaml:"unbounded_iterations"`
 			Tools               []string `yaml:"tools"`
+			Compaction          *struct {
+				Enabled *bool `yaml:"enabled"`
+			} `yaml:"compaction"`
 		} `yaml:"agents"`
 		Skills map[string]any `yaml:"skills"`
 	}
@@ -76,6 +79,11 @@ func TestBundle_AgentTeamsHasOrchestrator(t *testing.T) {
 	}
 	if !orch.UnboundedIterations {
 		t.Errorf("team/orchestrator must set unbounded_iterations")
+	}
+	// It holds skills + a long multi-agent driving transcript, so auto-compaction
+	// must be on to keep the session within the context window.
+	if orch.Compaction == nil || orch.Compaction.Enabled == nil || !*orch.Compaction.Enabled {
+		t.Errorf("team/orchestrator must enable compaction (long skills+driving transcript)")
 	}
 	hasTool := func(want string) bool {
 		for _, tl := range orch.Tools {
