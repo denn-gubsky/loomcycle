@@ -97,7 +97,13 @@ type AgentDefsSection struct {
 // can evolve independently — adding a field here doesn't require
 // adding it to the store struct, and vice versa.
 type AgentDefEntry struct {
-	DefID                  string          `json:"def_id"`
+	DefID string `json:"def_id"`
+	// TenantID is the RFC N tenant-isolation axis. Carried through the snapshot
+	// so a multi-tenant capture→restore preserves each def's owning tenant;
+	// without it every def collapsed to the shared "" tenant on restore
+	// (cross-tenant disclosure + same-name active-pointer collisions). Additive
+	// (omitempty) — older snapshots restore with an empty tenant as before.
+	TenantID               string          `json:"tenant_id,omitempty"`
 	Name                   string          `json:"name"`
 	Version                int             `json:"version"`
 	ParentDefID            string          `json:"parent_def_id,omitempty"`
@@ -125,6 +131,7 @@ type AgentDefActiveSection struct {
 
 type AgentDefActiveEntry struct {
 	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
@@ -141,6 +148,7 @@ type SkillDefsSection struct {
 // tools) is owned by the SkillDef tool.
 type SkillDefEntry struct {
 	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
 	Name                   string          `json:"name"`
 	Version                int             `json:"version"`
 	ParentDefID            string          `json:"parent_def_id,omitempty"`
@@ -163,6 +171,7 @@ type SkillDefActiveSection struct {
 
 type SkillDefActiveEntry struct {
 	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
@@ -179,6 +188,7 @@ type TeamDefsSection struct {
 // TeamDef tool.
 type TeamDefEntry struct {
 	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
 	Name                   string          `json:"name"`
 	Version                int             `json:"version"`
 	ParentDefID            string          `json:"parent_def_id,omitempty"`
@@ -201,6 +211,7 @@ type TeamDefActiveSection struct {
 
 type TeamDefActiveEntry struct {
 	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
@@ -220,6 +231,7 @@ type MCPServerDefsSection struct {
 // / discovered_tools) is owned by the MCPServerDef tool.
 type MCPServerDefEntry struct {
 	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
 	Name                   string          `json:"name"`
 	Version                int             `json:"version"`
 	ParentDefID            string          `json:"parent_def_id,omitempty"`
@@ -242,6 +254,7 @@ type MCPServerDefActiveSection struct {
 
 type MCPServerDefActiveEntry struct {
 	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`

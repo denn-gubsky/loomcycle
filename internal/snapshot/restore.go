@@ -147,6 +147,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, e := range sec.Entries {
 			inserted, err := s.SnapshotRestoreAgentDef(ctx, store.AgentDefRow{
 				DefID:                  e.DefID,
+				TenantID:               e.TenantID,
 				Name:                   e.Name,
 				Version:                e.Version,
 				ParentDefID:            e.ParentDefID,
@@ -178,6 +179,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, e := range sec.Entries {
 			inserted, err := s.SnapshotRestoreAgentDefActive(ctx, store.AgentDefActiveEntry{
 				Name:              e.Name,
+				TenantID:          e.TenantID,
 				DefID:             e.DefID,
 				PromotedAt:        e.PromotedAt,
 				PromotedByAgentID: e.PromotedByAgentID,
@@ -201,6 +203,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, e := range sec.Entries {
 			inserted, err := s.SnapshotRestoreSkillDef(ctx, store.SkillDefRow{
 				DefID:                  e.DefID,
+				TenantID:               e.TenantID,
 				Name:                   e.Name,
 				Version:                e.Version,
 				ParentDefID:            e.ParentDefID,
@@ -232,6 +235,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, e := range sec.Entries {
 			inserted, err := s.SnapshotRestoreSkillDefActive(ctx, store.SkillDefActiveEntry{
 				Name:              e.Name,
+				TenantID:          e.TenantID,
 				DefID:             e.DefID,
 				PromotedAt:        e.PromotedAt,
 				PromotedByAgentID: e.PromotedByAgentID,
@@ -255,6 +259,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, e := range sec.Entries {
 			inserted, err := s.SnapshotRestoreTeamDef(ctx, store.TeamDefRow{
 				DefID:                  e.DefID,
+				TenantID:               e.TenantID,
 				Name:                   e.Name,
 				Version:                e.Version,
 				ParentDefID:            e.ParentDefID,
@@ -286,6 +291,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, e := range sec.Entries {
 			inserted, err := s.SnapshotRestoreTeamDefActive(ctx, store.TeamDefActiveEntry{
 				Name:              e.Name,
+				TenantID:          e.TenantID,
 				DefID:             e.DefID,
 				PromotedAt:        e.PromotedAt,
 				PromotedByAgentID: e.PromotedByAgentID,
@@ -309,6 +315,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, e := range sec.Entries {
 			inserted, err := s.SnapshotRestoreMCPServerDef(ctx, store.MCPServerDefRow{
 				DefID:                  e.DefID,
+				TenantID:               e.TenantID,
 				Name:                   e.Name,
 				Version:                e.Version,
 				ParentDefID:            e.ParentDefID,
@@ -340,6 +347,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, e := range sec.Entries {
 			inserted, err := s.SnapshotRestoreMCPServerDefActive(ctx, store.MCPServerDefActiveEntry{
 				Name:              e.Name,
+				TenantID:          e.TenantID,
 				DefID:             e.DefID,
 				PromotedAt:        e.PromotedAt,
 				PromotedByAgentID: e.PromotedByAgentID,

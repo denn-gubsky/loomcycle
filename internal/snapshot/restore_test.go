@@ -116,6 +116,79 @@ func TestRoundTrip_WithMemoryAndAgentDefs(t *testing.T) {
 	}
 }
 
+// TestRoundTrip_PreservesDefTenantID pins the RFC AP review #2 fix: a snapshot
+// capture→restore must PRESERVE each def's owning tenant. Before the fix the
+// snapshot DTO types dropped tenant_id, so every def (Agent/Skill/Team/MCPServer)
+// collapsed to the shared "" tenant on restore — a cross-tenant disclosure +
+// same-name active-pointer collisions. This seeds each family under a DISTINCT
+// tenant and asserts the tenant round-trips, including the active pointer.
+func TestRoundTrip_PreservesDefTenantID(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	def := json.RawMessage(`{"x":1}`)
+	if _, err := src.AgentDefCreate(ctx, store.AgentDefRow{DefID: "ad1", Name: "a", Version: 1, TenantID: "acme", Definition: def}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.SkillDefCreate(ctx, store.SkillDefRow{DefID: "sd1", Name: "s", Version: 1, TenantID: "beta", Definition: def}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.TeamDefCreate(ctx, store.TeamDefRow{DefID: "td1", Name: "t", Version: 1, TenantID: "gamma", Definition: def}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.MCPServerDefCreate(ctx, store.MCPServerDefRow{DefID: "md1", Name: "m", Version: 1, TenantID: "delta", Definition: def}); err != nil {
+		t.Fatal(err)
+	}
+	// An active pointer in a non-empty tenant — the active section must carry it too.
+	if err := src.AgentDefSetActive(ctx, "acme", "a", "ad1", "agentX"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	tenantOf := func(kind string) string {
+		switch kind {
+		case "agent":
+			d, _ := dst.SnapshotReadAgentDefs(ctx)
+			return d[0].TenantID
+		case "skill":
+			d, _ := dst.SnapshotReadSkillDefs(ctx)
+			return d[0].TenantID
+		case "team":
+			d, _ := dst.SnapshotReadTeamDefs(ctx)
+			return d[0].TenantID
+		case "mcp":
+			d, _ := dst.SnapshotReadMCPServerDefs(ctx)
+			return d[0].TenantID
+		}
+		return ""
+	}
+	for _, tc := range []struct{ kind, want string }{
+		{"agent", "acme"}, {"skill", "beta"}, {"team", "gamma"}, {"mcp", "delta"},
+	} {
+		if got := tenantOf(tc.kind); got != tc.want {
+			t.Errorf("%s def restored under tenant %q, want %q (tenant dropped)", tc.kind, got, tc.want)
+		}
+	}
+	// The active pointer's tenant must survive too.
+	act, err := dst.SnapshotReadAgentDefActive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(act) != 1 || act[0].TenantID != "acme" {
+		t.Errorf("agent_def_active restored = %+v, want tenant acme", act)
+	}
+}
+
 // TestRoundTrip_PreservesAgentDefSampling pins the v0.28.0 contract that a
 // substrate-authored agent's per-agent LLM sampling block (temperature, top_p,
 // seed, stop — the breeder/exp6 path) survives capture → Export (the external

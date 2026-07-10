@@ -213,6 +213,7 @@ func captureAgentDefs(ctx context.Context, s store.Store, out *AgentDefsSection)
 	for _, r := range rows {
 		out.Entries = append(out.Entries, AgentDefEntry{
 			DefID:                  r.DefID,
+			TenantID:               r.TenantID,
 			Name:                   r.Name,
 			Version:                r.Version,
 			ParentDefID:            r.ParentDefID,
@@ -239,6 +240,7 @@ func captureAgentDefActive(ctx context.Context, s store.Store, out *AgentDefActi
 	for _, r := range rows {
 		out.Entries = append(out.Entries, AgentDefActiveEntry{
 			Name:              r.Name,
+			TenantID:          r.TenantID,
 			DefID:             r.DefID,
 			PromotedAt:        r.PromotedAt,
 			PromotedByAgentID: r.PromotedByAgentID,
@@ -258,6 +260,7 @@ func captureSkillDefs(ctx context.Context, s store.Store, out *SkillDefsSection)
 	for _, r := range rows {
 		out.Entries = append(out.Entries, SkillDefEntry{
 			DefID:                  r.DefID,
+			TenantID:               r.TenantID,
 			Name:                   r.Name,
 			Version:                r.Version,
 			ParentDefID:            r.ParentDefID,
@@ -284,6 +287,7 @@ func captureSkillDefActive(ctx context.Context, s store.Store, out *SkillDefActi
 	for _, r := range rows {
 		out.Entries = append(out.Entries, SkillDefActiveEntry{
 			Name:              r.Name,
+			TenantID:          r.TenantID,
 			DefID:             r.DefID,
 			PromotedAt:        r.PromotedAt,
 			PromotedByAgentID: r.PromotedByAgentID,
@@ -303,6 +307,7 @@ func captureTeamDefs(ctx context.Context, s store.Store, out *TeamDefsSection) e
 	for _, r := range rows {
 		out.Entries = append(out.Entries, TeamDefEntry{
 			DefID:                  r.DefID,
+			TenantID:               r.TenantID,
 			Name:                   r.Name,
 			Version:                r.Version,
 			ParentDefID:            r.ParentDefID,
@@ -329,6 +334,7 @@ func captureTeamDefActive(ctx context.Context, s store.Store, out *TeamDefActive
 	for _, r := range rows {
 		out.Entries = append(out.Entries, TeamDefActiveEntry{
 			Name:              r.Name,
+			TenantID:          r.TenantID,
 			DefID:             r.DefID,
 			PromotedAt:        r.PromotedAt,
 			PromotedByAgentID: r.PromotedByAgentID,
@@ -350,6 +356,7 @@ func captureMCPServerDefs(ctx context.Context, s store.Store, out *MCPServerDefs
 	for _, r := range rows {
 		out.Entries = append(out.Entries, MCPServerDefEntry{
 			DefID:                  r.DefID,
+			TenantID:               r.TenantID,
 			Name:                   r.Name,
 			Version:                r.Version,
 			ParentDefID:            r.ParentDefID,
@@ -376,6 +383,7 @@ func captureMCPServerDefActive(ctx context.Context, s store.Store, out *MCPServe
 	for _, r := range rows {
 		out.Entries = append(out.Entries, MCPServerDefActiveEntry{
 			Name:              r.Name,
+			TenantID:          r.TenantID,
 			DefID:             r.DefID,
 			PromotedAt:        r.PromotedAt,
 			PromotedByAgentID: r.PromotedByAgentID,
