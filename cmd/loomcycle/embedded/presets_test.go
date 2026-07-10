@@ -100,7 +100,9 @@ func TestBundle_AgentTeamsHasOrchestrator(t *testing.T) {
 			t.Errorf("team/orchestrator missing tool %q", tl)
 		}
 	}
-	for _, s := range []string{"team/orchestrate", "team/repo"} {
+	// team/repo (software) + team/sqldata (data) + team/docboard (docs) are the
+	// domain workspace skills; team/orchestrate is the driving playbook.
+	for _, s := range []string{"team/orchestrate", "team/repo", "team/sqldata", "team/docboard"} {
 		if _, ok := tree.Skills[s]; !ok {
 			t.Errorf("agent-teams bundle missing skill %q", s)
 		}
