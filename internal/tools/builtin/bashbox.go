@@ -82,6 +82,20 @@ type Bashbox struct {
 	// passes. Empty (default) = only PATH.
 	FallbackAllowedEnv []string
 
+	// FallbackAllowedCreds names RFC AR credentials (by CredentialDef name)
+	// injected into fallback commands' env — a PER-TENANT counterpart to
+	// FallbackAllowedEnv. Each is resolved for the run's own (tenant, user, agent)
+	// identity via CredResolve, so a tenant's own GITHUB_TOKEN reaches git/gh
+	// instead of one shared operator host token. A resolved cred OVERRIDES a
+	// same-named host env var. Empty (default) = none.
+	FallbackAllowedCreds []string
+	// CredResolve resolves an RFC AR credential by NAME for the run on ctx (the
+	// tenant/user/agent come from the run identity on ctx, so resolution is
+	// tenant-isolated), returning (value, ok). Wired to credential.Engine.Resolve.
+	// nil = credential injection disabled. The value is a secret — it goes only
+	// into the host child's env and must never be logged.
+	CredResolve func(ctx context.Context, name string) (string, bool)
+
 	// regOnce builds the base command registry exactly once per tool instance
 	// (default builtins + contrib awk/jq), shared read-only across concurrent
 	// calls (Lookup is RLock-guarded). Used only when no fallback is
@@ -182,7 +196,7 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		// is not a container; run loomcycle in one for hard isolation.
 		cmd := exec.CommandContext(ctx, name, inv.Args...)
 		cmd.Dir = hostCwd
-		cmd.Env = scrubbedHostEnv(b.FallbackAllowedEnv)
+		cmd.Env = b.fallbackEnv(ctx)
 		cmd.Stdin = inv.Stdin
 		cmd.Stdout = inv.Stdout
 		cmd.Stderr = inv.Stderr
@@ -199,6 +213,41 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		fmt.Fprintf(inv.Stderr, "%s: %v\n", name, runErr)
 		return &commands.ExitError{Code: 127}
 	})
+}
+
+// fallbackEnv builds the env for a host-command fallback: the operator's host
+// allowlist (FallbackAllowedEnv, read from os.Environ — operator-global) plus any
+// RFC AR credentials in FallbackAllowedCreds resolved for THIS run's identity via
+// CredResolve (per-tenant). A resolved cred overrides a same-named host var
+// (tenant-specific wins). Nothing else leaks into the child (PATH + these only).
+// Deterministic order: host names first (in declared order), then creds that were
+// not already contributed by a host var.
+func (b *Bashbox) fallbackEnv(ctx context.Context) []string {
+	host := scrubbedHostEnv(b.FallbackAllowedEnv)
+	if b.CredResolve == nil || len(b.FallbackAllowedCreds) == 0 {
+		return host
+	}
+	idx := make(map[string]int, len(host)) // name -> position in out
+	out := make([]string, 0, len(host)+len(b.FallbackAllowedCreds))
+	for _, kv := range host {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			idx[kv[:i]] = len(out)
+		}
+		out = append(out, kv)
+	}
+	for _, name := range b.FallbackAllowedCreds {
+		v, ok := b.CredResolve(ctx, name)
+		if !ok || v == "" {
+			continue
+		}
+		if pos, seen := idx[name]; seen {
+			out[pos] = name + "=" + v // cred overrides the host var
+		} else {
+			idx[name] = len(out)
+			out = append(out, name+"="+v)
+		}
+	}
+	return out
 }
 
 // fallbackHostCwd maps the sandbox working directory to a real host path. In rw

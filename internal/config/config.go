@@ -2108,6 +2108,15 @@ type Env struct {
 	// never the sandbox. PATH always passes. Sourced from
 	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV (comma-separated).
 	BashboxFallbackAllowedEnv []string
+	// BashboxFallbackAllowedCreds names RFC AR credentials (by CredentialDef name,
+	// e.g. GITHUB_TOKEN) injected into fallback commands' env — a PER-TENANT
+	// counterpart to BashboxFallbackAllowedEnv: each is resolved for the run's own
+	// (tenant, user, agent) identity via the credential engine, so a tenant's own
+	// GITHUB_TOKEN reaches git/gh instead of one shared operator host token. A
+	// resolved cred overrides a same-named host env var. Sourced from
+	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS (comma-separated). Requires a KEK
+	// (LOOMCYCLE_SECRET_KEY) for the engine to resolve.
+	BashboxFallbackAllowedCreds []string
 	// SkillsRoot points at a directory holding subdirectories of the
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
@@ -2896,8 +2905,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		ClientToolMaxConns:        getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", 8),
 		BashEnabled:               os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashboxEnabled:            os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
-		BashboxFallbackCommands:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
-		BashboxFallbackAllowedEnv: splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV")),
+		BashboxFallbackCommands:     splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
+		BashboxFallbackAllowedEnv:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV")),
+		BashboxFallbackAllowedCreds: splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS")),
 		SkillsRoot:                os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
 		AgentsRoot:                os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
 		HelpRoot:                  os.Getenv("LOOMCYCLE_HELP_ROOT"),
