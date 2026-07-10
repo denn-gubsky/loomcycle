@@ -26,6 +26,7 @@ var mcpWrapperSchemas = map[string]string{
 	"channel":          channelInputSchema,
 	"agentdef":         agentDefInputSchema,
 	"skilldef":         skillDefInputSchema,
+	"teamdef":          teamDefInputSchema,
 	"mcpserverdef":     mcpServerDefInputSchema,
 	"scheduledef":      scheduleDefInputSchema,
 	"a2aservercarddef": a2aServerCardDefInputSchema,

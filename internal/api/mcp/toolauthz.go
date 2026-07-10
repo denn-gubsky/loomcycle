@@ -47,6 +47,7 @@ var tenantConfinableTools = map[string]bool{
 	// cross-tenant reads.
 	"agentdef":         true,
 	"skilldef":         true,
+	"teamdef":          true, // RFC AP — tenant-confined team-workflow substrate
 	"mcpserverdef":     true,
 	"scheduledef":      true,
 	"a2aservercarddef": true,

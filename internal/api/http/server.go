@@ -309,6 +309,14 @@ type Server struct {
 	// "not configured" errors. Set via SetScheduleDefTool.
 	scheduleDefTool tools.Tool
 
+	// teamDefTool is the RFC AP TeamDef substrate tool (team-workflow
+	// graphs). Tenant-confined (ScopeTenant at the route), but structurally
+	// the same dedicated-slot wiring as scheduleDefTool — NOT in s.tools (not
+	// a per-agent dispatcher tool), reached via Connector.TeamDef + the
+	// POST /v1/_teamdef admin endpoint + the LoomCycle MCP meta-tool `teamdef`.
+	// Nil = the surface returns "not configured" errors. Set via SetTeamDefTool.
+	teamDefTool tools.Tool
+
 	// a2aServerCardDefTool + a2aAgentDefTool are the v1.x RFC G A2A
 	// substrate tools. Same operator-admin-only posture as
 	// scheduleDefTool — NOT in s.tools, reached via Connector +
@@ -777,6 +785,14 @@ func (s *Server) SetMCPServerDefTool(t tools.Tool) {
 // than the MCP-dependent MCPServerDef tool.
 func (s *Server) SetScheduleDefTool(t tools.Tool) {
 	s.scheduleDefTool = t
+}
+
+// SetTeamDefTool wires the RFC AP TeamDef substrate tool. Without this call,
+// Connector.TeamDef + POST /v1/_teamdef + the LoomCycle MCP meta-tool all refuse
+// with "not configured". The tool only needs the store + byte caps, so it can be
+// constructed alongside ScheduleDef in main.go.
+func (s *Server) SetTeamDefTool(t tools.Tool) {
+	s.teamDefTool = t
 }
 
 // SetA2AServerCardDefTool wires the v1.x RFC G A2AServerCardDef substrate
@@ -2513,6 +2529,11 @@ func (s *Server) Mux() http.Handler {
 	// same connector path, different wire surface.
 	mux.Handle("POST /v1/_agentdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateAgentDef))))
 	mux.Handle("POST /v1/_skilldef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateSkillDef))))
+	// RFC AP Phase 2 TeamDef substrate. Bearer-authed; tenant-confined
+	// (ScopeTenant via isTenantConfinedDefPath) — the tool stamps the caller's
+	// authoritative tenant + opaque-404s cross-tenant reads. Same dispatch shape
+	// as the other substrate admin endpoints.
+	mux.Handle("POST /v1/_teamdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateTeamDef))))
 	// v0.9.x dynamic MCP server registration. Bearer-authed; operator-
 	// admin-only (no per-agent surface). Same dispatch shape as the
 	// other two substrate admin endpoints.
@@ -2590,6 +2611,7 @@ func (s *Server) Mux() http.Handler {
 	// substrate write endpoints; drives the Web UI's /ui/library tab.
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
+	mux.Handle("GET /v1/_teamdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTeamDefNames))))
 	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
 	mux.Handle("GET /v1/_scheduledef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListScheduleDefNames))))
 	mux.Handle("GET /v1/_a2aservercarddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AServerCardDefNames))))

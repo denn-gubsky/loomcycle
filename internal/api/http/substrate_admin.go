@@ -50,6 +50,14 @@ func (s *Server) handleSubstrateSkillDef(w http.ResponseWriter, r *http.Request)
 	s.dispatchSubstrate(w, r, "SkillDef", s.SkillDef)
 }
 
+// handleSubstrateTeamDef serves POST /v1/_teamdef.
+// RFC AP Phase 2 team-workflow substrate. Bearer-authed; tenant-confined
+// (ScopeTenant via isTenantConfinedDefPath) — same dispatch shape as the
+// AgentDef + SkillDef admin endpoints.
+func (s *Server) handleSubstrateTeamDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "TeamDef", s.TeamDef)
+}
+
 // handleSubstrateMCPServerDef serves POST /v1/_mcpserverdef.
 // v0.9.x dynamic MCP server registration. Bearer-authed; same
 // dispatch shape as the AgentDef + SkillDef admin endpoints.

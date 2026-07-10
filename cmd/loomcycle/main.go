@@ -1612,6 +1612,16 @@ func main() {
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	})
+	// RFC AP Phase 2 — wire the TeamDef substrate tool (team-workflow graphs).
+	// Tenant-confined at the route (ScopeTenant), but the same dedicated-slot
+	// wiring as ScheduleDef; reached via Connector.TeamDef + POST /v1/_teamdef +
+	// the LoomCycle MCP meta-tool `teamdef`. Reuses the AgentDef byte caps (the
+	// definition is a graph blob, like ScheduleDef/A2A — no dedicated env knob).
+	srv.SetTeamDefTool(&builtin.TeamDef{
+		Store:               storeIface,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
 	// v1.x RFC G — wire the two A2A substrate tools. Same operator-admin-
 	// only posture as ScheduleDef; reached via Connector + the admin
 	// endpoints + the LoomCycle MCP meta-tools. Identical Store + Cfg +

@@ -486,6 +486,21 @@ func (s *Server) SkillDef(ctx context.Context, input json.RawMessage) (connector
 	return s.dispatchBuiltin(ctx, "SkillDef", input)
 }
 
+// TeamDef dispatches to the RFC AP TeamDef substrate tool (team-workflow
+// graphs). NOT in the per-agent dispatcher (s.tools) — it's authored via the
+// route + MCP meta-tool, not attached to agents — so it uses the dedicated
+// teamDefTool slot like MCPServerDef/ScheduleDef. See SetTeamDefTool for wiring.
+func (s *Server) TeamDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.teamDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("TeamDef: not configured (no tool wired via SetTeamDefTool)")
+	}
+	res, err := s.teamDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
 // VolumeDef dispatches to the RFC AH Phase 2a dynamic-volume substrate
 // tool. Unlike MCPServerDef (operator-admin-only) the VolumeDef tool IS in
 // the per-agent dispatcher (s.tools) with a default-deny volume_def_scopes

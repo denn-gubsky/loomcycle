@@ -128,6 +128,9 @@ func (m *mockConnector) AgentDef(_ context.Context, _ json.RawMessage) (connecto
 func (m *mockConnector) SkillDef(_ context.Context, _ json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) TeamDef(_ context.Context, _ json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) Evaluation(_ context.Context, _ json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
@@ -392,8 +395,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 47 {
-		t.Errorf("got %d tools, want 47 (+credentialdef on top of the path/document/volumedef/spawn_runs/compact_run list)", len(result.Tools))
+	if len(result.Tools) != 48 {
+		t.Errorf("got %d tools, want 48 (+teamdef on top of the credentialdef/path/document/volumedef/spawn_runs/compact_run list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -403,7 +406,7 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 		t.Error("catalogue missing the credentialdef meta-tool")
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}

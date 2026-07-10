@@ -67,6 +67,12 @@ var handlersByName = map[string]toolHandler{
 	"skilldef": wrapBuiltin("skilldef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.SkillDef(ctx, in)
 	}),
+	// RFC AP Phase 2 team-workflow substrate. Tenant-confined (the tool stamps
+	// the row's tenant from ctx + opaque-404s cross-tenant reads); mirror of
+	// skilldef.
+	"teamdef": wrapBuiltin("teamdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.TeamDef(ctx, in)
+	}),
 	// v0.9.x dynamic MCP server registration. Operator-admin-only;
 	// the LoomCycle MCP server is bearer-authed so external
 	// orchestrators (Claude Code, n8n via the MCP Client Tool) can
