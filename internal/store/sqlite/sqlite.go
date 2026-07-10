@@ -2608,7 +2608,7 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT def_id, name, version, parent_def_id, definition, description,
 		        created_at, created_by_agent_id, created_by_run_id,
-		        retired, bootstrapped_from_static, tenant_id
+		        retired, bootstrapped_from_static, tenant_id, content_sha256
 		 FROM teamdefs
 		 ORDER BY tenant_id ASC, name ASC, version ASC`,
 	)
@@ -2628,14 +2628,18 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 			definition  string
 			retiredInt  int
 			bootstrap   int
+			contentSHA  sql.NullString
 		)
 		if err := rows.Scan(
 			&r.DefID, &r.Name, &r.Version, &parentDefID,
 			&definition, &description,
 			&createdNs, &createdBy, &createdRun,
-			&retiredInt, &bootstrap, &r.TenantID,
+			&retiredInt, &bootstrap, &r.TenantID, &contentSHA,
 		); err != nil {
 			return nil, fmt.Errorf("scan team_def: %w", err)
+		}
+		if contentSHA.Valid {
+			r.ContentSHA256 = contentSHA.String
 		}
 		r.Definition = json.RawMessage(definition)
 		r.CreatedAt = time.Unix(0, createdNs)

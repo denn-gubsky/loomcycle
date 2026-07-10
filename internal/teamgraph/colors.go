@@ -120,8 +120,12 @@ func EdgeColor(d Definition, on string) string {
 }
 
 // resolveColorValue turns a def-supplied colour value into (fill, accent). A
-// named palette key yields both shades; a raw hex is used for both (no derived
-// accent). Returns ok=false only for the empty string.
+// named palette key yields both shades; a valid #hex is used for both (no
+// derived accent). Any other value (including a non-hex literal) returns
+// ok=false so the caller falls back to the keyword/rotation default — the value
+// is model/operator-authored and flows verbatim into the rendered Mermaid, so an
+// unvalidated string could inject styling/directives (colours are excluded from
+// the content hash, so a hostile value would also survive a fork undetected).
 func resolveColorValue(v string) (fill, accent string, ok bool) {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -130,7 +134,27 @@ func resolveColorValue(v string) (fill, accent string, ok bool) {
 	if h, named := namedHues[strings.ToLower(v)]; named {
 		return h.fill, h.accent, true
 	}
-	return v, v, true // raw hex (or any literal) — used verbatim
+	if isHexColor(v) {
+		return v, v, true
+	}
+	return "", "", false // invalid → caller falls back to a safe default
+}
+
+// isHexColor reports whether v is a #rgb or #rrggbb hex colour (the only literal
+// form accepted from a def, so nothing else reaches the Mermaid output).
+func isHexColor(v string) bool {
+	if len(v) != 4 && len(v) != 7 {
+		return false
+	}
+	if v[0] != '#' {
+		return false
+	}
+	for _, c := range v[1:] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func keywordMatch(s State) (string, bool) {

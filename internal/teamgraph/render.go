@@ -28,21 +28,21 @@ func RenderMermaid(name string, d Definition, highlightState string) string {
 	var b strings.Builder
 	b.WriteString("stateDiagram-v2\n")
 	if name != "" {
-		fmt.Fprintf(&b, "  %%%% %s\n", name) // `%%` → a Mermaid comment line
+		fmt.Fprintf(&b, "  %%%% %s\n", mmSanitize(name)) // `%%` → a Mermaid comment line
 	}
 	if d.Entry != "" {
-		fmt.Fprintf(&b, "  [*] --> %s\n", d.Entry)
+		fmt.Fprintf(&b, "  [*] --> %s\n", mmSanitize(d.Entry))
 	}
 
 	// Transitions, in definition order.
 	for _, t := range d.Transitions {
-		fmt.Fprintf(&b, "  %s --> %s: %s\n", t.From, t.To, t.On)
+		fmt.Fprintf(&b, "  %s --> %s: %s\n", mmSanitize(t.From), mmSanitize(t.To), mmSanitize(t.On))
 	}
 
 	// Final states → terminal marker (terminal handler, or no outbound edge).
 	for _, s := range d.States {
 		if s.Handler.Kind == HandlerTerminal || !outbound[s.ID] {
-			fmt.Fprintf(&b, "  %s --> [*]\n", s.ID)
+			fmt.Fprintf(&b, "  %s --> [*]\n", mmSanitize(s.ID))
 		}
 	}
 
@@ -54,10 +54,10 @@ func RenderMermaid(name string, d Definition, highlightState string) string {
 			if wait == "" {
 				wait = WaitAll
 			}
-			fmt.Fprintf(&b, "  note right of %s\n", s.ID)
-			fmt.Fprintf(&b, "    parallel: %s (wait: %s)\n", strings.Join(h.Agents, ", "), wait)
+			fmt.Fprintf(&b, "  note right of %s\n", mmSanitize(s.ID))
+			fmt.Fprintf(&b, "    parallel: %s (wait: %s)\n", mmSanitize(strings.Join(h.Agents, ", ")), wait)
 			if h.Consolidator != "" {
-				fmt.Fprintf(&b, "    consolidator: %s\n", h.Consolidator)
+				fmt.Fprintf(&b, "    consolidator: %s\n", mmSanitize(h.Consolidator))
 			}
 			b.WriteString("  end note\n")
 		}
@@ -101,11 +101,21 @@ func writeClassDefs(b *strings.Builder, d Definition, sc Scheme, highlightState 
 			continue
 		}
 		if hlValid && s.ID == highlightState {
-			fmt.Fprintf(b, "  class %s %s_hl\n", s.ID, class(f))
+			fmt.Fprintf(b, "  class %s %s_hl\n", mmSanitize(s.ID), class(f))
 		} else {
-			fmt.Fprintf(b, "  class %s %s\n", s.ID, class(f))
+			fmt.Fprintf(b, "  class %s %s\n", mmSanitize(s.ID), class(f))
 		}
 	}
+}
+
+// mmSanitize neutralises characters in a model/operator-authored id, label, or
+// agent name that would break out of a Mermaid line (newline / carriage return)
+// or forge a new statement/directive (`-->`, `%%`). State ids are sanitised
+// identically wherever they appear (transitions, terminal markers, class lines)
+// so the references still match. It is defence-in-depth against diagram
+// injection — it does not reject the def (validation owns that).
+func mmSanitize(s string) string {
+	return strings.NewReplacer("\n", " ", "\r", " ", "-->", "__", "%%", "__").Replace(s)
 }
 
 // strokeFor picks a stroke for a fill's classDef: the accent of whichever state

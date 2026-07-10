@@ -142,6 +142,10 @@ var longRunTools = map[string]bool{
 	"spawn_runs":  true,
 	"compact_run": true,
 	"evaluation":  true,
+	// teamdef op=run walks a team's graph, spawning each state's agent in
+	// sequence — a single-shot response held open for minutes. Without this a
+	// header timeout would reconnect-retry and re-execute the whole team.
+	"teamdef": true,
 }
 
 // newProxyTransport builds the thin client's HTTP transport. headerTimeout=0

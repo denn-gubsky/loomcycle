@@ -88,6 +88,10 @@ func TestValidate_Rejections(t *testing.T) {
 			`{"entry":"a","states":[{"state":"a","handler":{"kind":"agent","agent":"w"}},{"state":"b","handler":{"kind":"terminal"}}],"transitions":[{"from":"a","to":"b","on":"pushback:"}]}`, "non-empty reason"},
 		{"negative max_iterations",
 			`{"entry":"a","max_iterations":-1,"states":[{"state":"a","handler":{"kind":"terminal"}}]}`, "max_iterations"},
+		{"max_iterations over ceiling",
+			`{"entry":"a","max_iterations":100000,"states":[{"state":"a","handler":{"kind":"terminal"}}]}`, "exceeds the maximum"},
+		{"non-terminal dead end",
+			`{"entry":"a","states":[{"state":"a","handler":{"kind":"agent","agent":"w"}}],"transitions":[]}`, "no outbound transition"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
