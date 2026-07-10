@@ -21,6 +21,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 		"oauth":          "preset",
 		"document-agent": "bundle",
 		"agent-teams":    "bundle",
+		"team-examples":  "bundle",
 	}
 	for name, kind := range want {
 		u, ok := byName[name]
@@ -102,6 +103,39 @@ func TestBundle_AgentTeamsHasOrchestrator(t *testing.T) {
 	for _, s := range []string{"team/orchestrate", "team/repo"} {
 		if _, ok := tree.Skills[s]; !ok {
 			t.Errorf("agent-teams bundle missing skill %q", s)
+		}
+	}
+}
+
+// TestBundle_TeamExamplesHasStarters guards the RFC BD Phase 2 starter content:
+// the team-examples bundle must ship the SDLC + marketing handler agents and the
+// team/examples skill (the ready-to-create TeamDefs). Without these the
+// orchestrator has nothing to drive out of the box.
+func TestBundle_TeamExamplesHasStarters(t *testing.T) {
+	data, err := Show("team-examples")
+	if err != nil {
+		t.Fatalf("Show(team-examples): %v", err)
+	}
+	var tree struct {
+		Agents map[string]any `yaml:"agents"`
+		Skills map[string]any `yaml:"skills"`
+	}
+	if err := yaml.Unmarshal(data, &tree); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, a := range []string{"sdlc/architect", "sdlc/coder", "sdlc/reviewer", "marketing/writer", "marketing/editor"} {
+		if _, ok := tree.Agents[a]; !ok {
+			t.Errorf("team-examples missing handler agent %q", a)
+		}
+	}
+	if _, ok := tree.Skills["team/examples"]; !ok {
+		t.Errorf("team-examples missing the team/examples skill")
+	}
+	// The skill must carry both starter TeamDefs so they're actually creatable.
+	body, _ := Show("team-examples")
+	for _, marker := range []string{"sdlc/architect", "marketing/writer", `"entry": "architecture"`, `"entry": "draft"`} {
+		if !strings.Contains(string(body), marker) {
+			t.Errorf("team/examples skill missing starter marker %q", marker)
 		}
 	}
 }

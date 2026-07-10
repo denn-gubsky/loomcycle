@@ -1,0 +1,159 @@
+# RFC BD embedded bundle: team-examples
+#
+# Runnable STARTER TEAMS for the team/orchestrator (RFC BD). The `agent-teams`
+# bundle ships the orchestrator + the mechanism; this bundle ships the CONTENT so
+# a team actually runs end to end out of the box. Select all three:
+#   LOOMCYCLE_PRESETS=base,agent-teams,team-examples
+#
+# It provides:
+#   - handler agents for two domains (they CAN be static config; TeamDefs cannot):
+#       software: sdlc/architect, sdlc/coder, sdlc/reviewer
+#       marketing: marketing/writer, marketing/editor
+#   - a `team/examples` skill carrying the ready-to-create TeamDef JSON for an
+#     `sdlc` team (software workspace: repo volume + PR) and a `marketing` team
+#     (Documents-only), so the orchestrator/assistant can `TeamDef op=create` them
+#     and drive them. (TeamDefs are runtime-only — RFC AP has no static team layer
+#     — so a starter team ships as JSON a skill instantiates, not as config.)
+#
+# Two domains on purpose: the SDLC team exercises the software workspace (ephemeral
+# volume + git/gh via Bashbox — see the agent-teams `team/repo` skill + its
+# operator prereqs); the marketing team proves the domain-general design with NO
+# volume/repo/PR — its deliverable is the Document task board itself.
+#
+# The handler agents are meant to be SPAWNED BY the orchestrator (which creates the
+# shared ephemeral `work` volume for software teams); the sdlc/* agents' file/exec
+# tools resolve that shared volume. Run standalone (no orchestrator), an sdlc/*
+# agent has no `work` volume and its file ops are denied — expected.
+#
+# No provider matrix here (agents declare `tier: middle`); bring `base`. Overlay to
+# retarget tiers / swap prompts. Cannot widen tools (the ceiling is unchanged).
+
+agents:
+  # ---- software (SDLC) handlers — operate the shared ephemeral `work` volume ----
+  sdlc/architect:
+    tier: middle
+    max_tokens: 8192
+    effort: high
+    tools: [Read, Grep, Glob, Context]
+    system_prompt: |
+      You are the ARCHITECT on a software team. Given a task (and read access to the
+      checked-out repo in the `work` volume), produce a SHORT technical design: the
+      approach, the files/modules to touch, and the risks. Do not write code. Be
+      terse and structured — a planner and a coder read your output next. End with a
+      one-line "ready to implement?" so the orchestrator can gate on approval.
+
+  sdlc/coder:
+    tier: middle
+    max_tokens: 16384
+    effort: medium
+    tools: [Read, Write, Edit, Grep, Glob, Bashbox, Context]
+    system_prompt: |
+      You are the CODER on a software team. Implement the approved design in the
+      repo checked out in the `work` volume: edit files with Write/Edit, and use
+      Bashbox (volume="work") to build/test/format. Make the SMALLEST change that
+      satisfies the task; match the surrounding code's style. When done, summarize
+      what you changed (files + one line each) — the reviewer reads it next. Do not
+      commit or push; the orchestrator opens the PR.
+
+  sdlc/reviewer:
+    tier: middle
+    max_tokens: 8192
+    effort: high
+    tools: [Read, Grep, Glob, Bashbox, Context]
+    system_prompt: |
+      You are the REVIEWER on a software team. Review the coder's change in the
+      `work` volume: read the diff (Bashbox volume="work": `git diff`), check
+      correctness, tests, and style. Return a verdict the orchestrator routes on:
+      "approve" (advance to PR) or "pushback: <specific, actionable reasons>" (back
+      to the coder). Be concrete — name files + lines. Do not edit code yourself.
+
+  # ---- marketing handlers — Documents only, no volume/repo ----
+  marketing/writer:
+    tier: middle
+    max_tokens: 8192
+    effort: medium
+    tools: [Document, WebSearch, Context]
+    memory_scopes: [user]
+    system_prompt: |
+      You are the WRITER on a marketing team. Draft the requested copy (a post, an
+      email, a landing section) directly into the team's Document task board: put the
+      draft in the relevant chunk's body (Document op=update_chunk). Use WebSearch
+      only to check facts. Keep the brand voice the operator specified. When done,
+      say what you drafted and where — the editor reviews it next. There is no repo
+      and no PR; the Document is the deliverable.
+
+  marketing/editor:
+    tier: middle
+    max_tokens: 8192
+    effort: high
+    tools: [Document, Context]
+    system_prompt: |
+      You are the EDITOR on a marketing team. Review the writer's draft in the
+      Document task board (Document op=get_chunk): tighten the copy, fix voice/tone,
+      and check the brief is met. Either polish it in place (op=update_chunk) and
+      return "approve", or return "pushback: <specific edits>" for the writer. Be
+      concrete. The Document is the deliverable — no repo, no PR.
+
+skills:
+  team/examples:
+    description: Ready-to-create starter TeamDefs (an SDLC software team + a marketing Documents-only team) the orchestrator can instantiate and drive.
+    tools: [TeamDef, Document]
+    body: |
+      # Starter teams
+
+      Two ready-to-run example teams. To use one: `TeamDef op=create name="<name>"
+      overlay=<the JSON below>` (it validates on write), then drive it per the
+      team/orchestrate skill. Both reference handler agents shipped by the
+      team-examples bundle — confirm they exist with `AgentDef op=list` first.
+
+      ## `sdlc` — a software team (repo workspace + PR)
+      Needs the software prerequisites from the `team/repo` skill (Bashbox + git/gh +
+      a dynamic_root volume + GITHUB_TOKEN). Set up the `work` volume + clone per
+      team/repo BEFORE driving, and open the PR at the terminal state.
+      ```json
+      {
+        "entry": "architecture",
+        "max_iterations": 5,
+        "states": [
+          {"state": "architecture",   "handler": {"kind": "agent", "agent": "sdlc/architect"}},
+          {"state": "implementation", "handler": {"kind": "agent", "agent": "sdlc/coder"}},
+          {"state": "review",         "handler": {"kind": "agent", "agent": "sdlc/reviewer"}},
+          {"state": "pr",             "handler": {"kind": "terminal"}}
+        ],
+        "transitions": [
+          {"from": "architecture",   "to": "implementation", "on": "success"},
+          {"from": "implementation", "to": "review",         "on": "success"},
+          {"from": "review",         "to": "pr",             "on": "success"},
+          {"from": "review",         "to": "implementation", "on": "pushback:code-fix"}
+        ]
+      }
+      ```
+      Flow: architect designs → coder implements in `work` → reviewer approves
+      (→ PR) or pushes back to the coder → at `pr` you `gh pr create` (team/repo).
+
+      ## `marketing` — a Documents-only team (no repo, no PR)
+      No volume, no git — the Document task board is the deliverable. Create a board
+      (Document op=create_document), seed a chunk at `draft`, and drive.
+      ```json
+      {
+        "entry": "draft",
+        "max_iterations": 4,
+        "states": [
+          {"state": "draft",     "handler": {"kind": "agent", "agent": "marketing/writer"}},
+          {"state": "edit",      "handler": {"kind": "agent", "agent": "marketing/editor"}},
+          {"state": "published", "handler": {"kind": "terminal"}}
+        ],
+        "transitions": [
+          {"from": "draft", "to": "edit",      "on": "success"},
+          {"from": "edit",  "to": "published", "on": "success"},
+          {"from": "edit",  "to": "draft",     "on": "pushback:revise"}
+        ]
+      }
+      ```
+      Flow: writer drafts into the Document → editor polishes (→ published) or pushes
+      back to the writer. The finished copy lives in the Document chunk.
+
+      ## Note
+      These are STARTERS — fork + edit them (`TeamDef op=fork`) or build your own with
+      team/assistant. The handler agents are likewise examples: retarget their tiers
+      or swap prompts via an overlay.
