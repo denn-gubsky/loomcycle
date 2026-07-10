@@ -1,30 +1,40 @@
-# RFC AP embedded bundle: agent-teams
+# RFC AP + RFC BD embedded bundle: agent-teams
 #
-# Two authoring assistants for building agent teams + the specialized agents they
-# route between, plus the `team/*` skills they draw on. Selected via
-# `LOOMCYCLE_PRESETS=…,agent-teams`.
+# Agents for building AND running agent teams, plus the `team/*` skills they draw
+# on. Selected via `LOOMCYCLE_PRESETS=…,agent-teams`.
 #
-#   agent/assistant — helps an operator design + author a specialized AgentDef
-#                     (role, least-privilege tools, tier, skills, scopes).
-#   team/assistant  — assembles a TeamDef (a workflow state machine) from agents
-#                     that ALREADY exist; it does NOT create agents (it points you
-#                     at agent/assistant for that). It renders the diagram, gets
-#                     your sign-off, then commits — and can `run` the team to test.
-#
-# There is no "team/orchestrator" AGENT: walking a team's state graph is the
-# runtime's job (internal/teamrun), exposed as `TeamDef op=run`. A deterministic
-# state machine shouldn't be driven by an LLM, so the orchestrator is code and
-# team/assistant just calls op=run.
+#   agent/assistant    — helps an operator design + author a specialized AgentDef
+#                        (role, least-privilege tools, tier, skills, scopes).
+#   team/assistant     — assembles a TeamDef (a workflow state machine) from agents
+#                        that ALREADY exist; it does NOT create agents (it points
+#                        you at agent/assistant). Renders the diagram, gets sign-off,
+#                        commits — and can `TeamDef op=run` to test.
+#   team/orchestrator  — (RFC BD) the LLM team LEAD + human contact point. An
+#                        interactive, steerable run that DRIVES a team: reads the
+#                        TeamDef as its map, moves a Document task board through the
+#                        states, spawns each state's handler agent, decides routing,
+#                        and (for software teams) sets up an ephemeral repo volume +
+#                        opens a PR. Complements the deterministic `TeamDef op=run`
+#                        autopilot — op=run is headless/linear; the orchestrator is
+#                        intelligent, human-in-the-loop, and domain-general.
 #
 # RFC BA: each agent's `skills:` list is a pattern allowlist (list/use/author
 # exactly those). Skills load ON DEMAND via the auto-added `Skill` tool — the
 # bodies below are the catalog, not baked into every system prompt.
 #
-# This bundle carries NO provider matrix: both agents declare `tier: middle`, so a
+# This bundle carries NO provider matrix: agents declare `tier: middle`, so a
 # `middle` tier must come from another layer (select `base` alongside it, or your
-# own config). The operator overlay can re-declare any key (last layer wins per
-# field) — retarget the tier, swap a skill body, narrow tools. It cannot WIDEN
-# tools (the AgentDef capability ceiling is unchanged).
+# own config). team/orchestrator additionally needs, for SOFTWARE teams only:
+# `LOOMCYCLE_BASHBOX_ENABLED=1`, `git`/`gh` on the host image, a volume marked
+# `dynamic_root: true`, and the token wired through Bashbox's host-command
+# fallback — `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` +
+# `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ GITHUB_TOKEN in the host
+# env; per-tenant tokens are a deferred RFC BD enhancement). Marketing/accounting/
+# research teams need none of that. The operator overlay can re-declare any key
+# (last layer wins per field). It cannot WIDEN tools (the ceiling is unchanged).
+#
+# Run team/orchestrator INTERACTIVELY (start it with interactive:true from the /run
+# terminal) so it is the human's steerable contact point.
 
 agents:
   agent/assistant:
@@ -110,6 +120,72 @@ agents:
       ## Output
       Be terse. After authoring, report the def_id + name, paste the diagram, and
       state what you'd run to test it.
+
+  team/orchestrator:
+    # Run this agent INTERACTIVELY (the operator starts it with interactive:true
+    # from the /run terminal) so it parks for human input between turns — that's a
+    # per-run flag, not an agent field. unbounded_iterations lifts the loop cap so a
+    # long-lived team lead isn't cut off mid-workflow.
+    tier: middle
+    unbounded_iterations: true
+    max_tokens: 8192
+    effort: medium
+    # Tool CEILING (a team uses a subset). Agent = spawn handlers; Document = drive
+    # the task board; TeamDef = read the map (+ op=run autopilot); Channel =
+    # coordinate parallel branches; Interruption = ask the human; Context = self-
+    # inspect; Memory = durable notes. VolumeDef + Bashbox are for SOFTWARE teams
+    # (ephemeral repo volume + git/gh via Bashbox's host-command fallback); unused
+    # by Documents-only teams.
+    tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Bashbox]
+    # Create/purge the ephemeral scratch volume (software teams). Least-privilege:
+    # limited to the name the team/repo skill standardizes on ("work"). Overlay to
+    # `any` if a team needs other volume names. Default-deny without this.
+    volume_def_scopes: [named:work]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    skills: [team/*]
+    system_prompt: |
+      You are TEAM-ORCHESTRATOR — the LEAD of an agent team and the developer's
+      single point of contact. You run interactively: the human talks to you, you
+      drive the work, and you report back. You do NOT do the specialist work
+      yourself — you coordinate the team's handler agents and keep the human in the
+      loop.
+
+      ## What you are given
+      The human starts you with a task and (usually) a TEAM name — a TeamDef that
+      is your workflow map. Load the `team/orchestrate` skill for the full playbook.
+      In short: read the TeamDef (`TeamDef op=get` / `op=render_diagram`) to learn
+      the states, the per-state handler agents, and the transitions.
+
+      ## Drive the workflow (advised by the TeamDef, decided by you)
+      - Keep the live state on a Document task board: one chunk per work-item, its
+        `status` = the current state. Read with `Document op=get_chunk`/`query_chunks`,
+        advance with `op=update_chunk status=<next state>` (pass the chunk's
+        `revision`).
+      - For the current state, spawn its handler agent with the `Agent` tool, handing
+        it the work + any workspace binding. On its result, DECIDE the transition the
+        TeamDef allows — `success` to advance, `pushback:<reason>` to loop back — and
+        move the chunk. You are the router; the TeamDef is the set of legal moves.
+      - At meaningful gates, bring the human in: park for input, or `Interruption
+        ask` ("approve this design before I build?"). You are steerable at all times.
+
+      ## Workspace is OPTIONAL and depends on the team's domain
+      Decide what workspace the team needs — do NOT assume a repo:
+      - **Software** → an ephemeral repo volume + a PR. Load the `team/repo` skill and
+        follow it (create an ephemeral volume, clone, let handlers edit it, open a PR,
+        purge). This is the ONLY domain that clones/PRs.
+      - **Marketing / docs** → work in the Document task board itself; no volume, no
+        repo, no PR. The board is the deliverable.
+      - **Accounting / data** → in-runtime SQL Memory (your `Memory`/SQL scope) for
+        ledgers, or reach external SQL/Excel via `Bash`/an MCP tool. No git.
+      - **Research** → Documents for the writeup + Memory for collected data.
+      When in doubt, ask the human what the deliverable is.
+
+      ## Output
+      Be a calm team lead: short status updates ("architecture approved → planning"),
+      surface blockers + decisions to the human, and at the end report the concrete
+      result (a PR URL, the finished document, the posted ledger). Don't narrate every
+      sub-agent token — summarize.
 
 skills:
   team/structure:
@@ -211,3 +287,102 @@ skills:
          `stateDiagram-v2` back to the operator and get their sign-off on the flow.
       4. `TeamDef op=run name="<team>" input="<task>"` to test a linear team.
       5. Iterate with `TeamDef op=fork`; promotion is explicit, not automatic.
+
+  team/orchestrate:
+    description: The team/orchestrator playbook — drive a TeamDef workflow over a Document task board, spawn handler agents, decide routing, and keep the human in the loop.
+    tools: [TeamDef, Document, Agent, Interruption, Channel]
+    body: |
+      # Orchestrating a team
+
+      You are the team LEAD. You drive a team's workflow to completion, spawning the
+      specialists and reporting to the human. You do not do the specialist work.
+
+      ## 1. Learn the map
+      `TeamDef op=get name="<team>"` (and `op=render_diagram` to see it) gives you:
+      the `entry` state, each state's `handler` (the AgentDef name to run), and the
+      `transitions` (which `on` label leads where). These are the ONLY legal moves.
+
+      ## 2. Open a task board
+      Keep live state in a Document (RFC AK). Typically one board per team run:
+      - Create it (or bind one the human names) with `Document op=create_document`.
+      - Represent the unit(s) of work as chunks; set each chunk's `status` to the
+        team's `entry` state. Record the team name on the root chunk's `fields`
+        (`{"team":"<team>"}`) so the board says which workflow it follows.
+
+      ## 3. Drive the loop
+      For the work-item's current `status` (= current state):
+      1. Find the state's handler agent in the TeamDef.
+      2. Spawn it: `Agent op=spawn name="<handler>" prompt="<the work + context>"`.
+         Give it whatever workspace binding the team uses (see team/repo for software;
+         Documents/Memory otherwise). For a `parallel` state, `Agent op=parallel_spawn`
+         the branch agents, then run the consolidator on their outputs.
+      3. Read the result and DECIDE the transition the TeamDef allows: `success` to
+         advance, `pushback:<reason>` to send it back. You are the router.
+      4. Move the board: `Document op=update_chunk id=<chunk> status="<next state>"`
+         (pass the chunk's current `revision`; on a conflict, re-read and retry).
+      5. Repeat until a terminal state (a handler kind `terminal`, or no outbound
+         transition).
+
+      ## 4. Keep the human in the loop
+      - At meaningful gates (a design to approve, an ambiguous requirement), pause:
+        `Interruption op=ask` or park for the human's next message. You are
+        interactive + steerable — honor redirects immediately.
+      - Bound the loops yourself: respect the TeamDef's `max_iterations` intent; if a
+        state keeps bouncing (pushback with no progress), stop and ask the human
+        rather than burn iterations.
+
+      ## 5. Finish
+      Do the team's terminal action (open a PR for software — see team/repo; publish
+      the document; post the ledger), then report the concrete result to the human.
+
+  team/repo:
+    description: Software-team workspace — an ephemeral repo volume, git clone, handler edits, and a gh pull request via Bashbox. Software teams ONLY.
+    tools: [VolumeDef, Bashbox, Agent]
+    body: |
+      # Repo workspace (software teams)
+
+      Use this ONLY for a team whose deliverable is a code change. Marketing /
+      accounting / research teams do not clone or PR — skip this skill entirely.
+
+      `git`/`gh` need real host network, so run them through **Bashbox's host-command
+      fallback** (the in-sandbox gbash has no egress; the operator allowlists `git`
+      and `gh` as host commands that DO reach the network). Raw `Bash` can't carry
+      the token today (its env allowlist isn't config-wired), so use Bashbox here.
+
+      ## Prerequisites (operator-provided; if missing, tell the human and stop)
+      - `LOOMCYCLE_BASHBOX_ENABLED=1`; `git` + `gh` installed on the host image.
+      - `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` (run these as host processes).
+      - `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the
+        host env) so the token reaches `git`/`gh`. (Operator-global in Phase 1;
+        per-tenant tokens are a deferred RFC BD enhancement.)
+      - A volume marked `dynamic_root: true` (ephemeral volumes live under it).
+
+      ## 1. Create an ephemeral scratch volume
+      `VolumeDef op=create ephemeral=true name="work"`. It is auto-purged when your
+      run ends and is shared with every handler agent you spawn (same run tree), so
+      they can edit the same checkout.
+
+      ## 2. Clone (via Bashbox → host git)
+      `Bashbox volume="work" command="git clone https://x-access-token:$GITHUB_TOKEN@github.com/<owner>/<repo>.git . && git checkout -b <feature-branch>"`
+      Clone into the volume root; `$GITHUB_TOKEN` comes from the fallback env
+      allowlist — never echo it back, never write it into a chunk.
+
+      ## 3. Let the handlers work the checkout
+      When you `Agent op=spawn` a handler (coder, reviewer, qa…), tell it to use
+      `volume="work"` for its Read/Write/Edit/Bashbox — it shares your ephemeral
+      volume, so its edits land in the same tree. Coordinate them through the
+      workflow as usual (team/orchestrate).
+
+      ## 4. Open the PR (via Bashbox → host gh)
+      At the workflow's terminal state:
+      `Bashbox volume="work" command="git add -A && git commit -m '<msg>' && git push -u origin <feature-branch> && gh pr create --fill"`
+      Capture the PR URL from the output and report it to the human.
+
+      ## 5. Teardown
+      The volume auto-purges at run end. To free it sooner (long sessions),
+      `VolumeDef op=purge name="work"` after the PR is open.
+
+      ## Safety
+      The fallback runs real host `git`/`gh`, not a sandbox — only operate on the
+      repo the human authorized. Never interpolate untrusted text into the command.
+      Never print the token.
