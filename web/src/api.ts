@@ -1485,6 +1485,23 @@ export function renderTeamDiagram(name: string, highlightState?: string): Promis
   });
 }
 
+export interface CreatedTeam {
+  def_id: string;
+  name: string;
+  version: number;
+}
+
+// createTeam authors a TeamDef (op=create). `overlay` is the graph object
+// ({entry, states, transitions, max_iterations?, colors?}). The graph is
+// validated server-side; an invalid graph refuses (422) with the reason.
+export function createTeam(name: string, overlay: unknown): Promise<CreatedTeam> {
+  return jsonFetch<CreatedTeam>("/v1/_teamdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "create", name, overlay }),
+  });
+}
+
 // listDefVersionsByName uses the existing op-discriminated POST
 // endpoint with `{op:"list", name}` to retrieve every version of one
 // declared name. Used by the Library UI when an operator clicks into

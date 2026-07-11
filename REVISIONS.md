@@ -8,6 +8,38 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.17.1
+
+**🩹 Teams made usable — the `TeamDef` tool now reaches agents, + a Web UI "create
+team", + Interruption grants.** v1.17.0 shipped the team primitive but the
+`team/assistant` / `team/orchestrator` agents couldn't actually author or run
+teams.
+
+**1. `TeamDef` is now an agent-available tool (the fix).** The TeamDef tool was
+wired for the HTTP `/v1/_teamdef` route + the MCP `teamdef` meta-tool + the
+Connector, but was **never added to the in-loop agent tool set** (`allTools` in
+`main.go`) — so an agent's `tools: [TeamDef]` was silently dropped at run time
+(`Context op=tools` showed AgentDef/Context/Skill but no TeamDef), and the
+`team/structure` / `team/workflow` skills refused to load ("requires tools
+[TeamDef] not granted"). The single tool instance is now registered in `allTools`
+(Store late-bound, Spawn + op=run admission still injected by `SetTeamDefTool`),
+exactly like AgentDef/SkillDef — so `team/assistant` + `team/orchestrator` can
+create/render/run teams from within a run.
+
+**2. Interruption grants.** `team/assistant` now grants `Interruption` (it already
+had TeamDef; `team/orchestrator` already had both), and the `chat/medium` +
+`chat/local` agents grant `Interruption` — so a chat or team agent can pause to
+ask the human mid-run.
+
+**3. A Web UI "create team" dialog.** The teams board gains a **+ create team**
+action: a name + a graph-overlay JSON editor that POSTs `TeamDef op=create` (the
+graph is validated server-side, refusals shown inline), plus a **starter-template**
+dropdown pre-filling the SDLC / marketing example graphs. This is the missing
+"add" path — TeamDefs are runtime-only, so a bundle can't pre-create them; now you
+create them one click from the UI (or still via the `team/assistant` agent). The
+templates reference the `team-examples` bundle's handler agents, so a created team
+runs only when that bundle is loaded.
+
 ## What's in v1.17.0
 
 **✨ Agent Teams & Task Workflows (RFC AP) + the LLM Team Orchestrator (RFC BD).**

@@ -85,7 +85,7 @@ agents:
     max_iterations: 32
     max_tokens: 8192
     effort: medium
-    tools: [TeamDef, AgentDef, Context]
+    tools: [TeamDef, AgentDef, Context, Interruption]
     skills: [team/*]
     system_prompt: |
       You are TEAM-ASSISTANT. You assemble a TEAM WORKFLOW — a state machine whose
