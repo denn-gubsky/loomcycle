@@ -66,7 +66,7 @@ type OperatorTokenDef struct {
 // hence no '.' or ':' here. Tenants/names share the charset for symmetry.
 var operatorTokenNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
-const operatorTokenDefDescription = `Mint, rotate, retire, and inspect operator auth tokens (RFC L). ` +
+const operatorTokenDefDescription = `Mint, rotate, retire, and inspect operator auth tokens (see Context op=help topic=operator-tokens). ` +
 	`Each token binds a principal {tenant_id, subject, allowed_scopes}. ` +
 	`OPERATOR-ADMIN only. Operations: create, rotate, retire, get, list. ` +
 	`The token plaintext is shown ONCE on create/rotate and never again.`

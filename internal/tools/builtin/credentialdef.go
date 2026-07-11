@@ -45,7 +45,7 @@ const CredentialValueField = "value"
 func (c *CredentialDef) Name() string { return CredentialToolName }
 
 func (c *CredentialDef) Description() string {
-	return "Store and manage encrypted API credentials (RFC AR). Named secrets scoped tenant | user | agent, " +
+	return "Store and manage encrypted API credentials (see Context op=help topic=credentials). Named secrets scoped tenant | user | agent, " +
 		"encrypted at rest, that other config references as $cred:<name> and the runtime binds server-side — the " +
 		"model never sees the value. user scope keys on YOUR subject (per-user tokens, e.g. a personal Telegram/Slack " +
 		"bot token); tenant scope is shared across the tenant. Ops: create (store/rotate a value), get + list (metadata " +
