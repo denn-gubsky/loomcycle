@@ -1,55 +1,23 @@
-# document-agent bundle — the `doc/manager` agent that powers the Web UI
-# Document Assistant (RFC AM Phase 3).
+# RFC AQ embedded bundle: document-agent
 #
-# This is a first-class, reusable bundle (NOT an examples/ experiment). Two ways
-# to use it:
-#   1. Run it directly for a demo:
-#        export LOOMCYCLE_SQLMEM_ENABLED=1
-#        export LOOMCYCLE_SKILLS_ROOT=bundles/document-agent/skills
-#        loomcycle --config bundles/document-agent/loomcycle.yaml
-#   2. Register it in your own deployment: copy the `agents: doc/manager` block
-#      (and point LOOMCYCLE_SKILLS_ROOT at this bundle's skills/, or copy the
-#      skills into your skills root). loomcycle has no built-in-agent mechanism
-#      yet (auto-registering this in the binary is a deferred follow-up), so the
-#      agent must be present in the running config for the Assistant to find it.
+# The `doc/manager` agent that powers the Web UI Document Assistant (RFC AM), with
+# its four skills carried INLINE (top-level `skills:` map, loomcycle PR #559). A
+# bundle is just a config layer that defines an agent AND its skills — no skills
+# directory, no LOOMCYCLE_SKILLS_ROOT. Selected via `LOOMCYCLE_PRESETS=…,document-agent`.
 #
-# Requirements: SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1) — Documents need it.
+# RFC BA: the agent's `skills:` list is a pattern allowlist (it may list/use/author
+# exactly these four). Skills load ON DEMAND via the `Skill` tool (auto-added) — the
+# bodies below are the catalog, not baked into the system prompt.
 #
-# Swap the provider/tier below for your own routing; the agent only needs a
-# `middle` tier to resolve.
-
-models:
-  # — Anthropic (key: ANTHROPIC_API_KEY) —
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
-  # — DeepSeek — the cost floor (DEEPSEEK_API_KEY) —
-  deepseek-flash: { provider: deepseek, model: deepseek-v4-flash }
-  deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
-  # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
-  # Slow local models have their own knobs (num_ctx, header/idle timeouts,
-  # compaction tuning, unbounded interactive runs). See "Local models" in
-  # docs/CONFIGURATION.md and loomcycle.local-interactive.example.yaml.
-  local-small:  { provider: ollama-local, model: gemma4:9b }        # low tier
-  local-medium: { provider: ollama-local, model: qwen3.6:27b }      # middle tier
-  local-coder:  { provider: ollama-local, model: qwen3-coder-next } # high tier (coding)
-
-provider_priority:
-  - ollama-local
-  - deepseek
-  - anthropic            # set ANTHROPIC_API_KEY, or swap for your provider
-
-tiers:
-  middle:
-    - local-medium
-    - deepseek-pro
-    - sonnet
-
-user_tiers:
-  default:
-    provider_priority: [ollama-local,deepseek,anthropic]
-    fallback_on_error: true
-    max_fallback_attempts: 2
+# This bundle carries NO provider matrix: the agent declares `tier: middle`, so a
+# `middle` tier must come from another layer (select `base` alongside it, or your
+# own config). It also needs SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1) — Documents
+# require it. Absent either, doc/manager is a registered-but-idle def and the Web
+# UI Assistant shows a hint rather than a broken spawn.
+#
+# The operator overlay can override any of this by re-declaring the key (last layer
+# wins per field) — retarget the tier, swap a skill body, narrow tools.
+# It cannot WIDEN tools (the AgentDef capability ceiling is unchanged).
 
 agents:
   doc/manager:
@@ -62,7 +30,7 @@ agents:
     sql_scopes: [user]
     skills: [doc/*]
     system_prompt: |
-      You are DOC-MANAGER, a co-author of chunked-graph Documents (RFC AK). You
+      You are DOC-MANAGER, a co-author of chunked-graph Documents (see Context op=help topic=document). You
       turn an operator's plain-text instructions into Document tool calls — the
       operator drives you from the Web UI's Document Assistant instead of editing
       chunks by hand.
@@ -91,3 +59,119 @@ agents:
       ## Output
       Be terse. After acting, state what changed in a line or two — the Web UI
       refreshes the tree, so don't dump the whole document back.
+
+skills:
+  doc/semantic-chunking:
+    description: Split arbitrary prose or a Markdown file into a sensible chunk hierarchy in a chunked-graph Document.
+    tools: [Document]
+    body: |
+      # Semantic chunking
+
+      When the operator hands you a body of text (pasted prose, a spec, a Markdown
+      file) and asks to "import it" or "chunk it", turn it into a hierarchy of
+      chunks — do NOT dump it into one giant chunk.
+
+      ## Method
+      1. Read the text's own structure first: existing headings, numbered sections,
+         topic shifts, and natural paragraphs are your chunk boundaries.
+      2. Choose a hierarchy: a top-level chunk per major section, child chunks per
+         sub-section. Aim for chunks that are individually meaningful and editable —
+         a few sentences to a few paragraphs each, not one-liners and not whole pages.
+      3. Give every chunk a short, descriptive **title** (it becomes the heading).
+      4. Create them top-down so parents exist before children:
+         `Document op=create_chunk document_id=<id> parent_id=<parent> title="…" body="…"`
+         (omit `parent_id` for a child of the root, or pass the document's root chunk).
+      5. Carry a `type` when the operator's domain implies one (e.g. `section`,
+         `requirement`, `task`) and a `status` if they use a workflow.
+
+      ## Notes
+      - If the text is a loomcycle export (it has `<!-- loom: … -->` comments), prefer
+        the deterministic `import_md` op instead (see the doc/md-import skill).
+      - Keep the operator's wording in the body; don't paraphrase unless asked.
+
+  doc/edge-linking:
+    description: Create and curate graph edges between chunks (and across documents) in a chunked-graph Document.
+    tools: [Document]
+    body: |
+      # Edge linking
+
+      Chunks form a tree by `parent_id`, but they also carry a free-form **graph** of
+      typed edges (`link_chunks`) — "this publication promotes that blog post", "this
+      task targets that requirement". Use edges for cross-cutting relations that the
+      parent/child hierarchy can't express.
+
+      ## Method
+      1. Resolve both endpoints first with `query_chunks` / `get_chunk` — both chunks
+         must already exist (an edge to a missing chunk is refused). Cross-document
+         edges are allowed as long as both chunks are in this scope.
+      2. Pick a clear `kind` verb the operator will recognize: `references`,
+         `promotes`, `targets`, `depends_on`, `supersedes`. Reuse existing kinds in
+         the document rather than inventing near-duplicates.
+      3. Link: `Document op=link_chunks from_id=<a> to_id=<b> kind="references"`
+         (idempotent — re-linking the same triple is a no-op).
+      4. Remove a stale edge with `op=unlink_chunks from_id=<a> to_id=<b> kind="…"`.
+
+      ## Notes
+      - Edges are directional (`from → to`). State the direction back to the operator.
+      - Don't use an edge where a parent/child move is what's meant — see the
+        doc/restructuring skill.
+
+  doc/restructuring:
+    description: Safely move, reparent, reorder, promote, or delete chunks in a chunked-graph Document.
+    tools: [Document]
+    body: |
+      # Restructuring
+
+      Reshaping the tree — "promote the risks section to a top-level chunk", "move the
+      deployment steps under Runbooks", "reorder these" — is your job (the Web UI
+      deliberately has no drag-edit). Be careful: these operations cascade.
+
+      ## Method
+      1. Map the current shape first: `query_chunks document_id=<id>` to see parents
+         and positions before moving anything.
+      2. Reparent / reorder with `Document op=move_chunk id=<chunk> new_parent_id=<p>`
+         (and an optional `position`). Moving a chunk takes its whole subtree with it.
+         A move into a chunk's own subtree is refused (it would orphan the tree).
+      3. Promote = move to a shallower parent (e.g. `new_parent_id` = the document
+         root). Demote = move under a sibling.
+      4. Delete with `op=delete_chunk id=<chunk>` — this **cascades** to all
+         descendants and returns the count. You cannot delete a document's root chunk.
+
+      ## Safety
+      - For any cascade touching more than a couple of chunks, summarize the effect in
+        one sentence and get the operator's confirmation BEFORE acting
+        ("Deleting Section 3 removes it and its 4 sub-chunks — proceed?").
+      - Re-read after a move (`query_chunks`) if you're chaining further changes — ids
+        are stable but positions shift.
+
+  doc/md-import:
+    description: Import a Markdown file into a chunked-graph Document — deterministic round-trip vs semantic chunking.
+    tools: [Document]
+    body: |
+      # Markdown import
+
+      Two paths, pick by the input:
+
+      ## 1. A loomcycle export (round-trip) → `import_md`
+      If the Markdown was produced by `export_md` — it contains `<!-- loom: {…} -->`
+      comments and maybe a `<!-- loom-edges: … -->` trailer — use the deterministic op
+      and let the runtime rebuild the structure:
+
+      - New document: `Document op=import_md markdown="<the file>"` (the first heading
+        becomes the root; pass `path:` to also name it in the Path tree).
+      - Into an existing document: `op=import_md document_id=<id> markdown="…"`
+        (optionally `parent_id=<chunk>` to graft it under a specific chunk).
+
+      `import_md` recreates the heading hierarchy, applies each chunk's type/status/
+      fields, and remaps the edge graph. Chunks get fresh ids.
+
+      ## 2. Arbitrary prose / a plain `.md` → semantic chunking
+      If the Markdown has no `loom` metadata (a hand-written file, pasted notes), do
+      NOT use `import_md` blindly — its chunk boundaries are the heading lines, so a
+      body containing `##` lines would be re-chunked. Instead apply the
+      **doc/semantic-chunking** skill: read the structure and `create_chunk` each piece
+      with a good title.
+
+      ## After importing
+      Tell the operator the new `document_id` and how many chunks were created. They
+      can open it from the Path tree.

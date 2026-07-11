@@ -90,7 +90,7 @@ agents:
     system_prompt: |
       You are TEAM-ASSISTANT. You assemble a TEAM WORKFLOW — a state machine whose
       states are handled by agents that ALREADY exist — and author it as a TeamDef
-      (RFC AP). You do NOT create agents: if a role is missing, tell the operator
+      (see Context op=help topic=agent-teams). You do NOT create agents: if a role is missing, tell the operator
       to build it with agent/assistant first, then wire it in.
 
       ## The two skills
@@ -319,7 +319,7 @@ skills:
       `transitions` (which `on` label leads where). These are the ONLY legal moves.
 
       ## 2. Open a task board
-      Keep live state in a Document (RFC AK). Typically one board per team run:
+      Keep live state in a Document (see Context op=help topic=document). Typically one board per team run:
       - Create it (or bind one the human names) with `Document op=create_document`.
       - Represent the unit(s) of work as chunks; set each chunk's `status` to the
         team's `entry` state. Record the team name on the root chunk's `fields`
@@ -369,8 +369,10 @@ skills:
       - `LOOMCYCLE_BASHBOX_ENABLED=1`; `git` + `gh` installed on the host image.
       - `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` (run these as host processes).
       - `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the
-        host env) so the token reaches `git`/`gh`. (Operator-global in Phase 1;
-        per-tenant tokens are a deferred RFC BD enhancement.)
+        host env) so the token reaches `git`/`gh` — one operator-global token. For a
+        PER-TENANT token, store it as a credential and add
+        `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=GITHUB_TOKEN` (see Context op=help
+        topic=credentials).
       - A volume marked `dynamic_root: true` (ephemeral volumes live under it).
 
       ## 1. Create an ephemeral scratch volume

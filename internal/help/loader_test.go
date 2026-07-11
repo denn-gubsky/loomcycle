@@ -23,12 +23,14 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 	// in alphabetical order for diff readability.
 	want := []string{
 		"a2a-integration",
+		"agent-teams",
 		"bashbox",
 		"channel-admin",
 		"client-tools",
 		"code-agents",
 		"compaction",
 		"content-signatures",
+		"credentials",
 		"document",
 		"dynamic-mcp",
 		"experimentation",

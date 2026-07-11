@@ -69,7 +69,7 @@ type TeamDef struct {
 	Admit func(ctx context.Context) (context.Context, error)
 }
 
-const teamDefDescription = `Author, fork, promote, retire, and inspect team workflow definitions at runtime (RFC AP). ` +
+const teamDefDescription = `Author, fork, promote, retire, and inspect team workflow definitions at runtime (see Context op=help topic=agent-teams). ` +
 	`The definition is a state-machine graph (states with agent/parallel/consolidator/terminal handlers + ` +
 	`transitions gated by success/pushback/conditional). The graph is validated before any write — an invalid ` +
 	`graph (dangling transition, parallel without a consolidator, unreachable state, …) is refused and persists ` +

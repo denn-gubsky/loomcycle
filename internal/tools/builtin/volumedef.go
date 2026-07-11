@@ -71,7 +71,7 @@ type volumeDefBody struct {
 	Mode string `json:"mode"`
 }
 
-const volumeDefDescription = `Provision, inspect, and remove CONFINED dynamic filesystem volumes at runtime (RFC AH). ` +
+const volumeDefDescription = `Provision, inspect, and remove CONFINED dynamic filesystem volumes at runtime (see Context op=help topic=volumedef). ` +
 	`A volume is created by NAME + MODE only — the runtime derives the path inside an operator-blessed ` +
 	`parent (<dynamic_root>/<tenant>/<name>); you never supply a host path. Static yaml volumes: are the ` +
 	`operator's ground truth and cannot be created over. Operations: create, get, list, delete, purge. ` +
