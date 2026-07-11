@@ -31,14 +31,12 @@ agents:
     # (Anthropic defaults to 8192; ollama generates until the context fills).
     # Pinning a value would only IMPOSE a per-reply cap, not add headroom.
     unbounded_iterations: true              # interactive chat parks at end_turn
-    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill, Interruption]
     memory_scopes: [user]
     sql_scopes: [user]                      # Document is SQL-Memory-backed
-    sampling:
-      temperature: 0.7
     compaction:
       enabled: true
-      autocompact_at_pct: 80
+      autocompact_at_pct: 70
     system_prompt: |
       You are CHAT, a helpful, direct general-purpose assistant for an operator
       working in the loomcycle terminal. Hold a natural multi-turn conversation:
@@ -71,11 +69,9 @@ agents:
     # max_tokens OMITTED — ollama-local generates until the context window fills
     # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
     unbounded_iterations: true
-    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill, Interruption]
     memory_scopes: [user]
     sql_scopes: [user]
-    sampling:
-      temperature: 0.7
     compaction:
       enabled: true
       autocompact_at_pct: 60
