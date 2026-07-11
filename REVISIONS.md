@@ -4,6 +4,19 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.17.3
+
+**🎨 Teams board polish — legible selection + an inline editor.** Two Web UI fixes
+on the v1.17.2 board. (1) The **selected team card was invisible** — it filled with a
+hardcoded light lavender (a `--accent-bg` alias that doesn't exist in the token set)
+while the text stayed the theme foreground, so on the dark theme it was near-white on
+light lavender. It now uses the app's established active-row pattern (an accent border
++ translucent `--lc-accent-soft` fill) so the theme foreground stays readable. (2) The
+**"create team" form is now an inline panel beside the diagram** instead of a full-screen
+modal overlay — authoring a workflow and reading the current one sit side by side (the
+panel wraps below on narrow screens), and the header button toggles it (`+ create team` /
+`close editor`). Web UI only; no wire/schema change; adapters unchanged (1.16.0 / 1.13.0).
+
 For pre-v0.4 history (single-tool runtime, library milestone, security patch), see the same `docs/PLAN.md` under the per-version sections.
 
 ---
