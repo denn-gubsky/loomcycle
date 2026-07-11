@@ -8,6 +8,56 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.17.0
+
+**✨ Agent Teams & Task Workflows (RFC AP) + the LLM Team Orchestrator (RFC BD).**
+A domain-agnostic way to define a multi-step workflow, the agents that carry it
+out, and an intelligent lead that drives it.
+
+**1. TeamDef — the team-workflow primitive (RFC AP, #690–694).** A `TeamDef` is a
+content-addressed, tenant-scoped, versioned substrate def (create/fork/get/list/
+retire/promote/verify) whose `definition` is a **state-machine graph**: author-
+defined **states**, **transitions** (`success` / `pushback:<reason>` /
+`conditional:<expr>`, with loops bounded by a per-state `max_iterations` cap), and
+a per-state **handler** (`agent` | `parallel`+consolidator | `consolidator` |
+`terminal`). New `internal/teamgraph` (Parse/Validate/Sign — content hash excludes
+colours + identity) + `internal/teamrun` (a pure deterministic walk engine + the
+sub-agent runner). Ops: `render_diagram` (a Mermaid `stateDiagram-v2` with an
+unsaturated-fill / saturated-edge **colour scheme**) and `run` (walk a single-agent
+linear team end to end, threading output→input, via the existing sub-agent
+machinery — parallel/consolidator + pushback execution are a later phase). Lifted
+to HTTP (`/v1/_teamdef`) + MCP (`teamdef` meta-tool); gRPC + TS/Python twins
+deferred. Post-merge review fixed op=run admission (token budget + operator-key +
+depth) (#695) and snapshot tenant-preservation across all def families (#696).
+
+**2. The Team Orchestrator (RFC BD, #697–701).** A bundled LLM **`team/orchestrator`**
+agent — the intelligent team lead and the human's single contact point. Run it
+interactively: it reads a TeamDef as its map, drives a Document task board
+(`chunk.status` = the live state), spawns each state's handler, decides routing,
+and keeps the human in the loop (steerable, `unbounded_iterations`, auto-
+compaction for a long driving transcript). It complements the deterministic
+`op=run` autopilot. The **workspace is optional + domain-pluggable**: software
+teams clone a repo into an ephemeral volume and open a PR (via Bashbox's
+`git`/`gh` fallback, with **per-tenant tokens** through
+`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`, #699); marketing teams work in
+Documents; accounting teams use SQL Memory or external SQL/Excel. Ships the
+`agent-teams` bundle (`agent/assistant` + `team/assistant` + `team/orchestrator`
++ `team/*` skills) and a runnable **`team-examples`** bundle (SDLC + marketing
+starter teams + handler agents, #698, #700). A read-only Web UI **teams** board
+lists TeamDefs + renders the diagram (#701).
+
+**3. Help-over-RFC cleanup (#702–703).** Model-visible RFC letters (in bundled
+agent prompts, skill bodies, and built-in tool descriptions) are replaced with
+actionable `Context op=help topic=<slug>` pointers — agents can't read the RFC
+corpus, so the citations were noise. New `agent-teams` + `credentials` help
+articles fill the gaps, and RFC citations were swept out of every existing help
+article too.
+
+**Deferred to the v1.17.x line:** chunk-persistent board state + Interruption-on-
+cap; parallel/consolidator handler execution in the deterministic engine; the
+gRPC `TeamDef` RPC + TS/Python adapter twins; a live in-page Mermaid render +
+current-state binding on the Web UI board.
+
 ## What's in v1.16.3
 
 **✨ Agent `/`-grouping + a Web UI Library filter/sort, plus a `*` host-allowlist
