@@ -22,6 +22,7 @@ import {
   ScrollText,
   Settings,
   Sun,
+  Workflow,
 } from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
 import { useTheme } from "../hooks/useTheme";
@@ -65,6 +66,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/paths", label: "paths", Icon: FolderTree, vis: "tenant" },
   { to: "/channels", label: "channels", Icon: Radio, vis: "admin" },
   { to: "/schedules", label: "schedules", Icon: CalendarClock, vis: "tenant" },
+  { to: "/teams", label: "teams", Icon: Workflow, vis: "tenant" },
   { to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },
   { to: "/memory", label: "memory", Icon: Brain, vis: "admin" },
   { to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },
