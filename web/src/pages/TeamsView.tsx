@@ -215,8 +215,8 @@ export default function TeamsView() {
             states, transitions, and the colour scheme.
           </p>
         </div>
-        <button onClick={() => setShowCreate(true)} style={{ padding: "0.4rem 0.8rem", fontWeight: 600 }}>
-          + create team
+        <button onClick={() => setShowCreate((s) => !s)} style={{ padding: "0.4rem 0.8rem", fontWeight: 600 }}>
+          {showCreate ? "close editor" : "+ create team"}
         </button>
       </div>
 
@@ -251,9 +251,15 @@ export default function TeamsView() {
                       textAlign: "left",
                       padding: "0.4rem 0.6rem",
                       margin: "0.15rem 0",
-                      border: "1px solid var(--border, #ccc)",
+                      // Selected uses the app's active-row pattern
+                      // (.presets-item.active): accent border + translucent
+                      // accent-soft fill so the theme foreground stays legible.
+                      // The old `--accent-bg`/`#eef` alias doesn't exist → it fell
+                      // back to a solid light fill with near-white text = invisible.
+                      border: `1px solid ${isSel ? "var(--lc-accent)" : "var(--lc-rule, #ccc)"}`,
                       borderRadius: 6,
-                      background: isSel ? "var(--accent-bg, #eef)" : "transparent",
+                      background: isSel ? "var(--lc-accent-soft)" : "transparent",
+                      color: "var(--lc-text, inherit)",
                       cursor: "pointer",
                     }}
                   >
@@ -315,7 +321,7 @@ export default function TeamsView() {
                     border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
                     borderRadius: 8,
                     overflow: "auto",
-                    background: "var(--lc-surface-1, transparent)",
+                    background: "var(--lc-surface, transparent)",
                   }}
                   dangerouslySetInnerHTML={{ __html: svg }}
                 />
@@ -351,41 +357,39 @@ export default function TeamsView() {
             </div>
           )}
         </div>
-      </div>
 
-      {/* Create-team dialog */}
-      {showCreate && (
-        <div
-          onClick={() => !creating && setShowCreate(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.45)",
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "center",
-            padding: "3rem 1rem",
-            zIndex: 50,
-          }}
-        >
+        {/* Create-team panel — inline beside the diagram (not a modal overlay),
+            so authoring a workflow and reading the current one sit side by side.
+            It wraps below on narrow screens (the row is flex-wrap). */}
+        {showCreate && (
           <div
-            onClick={(e) => e.stopPropagation()}
             style={{
-              background: "var(--bg, #fff)",
-              color: "var(--fg, #111)",
-              border: "1px solid var(--border, #ccc)",
-              borderRadius: 8,
-              padding: "1.25rem",
-              width: "min(720px, 100%)",
-              maxHeight: "80vh",
-              overflowY: "auto",
+              flex: "0 0 380px",
+              minWidth: 300,
+              maxWidth: 480,
+              alignSelf: "stretch",
+              background: "var(--lc-surface, transparent)",
+              color: "var(--lc-text, inherit)",
+              border: "1px solid var(--lc-rule, #ccc)",
+              borderRadius: "var(--lc-radius, 8px)",
+              padding: "1rem",
               display: "flex",
               flexDirection: "column",
               gap: "0.75rem",
             }}
           >
-            <h2 style={{ margin: 0 }}>Create team</h2>
-            <p style={{ opacity: 0.7, margin: 0, fontSize: "0.9em" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Create team</h2>
+              <button
+                onClick={() => !creating && setShowCreate(false)}
+                disabled={creating}
+                title="close"
+                style={{ padding: "0.15rem 0.5rem", lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            </div>
+            <p style={{ opacity: 0.7, margin: 0, fontSize: "0.85em" }}>
               Author a TeamDef — a workflow state-machine graph. The graph is validated
               on create; an invalid graph is refused with the reason.
             </p>
@@ -450,8 +454,8 @@ export default function TeamsView() {
               </button>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
