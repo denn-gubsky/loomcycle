@@ -1,6 +1,6 @@
 ---
 name: path
-description: Path — a Unix-like filesystem (VFS) over your Memory, Volumes, and Documents. Address resources by human-readable, scoped, tenant-isolated paths with resolve/ls/stat/mkdir/mv/rm (RFC AL).
+description: Path — a Unix-like filesystem (VFS) over your Memory, Volumes, and Documents. Address resources by human-readable, scoped, tenant-isolated paths with resolve/ls/stat/mkdir/mv/rm.
 ---
 The `Path` tool gives your Memory entries, Volumes, and Documents a **Unix-like
 directory tree** — so instead of remembering a Memory key or a Volume name, you

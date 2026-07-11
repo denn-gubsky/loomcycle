@@ -147,7 +147,7 @@ When the tool runs, the result maps back to the model:
 A served card is signed (ES256 over the JCS canonicalisation of the
 card, JWS detached) when `sign_with_key_env` names an env var that is
 **on the operator's env allowlist** (the same
-`LOOMCYCLE_*`-style allowlist the scheduler and RFC F credentials use)
+`LOOMCYCLE_*`-style allowlist the scheduler and per-run credentials use)
 **and** that var holds a usable P-256 PEM key. The signature embeds the
 matching public key (a self-contained JWS) so a verifier needs no
 separate key fetch.
@@ -226,7 +226,7 @@ operator supplies peer credentials up front (see below).
 ## Per-run credentials for outbound peer auth
 
 A peer whose `auth.scheme` declares a `bearer_credential_ref` resolves
-the bearer from the **run's `UserCredentials` map** (the RFC F
+the bearer from the **run's `UserCredentials` map** (the
 per-run-credentials seam — see the `per-run-credentials` topic), keyed
 by the ref name. The credential is supplied by the caller on the run
 request (or a schedule fork's `user_credentials`), never hardcoded in

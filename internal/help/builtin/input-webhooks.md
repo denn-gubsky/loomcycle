@@ -115,7 +115,7 @@ webhooks:
 > tenant mismatch — a runtime webhook def persisted with an empty `tenant_id`,
 > so the spawn resolved the agent under `""` while the AgentDef was stored under
 > the creating principal's tenant. The WebhookDef tool now stamps the creating
-> tenant into the def (RFC N), so both author under the same tenant and the
+> tenant into the def, so both author under the same tenant and the
 > dynamic agent resolves.
 
 ## How a request is processed
@@ -167,7 +167,7 @@ MCP-tool bearers through the **same first-class field and the same resolver
 as `ScheduleDef`**: `user_credentials_from_env`. There are two sources, and
 both land on the run's `UserCredentials` map, which the MCP HTTP transport
 substitutes into `${run.credentials.<name>}` in your `mcp_servers.*.headers`
-(the RFC F seam) — so a webhook-spawned agent calls your authorized MCP
+(the per-run-credentials seam) — so a webhook-spawned agent calls your authorized MCP
 servers with per-user/service bearers, just as scheduled and interactive
 runs do.
 
@@ -204,13 +204,13 @@ mcp_servers:
 has no run identity to attach per-user bearers to, and accepting them would
 leak a secret onto the message bus. `user_credentials_from_env` (and any
 `payload_mapping` `user_credentials.*` target) is **refused at create time**
-for `delivery: channel` (RFC H Decision 11).
+for `delivery: channel`.
 
-## `tenant_id` — which tenant the spawned run executes as (RFC N)
+## `tenant_id` — which tenant the spawned run executes as
 
 Set `tenant_id:` on a webhook def to make its **spawn** run execute as that
 tenant: the run resolves that tenant's agents / skills / MCP servers and its
-memory and run records are isolated to the tenant (RFC L multi-tenant
+memory and run records are isolated to the tenant (multi-tenant
 boundary). Omit it (`""`) for a shared/default run with no tenant scoping.
 
 ```yaml

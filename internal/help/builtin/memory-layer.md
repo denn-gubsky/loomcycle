@@ -1,6 +1,6 @@
 ---
 name: memory-layer
-description: The Memory tool's add / recall ops — the LLM-extract memory-layer paradigm (mem9), and how it differs from key/value and vector search (RFC K).
+description: The Memory tool's add / recall ops — the LLM-extract memory-layer paradigm (mem9), and how it differs from key/value and vector search.
 ---
 loomcycle's `Memory` tool has three retrieval paradigms, not one.
 Most agents only need the first two; `add` / `recall` exist for the

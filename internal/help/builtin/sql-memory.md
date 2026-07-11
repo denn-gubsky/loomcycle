@@ -1,6 +1,6 @@
 ---
 name: sql-memory
-description: A per-scope SQL database on the Memory tool — when to use it, the ops, the capability gate, transactions, vectors, and shared schemas (RFC AA).
+description: A per-scope SQL database on the Memory tool — when to use it, the ops, the capability gate, transactions, vectors, and shared schemas.
 ---
 SQL Memory is a third facet of the `Memory` tool (alongside k/v and the
 semantic layer): a real, per-scope SQL database the runtime hosts, isolated

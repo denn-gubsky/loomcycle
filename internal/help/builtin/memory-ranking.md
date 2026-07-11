@@ -6,7 +6,7 @@ description: Memory retrieval tuning — the hybrid ranker (semantic + recency w
 # Memory ranking, dedup & pluggable backends
 
 By default `Memory.search` returns the top-k rows by pure cosine similarity
-to the query embedding — the v0.9.0 Vector Memory behavior. RFC I adds three
+to the query embedding — the v0.9.0 Vector Memory behavior. loomcycle adds three
 things on top, all **opt-in and zero-regression**: a hybrid ranker, search-
 time dedup, and a pluggable backend layer (so an agent's memory can live in
 an external store like Mem9 instead of loomcycle's own sqlite-vec/pgvector).
@@ -124,7 +124,7 @@ backends re-rank client-side on the candidates they return).
 **Credentials** for an external backend mirror the scheduler exactly: the API
 key is an env-var NAME (`api_key_env`) gated by the shared env-allowlist
 (`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`), resolvable per-run from
-`${run.credentials.*}` (RFC F) or the env. Never plaintext in the Def, never
+`${run.credentials.*}` or the env. Never plaintext in the Def, never
 logged. **Fallback:** `fallback_on_error: inprocess` keeps an agent working
 against local memory if the external backend is unreachable, rather than
 failing the run.

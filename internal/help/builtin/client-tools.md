@@ -1,6 +1,6 @@
 ---
 name: client-tools
-description: "Client-executed tools (RFC BC) — an agent invokes a tool that runs on the USER'S machine (browser DOM, local files, shell) over a WebSocket the client opens to loomcycle. Delegate-and-block; the agent sees an ordinary tool call."
+description: "Client-executed tools — an agent invokes a tool that runs on the USER'S machine (browser DOM, local files, shell) over a WebSocket the client opens to loomcycle. Delegate-and-block; the agent sees an ordinary tool call."
 aliases: [client-tool, clienttools, client-tool-host]
 ---
 A **client-tool** runs on the **user's own machine**, not in the runtime. A client

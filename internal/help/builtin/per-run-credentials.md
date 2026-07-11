@@ -1,6 +1,6 @@
 ---
 name: per-run-credentials
-description: Per-tool named credentials map for runs (RFC F) — multi-MCP authorization, ${run.credentials.<name>} substitution, v0.8.x back-compat, sub-agent inheritance.
+description: Per-tool named credentials map for runs — multi-MCP authorization, ${run.credentials.<name>} substitution, v0.8.x back-compat, sub-agent inheritance.
 ---
 Loomcycle v1.x ships per-tool named credentials so a single run can
 authenticate against multiple authorized MCP servers, each with its
@@ -217,7 +217,7 @@ JobEmber's on-demand search workflow:
    of the three credential values.
 ```
 
-The same workflow runs autonomously via RFC E's scheduled-agent-runs
+The same workflow runs autonomously via the scheduled-agent-runs
 substrate — schedule forks store the same map shape; sweeper builds
 `RunInput` with it; flow continues identically from step 3 onwards.
 

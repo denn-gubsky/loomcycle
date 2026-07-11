@@ -1,12 +1,12 @@
 ---
 name: scheduled-runs
-description: Scheduled autonomous agent runs (RFC E) — operator-authored cron schedules + dynamic per-user forks + on_complete delivery hooks. v1.x substrate.
+description: Scheduled autonomous agent runs — operator-authored cron schedules + dynamic per-user forks + on_complete delivery hooks. v1.x substrate.
 ---
 Loomcycle v1.x introduces a ScheduleDef substrate primitive
 (parallel to AgentDef / SkillDef / MCPServerDef) that lets operators
 express "build this `RunInput` on this cron, for this user, with
 these credentials." The scheduler is reframed as an entity that
-creates standard agentic runs — per-tool authorization (RFC F's
+creates standard agentic runs — per-tool authorization (the
 `user_credentials` map) flows through unchanged. The scheduler
 is transparent: once a scheduled run is in flight, it's
 indistinguishable from a `POST /v1/runs` caller's run that
@@ -74,7 +74,7 @@ standalone entry has an explicit `user_id` and a single `schedule:`.
 Mutual exclusion: a template can't fix one cron AND offer per-tier
 defaults. The config validator refuses at boot.
 
-## `max_fires` — bounded / one-shot schedules (RFC S / F36)
+## `max_fires` — bounded / one-shot schedules
 
 `max_fires: N` caps the schedule's LIFETIME fire count. The sweeper
 auto-retires the def after its Nth fire — no external watcher needed.
@@ -103,11 +103,11 @@ flag (lineage stays visible in `/ui/schedules`); the run-state row's
 `fire_count` is the counter. Set it on a substrate fork via the overlay:
 `{op:"fork", name:"…", overlay:{max_fires:3}}`.
 
-## `tenant_id` — which tenant the fired run executes as (RFC N)
+## `tenant_id` — which tenant the fired run executes as
 
 Set `tenant_id:` on a schedule to make its spawned run execute as that
 tenant: the run resolves that tenant's agents / skills / MCP servers and
-its memory and run records are isolated to the tenant (RFC L multi-tenant
+its memory and run records are isolated to the tenant (multi-tenant
 boundary). Omit it (`""`) for a shared/default run with no tenant scoping.
 
 ```yaml
@@ -151,14 +151,14 @@ follow-up PRs.
   adapter) — **next PR**
 - ⏳ `/ui/schedules` Web UI tab — **follow-up PR**
 
-## Per-tool credentials are RFC F's concern
+## Per-tool credentials
 
 This RFC stores the `user_credentials` map in fork rows and passes
 it through `RunInput.UserCredentials` when the sweeper fires. All
 authorization semantics — substitution syntax
 `${run.credentials.<name>}`, sub-agent identity inheritance, the
 transcript-exclusion posture, the v0.8.14 back-compat sugar —
-live in RFC F (see `Context.help per-run-credentials`).
+live in per-run credentials (see `Context.help per-run-credentials`).
 
 The only credential-related concept introduced by this RFC is the
 template-side `required_credentials:` list that forks must
@@ -178,7 +178,7 @@ run, not the hook surface.
 | `mcp.call` | `server` + `tool` + `args` |
 | `memory.set` | `scope` + `key` + `payload` (as the memory value) |
 
-Mcp.call hook dispatch reuses RFC F's per-tool credentials map —
+Mcp.call hook dispatch reuses the per-tool credentials map —
 the substituted credential value is whatever the schedule fork's
 `user_credentials[server]` resolves to.
 
@@ -197,15 +197,15 @@ Standard 5-field cron expressions per
 * * * * *
 ```
 
-Per RFC E sharp edge: no natural-language phrases like "every
+A sharp edge: no natural-language phrases like "every
 weekday at noon." If you need scheduling beyond cron's expressive
 range, set up multiple entries.
 
 ## Related topics
 
-- `per-run-credentials` — RFC F per-tool credentials map. The
+- `per-run-credentials` — the per-tool credentials map. The
   scheduler stores credentials in fork rows + passes them through
-  RunInput; F documents the wire shape + substitution semantics +
+  RunInput; that topic documents the wire shape + substitution semantics +
   sub-agent inheritance + v0.8.14 back-compat sugar.
 - `fairness` — per-user fairness applies to scheduled runs identically
   to on-demand runs (same `Runner.RunOnce` path; same `user_id`

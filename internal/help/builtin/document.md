@@ -1,6 +1,6 @@
 ---
 name: document
-description: Document — a chunked-graph document where each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query (RFC AK).
+description: Document — a chunked-graph document where each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query.
 ---
 A `Document` is not a flat Markdown file — it's a **chunked graph**. Each
 **chunk** is a first-class unit with a UUID, a place in a hierarchy, an optional
@@ -62,7 +62,7 @@ re-`get_chunk` and retry. This is how concurrent edits stay safe.
 ## Path-tree naming
 
 `create_document(path:"/docs/launch")` registers the document in the Path tree
-(RFC AL) so `Path resolve /docs/launch` finds it and `Document get_document
+so `Path resolve /docs/launch` finds it and `Document get_document
 path:/docs/launch` opens it. `query_chunks under_path:/docs` restricts a query
 to documents at or under that path. (See the `path` help topic.)
 

@@ -8,7 +8,7 @@ everyone who holds it can do everything, and the wire `tenant_id` /
 That is the right shape for one operator and wrong the moment a team or
 a small VPS fronts users who don't trust each other's claims.
 
-**OperatorTokenDef** (RFC L) replaces the shared secret with a
+**OperatorTokenDef** replaces the shared secret with a
 substrate of bearer tokens, each bound to an **authoritative principal**
 the auth middleware resolves *from the token* and stamps into the
 request — so the keys downstream isolation already uses become
@@ -35,8 +35,8 @@ user/tenant by editing the request body.
 ## Scope catalog (closed)
 
 `substrate:admin` (superuser — satisfies every scope), `substrate:tenant`
-(tenant operator — RFC AF), `runs:create`, `runs:read`, `channel:publish`,
-`channel:read`, `providers:operator-key` (RFC AX — may spend the operator's
+(tenant operator), `runs:create`, `runs:read`, `channel:publish`,
+`channel:read`, `providers:operator-key` (may spend the operator's
 host provider key; tenant-implied). Every catalog scope is enforced by at least one route —
 operators can't invent scope names, and the catalog intentionally excludes
 scopes no route checks (a scope that enforces nothing is a false
@@ -61,14 +61,14 @@ Confinement is automatic — a non-admin principal's def writes are stamped
 with its authoritative tenant, cross-tenant reads return an opaque 404, and
 a tenant-registered hook fires only on that tenant's runs.
 
-**`providers:operator-key`** (RFC AX) gates whether a run may fall back to the
+**`providers:operator-key`** gates whether a run may fall back to the
 operator's HOST provider API key. It is **tenant-implied** — `substrate:admin`
 and `substrate:tenant` (and the legacy `LOOMCYCLE_AUTH_TOKEN`) already have it —
 and **inert unless** the deployment sets `LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1`.
 To make a tenant pay its own way on a restricting deployment: (1) set the gate;
 (2) mint that tenant's principals with granular scopes that OMIT this one (and
 `substrate:*`), e.g. `--scopes runs:create,runs:read`; (3) give the tenant its
-own provider key (an RFC AR CredentialDef named after the key env-var). A
+own provider key (a CredentialDef named after the key env-var). A
 restricted run then routes only to providers the tenant can key itself and is
 refused **403** `operator_key_restricted` (gRPC `PermissionDenied`) if none —
 never touching the operator's key. Because it's tenant-implied, a
@@ -105,7 +105,7 @@ admin (root) token, click the **gear** (top-right), and open **Tokens**.
 Generate (the secret is revealed once with a copy button), list, rotate, and
 retire — backed by the same `POST /v1/_operatortokendef`. The gear and the
 Tokens panel are **admin-only** (a `substrate:tenant` session never sees them);
-the Settings hub also surfaces the embedded **Presets** (RFC AQ), **Runtime**
+the Settings hub also surfaces the embedded **Presets**, **Runtime**
 (pause/resume), and **Health**.
 
 ## Rotation grace
