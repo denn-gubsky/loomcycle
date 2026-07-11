@@ -8,6 +8,20 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.17.2
+
+**🎨 The Web UI teams board now RENDERS the diagram in-page.** v1.17.1's board
+showed the raw Mermaid `stateDiagram-v2` source in a code block — low-contrast on
+the dark theme and not an actual diagram. It now renders the state machine as an
+SVG via **mermaid** (lazy-loaded — a ~620 KB chunk loaded only on the teams page,
+kept out of the main bundle), **theme-aware** (mermaid's dark/default theme
+follows the app so edges + labels stay legible), with node fills from the def's
+colour scheme and the current-state highlight applied. A **"view source"** toggle
+still exposes the raw stateDiagram-v2 for copy-paste, and a render failure falls
+back to it. The rendered SVG is safe to inject: the source is server-generated +
+sanitized (render.go) and mermaid runs with `securityLevel:"strict"` (DOMPurify on
+the output). Web UI only; no wire/schema change; adapters unchanged (1.16.0 / 1.13.0).
+
 ## What's in v1.17.1
 
 **🩹 Teams made usable — the `TeamDef` tool now reaches agents, + a Web UI "create

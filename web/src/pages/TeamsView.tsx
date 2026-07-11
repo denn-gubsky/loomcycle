@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   TeamDiagram,
   TeamNameSummary,
@@ -6,6 +6,7 @@ import {
   listTeams,
   renderTeamDiagram,
 } from "../api";
+import { useTheme } from "../hooks/useTheme";
 
 // TeamsView — the agent-team board (RFC AP / BD).
 //
@@ -13,9 +14,10 @@ import {
 // stateDiagram-v2 source (render_diagram), and creates a team (op=create) —
 // either from scratch or pre-filled from a bundled starter template.
 //
-// v1 shows the diagram SOURCE (dep-free): it renders in any Markdown/Mermaid
-// viewer and is copy-pasteable. A live in-page graph render + binding to a
-// running Document board's current state are follow-ups.
+// The diagram is RENDERED in-page via mermaid (lazy-loaded so it stays out of
+// the main bundle), theme-aware (follows the app's light/dark theme), with a
+// "view source" toggle for the raw stateDiagram-v2. Binding the highlight to a
+// running Document board's live state is a follow-up.
 
 // Starter templates — mirror the `team/examples` skill in the team-examples
 // bundle. Their handler agents (sdlc/*, marketing/*) ship in that bundle, so a
@@ -82,6 +84,13 @@ export default function TeamsView() {
   const [diagErr, setDiagErr] = useState<string>("");
   const [loading, setLoading] = useState(false);
 
+  // Rendered diagram (mermaid → SVG), theme-aware, with a source toggle.
+  const { theme } = useTheme();
+  const [svg, setSvg] = useState<string>("");
+  const [renderErr, setRenderErr] = useState<string>("");
+  const [showSource, setShowSource] = useState(false);
+  const mmidRef = useRef(0);
+
   // Create-team dialog.
   const [showCreate, setShowCreate] = useState(false);
   const [createName, setCreateName] = useState("");
@@ -120,6 +129,40 @@ export default function TeamsView() {
   useEffect(() => {
     if (selected) void fetchDiagram(selected, highlight);
   }, [selected, highlight, fetchDiagram]);
+
+  // Render the Mermaid source to an SVG in-page. mermaid is lazy-imported (a
+  // big dep — kept out of the main bundle), initialized per the app theme so the
+  // edges/labels are legible on light or dark. On failure we fall back to the
+  // source view. Guard against a stale render winning a race.
+  useEffect(() => {
+    if (!diagram) {
+      setSvg("");
+      return;
+    }
+    let cancelled = false;
+    setRenderErr("");
+    void (async () => {
+      try {
+        const mermaid = (await import("mermaid")).default;
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: theme === "dark" ? "dark" : "default",
+          securityLevel: "strict",
+        });
+        const id = `team-mmd-${++mmidRef.current}`;
+        const out = await mermaid.render(id, diagram.diagram);
+        if (!cancelled) setSvg(out.svg);
+      } catch (e) {
+        if (!cancelled) {
+          setSvg("");
+          setRenderErr(e instanceof Error ? e.message : String(e));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [diagram, theme]);
 
   function applyTemplate(key: string) {
     if (!key) {
@@ -250,27 +293,60 @@ export default function TeamsView() {
                   {diagErr}
                 </div>
               )}
+              {renderErr && (
+                <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem" }}>
+                  Diagram render failed: {renderErr}
+                </div>
+              )}
+              {diagram && svg && (
+                <div
+                  // The rendered SVG. mermaid's theme (dark/default) matches the
+                  // app, so edges + labels are legible; node fills come from the
+                  // def's colour scheme. Scrolls if the graph is wide.
+                  //
+                  // dangerouslySetInnerHTML is safe here (double-sanitized): the
+                  // input `diagram.diagram` is server-generated + mmSanitize'd
+                  // (render.go strips newlines/-->/%% from ids/labels), and we
+                  // render with securityLevel:"strict", which runs the SVG output
+                  // through mermaid's bundled DOMPurify. No untrusted raw HTML.
+                  style={{
+                    marginTop: "0.5rem",
+                    padding: "0.75rem",
+                    border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
+                    borderRadius: 8,
+                    overflow: "auto",
+                    background: "var(--lc-surface-1, transparent)",
+                  }}
+                  dangerouslySetInnerHTML={{ __html: svg }}
+                />
+              )}
               {diagram && (
-                <>
-                  <p style={{ fontSize: "0.8em", opacity: 0.6, margin: "0.5rem 0 0.25rem" }}>
-                    Mermaid <code>stateDiagram-v2</code> — paste into any Mermaid viewer, or
-                    view where Mermaid renders (GitHub, the docs viewer).
-                  </p>
-                  <pre
-                    style={{
-                      background: "var(--code-bg, #f6f8fa)",
-                      border: "1px solid var(--border, #ddd)",
-                      borderRadius: 6,
-                      padding: "0.75rem",
-                      overflowX: "auto",
-                      fontFamily: "var(--mono, monospace)",
-                      fontSize: "0.85em",
-                      whiteSpace: "pre",
-                    }}
+                <div style={{ marginTop: "0.5rem" }}>
+                  <button
+                    onClick={() => setShowSource((s) => !s)}
+                    style={{ fontSize: "0.8em", padding: "0.2rem 0.5rem" }}
                   >
-                    {diagram.diagram}
-                  </pre>
-                </>
+                    {showSource ? "hide source" : "view source"}
+                  </button>
+                  {(showSource || (!svg && !renderErr)) && (
+                    <pre
+                      style={{
+                        marginTop: "0.5rem",
+                        background: "rgba(127,127,127,0.12)",
+                        color: "inherit",
+                        border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
+                        borderRadius: 6,
+                        padding: "0.75rem",
+                        overflowX: "auto",
+                        fontFamily: "var(--mono, monospace)",
+                        fontSize: "0.85em",
+                        whiteSpace: "pre",
+                      }}
+                    >
+                      {diagram.diagram}
+                    </pre>
+                  )}
+                </div>
               )}
             </div>
           )}
