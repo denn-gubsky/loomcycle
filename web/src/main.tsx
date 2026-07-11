@@ -26,6 +26,7 @@ import PathTreeView from "./pages/PathTreeView";
 import DocumentsView from "./pages/DocumentsView";
 import ChannelsView from "./pages/ChannelsView";
 import SchedulesView from "./pages/SchedulesView";
+import TeamsView from "./pages/TeamsView";
 import SettingsView from "./pages/SettingsView";
 import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
@@ -48,6 +49,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/agents" replace />} />
           <Route path="run" element={<RunView />} />
+          <Route path="teams" element={<TeamsView />} />
           <Route path="agents" element={<AgentsView />} />
           <Route path="agents/:agentId" element={<AgentIdRedirect />} />
           <Route path="library" element={<LibraryView />}>

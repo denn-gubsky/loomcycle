@@ -1441,6 +1441,50 @@ export function listMemoryBackendDefNames(): Promise<DefNamesResponse> {
   return jsonFetch<DefNamesResponse>("/v1/_memorybackenddef/names");
 }
 
+// ---- Teams (RFC AP / BD) ----
+//
+// TeamDefs are the agent-team workflow graphs. The Teams view lists them
+// (/v1/_teamdef/names) and renders a selected team's Mermaid stateDiagram
+// via the render_diagram op (POST /v1/_teamdef). Read-only.
+export interface TeamNameSummary {
+  name: string;
+  tenant_id?: string;
+  version_count: number;
+  active_def_id?: string;
+  latest_version: number;
+  last_updated?: string;
+  live_version_count?: number;
+  active_retired?: boolean;
+}
+
+export interface ListTeamsResponse {
+  names: TeamNameSummary[] | null;
+}
+
+export function listTeams(): Promise<ListTeamsResponse> {
+  return jsonFetch<ListTeamsResponse>("/v1/_teamdef/names");
+}
+
+export interface TeamDiagram {
+  name: string;
+  def_id: string;
+  format: string;
+  diagram: string;
+}
+
+// renderTeamDiagram resolves a team's active version and returns its Mermaid
+// stateDiagram-v2 source (with the colour scheme baked in). highlightState
+// (optional) marks one state with a bold outline — e.g. a chunk's current state.
+export function renderTeamDiagram(name: string, highlightState?: string): Promise<TeamDiagram> {
+  const body: Record<string, unknown> = { op: "render_diagram", name };
+  if (highlightState) body.highlight_state = highlightState;
+  return jsonFetch<TeamDiagram>("/v1/_teamdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // listDefVersionsByName uses the existing op-discriminated POST
 // endpoint with `{op:"list", name}` to retrieve every version of one
 // declared name. Used by the Library UI when an operator clicks into
