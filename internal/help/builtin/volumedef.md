@@ -1,6 +1,6 @@
 ---
 name: volumedef
-description: the VolumeDef tool — provision, inspect, and remove CONFINED dynamic filesystem volumes at runtime (RFC AH Phase 2a).
+description: the VolumeDef tool — provision, inspect, and remove CONFINED dynamic filesystem volumes at runtime.
 ---
 The **VolumeDef** tool provisions *dynamic* filesystem volumes at runtime —
 tenant-scoped, mutable, and confined inside an operator-blessed parent. It

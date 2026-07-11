@@ -28,7 +28,7 @@ The walker traverses four subdirectories of `.claude/`:
 | `.claude/agents/<name>.md` | `agents.<name>:` block in `loomcycle.yaml` | frontmatter → yaml; body → `system_prompt:` literal block |
 | `.claude/skills/<name>/SKILL.md` | `<skills-dest>/<name>/SKILL.md` (filesystem copy) | multi-file skills flagged; supplementary files NOT auto-copied |
 | `.claude/mcp.json` AND `<root>/.mcp.json` | `mcp_servers.<name>:` blocks | wrapped (`{"mcpServers": {...}}`) + bare shapes accepted |
-| `.claude/commands/<name>.md` | SKIPPED | Claude Code slash commands are IDE-side UX; see RFC B |
+| `.claude/commands/<name>.md` | SKIPPED | Claude Code slash commands are IDE-side UX |
 
 `<root>/.mcp.json` (the per-project convention) is read at one
 level above the `--from` path.
@@ -48,7 +48,7 @@ Two scope stubs land when the agent name matches:
 
 | Name pattern | Stub emitted |
 |---|---|
-| `*-scheduler`, `*-orchestrator`, `*-scheduling`, `scheduler-*`, `orchestrator-*` | `schedule_def_scopes: ["any"]` + RFC E pointer comment |
+| `*-scheduler`, `*-orchestrator`, `*-scheduling`, `scheduler-*`, `orchestrator-*` | `schedule_def_scopes: ["any"]` + a schedule pointer comment |
 | `*-evolver`, `*-author`, `*-meta-*`, `meta-*` | `agent_def_scopes: ["self"]` + safer-floor comment |
 
 The stubs are conservative — `["any"]` and `["self"]` are
@@ -60,7 +60,7 @@ loosen manually after seeing the agent in action.
 
 For each entry in `.claude/mcp.json`, the importer checks whether
 the package matches a recipe in the v1.x curated MCP server recipe
-library (RFC C1: `loomcycle mcp-registry list`). When matched, the
+library (`loomcycle mcp-registry list`). When matched, the
 recipe's `command` / `args` / `env` / `pool_size` supersede the
 operator's literal port — preserving the operator's chosen server
 name but applying the canonical recipe shape.
@@ -74,7 +74,7 @@ behaviour prefers the recipe because:
 
 - C1 recipes use the modern `${LOOMCYCLE_*}` env-var allowlist.
 - Bundled recipes use `${run.credentials.<name>}` substitution
-  for per-user auth where applicable (RFC F shipped).
+  for per-user auth where applicable (shipped).
 - `pool_size` defaults are tested.
 
 Operators who've customised their `.claude/mcp.json` (extra args,
@@ -144,8 +144,8 @@ but deliberately not translated:
   validity.
 
 **`.claude/mcp.json`:**
-- `registries:` — Loomcycle has no remote-registry surface (RFC C1
-  sharp edge: airgapped-friendly). If a server from a registry is
+- `registries:` — Loomcycle has no remote-registry surface (sharp
+  edge: airgapped-friendly). If a server from a registry is
   in scope, add it manually via `mcp_servers:` or register at
   runtime via the `MCPServerDef` tool.
 
@@ -264,5 +264,5 @@ Done. Run `loomcycle validate ./loomcycle.yaml` to confirm.
   bundling in loomcycle reads only SKILL.md; if your skill needs
   supplementary content, inline it into SKILL.md or restructure.
 - **`registries:` in `.claude/mcp.json`**: appears in unmapped
-  fields with a fixed message pointing at `MCPServerDef` (RFC C1
-  sharp edge: no remote-registry surface).
+  fields with a fixed message pointing at `MCPServerDef` (sharp
+  edge: no remote-registry surface).

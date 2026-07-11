@@ -1,6 +1,6 @@
 ---
 name: code-agents
-description: The synthetic code-js provider (RFC J) — running deterministic operator JavaScript as a first-class agent, its JS-side tool API, the default-deny sandbox, and the honest-determinism scope.
+description: The synthetic code-js provider — running deterministic operator JavaScript as a first-class agent, its JS-side tool API, the default-deny sandbox, and the honest-determinism scope.
 ---
 Some pipeline steps don't need an LLM. ATS scraping, known-shape SQL,
 format conversion, payload reshaping, routing — a few lines of code do

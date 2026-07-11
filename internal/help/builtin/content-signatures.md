@@ -47,7 +47,7 @@ Also excluded from the AgentDef hash: the `*_def_scopes` gates
 substrate doesn't persist in the `agent_defs` row, so hashing them
 would make a YAML-loaded agent and the same agent pushed via the
 substrate falsely report drift. The `skills:` field is likewise
-excluded (RFC BA): even though it round-trips through `AgentDef set`,
+excluded: even though it round-trips through `AgentDef set`,
 it is a per-agent skill-access ACL (authority) — not authored content
 — so two agents differing only in their `skills:` allowlist hash
 identically.

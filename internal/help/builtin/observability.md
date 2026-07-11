@@ -49,7 +49,7 @@ By design:
   cost, did it error."
 - **No secrets.** API keys, bearer tokens, OAuth secrets, header
   values never reach span attributes. The v1.x per-run credentials
-  map (RFC F, see `per-run-credentials` topic) inherits this
+  map (see `per-run-credentials` topic) inherits this
   posture — credential values never appear in span attributes,
   span events, or span resource attributes.
 - **No PII.** `loomcycle.user_id` is the operator's opaque user

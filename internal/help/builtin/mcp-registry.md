@@ -72,19 +72,19 @@ The top-level fields are byte-compatible with Claude Code's
   loomcycle overlay by adding the `_loomcycle:` block.
 - A loomcycle recipe can be lifted into a `.claude/` repo by
   stripping `_loomcycle:`.
-- RFC C2's `loomcycle import claude-code` walker uses the same format
+- The `loomcycle import claude-code` walker uses the same format
   on both ends — recipe-match path consults this library, and the
   `--emit-recipes` flag writes lossless `.mcp.json` entries into the
   overlay root.
 
 ## Composition with shipped surfaces
 
-- **RFC E (ScheduleDef)** — recipes with `_loomcycle.schedule_compatible: true`
+- **ScheduleDef** — recipes with `_loomcycle.schedule_compatible: true`
   are valid targets for `on_complete.mcp.call` hooks on scheduled
   runs. The library's `slack`, `telegram`, `email`, `discord`,
   `notion`, `jobs`, and per-server-fork-of `github` / `gitlab`
   recipes ship schedule-compatible.
-- **RFC F (per-run credentials)** — recipes that authorize per-user
+- **per-run credentials** — recipes that authorize per-user
   (e.g. `jobs`) demonstrate the `${run.credentials.<name>}` header
   substitution pattern. Operator-side env-var pattern
   (`${LOOMCYCLE_FOO_TOKEN}`) is for shared / operator-owned auth.

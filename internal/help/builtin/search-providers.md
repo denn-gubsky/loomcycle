@@ -1,9 +1,9 @@
 ---
 name: search-providers
-description: "Web search is a first-class, config-declared provider catalog with a fallback circuit (RFC BB) — Brave/Serper/Exa/Tavily/SearXNG behind the WebSearch tool, with per-agent priority + operator/tenant keys + a routing view."
+description: "Web search is a first-class, config-declared provider catalog with a fallback circuit — Brave/Serper/Exa/Tavily/SearXNG behind the WebSearch tool, with per-agent priority + operator/tenant keys + a routing view."
 aliases: [search, websearch, web-search]
 ---
-The `WebSearch` tool is a **multi-provider fallback circuit** (RFC BB), not a
+The `WebSearch` tool is a **multi-provider fallback circuit**, not a
 single backend. You call it the same way — `WebSearch("your query")` → a numbered
 list of title / URL / snippet — and the runtime routes the query to the first
 usable provider in a configured cascade, falling over to the next on an error,
@@ -64,7 +64,7 @@ Each keyed provider resolves its key the same way LLM providers do
    `SERPER_API_KEY`) — a tenant searches on its own quota. Author it via the
    `CredentialDef` tool or the Web UI Settings → Credentials page.
 2. Else the **operator host key** from that env var (unless the run is
-   operator-key-restricted, RFC AX).
+   operator-key-restricted).
 
 A provider you have no key for is skipped silently (not a failure); SearXNG is
 keyless, so it always runs. A failed provider is put in a short cooldown before

@@ -1,11 +1,11 @@
 ---
 name: skills
-description: "The Skill tool — discover and load domain-specific instruction sets on demand, governed by the agent's skills: pattern allowlist (RFC BA)."
+description: "The Skill tool — discover and load domain-specific instruction sets on demand, governed by the agent's skills: pattern allowlist."
 aliases: [skill]
 ---
 A **skill** is a named, reusable block of instructions (a `SKILL.md`
-body) you load into context **only when you need it**. Since RFC BA
-skills are **on demand** — they are NOT baked into your system prompt.
+body) you load into context **only when you need it**. Skills are
+**on demand** — they are NOT baked into your system prompt.
 You hold the `Skill` tool; you call it to discover what's available
 and to pull a skill's body in as a `tool_result` at the moment it's
 relevant. This keeps the base prompt small and lets one agent carry a

@@ -50,7 +50,7 @@ may NARROW but never widen, same rule as `AgentDef`.
 
 ## How the body lands in the model
 
-Skills are loaded **on demand** (RFC BA) — never baked into the
+Skills are loaded **on demand** — never baked into the
 system prompt. When the agent calls `Skill({"name": "..."})`
 (or `Skill({"op":"list"})` to discover), the tool consults
 `SkillDefGetActive(name)` first and falls back to the static
@@ -82,7 +82,7 @@ now loads the v2 body when it next invokes the `Skill` tool.
 ## Authoring gate
 
 Authoring is gated by the same `skills:` **pattern allowlist**
-(RFC BA) that governs listing + use — one policy for all three.
+that governs listing + use — one policy for all three.
 The agent must also hold the `SkillDef` tool. Empty/absent
 `skills:` = author anywhere; `-*` = author nothing.
 
