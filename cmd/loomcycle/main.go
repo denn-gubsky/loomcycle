@@ -896,6 +896,18 @@ func main() {
 	}
 	allTools = append(allTools, skillDefTool)
 
+	// TeamDef tool (RFC AP) — MUST be in allTools so team/assistant +
+	// team/orchestrator can author/run teams IN-LOOP (an agent's `tools: [TeamDef]`
+	// only takes effect if the instance is agent-available; being reachable via
+	// the HTTP/MCP def-route alone is not enough). Store is late-bound below;
+	// Spawn + Admit (op=run) are injected by srv.SetTeamDefTool. Byte caps reuse
+	// AgentDef's (the definition is a graph blob, like ScheduleDef/A2A).
+	teamDefTool := &builtin.TeamDef{
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	}
+	allTools = append(allTools, teamDefTool)
+
 	// VolumeDef tool (RFC AH Phase 2a) — the dynamic-volume substrate.
 	// In-loop (per-agent dispatcher) with a default-deny volume_def_scopes
 	// gate, NOT operator-admin-only like MCPServerDef. Store late-bound
@@ -1317,6 +1329,7 @@ func main() {
 	}
 	agentDefTool.Store = storeIface
 	skillDefTool.Store = storeIface
+	teamDefTool.Store = storeIface
 	volumeDefTool.Store = storeIface
 	// RFC AR — build the credential Sealer (per-tenant AES-GCM under the master
 	// KEK) + Engine now that the store exists. A malformed LOOMCYCLE_SECRET_KEY
@@ -1646,11 +1659,10 @@ func main() {
 	// wiring as ScheduleDef; reached via Connector.TeamDef + POST /v1/_teamdef +
 	// the LoomCycle MCP meta-tool `teamdef`. Reuses the AgentDef byte caps (the
 	// definition is a graph blob, like ScheduleDef/A2A — no dedicated env knob).
-	srv.SetTeamDefTool(&builtin.TeamDef{
-		Store:               storeIface,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
-	})
+	// Same instance that's agent-available in allTools — SetTeamDefTool injects
+	// Spawn + Admit (op=run) into it, and keeps the HTTP /v1/_teamdef + MCP
+	// `teamdef` + Connector surfaces pointing at it.
+	srv.SetTeamDefTool(teamDefTool)
 	// v1.x RFC G — wire the two A2A substrate tools. Same operator-admin-
 	// only posture as ScheduleDef; reached via Connector + the admin
 	// endpoints + the LoomCycle MCP meta-tools. Identical Store + Cfg +

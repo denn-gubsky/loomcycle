@@ -109,6 +109,57 @@ func TestBundle_AgentTeamsHasOrchestrator(t *testing.T) {
 	}
 }
 
+// TestBundle_TeamAndChatToolGrants guards the v1.17.1 tool grants: team/* agents
+// must grant TeamDef + Interruption (TeamDef is agent-available via main.go's
+// allTools, so the grant actually takes effect), and chat/* agents must grant
+// Interruption. A dropped grant would leave a team agent unable to author teams
+// or a chat agent unable to ask the human.
+func TestBundle_TeamAndChatToolGrants(t *testing.T) {
+	grantsFor := func(t *testing.T, unit string) map[string][]string {
+		t.Helper()
+		data, err := Show(unit)
+		if err != nil {
+			t.Fatalf("Show(%s): %v", unit, err)
+		}
+		var tree struct {
+			Agents map[string]struct {
+				Tools []string `yaml:"tools"`
+			} `yaml:"agents"`
+		}
+		if err := yaml.Unmarshal(data, &tree); err != nil {
+			t.Fatalf("unmarshal %s: %v", unit, err)
+		}
+		out := map[string][]string{}
+		for name, a := range tree.Agents {
+			out[name] = a.Tools
+		}
+		return out
+	}
+	has := func(tools []string, want string) bool {
+		for _, tl := range tools {
+			if tl == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	teams := grantsFor(t, "agent-teams")
+	for _, agent := range []string{"team/assistant", "team/orchestrator"} {
+		for _, tool := range []string{"TeamDef", "Interruption"} {
+			if !has(teams[agent], tool) {
+				t.Errorf("agent-teams %s must grant %q (got %v)", agent, tool, teams[agent])
+			}
+		}
+	}
+	chat := grantsFor(t, "chat")
+	for _, agent := range []string{"chat/medium", "chat/local"} {
+		if !has(chat[agent], "Interruption") {
+			t.Errorf("chat %s must grant Interruption (got %v)", agent, chat[agent])
+		}
+	}
+}
+
 // TestBundle_TeamExamplesHasStarters guards the RFC BD Phase 2 starter content:
 // the team-examples bundle must ship the SDLC + marketing handler agents and the
 // team/examples skill (the ready-to-create TeamDefs). Without these the
