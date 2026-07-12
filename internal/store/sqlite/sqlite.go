@@ -5070,6 +5070,29 @@ func (s *Store) TeamDefGetActive(ctx context.Context, tenantID, name string) (st
 	return s.TeamDefGet(ctx, defID)
 }
 
+// TeamDefDelete hard-deletes every version of (tenantID, name) and its active
+// pointer in one transaction (mirrors DynamicAgentDelete). Returns whether any
+// version row was removed.
+func (s *Store) TeamDefDelete(ctx context.Context, tenantID, name string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("teamdef delete: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM teamdef_active WHERE tenant_id = ? AND name = ?`, tenantID, name); err != nil {
+		return false, fmt.Errorf("teamdef delete active: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM teamdefs WHERE tenant_id = ? AND name = ?`, tenantID, name)
+	if err != nil {
+		return false, fmt.Errorf("teamdef delete rows: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("teamdef delete: commit: %w", err)
+	}
+	return n > 0, nil
+}
+
 func (s *Store) TeamDefSetRetired(ctx context.Context, defID string, retired bool) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE teamdefs SET retired = ? WHERE def_id = ?`,

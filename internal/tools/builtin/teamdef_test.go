@@ -278,6 +278,42 @@ func TestTeamDefTool_RenderDiagram(t *testing.T) {
 	}
 }
 
+// op=delete hard-removes a whole team by name (all versions + active pointer),
+// scoped to the caller's tenant; a missing team is a not-found error.
+func TestTeamDefTool_Delete(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+
+	createTeam(t, tool, ctx, "del-team", `{
+	  "entry":"a",
+	  "states":[{"state":"a","handler":{"kind":"agent","agent":"x"}},{"state":"b","handler":{"kind":"terminal"}}],
+	  "transitions":[{"from":"a","to":"b","on":"success"}]}`)
+
+	// It renders (active) before the delete.
+	if r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"render_diagram","name":"del-team"}`)); r.IsError {
+		t.Fatalf("pre-delete render: %s", r.Text)
+	}
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"delete","name":"del-team"}`))
+	if res.IsError {
+		t.Fatalf("delete: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["deleted"] != true {
+		t.Errorf("deleted = %v, want true", out["deleted"])
+	}
+
+	// Gone: rendering the active version is now not-found.
+	if r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"render_diagram","name":"del-team"}`)); !r.IsError || !strings.Contains(r.Text, "not found") {
+		t.Errorf("after delete, render should be not-found; got %q (isErr=%v)", r.Text, r.IsError)
+	}
+
+	// Deleting a missing team → not-found error (no leak, no panic).
+	if r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"delete","name":"ghost"}`)); !r.IsError || !strings.Contains(r.Text, "not found") {
+		t.Errorf("delete missing should be not-found; got %q (isErr=%v)", r.Text, r.IsError)
+	}
+}
+
 // Dry-run preview: render_diagram with an inline overlay renders (and
 // syntax-checks) an UNSAVED graph without persisting anything — this backs the
 // Web UI editor's "refresh diagram" preview.

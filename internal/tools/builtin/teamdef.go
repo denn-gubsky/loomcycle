@@ -78,14 +78,15 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`scheme applied) for a stored team, or — when given an inline overlay — a dry-run preview of an unsaved ` +
 	`graph (syntax-checked, not persisted). run walks a team's graph for a given input — each state's agent runs via the ` +
 	`sub-agent machinery, output threads to the next state, until a terminal state (Phase 1: single-agent linear ` +
-	`teams; parallel/consolidator + pushback routing are deferred). Operations: create, fork, get, list, retire, ` +
-	`promote, verify, render_diagram, run.`
+	`teams; parallel/consolidator + pushback routing are deferred). retire soft-retires one version; delete ` +
+	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
+	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run.`
 
 const teamDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","promote","verify","render_diagram","run"], "description": "Operation to perform."},
-    "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify)."},
+    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","delete","promote","verify","render_diagram","run"], "description": "Operation to perform."},
+    "name":          {"type": "string", "description": "Team name (required for create/fork/list/verify/delete)."},
     "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire/promote)."},
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base)."},
     "overlay": {
@@ -155,6 +156,8 @@ func (t *TeamDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return t.execList(ctx, in)
 	case "retire":
 		return t.execRetire(ctx, in)
+	case "delete":
+		return t.execDelete(ctx, in)
 	case "promote":
 		return t.execPromote(ctx, in)
 	case "verify":
@@ -166,7 +169,7 @@ func (t *TeamDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote, verify, render_diagram, run)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, delete, promote, verify, render_diagram, run)", in.Op)), nil
 	}
 }
 
@@ -399,6 +402,25 @@ func (t *TeamDef) execRetire(ctx context.Context, in teamDefInput) (tools.Result
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}
 	return okJSON(map[string]any{"def_id": in.DefID, "retired": *in.Retired})
+}
+
+// execDelete hard-deletes a team by name (all versions + active pointer). Teams
+// are runtime-only, so an operator needs to remove an obsolete/test team, not
+// just retire a version. RFC N: scoped to the caller's tenant (mirrors
+// DynamicAgentDelete) — a principal can't delete another tenant's team.
+func (t *TeamDef) execDelete(ctx context.Context, in teamDefInput) (tools.Result, error) {
+	if in.Name == "" {
+		return errResult("delete: missing required field: name"), nil
+	}
+	tenantID := tools.RunIdentity(ctx).TenantID
+	deleted, err := t.Store.TeamDefDelete(ctx, tenantID, in.Name)
+	if err != nil {
+		return errResult(fmt.Sprintf("delete: %s", err)), nil
+	}
+	if !deleted {
+		return errResult(fmt.Sprintf("delete: team %q not found", in.Name)), nil
+	}
+	return okJSON(map[string]any{"name": in.Name, "deleted": true})
 }
 
 func (t *TeamDef) execPromote(ctx context.Context, in teamDefInput) (tools.Result, error) {

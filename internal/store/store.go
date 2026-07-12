@@ -1476,6 +1476,12 @@ type Store interface {
 	// tenantID "" = the shared/operator/legacy tenant.
 	TeamDefGetActive(ctx context.Context, tenantID, name string) (TeamDefRow, error)
 	TeamDefSetRetired(ctx context.Context, defID string, retired bool) error
+	// TeamDefDelete hard-deletes ALL versions of `name` in `tenantID` plus its
+	// active pointer (mirrors DynamicAgentDelete — teams are runtime-only, so an
+	// operator needs to remove a test/obsolete team, not just retire it). RFC N:
+	// scoped to (tenant_id, name) so a principal can't delete another tenant's
+	// same-named team. Returns whether anything was deleted.
+	TeamDefDelete(ctx context.Context, tenantID, name string) (bool, error)
 
 	// ---- v0.9.x MCPServerDef substrate ----
 	//

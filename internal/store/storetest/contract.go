@@ -225,6 +225,7 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamDefVersionMonotonicUnderContention", testTeamDefVersionMonotonicUnderContention},
 		{"TeamDefActivePointerIdempotent", testTeamDefActivePointerIdempotent},
 		{"TeamDefRetireReversible", testTeamDefRetireReversible},
+		{"TeamDefDelete", testTeamDefDelete},
 		{"TeamDefListNamesLiveCount", testTeamDefListNamesLiveCount},
 		{"TeamDefStaticFallback", testTeamDefStaticFallback},
 		// RFC N — team definition plane tenant isolation. Fails on the
@@ -5511,6 +5512,46 @@ func testTeamDefRetireReversible(t *testing.T, s store.Store) {
 	rows, _ := s.TeamDefListByName(ctx, "team-retireagent")
 	if len(rows) != 1 {
 		t.Errorf("list after retire toggle: got %d, want 1", len(rows))
+	}
+}
+
+// testTeamDefDelete: delete removes ALL versions of a name + its active pointer,
+// scoped to the tenant, leaving other teams untouched; re-delete is a no-op.
+func testTeamDefDelete(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	v1, err := s.TeamDefCreate(ctx, mkTeamDef("tdel-1", "team-del", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TeamDefCreate(ctx, mkTeamDef("tdel-2", "team-del", v1.DefID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TeamDefSetActive(ctx, "", "team-del", v1.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TeamDefCreate(ctx, mkTeamDef("tkeep-1", "team-keep", "")); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := s.TeamDefDelete(ctx, "", "team-del")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Fatal("delete reported nothing removed")
+	}
+	if rows, _ := s.TeamDefListByName(ctx, "team-del"); len(rows) != 0 {
+		t.Errorf("after delete: %d versions remain, want 0", len(rows))
+	}
+	if _, err := s.TeamDefGetActive(ctx, "", "team-del"); err == nil {
+		t.Error("after delete: active pointer still resolves")
+	}
+	if rows, _ := s.TeamDefListByName(ctx, "team-keep"); len(rows) != 1 {
+		t.Errorf("bystander team-keep: %d versions, want 1", len(rows))
+	}
+	// Re-deleting a now-missing team → (false, nil).
+	if d, err := s.TeamDefDelete(ctx, "", "team-del"); err != nil || d {
+		t.Errorf("re-delete: got (%v,%v), want (false,nil)", d, err)
 	}
 }
 

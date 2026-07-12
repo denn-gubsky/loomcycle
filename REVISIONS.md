@@ -4,6 +4,23 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.18.1
+
+**🩹 Teams editor — fix loading an existing team + add team delete.** Two fixes on
+the v1.18.0 board. (1) **Selecting a team failed** with `"[object Object]" is not
+valid JSON`: the editor did `JSON.parse(definition)`, but the server stores the
+graph as a `json.RawMessage`, so it arrives **inlined as an object**, not a JSON
+string — `JSON.parse` on the object stringified it to `"[object Object]"` and threw.
+The editor now uses the value directly (parsing only if it's a string). Create was
+unaffected (it starts from a template, never loads). (2) **There was no way to
+delete a team** — retire only flips a flag and leaves it listed. Added a
+tenant-scoped **`delete`** op to the `TeamDef` tool (HTTP `/v1/_teamdef` + MCP
+`teamdef`) that hard-removes a whole team by name (all versions + its active
+pointer, one transaction), mirroring `DynamicAgentDelete`; the editor gains a
+**Delete** button (with a confirm). New store method `TeamDefDelete` (sqlite +
+postgres) with a contract test + a tool-level `TestTeamDefTool_Delete`. Web UI +
+one additive tool op; no schema migration; adapters unchanged (1.16.0 / 1.13.0).
+
 ## What's in v1.18.0
 
 **✏️ Teams board becomes an editor + live diagram preview.** The teams board was
