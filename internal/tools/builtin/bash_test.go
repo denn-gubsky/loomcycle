@@ -183,3 +183,104 @@ func TestBashCallerTimeoutCappedAtHardCeiling(t *testing.T) {
 		t.Errorf("missing output: %q", res.Text)
 	}
 }
+
+// TestBash_BuildEnv_InjectsTenantCreds: the child env carries PATH + the host
+// allowlist + per-tenant credentials (resolved from the run's ctx identity), and
+// a cred OVERRIDES a same-named host var. Tenant B resolves a different token —
+// proving resolution is ctx/tenant-scoped. Mirrors the Bashbox fallback test.
+func TestBash_BuildEnv_InjectsTenantCreds(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TEST_HOSTVAR", "hostval")
+	t.Setenv("LOOMCYCLE_TEST_SHARED", "from-host")
+
+	b := &Bash{
+		AllowedExtraEnv: []string{"LOOMCYCLE_TEST_HOSTVAR", "LOOMCYCLE_TEST_SHARED"},
+		AllowedCreds:    []string{"GITHUB_TOKEN", "LOOMCYCLE_TEST_SHARED"},
+		CredResolve: func(ctx context.Context, name string) (string, bool) {
+			ten := tools.RunIdentity(ctx).TenantID
+			switch name {
+			case "GITHUB_TOKEN":
+				return "tok-" + ten, true
+			case "LOOMCYCLE_TEST_SHARED":
+				return "from-cred", true
+			}
+			return "", false
+		},
+	}
+	envMap := func(ctx context.Context) map[string]string {
+		m := map[string]string{}
+		for _, kv := range b.buildEnv(ctx) {
+			if i := strings.IndexByte(kv, '='); i > 0 {
+				m[kv[:i]] = kv[i+1:]
+			}
+		}
+		return m
+	}
+
+	m := envMap(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme"}))
+	if _, ok := m["PATH"]; !ok {
+		t.Errorf("PATH should always pass")
+	}
+	if m["LOOMCYCLE_TEST_HOSTVAR"] != "hostval" {
+		t.Errorf("host allowlist var missing: %v", m)
+	}
+	if m["GITHUB_TOKEN"] != "tok-acme" {
+		t.Errorf("per-tenant cred = %q, want tok-acme", m["GITHUB_TOKEN"])
+	}
+	if m["LOOMCYCLE_TEST_SHARED"] != "from-cred" {
+		t.Errorf("cred must override same-named host var, got %q", m["LOOMCYCLE_TEST_SHARED"])
+	}
+
+	mb := envMap(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "beta"}))
+	if mb["GITHUB_TOKEN"] != "tok-beta" {
+		t.Errorf("tenant B cred = %q, want tok-beta (tenant isolation)", mb["GITHUB_TOKEN"])
+	}
+}
+
+// TestBash_BuildEnv_NoResolverIsHostOnly: without CredResolve wired, the declared
+// cred names resolve to nothing (host env only) — byte-identical to the
+// pre-feature behavior (operator must opt in).
+func TestBash_BuildEnv_NoResolverIsHostOnly(t *testing.T) {
+	b := &Bash{AllowedCreds: []string{"GITHUB_TOKEN"}} // CredResolve nil
+	for _, kv := range b.buildEnv(context.Background()) {
+		if strings.HasPrefix(kv, "GITHUB_TOKEN=") {
+			t.Errorf("no CredResolve → creds must not resolve, got %q", kv)
+		}
+	}
+}
+
+// TestBash_InjectsCredIntoChildEnv: a resolved per-tenant credential actually
+// lands in the REAL subprocess env (`env` output) and overrides a same-named
+// host var — exercises the full run-time path, not just buildEnv.
+func TestBash_InjectsCredIntoChildEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip()
+	}
+	t.Setenv("LOOMCYCLE_TEST_CRED", "from-host") // host var the cred must override
+	cwd, _ := filepath.EvalSymlinks(t.TempDir())
+	b := &Bash{
+		Enabled:         true,
+		AllowedExtraEnv: []string{"LOOMCYCLE_TEST_CRED"},
+		AllowedCreds:    []string{"LOOMCYCLE_TEST_CRED"},
+		CredResolve: func(ctx context.Context, name string) (string, bool) {
+			if name == "LOOMCYCLE_TEST_CRED" {
+				return "tenant-cred-" + tools.RunIdentity(ctx).TenantID, true
+			}
+			return "", false
+		},
+	}
+	ctx := tools.WithRunIdentity(bashCtx(cwd), tools.RunIdentityValue{TenantID: "acme"})
+	body, _ := json.Marshal(map[string]string{"command": "env"})
+	res, err := b.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "LOOMCYCLE_TEST_CRED=tenant-cred-acme") {
+		t.Errorf("per-tenant cred not injected into child env: %q", res.Text)
+	}
+	if strings.Contains(res.Text, "LOOMCYCLE_TEST_CRED=from-host") {
+		t.Errorf("cred must override the same-named host var, but host value leaked: %q", res.Text)
+	}
+}

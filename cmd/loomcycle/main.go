@@ -782,6 +782,13 @@ func main() {
 		FallbackAllowedCreds: cfg.Env.BashboxFallbackAllowedCreds,
 	}
 
+	// Bash is likewise a named var so its CredResolve can be late-bound after
+	// the credential engine — it injects per-tenant creds into the raw child env.
+	bashTool := &builtin.Bash{
+		Enabled:      cfg.Env.BashEnabled,
+		AllowedCreds: cfg.Env.BashAllowedCreds,
+	}
+
 	allTools := []tools.Tool{
 		// The file/exec tools resolve their sandbox root per-call from the
 		// run's VolumePolicy (RFC AH); an agent bound to no volume is refused
@@ -796,7 +803,9 @@ func main() {
 		httpTool,
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{Registry: searchRegistry, Resolver: searchResolver, HostKeys: searchHostKeys, ShowProvenance: cfg.Env.WebSearchProvenance},
-		&builtin.Bash{Enabled: cfg.Env.BashEnabled},
+		// Bash — constructed above so CredResolve can be late-bound after the
+		// credential engine exists (per-tenant cred injection into the child env).
+		bashTool,
 		// Bashbox — a TRUE in-process sandbox (gbash): no OS process, paths
 		// rooted at the volume, no network, and read-only volumes are honored
 		// (writes hit an in-RAM overlay). Opt-in like Bash. Constructed above so
@@ -1443,6 +1452,29 @@ func main() {
 		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
 		if err != nil {
 			log.Printf("bashbox: credential resolve %q failed for tenant=%s: %v", name, ri.TenantID, err)
+			return "", false
+		}
+		if !found {
+			return "", false
+		}
+		registerSecret(res.Value)
+		return res.Value, true
+	}
+	// Raw Bash mirrors the Bashbox fallback: inject PER-TENANT credentials named
+	// in LOOMCYCLE_BASH_ALLOWED_CREDS into the child's env, resolved for the run's
+	// own identity (agent>user>tenant) — so a tenant's own GITHUB_TOKEN reaches
+	// the command instead of one shared operator host var. Only the
+	// operator-allowlisted names are injected; the value goes solely into the
+	// child's env (registerSecret masks any transcript echo). Fails soft (no KEK /
+	// miss → the host-env allowlist still applies).
+	bashTool.CredResolve = func(ctx context.Context, name string) (string, bool) {
+		if !credEngine.CanResolve() {
+			return "", false
+		}
+		ri := tools.RunIdentity(ctx)
+		res, found, err := credEngine.Resolve(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, name)
+		if err != nil {
+			log.Printf("bash: credential resolve %q failed for tenant=%s: %v", name, ri.TenantID, err)
 			return "", false
 		}
 		if !found {
