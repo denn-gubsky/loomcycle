@@ -2472,7 +2472,8 @@ func TestAgentGateWarnings(t *testing.T) {
 		{"eval no scopes", AgentDef{Tools: []string{"Evaluation"}}, []string{"evaluation_scopes is empty"}},
 		{"channel no acl", AgentDef{Tools: []string{"Channel"}}, []string{"channels.publish and channels.subscribe are both empty"}},
 		{"channel publish-only is fine", AgentDef{Tools: []string{"Channel"}, Channels: AgentChannelACL{Publish: []string{"x"}}}, nil},
-		{"interruption disabled", AgentDef{Tools: []string{"Interruption"}}, []string{"interruption.enabled is false"}},
+		// Listing the Interruption tool now auto-enables it → no warning either way.
+		{"interruption tool present, no flag", AgentDef{Tools: []string{"Interruption"}}, nil},
 		{"interruption enabled", AgentDef{Tools: []string{"Interruption"}, Interruption: AgentInterruptionACL{Enabled: true}}, nil},
 		{"multiple gates, deterministic order", AgentDef{Tools: []string{"Memory", "Evaluation"}}, []string{"memory_scopes is empty", "evaluation_scopes is empty"}},
 	}

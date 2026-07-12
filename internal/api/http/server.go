@@ -1510,13 +1510,24 @@ func (s *Server) historyPolicyForAgent(agentDef config.AgentDef) tools.HistoryPo
 	return tools.HistoryPolicyValue{Scopes: agentDef.HistoryScope}
 }
 
-// interruptionPolicyForAgent maps the agent's yaml ACL into the
-// runtime policy struct the Interruption tool reads via ctx.
-// Default-deny: absent block in yaml → Enabled=false → tool returns
-// is_error on every op.
+// interruptionToolName is the built-in Interruption tool's Name(). Listing it
+// in an agent's `tools` allowlist is what enables the interruption policy.
+const interruptionToolName = "Interruption"
+
+// interruptionPolicyForAgent maps the agent's yaml into the runtime policy the
+// Interruption tool reads via ctx. The tool is ENABLED by its PRESENCE in the
+// agent's `tools` allowlist — that default-deny grant IS the opt-in, so a
+// separate `interruption.enabled` flag is not required (an agent that listed
+// the tool but omitted the flag used to refuse every op — needless friction
+// that caused live errors). `kinds` / `max_pending` remain optional policy; an
+// explicit `interruption.enabled: true` still enables it even without the tool
+// listed. policy.Apply reuses filterTools' matcher so wildcard/pattern grants
+// (e.g. tools: ["*"]) are honored and can't drift.
 func (s *Server) interruptionPolicyForAgent(agentDef config.AgentDef) tools.InterruptionPolicyValue {
+	enabled := agentDef.Interruption.Enabled ||
+		len(policy.Apply([]string{interruptionToolName}, agentDef.Tools, nil)) > 0
 	return tools.InterruptionPolicyValue{
-		Enabled:    agentDef.Interruption.Enabled,
+		Enabled:    enabled,
 		Kinds:      agentDef.Interruption.Kinds,
 		MaxPending: agentDef.Interruption.MaxPending,
 	}

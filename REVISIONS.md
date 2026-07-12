@@ -4,6 +4,10 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.19.1
+
+**🩹 Listing the `Interruption` tool now enables it — no separate `interruption.enabled` flag.** An agent that had `Interruption` in its `tools:` list but no `interruption: { enabled: true }` block silently refused every op (`not enabled for this agent`) — a redundant second gate that caused live errors, including on the bundled `chat/*` and `team/*` agents (notably `team/orchestrator`, whose whole job is human-in-the-loop). Now `interruptionPolicyForAgent` derives `Enabled` from **tool presence**: listing `Interruption` in the agent's `tools` allowlist — the operator's default-deny grant — *is* the opt-in (matched via `policy.Apply`, so wildcard/pattern grants like `tools: ["*"]` count and can't drift from the dispatcher). `kinds` / `max_pending` remain optional policy under `interruption:`, and an explicit `interruption.enabled: true` still works (and still enables even without the tool listed). The now-obsolete config warning was removed and the refusal message updated. Regression `TestInterruptionPolicyForAgent_ToolPresenceEnables`. Runtime + config only; no wire/schema change; adapters unchanged (1.19.0).
+
 ## What's in v1.19.0
 
 **🧑‍🤝‍🧑 Agent Teams grow up — parallel execution, durable boards, a gRPC/adapter surface, and per-tenant Bash creds.** Four deferred team items land together.

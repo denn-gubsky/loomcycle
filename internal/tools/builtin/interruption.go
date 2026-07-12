@@ -179,7 +179,7 @@ func (it *Interruption) Execute(ctx context.Context, raw json.RawMessage) (tools
 	policy := tools.InterruptionPolicy(ctx)
 	if !policy.Enabled {
 		return errResult(
-			"Interruption tool: not enabled for this agent — add `interruption: { enabled: true }` to the agent yaml",
+			"Interruption tool: not enabled for this agent — add `Interruption` to the agent's tools list",
 		), nil
 	}
 
