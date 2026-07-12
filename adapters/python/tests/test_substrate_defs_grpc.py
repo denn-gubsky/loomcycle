@@ -48,6 +48,7 @@ _CASES = [
     ("memory_backend_def", "MemoryBackendDef"),
     ("operator_token_def", "OperatorTokenDef"),
     ("volume_def", "VolumeDef"),
+    ("team_def", "TeamDef"),
 ]
 
 
