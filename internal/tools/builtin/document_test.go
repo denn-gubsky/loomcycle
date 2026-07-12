@@ -729,3 +729,64 @@ func TestDocument_SetPath(t *testing.T) {
 		t.Errorf("set_path on unknown id should fail")
 	}
 }
+
+// TestDocument_ChunkStatusBoardRoundTrip exercises the board surface the TeamDef
+// op=run walk drives: SetChunkStatus persists a chunk's status (revision-guarded,
+// reusing update_chunk's atomic bump) and GetChunkStatus reads it back — the
+// durable, resumable walk position. A missing chunk is ok=false on read and an
+// error on write (never a phantom).
+func TestDocument_ChunkStatusBoardRoundTrip(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"Board"}`)
+	if res.IsError {
+		t.Fatalf("create_document: %s", res.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	out, res = docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","title":"task"}`)
+	if res.IsError {
+		t.Fatalf("create_chunk: %s", res.Text)
+	}
+	chunkID, _ := out["id"].(string)
+
+	// Fresh chunk: exists, no status yet.
+	status, ok, err := d.GetChunkStatus(ctx, "agent", chunkID)
+	if err != nil {
+		t.Fatalf("GetChunkStatus: %v", err)
+	}
+	if !ok || status != "" {
+		t.Errorf("fresh chunk status = (%q,%v), want (\"\",true)", status, ok)
+	}
+
+	// Persist a status, read it back — and confirm the tool's own get_chunk agrees.
+	if err := d.SetChunkStatus(ctx, "agent", chunkID, "review"); err != nil {
+		t.Fatalf("SetChunkStatus: %v", err)
+	}
+	status, ok, err = d.GetChunkStatus(ctx, "agent", chunkID)
+	if err != nil {
+		t.Fatalf("GetChunkStatus: %v", err)
+	}
+	if !ok || status != "review" {
+		t.Errorf("status = (%q,%v), want (review,true)", status, ok)
+	}
+	got, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"agent","id":"`+chunkID+`"}`)
+	if got["status"] != "review" {
+		t.Errorf("get_chunk status = %v, want review (board write visible to the tool)", got["status"])
+	}
+
+	// Advance the status (the transition case).
+	if err := d.SetChunkStatus(ctx, "agent", chunkID, "done"); err != nil {
+		t.Fatalf("SetChunkStatus: %v", err)
+	}
+	if status, _, _ = d.GetChunkStatus(ctx, "agent", chunkID); status != "done" {
+		t.Errorf("status = %q, want done", status)
+	}
+
+	// Unknown chunk: ok=false on read, error on write (no phantom).
+	if _, ok, err := d.GetChunkStatus(ctx, "agent", "nope"); err != nil || ok {
+		t.Errorf("GetChunkStatus(nope) = (ok=%v,err=%v), want (false,nil)", ok, err)
+	}
+	if err := d.SetChunkStatus(ctx, "agent", "nope", "x"); err == nil || !strings.Contains(err.Error(), "no such chunk") {
+		t.Errorf("SetChunkStatus(nope) err = %v, want 'no such chunk'", err)
+	}
+}

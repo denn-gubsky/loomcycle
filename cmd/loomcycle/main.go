@@ -970,6 +970,35 @@ func main() {
 	}
 	allTools = append(allTools, interruptionTool)
 
+	// RFC AP/BD — wire the TeamDef op=run board + interruption escalation deps
+	// (both opt-in per run; Spawn + Admit are injected separately by
+	// srv.SetTeamDefTool). Board persists a board-bound walk's position onto a
+	// Document chunk (chunk.status = current state) + resumes from it; AskHuman
+	// escalates an iteration cap to a human via the Interruption tool's `ask`
+	// instead of aborting. A run that sets neither board_chunk_id nor
+	// interrupt_on_cap is byte-identical to before. documentTool.SqlMem is
+	// late-bound below (Board holds the *Document pointer, reading SqlMem at call
+	// time), and AskHuman is invoked under the parent run's ctx so the block +
+	// resolve + heartbeat all reuse the standard Interruption machinery.
+	teamDefTool.Board = documentTool
+	teamDefTool.AskHuman = func(ctx context.Context, question string) (string, error) {
+		ask, _ := json.Marshal(map[string]any{"op": "ask", "question": question})
+		res, err := interruptionTool.Execute(ctx, ask)
+		if err != nil {
+			return "", err
+		}
+		if res.IsError {
+			// timeout / cancelled / not-enabled-for-agent / no-run-id — surface as
+			// an error so the cap escalation fails safe to abort.
+			return "", errors.New(res.Text)
+		}
+		var parsed struct {
+			Answer string `json:"answer"`
+		}
+		_ = json.Unmarshal([]byte(res.Text), &parsed)
+		return parsed.Answer, nil
+	}
+
 	// Context tool (v0.8.7). Read-only runtime introspection. The Tools
 	// field is back-filled with the FULL allTools slice after every
 	// other registration (MCP + localapi) so doc/tools ops reflect the

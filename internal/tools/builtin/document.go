@@ -385,6 +385,73 @@ func (d *Document) getChunkRow(ctx context.Context, key sqlmem.ScopeKey, id stri
 	return scanChunkRow(res.Columns, res.Rows[0]), true, nil
 }
 
+// --- board surface (chunk.status as a durable walk position) ---
+
+// GetChunkStatus reads a chunk's status field. It is the narrow read half of the
+// Document-board surface a TeamDef `op=run` uses to RESUME from a persisted walk
+// position (chunk.status = the team state to continue from). scope is "agent" or
+// "user" (default user); the ScopeKey + tenant come from ctx exactly as the
+// tool's own ops resolve them. ok=false when the chunk doesn't exist in this
+// scope (so a caller can distinguish "no such chunk" from "status is empty").
+func (d *Document) GetChunkStatus(ctx context.Context, scope, chunkID string) (status string, ok bool, err error) {
+	if d.Store == nil || d.SqlMem == nil {
+		return "", false, fmt.Errorf("Document board: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+	}
+	key, _, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		return "", false, err
+	}
+	if err := d.ensureSchema(ctx, key); err != nil {
+		return "", false, err
+	}
+	row, found, err := d.getChunkRow(ctx, key, chunkID)
+	if err != nil {
+		return "", false, err
+	}
+	if !found {
+		return "", false, nil
+	}
+	return row.Status, true, nil
+}
+
+// SetChunkStatus sets a chunk's status field — the write half of the board
+// surface, called on each state transition so chunk.status durably reflects the
+// walk's current position. It reuses the same atomic, revision-guarded bump as
+// update_chunk (read the current revision, then UPDATE ... WHERE revision = ?)
+// so a concurrent human/agent edit of the same chunk is a clean conflict rather
+// than a silent lost write. Reusing the tool's SQL path keeps the chunk-schema
+// logic in one place (no hand-rolled board SQL to drift). A best-effort change
+// event lets the Web UI board follow along live.
+func (d *Document) SetChunkStatus(ctx context.Context, scope, chunkID, status string) error {
+	if d.Store == nil || d.SqlMem == nil {
+		return fmt.Errorf("Document board: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+	}
+	key, mscope, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		return err
+	}
+	if err := d.ensureSchema(ctx, key); err != nil {
+		return err
+	}
+	row, found, err := d.getChunkRow(ctx, key, chunkID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("no such chunk: %s", chunkID)
+	}
+	now := time.Now().UnixNano()
+	res, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(`UPDATE chunks SET status = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`), []any{nullIfEmpty(status), now, chunkID, row.Revision}, 0)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("chunk %s: revision conflict setting status (changed by a concurrent write)", chunkID)
+	}
+	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", chunkID)
+	return nil
+}
+
 // --- ops: document lifecycle ---
 
 func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {

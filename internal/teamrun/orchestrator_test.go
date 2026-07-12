@@ -168,6 +168,178 @@ func TestWalk_ContextCancelAborts(t *testing.T) {
 	}
 }
 
+// pingPongJSON is an a↔b success loop with no terminal + cap 2 — it never
+// converges, so the per-state cap always fires (the OnCap escalation seam).
+const pingPongJSON = `{
+  "entry":"a",
+  "max_iterations":2,
+  "states":[
+    {"state":"a","handler":{"kind":"agent","agent":"a"}},
+    {"state":"b","handler":{"kind":"agent","agent":"b"}}
+  ],
+  "transitions":[
+    {"from":"a","to":"b","on":"success"},
+    {"from":"b","to":"a","on":"success"}
+  ]}`
+
+// rerouteJSON is the a↔b loop plus a terminal `done` reachable via a
+// never-taken pushback edge — the fake always takes success, so `done` is only
+// reached when an OnCap reroute jumps to it.
+const rerouteJSON = `{
+  "entry":"a",
+  "max_iterations":2,
+  "states":[
+    {"state":"a","handler":{"kind":"agent","agent":"a"}},
+    {"state":"b","handler":{"kind":"agent","agent":"b"}},
+    {"state":"done","handler":{"kind":"terminal"}}
+  ],
+  "transitions":[
+    {"from":"a","to":"b","on":"success"},
+    {"from":"b","to":"a","on":"success"},
+    {"from":"b","to":"done","on":"pushback:stop"}
+  ]}`
+
+// TestWalk_OnEnterStateObservesEveryEnteredState pins the board-persistence seam:
+// OnEnterState fires once per entered state, in order, INCLUDING the terminal —
+// so a board-bound run's chunk.status lands on the end state when the walk
+// completes.
+func TestWalk_OnEnterStateObservesEveryEnteredState(t *testing.T) {
+	d := mustParse(t, linearJSON) // a → b → c(terminal)
+	var entered []string
+	if _, err := Walk(context.Background(), d, &Task{Input: "seed"}, &fakeRunner{},
+		OnEnterState(func(_ context.Context, s string) error {
+			entered = append(entered, s)
+			return nil
+		})); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if want := []string{"a", "b", "c"}; !equalStrs(entered, want) {
+		t.Errorf("entered %v, want %v (terminal observed too)", entered, want)
+	}
+}
+
+// TestWalk_OnEnterStateFiresOnResume proves a resumed walk (preset State) re-
+// observes from the persisted position, not the entry — so a board-bound run
+// continues where it left off.
+func TestWalk_OnEnterStateFiresOnResume(t *testing.T) {
+	d := mustParse(t, linearJSON)
+	var entered []string
+	if _, err := Walk(context.Background(), d, &Task{State: "b"}, &fakeRunner{},
+		OnEnterState(func(_ context.Context, s string) error {
+			entered = append(entered, s)
+			return nil
+		})); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if want := []string{"b", "c"}; !equalStrs(entered, want) {
+		t.Errorf("entered %v, want %v (resumed at b, no a)", entered, want)
+	}
+}
+
+// TestWalk_OnEnterStateErrorAborts: a persistence failure aborts the walk before
+// the failing state's handler runs (durability is load-bearing — a walk that
+// can't record its position must not advance).
+func TestWalk_OnEnterStateErrorAborts(t *testing.T) {
+	d := mustParse(t, linearJSON)
+	r := &fakeRunner{}
+	sentinel := errors.New("persist failed")
+	_, err := Walk(context.Background(), d, &Task{}, r,
+		OnEnterState(func(_ context.Context, s string) error {
+			if s == "b" {
+				return sentinel
+			}
+			return nil
+		}))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("want sentinel error, got %v", err)
+	}
+	if len(r.calls) != 1 || r.calls[0] != "a" {
+		t.Errorf("ran %v, want [a] (b handler must not run after its persist fails)", r.calls)
+	}
+}
+
+// TestWalk_OnCapContinueGrantsAnotherWindow: a CapContinue ruling resets the
+// capped state's window and keeps walking; a later CapAbort still terminates with
+// *ErrIterationCap. Proves the human-in-the-loop escalation is bounded by the
+// human's answers, never infinite.
+func TestWalk_OnCapContinueGrantsAnotherWindow(t *testing.T) {
+	d := mustParse(t, pingPongJSON)
+	calls := 0
+	_, err := Walk(context.Background(), d, &Task{}, &fakeRunner{},
+		OnCap(func(_ context.Context, _ *ErrIterationCap) (CapDecision, error) {
+			calls++
+			if calls == 1 {
+				return CapDecision{Action: CapContinue}, nil
+			}
+			return CapDecision{Action: CapAbort}, nil
+		}))
+	var cap *ErrIterationCap
+	if !errors.As(err, &cap) {
+		t.Fatalf("want *ErrIterationCap after abort, got %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("onCap called %d times, want 2 (continue once, then abort)", calls)
+	}
+}
+
+// TestWalk_OnCapRerouteJumpsToTarget: a CapReroute ruling jumps the walk to the
+// named state without running the capped state's handler; rerouting to a terminal
+// completes the walk cleanly.
+func TestWalk_OnCapRerouteJumpsToTarget(t *testing.T) {
+	d := mustParse(t, rerouteJSON)
+	task := &Task{}
+	_, err := Walk(context.Background(), d, task, &fakeRunner{},
+		OnCap(func(_ context.Context, _ *ErrIterationCap) (CapDecision, error) {
+			return CapDecision{Action: CapReroute, Reroute: "done"}, nil
+		}))
+	if err != nil {
+		t.Fatalf("reroute to a terminal should complete, got %v", err)
+	}
+	if task.State != "done" {
+		t.Errorf("final state = %q, want done (rerouted)", task.State)
+	}
+}
+
+// TestWalk_OnCapAbortReturnsCapErr: an explicit CapAbort (and the zero-value
+// decision) terminates with *ErrIterationCap — the same outcome as no observer.
+func TestWalk_OnCapAbortReturnsCapErr(t *testing.T) {
+	d := mustParse(t, pingPongJSON)
+	_, err := Walk(context.Background(), d, &Task{}, &fakeRunner{},
+		OnCap(func(_ context.Context, _ *ErrIterationCap) (CapDecision, error) {
+			return CapDecision{Action: CapAbort}, nil
+		}))
+	var cap *ErrIterationCap
+	if !errors.As(err, &cap) {
+		t.Fatalf("abort should return *ErrIterationCap, got %v", err)
+	}
+}
+
+// TestWalk_OnCapErrorPropagates: an error from the OnCap observer aborts the walk
+// with that error (e.g. the interruption machinery is unreachable).
+func TestWalk_OnCapErrorPropagates(t *testing.T) {
+	d := mustParse(t, pingPongJSON)
+	sentinel := errors.New("interruption bus down")
+	_, err := Walk(context.Background(), d, &Task{}, &fakeRunner{},
+		OnCap(func(_ context.Context, _ *ErrIterationCap) (CapDecision, error) {
+			return CapDecision{}, sentinel
+		}))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("want sentinel, got %v", err)
+	}
+}
+
+func equalStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
