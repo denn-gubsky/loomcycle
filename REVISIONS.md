@@ -4,6 +4,19 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.17.4
+
+**🎨 Teams board — a draggable splitter between the diagram and the editor.** The
+v1.17.3 inline editor and the diagram were plain flex siblings, so a wide diagram
+could **overlap** the editor. The board is now a **full-height layout** (a fixed
+team list + a diagram/editor region) with the diagram and the create-team editor
+divided by the app's **draggable `Splitter`** (the same one Agents/Memory/Schedules
+use) — drag the handle to rebalance the two views, and the split width **persists**
+across reloads (`localStorage`). Each pane scrolls internally (a tall diagram or a
+long overlay JSON no longer pushes anything off-screen or into the other pane), and
+when the editor is closed the diagram fills the width. Web UI only; no wire/schema
+change; adapters unchanged (1.16.0 / 1.13.0).
+
 ## What's in v1.17.3
 
 **🎨 Teams board polish — legible selection + an inline editor.** Two Web UI fixes

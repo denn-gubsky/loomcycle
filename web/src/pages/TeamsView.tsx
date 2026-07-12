@@ -7,6 +7,7 @@ import {
   renderTeamDiagram,
 } from "../api";
 import { useTheme } from "../hooks/useTheme";
+import Splitter from "../components/Splitter";
 
 // TeamsView — the agent-team board (RFC AP / BD).
 //
@@ -205,11 +206,209 @@ export default function TeamsView() {
     }
   }
 
+  // The selected team's diagram — a self-contained full-height pane: a fixed
+  // header (name + highlight input) over a scrollable diagram region. Used both
+  // standalone and as the left pane of the Splitter, so it owns `height:100%`
+  // + an inner scroll rather than relying on the parent's flex.
+  const diagramPane = (
+    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}>
+      {!selected && <p style={{ opacity: 0.6 }}>Select a team to view its diagram.</p>}
+      {selected && (
+        <>
+          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap", flex: "0 0 auto" }}>
+            <strong>{selected}</strong>
+            <label style={{ fontSize: "0.85em", opacity: 0.8 }}>
+              highlight state:{" "}
+              <input
+                value={highlight}
+                onChange={(e) => setHighlight(e.target.value)}
+                placeholder="(state id)"
+                style={{ padding: "0.2rem 0.4rem" }}
+              />
+            </label>
+          </div>
+          {diagErr && (
+            <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem", flex: "0 0 auto" }}>
+              {diagErr}
+            </div>
+          )}
+          {renderErr && (
+            <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem", flex: "0 0 auto" }}>
+              Diagram render failed: {renderErr}
+            </div>
+          )}
+          {/* Scroll region — a tall/wide diagram scrolls here so the header +
+              highlight input stay pinned. */}
+          <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: "0.5rem" }}>
+            {diagram && svg && (
+              <div
+                // The rendered SVG. mermaid's theme (dark/default) matches the
+                // app, so edges + labels are legible; node fills come from the
+                // def's colour scheme.
+                //
+                // dangerouslySetInnerHTML is safe here (double-sanitized): the
+                // input `diagram.diagram` is server-generated + mmSanitize'd
+                // (render.go strips newlines/-->/%% from ids/labels), and we
+                // render with securityLevel:"strict", which runs the SVG output
+                // through mermaid's bundled DOMPurify. No untrusted raw HTML.
+                style={{
+                  padding: "0.75rem",
+                  border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
+                  borderRadius: 8,
+                  background: "var(--lc-surface, transparent)",
+                }}
+                dangerouslySetInnerHTML={{ __html: svg }}
+              />
+            )}
+            {diagram && (
+              <div style={{ marginTop: "0.5rem" }}>
+                <button
+                  onClick={() => setShowSource((s) => !s)}
+                  style={{ fontSize: "0.8em", padding: "0.2rem 0.5rem" }}
+                >
+                  {showSource ? "hide source" : "view source"}
+                </button>
+                {(showSource || (!svg && !renderErr)) && (
+                  <pre
+                    style={{
+                      marginTop: "0.5rem",
+                      background: "rgba(127,127,127,0.12)",
+                      color: "inherit",
+                      border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
+                      borderRadius: 6,
+                      padding: "0.75rem",
+                      overflowX: "auto",
+                      fontFamily: "var(--mono, monospace)",
+                      fontSize: "0.85em",
+                      whiteSpace: "pre",
+                    }}
+                  >
+                    {diagram.diagram}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  // The create-team editor — the Splitter's right pane. A card (surface + border)
+  // with a fixed header + footer and a scrollable form body, so a long overlay
+  // JSON never pushes the Create/Cancel buttons off-screen.
+  const editorPane = (
+    <div
+      style={{
+        height: "100%",
+        minHeight: 0,
+        boxSizing: "border-box",
+        background: "var(--lc-surface, transparent)",
+        color: "var(--lc-text, inherit)",
+        border: "1px solid var(--lc-rule, #ccc)",
+        borderRadius: "var(--lc-radius, 8px)",
+        padding: "1rem",
+        display: "flex",
+        flexDirection: "column",
+        gap: "0.75rem",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flex: "0 0 auto" }}>
+        <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Create team</h2>
+        <button
+          onClick={() => !creating && setShowCreate(false)}
+          disabled={creating}
+          title="close"
+          style={{ padding: "0.15rem 0.5rem", lineHeight: 1 }}
+        >
+          ✕
+        </button>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <p style={{ opacity: 0.7, margin: 0, fontSize: "0.85em" }}>
+          Author a TeamDef — a workflow state-machine graph. The graph is validated
+          on create; an invalid graph is refused with the reason.
+        </p>
+
+        <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+          <span>Start from a template</span>
+          <select
+            defaultValue=""
+            onChange={(e) => applyTemplate(e.target.value)}
+            style={{ padding: "0.35rem" }}
+          >
+            <option value="">Blank</option>
+            {TEAM_TEMPLATES.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+          <span style={{ fontSize: "0.78em", opacity: 0.6 }}>
+            Starter templates reference the <code>team-examples</code> bundle's handler
+            agents — a team only runs if that bundle is loaded.
+          </span>
+        </label>
+
+        <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+          <span>Name</span>
+          <input
+            value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+            placeholder="e.g. sdlc"
+            style={{ padding: "0.4rem" }}
+          />
+        </label>
+
+        <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+          <span>Graph (overlay JSON — entry / states / transitions)</span>
+          <textarea
+            value={createJSON}
+            onChange={(e) => setCreateJSON(e.target.value)}
+            spellCheck={false}
+            rows={16}
+            style={{
+              padding: "0.5rem",
+              fontFamily: "var(--mono, monospace)",
+              fontSize: "0.82em",
+              whiteSpace: "pre",
+              overflowWrap: "normal",
+            }}
+          />
+        </label>
+
+        {createErr && (
+          <div style={{ color: "var(--error, #e03131)", whiteSpace: "pre-wrap" }}>{createErr}</div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end", flex: "0 0 auto" }}>
+        <button onClick={() => setShowCreate(false)} disabled={creating}>
+          Cancel
+        </button>
+        <button onClick={() => void handleCreate()} disabled={creating} style={{ fontWeight: 600 }}>
+          {creating ? "Creating…" : "Create"}
+        </button>
+      </div>
+    </div>
+  );
+
   return (
-    <div style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap" }}>
+    <div
+      style={{
+        height: "100%",
+        minHeight: 0,
+        boxSizing: "border-box",
+        padding: "1rem",
+        display: "flex",
+        flexDirection: "column",
+        gap: "1rem",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap", flex: "0 0 auto" }}>
         <div>
-          <h1>teams</h1>
+          <h1 style={{ margin: 0 }}>teams</h1>
           <p style={{ opacity: 0.7, margin: "0.25rem 0" }}>
             Agent-team workflows. Select a team to see its state-machine diagram —
             states, transitions, and the colour scheme.
@@ -220,12 +419,16 @@ export default function TeamsView() {
         </button>
       </div>
 
-      {err && <div style={{ color: "var(--error, #e03131)" }}>Failed to load teams: {err}</div>}
+      {err && <div style={{ color: "var(--error, #e03131)", flex: "0 0 auto" }}>Failed to load teams: {err}</div>}
 
-      <div style={{ display: "flex", gap: "1.5rem", alignItems: "flex-start", flexWrap: "wrap" }}>
+      {/* Full-height body: fixed team list + a diagram/editor region divided by a
+          draggable Splitter. The row is bounded (flex:1 + minHeight:0 under a
+          height:100% root) so the Splitter's height:100% resolves and each pane
+          scrolls internally instead of overlapping. */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: "1.5rem", alignItems: "stretch" }}>
         {/* Team list */}
-        <div style={{ minWidth: 220, flex: "0 0 auto" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ width: 240, flex: "0 0 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flex: "0 0 auto" }}>
             <strong>teams ({teams.length})</strong>
             <button onClick={() => void fetchTeams()} disabled={loading}>
               {loading ? "…" : "refresh"}
@@ -237,7 +440,7 @@ export default function TeamsView() {
               template), or ask the <code>team/assistant</code> agent.
             </p>
           )}
-          <ul style={{ listStyle: "none", padding: 0, margin: "0.5rem 0" }}>
+          <ul style={{ listStyle: "none", padding: 0, margin: "0.5rem 0", flex: 1, minHeight: 0, overflowY: "auto" }}>
             {teams.map((t) => {
               const key = t.tenant_id ? `${t.tenant_id}/${t.name}` : t.name;
               const isSel = selected === t.name;
@@ -277,184 +480,22 @@ export default function TeamsView() {
           </ul>
         </div>
 
-        {/* Selected team diagram */}
-        <div style={{ flex: "1 1 420px", minWidth: 320 }}>
-          {!selected && <p style={{ opacity: 0.6 }}>Select a team to view its diagram.</p>}
-          {selected && (
-            <div>
-              <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
-                <strong>{selected}</strong>
-                <label style={{ fontSize: "0.85em", opacity: 0.8 }}>
-                  highlight state:{" "}
-                  <input
-                    value={highlight}
-                    onChange={(e) => setHighlight(e.target.value)}
-                    placeholder="(state id)"
-                    style={{ padding: "0.2rem 0.4rem" }}
-                  />
-                </label>
-              </div>
-              {diagErr && (
-                <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem" }}>
-                  {diagErr}
-                </div>
-              )}
-              {renderErr && (
-                <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem" }}>
-                  Diagram render failed: {renderErr}
-                </div>
-              )}
-              {diagram && svg && (
-                <div
-                  // The rendered SVG. mermaid's theme (dark/default) matches the
-                  // app, so edges + labels are legible; node fills come from the
-                  // def's colour scheme. Scrolls if the graph is wide.
-                  //
-                  // dangerouslySetInnerHTML is safe here (double-sanitized): the
-                  // input `diagram.diagram` is server-generated + mmSanitize'd
-                  // (render.go strips newlines/-->/%% from ids/labels), and we
-                  // render with securityLevel:"strict", which runs the SVG output
-                  // through mermaid's bundled DOMPurify. No untrusted raw HTML.
-                  style={{
-                    marginTop: "0.5rem",
-                    padding: "0.75rem",
-                    border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
-                    borderRadius: 8,
-                    overflow: "auto",
-                    background: "var(--lc-surface, transparent)",
-                  }}
-                  dangerouslySetInnerHTML={{ __html: svg }}
-                />
-              )}
-              {diagram && (
-                <div style={{ marginTop: "0.5rem" }}>
-                  <button
-                    onClick={() => setShowSource((s) => !s)}
-                    style={{ fontSize: "0.8em", padding: "0.2rem 0.5rem" }}
-                  >
-                    {showSource ? "hide source" : "view source"}
-                  </button>
-                  {(showSource || (!svg && !renderErr)) && (
-                    <pre
-                      style={{
-                        marginTop: "0.5rem",
-                        background: "rgba(127,127,127,0.12)",
-                        color: "inherit",
-                        border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
-                        borderRadius: 6,
-                        padding: "0.75rem",
-                        overflowX: "auto",
-                        fontFamily: "var(--mono, monospace)",
-                        fontSize: "0.85em",
-                        whiteSpace: "pre",
-                      }}
-                    >
-                      {diagram.diagram}
-                    </pre>
-                  )}
-                </div>
-              )}
-            </div>
+        {/* Diagram, optionally split with the editor by a draggable handle. */}
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+          {showCreate ? (
+            <Splitter
+              defaultLeftWidth={420}
+              minLeftWidth={240}
+              minRightWidth={320}
+              storageKey="loomcycle.split.teams"
+            >
+              {diagramPane}
+              {editorPane}
+            </Splitter>
+          ) : (
+            diagramPane
           )}
         </div>
-
-        {/* Create-team panel — inline beside the diagram (not a modal overlay),
-            so authoring a workflow and reading the current one sit side by side.
-            It wraps below on narrow screens (the row is flex-wrap). */}
-        {showCreate && (
-          <div
-            style={{
-              flex: "0 0 380px",
-              minWidth: 300,
-              maxWidth: 480,
-              alignSelf: "stretch",
-              background: "var(--lc-surface, transparent)",
-              color: "var(--lc-text, inherit)",
-              border: "1px solid var(--lc-rule, #ccc)",
-              borderRadius: "var(--lc-radius, 8px)",
-              padding: "1rem",
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.75rem",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Create team</h2>
-              <button
-                onClick={() => !creating && setShowCreate(false)}
-                disabled={creating}
-                title="close"
-                style={{ padding: "0.15rem 0.5rem", lineHeight: 1 }}
-              >
-                ✕
-              </button>
-            </div>
-            <p style={{ opacity: 0.7, margin: 0, fontSize: "0.85em" }}>
-              Author a TeamDef — a workflow state-machine graph. The graph is validated
-              on create; an invalid graph is refused with the reason.
-            </p>
-
-            <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-              <span>Start from a template</span>
-              <select
-                defaultValue=""
-                onChange={(e) => applyTemplate(e.target.value)}
-                style={{ padding: "0.35rem" }}
-              >
-                <option value="">Blank</option>
-                {TEAM_TEMPLATES.map((t) => (
-                  <option key={t.key} value={t.key}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
-              <span style={{ fontSize: "0.78em", opacity: 0.6 }}>
-                Starter templates reference the <code>team-examples</code> bundle's handler
-                agents — a team only runs if that bundle is loaded.
-              </span>
-            </label>
-
-            <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-              <span>Name</span>
-              <input
-                value={createName}
-                onChange={(e) => setCreateName(e.target.value)}
-                placeholder="e.g. sdlc"
-                style={{ padding: "0.4rem" }}
-              />
-            </label>
-
-            <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-              <span>Graph (overlay JSON — entry / states / transitions)</span>
-              <textarea
-                value={createJSON}
-                onChange={(e) => setCreateJSON(e.target.value)}
-                spellCheck={false}
-                rows={16}
-                style={{
-                  padding: "0.5rem",
-                  fontFamily: "var(--mono, monospace)",
-                  fontSize: "0.82em",
-                  whiteSpace: "pre",
-                  overflowWrap: "normal",
-                }}
-              />
-            </label>
-
-            {createErr && (
-              <div style={{ color: "var(--error, #e03131)", whiteSpace: "pre-wrap" }}>{createErr}</div>
-            )}
-
-            <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
-              <button onClick={() => setShowCreate(false)} disabled={creating}>
-                Cancel
-              </button>
-              <button onClick={() => void handleCreate()} disabled={creating} style={{ fontWeight: 600 }}>
-                {creating ? "Creating…" : "Create"}
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
