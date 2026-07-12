@@ -29,6 +29,7 @@ type substrateMock struct {
 	gotSkillDefInput    json.RawMessage
 	gotScheduleDefInput json.RawMessage
 	gotVolumeDefInput   json.RawMessage
+	gotTeamDefInput     json.RawMessage
 	gotPathInput        json.RawMessage
 	gotDocumentInput    json.RawMessage
 
@@ -36,6 +37,7 @@ type substrateMock struct {
 	skillDefResult    connector.ToolResult
 	scheduleDefResult connector.ToolResult
 	volumeDefResult   connector.ToolResult
+	teamDefResult     connector.ToolResult
 	pathResult        connector.ToolResult
 	documentResult    connector.ToolResult
 
@@ -43,6 +45,7 @@ type substrateMock struct {
 	skillDefErr    error
 	scheduleDefErr error
 	volumeDefErr   error
+	teamDefErr     error
 	pathErr        error
 	documentErr    error
 }
@@ -75,6 +78,11 @@ func (m *substrateMock) ScheduleDef(_ context.Context, in json.RawMessage) (conn
 func (m *substrateMock) VolumeDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	m.gotVolumeDefInput = in
 	return m.volumeDefResult, m.volumeDefErr
+}
+
+func (m *substrateMock) TeamDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotTeamDefInput = in
+	return m.teamDefResult, m.teamDefErr
 }
 
 func TestGrpcAgentDef_HappyPath(t *testing.T) {
@@ -178,6 +186,33 @@ func TestGrpcVolumeDef_HappyPath(t *testing.T) {
 		t.Errorf("connector wasn't called with the input")
 	}
 	if string(resp.GetOutputJson()) != `{"name":"repo-a","path":"/pool/_shared/repo-a","mode":"rw"}` {
+		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
+func TestGrpcTeamDef_HappyPath(t *testing.T) {
+	mc := &substrateMock{
+		teamDefResult: connector.ToolResult{
+			Text:    `{"def_id":"team_abc","name":"triage","version":1}`,
+			IsError: false,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.TeamDef(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create","name":"triage","overlay":{"entry":"start","states":[],"transitions":[]}}`),
+	})
+	if err != nil {
+		t.Fatalf("TeamDef: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true, want false")
+	}
+	if string(mc.gotTeamDefInput) == "" {
+		t.Errorf("connector wasn't called with the input")
+	}
+	if string(resp.GetOutputJson()) != `{"def_id":"team_abc","name":"triage","version":1}` {
 		t.Errorf("output_json = %s", resp.GetOutputJson())
 	}
 }

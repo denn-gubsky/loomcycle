@@ -7082,7 +7082,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x19BroadcastChannelsResponse\x12\x1c\n" +
 	"\tpublished\x18\x01 \x01(\x05R\tpublished\x12\x16\n" +
 	"\x06failed\x18\x02 \x01(\x05R\x06failed\x12=\n" +
-	"\aresults\x18\x03 \x03(\v2#.loomcycle.v1.BroadcastChannelEntryR\aresults2\xf3\x1d\n" +
+	"\aresults\x18\x03 \x03(\v2#.loomcycle.v1.BroadcastChannelEntryR\aresults2\xbf\x1e\n" +
 	"\tLoomcycle\x126\n" +
 	"\x03Run\x12\x18.loomcycle.v1.RunRequest\x1a\x13.loomcycle.v1.Event0\x01\x12@\n" +
 	"\bContinue\x12\x1d.loomcycle.v1.ContinueRequest\x1a\x13.loomcycle.v1.Event0\x01\x12P\n" +
@@ -7123,7 +7123,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"WebhookDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12S\n" +
 	"\x10MemoryBackendDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12S\n" +
 	"\x10OperatorTokenDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12L\n" +
-	"\tVolumeDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12G\n" +
+	"\tVolumeDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12J\n" +
+	"\aTeamDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12G\n" +
 	"\x04Path\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12K\n" +
 	"\bDocument\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12U\n" +
 	"\fListChannels\x12!.loomcycle.v1.ListChannelsRequest\x1a\".loomcycle.v1.ListChannelsResponse\x12^\n" +
@@ -7337,64 +7338,66 @@ var file_loomcycle_proto_depIdxs = []int32{
 	70, // 84: loomcycle.v1.Loomcycle.MemoryBackendDef:input_type -> loomcycle.v1.SubstrateRequest
 	70, // 85: loomcycle.v1.Loomcycle.OperatorTokenDef:input_type -> loomcycle.v1.SubstrateRequest
 	70, // 86: loomcycle.v1.Loomcycle.VolumeDef:input_type -> loomcycle.v1.SubstrateRequest
-	70, // 87: loomcycle.v1.Loomcycle.Path:input_type -> loomcycle.v1.SubstrateRequest
-	70, // 88: loomcycle.v1.Loomcycle.Document:input_type -> loomcycle.v1.SubstrateRequest
-	72, // 89: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
-	75, // 90: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
-	77, // 91: loomcycle.v1.Loomcycle.PublishChannel:input_type -> loomcycle.v1.PublishChannelRequest
-	79, // 92: loomcycle.v1.Loomcycle.SubscribeChannel:input_type -> loomcycle.v1.SubscribeChannelRequest
-	82, // 93: loomcycle.v1.Loomcycle.PeekChannel:input_type -> loomcycle.v1.PeekChannelRequest
-	84, // 94: loomcycle.v1.Loomcycle.AckChannel:input_type -> loomcycle.v1.AckChannelRequest
-	86, // 95: loomcycle.v1.Loomcycle.AwaitChannels:input_type -> loomcycle.v1.AwaitChannelsRequest
-	89, // 96: loomcycle.v1.Loomcycle.BroadcastChannels:input_type -> loomcycle.v1.BroadcastChannelsRequest
-	15, // 97: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
-	15, // 98: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
-	6,  // 99: loomcycle.v1.Loomcycle.SpawnRunBatch:output_type -> loomcycle.v1.BatchSpawnResult
-	8,  // 100: loomcycle.v1.Loomcycle.CompactRun:output_type -> loomcycle.v1.CompactRunResult
-	10, // 101: loomcycle.v1.Loomcycle.RunInput:output_type -> loomcycle.v1.RunInputResponse
-	15, // 102: loomcycle.v1.Loomcycle.StreamRun:output_type -> loomcycle.v1.Event
-	24, // 103: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
-	27, // 104: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
-	30, // 105: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
-	32, // 106: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
-	35, // 107: loomcycle.v1.Loomcycle.UsageReport:output_type -> loomcycle.v1.UsageReportResponse
-	38, // 108: loomcycle.v1.Loomcycle.TokenLimit:output_type -> loomcycle.v1.TokenLimitResponse
-	40, // 109: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
-	42, // 110: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
-	45, // 111: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
-	47, // 112: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
-	49, // 113: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
-	51, // 114: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
-	53, // 115: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
-	55, // 116: loomcycle.v1.Loomcycle.ResolveProbe:output_type -> loomcycle.v1.ResolverMatrixResponse
-	59, // 117: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
-	61, // 118: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
-	63, // 119: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
-	65, // 120: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
-	67, // 121: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
-	69, // 122: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
-	71, // 123: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 124: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 125: loomcycle.v1.Loomcycle.MCPServerDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 126: loomcycle.v1.Loomcycle.ScheduleDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 127: loomcycle.v1.Loomcycle.A2AServerCardDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 128: loomcycle.v1.Loomcycle.A2AAgentDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 129: loomcycle.v1.Loomcycle.WebhookDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 130: loomcycle.v1.Loomcycle.MemoryBackendDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 131: loomcycle.v1.Loomcycle.OperatorTokenDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 132: loomcycle.v1.Loomcycle.VolumeDef:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 133: loomcycle.v1.Loomcycle.Path:output_type -> loomcycle.v1.SubstrateResponse
-	71, // 134: loomcycle.v1.Loomcycle.Document:output_type -> loomcycle.v1.SubstrateResponse
-	73, // 135: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
-	76, // 136: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
-	78, // 137: loomcycle.v1.Loomcycle.PublishChannel:output_type -> loomcycle.v1.PublishChannelResponse
-	80, // 138: loomcycle.v1.Loomcycle.SubscribeChannel:output_type -> loomcycle.v1.SubscribeChannelResponse
-	83, // 139: loomcycle.v1.Loomcycle.PeekChannel:output_type -> loomcycle.v1.PeekChannelResponse
-	85, // 140: loomcycle.v1.Loomcycle.AckChannel:output_type -> loomcycle.v1.AckChannelResponse
-	88, // 141: loomcycle.v1.Loomcycle.AwaitChannels:output_type -> loomcycle.v1.AwaitChannelsResponse
-	91, // 142: loomcycle.v1.Loomcycle.BroadcastChannels:output_type -> loomcycle.v1.BroadcastChannelsResponse
-	97, // [97:143] is the sub-list for method output_type
-	51, // [51:97] is the sub-list for method input_type
+	70, // 87: loomcycle.v1.Loomcycle.TeamDef:input_type -> loomcycle.v1.SubstrateRequest
+	70, // 88: loomcycle.v1.Loomcycle.Path:input_type -> loomcycle.v1.SubstrateRequest
+	70, // 89: loomcycle.v1.Loomcycle.Document:input_type -> loomcycle.v1.SubstrateRequest
+	72, // 90: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
+	75, // 91: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
+	77, // 92: loomcycle.v1.Loomcycle.PublishChannel:input_type -> loomcycle.v1.PublishChannelRequest
+	79, // 93: loomcycle.v1.Loomcycle.SubscribeChannel:input_type -> loomcycle.v1.SubscribeChannelRequest
+	82, // 94: loomcycle.v1.Loomcycle.PeekChannel:input_type -> loomcycle.v1.PeekChannelRequest
+	84, // 95: loomcycle.v1.Loomcycle.AckChannel:input_type -> loomcycle.v1.AckChannelRequest
+	86, // 96: loomcycle.v1.Loomcycle.AwaitChannels:input_type -> loomcycle.v1.AwaitChannelsRequest
+	89, // 97: loomcycle.v1.Loomcycle.BroadcastChannels:input_type -> loomcycle.v1.BroadcastChannelsRequest
+	15, // 98: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
+	15, // 99: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
+	6,  // 100: loomcycle.v1.Loomcycle.SpawnRunBatch:output_type -> loomcycle.v1.BatchSpawnResult
+	8,  // 101: loomcycle.v1.Loomcycle.CompactRun:output_type -> loomcycle.v1.CompactRunResult
+	10, // 102: loomcycle.v1.Loomcycle.RunInput:output_type -> loomcycle.v1.RunInputResponse
+	15, // 103: loomcycle.v1.Loomcycle.StreamRun:output_type -> loomcycle.v1.Event
+	24, // 104: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
+	27, // 105: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
+	30, // 106: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
+	32, // 107: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
+	35, // 108: loomcycle.v1.Loomcycle.UsageReport:output_type -> loomcycle.v1.UsageReportResponse
+	38, // 109: loomcycle.v1.Loomcycle.TokenLimit:output_type -> loomcycle.v1.TokenLimitResponse
+	40, // 110: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
+	42, // 111: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
+	45, // 112: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
+	47, // 113: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
+	49, // 114: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
+	51, // 115: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
+	53, // 116: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
+	55, // 117: loomcycle.v1.Loomcycle.ResolveProbe:output_type -> loomcycle.v1.ResolverMatrixResponse
+	59, // 118: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
+	61, // 119: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
+	63, // 120: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
+	65, // 121: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
+	67, // 122: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
+	69, // 123: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
+	71, // 124: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 125: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 126: loomcycle.v1.Loomcycle.MCPServerDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 127: loomcycle.v1.Loomcycle.ScheduleDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 128: loomcycle.v1.Loomcycle.A2AServerCardDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 129: loomcycle.v1.Loomcycle.A2AAgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 130: loomcycle.v1.Loomcycle.WebhookDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 131: loomcycle.v1.Loomcycle.MemoryBackendDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 132: loomcycle.v1.Loomcycle.OperatorTokenDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 133: loomcycle.v1.Loomcycle.VolumeDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 134: loomcycle.v1.Loomcycle.TeamDef:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 135: loomcycle.v1.Loomcycle.Path:output_type -> loomcycle.v1.SubstrateResponse
+	71, // 136: loomcycle.v1.Loomcycle.Document:output_type -> loomcycle.v1.SubstrateResponse
+	73, // 137: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
+	76, // 138: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
+	78, // 139: loomcycle.v1.Loomcycle.PublishChannel:output_type -> loomcycle.v1.PublishChannelResponse
+	80, // 140: loomcycle.v1.Loomcycle.SubscribeChannel:output_type -> loomcycle.v1.SubscribeChannelResponse
+	83, // 141: loomcycle.v1.Loomcycle.PeekChannel:output_type -> loomcycle.v1.PeekChannelResponse
+	85, // 142: loomcycle.v1.Loomcycle.AckChannel:output_type -> loomcycle.v1.AckChannelResponse
+	88, // 143: loomcycle.v1.Loomcycle.AwaitChannels:output_type -> loomcycle.v1.AwaitChannelsResponse
+	91, // 144: loomcycle.v1.Loomcycle.BroadcastChannels:output_type -> loomcycle.v1.BroadcastChannelsResponse
+	98, // [98:145] is the sub-list for method output_type
+	51, // [51:98] is the sub-list for method input_type
 	51, // [51:51] is the sub-list for extension type_name
 	51, // [51:51] is the sub-list for extension extendee
 	0,  // [0:51] is the sub-list for field type_name
