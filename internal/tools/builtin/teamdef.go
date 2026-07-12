@@ -75,7 +75,8 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`graph (dangling transition, parallel without a consolidator, unreachable state, …) is refused and persists ` +
 	`nothing. Colours are presentation-only and excluded from the content hash. Promotion is explicit — selection ` +
 	`is policy, not runtime. render_diagram generates a Mermaid stateDiagram-v2 (with the colour ` +
-	`scheme applied) for a team. run walks a team's graph for a given input — each state's agent runs via the ` +
+	`scheme applied) for a stored team, or — when given an inline overlay — a dry-run preview of an unsaved ` +
+	`graph (syntax-checked, not persisted). run walks a team's graph for a given input — each state's agent runs via the ` +
 	`sub-agent machinery, output threads to the next state, until a terminal state (Phase 1: single-agent linear ` +
 	`teams; parallel/consolidator + pushback routing are deferred). Operations: create, fork, get, list, retire, ` +
 	`promote, verify, render_diagram, run.`
@@ -89,7 +90,7 @@ const teamDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name in your tenant, falling back to the shared \"\" base)."},
     "overlay": {
       "type": "object",
-      "description": "Team workflow graph. Top-level fields are merged per-field over the parent (slices replace wholesale). Server-set fields (def_id, version, parent_def_id, created_*) are ignored if supplied.",
+      "description": "Team workflow graph. For create/fork, top-level fields are merged per-field over the parent (slices replace wholesale); server-set fields (def_id, version, parent_def_id, created_*) are ignored if supplied. For render_diagram, supplying an overlay renders a DRY-RUN preview of the unsaved graph (syntax-checked, not persisted) instead of resolving a stored def.",
       "properties": {
         "entry":          {"type": "string", "description": "The entry state id."},
         "max_iterations": {"type": "integer", "description": "Per-state cycle cap (0 = default)."},
@@ -465,6 +466,38 @@ func (t *TeamDef) execRenderDiagram(ctx context.Context, in teamDefInput) (tools
 	if in.Format != "" && in.Format != "mermaid" {
 		return errResult(fmt.Sprintf("render_diagram: format %q is not supported (only mermaid; d2 is deferred)", in.Format)), nil
 	}
+
+	// Dry-run preview: when an inline overlay is supplied, render (and
+	// syntax-check) the UNSAVED definition without any store write. This backs
+	// the Web UI editor's "refresh diagram" — an operator previews edits before
+	// persisting them via create/fork. No def is read (the overlay carries the
+	// whole graph), so no tenant/def_id resolution or store access is needed;
+	// the same Parse+Validate create runs is applied so the check matches.
+	if len(in.Overlay) > 0 {
+		defJSON, err := t.buildDefinition("", in.Overlay)
+		if err != nil {
+			return errResult(fmt.Sprintf("render_diagram: %s", err)), nil
+		}
+		def, err := teamgraph.Parse(defJSON)
+		if err != nil {
+			return errResult(fmt.Sprintf("render_diagram: %s", err)), nil
+		}
+		if err := teamgraph.Validate(def); err != nil {
+			return errResult(fmt.Sprintf("render_diagram: %s", err)), nil
+		}
+		name := in.Name
+		if name == "" {
+			name = "team"
+		}
+		return okJSON(map[string]any{
+			"name":    name,
+			"def_id":  "",
+			"format":  "mermaid",
+			"diagram": teamgraph.RenderMermaid(name, def, in.HighlightState),
+			"preview": true,
+		})
+	}
+
 	var row store.TeamDefRow
 	var err error
 	switch {
