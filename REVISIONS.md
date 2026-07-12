@@ -4,6 +4,20 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.19.0
+
+**🧑‍🤝‍🧑 Agent Teams grow up — parallel execution, durable boards, a gRPC/adapter surface, and per-tenant Bash creds.** Four deferred team items land together.
+
+- **Parallel fan-out + consolidator execution.** `TeamDef op=run` now walks every handler kind, not just single-agent linear teams. A **`parallel`** state fans out to its agents concurrently (bounded; `wait: all | any | at_least:N`), then a **`consolidator`** agent reads the `{"results":[…]}` envelope and names the next edge on a `signal: <edge>` line (`success` to advance, `pushback:<reason>` to loop back) — so pushback routing works. The per-state iteration cap still bounds every cycle. `internal/teamrun` only; no wire change. (#712)
+
+- **Durable, resumable team boards + interrupt-on-cap.** `op=run` may OPTIONALLY bind to a Document task board (**`board_chunk_id`**): each transition persists `chunk.status` = the current state, and a later run **resumes** from it. And **`interrupt_on_cap`** escalates an iteration-cap overflow to a human via the Interruption tool — continue / `reroute:<state>` / abort — instead of aborting; an unanswered or declined ask still terminates (the cap guarantee holds). Both are additive opt-in flags; a run that sets neither is **byte-identical** to before. (#713)
+
+- **TeamDef over gRPC + the TS/Python adapters.** Teams were HTTP/MCP-only; now a **`TeamDef` gRPC RPC** (`ScopeTenant`, op-discriminated like the other substrate RPCs) plus **`@loomcycle/client`** and **Python** methods — `listTeams` / `renderTeamDiagram` / `getTeamDef` / `createTeam` / `forkTeam` / `deleteTeam` / `runTeam`. Adapters bumped to **1.19.0**. (#711)
+
+- **Per-tenant credentials for raw Bash.** **`LOOMCYCLE_BASH_ALLOWED_CREDS`** injects named per-tenant `CredentialDef`s into raw Bash's child env (tenant-isolated, `registerSecret`-redacted, opt-in) — mirroring the Bashbox host-command fallback, so a raw-Bash software team gets its own `GITHUB_TOKEN` without the operator's host key. No existing Bash protection weakened. (#710)
+
+No schema migration. `@loomcycle/client` **1.19.0** / Python **1.19.0**.
+
 ## What's in v1.18.1
 
 **🩹 Teams editor — fix loading an existing team + add team delete.** Two fixes on
