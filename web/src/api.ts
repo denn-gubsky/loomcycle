@@ -1519,9 +1519,10 @@ export interface TeamDefDetail {
   version: number;
   retired?: boolean;
   content_sha256?: string;
-  // The stored graph JSON ({entry, states, transitions, colors?, ...}) — the
-  // editable definition loaded into the Teams editor.
-  definition: string;
+  // The stored graph ({entry, states, transitions, colors?, ...}) — the editable
+  // definition loaded into the Teams editor. The server stores it as a
+  // json.RawMessage, so it arrives INLINED as an object (not a JSON string).
+  definition: unknown;
 }
 
 // getTeamDef fetches one version's full record incl. the editable `definition`
@@ -1531,6 +1532,17 @@ export function getTeamDef(defId: string): Promise<TeamDefDetail> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ op: "get", def_id: defId }),
+  });
+}
+
+// deleteTeam hard-removes a whole team by name (all versions + active pointer),
+// scoped to the caller's tenant (op=delete). Teams are runtime-only, so this is
+// how an operator clears an obsolete/test team.
+export function deleteTeam(name: string): Promise<{ name: string; deleted: boolean }> {
+  return jsonFetch("/v1/_teamdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "delete", name }),
   });
 }
 

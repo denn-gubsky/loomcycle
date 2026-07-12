@@ -3,6 +3,7 @@ import {
   TeamDiagram,
   TeamNameSummary,
   createTeam,
+  deleteTeam,
   forkTeam,
   getTeamDef,
   listTeams,
@@ -101,6 +102,7 @@ export default function TeamsView() {
   const [editorErr, setEditorErr] = useState<string>("");
   const [loadingDef, setLoadingDef] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Diagram.
   const [highlight, setHighlight] = useState<string>("");
@@ -138,8 +140,11 @@ export default function TeamsView() {
     setEditorErr("");
     try {
       const detail = await getTeamDef(defId);
-      const parsed = JSON.parse(detail.definition);
-      setEditorText(pretty(parsed));
+      // `definition` is a json.RawMessage on the server → it arrives INLINED as
+      // an object; only parse if it came back as a JSON string.
+      const raw = detail.definition;
+      const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
+      setEditorText(pretty(obj));
     } catch (e) {
       setEditorText("");
       setEditorErr("Failed to load definition: " + msg(e));
@@ -295,6 +300,28 @@ export default function TeamsView() {
     }
   }
 
+  async function onDelete() {
+    if (!selected) return;
+    if (!window.confirm(`Delete team "${selected}"? This removes all its versions and cannot be undone.`)) {
+      return;
+    }
+    setEditorErr("");
+    setDeleting(true);
+    try {
+      await deleteTeam(selected);
+      await fetchTeams();
+      // Clear the workspace — the team is gone.
+      setSelected("");
+      setEditorText("");
+      setDiagramSource(null);
+      setDiagram(null);
+    } catch (e) {
+      setEditorErr("Delete failed: " + msg(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function onCreate() {
     setEditorErr("");
     if (!createName.trim()) {
@@ -335,9 +362,18 @@ export default function TeamsView() {
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flex: "0 0 auto", gap: "0.5rem" }}>
         <strong>{creating ? "Create team" : `Edit: ${selected}`}</strong>
-        {creating && (
+        {creating ? (
           <button onClick={cancelCreate} disabled={saving} style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem" }}>
             Cancel
+          </button>
+        ) : (
+          <button
+            onClick={() => void onDelete()}
+            disabled={saving || deleting || loadingDef}
+            title="Delete this team (all versions)"
+            style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", color: "var(--error, #e03131)" }}
+          >
+            {deleting ? "Deleting…" : "Delete"}
           </button>
         )}
       </div>
