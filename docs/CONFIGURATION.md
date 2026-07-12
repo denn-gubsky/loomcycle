@@ -588,7 +588,7 @@ When the provider reports a window, the loop also caps the kept tail to ~half th
 For a terminal you steer turn-by-turn:
 
 - `unbounded_iterations: true` — an interactive run is operator-driven and Cancel-bounded; don't let the 16-iteration runaway guard end a live session (each steer + each end_turn park burns an iteration).
-- `interruption: { enabled: true }` — let the operator answer the agent's questions inline.
+- add `Interruption` to the agent's `tools` — lets the operator answer the agent's questions inline. Listing the tool enables it; the older separate `interruption: { enabled: true }` flag is no longer required (`kinds` / `max_pending` remain optional policy under `interruption:`).
 - `max_tokens: 8192` — the local default (4096) truncates large output.
 
 All of this is wired together in [`loomcycle.local-interactive.example.yaml`](../loomcycle.local-interactive.example.yaml).

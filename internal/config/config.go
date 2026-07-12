@@ -1372,14 +1372,18 @@ func (s ContextPluginSpec) IsEnabled() bool { return s.Enabled == nil || *s.Enab
 // sync when a built-in plugin is added.
 var knownContextPluginNames = map[string]bool{"redact": true}
 
-// AgentInterruptionACL is the per-agent v0.8.16 Interruption tool
-// gate. Three fields:
+// AgentInterruptionACL is the per-agent Interruption tool policy.
+// Three fields:
 //
-//   - Enabled gates the tool entirely. False (default) → every op
-//     returns is_error with a "not enabled" refusal.
+//   - Enabled is now OPTIONAL. Listing the `Interruption` tool in the agent's
+//     `tools` allowlist enables the tool automatically (that default-deny grant
+//     is the opt-in — interruptionPolicyForAgent derives Enabled from tool
+//     presence). Setting Enabled: true still works and additionally enables it
+//     even without the tool listed (unusual). It no longer needs to be paired
+//     with the tool — that redundant gate caused live "not enabled" errors.
 //   - Kinds is the allowlist of interrupt kinds this agent may
-//     create. v0.8.16 supports only "question". Empty (when
-//     Enabled=true) defaults to ["question"]. Future "pause" /
+//     create. Currently only "question" is supported. Empty (when
+//     the tool is enabled) defaults to ["question"]. Future "pause" /
 //     "wait_until" / "approval" kinds land here as additive opt-ins
 //     without a yaml shape change.
 //   - MaxPending caps simultaneous pending interrupts on a single
@@ -4648,9 +4652,10 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	if has("Channel") && len(a.Channels.Publish) == 0 && len(a.Channels.Subscribe) == 0 {
 		w = append(w, fmt.Sprintf("agent %q: tools includes Channel but channels.publish and channels.subscribe are both empty — every Channel op will default-deny", name))
 	}
-	if has("Interruption") && !a.Interruption.Enabled {
-		w = append(w, fmt.Sprintf("agent %q: tools includes Interruption but interruption.enabled is false — every Interruption op will refuse; set interruption.enabled: true", name))
-	}
+	// NOTE: no Interruption warning here — listing the Interruption tool in
+	// `tools` now enables it automatically (interruptionPolicyForAgent derives
+	// Enabled from tool presence), so a missing `interruption.enabled` is no
+	// longer a misconfiguration.
 	return w
 }
 
