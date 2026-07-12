@@ -2089,6 +2089,15 @@ type Env struct {
 	// network calls. Operators wanting real isolation should run
 	// loomcycle inside a container or VM.
 	BashEnabled bool
+	// BashAllowedCreds names RFC AR credentials (by CredentialDef name, e.g.
+	// GITHUB_TOKEN) injected into the raw Bash tool's child env — a PER-TENANT
+	// counterpart to the operator-shared env allowlist: each is resolved for the
+	// run's own (tenant, user, agent) identity via the credential engine, so a
+	// tenant's own GITHUB_TOKEN reaches the command instead of one shared
+	// operator host var. A resolved cred overrides a same-named host env var.
+	// Sourced from LOOMCYCLE_BASH_ALLOWED_CREDS (comma-separated). Requires a KEK
+	// (LOOMCYCLE_SECRET_KEY) for the engine to resolve; empty (default) = none.
+	BashAllowedCreds []string
 	// BashboxEnabled gates the Bashbox tool — a TRUE in-process sandbox
 	// (gbash) that spawns no OS process, roots all paths at the mounted
 	// volume, and has no network. Unlike Bash it HONORS read-only volumes
@@ -2904,6 +2913,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		ClientToolMaxBytes:          int64(getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_BYTES", 1<<20)),
 		ClientToolMaxConns:          getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", 8),
 		BashEnabled:                 os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
+		BashAllowedCreds:            splitCSV(os.Getenv("LOOMCYCLE_BASH_ALLOWED_CREDS")),
 		BashboxEnabled:              os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
 		BashboxFallbackCommands:     splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
 		BashboxFallbackAllowedEnv:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV")),

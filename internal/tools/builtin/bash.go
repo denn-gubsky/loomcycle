@@ -45,6 +45,22 @@ type Bash struct {
 	// because most binaries break without it). Empty by default —
 	// only PATH leaks.
 	AllowedExtraEnv []string
+
+	// AllowedCreds names RFC AR credentials (by CredentialDef name, e.g.
+	// GITHUB_TOKEN) injected into the child's env — a PER-TENANT counterpart to
+	// AllowedExtraEnv (which reads one shared operator host var). Each is
+	// resolved for the run's own (tenant, user, agent) identity via CredResolve,
+	// so a tenant's own GITHUB_TOKEN reaches the command instead of one shared
+	// operator host var. A resolved cred OVERRIDES a same-named host env var.
+	// Empty (default) = none, so behavior is unchanged unless the operator opts
+	// in with LOOMCYCLE_BASH_ALLOWED_CREDS.
+	AllowedCreds []string
+	// CredResolve resolves an RFC AR credential by NAME for the run on ctx (the
+	// tenant/user/agent come from the run identity on ctx, so resolution is
+	// tenant-isolated), returning (value, ok). Wired to credential.Engine.Resolve.
+	// nil = credential injection disabled. The value is a secret — it goes only
+	// into the child's env and must never be logged.
+	CredResolve func(ctx context.Context, name string) (string, bool)
 }
 
 func (b *Bash) Name() string { return "Bash" }
@@ -121,7 +137,9 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", args.Command)
 	cmd.Dir = cwd
-	cmd.Env = b.buildEnv()
+	// Pass the original Execute ctx (carries the run identity) rather than the
+	// timeout-bound runCtx — see buildEnv.
+	cmd.Env = b.buildEnv(ctx)
 	// Capture combined output through a bounded buffer. We write to a
 	// LimitedWriter rather than reading all-at-once so a malicious command
 	// can't OOM us by producing 100 GiB of output before we read it.
@@ -163,9 +181,14 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // buildEnv constructs the env passed to the child. Only PATH leaks by
 // default (most binaries are unusable without it), plus any explicitly
 // allow-listed names. Sensitive secrets like API keys never leak — the
-// model could otherwise extract them via `env`.
-func (b *Bash) buildEnv() []string {
-	return scrubbedHostEnv(b.AllowedExtraEnv)
+// model could otherwise extract them via `env`. On top of that, any RFC AR
+// credential in AllowedCreds is resolved for THIS run's identity (from ctx)
+// and injected per-tenant, overriding a same-named host var. ctx is the
+// caller's Execute ctx (carries the run identity), NOT the command's
+// timeout-bound context — a credential store read is setup, not part of the
+// bounded command execution, so it must not race the command's wall-clock.
+func (b *Bash) buildEnv(ctx context.Context) []string {
+	return mergeCredEnv(ctx, scrubbedHostEnv(b.AllowedExtraEnv), b.AllowedCreds, b.CredResolve)
 }
 
 // scrubbedHostEnv builds the environment for a host child process: PATH always
