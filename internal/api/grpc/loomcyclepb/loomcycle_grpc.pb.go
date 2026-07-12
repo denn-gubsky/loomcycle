@@ -74,6 +74,7 @@ const (
 	Loomcycle_MemoryBackendDef_FullMethodName    = "/loomcycle.v1.Loomcycle/MemoryBackendDef"
 	Loomcycle_OperatorTokenDef_FullMethodName    = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
 	Loomcycle_VolumeDef_FullMethodName           = "/loomcycle.v1.Loomcycle/VolumeDef"
+	Loomcycle_TeamDef_FullMethodName             = "/loomcycle.v1.Loomcycle/TeamDef"
 	Loomcycle_Path_FullMethodName                = "/loomcycle.v1.Loomcycle/Path"
 	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
@@ -313,6 +314,15 @@ type LoomcycleClient interface {
 	// Same SubstrateRequest body shape (op-discriminated input_json +
 	// is_error tool refusals in the response).
 	VolumeDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// TeamDef dispatches to the RFC AP team-workflow substrate. Mirrors
+	// POST /v1/_teamdef. TENANT-CONFINED (ScopeTenant, like AgentDef/SkillDef):
+	// the tool stamps the caller's authoritative tenant + opaque-404s
+	// cross-tenant reads. Op-discriminated input_json (create / fork / get /
+	// list / retire / delete / promote / verify / render_diagram / run — a
+	// versioned def family; `run` walks the team's state graph, spawning each
+	// state's agent under the same admission a run would get). Same
+	// SubstrateRequest/Response body shape (is_error carries tool refusals).
+	TeamDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
 	// TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
 	// the operator-trust ctx + the caller's authoritative tenant, never the
@@ -756,6 +766,16 @@ func (c *loomcycleClient) VolumeDef(ctx context.Context, in *SubstrateRequest, o
 	return out, nil
 }
 
+func (c *loomcycleClient) TeamDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_TeamDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) Path(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubstrateResponse)
@@ -1092,6 +1112,15 @@ type LoomcycleServer interface {
 	// Same SubstrateRequest body shape (op-discriminated input_json +
 	// is_error tool refusals in the response).
 	VolumeDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// TeamDef dispatches to the RFC AP team-workflow substrate. Mirrors
+	// POST /v1/_teamdef. TENANT-CONFINED (ScopeTenant, like AgentDef/SkillDef):
+	// the tool stamps the caller's authoritative tenant + opaque-404s
+	// cross-tenant reads. Op-discriminated input_json (create / fork / get /
+	// list / retire / delete / promote / verify / render_diagram / run — a
+	// versioned def family; `run` walks the team's state graph, spawning each
+	// state's agent under the same admission a run would get). Same
+	// SubstrateRequest/Response body shape (is_error carries tool refusals).
+	TeamDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
 	// TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
 	// the operator-trust ctx + the caller's authoritative tenant, never the
@@ -1255,6 +1284,9 @@ func (UnimplementedLoomcycleServer) OperatorTokenDef(context.Context, *Substrate
 }
 func (UnimplementedLoomcycleServer) VolumeDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VolumeDef not implemented")
+}
+func (UnimplementedLoomcycleServer) TeamDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TeamDef not implemented")
 }
 func (UnimplementedLoomcycleServer) Path(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Path not implemented")
@@ -1934,6 +1966,24 @@ func _Loomcycle_VolumeDef_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_TeamDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).TeamDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_TeamDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).TeamDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_Path_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubstrateRequest)
 	if err := dec(in); err != nil {
@@ -2245,6 +2295,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VolumeDef",
 			Handler:    _Loomcycle_VolumeDef_Handler,
+		},
+		{
+			MethodName: "TeamDef",
+			Handler:    _Loomcycle_TeamDef_Handler,
 		},
 		{
 			MethodName: "Path",

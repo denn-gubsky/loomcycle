@@ -315,6 +315,16 @@ service Loomcycle {
   // is_error tool refusals in the response).
   rpc VolumeDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // TeamDef dispatches to the RFC AP team-workflow substrate. Mirrors
+  // POST /v1/_teamdef. TENANT-CONFINED (ScopeTenant, like AgentDef/SkillDef):
+  // the tool stamps the caller's authoritative tenant + opaque-404s
+  // cross-tenant reads. Op-discriminated input_json (create / fork / get /
+  // list / retire / delete / promote / verify / render_diagram / run — a
+  // versioned def family; `run` walks the team's state graph, spawning each
+  // state's agent under the same admission a run would get). Same
+  // SubstrateRequest/Response body shape (is_error carries tool refusals).
+  rpc TeamDef(SubstrateRequest) returns (SubstrateResponse);
+
   // Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
   // TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
   // the operator-trust ctx + the caller's authoritative tenant, never the

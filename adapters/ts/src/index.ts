@@ -57,6 +57,15 @@
  *     listVolumes(): Promise<PersistentVolumesResponse>
  *     listEphemeralVolumes(): Promise<EphemeralVolumesResponse>
  *
+ *     // Agent Teams (RFC AP — TeamDef substrate; tenant-confined)
+ *     listTeams(): Promise<ListTeamsResponse>
+ *     renderTeamDiagram(name, opts?): Promise<TeamDiagram>
+ *     getTeamDef(defId): Promise<TeamDefDetail>
+ *     createTeam(name, overlay): Promise<CreatedTeam>
+ *     forkTeam(name, overlay): Promise<CreatedTeam>
+ *     deleteTeam(name): Promise<{name, deleted}>
+ *     runTeam({name|defId, input}): Promise<TeamRunResult>
+ *
  *     // Path VFS + chunked-graph Documents on the wire (v1.4.0 — RFC AL / RFC AK)
  *     path(input): Promise<PathToolResponse>                      // resolve/ls/stat/mkdir/mv/rm
  *     document(input): Promise<DocumentToolResponse>              // 13 ops; needs SQL Memory
@@ -185,6 +194,13 @@ export type {
   // Substrate admin (v0.8.22)
   SubstrateToolInput,
   SubstrateToolResponse,
+  // RFC AP Agent Teams (TeamDef substrate)
+  TeamNameSummary,
+  ListTeamsResponse,
+  TeamDiagram,
+  CreatedTeam,
+  TeamDefDetail,
+  TeamRunResult,
   // RFC AL Path VFS + RFC AK Document on the wire (v1.4.0)
   PathToolInput,
   PathToolResponse,

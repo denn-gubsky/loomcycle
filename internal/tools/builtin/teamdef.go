@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
@@ -67,6 +68,31 @@ type TeamDef struct {
 	// the walk (used for every spawned agent), or an error that aborts the run.
 	// nil = no admission (unit tests / authoring-only wiring).
 	Admit func(ctx context.Context) (context.Context, error)
+
+	// Board, if set, lets an op=run OPTIONALLY bind to a Document task board: when
+	// the caller passes board_chunk_id, the walk persists its position onto that
+	// chunk's status (chunk.status = the current team state) on every transition
+	// and RESUMES from the persisted status on the next run — durable, resumable
+	// progress. Satisfied by *Document (same package). nil = board binding is
+	// unavailable (board_chunk_id is then refused). Wired by SetTeamDefTool.
+	Board teamBoard
+
+	// AskHuman, if set, escalates an iteration-cap overflow to a human instead of
+	// aborting: when the caller passes interrupt_on_cap, a capped state raises an
+	// Interruption `ask` (this closure blocks until answered/timed-out/cancelled)
+	// and the answer decides continue / reroute:<state> / abort. It mirrors the
+	// Spawn/Admit injection — wired by the server to the Interruption tool. nil (or
+	// a run that omits interrupt_on_cap) = a cap returns the iteration_cap outcome.
+	AskHuman func(ctx context.Context, question string) (answer string, err error)
+}
+
+// teamBoard is the minimal Document-board surface a board-bound op=run needs: read
+// a chunk's status to resume, and set it to persist each transition. An interface
+// (satisfied by *Document, same package) keeps op=run testable with a fake and
+// documents exactly the two operations the walk performs against a board.
+type teamBoard interface {
+	GetChunkStatus(ctx context.Context, scope, chunkID string) (status string, ok bool, err error)
+	SetChunkStatus(ctx context.Context, scope, chunkID, status string) error
 }
 
 const teamDefDescription = `Author, fork, promote, retire, and inspect team workflow definitions at runtime (see Context op=help topic=agent-teams). ` +
@@ -79,7 +105,9 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`graph (syntax-checked, not persisted). run walks a team's graph for a given input via the sub-agent ` +
 	`machinery — a single agent, or a parallel fan-out whose consolidator agent selects the next edge ` +
 	`(success to advance, pushback to loop back for rework) — output threads to the next state, until a ` +
-	`terminal state. retire soft-retires one version; delete ` +
+	`terminal state. run may OPTIONALLY bind to a Document chunk board (board_chunk_id) so progress persists ` +
+	`as chunk.status and resumes across runs, and may escalate an iteration cap to a human (interrupt_on_cap) ` +
+	`instead of aborting. retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
 	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run.`
 
@@ -108,7 +136,10 @@ const teamDefInputSchema = `{
     "content_sha256": {"type": "string", "description": "Input for op=verify — the local content hash to compare against the active row."},
     "format":         {"type": "string", "enum": ["mermaid","d2"], "description": "render_diagram output format (default mermaid; d2 is deferred)."},
     "highlight_state": {"type": "string", "description": "render_diagram: optionally mark this state (e.g. a chunk's current state) with a bold outline."},
-    "input":          {"type": "string", "description": "run: the initial input handed to the entry state's agent (the task/prompt the team works on)."}
+    "input":          {"type": "string", "description": "run: the initial input handed to the entry state's agent (the task/prompt the team works on)."},
+    "board_chunk_id": {"type": "string", "description": "run (optional): bind the walk to a Document chunk task board. Each state transition persists chunk.status = the current team state (durable progress), and a later run RESUMES from the persisted status. Omit for an ephemeral run (default)."},
+    "board_scope":    {"type": "string", "enum": ["agent","user"], "description": "run (optional): the Document scope of board_chunk_id (default user)."},
+    "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."}
   },
   "required": ["op"]
 }`
@@ -122,10 +153,13 @@ type teamDefInput struct {
 	Description    string          `json:"description,omitempty"`
 	Promote        *bool           `json:"promote,omitempty"`
 	Retired        *bool           `json:"retired,omitempty"`
-	ContentSHA256  string          `json:"content_sha256,omitempty"`  // input for op: verify
-	Format         string          `json:"format,omitempty"`          // render_diagram: mermaid (default) | d2
-	HighlightState string          `json:"highlight_state,omitempty"` // render_diagram: mark a state
-	Input          string          `json:"input,omitempty"`           // run: initial input to the entry state
+	ContentSHA256  string          `json:"content_sha256,omitempty"`   // input for op: verify
+	Format         string          `json:"format,omitempty"`           // render_diagram: mermaid (default) | d2
+	HighlightState string          `json:"highlight_state,omitempty"`  // render_diagram: mark a state
+	Input          string          `json:"input,omitempty"`            // run: initial input to the entry state
+	BoardChunkID   string          `json:"board_chunk_id,omitempty"`   // run: bind the walk to a Document chunk board
+	BoardScope     string          `json:"board_scope,omitempty"`      // run: board_chunk_id's Document scope (agent|user, default user)
+	InterruptOnCap bool            `json:"interrupt_on_cap,omitempty"` // run: escalate an iteration cap to a human instead of aborting
 }
 
 // Name implements tools.Tool.
@@ -564,12 +598,32 @@ func (t *TeamDef) execRenderDiagram(ctx context.Context, in teamDefInput) (tools
 // a consolidator that selects the outgoing edge (enabling success/pushback
 // routing) — see teamrun.NewAgentRunner.
 //
-// The walk is ephemeral: the position isn't persisted to a Document chunk and a
-// cycle-cap overflow returns a clear error rather than raising an Interruption —
-// the chunk-backed persistent walk (with Interruption-on-cap) is a follow-up.
+// Two opt-in additions (RFC AP/BD), both additive — a run that sets neither is
+// byte-identical to the ephemeral Phase-1 path (no board, cap → iteration_cap):
+//   - board_chunk_id binds the walk to a Document chunk task board. Each state
+//     transition upserts the chunk's status to the current state (durable
+//     progress), and a later run RESUMES from the persisted status. The board
+//     tracks POSITION only — the threaded intermediate output is NOT persisted, so
+//     a resumed walk re-seeds the entry input from the caller's `input` (each
+//     state re-reads its working material from the chunk the agents co-author).
+//   - interrupt_on_cap escalates an iteration-cap overflow to a human via the
+//     Interruption machinery (continue / reroute:<state> / abort) instead of
+//     returning the iteration_cap outcome. An unanswered/declined ask aborts, so
+//     the termination guarantee holds.
 func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, error) {
 	if t.Spawn == nil {
 		return errResult("run: this TeamDef tool is not configured for execution (no runner wired)"), nil
+	}
+
+	// Board binding is opt-in; if requested it MUST be wired (a SQL-Memory-backed
+	// Document tool), else fail loud rather than silently dropping durability.
+	boardBound := in.BoardChunkID != ""
+	if boardBound && t.Board == nil {
+		return errResult("run: board_chunk_id set but this TeamDef tool has no Document board wired (requires SQL Memory)"), nil
+	}
+	boardScope := in.BoardScope
+	if boardScope == "" {
+		boardScope = "user"
 	}
 
 	var row store.TeamDefRow
@@ -614,7 +668,65 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	}
 
 	task := &teamrun.Task{Input: in.Input}
-	trace, walkErr := teamrun.Walk(walkCtx, def, task, teamrun.NewAgentRunner(t.Spawn))
+
+	// Assemble walk options. When neither feature is used, opts is empty and Walk
+	// runs with no options → the ephemeral Phase-1 behaviour is byte-identical.
+	var opts []teamrun.Option
+	resumedFrom := ""
+	if boardBound {
+		// Resume: continue from the chunk's persisted status when it names a state
+		// still in the current graph (a graph edit that dropped that state falls
+		// back to the entry — start over rather than resume into a hole).
+		status, ok, gerr := t.Board.GetChunkStatus(walkCtx, boardScope, in.BoardChunkID)
+		if gerr != nil {
+			return errResult(fmt.Sprintf("run: board: %s", gerr)), nil
+		}
+		if ok && status != "" {
+			if _, known := teamgraph.StateByID(def, status); known {
+				task.State = status
+				resumedFrom = status
+			}
+		}
+		opts = append(opts, teamrun.OnEnterState(func(c context.Context, state string) error {
+			if serr := t.Board.SetChunkStatus(c, boardScope, in.BoardChunkID, state); serr != nil {
+				return fmt.Errorf("board: %w", serr)
+			}
+			return nil
+		}))
+	}
+
+	interruptions := 0
+	lastDecision := ""
+	if in.InterruptOnCap && t.AskHuman != nil {
+		opts = append(opts, teamrun.OnCap(func(c context.Context, capErr *teamrun.ErrIterationCap) (teamrun.CapDecision, error) {
+			interruptions++
+			q := fmt.Sprintf(
+				"Team %q: state %q hit its iteration cap (%d entries > max %d). "+
+					"Reply `continue` to grant another %d-iteration window, `reroute:<state>` to jump to another state, or `abort` to stop.",
+				row.Name, capErr.State, capErr.Count, capErr.Max, capErr.Max)
+			answer, aerr := t.AskHuman(c, q)
+			if aerr != nil {
+				// Interruption unavailable / timed out / cancelled / declined →
+				// abort. Preserves the termination guarantee (a failed escalation
+				// never loops).
+				lastDecision = "abort"
+				return teamrun.CapDecision{Action: teamrun.CapAbort}, nil
+			}
+			dec := parseCapAnswer(answer)
+			// A reroute to an unknown state degrades to abort (fail safe) so a
+			// human typo can't send the walk into a non-existent state.
+			if dec.Action == teamrun.CapReroute {
+				if _, known := teamgraph.StateByID(def, dec.Reroute); !known {
+					lastDecision = "abort"
+					return teamrun.CapDecision{Action: teamrun.CapAbort}, nil
+				}
+			}
+			lastDecision = capActionLabel(dec)
+			return dec, nil
+		}))
+	}
+
+	trace, walkErr := teamrun.Walk(walkCtx, def, task, teamrun.NewAgentRunner(t.Spawn), opts...)
 
 	steps := make([]map[string]any, 0, len(trace))
 	for _, s := range trace {
@@ -627,12 +739,34 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		})
 	}
 
+	// annotate adds the opt-in board/interruption fields to a response ONLY when
+	// the relevant feature was used, keeping the default ephemeral response shape
+	// byte-identical for existing callers.
+	annotate := func(m map[string]any) map[string]any {
+		if boardBound {
+			m["board_chunk_id"] = in.BoardChunkID
+			m["board_scope"] = boardScope
+			if resumedFrom != "" {
+				m["resumed_from"] = resumedFrom
+			}
+		}
+		if in.InterruptOnCap {
+			m["interruptions"] = interruptions
+			if lastDecision != "" {
+				m["cap_decision"] = lastDecision
+			}
+		}
+		return m
+	}
+
 	if walkErr != nil {
 		var capErr *teamrun.ErrIterationCap
 		if errors.As(walkErr, &capErr) {
 			// Cap overflow is a first-class outcome, not a tool fault — report it
-			// with the trace so the caller sees how far the walk got.
-			return okJSON(map[string]any{
+			// with the trace so the caller sees how far the walk got. (When
+			// interrupt_on_cap escalated, this is the human's abort / a failed
+			// escalation; continue/reroute keep the walk going and don't land here.)
+			return okJSON(annotate(map[string]any{
 				"name":            row.Name,
 				"def_id":          row.DefID,
 				"status":          "iteration_cap",
@@ -640,19 +774,53 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 				"max_iterations":  capErr.Max,
 				"iteration_count": capErr.Count,
 				"steps":           steps,
-			})
+			}))
 		}
 		return errResult(fmt.Sprintf("run: %s", walkErr)), nil
 	}
 
-	return okJSON(map[string]any{
+	return okJSON(annotate(map[string]any{
 		"name":         row.Name,
 		"def_id":       row.DefID,
 		"status":       "completed",
 		"final_state":  task.State,
 		"final_output": task.Input, // Walk threads the last handler's output here
 		"steps":        steps,
-	})
+	}))
+}
+
+// parseCapAnswer maps a human's free-text cap answer to a walk decision. Only an
+// explicit "continue" or "reroute:<state>" proceeds; everything else — "abort",
+// empty, or an unrecognised reply — is abort, so the default is always to stop
+// (the termination guarantee). The reroute target keeps its original case (it's a
+// state id); only the keyword match is case-insensitive.
+func parseCapAnswer(answer string) teamrun.CapDecision {
+	trimmed := strings.TrimSpace(answer)
+	switch {
+	case strings.EqualFold(trimmed, "continue"):
+		return teamrun.CapDecision{Action: teamrun.CapContinue}
+	case strings.HasPrefix(strings.ToLower(trimmed), "reroute"):
+		target := strings.TrimSpace(trimmed[len("reroute"):])
+		target = strings.TrimSpace(strings.TrimPrefix(target, ":"))
+		if target == "" {
+			return teamrun.CapDecision{Action: teamrun.CapAbort}
+		}
+		return teamrun.CapDecision{Action: teamrun.CapReroute, Reroute: target}
+	default:
+		return teamrun.CapDecision{Action: teamrun.CapAbort}
+	}
+}
+
+// capActionLabel is the human-readable decision recorded on the run response.
+func capActionLabel(d teamrun.CapDecision) string {
+	switch d.Action {
+	case teamrun.CapContinue:
+		return "continue"
+	case teamrun.CapReroute:
+		return "reroute:" + d.Reroute
+	default:
+		return "abort"
+	}
 }
 
 // ---- helpers ----

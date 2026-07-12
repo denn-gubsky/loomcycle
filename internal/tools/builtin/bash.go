@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -44,6 +45,22 @@ type Bash struct {
 	// because most binaries break without it). Empty by default —
 	// only PATH leaks.
 	AllowedExtraEnv []string
+
+	// AllowedCreds names RFC AR credentials (by CredentialDef name, e.g.
+	// GITHUB_TOKEN) injected into the child's env — a PER-TENANT counterpart to
+	// AllowedExtraEnv (which reads one shared operator host var). Each is
+	// resolved for the run's own (tenant, user, agent) identity via CredResolve,
+	// so a tenant's own GITHUB_TOKEN reaches the command instead of one shared
+	// operator host var. A resolved cred OVERRIDES a same-named host env var.
+	// Empty (default) = none, so behavior is unchanged unless the operator opts
+	// in with LOOMCYCLE_BASH_ALLOWED_CREDS.
+	AllowedCreds []string
+	// CredResolve resolves an RFC AR credential by NAME for the run on ctx (the
+	// tenant/user/agent come from the run identity on ctx, so resolution is
+	// tenant-isolated), returning (value, ok). Wired to credential.Engine.Resolve.
+	// nil = credential injection disabled. The value is a secret — it goes only
+	// into the child's env and must never be logged.
+	CredResolve func(ctx context.Context, name string) (string, bool)
 }
 
 func (b *Bash) Name() string { return "Bash" }
@@ -120,7 +137,9 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", args.Command)
 	cmd.Dir = cwd
-	cmd.Env = b.buildEnv()
+	// Pass the original Execute ctx (carries the run identity) rather than the
+	// timeout-bound runCtx — see buildEnv.
+	cmd.Env = b.buildEnv(ctx)
 	// Capture combined output through a bounded buffer. We write to a
 	// LimitedWriter rather than reading all-at-once so a malicious command
 	// can't OOM us by producing 100 GiB of output before we read it.
@@ -162,9 +181,14 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // buildEnv constructs the env passed to the child. Only PATH leaks by
 // default (most binaries are unusable without it), plus any explicitly
 // allow-listed names. Sensitive secrets like API keys never leak — the
-// model could otherwise extract them via `env`.
-func (b *Bash) buildEnv() []string {
-	return scrubbedHostEnv(b.AllowedExtraEnv)
+// model could otherwise extract them via `env`. On top of that, any RFC AR
+// credential in AllowedCreds is resolved for THIS run's identity (from ctx)
+// and injected per-tenant, overriding a same-named host var. ctx is the
+// caller's Execute ctx (carries the run identity), NOT the command's
+// timeout-bound context — a credential store read is setup, not part of the
+// bounded command execution, so it must not race the command's wall-clock.
+func (b *Bash) buildEnv(ctx context.Context) []string {
+	return mergeCredEnv(ctx, scrubbedHostEnv(b.AllowedExtraEnv), b.AllowedCreds, b.CredResolve)
 }
 
 // scrubbedHostEnv builds the environment for a host child process: PATH always
@@ -179,6 +203,45 @@ func scrubbedHostEnv(allowedExtra []string) []string {
 	}
 	for _, name := range allowedExtra {
 		if v := os.Getenv(name); v != "" {
+			out = append(out, name+"="+v)
+		}
+	}
+	return out
+}
+
+// mergeCredEnv overlays per-tenant RFC AR credentials onto a host env slice.
+// host is the operator-allowlisted host vars (from scrubbedHostEnv); for each
+// name in allowedCreds it resolves the run's own (tenant/user/agent) credential
+// via resolve and either OVERRIDES a same-named host var or appends it — so a
+// tenant-specific secret wins over a shared operator host var. resolve==nil or
+// no cred names → host is returned unchanged (byte-identical to the pre-cred
+// behavior). Shared by the Bash tool and the Bashbox host-command fallback so
+// the two security-sensitive credential-injection paths can't drift apart
+// (mirrors the scrubbedHostEnv sharing rationale). Deterministic order: host
+// names first (declared order), then creds not already contributed by a host
+// var. The resolved value is a secret — the caller must registerSecret it and
+// it goes only into the child's env, never a log.
+func mergeCredEnv(ctx context.Context, host, allowedCreds []string, resolve func(ctx context.Context, name string) (string, bool)) []string {
+	if resolve == nil || len(allowedCreds) == 0 {
+		return host
+	}
+	idx := make(map[string]int, len(host)) // name -> position in out
+	out := make([]string, 0, len(host)+len(allowedCreds))
+	for _, kv := range host {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			idx[kv[:i]] = len(out)
+		}
+		out = append(out, kv)
+	}
+	for _, name := range allowedCreds {
+		v, ok := resolve(ctx, name)
+		if !ok || v == "" {
+			continue
+		}
+		if pos, seen := idx[name]; seen {
+			out[pos] = name + "=" + v // cred overrides the host var
+		} else {
+			idx[name] = len(out)
 			out = append(out, name+"="+v)
 		}
 	}

@@ -971,6 +971,78 @@ export type SubstrateToolInput = {
  *  Callers narrow as needed. */
 export type SubstrateToolResponse = unknown;
 
+// ---- RFC AP Agent Teams (TeamDef substrate) ----
+//
+// TeamDefs are agent-team workflow graphs (states + transitions + per-state
+// handler agent). The team methods mirror the HTTP shapes in the Web UI's
+// api.ts; the substrate is tenant-confined (the runtime stamps the caller's
+// authoritative tenant), so a team is visible only within its own tenant.
+
+/** One team's roll-up in {@link ListTeamsResponse} (GET /v1/_teamdef/names). */
+export interface TeamNameSummary {
+  name: string;
+  tenant_id?: string;
+  version_count: number;
+  active_def_id?: string;
+  latest_version: number;
+  last_updated?: string;
+  live_version_count?: number;
+  active_retired?: boolean;
+}
+
+/** Response of {@link LoomcycleClient.listTeams}. `names` is `null` (not `[]`)
+ *  when the tenant has no teams — mirrors the server's Go nil-slice encoding. */
+export interface ListTeamsResponse {
+  names: TeamNameSummary[] | null;
+}
+
+/** A rendered team diagram from {@link LoomcycleClient.renderTeamDiagram}
+ *  (op=render_diagram). `diagram` is Mermaid `stateDiagram-v2` source. */
+export interface TeamDiagram {
+  name: string;
+  def_id: string;
+  format: string;
+  diagram: string;
+}
+
+/** Result of {@link LoomcycleClient.createTeam} / {@link LoomcycleClient.forkTeam}
+ *  (op=create / op=fork) — the newly-written version's identifiers. */
+export interface CreatedTeam {
+  def_id: string;
+  name: string;
+  version: number;
+}
+
+/** One team version's full record from {@link LoomcycleClient.getTeamDef}
+ *  (op=get). `definition` is the stored graph, inlined as an object (the server
+ *  stores it as raw JSON), suitable for loading into an editor. */
+export interface TeamDefDetail {
+  def_id: string;
+  name: string;
+  version: number;
+  retired?: boolean;
+  content_sha256?: string;
+  definition: unknown;
+}
+
+/** Result of {@link LoomcycleClient.runTeam} (op=run) — the walk trace. `status`
+ *  is `"completed"` (a terminal state was reached) or `"iteration_cap"` (a
+ *  state's cycle cap tripped; `capped_state` + `iteration_count` describe it).
+ *  `steps` is the per-state trace. Extra fields are tolerated (the run output
+ *  varies by outcome), so callers narrow as needed. */
+export interface TeamRunResult {
+  name: string;
+  def_id: string;
+  status: string;
+  final_state?: string;
+  final_output?: string;
+  capped_state?: string;
+  max_iterations?: number;
+  iteration_count?: number;
+  steps: Array<Record<string, unknown>>;
+  [extra: string]: unknown;
+}
+
 /** Input for {@link LoomcycleClient.path} — the RFC AL Unix-like VFS tool
  *  (POST /v1/_path). Op-discriminated; the server resolves scope + tenant
  *  from the authenticated principal, never the wire. Address Memory entries,

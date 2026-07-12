@@ -607,6 +607,9 @@ var grpcConsumerScopes = map[string]string{
 	"WebhookDef":       auth.ScopeTenant,
 	"MemoryBackendDef": auth.ScopeTenant,
 	"VolumeDef":        auth.ScopeTenant,
+	// RFC AP TeamDef — team-workflow substrate. Same ScopeTenant posture as the
+	// other def families; the HTTP /v1/_teamdef route is tenant-confined too.
+	"TeamDef": auth.ScopeTenant,
 	// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated tools
 	// lifted to the wire. Same ScopeTenant posture as VolumeDef.
 	"Path":         auth.ScopeTenant,

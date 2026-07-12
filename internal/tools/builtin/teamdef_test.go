@@ -562,3 +562,229 @@ func TestTeamDefTool_RoundTrip(t *testing.T) {
 		t.Fatalf("promote: %s", res.Text)
 	}
 }
+
+// --- op=run: Document board binding + Interruption-on-cap (RFC AP/BD) ---
+
+// fakeBoard is an in-memory teamBoard for op=run board tests: it records every
+// SetChunkStatus in order and can pre-seed a status so a run RESUMES from it.
+type fakeBoard struct {
+	status   string   // current persisted status (seeds resume; updated by Set)
+	exists   bool     // whether GetChunkStatus reports the chunk as present
+	setCalls []string // states persisted, in order
+}
+
+func (f *fakeBoard) GetChunkStatus(_ context.Context, _, _ string) (string, bool, error) {
+	return f.status, f.exists, nil
+}
+
+func (f *fakeBoard) SetChunkStatus(_ context.Context, _, _, status string) error {
+	f.setCalls = append(f.setCalls, status)
+	f.status = status
+	return nil
+}
+
+const linearBoardTeam = `{
+  "entry":"a",
+  "states":[
+    {"state":"a","handler":{"kind":"agent","agent":"agent-a"}},
+    {"state":"b","handler":{"kind":"agent","agent":"agent-b"}},
+    {"state":"done","handler":{"kind":"terminal"}}
+  ],
+  "transitions":[
+    {"from":"a","to":"b","on":"success"},
+    {"from":"b","to":"done","on":"success"}
+  ]}`
+
+// pingPongTeam is an a↔b success loop with no terminal + cap 2 — it never
+// converges, so the per-state cap always fires (drives the interrupt-on-cap path).
+const pingPongTeam = `{
+  "entry":"a","max_iterations":2,
+  "states":[{"state":"a","handler":{"kind":"agent","agent":"a"}},{"state":"b","handler":{"kind":"agent","agent":"b"}}],
+  "transitions":[{"from":"a","to":"b","on":"success"},{"from":"b","to":"a","on":"success"}]}`
+
+// TestTeamDefTool_Run_BoardPersistsStatusAcrossTransitions: a board-bound run
+// upserts chunk.status on entering each state — including the terminal, so a
+// completed board lands on the end state.
+func TestTeamDefTool_Run_BoardPersistsStatusAcrossTransitions(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return agent + "!", nil }
+	board := &fakeBoard{exists: true}
+	tool.Board = board
+	createTeam(t, tool, ctx, "board-linear", linearBoardTeam)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"board-linear","input":"seed","board_chunk_id":"chunk-1"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["status"] != "completed" {
+		t.Errorf("status = %v, want completed", out["status"])
+	}
+	if out["board_chunk_id"] != "chunk-1" {
+		t.Errorf("board_chunk_id = %v, want chunk-1", out["board_chunk_id"])
+	}
+	if got := strings.Join(board.setCalls, ","); got != "a,b,done" {
+		t.Errorf("persisted status sequence %q, want a,b,done (terminal included)", got)
+	}
+}
+
+// TestTeamDefTool_Run_BoardResumesFromPersistedState: a run whose board chunk
+// already holds a mid-graph status resumes THERE — the earlier state's agent is
+// not re-spawned. This is the durable-resume guarantee.
+func TestTeamDefTool_Run_BoardResumesFromPersistedState(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	var spawned []string
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) {
+		spawned = append(spawned, agent)
+		return agent + "!", nil
+	}
+	board := &fakeBoard{exists: true, status: "b"} // a prior run left off at b
+	tool.Board = board
+	createTeam(t, tool, ctx, "board-resume", linearBoardTeam)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"board-resume","input":"seed","board_chunk_id":"chunk-1"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["resumed_from"] != "b" {
+		t.Errorf("resumed_from = %v, want b", out["resumed_from"])
+	}
+	if len(spawned) != 1 || spawned[0] != "agent-b" {
+		t.Errorf("spawned %v, want [agent-b] (resumed at b, agent-a skipped)", spawned)
+	}
+	if out["final_state"] != "done" {
+		t.Errorf("final_state = %v, want done", out["final_state"])
+	}
+	if got := strings.Join(board.setCalls, ","); got != "b,done" {
+		t.Errorf("persisted status sequence %q, want b,done", got)
+	}
+}
+
+// TestTeamDefTool_Run_InterruptOnCapContinuesThenAborts: the cap escalates to a
+// human; `continue` grants another window, a later `abort` terminates. The run
+// still reports the iteration_cap outcome (termination preserved).
+func TestTeamDefTool_Run_InterruptOnCapContinuesThenAborts(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	asked := 0
+	tool.AskHuman = func(_ context.Context, _ string) (string, error) {
+		asked++
+		if asked == 1 {
+			return "continue", nil
+		}
+		return "abort", nil
+	}
+	createTeam(t, tool, ctx, "intr-loop", pingPongTeam)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"intr-loop","input":"x","interrupt_on_cap":true}`))
+	if res.IsError {
+		t.Fatalf("iteration cap should be a reported outcome, not a tool error: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["status"] != "iteration_cap" {
+		t.Errorf("status = %v, want iteration_cap (human aborted)", out["status"])
+	}
+	if asked != 2 {
+		t.Errorf("AskHuman called %d times, want 2 (continue then abort)", asked)
+	}
+	if out["interruptions"].(float64) != 2 {
+		t.Errorf("interruptions = %v, want 2", out["interruptions"])
+	}
+	if out["cap_decision"] != "abort" {
+		t.Errorf("cap_decision = %v, want abort", out["cap_decision"])
+	}
+}
+
+// TestTeamDefTool_Run_InterruptOnCapReroutesToTerminal: a human `reroute:<state>`
+// answer jumps the walk to a terminal, completing the run instead of aborting.
+func TestTeamDefTool_Run_InterruptOnCapReroutesToTerminal(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	tool.AskHuman = func(_ context.Context, _ string) (string, error) { return "reroute:done", nil }
+	createTeam(t, tool, ctx, "intr-reroute", `{
+	  "entry":"a","max_iterations":2,
+	  "states":[
+	    {"state":"a","handler":{"kind":"agent","agent":"a"}},
+	    {"state":"b","handler":{"kind":"agent","agent":"b"}},
+	    {"state":"done","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[
+	    {"from":"a","to":"b","on":"success"},
+	    {"from":"b","to":"a","on":"success"},
+	    {"from":"b","to":"done","on":"pushback:stop"}
+	  ]}`)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"intr-reroute","input":"x","interrupt_on_cap":true}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["status"] != "completed" {
+		t.Errorf("status = %v, want completed (rerouted to terminal)", out["status"])
+	}
+	if out["final_state"] != "done" {
+		t.Errorf("final_state = %v, want done", out["final_state"])
+	}
+	if out["cap_decision"] != "reroute:done" {
+		t.Errorf("cap_decision = %v, want reroute:done", out["cap_decision"])
+	}
+}
+
+// TestTeamDefTool_Run_DefaultPathIgnoresBoardAndInterrupt pins the additive
+// contract: with a board + AskHuman WIRED but neither board_chunk_id nor
+// interrupt_on_cap set, the run is byte-identical to the ephemeral path — the
+// board is never touched, the human never asked, and the opt-in response fields
+// are absent. (Fail-before: pass opts unconditionally and this test breaks.)
+func TestTeamDefTool_Run_DefaultPathIgnoresBoardAndInterrupt(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	board := &fakeBoard{exists: true}
+	tool.Board = board
+	asked := 0
+	tool.AskHuman = func(_ context.Context, _ string) (string, error) { asked++; return "continue", nil }
+	createTeam(t, tool, ctx, "plain-loop", pingPongTeam)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"plain-loop","input":"x"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["status"] != "iteration_cap" {
+		t.Errorf("status = %v, want iteration_cap (unchanged default)", out["status"])
+	}
+	if out["capped_state"] != "a" {
+		t.Errorf("capped_state = %v, want a", out["capped_state"])
+	}
+	if asked != 0 {
+		t.Errorf("AskHuman called %d times, want 0 (interrupt_on_cap not set)", asked)
+	}
+	if len(board.setCalls) != 0 {
+		t.Errorf("board written %d times, want 0 (board_chunk_id not set)", len(board.setCalls))
+	}
+	if _, ok := out["board_chunk_id"]; ok {
+		t.Errorf("board_chunk_id must be absent from the default response: %v", out)
+	}
+	if _, ok := out["interruptions"]; ok {
+		t.Errorf("interruptions must be absent from the default response: %v", out)
+	}
+}
+
+// TestTeamDefTool_Run_BoardChunkIDWithoutBoardWiredErrors: requesting a board
+// without one wired fails loud rather than silently dropping durability.
+func TestTeamDefTool_Run_BoardChunkIDWithoutBoardWiredErrors(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	// tool.Board left nil.
+	createTeam(t, tool, ctx, "board-missing", linearBoardTeam)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"board-missing","input":"x","board_chunk_id":"c1"}`))
+	if !res.IsError || !strings.Contains(res.Text, "no Document board wired") {
+		t.Fatalf("board_chunk_id without a wired board should error; got %q (isErr=%v)", res.Text, res.IsError)
+	}
+}
