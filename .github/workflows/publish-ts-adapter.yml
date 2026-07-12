@@ -24,6 +24,12 @@ on:
   push:
     tags:
       - "v*"
+  # Manual escape hatch: publish adapters/ts's current version from the
+  # dispatched ref regardless of a tag. Used when a v* tag's publish run was
+  # lost (e.g. an infra failure) and re-tagging would disturb the goreleaser
+  # release. On dispatch the version-match gate is skipped and package.json's
+  # version is published as-is.
+  workflow_dispatch: {}
 
 # Run JavaScript-based actions (checkout, setup-node) on Node.js 24. GitHub
 # forces this default 2026-06-16 and removes Node 20 from runners 2026-09-16;
@@ -45,20 +51,21 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Node 24: npm@latest (below) requires Node >=22 — on Node 20 the
+          # `npm install -g npm@latest` step failed EBADENGINE before ever
+          # reaching the publish, so every release silently skipped npm. Node 24
+          # also aligns with FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 above.
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: adapters/ts/package-lock.json
 
       - name: Upgrade npm CLI for Trusted Publisher OIDC support
         # Trusted Publishing requires npm CLI 11.5.1+ to negotiate the
-        # GitHub Actions → npm OIDC handshake. Node 20 ships with npm
-        # 10.x, which silently falls back to looking for NODE_AUTH_TOKEN
-        # in .npmrc and emits a misleading "404 not in this registry"
-        # error from the unauthenticated PUT (npm hides scoped-package
-        # existence from anonymous callers). Pinning to npm@latest
-        # avoids tracking minor-version bumps; the action only runs on
-        # tag pushes so the version drift surface is small.
+        # GitHub Actions → npm OIDC handshake. Pinning to npm@latest avoids
+        # tracking minor-version bumps; it needs Node >=22 (hence node-version
+        # 24 above). The action only runs on tag pushes / manual dispatch so
+        # the version-drift surface is small.
         run: npm install -g npm@latest
 
       - name: Verify package version matches tag
@@ -78,9 +85,17 @@ jobs:
         # tags do.
         env:
           TAG_REF: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           PKG_VER=$(node -p "require('./package.json').version")
+          # Manual dispatch: publish package.json's version as-is (the tag-match
+          # gate doesn't apply — the ref may be a branch, not a v* tag).
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "::notice::Manual dispatch — publishing @loomcycle/client@$PKG_VER from $TAG_REF"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           TAG_VER="${TAG_REF#v}"
           if [ "$PKG_VER" != "$TAG_VER" ]; then
             echo "::notice::Skipping publish — adapters/ts/package.json version ($PKG_VER) does not match tag ($TAG_VER). This is expected for Web-UI-only or binary-only releases. Bump adapters/ts/package.json to match the tag if you want to publish the adapter."
