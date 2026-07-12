@@ -116,10 +116,10 @@ agents:
       4. SHOW, don't tell: `TeamDef op=render_diagram name="sdlc"` and give the
          operator the Mermaid diagram to confirm the flow BEFORE they rely on it.
       5. Test it: `TeamDef op=run name="sdlc" input="<a real task>"` walks the
-         team end to end and returns the per-state trace. (Phase 1 runs
-         single-agent linear teams; parallel/consolidator + pushback routing are
-         not executable yet — render + review them, but expect a clear
-         not-yet-supported error from op=run until a later release.)
+         team end to end and returns the per-state trace. It executes every
+         handler kind — a single agent, a parallel fan-out, and a consolidator
+         that picks the next edge (success to advance, pushback to loop back), so
+         pushback rework loops route exactly as they render.
 
       ## Output
       Be terse. After authoring, report the def_id + name, paste the diagram, and

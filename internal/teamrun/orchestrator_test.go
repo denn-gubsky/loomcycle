@@ -142,8 +142,8 @@ func TestWalk_UnknownEdgeErrors(t *testing.T) {
 }
 
 func TestWalk_HandlerErrorPropagates(t *testing.T) {
-	// The Phase-1 production runner errors on a parallel handler; the engine
-	// must surface that error and stop, not swallow it.
+	// A handler that returns an error (e.g. a fan-out that can't meet its wait
+	// threshold) must be surfaced by the engine and stop the walk, not swallowed.
 	d := mustParse(t, `{
 	  "entry":"fan",
 	  "states":[

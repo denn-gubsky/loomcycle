@@ -102,11 +102,12 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`nothing. Colours are presentation-only and excluded from the content hash. Promotion is explicit — selection ` +
 	`is policy, not runtime. render_diagram generates a Mermaid stateDiagram-v2 (with the colour ` +
 	`scheme applied) for a stored team, or — when given an inline overlay — a dry-run preview of an unsaved ` +
-	`graph (syntax-checked, not persisted). run walks a team's graph for a given input — each state's agent runs via the ` +
-	`sub-agent machinery, output threads to the next state, until a terminal state (Phase 1: single-agent linear ` +
-	`teams; parallel/consolidator + pushback routing are deferred). run may OPTIONALLY bind to a Document chunk board ` +
-	`(board_chunk_id) so progress persists as chunk.status and resumes across runs, and may escalate an iteration cap ` +
-	`to a human (interrupt_on_cap) instead of aborting. retire soft-retires one version; delete ` +
+	`graph (syntax-checked, not persisted). run walks a team's graph for a given input via the sub-agent ` +
+	`machinery — a single agent, or a parallel fan-out whose consolidator agent selects the next edge ` +
+	`(success to advance, pushback to loop back for rework) — output threads to the next state, until a ` +
+	`terminal state. run may OPTIONALLY bind to a Document chunk board (board_chunk_id) so progress persists ` +
+	`as chunk.status and resumes across runs, and may escalate an iteration cap to a human (interrupt_on_cap) ` +
+	`instead of aborting. retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
 	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run.`
 
@@ -591,11 +592,11 @@ func (t *TeamDef) execRenderDiagram(ctx context.Context, in teamDefInput) (tools
 // ---- run ----
 
 // execRun walks a team's graph for a given input: it resolves the active (or
-// pinned) def in the caller's tenant, then runs each state's agent via the
+// pinned) def in the caller's tenant, then runs each state's handler via the
 // injected Spawn (the exact sub-agent machinery), threading output → input,
-// until a terminal state. Phase 1 (RFC AP): single-agent linear teams — a
-// parallel/consolidator handler, or a pushback route (agent+consolidator), is a
-// loud not-yet-supported error rather than a silent success.
+// until a terminal state. Handlers may be a single agent, a parallel fan-out, or
+// a consolidator that selects the outgoing edge (enabling success/pushback
+// routing) — see teamrun.NewAgentRunner.
 //
 // Two opt-in additions (RFC AP/BD), both additive — a run that sets neither is
 // byte-identical to the ephemeral Phase-1 path (no board, cap → iteration_cap):

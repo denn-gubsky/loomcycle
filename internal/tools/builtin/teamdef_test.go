@@ -217,10 +217,17 @@ func TestTeamDefTool_Run_UnknownTeam(t *testing.T) {
 	}
 }
 
-func TestTeamDefTool_Run_ParallelNotYetSupported(t *testing.T) {
+func TestTeamDefTool_Run_ParallelFanOutConsolidates(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "", nil }
+	// x/y fan out concurrently; the consolidator c reads their results and
+	// selects the success edge via the signal convention.
+	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) {
+		if agent == "c" {
+			return "signal: success", nil
+		}
+		return agent + "-out", nil
+	}
 	createTeam(t, tool, ctx, "run-parallel", `{
 	  "entry":"fan",
 	  "states":[
@@ -229,8 +236,15 @@ func TestTeamDefTool_Run_ParallelNotYetSupported(t *testing.T) {
 	  ],
 	  "transitions":[{"from":"fan","to":"end","on":"success"}]}`)
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"run-parallel","input":"x"}`))
-	if !res.IsError || !strings.Contains(res.Text, "Phase 3") {
-		t.Fatalf("parallel handler should error as not-yet-supported; got %q (isErr=%v)", res.Text, res.IsError)
+	if res.IsError {
+		t.Fatalf("parallel op=run should execute; got error %q", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["status"] != "completed" {
+		t.Errorf("status = %v, want completed", out["status"])
+	}
+	if out["final_state"] != "end" {
+		t.Errorf("final_state = %v, want end", out["final_state"])
 	}
 }
 

@@ -31,12 +31,16 @@ by moving `status` from one state to the next per the transitions. (See the
 
 ## Two ways to run a team
 
-- **`TeamDef op=run`** — the deterministic **autopilot**: it walks a single-agent
-  linear team end to end (spawn each state's agent, thread output → input, follow
-  `success`) and returns the per-state trace. Headless, no human in the loop.
-  Parallel/consolidator handlers + pushback routing are not executable this way
-  yet — they render and validate, but `op=run` returns a clear not-yet-supported
-  error for them.
+- **`TeamDef op=run`** — the deterministic **autopilot**: it walks a team's graph
+  end to end and returns the per-state trace. Headless, no human in the loop. It
+  executes every handler kind — a single `agent`, a `parallel` fan-out (its agents
+  run concurrently; `wait` = `all` | `any` | `at_least:<N>`), and a `consolidator`
+  that reads the results and picks the outgoing edge, so `pushback` rework loops
+  route just as they render. A consolidator selects its edge by emitting a line
+  `signal: <edge>` (e.g. `signal: success` or `signal: pushback:redo`): the
+  `<edge>` must match one of the state's outbound transition labels, the last such
+  line wins, and no signal defaults to `success`. Every cycle is bounded by the
+  per-state `max_iterations` cap.
 - **The `team/orchestrator` agent** — an LLM **team lead** and the human's
   contact point. Run it interactively: it reads the TeamDef as its map, drives
   the Document board (moving `status`, spawning each state's handler), decides

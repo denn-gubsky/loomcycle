@@ -51,6 +51,9 @@ and transitions (edges) gated by `success` / `pushback:<reason>` /
 by a per-state `max_iterations` cap. Colours are presentation-only (excluded from
 the content hash) and drive the generated Mermaid diagram.
 
-**Phase 1** runs single-agent linear teams end to end (`op=run`); `parallel` /
-`consolidator` execution + pushback routing render + validate but are not
-executable yet — `op=run` returns a clear not-yet-supported error for them.
+`op=run` walks a team end to end and executes every handler kind — a single
+`agent`, a `parallel` fan-out (agents run concurrently; `wait` = `all` | `any` |
+`at_least:<N>`), and a `consolidator` that reads the results and selects the
+outgoing edge, so `pushback` rework loops route exactly as they render. A
+consolidator names its edge on a `signal: <edge>` line (last one wins; no signal
+defaults to `success`).
