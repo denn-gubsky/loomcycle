@@ -2476,6 +2476,14 @@ func TestAgentGateWarnings(t *testing.T) {
 		{"interruption tool present, no flag", AgentDef{Tools: []string{"Interruption"}}, nil},
 		{"interruption enabled", AgentDef{Tools: []string{"Interruption"}, Interruption: AgentInterruptionACL{Enabled: true}}, nil},
 		{"multiple gates, deterministic order", AgentDef{Tools: []string{"Memory", "Evaluation"}}, []string{"memory_scopes is empty", "evaluation_scopes is empty"}},
+		// def-authoring tools: listed without their *_def_scopes → silent default-deny.
+		{"agentdef no scope", AgentDef{Tools: []string{"AgentDef"}}, []string{"agent_def_scopes is empty"}},
+		{"agentdef with scope", AgentDef{Tools: []string{"AgentDef"}, AgentDefScopes: []string{"any"}}, nil},
+		{"scheduledef no scope", AgentDef{Tools: []string{"ScheduleDef"}}, []string{"schedule_def_scopes is empty"}},
+		{"a2a server-card def no scope", AgentDef{Tools: []string{"A2AServerCardDef"}}, []string{"a2a_server_card_def_scopes is empty"}},
+		{"a2a agent def no scope", AgentDef{Tools: []string{"A2AAgentDef"}}, []string{"a2a_agent_def_scopes is empty"}},
+		{"volumedef no scope", AgentDef{Tools: []string{"VolumeDef"}}, []string{"volume_def_scopes is empty"}},
+		{"volumedef with scope", AgentDef{Tools: []string{"VolumeDef"}, VolumeDefScopes: []string{"named:work"}}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
