@@ -274,6 +274,25 @@ func (s *Server) VolumeDef(ctx context.Context, req *loomcyclepb.SubstrateReques
 	})
 }
 
+// TeamDef serves the RFC AP TeamDef gRPC RPC — team-workflow substrate. Same
+// shape as the other substrate RPCs; op-discriminated input_json (create / fork
+// / get / list / retire / delete / promote / verify / render_diagram / run)
+// routes via the Connector to the in-process tool. TENANT-CONFINED (the scope
+// gate maps it to ScopeTenant, like AgentDef/SkillDef); the tool has no
+// per-agent scope policy of its own (authoring is gated at the transport +
+// tenant), so it reuses the plain operator-trust substrateGRPCCtx. `run` walks
+// the team's graph, spawning each state's agent under the wired executor's
+// admission — same connector path the HTTP POST /v1/_teamdef endpoint takes.
+func (s *Server) TeamDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "TeamDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.TeamDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
 // Path serves the RFC AL Path-VFS gRPC RPC. Op-discriminated input_json
 // (resolve / get / ls / stat / mkdir / mv / rm) routes via the Connector to
 // the in-process tool. TENANT-CONFINED (ScopeTenant): substrateGRPCCtx stamps
