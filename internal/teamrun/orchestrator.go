@@ -73,6 +73,63 @@ func (e *ErrIterationCap) Error() string {
 	return fmt.Sprintf("teamrun: state %q exceeded max_iterations (%d > %d)", e.State, e.Count, e.Max)
 }
 
+// CapAction is what a cap observer (OnCap) decides when a state trips its
+// per-state iteration cap. The zero value is CapAbort so a nil/incomplete
+// decision fails safe — the termination guarantee holds no matter what the
+// observer returns.
+type CapAction int
+
+const (
+	// CapAbort terminates the walk with *ErrIterationCap (the same outcome as
+	// having no observer). It is the zero value — an unanswered / timed-out /
+	// declined human interruption maps here, so the walk always terminates.
+	CapAbort CapAction = iota
+	// CapContinue grants the capped state one more full max-iteration window
+	// (the tripping entry becomes #1 of the new window) and runs its handler.
+	CapContinue
+	// CapReroute abandons the capped state's handler this cycle and jumps the
+	// walk to Reroute instead, clearing the capped state's counter so a later
+	// revisit gets a fresh window. An empty/unknown Reroute target degrades to
+	// CapAbort at the next state lookup (fail safe).
+	CapReroute
+)
+
+// CapDecision is an OnCap observer's ruling.
+type CapDecision struct {
+	Action  CapAction
+	Reroute string // target state id when Action == CapReroute
+}
+
+// Option customizes a Walk. Zero options → the walk behaves exactly as the
+// bare four-argument form always has (nothing observed; a cap returns
+// *ErrIterationCap), so existing callers and the default op=run path are
+// byte-identical.
+type Option func(*walkConfig)
+
+type walkConfig struct {
+	// onEnterState fires once for each state the walk enters (including the
+	// terminal state), with that state's id. A board-bound run persists the
+	// position here (chunk.status = state). A returned error aborts the walk.
+	onEnterState func(ctx context.Context, state string) error
+	// onCap fires when a state trips its iteration cap. Its CapDecision steers
+	// the walk (abort / continue / reroute). A returned error aborts the walk
+	// with that error. nil = a cap returns *ErrIterationCap as before.
+	onCap func(ctx context.Context, cap *ErrIterationCap) (CapDecision, error)
+}
+
+// OnEnterState registers a hook fired as the walk enters each state (terminal
+// included) — the seam a durable board-bound run uses to persist chunk.status.
+func OnEnterState(f func(ctx context.Context, state string) error) Option {
+	return func(c *walkConfig) { c.onEnterState = f }
+}
+
+// OnCap registers a hook that decides what happens when a state trips its
+// iteration cap — the seam for human-in-the-loop escalation (Interruption).
+// Without it a cap terminates the walk with *ErrIterationCap.
+func OnCap(f func(ctx context.Context, cap *ErrIterationCap) (CapDecision, error)) Option {
+	return func(c *walkConfig) { c.onCap = f }
+}
+
 // Walk drives task from its current state (or the definition's entry when
 // task.State is empty) to a terminal state, mutating task in place as it goes:
 // each non-terminal state's handler runs via r, its selected edge picks the next
@@ -80,11 +137,18 @@ func (e *ErrIterationCap) Error() string {
 // executed states.
 //
 // Termination is guaranteed: every non-terminal state increments its own entry
-// count, and exceeding the per-state cap returns *ErrIterationCap. So a
-// pushback loop that never converges is bounded, not infinite.
-func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner) ([]StepRecord, error) {
+// count, and exceeding the per-state cap returns *ErrIterationCap — unless an
+// OnCap observer rules CapContinue/CapReroute, in which case the loop is bounded
+// instead by how long a human keeps answering (an unanswered/aborted decision
+// still returns *ErrIterationCap). So a pushback loop that never converges is
+// always bounded, never infinite.
+func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opts ...Option) ([]StepRecord, error) {
 	if task == nil {
 		return nil, fmt.Errorf("teamrun: nil task")
+	}
+	var cfg walkConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
 	if task.State == "" {
 		task.State = d.Entry
@@ -103,6 +167,15 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner) ([]
 		if !ok {
 			return trace, fmt.Errorf("teamrun: current state %q is not in the team definition", task.State)
 		}
+		// Observe the entered (validated) state before dispatch, so a board-bound
+		// run persists the position it is ABOUT to work — a crash resumes at this
+		// state (at-least-once for its handler). Fires for the terminal state too,
+		// so a completed board lands on the end state.
+		if cfg.onEnterState != nil {
+			if err := cfg.onEnterState(ctx, st.ID); err != nil {
+				return trace, err
+			}
+		}
 		if st.Handler.Kind == teamgraph.HandlerTerminal {
 			return trace, nil // reached an end state — done
 		}
@@ -111,7 +184,27 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner) ([]
 		// non-converging loop can't spend an extra handler run on overflow.
 		task.IterationCounts[st.ID]++
 		if n := task.IterationCounts[st.ID]; n > max {
-			return trace, &ErrIterationCap{State: st.ID, Count: n, Max: max}
+			capErr := &ErrIterationCap{State: st.ID, Count: n, Max: max}
+			if cfg.onCap == nil {
+				return trace, capErr
+			}
+			dec, err := cfg.onCap(ctx, capErr)
+			if err != nil {
+				return trace, err
+			}
+			switch dec.Action {
+			case CapContinue:
+				// Fresh window; this tripping entry becomes iteration #1.
+				task.IterationCounts[st.ID] = 1
+			case CapReroute:
+				// Unstick the capped state (fresh window on a future revisit) and
+				// jump. An unknown target is caught by StateByID next iteration.
+				task.IterationCounts[st.ID] = 0
+				task.State = dec.Reroute
+				continue
+			default: // CapAbort (and the zero value) — terminate, fail safe.
+				return trace, capErr
+			}
 		}
 
 		out, err := r.RunHandler(ctx, st, task.Input)
