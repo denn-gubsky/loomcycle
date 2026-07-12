@@ -278,6 +278,50 @@ func TestTeamDefTool_RenderDiagram(t *testing.T) {
 	}
 }
 
+// Dry-run preview: render_diagram with an inline overlay renders (and
+// syntax-checks) an UNSAVED graph without persisting anything — this backs the
+// Web UI editor's "refresh diagram" preview.
+func TestTeamDefTool_RenderDiagram_InlineOverlayDryRun(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+
+	overlay := `{
+	  "entry":"draft",
+	  "states":[
+	    {"state":"draft","handler":{"kind":"agent","agent":"writer"}},
+	    {"state":"done","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[{"from":"draft","to":"done","on":"success"}]}`
+
+	// Render the unsaved overlay directly — no create first.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"render_diagram","name":"preview-team","overlay":`+overlay+`}`))
+	if res.IsError {
+		t.Fatalf("dry-run render_diagram: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["preview"] != true {
+		t.Errorf("preview flag = %v, want true", out["preview"])
+	}
+	if out["def_id"] != "" {
+		t.Errorf("def_id = %q, want empty (dry-run persists nothing)", out["def_id"])
+	}
+	if d, _ := out["diagram"].(string); !strings.Contains(d, "[*] --> draft") {
+		t.Errorf("dry-run diagram missing entry edge:\n%s", d)
+	}
+
+	// It persisted NOTHING — rendering the same name (no overlay) is still not-found.
+	if r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"render_diagram","name":"preview-team"}`)); !r.IsError || !strings.Contains(r.Text, "not found") {
+		t.Errorf("dry-run must not persist; got %q (isErr=%v)", r.Text, r.IsError)
+	}
+
+	// The syntax check runs exactly like create: an invalid graph (dangling
+	// transition to a non-existent state) is refused, no diagram returned.
+	bad := `{"op":"render_diagram","name":"bad","overlay":{"entry":"a","states":[{"state":"a","handler":{"kind":"agent","agent":"x"}},{"state":"b","handler":{"kind":"terminal"}}],"transitions":[{"from":"a","to":"ghost","on":"success"}]}}`
+	if r, _ := tool.Execute(ctx, json.RawMessage(bad)); !r.IsError {
+		t.Errorf("invalid overlay should fail the syntax check; got %q", r.Text)
+	}
+}
+
 func TestTeamDefTool_CreateValidGraphPersists(t *testing.T) {
 	tool, ctx, cleanup := teamDefFixture(t)
 	defer cleanup()

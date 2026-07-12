@@ -3,22 +3,24 @@ import {
   TeamDiagram,
   TeamNameSummary,
   createTeam,
+  forkTeam,
+  getTeamDef,
   listTeams,
+  previewTeamDiagram,
   renderTeamDiagram,
 } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import Splitter from "../components/Splitter";
 
-// TeamsView — the agent-team board (RFC AP / BD).
+// TeamsView — the agent-team board.
 //
-// Lists TeamDefs (/v1/_teamdef/names), renders a selected team's Mermaid
-// stateDiagram-v2 source (render_diagram), and creates a team (op=create) —
-// either from scratch or pre-filled from a bundled starter template.
-//
-// The diagram is RENDERED in-page via mermaid (lazy-loaded so it stays out of
-// the main bundle), theme-aware (follows the app's light/dark theme), with a
-// "view source" toggle for the raw stateDiagram-v2. Binding the highlight to a
-// running Document board's live state is a follow-up.
+// Layout: a fixed team list, then a draggable Splitter dividing an EDITOR pane
+// (left) from a DIAGRAM pane (right). Selecting a team loads its editable
+// definition into the editor and renders its stored diagram; the operator edits
+// the graph JSON and clicks "Refresh diagram" to preview the unsaved edit
+// (server syntax-checks + renders via render_diagram's dry-run overlay, no
+// persist), then "Save new version" to fork+promote it. Create shows the editor
+// with an EMPTY diagram (no stale one) until the first refresh.
 
 // Starter templates — mirror the `team/examples` skill in the team-examples
 // bundle. Their handler agents (sdlc/*, marketing/*) ship in that bundle, so a
@@ -76,14 +78,35 @@ const BLANK_OVERLAY = {
   transitions: [{ from: "start", to: "done", on: "success" }],
 };
 
+const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const pretty = (v: unknown) => JSON.stringify(v, null, 2);
+
+// The diagram is rendered from one of two sources: the team's stored active
+// version, or an unsaved preview overlay. Highlight re-renders whichever.
+type DiagramSource =
+  | { kind: "stored"; name: string }
+  | { kind: "preview"; name: string; overlay: unknown }
+  | null;
+
 export default function TeamsView() {
   const [teams, setTeams] = useState<TeamNameSummary[]>([]);
   const [selected, setSelected] = useState<string>("");
-  const [highlight, setHighlight] = useState<string>("");
-  const [diagram, setDiagram] = useState<TeamDiagram | null>(null);
+  const [creating, setCreating] = useState(false);
   const [err, setErr] = useState<string>("");
-  const [diagErr, setDiagErr] = useState<string>("");
   const [loading, setLoading] = useState(false);
+
+  // Editor.
+  const [editorText, setEditorText] = useState<string>("");
+  const [createName, setCreateName] = useState<string>("");
+  const [editorErr, setEditorErr] = useState<string>("");
+  const [loadingDef, setLoadingDef] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Diagram.
+  const [highlight, setHighlight] = useState<string>("");
+  const [diagramSource, setDiagramSource] = useState<DiagramSource>(null);
+  const [diagram, setDiagram] = useState<TeamDiagram | null>(null);
+  const [diagErr, setDiagErr] = useState<string>("");
 
   // Rendered diagram (mermaid → SVG), theme-aware, with a source toggle.
   const { theme } = useTheme();
@@ -92,13 +115,6 @@ export default function TeamsView() {
   const [showSource, setShowSource] = useState(false);
   const mmidRef = useRef(0);
 
-  // Create-team dialog.
-  const [showCreate, setShowCreate] = useState(false);
-  const [createName, setCreateName] = useState("");
-  const [createJSON, setCreateJSON] = useState(JSON.stringify(BLANK_OVERLAY, null, 2));
-  const [createErr, setCreateErr] = useState("");
-  const [creating, setCreating] = useState(false);
-
   const fetchTeams = useCallback(async () => {
     setLoading(true);
     setErr("");
@@ -106,7 +122,7 @@ export default function TeamsView() {
       const resp = await listTeams();
       setTeams(resp.names ?? []);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(msg(e));
     } finally {
       setLoading(false);
     }
@@ -116,20 +132,70 @@ export default function TeamsView() {
     void fetchTeams();
   }, [fetchTeams]);
 
-  const fetchDiagram = useCallback(async (name: string, hl: string) => {
-    if (!name) return;
-    setDiagErr("");
+  // Load a def's editable JSON into the editor (canonical, pretty-printed).
+  const loadDefIntoEditor = useCallback(async (defId: string) => {
+    setLoadingDef(true);
+    setEditorErr("");
     try {
-      setDiagram(await renderTeamDiagram(name, hl || undefined));
+      const detail = await getTeamDef(defId);
+      const parsed = JSON.parse(detail.definition);
+      setEditorText(pretty(parsed));
     } catch (e) {
-      setDiagram(null);
-      setDiagErr(e instanceof Error ? e.message : String(e));
+      setEditorText("");
+      setEditorErr("Failed to load definition: " + msg(e));
+    } finally {
+      setLoadingDef(false);
     }
   }, []);
 
+  // Select a stored team → load its definition + render its stored diagram.
+  const selectTeam = useCallback(
+    (t: TeamNameSummary) => {
+      setCreating(false);
+      setSelected(t.name);
+      setEditorErr("");
+      setDiagErr("");
+      setHighlight("");
+      setDiagramSource({ kind: "stored", name: t.name });
+      if (t.active_def_id) {
+        void loadDefIntoEditor(t.active_def_id);
+      } else {
+        setEditorText("");
+        setEditorErr("This team has no active version to edit.");
+      }
+    },
+    [loadDefIntoEditor],
+  );
+
+  // Render whichever source is current (stored or preview), applying highlight.
+  // A stored miss / an invalid preview both surface in the diagram pane; a
+  // JSON-syntax error is caught earlier (editor pane) before we get here.
   useEffect(() => {
-    if (selected) void fetchDiagram(selected, highlight);
-  }, [selected, highlight, fetchDiagram]);
+    if (!diagramSource) {
+      setDiagram(null);
+      return;
+    }
+    let cancelled = false;
+    setDiagErr("");
+    void (async () => {
+      try {
+        const hl = highlight || undefined;
+        const d =
+          diagramSource.kind === "stored"
+            ? await renderTeamDiagram(diagramSource.name, hl)
+            : await previewTeamDiagram(diagramSource.name, diagramSource.overlay, hl);
+        if (!cancelled) setDiagram(d);
+      } catch (e) {
+        if (!cancelled) {
+          setDiagram(null);
+          setDiagErr(msg(e));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [diagramSource, highlight]);
 
   // Render the Mermaid source to an SVG in-page. mermaid is lazy-imported (a
   // big dep — kept out of the main bundle), initialized per the app theme so the
@@ -156,7 +222,7 @@ export default function TeamsView() {
       } catch (e) {
         if (!cancelled) {
           setSvg("");
-          setRenderErr(e instanceof Error ? e.message : String(e));
+          setRenderErr(msg(e));
         }
       }
     })();
@@ -165,231 +231,253 @@ export default function TeamsView() {
     };
   }, [diagram, theme]);
 
-  function applyTemplate(key: string) {
-    if (!key) {
-      setCreateJSON(JSON.stringify(BLANK_OVERLAY, null, 2));
-      return;
-    }
-    const t = TEAM_TEMPLATES.find((x) => x.key === key);
-    if (t) {
-      if (!createName) setCreateName(t.name);
-      setCreateJSON(JSON.stringify(t.overlay, null, 2));
-    }
-  }
-
-  async function handleCreate() {
-    setCreateErr("");
-    if (!createName.trim()) {
-      setCreateErr("Name is required.");
-      return;
-    }
-    let overlay: unknown;
-    try {
-      overlay = JSON.parse(createJSON);
-    } catch (e) {
-      setCreateErr("Overlay is not valid JSON: " + (e instanceof Error ? e.message : String(e)));
-      return;
-    }
+  function startCreate() {
     setCreating(true);
+    setSelected("");
+    setCreateName("");
+    setEditorText(pretty(BLANK_OVERLAY));
+    setEditorErr("");
+    setDiagErr("");
+    setHighlight("");
+    setDiagramSource(null); // EMPTY diagram until the first refresh.
+    setDiagram(null);
+  }
+
+  function cancelCreate() {
+    setCreating(false);
+    setSelected("");
+    setEditorText("");
+    setEditorErr("");
+    setDiagramSource(null);
+    setDiagram(null);
+  }
+
+  function applyTemplate(key: string) {
+    const t = TEAM_TEMPLATES.find((x) => x.key === key);
+    setEditorText(pretty(t ? t.overlay : BLANK_OVERLAY));
+    if (t && !createName) setCreateName(t.name);
+  }
+
+  // Parse the editor text as JSON; on failure set the editor error and return
+  // undefined. The server does the graph syntax check (dry-run / create / fork).
+  function parseEditor(): unknown | undefined {
     try {
-      const created = await createTeam(createName.trim(), overlay);
-      setShowCreate(false);
-      setCreateName("");
-      setCreateJSON(JSON.stringify(BLANK_OVERLAY, null, 2));
-      await fetchTeams();
-      setSelected(created.name);
+      return JSON.parse(editorText);
     } catch (e) {
-      // The server 422s an invalid graph with the reason in the message.
-      setCreateErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCreating(false);
+      setEditorErr("Not valid JSON: " + msg(e));
+      return undefined;
     }
   }
 
-  // The selected team's diagram — a self-contained full-height pane: a fixed
-  // header (name + highlight input) over a scrollable diagram region. Used both
-  // standalone and as the left pane of the Splitter, so it owns `height:100%`
-  // + an inner scroll rather than relying on the parent's flex.
-  const diagramPane = (
-    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}>
-      {!selected && <p style={{ opacity: 0.6 }}>Select a team to view its diagram.</p>}
-      {selected && (
-        <>
-          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap", flex: "0 0 auto" }}>
-            <strong>{selected}</strong>
-            <label style={{ fontSize: "0.85em", opacity: 0.8 }}>
-              highlight state:{" "}
-              <input
-                value={highlight}
-                onChange={(e) => setHighlight(e.target.value)}
-                placeholder="(state id)"
-                style={{ padding: "0.2rem 0.4rem" }}
-              />
-            </label>
-          </div>
-          {diagErr && (
-            <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem", flex: "0 0 auto" }}>
-              {diagErr}
-            </div>
-          )}
-          {renderErr && (
-            <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem", flex: "0 0 auto" }}>
-              Diagram render failed: {renderErr}
-            </div>
-          )}
-          {/* Scroll region — a tall/wide diagram scrolls here so the header +
-              highlight input stay pinned. */}
-          <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: "0.5rem" }}>
-            {diagram && svg && (
-              <div
-                // The rendered SVG. mermaid's theme (dark/default) matches the
-                // app, so edges + labels are legible; node fills come from the
-                // def's colour scheme.
-                //
-                // dangerouslySetInnerHTML is safe here (double-sanitized): the
-                // input `diagram.diagram` is server-generated + mmSanitize'd
-                // (render.go strips newlines/-->/%% from ids/labels), and we
-                // render with securityLevel:"strict", which runs the SVG output
-                // through mermaid's bundled DOMPurify. No untrusted raw HTML.
-                style={{
-                  padding: "0.75rem",
-                  border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
-                  borderRadius: 8,
-                  background: "var(--lc-surface, transparent)",
-                }}
-                dangerouslySetInnerHTML={{ __html: svg }}
-              />
-            )}
-            {diagram && (
-              <div style={{ marginTop: "0.5rem" }}>
-                <button
-                  onClick={() => setShowSource((s) => !s)}
-                  style={{ fontSize: "0.8em", padding: "0.2rem 0.5rem" }}
-                >
-                  {showSource ? "hide source" : "view source"}
-                </button>
-                {(showSource || (!svg && !renderErr)) && (
-                  <pre
-                    style={{
-                      marginTop: "0.5rem",
-                      background: "rgba(127,127,127,0.12)",
-                      color: "inherit",
-                      border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
-                      borderRadius: 6,
-                      padding: "0.75rem",
-                      overflowX: "auto",
-                      fontFamily: "var(--mono, monospace)",
-                      fontSize: "0.85em",
-                      whiteSpace: "pre",
-                    }}
-                  >
-                    {diagram.diagram}
-                  </pre>
-                )}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  );
+  function onRefresh() {
+    setEditorErr("");
+    const parsed = parseEditor();
+    if (parsed === undefined) return;
+    const name = creating ? createName.trim() || "team" : selected;
+    setDiagramSource({ kind: "preview", name, overlay: parsed });
+  }
 
-  // The create-team editor — the Splitter's right pane. A card (surface + border)
-  // with a fixed header + footer and a scrollable form body, so a long overlay
-  // JSON never pushes the Create/Cancel buttons off-screen.
+  async function onSave() {
+    setEditorErr("");
+    const parsed = parseEditor();
+    if (parsed === undefined) return;
+    setSaving(true);
+    try {
+      const res = await forkTeam(selected, parsed);
+      await fetchTeams();
+      await loadDefIntoEditor(res.def_id);
+      setDiagramSource({ kind: "stored", name: selected });
+    } catch (e) {
+      // The server 422s an invalid graph with the reason.
+      setEditorErr(msg(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onCreate() {
+    setEditorErr("");
+    if (!createName.trim()) {
+      setEditorErr("Name is required.");
+      return;
+    }
+    const parsed = parseEditor();
+    if (parsed === undefined) return;
+    setSaving(true);
+    try {
+      const res = await createTeam(createName.trim(), parsed);
+      await fetchTeams();
+      setCreating(false);
+      setSelected(res.name);
+      await loadDefIntoEditor(res.def_id);
+      setDiagramSource({ kind: "stored", name: res.name });
+    } catch (e) {
+      setEditorErr(msg(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const active = selected || creating;
+
+  // ---- Editor pane (Splitter left) ----
   const editorPane = (
     <div
       style={{
         height: "100%",
         minHeight: 0,
         boxSizing: "border-box",
-        background: "var(--lc-surface, transparent)",
-        color: "var(--lc-text, inherit)",
-        border: "1px solid var(--lc-rule, #ccc)",
-        borderRadius: "var(--lc-radius, 8px)",
-        padding: "1rem",
         display: "flex",
         flexDirection: "column",
-        gap: "0.75rem",
+        gap: "0.6rem",
+        paddingRight: "0.75rem",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flex: "0 0 auto" }}>
-        <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Create team</h2>
-        <button
-          onClick={() => !creating && setShowCreate(false)}
-          disabled={creating}
-          title="close"
-          style={{ padding: "0.15rem 0.5rem", lineHeight: 1 }}
-        >
-          ✕
-        </button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flex: "0 0 auto", gap: "0.5rem" }}>
+        <strong>{creating ? "Create team" : `Edit: ${selected}`}</strong>
+        {creating && (
+          <button onClick={cancelCreate} disabled={saving} style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem" }}>
+            Cancel
+          </button>
+        )}
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-        <p style={{ opacity: 0.7, margin: 0, fontSize: "0.85em" }}>
-          Author a TeamDef — a workflow state-machine graph. The graph is validated
-          on create; an invalid graph is refused with the reason.
-        </p>
-
-        <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-          <span>Start from a template</span>
-          <select
-            defaultValue=""
-            onChange={(e) => applyTemplate(e.target.value)}
-            style={{ padding: "0.35rem" }}
-          >
-            <option value="">Blank</option>
+      {creating && (
+        <div style={{ display: "flex", gap: "0.5rem", flex: "0 0 auto", flexWrap: "wrap" }}>
+          <input
+            value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+            placeholder="team name (e.g. sdlc)"
+            style={{ padding: "0.35rem", flex: "1 1 160px", minWidth: 0 }}
+          />
+          <select defaultValue="" onChange={(e) => applyTemplate(e.target.value)} style={{ padding: "0.35rem" }}>
+            <option value="">Template…</option>
             {TEAM_TEMPLATES.map((t) => (
               <option key={t.key} value={t.key}>
                 {t.label}
               </option>
             ))}
           </select>
-          <span style={{ fontSize: "0.78em", opacity: 0.6 }}>
-            Starter templates reference the <code>team-examples</code> bundle's handler
-            agents — a team only runs if that bundle is loaded.
-          </span>
-        </label>
+        </div>
+      )}
 
-        <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-          <span>Name</span>
-          <input
-            value={createName}
-            onChange={(e) => setCreateName(e.target.value)}
-            placeholder="e.g. sdlc"
-            style={{ padding: "0.4rem" }}
-          />
-        </label>
+      <textarea
+        value={editorText}
+        onChange={(e) => setEditorText(e.target.value)}
+        spellCheck={false}
+        placeholder={loadingDef ? "Loading…" : "Team graph JSON — entry / states / transitions"}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          resize: "none",
+          padding: "0.6rem",
+          fontFamily: "var(--mono, monospace)",
+          fontSize: "0.82em",
+          whiteSpace: "pre",
+          overflow: "auto",
+          border: "1px solid var(--lc-rule, #ccc)",
+          borderRadius: 6,
+          background: "var(--lc-input-bg, transparent)",
+          color: "var(--lc-text, inherit)",
+        }}
+      />
 
-        <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-          <span>Graph (overlay JSON — entry / states / transitions)</span>
-          <textarea
-            value={createJSON}
-            onChange={(e) => setCreateJSON(e.target.value)}
-            spellCheck={false}
-            rows={16}
-            style={{
-              padding: "0.5rem",
-              fontFamily: "var(--mono, monospace)",
-              fontSize: "0.82em",
-              whiteSpace: "pre",
-              overflowWrap: "normal",
-            }}
-          />
-        </label>
+      {editorErr && (
+        <div style={{ color: "var(--error, #e03131)", whiteSpace: "pre-wrap", flex: "0 0 auto", fontSize: "0.85em" }}>
+          {editorErr}
+        </div>
+      )}
 
-        {createErr && (
-          <div style={{ color: "var(--error, #e03131)", whiteSpace: "pre-wrap" }}>{createErr}</div>
+      <div style={{ display: "flex", gap: "0.5rem", flex: "0 0 auto", flexWrap: "wrap" }}>
+        <button onClick={onRefresh} disabled={saving || loadingDef} style={{ fontWeight: 600 }}>
+          Refresh diagram
+        </button>
+        {creating ? (
+          <button onClick={() => void onCreate()} disabled={saving} style={{ fontWeight: 600 }}>
+            {saving ? "Creating…" : "Create"}
+          </button>
+        ) : (
+          <button onClick={() => void onSave()} disabled={saving || loadingDef} style={{ fontWeight: 600 }}>
+            {saving ? "Saving…" : "Save new version"}
+          </button>
         )}
       </div>
+    </div>
+  );
 
-      <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end", flex: "0 0 auto" }}>
-        <button onClick={() => setShowCreate(false)} disabled={creating}>
-          Cancel
-        </button>
-        <button onClick={() => void handleCreate()} disabled={creating} style={{ fontWeight: 600 }}>
-          {creating ? "Creating…" : "Create"}
-        </button>
+  // ---- Diagram pane (Splitter right) ----
+  const diagramPane = (
+    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column", paddingLeft: "0.75rem" }}>
+      <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap", flex: "0 0 auto" }}>
+        <strong>{creating ? createName || "(new team)" : selected}</strong>
+        <label style={{ fontSize: "0.85em", opacity: 0.8 }}>
+          highlight state:{" "}
+          <input
+            value={highlight}
+            onChange={(e) => setHighlight(e.target.value)}
+            placeholder="(state id)"
+            style={{ padding: "0.2rem 0.4rem" }}
+          />
+        </label>
+      </div>
+      {diagErr && (
+        <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem", flex: "0 0 auto", whiteSpace: "pre-wrap" }}>
+          {diagErr}
+        </div>
+      )}
+      {renderErr && (
+        <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem", flex: "0 0 auto" }}>
+          Diagram render failed: {renderErr}
+        </div>
+      )}
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginTop: "0.5rem" }}>
+        {!diagram && !diagErr && (
+          <p style={{ opacity: 0.6 }}>
+            {creating
+              ? "Edit the graph on the left, then Refresh diagram to preview."
+              : "Refresh diagram to preview your edits."}
+          </p>
+        )}
+        {diagram && svg && (
+          <div
+            // The rendered SVG. dangerouslySetInnerHTML is safe here
+            // (double-sanitized): the source is server-generated + mmSanitize'd
+            // (render.go strips newlines/-->/%% from ids/labels) and we render
+            // with securityLevel:"strict" (mermaid's bundled DOMPurify).
+            style={{
+              padding: "0.75rem",
+              border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
+              borderRadius: 8,
+              background: "var(--lc-surface, transparent)",
+            }}
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        )}
+        {diagram && (
+          <div style={{ marginTop: "0.5rem" }}>
+            <button onClick={() => setShowSource((s) => !s)} style={{ fontSize: "0.8em", padding: "0.2rem 0.5rem" }}>
+              {showSource ? "hide source" : "view source"}
+            </button>
+            {(showSource || (!svg && !renderErr)) && (
+              <pre
+                style={{
+                  marginTop: "0.5rem",
+                  background: "rgba(127,127,127,0.12)",
+                  color: "inherit",
+                  border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
+                  borderRadius: 6,
+                  padding: "0.75rem",
+                  overflowX: "auto",
+                  fontFamily: "var(--mono, monospace)",
+                  fontSize: "0.85em",
+                  whiteSpace: "pre",
+                }}
+              >
+                {diagram.diagram}
+              </pre>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -410,21 +498,18 @@ export default function TeamsView() {
         <div>
           <h1 style={{ margin: 0 }}>teams</h1>
           <p style={{ opacity: 0.7, margin: "0.25rem 0" }}>
-            Agent-team workflows. Select a team to see its state-machine diagram —
-            states, transitions, and the colour scheme.
+            Agent-team workflows. Select a team to edit its graph and preview the
+            state-machine diagram; Refresh renders your unsaved edits, Save forks a
+            new version.
           </p>
         </div>
-        <button onClick={() => setShowCreate((s) => !s)} style={{ padding: "0.4rem 0.8rem", fontWeight: 600 }}>
-          {showCreate ? "close editor" : "+ create team"}
+        <button onClick={startCreate} disabled={creating} style={{ padding: "0.4rem 0.8rem", fontWeight: 600 }}>
+          + create team
         </button>
       </div>
 
       {err && <div style={{ color: "var(--error, #e03131)", flex: "0 0 auto" }}>Failed to load teams: {err}</div>}
 
-      {/* Full-height body: fixed team list + a diagram/editor region divided by a
-          draggable Splitter. The row is bounded (flex:1 + minHeight:0 under a
-          height:100% root) so the Splitter's height:100% resolves and each pane
-          scrolls internally instead of overlapping. */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", gap: "1.5rem", alignItems: "stretch" }}>
         {/* Team list */}
         <div style={{ width: 240, flex: "0 0 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -443,11 +528,11 @@ export default function TeamsView() {
           <ul style={{ listStyle: "none", padding: 0, margin: "0.5rem 0", flex: 1, minHeight: 0, overflowY: "auto" }}>
             {teams.map((t) => {
               const key = t.tenant_id ? `${t.tenant_id}/${t.name}` : t.name;
-              const isSel = selected === t.name;
+              const isSel = !creating && selected === t.name;
               return (
                 <li key={key}>
                   <button
-                    onClick={() => setSelected(t.name)}
+                    onClick={() => selectTeam(t)}
                     style={{
                       display: "block",
                       width: "100%",
@@ -457,8 +542,6 @@ export default function TeamsView() {
                       // Selected uses the app's active-row pattern
                       // (.presets-item.active): accent border + translucent
                       // accent-soft fill so the theme foreground stays legible.
-                      // The old `--accent-bg`/`#eef` alias doesn't exist → it fell
-                      // back to a solid light fill with near-white text = invisible.
                       border: `1px solid ${isSel ? "var(--lc-accent)" : "var(--lc-rule, #ccc)"}`,
                       borderRadius: 6,
                       background: isSel ? "var(--lc-accent-soft)" : "transparent",
@@ -480,20 +563,20 @@ export default function TeamsView() {
           </ul>
         </div>
 
-        {/* Diagram, optionally split with the editor by a draggable handle. */}
+        {/* Editor | diagram, divided by a draggable handle. */}
         <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-          {showCreate ? (
+          {active ? (
             <Splitter
-              defaultLeftWidth={420}
-              minLeftWidth={240}
-              minRightWidth={320}
-              storageKey="loomcycle.split.teams"
+              defaultLeftWidth={460}
+              minLeftWidth={300}
+              minRightWidth={280}
+              storageKey="loomcycle.split.teams.editor"
             >
-              {diagramPane}
               {editorPane}
+              {diagramPane}
             </Splitter>
           ) : (
-            diagramPane
+            <p style={{ opacity: 0.6 }}>Select a team to edit, or click + create team.</p>
           )}
         </div>
       </div>

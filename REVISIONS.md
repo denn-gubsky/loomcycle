@@ -4,6 +4,29 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.18.0
+
+**✏️ Teams board becomes an editor + live diagram preview.** The teams board was
+read-only-ish (view a team's diagram, or author one in a separate box). It's now a
+proper **edit-and-preview** workspace: selecting a team loads its **editable
+definition** (the graph JSON) into an editor pane on the left and renders its
+stored diagram on the right, divided by the draggable splitter. You edit the graph,
+click **Refresh diagram** to preview your *unsaved* edits (the server
+**syntax-checks + renders without persisting**), then **Save new version** to
+fork+promote it — or **+ create team** to author a new one, which now shows the
+editor beside an **empty** diagram (no stale one) until you refresh. JSON-syntax
+errors surface in the editor; graph-validation errors surface on the diagram.
+
+Backing this is one small **additive** change to the `render_diagram` op (HTTP
+`/v1/_teamdef` + the MCP `teamdef` tool): when given an inline **`overlay`**, it
+renders a **dry-run** of the unsaved graph — the same `Parse` + `Validate` create
+runs, then `RenderMermaid`, with **no store write** and no def/tenant resolution
+(the overlay carries the whole graph). Existing render-by-`name`/`def_id` is
+unchanged. Regression test `TestTeamDefTool_RenderDiagram_InlineOverlayDryRun`
+asserts it renders, persists nothing, and fails the syntax check on an invalid
+graph. Web UI + one additive tool field; no schema migration; adapters unchanged
+(1.16.0 / 1.13.0).
+
 ## What's in v1.17.4
 
 **🎨 Teams board — a draggable splitter between the diagram and the editor.** The

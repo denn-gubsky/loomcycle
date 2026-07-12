@@ -1502,6 +1502,56 @@ export function createTeam(name: string, overlay: unknown): Promise<CreatedTeam>
   });
 }
 
+// forkTeam saves an edited graph as a NEW version of an existing team (op=fork).
+// With no parent_def_id the server forks the name's active def; the overlay
+// (a full graph) replaces it. Validated server-side (422 with the reason).
+export function forkTeam(name: string, overlay: unknown): Promise<CreatedTeam> {
+  return jsonFetch<CreatedTeam>("/v1/_teamdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "fork", name, overlay }),
+  });
+}
+
+export interface TeamDefDetail {
+  def_id: string;
+  name: string;
+  version: number;
+  retired?: boolean;
+  content_sha256?: string;
+  // The stored graph JSON ({entry, states, transitions, colors?, ...}) — the
+  // editable definition loaded into the Teams editor.
+  definition: string;
+}
+
+// getTeamDef fetches one version's full record incl. the editable `definition`
+// JSON (op=get by def_id). Used to load a selected team into the editor.
+export function getTeamDef(defId: string): Promise<TeamDefDetail> {
+  return jsonFetch<TeamDefDetail>("/v1/_teamdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "get", def_id: defId }),
+  });
+}
+
+// previewTeamDiagram renders a DRY-RUN diagram from an unsaved graph overlay
+// (op=render_diagram + overlay) — the server syntax-checks + renders without
+// persisting. Backs the editor's "refresh diagram". Throws (422) on an invalid
+// graph with the reason.
+export function previewTeamDiagram(
+  name: string,
+  overlay: unknown,
+  highlightState?: string,
+): Promise<TeamDiagram> {
+  const body: Record<string, unknown> = { op: "render_diagram", name, overlay };
+  if (highlightState) body.highlight_state = highlightState;
+  return jsonFetch<TeamDiagram>("/v1/_teamdef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // listDefVersionsByName uses the existing op-discriminated POST
 // endpoint with `{op:"list", name}` to retrieve every version of one
 // declared name. Used by the Library UI when an operator clicks into
