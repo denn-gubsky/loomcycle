@@ -11,11 +11,11 @@
 // Interruption on the cap, and a trigger surface) is layered on top (a
 // follow-up), not baked into the walk.
 //
-// Phase 1 (RFC AP) exercises single-`agent` handlers + `success`/`pushback`
-// transitions + loops. The engine itself is handler-kind-agnostic beyond
-// stopping at `terminal`: which state runs, how, and which edge it picks are all
-// the Runner's concern, so `parallel`/`consolidator` execution (Phase 3) lands
-// entirely in a richer Runner without changing this walk.
+// The engine is handler-kind-agnostic beyond stopping at `terminal`: which state
+// runs, how, and which edge it picks are all the Runner's concern. So
+// `parallel`/`consolidator` fan-out and consolidator-driven edge selection live
+// entirely in the Runner (see internal/teamrun/spawn.go) — this walk is
+// unchanged by them.
 package teamrun
 
 import (
