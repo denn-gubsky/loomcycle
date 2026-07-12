@@ -223,31 +223,7 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 // Deterministic order: host names first (in declared order), then creds that were
 // not already contributed by a host var.
 func (b *Bashbox) fallbackEnv(ctx context.Context) []string {
-	host := scrubbedHostEnv(b.FallbackAllowedEnv)
-	if b.CredResolve == nil || len(b.FallbackAllowedCreds) == 0 {
-		return host
-	}
-	idx := make(map[string]int, len(host)) // name -> position in out
-	out := make([]string, 0, len(host)+len(b.FallbackAllowedCreds))
-	for _, kv := range host {
-		if i := strings.IndexByte(kv, '='); i > 0 {
-			idx[kv[:i]] = len(out)
-		}
-		out = append(out, kv)
-	}
-	for _, name := range b.FallbackAllowedCreds {
-		v, ok := b.CredResolve(ctx, name)
-		if !ok || v == "" {
-			continue
-		}
-		if pos, seen := idx[name]; seen {
-			out[pos] = name + "=" + v // cred overrides the host var
-		} else {
-			idx[name] = len(out)
-			out = append(out, name+"="+v)
-		}
-	}
-	return out
+	return mergeCredEnv(ctx, scrubbedHostEnv(b.FallbackAllowedEnv), b.FallbackAllowedCreds, b.CredResolve)
 }
 
 // fallbackHostCwd maps the sandbox working directory to a real host path. In rw

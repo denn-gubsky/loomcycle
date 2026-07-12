@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -179,6 +180,45 @@ func scrubbedHostEnv(allowedExtra []string) []string {
 	}
 	for _, name := range allowedExtra {
 		if v := os.Getenv(name); v != "" {
+			out = append(out, name+"="+v)
+		}
+	}
+	return out
+}
+
+// mergeCredEnv overlays per-tenant RFC AR credentials onto a host env slice.
+// host is the operator-allowlisted host vars (from scrubbedHostEnv); for each
+// name in allowedCreds it resolves the run's own (tenant/user/agent) credential
+// via resolve and either OVERRIDES a same-named host var or appends it — so a
+// tenant-specific secret wins over a shared operator host var. resolve==nil or
+// no cred names → host is returned unchanged (byte-identical to the pre-cred
+// behavior). Shared by the Bash tool and the Bashbox host-command fallback so
+// the two security-sensitive credential-injection paths can't drift apart
+// (mirrors the scrubbedHostEnv sharing rationale). Deterministic order: host
+// names first (declared order), then creds not already contributed by a host
+// var. The resolved value is a secret — the caller must registerSecret it and
+// it goes only into the child's env, never a log.
+func mergeCredEnv(ctx context.Context, host, allowedCreds []string, resolve func(ctx context.Context, name string) (string, bool)) []string {
+	if resolve == nil || len(allowedCreds) == 0 {
+		return host
+	}
+	idx := make(map[string]int, len(host)) // name -> position in out
+	out := make([]string, 0, len(host)+len(allowedCreds))
+	for _, kv := range host {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			idx[kv[:i]] = len(out)
+		}
+		out = append(out, kv)
+	}
+	for _, name := range allowedCreds {
+		v, ok := resolve(ctx, name)
+		if !ok || v == "" {
+			continue
+		}
+		if pos, seen := idx[name]; seen {
+			out[pos] = name + "=" + v // cred overrides the host var
+		} else {
+			idx[name] = len(out)
 			out = append(out, name+"="+v)
 		}
 	}
