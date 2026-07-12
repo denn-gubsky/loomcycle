@@ -38,7 +38,7 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
 As of v1.1.1 the client covers all 42 gRPC RPCs: the substrate-def family
 (agent_def / skill_def / mcp_server_def / schedule_def / a2a_server_card_def /
 a2a_agent_def / webhook_def / memory_backend_def / operator_token_def /
-volume_def), the channel ops (list_channels / publish_channel /
+volume_def / team_def), the channel ops (list_channels / publish_channel /
 subscribe_channel / peek_channel / ack_channel / await_channels /
 broadcast_channels), the RFC AI interactive session (run_input + stream_run +
 an ``interactive=True`` flag on run_streaming / continue_session),

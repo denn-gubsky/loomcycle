@@ -700,6 +700,17 @@ class LoomcycleClient:
         path. Mirror of :meth:`agent_def`."""
         return await self._dispatch_substrate("VolumeDef", input)
 
+    async def team_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the TeamDef substrate tool — agent-team workflow graphs
+        (RFC AP). Op-discriminated: create / fork / get / list / retire /
+        delete / promote / verify / render_diagram / run. A versioned def
+        family (content-addressed, like :meth:`agent_def`); tenant-confined —
+        the runtime stamps the caller's authoritative tenant and opaque-404s
+        cross-tenant. ``op="run"`` walks the team's state graph, spawning each
+        state's agent under the same admission a run gets. Mirror of
+        :meth:`agent_def`."""
+        return await self._dispatch_substrate("TeamDef", input)
+
     async def path(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the Path VFS tool — a Unix-like filesystem over your Memory
         entries, Volume mounts, and Documents (RFC AL). Op-discriminated:

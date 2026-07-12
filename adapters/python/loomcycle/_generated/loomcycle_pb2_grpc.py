@@ -218,6 +218,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.TeamDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/TeamDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.Path = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Path',
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
@@ -707,6 +712,20 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def TeamDef(self, request, context):
+        """TeamDef dispatches to the RFC AP team-workflow substrate. Mirrors
+        POST /v1/_teamdef. TENANT-CONFINED (ScopeTenant, like AgentDef/SkillDef):
+        the tool stamps the caller's authoritative tenant + opaque-404s
+        cross-tenant reads. Op-discriminated input_json (create / fork / get /
+        list / retire / delete / promote / verify / render_diagram / run — a
+        versioned def family; `run` walks the team's state graph, spawning each
+        state's agent under the same admission a run would get). Same
+        SubstrateRequest/Response body shape (is_error carries tool refusals).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Path(self, request, context):
         """Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
         TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
@@ -982,6 +1001,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'VolumeDef': grpc.unary_unary_rpc_method_handler(
                     servicer.VolumeDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'TeamDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.TeamDef,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -2010,6 +2034,33 @@ class Loomcycle(object):
             request,
             target,
             '/loomcycle.v1.Loomcycle/VolumeDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def TeamDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/TeamDef',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,
