@@ -120,6 +120,11 @@ import type {
   StreamUserRunStatesOptions,
   SubstrateToolInput,
   SubstrateToolResponse,
+  CreatedTeam,
+  ListTeamsResponse,
+  TeamDefDetail,
+  TeamDiagram,
+  TeamRunResult,
   PathToolInput,
   PathToolResponse,
   DocumentToolInput,
@@ -1217,6 +1222,91 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_volumedef", input, opts);
+  }
+
+  // ---- RFC AP Agent Teams (TeamDef substrate) ----
+  //
+  // TeamDefs are agent-team workflow graphs (states + transitions + a per-state
+  // handler agent). These mirror the HTTP shapes the Web UI drives; the
+  // substrate is tenant-confined (the runtime stamps the caller's authoritative
+  // tenant, opaque-404s cross-tenant). All op-dispatch through POST /v1/_teamdef
+  // except listTeams, which reads GET /v1/_teamdef/names.
+
+  /** List every team the caller may see (GET /v1/_teamdef/names), each with its
+   *  version roll-up. Tenant-scoped server-side. `names` is `null` when empty. */
+  async listTeams(opts?: { signal?: AbortSignal }): Promise<ListTeamsResponse> {
+    return jsonFetch<ListTeamsResponse>(this.ctx, "/v1/_teamdef/names", opts);
+  }
+
+  /** Render a team's active version as a Mermaid `stateDiagram-v2` (op=
+   *  render_diagram). `highlightState` optionally marks one state with a bold
+   *  outline (e.g. a chunk's current state). */
+  async renderTeamDiagram(
+    name: string,
+    opts?: { signal?: AbortSignal; highlightState?: string },
+  ): Promise<TeamDiagram> {
+    const body: Record<string, unknown> = { op: "render_diagram", name };
+    if (opts?.highlightState) body.highlight_state = opts.highlightState;
+    return postJSON<TeamDiagram>(this.ctx, "/v1/_teamdef", body, opts);
+  }
+
+  /** Fetch one version's full record incl. the editable `definition` graph
+   *  (op=get by def_id). */
+  async getTeamDef(defId: string, opts?: { signal?: AbortSignal }): Promise<TeamDefDetail> {
+    return postJSON<TeamDefDetail>(this.ctx, "/v1/_teamdef", { op: "get", def_id: defId }, opts);
+  }
+
+  /** Author a new TeamDef (op=create). `overlay` is the workflow graph
+   *  (`{entry, states, transitions, max_iterations?, colors?}`), validated
+   *  server-side — an invalid graph raises {@link SubstrateToolRefusedError}. */
+  async createTeam(
+    name: string,
+    overlay: Record<string, unknown>,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CreatedTeam> {
+    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", { op: "create", name, overlay }, opts);
+  }
+
+  /** Save an edited graph as a NEW version of an existing team (op=fork). With
+   *  no parent the server forks the name's active def; `overlay` (a full graph)
+   *  replaces it. Validated server-side ({@link SubstrateToolRefusedError}). */
+  async forkTeam(
+    name: string,
+    overlay: Record<string, unknown>,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CreatedTeam> {
+    return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", { op: "fork", name, overlay }, opts);
+  }
+
+  /** Hard-remove a whole team by name — all versions + the active pointer
+   *  (op=delete), scoped to the caller's tenant. Teams are runtime-only, so
+   *  this is how an operator clears an obsolete/test team. */
+  async deleteTeam(
+    name: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ name: string; deleted: boolean }> {
+    return postJSON<{ name: string; deleted: boolean }>(
+      this.ctx,
+      "/v1/_teamdef",
+      { op: "delete", name },
+      opts,
+    );
+  }
+
+  /** Execute a team (op=run) — walk its state graph, spawning each state's agent
+   *  until a terminal state, returning the per-state trace. Target the active
+   *  version by `name` OR a specific version by `defId`. `input` is the initial
+   *  task handed to the entry state's agent. The walk runs under the same
+   *  admission a normal run gets (token budget / operator-key / depth). */
+  async runTeam(
+    target: { name?: string; defId?: string; input?: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamRunResult> {
+    const body: Record<string, unknown> = { op: "run" };
+    if (target.name !== undefined) body.name = target.name;
+    if (target.defId !== undefined) body.def_id = target.defId;
+    if (target.input !== undefined) body.input = target.input;
+    return postJSON<TeamRunResult>(this.ctx, "/v1/_teamdef", body, opts);
   }
 
   /** Invoke the RFC AL Path VFS tool over HTTP (`POST /v1/_path`). A
