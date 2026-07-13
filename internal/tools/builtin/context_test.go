@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -870,7 +869,7 @@ func TestContextTool_EvaluationsRefusesWithoutStore(t *testing.T) {
 	}
 }
 
-// ---- channels / history (PR 3) ----
+// ---- channels (PR 3) ----
 
 func TestContextTool_ChannelsListsAccessible(t *testing.T) {
 	tool, _, ctx, _, _, _ := substrateFixture(t)
@@ -909,199 +908,6 @@ func TestContextTool_ChannelsListsAccessible(t *testing.T) {
 				t.Errorf("alerts: publish=%v subscribe=%v, want false/true", m["publish"], m["subscribe"])
 			}
 		}
-	}
-}
-
-func TestContextTool_HistorySelfScope(t *testing.T) {
-	tool, s, ctx, agentName, _, _ := substrateFixture(t)
-	// Seed a real run + an event under THIS caller's agent_id.
-	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
-	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_caller", UserID: "alice"})
-	_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hello"}`))
-
-	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller", UserID: "alice"})
-	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
-
-	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history"}`))
-	if res.IsError {
-		t.Fatalf("history: %s", res.Text)
-	}
-	out := decodeResult(t, res.Text)
-	if out["agent_id"] != "a_caller" {
-		t.Errorf("agent_id = %v, want a_caller", out["agent_id"])
-	}
-	if count := out["count"].(float64); count < 1 {
-		t.Errorf("count = %v, want >= 1", count)
-	}
-}
-
-func TestContextTool_HistoryRefusesOtherAgentUnderSelfScope(t *testing.T) {
-	tool, s, ctx, agentName, _, _ := substrateFixture(t)
-	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
-	_, _ = s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_other", UserID: "alice"})
-
-	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller"})
-	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
-
-	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_other"}`))
-	if !res.IsError {
-		t.Fatalf("history of other agent under self scope should refuse; got %s", res.Text)
-	}
-	if !strings.Contains(res.Text, "scope check") {
-		t.Errorf("error should mention scope check; got %q", res.Text)
-	}
-}
-
-func TestContextTool_HistoryAnyScopeAllowsOther(t *testing.T) {
-	tool, s, ctx, agentName, _, _ := substrateFixture(t)
-	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
-	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_other", UserID: "alice"})
-	_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hi"}`))
-
-	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller"})
-	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
-
-	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_other"}`))
-	if res.IsError {
-		t.Fatalf("history under `any` scope should succeed; got %s", res.Text)
-	}
-}
-
-// TestContextTool_HistorySinceTsFiltersOlder pins the v0.8.17 PR 3.5
-// addendum: an RFC3339 since_ts filters out events older than the
-// timestamp. Two events seeded — one before since_ts, one after —
-// only the recent one appears in the result.
-func TestContextTool_HistorySinceTsFiltersOlder(t *testing.T) {
-	tool, s, ctx, agentName, _, _ := substrateFixture(t)
-	bg := context.Background()
-	sess, _ := s.CreateSession(bg, "t", agentName, "alice")
-	run, _ := s.CreateRun(bg, sess.ID, store.RunIdentity{AgentID: "a_caller", UserID: "alice"})
-
-	// First event NOW; second event 100ms later. The since_ts will
-	// be 50ms after the first so the filter excludes it.
-	_ = s.AppendEvent(bg, run.ID, "text", []byte(`{"text":"old"}`))
-	t0 := time.Now()
-	time.Sleep(100 * time.Millisecond)
-	_ = s.AppendEvent(bg, run.ID, "text", []byte(`{"text":"new"}`))
-
-	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller", UserID: "alice"})
-	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
-
-	// since_ts at t0+50ms — between the two events.
-	since := t0.Add(50 * time.Millisecond).UTC().Format(time.RFC3339Nano)
-	body := fmt.Sprintf(`{"op":"history","since_ts":%q}`, since)
-	res, _ := tool.Execute(histCtx, json.RawMessage(body))
-	if res.IsError {
-		t.Fatalf("history with since_ts: %s", res.Text)
-	}
-	out := decodeResult(t, res.Text)
-	count := out["count"].(float64)
-	if count != 1 {
-		t.Errorf("count = %v, want 1 (older event excluded by since_ts)", count)
-	}
-}
-
-// TestContextTool_HistorySinceTsInvalidFormat — bad RFC3339 string
-// returns a clear error.
-func TestContextTool_HistorySinceTsInvalidFormat(t *testing.T) {
-	tool, _, ctx, _, _, _ := substrateFixture(t)
-	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller"})
-	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
-	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","since_ts":"not-a-date"}`))
-	if !res.IsError {
-		t.Fatal("history with bad since_ts should error")
-	}
-	if !strings.Contains(res.Text, "RFC3339") {
-		t.Errorf("error should mention RFC3339; got %q", res.Text)
-	}
-}
-
-func TestContextTool_HistoryRefusesEmptyScopes(t *testing.T) {
-	tool, _, ctx, _, _, _ := substrateFixture(t)
-	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller"})
-	// No WithHistoryPolicy attached.
-	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history"}`))
-	if !res.IsError {
-		t.Fatal("history without any scope should refuse (default-deny)")
-	}
-}
-
-func TestContextTool_HistoryRefusesWithoutStore(t *testing.T) {
-	tool := &Context{}
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a"})
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"history"}`))
-	if !res.IsError {
-		t.Fatal("history without Store should refuse")
-	}
-}
-
-// ---- permissions surfaces history_scope ----
-
-func TestContextTool_PermissionsSurfacesHistoryScope(t *testing.T) {
-	tool, ctx := contextFixture(t)
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "any"}})
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"permissions"}`))
-	out := decodeResult(t, res.Text)
-	scopes := out["history_scope"].([]any)
-	if len(scopes) != 2 || scopes[0] != "self" || scopes[1] != "any" {
-		t.Errorf("history_scope = %v, want [self any]", scopes)
-	}
-}
-
-// PR 3 review fix: truncated must be true ONLY when there are more
-// filter-matching events than the limit allows. Old code compared
-// limit to raw transcript size — false positive when event_types
-// filter excluded enough events that matchCount <= limit.
-func TestContextTool_HistoryTruncatedRespectsTypeFilter(t *testing.T) {
-	tool, s, ctx, agentName, _, _ := substrateFixture(t)
-	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
-	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_filtered", UserID: "alice"})
-	// Mix: 3 text events + 50 usage events. With a `text` filter +
-	// limit=10, only 3 events match — truncated MUST be false.
-	for i := 0; i < 3; i++ {
-		_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hi"}`))
-	}
-	for i := 0; i < 50; i++ {
-		_ = s.AppendEvent(context.Background(), run.ID, "usage", []byte(`{"tokens":1}`))
-	}
-
-	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_filtered"})
-	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
-
-	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_filtered","event_types":["text"],"limit":10}`))
-	if res.IsError {
-		t.Fatalf("history: %s", res.Text)
-	}
-	out := decodeResult(t, res.Text)
-	if c := out["count"].(float64); c != 3 {
-		t.Errorf("count = %v, want 3 (only text events match)", c)
-	}
-	if out["truncated"].(bool) {
-		t.Error("truncated = true; want false (only 3 matching events, all returned)")
-	}
-}
-
-// Same fixture but with limit=2 — now 3 matches exceeds limit, so
-// truncated MUST be true.
-func TestContextTool_HistoryTruncatedTrueWhenMatchesExceedLimit(t *testing.T) {
-	tool, s, ctx, agentName, _, _ := substrateFixture(t)
-	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
-	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_match", UserID: "alice"})
-	for i := 0; i < 3; i++ {
-		_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hi"}`))
-	}
-
-	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_match"})
-	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
-
-	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_match","event_types":["text"],"limit":2}`))
-	out := decodeResult(t, res.Text)
-	if c := out["count"].(float64); c != 2 {
-		t.Errorf("count = %v, want 2 (limit)", c)
-	}
-	if !out["truncated"].(bool) {
-		t.Error("truncated = false; want true (3 matches > limit 2)")
 	}
 }
 

@@ -157,6 +157,16 @@ type Connector interface {
 	// — all dispatch through this single Connector method.
 	Document(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// History — RFC BE browse/search/annotate past chats (a chat = a session).
+	// Op-discriminated (list / get / search / rename / annotate / pin /
+	// archive). Owner-scope-aware (self / user / tenant / global) with the
+	// owner resolved server-side from the run identity; every by-id read folds a
+	// cross-scope row to an opaque not-found and `global` is admin-only.
+	// Reachable via POST /v1/_history, the LoomCycle MCP meta-tool `history`,
+	// and (in a later PR) the gRPC RPC + TS/Python adapters — all dispatch
+	// through this single Connector method.
+	History(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// MCPServerDef — v0.9.x dynamic MCP server registration substrate.
 	// Op-discriminated (create / fork / get / list / promote / retire
 	// / rediscover / verify). Operator-admin-only: NOT auto-attached

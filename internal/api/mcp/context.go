@@ -129,12 +129,16 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 		ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 			Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 		})
-		ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
+		// RFC BE History: full owner-scope reach INCLUDING cross-tenant `global`.
+		ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant", "global"}})
 		ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	} else {
-		// Tenant principal: own-only evaluation; cross-tenant history + the
-		// mint plane stay default-deny (zero).
+		// Tenant principal: own-only evaluation; the mint plane stays
+		// default-deny (zero). RFC BE History gets the own-tenant scopes but
+		// NOT `global` — the tenant stamp on ctx + the tool's fold confine every
+		// op to this tenant/subject.
 		ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: []string{"submit_self"}})
+		ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant"}})
 	}
 	return ctx
 }

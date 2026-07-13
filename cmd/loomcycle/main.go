@@ -947,6 +947,11 @@ func main() {
 	documentTool := &builtin.Document{Bus: channelBus}
 	allTools = append(allTools, documentTool)
 
+	// RFC BE — the History tool (browse/search/annotate past chats). Store
+	// late-bound below; the per-agent history_scope policy gates every op.
+	historyTool := &builtin.History{}
+	allTools = append(allTools, historyTool)
+
 	// MCPServerDef tool construction is deferred until after the pool
 	// + dynamic registry are built (operator-admin-only — NOT appended
 	// to allTools; wired via SetMCPServerDefTool after the pool exists).
@@ -1504,6 +1509,7 @@ func main() {
 	}
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface
+	historyTool.Store = storeIface
 	skillTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface

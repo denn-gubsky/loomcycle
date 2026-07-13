@@ -1005,25 +1005,23 @@ type AgentDef struct {
 	// produce.
 	EvaluationScopes []string `yaml:"evaluation_scopes"`
 
-	// HistoryScope gates the v0.8.7 Context.history op. Closed set:
+	// HistoryScope gates the RFC BE History tool (browse/search/annotate
+	// past chats). Owner-scope vocabulary:
 	//
-	//	"self"        — caller may read its own run's transcript
-	//	"siblings"    — RESERVED (not yet active in v0.8.7 PR 3)
-	//	"descendants" — RESERVED
-	//	"named:<n>"   — RESERVED
-	//	"any"         — UNRESTRICTED. Caller may read ANY agent's
-	//	                transcript INCLUDING transcripts owned by
-	//	                OTHER users in multi-tenant deployments. There
-	//	                is no user_id check today; `any` is a flat
-	//	                operator-trust grant. Use only for admin /
-	//	                debugging agents under operator control. For
-	//	                "caller may read my own + my children's
-	//	                transcripts" wait for siblings/descendants
-	//	                scopes to activate (needs RunIdentityValue
-	//	                ParentAgentID plumbing).
+	//	"self"   — the agent's own chats (sessions where agent == this agent)
+	//	"user"   — the end-user's chats (same user_id, within the tenant)
+	//	"tenant" — every chat within the caller's tenant
+	//	"global" — chats across ALL tenants. Cross-tenant, so it is honored
+	//	           ONLY under an admin principal; a tenant-scoped run has it
+	//	           silently stripped at policy-resolution time (a tenant agent
+	//	           with `global` in yaml still sees only its own tenant).
 	//
-	// Empty / unset = default-deny. Mirror of the substrate-scope
-	// pattern (agent_def_scopes, evaluation_scopes).
+	// Legacy migration: "any" is accepted as an alias for "global" (existing
+	// configs keep working); the never-implemented "siblings"/"descendants"/
+	// "named:<n>" values are retired and rejected at config-load.
+	//
+	// Empty / unset = default-deny. Mirror of the substrate-scope pattern
+	// (agent_def_scopes, evaluation_scopes).
 	HistoryScope []string `yaml:"history_scope"`
 
 	// DisableContext opts the agent OUT of the v0.8.7 default-add
@@ -4540,17 +4538,16 @@ var validEvaluationScopes = map[string]bool{
 	"read_any":           true,
 }
 
-// validHistoryScopes is the closed set of Context.history scope
-// strings. "self" / "siblings" / "descendants" / "named:<n>" /
-// "any". The non-"self"/"any" entries are RESERVED in v0.8.7 PR 3
-// — granting them is well-formed but the runtime falls through to
-// default-deny until the plumbing PR lands.
+// validHistoryScopes is the closed set of History-tool (RFC BE) owner-scope
+// strings: "self" / "user" / "tenant" / "global". "any" is accepted as a
+// legacy alias for "global" (normalized at policy-resolution time). The
+// never-implemented "siblings"/"descendants"/"named:<n>" values are retired.
 var validHistoryScopes = map[string]bool{
-	"self":        true,
-	"siblings":    true,
-	"descendants": true,
-	"any":         true,
-	// "named:<n>" handled by prefix check at validation time.
+	"self":   true,
+	"user":   true,
+	"tenant": true,
+	"global": true,
+	"any":    true, // legacy alias for "global"
 }
 
 // validateAgentDefScope checks one entry in an agent's
@@ -5090,20 +5087,15 @@ func validate(c *Config) error {
 				return fmt.Errorf("agent %q: evaluation_scopes[%d]: unknown scope %q (want one of: submit_self, submit_siblings, submit_descendants, submit_any, read_any)", name, i, sc)
 			}
 		}
-		// Context.history (v0.8.7): validate history_scope entries.
-		// Closed set as documented on AgentDef.HistoryScope. The
-		// `named:<n>` prefix follows the same shape as agent_def_scopes.
+		// History tool (RFC BE): validate history_scope entries against the
+		// owner-scope vocabulary. "any" is accepted (legacy alias for
+		// "global"); the retired "siblings"/"descendants"/"named:<n>" values
+		// are rejected with a message pointing at the new vocabulary.
 		for i, sc := range agent.HistoryScope {
 			if validHistoryScopes[sc] {
 				continue
 			}
-			if strings.HasPrefix(sc, "named:") {
-				if strings.TrimPrefix(sc, "named:") == "" {
-					return fmt.Errorf("agent %q: history_scope[%d]: empty name after `named:` prefix", name, i)
-				}
-				continue
-			}
-			return fmt.Errorf("agent %q: history_scope[%d]: unknown scope %q (want one of: self, siblings, descendants, any, named:<n>)", name, i, sc)
+			return fmt.Errorf("agent %q: history_scope[%d]: unknown scope %q (want one of: self, user, tenant, global)", name, i, sc)
 		}
 	}
 	// Channel tool: validate the top-level `channels:` block.

@@ -37,6 +37,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"fairness",
 		"fan-out-patterns",
 		"getting-started",
+		"history",
 		"hooks",
 		"input-webhooks",
 		"installation",

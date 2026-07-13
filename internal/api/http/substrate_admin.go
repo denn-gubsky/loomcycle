@@ -127,6 +127,19 @@ func (s *Server) handleSubstrateDocument(w http.ResponseWriter, r *http.Request)
 	s.dispatchSubstrateCtx(w, r, "Document", s.Document, s.substrateBrowseCtxFn(r))
 }
 
+// handleSubstrateHistory serves POST /v1/_history.
+// RFC BE History tool (browse/search/annotate past chats). Bearer-authed;
+// tenant-confined (ScopeTenant via isTenantConfinedDefPath; admin satisfies).
+// Uses the USER-aware ctx (substrateAdminUserCtx) so a scope:"user" op keys on
+// the principal's OWN subject — the same user-scope id an agent run for this
+// principal uses — and a scope:"tenant" op stamps the principal's authoritative
+// tenant. The owner is resolved from the operator-trust ctx, NEVER the wire; the
+// admin-gated history policy (see substrateAdminCtx) refuses scope:"global" for a
+// non-admin tenant operator even though the route gate admits the request.
+func (s *Server) handleSubstrateHistory(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrateCtx(w, r, "History", s.History, substrateAdminUserCtx)
+}
+
 // handleSubstrateCredentialDef serves POST /v1/_credentialdef.
 // RFC AR secure per-tenant credential store. Bearer-authed; tenant-confined
 // (ScopeTenant via isTenantConfinedDefPath). Uses the USER-aware ctx
@@ -306,10 +319,16 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
-	// Context.history: "any" — read every agent's transcript.
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{
-		Scopes: []string{"any"},
-	})
+	// History tool (RFC BE): own-scope access always; the cross-tenant
+	// `global` scope only for an admin principal (mirrors the in-loop
+	// historyGlobalAllowed gate). A tenant operator reaching POST /v1/_history
+	// is thus confined to its own tenant even though the route gate
+	// (ScopeTenant) admits it.
+	histScopes := []string{"self", "user", "tenant"}
+	if auth.HasScope(principal.Scopes, auth.ScopeAdmin) {
+		histScopes = append(histScopes, "global")
+	}
+	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: histScopes})
 	// OperatorTokenDef: operator-admin (RFC L). The /v1/_* endpoints are
 	// bearer-authed against the operator; minting auth tokens is the
 	// operator's prerogative. PR2's middleware additionally gates this
