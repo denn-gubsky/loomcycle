@@ -130,6 +130,31 @@ type Session struct {
 	// rows that pre-date the column. Caller-supplied at session
 	// creation; sub-agent sessions inherit the parent's value.
 	UserID string `json:"user_id,omitempty"`
+
+	// --- RFC BE: human/organizational chat metadata. ---
+	// A "chat" is a session; these give it a human handle for the History
+	// tool's browse/search/annotate surface. All additive + nullable — legacy
+	// rows read the zero value. Never a secret.
+
+	// Title / Description are the human-authored labels (History op=rename /
+	// annotate). Empty = never set.
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	// Tags is a free-form label set, stored as a JSON array in sessions.tags.
+	// nil = the column is NULL (never set); a non-nil empty slice round-trips
+	// as an explicit empty set. Encoded via EncodeTags / DecodeTags.
+	Tags []string `json:"tags,omitempty"`
+	// Pinned floats the chat to the top of a listing (pinned-first ordering).
+	Pinned bool `json:"pinned,omitempty"`
+	// ArchivedAt marks a reversible soft-hide (History op=archive) — excluded
+	// from listings by default. Zero time = not archived. Distinct from the
+	// RFC AV retention pruner, which hard-deletes.
+	ArchivedAt time.Time `json:"archived_at,omitempty"`
+	// Summary is the cached recap of the chat (History op=recap), refreshed
+	// idempotently; SummaryUpdatedAt stamps when it was last written. Zero
+	// time = no recap yet.
+	Summary          string    `json:"summary,omitempty"`
+	SummaryUpdatedAt time.Time `json:"summary_updated_at,omitempty"`
 }
 
 // RunStatus is the terminal state of a run, or "running" while it's still in
@@ -142,6 +167,78 @@ const (
 	RunFailed    RunStatus = "failed"
 	RunCancelled RunStatus = "cancelled"
 )
+
+// SessionFilter narrows a ListSessions query (RFC BE — the History tool's
+// browse/search surface). Zero values mean "no filter on that axis":
+//   - TenantID == "" → all tenants (mirrors EventFilter.TenantID; the HTTP
+//     layer enforces admin-only for the cross-tenant view). Non-empty →
+//     restrict to that tenant.
+//   - UserID / AgentName == "" → no filter on that axis.
+//   - Status == "" → any status; non-empty → only sessions whose derived
+//     status (see SessionSummary.Status) matches.
+//   - From / To zero-value → unbounded on that side. Both bound the session's
+//     LastActivity (not created_at) so the window means "chats active in it".
+//   - Tag == "" → no tag filter; non-empty → sessions carrying that exact tag.
+//   - TitleContains == "" → no title filter; non-empty → case-insensitive
+//     substring match on the title.
+type SessionFilter struct {
+	TenantID      string
+	UserID        string
+	AgentName     string
+	Status        RunStatus
+	From, To      time.Time
+	Tag           string
+	TitleContains string
+	// IncludePinned, when true, RESTRICTS the result to pinned sessions only
+	// (the "pinned chats" view). false = no pinned filter — every session,
+	// still ordered pinned-first. (Named for the view it powers; it is a
+	// narrowing filter, not an additive one.)
+	IncludePinned bool
+	// IncludeArchived, when false (the default), EXCLUDES archived sessions;
+	// true includes them alongside the rest.
+	IncludeArchived bool
+}
+
+// SessionSummary is one row of ListSessions: a chat's metadata plus aggregates
+// rolled up from its runs (RFC BE). Token/cost/run-count come from the runs
+// table (RFC AV columns); Status is the session's derived status — "running" if
+// any run is active, else the most recent run's terminal status ("" for a
+// session with no runs yet).
+type SessionSummary struct {
+	SessionID    string    `json:"session_id"`
+	TenantID     string    `json:"tenant_id"`
+	Agent        string    `json:"agent"`
+	UserID       string    `json:"user_id,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	LastActivity time.Time `json:"last_activity"`
+	RunCount     int       `json:"run_count"`
+
+	Title       string   `json:"title,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Pinned      bool     `json:"pinned,omitempty"`
+	Archived    bool     `json:"archived,omitempty"`
+	Summary     string   `json:"summary,omitempty"`
+
+	InputTokens  int64     `json:"input_tokens"`
+	OutputTokens int64     `json:"output_tokens"`
+	Cost         float64   `json:"cost"`
+	Status       RunStatus `json:"status,omitempty"`
+}
+
+// SessionMetaPatch is a partial update to a session's RFC BE metadata. A nil
+// pointer leaves that field unchanged; a non-nil pointer writes it (an empty
+// string / empty slice is a legitimate "clear it" value). Archived==true stamps
+// archived_at=now; false clears it. A non-nil Summary also stamps
+// summary_updated_at=now.
+type SessionMetaPatch struct {
+	Title       *string
+	Description *string
+	Summary     *string
+	Tags        *[]string
+	Pinned      *bool
+	Archived    *bool
+}
 
 // Run is one execution within a session.
 type Run struct {
@@ -660,6 +757,39 @@ func DecodeParentContext(s string) (*ParentContext, error) {
 	return &p, nil
 }
 
+// EncodeTags marshals a session-tag slice into the JSON stored in
+// sessions.tags (RFC BE). A nil slice encodes to "[]" (an explicit empty set),
+// so callers that mean "leave the column unchanged" must skip the column
+// entirely rather than passing nil here. Shared by both backends so the SQLite
+// and Postgres column formats can't drift.
+func EncodeTags(tags []string) (string, error) {
+	if tags == nil {
+		tags = []string{}
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// DecodeTags parses a stored sessions.tags value. An empty string (NULL column
+// / legacy row) and an empty JSON array both decode to nil, so the round-tripped
+// SessionSummary.Tags stays clean for JSON omitempty.
+func DecodeTags(s string) ([]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
 // UserSummary is one row of ListUsers' output: distinct user_id with
 // summary stats. Drives the Web UI's user picker so operators can see
 // who has active runs and pick from a list rather than typing a UUID.
@@ -793,6 +923,23 @@ type Store interface {
 	// offset-based for simplicity; cursor-based pagination is a
 	// follow-up if scale demands.
 	ListEvents(ctx context.Context, filter EventFilter, limit, offset int) ([]Event, int64, error)
+
+	// ListSessions returns sessions matching the filter, each rolled up with
+	// its runs' aggregates (RFC BE — the History tool's browse/search surface).
+	// RunCount / InputTokens / OutputTokens / Cost sum the session's runs;
+	// LastActivity is the max of the runs' started/completed times (falling
+	// back to the session's created_at when it has no runs); Status is derived
+	// (running if any run is active, else the latest run's status). Ordered
+	// pinned-first then LastActivity DESC. Returns the page rows AND the total
+	// match count for offset pagination, mirroring ListEvents. Empty TenantID =
+	// all tenants (the HTTP layer gates the cross-tenant view to admins).
+	ListSessions(ctx context.Context, filter SessionFilter, limit, offset int) ([]SessionSummary, int64, error)
+
+	// SetSessionMeta applies a partial metadata update to a session (RFC BE).
+	// Only the non-nil fields of the patch are written; the rest are left
+	// unchanged. Returns *ErrNotFound when sessionID does not exist. See
+	// SessionMetaPatch for the archived_at / summary_updated_at side effects.
+	SetSessionMeta(ctx context.Context, sessionID string, patch SessionMetaPatch) error
 
 	// GetLastEventForRun returns the highest-seq event recorded for
 	// the given run. v0.8.21 introduces this so the list-agents

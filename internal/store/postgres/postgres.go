@@ -242,15 +242,21 @@ func (s *Store) CreateSession(ctx context.Context, tenantID, agent, userID strin
 // GetSession returns the row by ID or *store.ErrNotFound.
 func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
 	var (
-		out       store.Session
-		userID    *string
-		createdAt time.Time
+		out                        store.Session
+		userID                     *string
+		createdAt                  time.Time
+		title, description, tags   *string
+		summary                    *string
+		pinned                     bool
+		archivedNs, summaryUpdedNs *int64
 	)
 	row := s.pool.QueryRow(ctx,
-		`SELECT id, tenant_id, agent, user_id, created_at
+		`SELECT id, tenant_id, agent, user_id, created_at,
+		        title, description, tags, pinned, archived_at, summary, summary_updated_at
 		 FROM sessions WHERE id = $1`, sessionID,
 	)
-	if err := row.Scan(&out.ID, &out.TenantID, &out.Agent, &userID, &createdAt); err != nil {
+	if err := row.Scan(&out.ID, &out.TenantID, &out.Agent, &userID, &createdAt,
+		&title, &description, &tags, &pinned, &archivedNs, &summary, &summaryUpdedNs); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 		}
@@ -260,6 +266,29 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session
 		out.UserID = *userID
 	}
 	out.CreatedAt = createdAt
+	if title != nil {
+		out.Title = *title
+	}
+	if description != nil {
+		out.Description = *description
+	}
+	if tags != nil {
+		decoded, derr := store.DecodeTags(*tags)
+		if derr != nil {
+			return store.Session{}, fmt.Errorf("decode session tags: %w", derr)
+		}
+		out.Tags = decoded
+	}
+	out.Pinned = pinned
+	if archivedNs != nil {
+		out.ArchivedAt = time.Unix(0, *archivedNs)
+	}
+	if summary != nil {
+		out.Summary = *summary
+	}
+	if summaryUpdedNs != nil {
+		out.SummaryUpdatedAt = time.Unix(0, *summaryUpdedNs)
+	}
 	return out, nil
 }
 
@@ -775,6 +804,250 @@ func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.R
 	}
 	defer rows.Close()
 	return scanRunRows(rows)
+}
+
+// ListSessions returns sessions matching the filter, rolled up with their runs'
+// aggregates (RFC BE). Mirrors the SQLite adapter: the aggregation runs in a
+// derived subquery so session-level filters narrow the GROUP BY and derived
+// filters (status + last-activity window) apply to the aggregate; the count and
+// page queries share the exact filtered set. See store.SessionSummary for the
+// derived Status + LastActivity semantics.
+//
+// SUM(bigint) yields NUMERIC in Postgres, so the token/count aggregates are cast
+// back to BIGINT (and cost to DOUBLE PRECISION) — otherwise pgx would surface a
+// pgtype.Numeric that won't scan into int64/float64.
+func (s *Store) ListSessions(ctx context.Context, f store.SessionFilter, limit, offset int) ([]store.SessionSummary, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var (
+		conds []string // session-level (inside the GROUP BY subquery)
+		outer []string // derived (over the aggregate)
+		args  []any
+		i     = 1
+	)
+	if f.TenantID != "" {
+		conds = append(conds, fmt.Sprintf("s.tenant_id = $%d", i))
+		args = append(args, f.TenantID)
+		i++
+	}
+	if f.UserID != "" {
+		conds = append(conds, fmt.Sprintf("s.user_id = $%d", i))
+		args = append(args, f.UserID)
+		i++
+	}
+	if f.AgentName != "" {
+		conds = append(conds, fmt.Sprintf("s.agent = $%d", i))
+		args = append(args, f.AgentName)
+		i++
+	}
+	if !f.IncludeArchived {
+		conds = append(conds, "s.archived_at IS NULL")
+	}
+	if f.IncludePinned {
+		conds = append(conds, "s.pinned")
+	}
+	if f.Tag != "" {
+		// Literal substring match against the JSON-array text, tag matched WITH
+		// its quotes so `"q3"` can't match inside `"q3-plan"`; strpos (not LIKE)
+		// avoids interpreting `%`/`_` in the tag.
+		conds = append(conds, fmt.Sprintf("strpos(s.tags, $%d) > 0", i))
+		args = append(args, `"`+f.Tag+`"`)
+		i++
+	}
+	if f.TitleContains != "" {
+		conds = append(conds, fmt.Sprintf("strpos(lower(s.title), lower($%d)) > 0", i))
+		args = append(args, f.TitleContains)
+		i++
+	}
+	innerWhere := ""
+	if len(conds) > 0 {
+		innerWhere = "WHERE " + strings.Join(conds, " AND ")
+	}
+	if f.Status != "" {
+		outer = append(outer, fmt.Sprintf("agg.status = $%d", i))
+		args = append(args, string(f.Status))
+		i++
+	}
+	if !f.From.IsZero() {
+		outer = append(outer, fmt.Sprintf("agg.last_activity >= $%d", i))
+		args = append(args, f.From)
+		i++
+	}
+	if !f.To.IsZero() {
+		outer = append(outer, fmt.Sprintf("agg.last_activity <= $%d", i))
+		args = append(args, f.To)
+		i++
+	}
+	outerWhere := ""
+	if len(outer) > 0 {
+		outerWhere = "WHERE " + strings.Join(outer, " AND ")
+	}
+
+	inner := `SELECT
+			s.id, s.tenant_id, s.agent, s.user_id, s.created_at,
+			s.title, s.description, s.tags, s.pinned, s.archived_at, s.summary,
+			COUNT(r.id)::BIGINT AS run_count,
+			COALESCE(SUM(r.input_tokens), 0)::BIGINT AS in_tok,
+			COALESCE(SUM(r.output_tokens), 0)::BIGINT AS out_tok,
+			COALESCE(SUM(r.cost), 0)::DOUBLE PRECISION AS cost,
+			COALESCE(MAX(CASE WHEN r.completed_at IS NOT NULL AND r.completed_at > r.started_at
+			                  THEN r.completed_at ELSE r.started_at END), s.created_at) AS last_activity,
+			CASE WHEN MAX(CASE WHEN r.status = 'running' THEN 1 ELSE 0 END) = 1 THEN 'running'
+			     ELSE COALESCE((SELECT r2.status FROM runs r2 WHERE r2.session_id = s.id
+			                    ORDER BY r2.started_at DESC LIMIT 1), '') END AS status
+		FROM sessions s
+		LEFT JOIN runs r ON r.session_id = s.id
+		` + innerWhere + `
+		GROUP BY s.id`
+
+	var total int64
+	if err := s.pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM ("+inner+") agg "+outerWhere, args...,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count sessions: %w", err)
+	}
+
+	pageArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.pool.Query(ctx,
+		"SELECT agg.id, agg.tenant_id, agg.agent, agg.user_id, agg.created_at, "+
+			"agg.title, agg.description, agg.tags, agg.pinned, agg.archived_at, agg.summary, "+
+			"agg.run_count, agg.in_tok, agg.out_tok, agg.cost, agg.last_activity, agg.status "+
+			"FROM ("+inner+") agg "+outerWhere+
+			fmt.Sprintf(" ORDER BY agg.pinned DESC, agg.last_activity DESC LIMIT $%d OFFSET $%d", i, i+1),
+		pageArgs...,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]store.SessionSummary, 0, limit)
+	for rows.Next() {
+		var (
+			ss                       store.SessionSummary
+			userID                   *string
+			title, description, tags *string
+			summary                  *string
+			pinned                   bool
+			archivedNs               *int64
+			runCount                 int64
+			createdAt, lastActivity  time.Time
+			statusStr                string
+		)
+		if err := rows.Scan(
+			&ss.SessionID, &ss.TenantID, &ss.Agent, &userID, &createdAt,
+			&title, &description, &tags, &pinned, &archivedNs, &summary,
+			&runCount, &ss.InputTokens, &ss.OutputTokens, &ss.Cost, &lastActivity, &statusStr,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan session: %w", err)
+		}
+		ss.CreatedAt = createdAt
+		ss.LastActivity = lastActivity
+		ss.RunCount = int(runCount)
+		if userID != nil {
+			ss.UserID = *userID
+		}
+		if title != nil {
+			ss.Title = *title
+		}
+		if description != nil {
+			ss.Description = *description
+		}
+		if summary != nil {
+			ss.Summary = *summary
+		}
+		if tags != nil {
+			decoded, derr := store.DecodeTags(*tags)
+			if derr != nil {
+				return nil, 0, fmt.Errorf("decode session tags: %w", derr)
+			}
+			ss.Tags = decoded
+		}
+		ss.Pinned = pinned
+		ss.Archived = archivedNs != nil
+		if statusStr != "" {
+			ss.Status = store.RunStatus(statusStr)
+		}
+		out = append(out, ss)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iter sessions: %w", err)
+	}
+	return out, total, nil
+}
+
+// SetSessionMeta writes only the non-nil fields of the patch onto the session
+// row (RFC BE). Returns *store.ErrNotFound when the session does not exist.
+func (s *Store) SetSessionMeta(ctx context.Context, sessionID string, p store.SessionMetaPatch) error {
+	now := time.Now().UnixNano()
+	var sets []string
+	var args []any
+	i := 1
+	if p.Title != nil {
+		sets = append(sets, fmt.Sprintf("title = $%d", i))
+		args = append(args, nullableText(*p.Title))
+		i++
+	}
+	if p.Description != nil {
+		sets = append(sets, fmt.Sprintf("description = $%d", i))
+		args = append(args, nullableText(*p.Description))
+		i++
+	}
+	if p.Summary != nil {
+		// A summary write always stamps summary_updated_at (idempotent recap).
+		sets = append(sets, fmt.Sprintf("summary = $%d", i))
+		args = append(args, nullableText(*p.Summary))
+		i++
+		sets = append(sets, fmt.Sprintf("summary_updated_at = $%d", i))
+		args = append(args, now)
+		i++
+	}
+	if p.Tags != nil {
+		encoded, err := store.EncodeTags(*p.Tags)
+		if err != nil {
+			return fmt.Errorf("encode session tags: %w", err)
+		}
+		sets = append(sets, fmt.Sprintf("tags = $%d", i))
+		args = append(args, encoded)
+		i++
+	}
+	if p.Pinned != nil {
+		sets = append(sets, fmt.Sprintf("pinned = $%d", i))
+		args = append(args, *p.Pinned)
+		i++
+	}
+	if p.Archived != nil {
+		if *p.Archived {
+			sets = append(sets, fmt.Sprintf("archived_at = $%d", i))
+			args = append(args, now)
+			i++
+		} else {
+			sets = append(sets, "archived_at = NULL")
+		}
+	}
+	if len(sets) == 0 {
+		// Empty patch: still surface ErrNotFound for a missing session.
+		_, err := s.GetSession(ctx, sessionID)
+		return err
+	}
+	args = append(args, sessionID)
+	tag, err := s.pool.Exec(ctx,
+		fmt.Sprintf("UPDATE sessions SET %s WHERE id = $%d", strings.Join(sets, ", "), i), args...)
+	if err != nil {
+		return fmt.Errorf("set session meta: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "session", ID: sessionID}
+	}
+	return nil
 }
 
 // DeleteSessionCascade deletes a session + all its runs + events in one tx (RFC
