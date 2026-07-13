@@ -612,8 +612,12 @@ var grpcConsumerScopes = map[string]string{
 	"TeamDef": auth.ScopeTenant,
 	// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated tools
 	// lifted to the wire. Same ScopeTenant posture as VolumeDef.
-	"Path":         auth.ScopeTenant,
-	"Document":     auth.ScopeTenant,
+	"Path":     auth.ScopeTenant,
+	"Document": auth.ScopeTenant,
+	// RFC BE History — scope-aware chat browse/annotate. ScopeTenant route
+	// floor (a tenant operator may call it); the cross-tenant `global` scope is
+	// admin-gated inside the tool. Same posture as the HTTP /v1/_history route.
+	"History":      auth.ScopeTenant,
 	"RegisterHook": auth.ScopeTenant,
 	"ListHooks":    auth.ScopeTenant,
 	"DeleteHook":   auth.ScopeTenant,

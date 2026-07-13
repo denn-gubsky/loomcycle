@@ -70,6 +70,9 @@
  *     path(input): Promise<PathToolResponse>                      // resolve/ls/stat/mkdir/mv/rm
  *     document(input): Promise<DocumentToolResponse>              // 13 ops; needs SQL Memory
  *
+ *     // History — browse/search/annotate past chats (RFC BE; tenant-confined)
+ *     history(input): Promise<HistoryToolResponse>                // list/get/search/rename/annotate/pin/archive/recap/resume
+ *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
  *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
  *     listLibrarySkills(): Promise<LibraryListResponse<LibrarySkillDefinition>>
@@ -206,6 +209,9 @@ export type {
   PathToolResponse,
   DocumentToolInput,
   DocumentToolResponse,
+  // RFC BE History (browse/search/annotate past chats)
+  HistoryToolInput,
+  HistoryToolResponse,
   // RFC AH dynamic volumes (v0.35.0)
   VolumeMode,
   PersistentVolumeEntry,

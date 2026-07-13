@@ -105,9 +105,19 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{
-		Scopes: []string{"any"},
-	})
+	// History tool (RFC BE): own-scope access (self/user/tenant) always; the
+	// cross-tenant `global` scope only for an admin principal — mirrors the HTTP
+	// substrateAdminUserCtx grant + the in-loop historyGlobalAllowed gate. The
+	// History tool's scope vocabulary is {self,user,tenant,global} matched
+	// EXACTLY (containsScope has no wildcard), so the def-family "any" token
+	// means nothing to it — granting "any" would refuse EVERY op. A tenant
+	// operator reaching the History RPC is thus confined to its own tenant even
+	// though the route gate (ScopeTenant) admits it.
+	histScopes := []string{"self", "user", "tenant"}
+	if auth.HasScope(principal.Scopes, auth.ScopeAdmin) {
+		histScopes = append(histScopes, "global")
+	}
+	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: histScopes})
 	return ctx
 }
 
@@ -316,6 +326,26 @@ func (s *Server) Path(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*
 func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPCCtx(ctx, "Document", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.Document(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// History serves the RFC BE History gRPC RPC — browse/search/annotate past
+// chats (a chat = a session). Mirrors POST /v1/_history. Op-discriminated
+// input_json (list / get / search / rename / annotate / pin / archive / recap
+// / resume). USER-SCOPE-AWARE like Path/Document, so it uses substrateGRPCUserCtx
+// (mirroring the HTTP handler's substrateAdminUserCtx): a scope:"user" op keys
+// on the principal's Subject (= the run user_id), scope:"tenant" on the
+// caller's authoritative tenant. TENANT-CONFINED (the scope gate maps it to
+// ScopeTenant); the cross-tenant scope:"global" is admin-gated inside the tool
+// via the HistoryPolicy substrateGRPCCtx grants (own scopes always, global only
+// for an admin principal) — the owner is NEVER read from the wire.
+func (s *Server) History(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "History", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.History(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}

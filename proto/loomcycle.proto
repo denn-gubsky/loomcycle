@@ -338,6 +338,16 @@ service Loomcycle {
   // query_chunks, type defs); same SubstrateRequest/Response body shape.
   rpc Document(SubstrateRequest) returns (SubstrateResponse);
 
+  // History dispatches to the RFC BE History tool (browse/search/annotate
+  // past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
+  // (ScopeTenant): the owner is resolved from the operator-trust ctx +
+  // caller's authoritative tenant, NEVER the wire — a scope:"user" op keys on
+  // the principal's own subject, scope:"tenant" on its tenant; the cross-tenant
+  // scope:"global" is admin-only. Op-discriminated input_json (list / get /
+  // search / rename / annotate / pin / archive / recap / resume); same
+  // SubstrateRequest/Response body shape (is_error carries tool refusals).
+  rpc History(SubstrateRequest) returns (SubstrateResponse);
+
   // ----- v0.9.x n8n RFC Phase 0 -----
   //
   // ListChannels mirrors GET /v1/_channels — operator-declared

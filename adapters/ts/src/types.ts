@@ -1133,6 +1133,69 @@ export type DocumentToolInput = {
 export type PathToolResponse = unknown;
 export type DocumentToolResponse = unknown;
 
+/** Input for {@link LoomcycleClient.history} — the RFC BE History tool
+ *  (POST /v1/_history). Browse/search/annotate PAST CHATS (a chat = a session).
+ *  Op-discriminated; the owner is resolved server-side from the authenticated
+ *  principal, never the wire — you pick a `scope` selector, not an owner id.
+ *  Loosely typed (the in-process tool owns the full schema); use the `[extra]`
+ *  index signature for forward-compat fields. */
+export type HistoryToolInput = {
+  op:
+    | "list"
+    | "get"
+    | "search"
+    | "rename"
+    | "annotate"
+    | "pin"
+    | "archive"
+    | "recap"
+    | "resume";
+  /** Whose chats: self = this caller's agent; user = this end-user's; tenant =
+   *  this tenant's; global = all tenants (admin only). Default self. */
+  scope?: "self" | "user" | "tenant" | "global";
+  /** get/rename/annotate/pin/archive/recap/resume: the chat (session) id. */
+  session_id?: string;
+  /** list/search: filter by derived chat status (running/completed/failed/cancelled). */
+  status?: string;
+  /** list/search: RFC3339 lower bound on last activity. */
+  from?: string;
+  /** list/search: RFC3339 upper bound on last activity. */
+  to?: string;
+  /** list/search: return only chats carrying this exact tag. */
+  tag?: string;
+  /** list: case-insensitive substring match on the title. */
+  title_contains?: string;
+  /** search: case-insensitive title match (metadata MVP; no full-text yet). */
+  query?: string;
+  /** list/search: restrict to pinned chats. */
+  pinned_only?: boolean;
+  /** list/search: include archived chats (excluded by default). */
+  include_archived?: boolean;
+  /** list/search: max chats per page (default 50, cap 500). */
+  limit?: number;
+  /** list/search: pagination offset. */
+  offset?: number;
+  /** get: "markdown" renders the transcript as Markdown instead of events. */
+  format?: string;
+  /** rename: the new title. */
+  title?: string;
+  /** annotate: the new description. */
+  description?: string;
+  /** annotate: the new tag set (replaces the existing set). */
+  tags?: string[];
+  /** pin: true pins (default), false unpins. */
+  pinned?: boolean;
+  /** archive: true archives (default), false unarchives. */
+  archived?: boolean;
+  [extra: string]: unknown;
+};
+
+/** Response shape for {@link LoomcycleClient.history}. `unknown` because it
+ *  varies per op — `list`/`search` return `{scope, chats, total, ...}`, `get`
+ *  returns the chat metadata + transcript (or Markdown), `recap` a summary,
+ *  `resume` a continuation handle. Callers narrow as needed. */
+export type HistoryToolResponse = unknown;
+
 /** Volume access mode — read-only or read-write (RFC AH). */
 export type VolumeMode = "ro" | "rw";
 
