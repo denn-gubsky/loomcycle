@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/memory/eval"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -594,3 +596,186 @@ func TestHistory_ResumeCrossTenantOpaqueNotFound(t *testing.T) {
 }
 
 func strptr(s string) *string { return &s }
+
+// seedEmbedding indexes a chat with the vector emb produces for text — the
+// direct way to populate the op=related index across tenants in a test (the
+// store copies the owning tenant/user/agent from the session itself).
+func seedEmbedding(t *testing.T, s store.Store, emb providers.Embedder, sessionID, text string) {
+	t.Helper()
+	vecs, err := emb.Embed(context.Background(), []string{text})
+	if err != nil || len(vecs) == 0 {
+		t.Fatalf("embed: %v", err)
+	}
+	if err := s.SessionEmbedUpsert(context.Background(), sessionID, store.SessionEmbedding{
+		Provider: emb.Provider(), Model: emb.Model(), Dimension: len(vecs[0]), Vector: vecs[0],
+	}); err != nil {
+		t.Fatalf("SessionEmbedUpsert: %v", err)
+	}
+}
+
+// relatedResult decodes the op=related response envelope.
+type relatedResult struct {
+	Related []struct {
+		SessionID string  `json:"session_id"`
+		Score     float64 `json:"score"`
+	} `json:"related"`
+	Count           int    `json:"count"`
+	SourceSessionID string `json:"source_session_id"`
+	Query           string `json:"query"`
+}
+
+func decodeRelated(t *testing.T, res tools.Result) relatedResult {
+	t.Helper()
+	if res.IsError {
+		t.Fatalf("related: %s", res.Text)
+	}
+	var out relatedResult
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("decode related: %v (%s)", err, res.Text)
+	}
+	return out
+}
+
+func relatedIDs(r relatedResult) []string {
+	ids := make([]string, 0, len(r.Related))
+	for _, x := range r.Related {
+		ids = append(ids, x.SessionID)
+	}
+	return ids
+}
+
+// TestHistory_RelatedRefusesWithoutEmbedder: op=related with no embedder wired
+// refuses cleanly (the ErrEmbedderNotConfigured posture) — every other op works.
+func TestHistory_RelatedRefusesWithoutEmbedder(t *testing.T) {
+	h, s := historyFixture(t)
+	id := seedChat(t, s, "t1", "agentA", "alice")
+	req := fmt.Sprintf(`{"op":"related","scope":"self","session_id":%q}`, id)
+	res, _ := h.Execute(histCtx([]string{"self"}, "agentA", "alice", "t1"), json.RawMessage(req))
+	if !res.IsError {
+		t.Fatal("related without an embedder must refuse")
+	}
+}
+
+// TestHistory_RelatedRequiresSourceOrQuery: with an embedder but neither
+// session_id nor query, related refuses.
+func TestHistory_RelatedRequiresSourceOrQuery(t *testing.T) {
+	h, _ := historyFixture(t)
+	h.Embedder = eval.NewDeterministicEmbedder(64)
+	res, _ := h.Execute(histCtx([]string{"self"}, "agentA", "alice", "t1"),
+		json.RawMessage(`{"op":"related","scope":"self"}`))
+	if !res.IsError {
+		t.Fatal("related with neither session_id nor query must refuse")
+	}
+}
+
+// TestHistory_RelatedRanksAndExcludesSource: related by session_id returns
+// similar chats ranked by similarity, with the source chat itself excluded.
+func TestHistory_RelatedRanksAndExcludesSource(t *testing.T) {
+	h, s := historyFixture(t)
+	emb := eval.NewDeterministicEmbedder(64)
+	h.Embedder = emb
+	ctx := histCtx([]string{"self"}, "agentA", "alice", "t1")
+
+	src := seedChat(t, s, "t1", "agentA", "alice")
+	near := seedChat(t, s, "t1", "agentA", "alice")
+	far := seedChat(t, s, "t1", "agentA", "alice")
+
+	// The source's by-id text is its title+summary — set them so it token-overlaps
+	// `near` and shares nothing with `far`.
+	if err := s.SetSessionMeta(context.Background(), src, store.SessionMetaPatch{
+		Title: strptr("kubernetes deployment"), Summary: strptr("rollout strategy"),
+	}); err != nil {
+		t.Fatalf("set src meta: %v", err)
+	}
+	// Index all three (the source too — it must still be excluded from results).
+	seedEmbedding(t, s, emb, src, "kubernetes deployment\nrollout strategy")
+	seedEmbedding(t, s, emb, near, "kubernetes deployment scaling and rollout")
+	seedEmbedding(t, s, emb, far, "grocery shopping list milk eggs bread")
+
+	req := fmt.Sprintf(`{"op":"related","scope":"self","session_id":%q}`, src)
+	res, _ := h.Execute(ctx, json.RawMessage(req))
+	out := decodeRelated(t, res)
+	ids := relatedIDs(out)
+	if contains(ids, src) {
+		t.Errorf("the source chat must be excluded from its own related results; got %v", ids)
+	}
+	if !contains(ids, near) {
+		t.Errorf("a token-overlapping chat should appear; got %v", ids)
+	}
+	// `near` must outrank `far`.
+	nearPos, farPos := indexOf(ids, near), indexOf(ids, far)
+	if nearPos == -1 || (farPos != -1 && nearPos > farPos) {
+		t.Errorf("near (%d) should rank above far (%d); ids=%v", nearPos, farPos, ids)
+	}
+	if out.SourceSessionID != src {
+		t.Errorf("source_session_id = %q, want %q", out.SourceSessionID, src)
+	}
+}
+
+// TestHistory_RelatedByQueryMatches: related with a free-text query returns
+// semantically matching chats (no source chat to exclude).
+func TestHistory_RelatedByQueryMatches(t *testing.T) {
+	h, s := historyFixture(t)
+	emb := eval.NewDeterministicEmbedder(64)
+	h.Embedder = emb
+	ctx := histCtx([]string{"self"}, "agentA", "alice", "t1")
+
+	hit := seedChat(t, s, "t1", "agentA", "alice")
+	miss := seedChat(t, s, "t1", "agentA", "alice")
+	seedEmbedding(t, s, emb, hit, "postgres migration schema upgrade")
+	seedEmbedding(t, s, emb, miss, "weather forecast sunny tomorrow")
+
+	res, _ := h.Execute(ctx,
+		json.RawMessage(`{"op":"related","scope":"self","query":"postgres schema migration"}`))
+	out := decodeRelated(t, res)
+	ids := relatedIDs(out)
+	if len(ids) == 0 || ids[0] != hit {
+		t.Errorf("query should rank the token-overlapping chat first; got %v", ids)
+	}
+	if out.Query == "" {
+		t.Error("query-form related should echo the query")
+	}
+}
+
+// TestHistory_RelatedTenantFolded: a semantically IDENTICAL chat in another
+// tenant never appears — the fold beats similarity (the load-bearing isolation).
+func TestHistory_RelatedTenantFolded(t *testing.T) {
+	h, s := historyFixture(t)
+	emb := eval.NewDeterministicEmbedder(64)
+	h.Embedder = emb
+
+	src := seedChat(t, s, "t1", "agentA", "alice")
+	sibling := seedChat(t, s, "t1", "agentA", "alice")
+	victim := seedChat(t, s, "t2", "agentB", "bob") // another tenant
+
+	if err := s.SetSessionMeta(context.Background(), src, store.SessionMetaPatch{
+		Title: strptr("incident postmortem"), Summary: strptr("root cause analysis"),
+	}); err != nil {
+		t.Fatalf("set src meta: %v", err)
+	}
+	const text = "incident postmortem\nroot cause analysis"
+	seedEmbedding(t, s, emb, src, text)
+	seedEmbedding(t, s, emb, sibling, text) // same tenant, identical vector
+	seedEmbedding(t, s, emb, victim, text)  // other tenant, identical vector
+
+	// tenant scope over t1: the identical-vector victim in t2 must NOT surface.
+	req := fmt.Sprintf(`{"op":"related","scope":"tenant","session_id":%q}`, src)
+	res, _ := h.Execute(histCtx([]string{"tenant"}, "agentA", "alice", "t1"), json.RawMessage(req))
+	out := decodeRelated(t, res)
+	ids := relatedIDs(out)
+	if contains(ids, victim) {
+		t.Errorf("a cross-tenant chat must never appear in related, even when identical; got %v", ids)
+	}
+	if !contains(ids, sibling) {
+		t.Errorf("the same-tenant sibling should appear; got %v", ids)
+	}
+}
+
+func indexOf(ids []string, want string) int {
+	for i, id := range ids {
+		if id == want {
+			return i
+		}
+	}
+	return -1
+}

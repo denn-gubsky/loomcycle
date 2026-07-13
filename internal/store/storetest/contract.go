@@ -90,6 +90,11 @@ func Run(t *testing.T, factory Factory) {
 		{"ListSessions", testListSessions},
 		{"ListSessionsTenantIsolation", testListSessionsTenantIsolation},
 		{"SetSessionMeta", testSetSessionMeta},
+		// RFC BE op=related — the per-session embedding index. Unlike
+		// memory_embeddings this needs no vector extension (ranks in Go), so both
+		// backends run the REAL round-trip — no SupportsVectors() fork.
+		{"SessionEmbedUpsertSearch", testSessionEmbedUpsertSearch},
+		{"SessionEmbedSearchTenantFold", testSessionEmbedSearchTenantFold},
 		{"ListUsers", testListUsers},
 		{"ListRunsByParentAgentID", testListRunsByParentAgentID},
 		{"UpdateHeartbeat", testUpdateHeartbeat},
@@ -1906,6 +1911,153 @@ func testSetSessionMeta(t *testing.T, s store.Store) {
 	// Empty patch on an existing id is a no-op (nil error).
 	if err := s.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{}); err != nil {
 		t.Errorf("empty patch on existing id: got %v, want nil", err)
+	}
+}
+
+// simIDs / containsSim are the []SessionSimilar analogues of summaryIDs /
+// contains for the RFC BE op=related contract tests.
+func simIDs(list []store.SessionSimilar) []string {
+	out := make([]string, len(list))
+	for i, x := range list {
+		out[i] = x.SessionID
+	}
+	return out
+}
+
+func containsSim(list []store.SessionSimilar, id string) bool {
+	for _, x := range list {
+		if x.SessionID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// testSessionEmbedUpsertSearch round-trips the RFC BE per-session embedding
+// index: an upsert on a missing session is an opaque not-found; a cosine search
+// ranks chats by similarity to the query (monotone-DESC scores); limit caps the
+// page; an upsert REPLACES the vector; and archived chats are excluded by
+// default. Hand-built 4-D unit vectors make the ordering hand-verifiable (the
+// same style as the memory-embed contract). Unlike memory_embeddings this runs
+// on BOTH backends — the session index ranks in Go and needs no vector extension.
+func testSessionEmbedUpsertSearch(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// Upsert on a missing session is an opaque not-found (no row invented).
+	var nf *store.ErrNotFound
+	if err := s.SessionEmbedUpsert(ctx, "s_nope", store.SessionEmbedding{
+		Provider: "eval", Model: "m", Dimension: 4, Vector: floats32(1, 0, 0, 0),
+	}); !errors.As(err, &nf) {
+		t.Fatalf("SessionEmbedUpsert on missing session: got %v (%T), want *store.ErrNotFound", err, err)
+	}
+
+	// Three chats in one tenant, embedded in different 4-D directions.
+	aligned, _ := s.CreateSession(ctx, "t1", "agentA", "alice")
+	off45, _ := s.CreateSession(ctx, "t1", "agentA", "alice")
+	ortho, _ := s.CreateSession(ctx, "t1", "agentA", "alice")
+	seed := []struct {
+		id  string
+		vec []float32
+	}{
+		{aligned.ID, floats32(1, 0, 0, 0)},         // aligned with the query
+		{off45.ID, floats32(0.7071, 0.7071, 0, 0)}, // 45° off
+		{ortho.ID, floats32(0, 1, 0, 0)},           // orthogonal
+	}
+	for _, e := range seed {
+		if err := s.SessionEmbedUpsert(ctx, e.id, store.SessionEmbedding{
+			Provider: "eval", Model: "m", Dimension: 4, Vector: e.vec,
+		}); err != nil {
+			t.Fatalf("SessionEmbedUpsert %s: %v", e.id, err)
+		}
+	}
+
+	res, err := s.SessionEmbedSearch(ctx, store.SessionFilter{TenantID: "t1"}, floats32(1, 0, 0, 0), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 3 {
+		t.Fatalf("got %d results, want 3 (%v)", len(res), simIDs(res))
+	}
+	if res[0].SessionID != aligned.ID || res[1].SessionID != off45.ID || res[2].SessionID != ortho.ID {
+		t.Errorf("ranking = %v, want [aligned off45 ortho]", simIDs(res))
+	}
+	if !(res[0].Score >= res[1].Score && res[1].Score >= res[2].Score) {
+		t.Errorf("scores not monotone-DESC: %v", []float64{res[0].Score, res[1].Score, res[2].Score})
+	}
+
+	// limit caps the returned rows.
+	top1, err := s.SessionEmbedSearch(ctx, store.SessionFilter{TenantID: "t1"}, floats32(1, 0, 0, 0), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(top1) != 1 || top1[0].SessionID != aligned.ID {
+		t.Errorf("limit=1 = %v, want [aligned]", simIDs(top1))
+	}
+
+	// An upsert REPLACES the vector: re-point `ortho` at the query and it now wins.
+	if err := s.SessionEmbedUpsert(ctx, ortho.ID, store.SessionEmbedding{
+		Provider: "eval", Model: "m", Dimension: 4, Vector: floats32(1, 0, 0, 0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	re, _ := s.SessionEmbedSearch(ctx, store.SessionFilter{TenantID: "t1"}, floats32(1, 0, 0, 0), 1)
+	if len(re) != 1 || re[0].SessionID != ortho.ID {
+		t.Errorf("after re-embed, top = %v, want [ortho]", simIDs(re))
+	}
+
+	// Archived chats are excluded by default, included with IncludeArchived.
+	if err := s.SetSessionMeta(ctx, aligned.ID, store.SessionMetaPatch{Archived: boolPtr(true)}); err != nil {
+		t.Fatal(err)
+	}
+	def, _ := s.SessionEmbedSearch(ctx, store.SessionFilter{TenantID: "t1"}, floats32(1, 0, 0, 0), 10)
+	if containsSim(def, aligned.ID) {
+		t.Errorf("archived chat must be excluded by default; got %v", simIDs(def))
+	}
+	inc, _ := s.SessionEmbedSearch(ctx, store.SessionFilter{TenantID: "t1", IncludeArchived: true}, floats32(1, 0, 0, 0), 10)
+	if !containsSim(inc, aligned.ID) {
+		t.Errorf("IncludeArchived should surface the archived chat; got %v", simIDs(inc))
+	}
+}
+
+// testSessionEmbedSearchTenantFold is the load-bearing isolation contract for
+// op=related: the SAME (closest-possible) vector stored in two tenants — a
+// tenant-A similarity search must NEVER surface tenant B's chat, and a
+// user-scoped search must not surface another user's chat within the tenant.
+func testSessionEmbedSearchTenantFold(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, _ := s.CreateSession(ctx, "A", "agentA", "alice")
+	b, _ := s.CreateSession(ctx, "B", "agentB", "bob")
+	for _, id := range []string{a.ID, b.ID} {
+		if err := s.SessionEmbedUpsert(ctx, id, store.SessionEmbedding{
+			Provider: "eval", Model: "m", Dimension: 4, Vector: floats32(1, 0, 0, 0),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := s.SessionEmbedSearch(ctx, store.SessionFilter{TenantID: "A"}, floats32(1, 0, 0, 0), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].SessionID != a.ID {
+		t.Fatalf("tenant A similarity search = %v, want only [%s]", simIDs(res), a.ID)
+	}
+	for _, r := range res {
+		if r.SessionID == b.ID || r.TenantID == "B" {
+			t.Errorf("tenant B chat %s leaked into tenant A similarity search", b.ID)
+		}
+	}
+
+	// user-scope fold within a tenant: another user's identical-vector chat is
+	// excluded when the filter carries UserID.
+	carol, _ := s.CreateSession(ctx, "A", "agentA", "carol")
+	if err := s.SessionEmbedUpsert(ctx, carol.ID, store.SessionEmbedding{
+		Provider: "eval", Model: "m", Dimension: 4, Vector: floats32(1, 0, 0, 0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	byUser, _ := s.SessionEmbedSearch(ctx, store.SessionFilter{TenantID: "A", UserID: "alice"}, floats32(1, 0, 0, 0), 10)
+	if len(byUser) != 1 || byUser[0].SessionID != a.ID {
+		t.Errorf("user-scope similarity fold = %v, want only alice's [%s]", simIDs(byUser), a.ID)
 	}
 }
 

@@ -1,6 +1,6 @@
 ---
 name: history
-description: History — browse, search, and annotate PAST chats (a chat = a conversation session). Owner-scoped (self/user/tenant/global), tenant-isolated, with list/get/search/rename/annotate/pin/archive/recap/resume.
+description: History — browse, search, and annotate PAST chats (a chat = a conversation session). Owner-scoped (self/user/tenant/global), tenant-isolated, with list/get/search/rename/annotate/pin/archive/recap/resume/related.
 ---
 The `History` tool lets an agent — or an operator over HTTP/MCP — reach **previous
 chats**: list them, search by title, read a full transcript, and give a chat a
@@ -57,6 +57,14 @@ exists in another tenant.
   `{session_id, agent, tenant_id, user_id, status, last_activity, hint}`. It does
   not itself start a run — the `hint` explains how to continue (a new run against
   this `session_id`).
+- `related (session_id | query) [scope] [limit] [include_archived]` — find chats
+  **similar in meaning** to a given chat (`session_id`, whose title + summary +
+  description is the source; it is excluded from its own results) **or** to a
+  free-text `query`. Ranked by similarity, folded to the same scope as the other
+  reads. **Needs an embedder** (the same one Memory uses) — without one it
+  refuses. The similarity index fills **lazily**: a chat becomes matchable once
+  it has been `recap`ped, `rename`d, or `annotate`d (there is no bulk backfill of
+  old chats), so `recap` a chat to make it — and its neighbours — discoverable.
 
 ## Notes
 
