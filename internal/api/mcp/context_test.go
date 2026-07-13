@@ -178,6 +178,15 @@ func TestMcpPrincipalCtx_AuthenticatedPrincipal_KeysOnSubject(t *testing.T) {
 // cross-agent evaluation) stays default-deny. An admin principal gets the
 // full plane. This guards against a tenant principal silently inheriting
 // operator authority through the shared policy grant.
+func historyHasScope(scopes []string, want string) bool {
+	for _, s := range scopes {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMcpPrincipalCtx_NonAdminPrincipal_DeniesOperatorPlane(t *testing.T) {
 	admin := mcpPrincipalCtx(auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "root", Scopes: []string{auth.ScopeAdmin}}))
@@ -191,11 +200,16 @@ func TestMcpPrincipalCtx_NonAdminPrincipal_DeniesOperatorPlane(t *testing.T) {
 	if tools.OperatorTokenDefPolicy(tenant).Admin {
 		t.Errorf("non-admin principal must NOT grant OperatorTokenDef admin (mint plane leak)")
 	}
-	if len(tools.HistoryPolicy(admin).Scopes) == 0 {
-		t.Errorf("admin principal must grant History scopes")
+	// History (RFC BE): admin gets the cross-tenant `global` scope; a tenant
+	// principal gets the own-tenant scopes (self/user/tenant) but NOT `global`.
+	if !historyHasScope(tools.HistoryPolicy(admin).Scopes, "global") {
+		t.Errorf("admin principal must grant cross-tenant History (global); got %v", tools.HistoryPolicy(admin).Scopes)
 	}
-	if len(tools.HistoryPolicy(tenant).Scopes) != 0 {
-		t.Errorf("non-admin principal must NOT grant cross-tenant History; got %v", tools.HistoryPolicy(tenant).Scopes)
+	if historyHasScope(tools.HistoryPolicy(tenant).Scopes, "global") {
+		t.Errorf("non-admin principal must NOT grant cross-tenant History (global); got %v", tools.HistoryPolicy(tenant).Scopes)
+	}
+	if len(tools.HistoryPolicy(tenant).Scopes) == 0 {
+		t.Errorf("non-admin principal should still get own-tenant History scopes; got none")
 	}
 	// Evaluation: admin gets the cross-agent verbs; tenant gets submit_self only.
 	for _, s := range tools.EvaluationPolicy(tenant).Scopes {

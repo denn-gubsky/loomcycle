@@ -32,6 +32,7 @@ type substrateMock struct {
 	gotTeamDefInput     json.RawMessage
 	gotPathInput        json.RawMessage
 	gotDocumentInput    json.RawMessage
+	gotHistoryInput     json.RawMessage
 
 	agentDefResult    connector.ToolResult
 	skillDefResult    connector.ToolResult
@@ -40,6 +41,7 @@ type substrateMock struct {
 	teamDefResult     connector.ToolResult
 	pathResult        connector.ToolResult
 	documentResult    connector.ToolResult
+	historyResult     connector.ToolResult
 
 	agentDefErr    error
 	skillDefErr    error
@@ -48,6 +50,7 @@ type substrateMock struct {
 	teamDefErr     error
 	pathErr        error
 	documentErr    error
+	historyErr     error
 }
 
 func (m *substrateMock) Path(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -58,6 +61,11 @@ func (m *substrateMock) Path(_ context.Context, in json.RawMessage) (connector.T
 func (m *substrateMock) Document(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	m.gotDocumentInput = in
 	return m.documentResult, m.documentErr
+}
+
+func (m *substrateMock) History(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotHistoryInput = in
+	return m.historyResult, m.historyErr
 }
 
 func (m *substrateMock) AgentDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {

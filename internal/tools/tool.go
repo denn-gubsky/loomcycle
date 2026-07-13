@@ -1275,26 +1275,25 @@ func EvaluationPolicy(ctx context.Context) EvaluationPolicyValue {
 }
 
 // ctxKeyHistoryPolicy is the key under which the runtime stashes the
-// v0.8.7 Context.history scope policy. Multi-select scopes; same shape
-// as AgentDefPolicy and EvaluationPolicy. The closed set lives on
+// History tool's owner-scope policy (RFC BE). Multi-select scopes; same
+// shape as AgentDefPolicy and EvaluationPolicy. The closed set lives on
 // config.AgentDef.HistoryScope.
 type ctxKeyHistoryPolicy struct{}
 
-// HistoryPolicyValue is the per-agent Context.history gate. Multi-
-// select; empty Scopes = default-deny (Context.history refuses).
+// HistoryPolicyValue is the per-agent gate for the History tool (RFC BE).
+// Multi-select; empty Scopes = default-deny (History refuses every op).
 //
-// Closed set:
-//   - "self"        — caller may read its own run's transcript
-//   - "siblings"    — RESERVED (not yet active in v0.8.7 PR 3;
-//     RunIdentityValue lacks ParentAgentID, so the
-//     server can't derive sibling relationships
-//     without a separate plumbing PR)
-//   - "descendants" — RESERVED (same reason)
-//   - "named:<n>"   — RESERVED (same reason)
-//   - "any"         — UNRESTRICTED. Caller may read ANY agent's
-//     transcript INCLUDING transcripts owned by
-//     other users. Operator-trust grant; use only
-//     for admin/debug agents.
+// Owner-scope vocabulary — the caller may browse/read/annotate chats owned by:
+//   - "self"   — this agent (sessions whose agent == the caller's agent name)
+//   - "user"   — this end-user (sessions with the caller's user_id, same tenant)
+//   - "tenant" — this tenant (every subject/agent within the caller's tenant)
+//   - "global" — ALL tenants. Cross-tenant; granted ONLY to an admin principal.
+//     Non-admin runs have `global` STRIPPED at policy-resolution time
+//     (server.go historyPolicyForAgent / mcp grantOperatorPolicies), so the
+//     tool trusts this list verbatim without a separate admin check.
+//
+// The target owner id is always resolved server-side from RunIdentity(ctx) /
+// AgentName(ctx); this policy only says which scope SELECTORS are permitted.
 type HistoryPolicyValue struct {
 	Scopes []string
 }

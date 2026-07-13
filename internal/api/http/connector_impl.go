@@ -545,6 +545,16 @@ func (s *Server) Document(ctx context.Context, input json.RawMessage) (connector
 	return s.dispatchBuiltin(ctx, "Document", input)
 }
 
+// History dispatches to the RFC BE History tool. Same posture as Document —
+// in-dispatcher tool reached via dispatchBuiltin; what POST /v1/_history and
+// the MCP `history` meta-tool call. Scope/tenant/user come from the
+// operator-trust ctx the caller's transport stamped (substrateAdminUserCtx /
+// mcpPrincipalCtx), never from the wire; the ctx history policy admin-gates the
+// cross-tenant `global` scope.
+func (s *Server) History(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	return s.dispatchBuiltin(ctx, "History", input)
+}
+
 // MCPServerDef dispatches to the v0.9.x dynamic MCP-server-registration
 // substrate tool. The tool is NOT in the per-agent dispatcher (operator-
 // admin-only) — dispatchBuiltinDirect looks it up via the dedicated

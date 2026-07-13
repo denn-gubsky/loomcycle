@@ -1579,7 +1579,8 @@ agents:
 	}
 }
 
-// TestHistoryScopeValidation: closed set + named:<n> prefix.
+// TestHistoryScopeValidation: an out-of-set value is rejected (RFC BE closed set
+// is self/user/tenant/global + the legacy "any" alias).
 func TestHistoryScopeValidation(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
@@ -1602,18 +1603,37 @@ agents:
 func TestHistoryScopeAcceptsValid(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
+	// RFC BE owner-scope vocabulary plus the legacy "any" alias (accepted for
+	// back-compat; normalized to "global" at policy-resolution time).
 	if err := os.WriteFile(yamlPath, []byte(`
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   good:
     model: claude-sonnet-4-6
     tools: [Read]
-    history_scope: [self, any, "named:friend"]
+    history_scope: [self, user, tenant, global, any]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(yamlPath); err != nil {
 		t.Errorf("Load: %v", err)
+	}
+}
+
+// TestHistoryScopeRejectsRetired pins that the never-implemented v0.8.7 values
+// (siblings / descendants / named:<n>) are rejected under the RFC BE vocabulary.
+func TestHistoryScopeRejectsRetired(t *testing.T) {
+	for _, retired := range []string{"siblings", "descendants", "named:friend"} {
+		tmp := t.TempDir()
+		yamlPath := filepath.Join(tmp, "c.yaml")
+		body := "defaults: { provider: anthropic, model: claude-sonnet-4-6 }\n" +
+			"agents:\n  bad:\n    model: claude-sonnet-4-6\n    tools: [Read]\n    history_scope: [\"" + retired + "\"]\n"
+		if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(yamlPath); err == nil {
+			t.Errorf("history_scope: [%s] should be rejected (retired value)", retired)
+		}
 	}
 }
 

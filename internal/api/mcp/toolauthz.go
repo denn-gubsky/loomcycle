@@ -63,6 +63,10 @@ var tenantConfinableTools = map[string]bool{
 	"channeldef": true,
 	"path":       true,
 	"document":   true,
+	// RFC BE History — the ctx tenant stamp + the tool's own scope fold confine
+	// a tenant session to its own tenant; the cross-tenant `global` scope is
+	// refused by the admin-gated history policy (grantOperatorPolicies).
+	"history": true,
 
 	// Per-run / per-user — tenant inherited; the underlying tool applies its
 	// own own-subject / cross-tenant-404 gate.

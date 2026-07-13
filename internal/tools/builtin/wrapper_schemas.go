@@ -40,6 +40,7 @@ var mcpWrapperSchemas = map[string]string{
 	"context":          contextInputSchema,
 	"path":             pathInputSchema,
 	"document":         documentInputSchema,
+	"history":          historyInputSchema,
 }
 
 // MCPWrapperInputSchema returns the canonical input schema for the

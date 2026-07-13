@@ -156,12 +156,13 @@ v0.8.17 RFC.
 - **Not encrypted at rest.** Operator's disk-encryption policy
   applies — same posture as transcripts and Memory.
 
-## Pair with Context.history
+## Pair with the History tool
 
 Restored experiments contain interaction history events
 (opt-in via `include_history=true`). Agents in the restored
-instance read those events via `Context.history(since_ts=
-<experiment_start_ts>)` to reflect on past conversations.
+instance read past chats via the `History` tool
+(`History op=get session_id:<id>` for a transcript, or
+`op=list` to browse) to reflect on prior conversations.
 Self-evolving experiments survive cross-version migration with
 their memory intact.
 

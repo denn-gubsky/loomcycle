@@ -76,7 +76,8 @@ const contextDescription = `Read-only runtime introspection. ` +
 	`Answers "what tools do I have? who am I? what permissions apply to me? ` +
 	`what other agents exist? what's my def's lineage and evaluation history? ` +
 	`what runtime concepts and recipes does loomcycle document? what time is it / how long have I been running?". ` +
-	`Operations: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help, time. ` +
+	`Operations: self, tools, doc, permissions, agents, lineage, evaluations, channels, help, time. ` +
+	`(To browse/search/read past chats, use the History tool, not this one.) ` +
 	`Always safe to call — no side effects, no storage writes, no network calls. ` +
 	`Useful for self-evolving agents that build their own task plans and want to inspect ` +
 	`their environment before deciding what to do. ` +
@@ -86,16 +87,12 @@ const contextDescription = `Read-only runtime introspection. ` +
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","history","help","time","compact"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","help","time","compact"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
     "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
     "depth":           {"type": "integer", "description": "lineage only: max depth to walk in each direction (default 10, cap 100)."},
     "include_lineage": {"type": "boolean", "description": "evaluations only: include ancestors' evaluations in the aggregate (default false)."},
-    "agent_id":        {"type": "string", "description": "history only: target agent_id whose run history to fetch. Omitted = caller's own agent_id from ctx."},
-    "event_types":     {"type": "array", "items": {"type": "string"}, "description": "history only: optional filter — return only events of these types (e.g. [\"text\",\"tool_call\"])."},
-    "limit":           {"type": "integer", "description": "history only: max events to return (default 100, cap 1000)."},
-    "since_ts":        {"type": "string", "description": "history only: RFC3339 timestamp; events older than this are excluded. Empty = no filter. Useful for reflecting on a recent time window."},
     "topic":           {"type": "string", "description": "help only: the topic name to fetch detailed content for. Omitted = return the topic index (name + description for each available topic)."}
   },
   "required": ["op"],
@@ -103,23 +100,13 @@ const contextInputSchema = `{
 }`
 
 type contextInput struct {
-	Op             string   `json:"op"`
-	Name           string   `json:"name,omitempty"`
-	Prefix         string   `json:"prefix,omitempty"`
-	DefID          string   `json:"def_id,omitempty"`
-	Depth          int      `json:"depth,omitempty"`
-	IncludeLineage bool     `json:"include_lineage,omitempty"`
-	AgentID        string   `json:"agent_id,omitempty"`
-	EventTypes     []string `json:"event_types,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
-	Topic          string   `json:"topic,omitempty"`
-	// SinceTs is the v0.8.17 addendum (PR 3.5): RFC3339 timestamp.
-	// Events with ts < SinceTs are excluded from the history op's
-	// result + the truncated/count calculation. Empty / zero =
-	// no filter (current behavior). Agents reflecting on a recent
-	// time window (e.g. an experiment that started 2 hours ago) use
-	// this to narrow the transcript walk.
-	SinceTs string `json:"since_ts,omitempty"`
+	Op             string `json:"op"`
+	Name           string `json:"name,omitempty"`
+	Prefix         string `json:"prefix,omitempty"`
+	DefID          string `json:"def_id,omitempty"`
+	Depth          int    `json:"depth,omitempty"`
+	IncludeLineage bool   `json:"include_lineage,omitempty"`
+	Topic          string `json:"topic,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -155,8 +142,6 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execEvaluations(ctx, in)
 	case "channels":
 		return c.execChannels(ctx, in)
-	case "history":
-		return c.execHistory(ctx, in)
 	case "help":
 		return c.execHelp(ctx, in)
 	case "time":
@@ -166,7 +151,7 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help, time, compact)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, help, time, compact)", in.Op)), nil
 	}
 }
 
@@ -515,7 +500,6 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	sdPol := tools.SkillPolicy(ctx)
 	evPol := tools.EvaluationPolicy(ctx)
 
-	histPol := tools.HistoryPolicy(ctx)
 	out := map[string]any{
 		"tools": tools.AgentTools(ctx),
 		"host_policy": map[string]any{
@@ -534,7 +518,6 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 		"agent_def_scopes":  adPol.Scopes,
 		"skills":            sdPol.Patterns,
 		"evaluation_scopes": evPol.Scopes,
-		"history_scope":     histPol.Scopes,
 	}
 	return okJSON(out)
 }
@@ -803,140 +786,6 @@ func filterWildcards(xs []string) []string {
 		}
 	}
 	return out
-}
-
-// ---- history ----
-
-func (c *Context) execHistory(ctx context.Context, in contextInput) (tools.Result, error) {
-	if c.Store == nil {
-		return errResult("history: not configured (no Store backend)"), nil
-	}
-
-	// Gate on history_scope. The closed set is documented on
-	// HistoryPolicyValue. Default-deny: empty scopes refuses.
-	pol := tools.HistoryPolicy(ctx)
-	if len(pol.Scopes) == 0 {
-		return errResult("history: agent has no `history_scope` policy (default-deny); add `history_scope: [...]` to the agent yaml"), nil
-	}
-
-	// v0.8.17 addendum: validate since_ts BEFORE the run lookup so
-	// bad input fails fast without wasting a DB query. Empty / zero
-	// = no filter.
-	var sinceTs time.Time
-	if in.SinceTs != "" {
-		t, err := time.Parse(time.RFC3339, in.SinceTs)
-		if err != nil {
-			return errResult(fmt.Sprintf("history: since_ts must be RFC3339: %v", err)), nil
-		}
-		sinceTs = t
-	}
-
-	// Determine target agent_id. Omitted = caller's own.
-	emitter := tools.RunIdentity(ctx)
-	targetAgentID := in.AgentID
-	if targetAgentID == "" {
-		targetAgentID = emitter.AgentID
-	}
-	if targetAgentID == "" {
-		return errResult("history: no agent_id supplied and caller has no AgentID on ctx"), nil
-	}
-
-	// Scope check. v0.8.7 PR 3 supports:
-	//   - "self": caller's own agent_id only
-	//   - "any":  unrestricted
-	// "siblings" / "descendants" / "named:<n>" are reserved and not
-	// yet active; granting them yields default-deny until the
-	// follow-up plumbing lands.
-	allowed := false
-	if hasHistoryScope(pol, "any") {
-		allowed = true
-	} else if hasHistoryScope(pol, "self") && targetAgentID == emitter.AgentID {
-		allowed = true
-	}
-	if !allowed {
-		return errResult(fmt.Sprintf("history: scope check failed for agent_id %q (caller scopes: %v)", targetAgentID, pol.Scopes)), nil
-	}
-
-	// Resolve agent_id → Run row → session_id.
-	run, err := c.Store.GetRunByAgentID(ctx, targetAgentID)
-	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
-			return errResult(fmt.Sprintf("history: agent_id %q not found", targetAgentID)), nil
-		}
-		return errResult(fmt.Sprintf("history: lookup run: %s", err)), nil
-	}
-
-	events, err := c.Store.GetTranscript(ctx, run.SessionID)
-	if err != nil {
-		return errResult(fmt.Sprintf("history: transcript: %s", err)), nil
-	}
-
-	// Optional event_types filter + limit.
-	typeFilter := stringSet(in.EventTypes)
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-
-	type eventOut struct {
-		Seq       int64           `json:"seq"`
-		RunID     string          `json:"run_id"`
-		Timestamp string          `json:"ts"`
-		Type      string          `json:"type"`
-		Payload   json.RawMessage `json:"payload,omitempty"`
-	}
-	// Track POST-FILTER match count separately so truncated is
-	// honest: it's true iff there are more matches than we returned.
-	// The old check (`len(out)==limit && len(events)>limit`) used
-	// the raw transcript size and gave false positives whenever an
-	// event_types filter excluded enough events that the filter-
-	// matching count was actually <= limit (PR 3 review fix).
-	out := make([]eventOut, 0, limit)
-	matchedCount := 0
-	for _, ev := range events {
-		if len(typeFilter) > 0 && !typeFilter[ev.Type] {
-			continue
-		}
-		if !sinceTs.IsZero() && ev.Timestamp.Before(sinceTs) {
-			continue
-		}
-		matchedCount++
-		if len(out) < limit {
-			out = append(out, eventOut{
-				Seq:       ev.Seq,
-				RunID:     ev.RunID,
-				Timestamp: ev.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z"),
-				Type:      ev.Type,
-				Payload:   json.RawMessage(ev.Payload),
-			})
-		}
-		// Loop continues even after limit so we get an accurate
-		// matchedCount. Worst case: O(len(events)) — bounded by
-		// GetTranscript's own paging. Acceptable cost for honest
-		// truncation reporting; agents using a tiny limit on a
-		// huge transcript pay marginal extra work.
-	}
-
-	return okJSON(map[string]any{
-		"agent_id":   targetAgentID,
-		"session_id": run.SessionID,
-		"events":     out,
-		"count":      len(out),
-		"truncated":  matchedCount > limit,
-	})
-}
-
-func hasHistoryScope(pol tools.HistoryPolicyValue, want string) bool {
-	for _, s := range pol.Scopes {
-		if s == want {
-			return true
-		}
-	}
-	return false
 }
 
 // ---- help ----

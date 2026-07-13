@@ -710,6 +710,10 @@ func isTenantConfinedDefPath(path string) bool {
 		// tools (resolve scope from the operator-trust ctx + tenant-stamp via
 		// RunIdentity). Same posture as _volumedef: ScopeTenant, no /names.
 		"/v1/_path", "/v1/_document",
+		// RFC BE History tool — scope-aware, tenant-isolated (owner resolved
+		// from the operator-trust ctx; cross-tenant `global` gated to admin by
+		// the policy). Same posture as _path/_document: ScopeTenant, no /names.
+		"/v1/_history",
 		// RFC AR secure credential store — scope-aware, tenant-isolated
 		// (scope_id derived from the operator-trust ctx's authoritative
 		// tenant/subject, never the wire; fail-closed without

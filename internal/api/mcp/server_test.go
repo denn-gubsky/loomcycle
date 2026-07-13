@@ -269,6 +269,9 @@ func (m *mockConnector) Path(context.Context, json.RawMessage) (connector.ToolRe
 func (m *mockConnector) Document(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) History(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 
 // v0.9.x Channel CRUD stubs.
 func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
@@ -395,8 +398,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 48 {
-		t.Errorf("got %d tools, want 48 (+teamdef on top of the credentialdef/path/document/volumedef/spawn_runs/compact_run list)", len(result.Tools))
+	if len(result.Tools) != 49 {
+		t.Errorf("got %d tools, want 49 (+history on top of the teamdef/credentialdef/path/document/volumedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -406,7 +409,7 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 		t.Error("catalogue missing the credentialdef meta-tool")
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "history", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
@@ -439,7 +442,7 @@ func TestServer_ToolsList_FiltersAdminToolsForTenant(t *testing.T) {
 			t.Errorf("admin-only tool %q must be hidden from a tenant principal's tools/list", hidden)
 		}
 	}
-	for _, shown := range []string{"document", "agentdef", "memory", "spawn_run", "path", "context", "register_hook", "list_hooks", "delete_hook"} {
+	for _, shown := range []string{"document", "history", "agentdef", "memory", "spawn_run", "path", "context", "register_hook", "list_hooks", "delete_hook"} {
 		if !names[shown] {
 			t.Errorf("tenant-confinable tool %q must remain in a tenant principal's tools/list", shown)
 		}

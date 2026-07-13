@@ -1504,10 +1504,50 @@ func (s *Server) emitSystemPromptEvent(
 	}
 }
 
-// historyPolicyForAgent returns the v0.8.7 Context.history scope policy
-// for one agent. Default-deny shape: empty Scopes = no access.
-func (s *Server) historyPolicyForAgent(agentDef config.AgentDef) tools.HistoryPolicyValue {
-	return tools.HistoryPolicyValue{Scopes: agentDef.HistoryScope}
+// historyPolicyForAgent resolves the RFC BE History-tool scope policy for one
+// agent, from ctx + the agent's history_scope yaml. Default-deny (empty Scopes).
+//
+// Two normalizations happen here, NOT in the tool: (1) the legacy "any" value is
+// mapped to "global"; (2) the cross-tenant "global" scope is STRIPPED unless the
+// run's principal is admin. Both keep the tool a pure policy.Scopes consumer.
+//
+// The admin gate FAILS CLOSED: an absent principal (open dev mode, or a resumed
+// run re-dispatched at boot with no request ctx) is treated as non-admin and
+// loses `global`. That loses nothing operationally — with no tenant boundary,
+// scope:tenant already spans everything — while ensuring a resumed tenant run
+// can never silently regain cross-tenant reach.
+func (s *Server) historyPolicyForAgent(ctx context.Context, agentDef config.AgentDef) tools.HistoryPolicyValue {
+	return tools.HistoryPolicyValue{Scopes: normalizeHistoryScopes(agentDef.HistoryScope, historyGlobalAllowed(ctx))}
+}
+
+// historyGlobalAllowed reports whether the ctx principal may resolve the
+// cross-tenant `global` History scope. Admin-equivalent (which the legacy
+// single-operator principal carries) only; no principal ⇒ false (fail closed).
+func historyGlobalAllowed(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return ok && auth.HasScope(p.Scopes, auth.ScopeAdmin)
+}
+
+// normalizeHistoryScopes maps the legacy "any" alias to "global", drops "global"
+// when the caller is not admin, and de-duplicates. Order is preserved for the
+// (unlikely) case an operator relies on it in an error message.
+func normalizeHistoryScopes(raw []string, adminAllowsGlobal bool) []string {
+	seen := make(map[string]bool, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, sc := range raw {
+		if sc == "any" {
+			sc = "global"
+		}
+		if sc == "global" && !adminAllowsGlobal {
+			continue
+		}
+		if seen[sc] {
+			continue
+		}
+		seen[sc] = true
+		out = append(out, sc)
+	}
+	return out
 }
 
 // interruptionToolName is the built-in Interruption tool's Name(). Listing it
@@ -2295,7 +2335,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
-	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
+	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, runID)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
@@ -2606,6 +2646,10 @@ func (s *Server) Mux() http.Handler {
 	// the wire. Same dispatch shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_path", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstratePath))))
 	mux.Handle("POST /v1/_document", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocument))))
+	// RFC BE History tool — browse/search/annotate past chats. Tenant-confined
+	// (ScopeTenant via isTenantConfinedDefPath); the tool's own scope fold +
+	// admin-gated `global` keep a tenant operator inside its own tenant.
+	mux.Handle("POST /v1/_history", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateHistory))))
 	// RFC AR secure credential store (the Web UI Settings → Credentials panel's
 	// ingress). Bearer-authed; tenant-confined (ScopeTenant via
 	// isTenantConfinedDefPath) — the tool derives scope_id from the operator-trust
@@ -3744,7 +3788,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
-	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
+	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, runID)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
@@ -4283,7 +4327,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
-	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
+	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
@@ -5376,7 +5420,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithSearchProviders(subCtx, def.SearchProviders)
 	subCtx = tools.WithVolumeDefPolicy(subCtx, s.volumeDefPolicyForAgent(def))
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
-	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(def))
+	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(subCtx, def))
 	subCtx = tools.WithInterruptionPolicy(subCtx, s.interruptionPolicyForAgent(def))
 	subCtx = tools.WithRunID(subCtx, subRunID)
 	subCtx = tools.WithDispatcher(subCtx, subDispatcher)

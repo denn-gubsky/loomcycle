@@ -285,13 +285,18 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("document"),
 		},
 		{
+			Name:        "history",
+			Description: "History tool ops (list/get/search/rename/annotate/pin/archive). RFC BE — browse, search, and annotate past chats (a chat = a conversation session). Owner-scope-aware (self/user/tenant/global; global = admin only) with the owner resolved server-side from the run identity; cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats included. Pass-through.",
+			InputSchema: builtinSchema("history"),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: builtinSchema("evaluation"),
 		},
 		{
 			Name:        "context",
-			Description: "Context tool ops (self/tools/doc/permissions/agents/lineage/evaluations/channels/history/help/time). Pass-through.",
+			Description: "Context tool ops (self/tools/doc/permissions/agents/lineage/evaluations/channels/help/time). Pass-through.",
 			InputSchema: builtinSchema("context"),
 		},
 
