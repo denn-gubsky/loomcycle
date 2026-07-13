@@ -1510,6 +1510,9 @@ func main() {
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface
 	historyTool.Store = storeIface
+	// RFC BE op=related — the SAME embedder the Memory tool uses; nil (no
+	// embedder configured) makes op=related refuse cleanly, every other op works.
+	historyTool.Embedder = embedder
 	skillTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface

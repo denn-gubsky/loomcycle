@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -51,6 +53,13 @@ type History struct {
 	// the sessionID is authorized. nil = op=recap refuses with "not configured"
 	// (the same posture as TeamDef op=run on a nil Spawn); every other op works.
 	Recap func(ctx context.Context, sessionID string) (summary string, err error)
+
+	// Embedder turns a source text (a chat's title+summary, or a free-text query)
+	// into a vector for op=related's semantic "similar chats" search. It is the
+	// SAME embedder the Memory tool uses, wired from cfg.Memory.Embedder in
+	// main.go. nil (no embedder configured) = op=related refuses cleanly, mirroring
+	// Memory's ErrEmbedderNotConfigured posture; every other op works regardless.
+	Embedder providers.Embedder
 }
 
 func (h *History) Name() string { return "History" }
@@ -61,7 +70,8 @@ func (h *History) Description() string {
 		"get (one chat's metadata + full transcript; format:markdown renders it), rename (set title), " +
 		"annotate (set description and/or tags), pin (float to the top), archive (reversible soft-hide), " +
 		"recap (refresh the stored LLM summary of the chat — idempotent, safe on a live/parked chat), " +
-		"resume (return a handle for continuing the chat in a new run). " +
+		"resume (return a handle for continuing the chat in a new run), " +
+		"related (find chats similar in meaning to a given chat (session_id) or a free-text query — needs an embedder). " +
 		"scope selects whose chats: self = this agent's, user = this end-user's, tenant = this tenant's, " +
 		"global = all tenants (admin only). The owner is resolved server-side from the run identity, never the wire; " +
 		"cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats are included. " +
@@ -74,18 +84,18 @@ func (h *History) Description() string {
 const historyInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive","recap","resume"]},
+		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive","recap","resume","related"]},
 		"scope":           {"type": "string", "enum": ["self","user","tenant","global"], "description": "Whose chats: self = this agent's; user = this end-user's; tenant = this tenant's; global = all tenants (admin only). Default self. The owner id is resolved server-side from the run identity, never the wire."},
-		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume: the chat (session) id to target."},
+		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume: the chat (session) id to target. related: find chats similar to THIS chat (its title+summary is the source; it is excluded from results)."},
 		"status":          {"type": "string", "description": "list/search: filter by derived chat status (running/completed/failed/cancelled)."},
 		"from":            {"type": "string", "description": "list/search: RFC3339 lower bound on last activity."},
 		"to":              {"type": "string", "description": "list/search: RFC3339 upper bound on last activity."},
 		"tag":             {"type": "string", "description": "list/search: return only chats carrying this exact tag."},
 		"title_contains":  {"type": "string", "description": "list: case-insensitive substring match on the title."},
-		"query":           {"type": "string", "description": "search: case-insensitive title match (metadata MVP; full-text content search is not yet available)."},
+		"query":           {"type": "string", "description": "search: case-insensitive title match (metadata MVP; full-text content search is not yet available). related: free-text query to find semantically similar chats (use this OR session_id, not both)."},
 		"pinned_only":     {"type": "boolean", "description": "list/search: restrict to pinned chats."},
-		"include_archived":{"type": "boolean", "description": "list/search: include archived chats (excluded by default)."},
-		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 50, cap 500)."},
+		"include_archived":{"type": "boolean", "description": "list/search/related: include archived chats (excluded by default)."},
+		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 50, cap 500). related: max similar chats to return (default 10, cap 500)."},
 		"offset":          {"type": "integer", "description": "list/search: pagination offset."},
 		"format":          {"type": "string", "description": "get: \"markdown\" renders the transcript as Markdown instead of a structured event array."},
 		"title":           {"type": "string", "description": "rename: the new title."},
@@ -159,8 +169,10 @@ func (h *History) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return h.recap(ctx, scope, in)
 	case "resume":
 		return h.resume(ctx, scope, in)
+	case "related":
+		return h.related(ctx, scope, in)
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (want one of: list, get, search, rename, annotate, pin, archive, recap, resume)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (want one of: list, get, search, rename, annotate, pin, archive, recap, resume, related)", in.Op)), nil
 	}
 }
 
@@ -344,6 +356,9 @@ func (h *History) recap(ctx context.Context, scope string, in historyInput) (too
 	if err != nil {
 		return errResult("history: recap: reload: " + err.Error()), nil
 	}
+	// The fresh summary changes the chat's embed text — refresh the op=related
+	// index (best-effort; never fails the recap).
+	h.populateEmbedding(ctx, updated)
 	runs, _ := h.Store.RunsForSession(ctx, sess.ID)
 	return okJSON(map[string]any{
 		"scope":   scope,
@@ -381,6 +396,137 @@ func (h *History) resume(ctx context.Context, scope string, in historyInput) (to
 				"(or the spawn_run MCP tool). The new run appends to this chat's transcript.",
 		},
 	})
+}
+
+// related finds chats similar in meaning to a source — either a given chat
+// (session_id, whose title/summary/description is embedded and which is excluded
+// from its own results) OR a free-text query — using the configured embedder.
+//
+// Two isolation guarantees, both reusing the existing seams:
+//   - Fold-first for the by-id form: loadSessionInScope enforces the source
+//     chat's scope BEFORE it is embedded, so a cross-scope session_id is refused
+//     with the same opaque not-found as every other by-id op.
+//   - The vector search runs through SessionEmbedSearch(filterForScope(...)),
+//     which applies the SAME owner/tenant/archived fold as list/search at the
+//     SQL layer — a cross-tenant chat never appears even when it is the closest
+//     match.
+//
+// Gated on an embedder: nil h.Embedder refuses cleanly (mirrors Memory's
+// ErrEmbedderNotConfigured), while every other History op works without one.
+func (h *History) related(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
+	if h.Embedder == nil {
+		return errResult("history: related requires an embedder (set memory.embedder in operator yaml)"), nil
+	}
+
+	var sourceText, excludeID string
+	switch {
+	case in.SessionID != "":
+		sess, err := h.loadSessionInScope(ctx, scope, "related", in.SessionID)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		sourceText = sessionEmbedText(sess.Title, sess.Summary, sess.Description)
+		excludeID = sess.ID
+		if sourceText == "" {
+			// A chat with no title/summary/description has nothing to match on —
+			// recap or annotate it first so the index has meaning.
+			return errResult("history: related: chat has no title, summary, or description to match on (recap or annotate it first)"), nil
+		}
+	case strings.TrimSpace(in.Query) != "":
+		sourceText = strings.TrimSpace(in.Query)
+	default:
+		return errResult("history: related requires session_id or query"), nil
+	}
+
+	vecs, err := h.Embedder.Embed(ctx, []string{sourceText})
+	if err != nil {
+		return errResult("history: related: embed: " + err.Error()), nil
+	}
+	if len(vecs) == 0 || len(vecs[0]) == 0 {
+		return errResult("history: related: embedder returned an empty vector"), nil
+	}
+
+	f, err := h.filterForScope(ctx, scope, in)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	// Fetch one extra so excluding the source chat still leaves a full page.
+	rows, err := h.Store.SessionEmbedSearch(ctx, f, vecs[0], limit+1)
+	if err != nil {
+		return errResult("history: related: " + err.Error()), nil
+	}
+	out := make([]store.SessionSimilar, 0, len(rows))
+	for _, r := range rows {
+		if r.SessionID == excludeID {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= limit {
+			break
+		}
+	}
+
+	res := map[string]any{
+		"scope":   scope,
+		"related": out,
+		"count":   len(out),
+	}
+	if excludeID != "" {
+		res["source_session_id"] = excludeID
+	} else {
+		res["query"] = sourceText
+	}
+	return okJSON(res)
+}
+
+// sessionEmbedText builds the text embedded for a chat, joining its title,
+// summary, and description. It is the SINGLE source of embed text so that the
+// vector stored by populateEmbedding and the query vector op=related derives
+// from a by-id source are computed identically — a chat is therefore its own
+// closest match (which is why related() excludes the source). Empty fields are
+// dropped so the vector isn't polluted by blank lines.
+func sessionEmbedText(title, summary, description string) string {
+	parts := make([]string, 0, 3)
+	for _, p := range []string{title, summary, description} {
+		if t := strings.TrimSpace(p); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// populateEmbedding refreshes the session's row in the semantic index that backs
+// op=related. It runs after a metadata write that changes the embed text (recap
+// → summary; rename → title; annotate → description). BEST-EFFORT: a nil
+// Embedder, an empty embed text, or any embed/store failure is logged and
+// swallowed — indexing must never fail the metadata op that triggered it. The
+// index therefore fills LAZILY as chats are recapped / renamed / annotated;
+// there is no historical backfill of pre-existing chats in this PR.
+func (h *History) populateEmbedding(ctx context.Context, sess store.Session) {
+	if h.Embedder == nil {
+		return
+	}
+	text := sessionEmbedText(sess.Title, sess.Summary, sess.Description)
+	if text == "" {
+		return
+	}
+	vecs, err := h.Embedder.Embed(ctx, []string{text})
+	if err != nil || len(vecs) == 0 || len(vecs[0]) == 0 {
+		log.Printf("history: populate embedding for chat %s failed (index not updated): %v", sess.ID, err)
+		return
+	}
+	if err := h.Store.SessionEmbedUpsert(ctx, sess.ID, store.SessionEmbedding{
+		Provider:  h.Embedder.Provider(),
+		Model:     h.Embedder.Model(),
+		Dimension: len(vecs[0]),
+		Vector:    vecs[0],
+	}); err != nil {
+		log.Printf("history: upsert embedding for chat %s failed (index not updated): %v", sess.ID, err)
+	}
 }
 
 // resumeHandle is the continuation pointer op=resume returns. It carries only
@@ -441,6 +587,12 @@ func (h *History) applyMeta(ctx context.Context, scope, sessionID, op string, pa
 	updated, err := h.Store.GetSession(ctx, sess.ID)
 	if err != nil {
 		return errResult("history: reload: " + err.Error()), nil
+	}
+	// A title (rename) or description (annotate) change alters the chat's embed
+	// text — refresh the op=related index (best-effort; never fails the op).
+	// pin/archive don't touch embed text, so they skip it.
+	if patch.Title != nil || patch.Description != nil {
+		h.populateEmbedding(ctx, updated)
 	}
 	runs, _ := h.Store.RunsForSession(ctx, sess.ID)
 	return okJSON(map[string]any{

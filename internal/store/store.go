@@ -22,6 +22,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -790,6 +793,97 @@ func DecodeTags(s string) ([]string, error) {
 	return out, nil
 }
 
+// EncodeVector serialises an embedding vector as the pgvector text shape
+// "[1,2,3]" (RFC BE session-similarity index). It is byte-identical to the
+// Postgres pgvector codec (strconv.FormatFloat with 'g'/-1/32) so a vector
+// stored by either backend round-trips the same; keeping it in the store
+// package lets the SQLite session_embeddings table share one codec instead of
+// re-deriving pgvector's format. The column is a plain TEXT — the session index
+// ranks in Go (small per-chat set), so it needs no pgvector extension.
+func EncodeVector(v []float32) string {
+	if len(v) == 0 {
+		return "[]"
+	}
+	var b strings.Builder
+	b.Grow(len(v) * 12)
+	b.WriteByte('[')
+	for i, f := range v {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(float64(f), 'g', -1, 32))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+// DecodeVector parses EncodeVector's output back to []float32. Tolerates
+// whitespace between elements. An empty "[]" decodes to an empty slice.
+func DecodeVector(s string) ([]float32, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
+		return nil, fmt.Errorf("DecodeVector: missing brackets in %q", s)
+	}
+	body := strings.TrimSpace(s[1 : len(s)-1])
+	if body == "" {
+		return []float32{}, nil
+	}
+	parts := strings.Split(body, ",")
+	out := make([]float32, len(parts))
+	for i, p := range parts {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p), 32)
+		if err != nil {
+			return nil, fmt.Errorf("DecodeVector: parse %q: %w", p, err)
+		}
+		out[i] = float32(f)
+	}
+	return out, nil
+}
+
+// CosineSimilarity returns the cosine similarity of two equal-length vectors in
+// [-1, 1] (higher = closer). Used by the session-similarity index's in-Go
+// ranking. Returns 0 (not an error) when the lengths differ or either vector is
+// zero-magnitude — a mismatched-dimension or empty candidate simply ranks last
+// rather than aborting the whole search (embeddings from a different model
+// coexist harmlessly).
+func CosineSimilarity(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		av, bv := float64(a[i]), float64(b[i])
+		dot += av * bv
+		na += av * av
+		nb += bv * bv
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+}
+
+// SessionEmbedding is the input to SessionEmbedUpsert (RFC BE semantic "related
+// chats"). The caller supplies only the embedder identity + the vector; the
+// store copies the owning (tenant_id, user_id, agent) straight from the
+// authoritative sessions row so the denormalised owner columns can never drift
+// from — or be spoofed apart from — the session they index.
+type SessionEmbedding struct {
+	Provider  string
+	Model     string
+	Dimension int
+	Vector    []float32
+}
+
+// SessionSimilar is one ranked result of SessionEmbedSearch: a chat's full
+// SessionSummary plus its cosine similarity to the query vector (Score, higher =
+// closer). Rows are already scope- and tenant-folded at the SQL layer, so a
+// caller renders them directly.
+type SessionSimilar struct {
+	SessionSummary
+	Score float64 `json:"score"`
+}
+
 // UserSummary is one row of ListUsers' output: distinct user_id with
 // summary stats. Drives the Web UI's user picker so operators can see
 // who has active runs and pick from a list rather than typing a UUID.
@@ -940,6 +1034,25 @@ type Store interface {
 	// unchanged. Returns *ErrNotFound when sessionID does not exist. See
 	// SessionMetaPatch for the archived_at / summary_updated_at side effects.
 	SetSessionMeta(ctx context.Context, sessionID string, patch SessionMetaPatch) error
+
+	// SessionEmbedUpsert writes (or replaces) the embedding vector for one
+	// session — the per-chat index backing History op=related (RFC BE semantic
+	// "related chats"). The owning (tenant_id, user_id, agent) are copied from
+	// the sessions row itself, NOT from the caller, so the denormalised owner
+	// columns the similarity search folds on stay in lockstep with the session.
+	// Returns *ErrNotFound when sessionID does not exist. Unlike MemoryEmbed*,
+	// this needs no vector extension: the index is small (one row per chat) and
+	// ranks in Go, so both backends implement it (no ErrVectorUnsupported).
+	SessionEmbedUpsert(ctx context.Context, sessionID string, e SessionEmbedding) error
+
+	// SessionEmbedSearch returns sessions ranked by cosine similarity of their
+	// stored embedding to the query vector, applying the SAME owner/tenant/
+	// archived constraints as ListSessions (SessionFilter) so results are already
+	// scope- and tenant-safe at the SQL layer — a cross-tenant chat never leaves
+	// the DB even when it is semantically closest. Only sessions carrying an
+	// embedding are candidates (INNER JOIN). Ranking is in Go over the folded
+	// candidate set; limit caps the returned rows.
+	SessionEmbedSearch(ctx context.Context, filter SessionFilter, query []float32, limit int) ([]SessionSimilar, error)
 
 	// GetLastEventForRun returns the highest-seq event recorded for
 	// the given run. v0.8.21 introduces this so the list-agents

@@ -207,6 +207,29 @@ func (s *Store) migrate(ctx context.Context) error {
 		// run cheaply for every running agent — (run_id, seq DESC)
 		// is the covering shape.
 		`CREATE INDEX IF NOT EXISTS events_by_run_seq ON events(run_id, seq DESC)`,
+		// RFC BE — per-session embedding index backing History op=related
+		// (semantic "related chats"). One row per chat; the vector is a plain
+		// TEXT column (store.EncodeVector) ranked in Go, so NO sqlite-vec is
+		// needed — this works on the default pure-Go build, unlike
+		// memory_embeddings. tenant_id/user_id/agent are denormalised from the
+		// session so the similarity search folds owner/tenant WITHOUT a join
+		// (they are immutable session facts, set once at CreateSession).
+		// FK CASCADE drops the row when the session is deleted; updated_at is
+		// unix-nano. Mirrors postgres migration 0058.
+		`CREATE TABLE IF NOT EXISTS session_embeddings (
+			session_id  TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			user_id     TEXT,
+			agent       TEXT NOT NULL DEFAULT '',
+			provider    TEXT NOT NULL,
+			model       TEXT NOT NULL,
+			dimension   INTEGER NOT NULL,
+			vector      TEXT NOT NULL,
+			updated_at  INTEGER NOT NULL
+		)`,
+		// The similarity search folds on (tenant_id, user_id, agent) then scans
+		// the most-recent candidates; this covers that owner prefix.
+		`CREATE INDEX IF NOT EXISTS session_embeddings_by_owner ON session_embeddings(tenant_id, user_id, agent)`,
 		// v0.8 Memory tool. PRIMARY KEY (scope, scope_id, key) gives
 		// the natural lookup index; the partial expires_at index keeps
 		// the sweeper's DELETE cheap (no full-table scan).

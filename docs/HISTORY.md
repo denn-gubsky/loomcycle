@@ -83,6 +83,7 @@ becomes a cross-tenant existence oracle (session ids are not secret).
 | `archive` | reversible soft-hide (`archived:false` restores). Distinct from the RFC AV usage-retention pruner, which hard-deletes. |
 | `recap`   | refresh the chat's **stored LLM summary** of the transcript-so-far — idempotent, and safe on a **live / parked** chat. Written to the chat's metadata so `list`/`get`/`search` surface it cheaply. See below. |
 | `resume`  | return a **continuation handle** `{session_id, agent, tenant_id, user_id, status, last_activity, hint}` — the coordinates + hint for continuing the chat in a new run. Does not itself start a run. |
+| `related` | find chats **similar in meaning** to a given chat (`session_id`, excluded from its own results) or a free-text `query`, using the configured embedder. Ranked by cosine similarity, folded to the same scope. **Gated on an embedder.** See below. |
 
 ## Recap — a metadata-backed, refreshable summary
 
@@ -109,6 +110,44 @@ resolved tier model — and carries the chat's RFC AX operator-key restriction
 operator key. A recap of an already-compacted chat summarizes its **current
 effective** (post-compaction) view.
 
+## Related — semantic "similar chats"
+
+`related` finds chats close in meaning to a source, using the **same vector
+embedder the Memory tool uses** (`memory.embedder` in operator yaml). The source
+is either a chat (`session_id` — its title + summary + description is embedded and
+the chat is excluded from its own results) or a free-text `query`. It is **gated
+on an embedder**: with none configured it refuses cleanly (`related requires an
+embedder …`), mirroring Memory's `ErrEmbedderNotConfigured` posture; every other
+History op works without one.
+
+**The index and how it fills.** A dedicated `session_embeddings` table (one row
+per chat, migration 0058) holds each chat's vector. It is populated **lazily,
+best-effort**: `recap` (summary change), `rename` (title change), and `annotate`
+(description change) re-embed the chat and upsert its row. A populate failure is
+logged and never fails the triggering op. There is **no historical backfill** in
+this PR — an old chat becomes matchable only after it is next recapped / renamed /
+annotated. The `sessionEmbedText` helper (title + summary + description) is the
+single source of embed text, so a chat's stored vector and a by-id `related`
+lookup of it are computed identically.
+
+**No pgvector needed.** Unlike `memory_embeddings` (which needs pgvector /
+sqlite-vec), the per-chat index is small, so the vector is a plain TEXT column
+(`store.EncodeVector`) and cosine ranking runs **in Go** over the folded
+candidate set (`store.CosineSimilarity`). This keeps `related` working on the
+default single-binary SQLite build — and lets the same real search run in CI on
+both backends. A recency cap (`sessionSimilarCandidateCap`) bounds how many
+in-scope chats a search loads before ranking, so a large tenant can't blow memory.
+
+**Tenant fold — the exact seam.** `SessionEmbedSearch` takes the SAME
+`SessionFilter` as `ListSessions` and applies the owner/tenant fold in the SQL
+`WHERE` — on the denormalised `session_embeddings.{tenant_id,user_id,agent}`
+columns (copied from the authoritative session row at upsert; they are immutable
+session facts) for the owner axes, and on `sessions.archived_at` for the archived
+filter. A cross-tenant chat therefore **never leaves the DB**, even when its
+vector is the closest possible match — the fold beats similarity. `related`
+builds that filter via the same `filterForScope` the other reads use, and folds
+the by-id source first through `loadSessionInScope`.
+
 ## Redaction
 
 Transcripts are persisted **already-redacted** — the recording emit path
@@ -122,9 +161,12 @@ never reaches a History reader.
 - **In-loop:** an agent with `tools: [History]` + a `history_scope` calls it like
   any built-in.
 - **Off-run:** `POST /v1/_history` (bearer-authed, `ScopeTenant`; admin
-  satisfies) and the LoomCycle MCP meta-tool `history`. Both resolve owner-scope
-  + tenant from the authenticated principal, never the wire.
-- The gRPC RPC and the TS/Python adapter twins are a later PR.
+  satisfies), the LoomCycle MCP meta-tool `history`, the gRPC RPC, and the
+  TS/Python adapter twins. All resolve owner-scope + tenant from the
+  authenticated principal, never the wire.
+- `related` is a new **op** on that existing tool — it rides the same
+  op-discriminated dispatch and JSON envelope (`session_id` / `query` / `limit`
+  fields already on the schema), so every transport gains it with no wire change.
 
 ## Continuing a chat
 
