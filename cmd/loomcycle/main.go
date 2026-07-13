@@ -1615,6 +1615,12 @@ func main() {
 	// RFC AX: the keyability probe backs credential-aware routing for a
 	// restricted run (resolves only to providers the tenant can key itself).
 	srv.SetCredKeyable(credKeyable)
+	// RFC BE: the History tool's op=recap summarizer. Store was late-bound above
+	// (before srv existed); Recap needs server-side provider/model resolution, so
+	// it's the off-loop twin of the compaction summarizer (Server.RecapSession).
+	// The method value reads s.resolver lazily at call time — set below via
+	// SetResolver, long before any runtime recap call.
+	historyTool.Recap = srv.RecapSession
 	// RFC BB: the search catalog for the routing view (GET /v1/_routing search
 	// block). Same registry/resolver the WebSearch tool uses; nil when no search
 	// providers are configured.

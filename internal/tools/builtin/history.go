@@ -43,6 +43,14 @@ type History struct {
 	// call returns an is_error result with a clear "not configured" message —
 	// operators see one failure rather than a panic). Late-bound in main.go.
 	Store store.Store
+
+	// Recap produces a fresh LLM summary of a chat's transcript-so-far. It is a
+	// late-bound closure (wired by the server to Server.RecapSession) so the tool
+	// itself never touches a provider — it just persists the returned text to the
+	// session metadata. The scope fold has ALREADY run before this is called, so
+	// the sessionID is authorized. nil = op=recap refuses with "not configured"
+	// (the same posture as TeamDef op=run on a nil Spawn); every other op works.
+	Recap func(ctx context.Context, sessionID string) (summary string, err error)
 }
 
 func (h *History) Name() string { return "History" }
@@ -51,7 +59,9 @@ func (h *History) Description() string {
 	return "Browse, search, and annotate PAST chats (a chat = a conversation session; session -> runs -> events). " +
 		"Ops: list (chats in a scope, filtered + paginated, pinned-first), search (title match within a scope), " +
 		"get (one chat's metadata + full transcript; format:markdown renders it), rename (set title), " +
-		"annotate (set description and/or tags), pin (float to the top), archive (reversible soft-hide). " +
+		"annotate (set description and/or tags), pin (float to the top), archive (reversible soft-hide), " +
+		"recap (refresh the stored LLM summary of the chat — idempotent, safe on a live/parked chat), " +
+		"resume (return a handle for continuing the chat in a new run). " +
 		"scope selects whose chats: self = this agent's, user = this end-user's, tenant = this tenant's, " +
 		"global = all tenants (admin only). The owner is resolved server-side from the run identity, never the wire; " +
 		"cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats are included. " +
@@ -64,9 +74,9 @@ func (h *History) Description() string {
 const historyInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive"]},
+		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive","recap","resume"]},
 		"scope":           {"type": "string", "enum": ["self","user","tenant","global"], "description": "Whose chats: self = this agent's; user = this end-user's; tenant = this tenant's; global = all tenants (admin only). Default self. The owner id is resolved server-side from the run identity, never the wire."},
-		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive: the chat (session) id to target."},
+		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume: the chat (session) id to target."},
 		"status":          {"type": "string", "description": "list/search: filter by derived chat status (running/completed/failed/cancelled)."},
 		"from":            {"type": "string", "description": "list/search: RFC3339 lower bound on last activity."},
 		"to":              {"type": "string", "description": "list/search: RFC3339 upper bound on last activity."},
@@ -145,8 +155,12 @@ func (h *History) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return h.pin(ctx, scope, in)
 	case "archive":
 		return h.archive(ctx, scope, in)
+	case "recap":
+		return h.recap(ctx, scope, in)
+	case "resume":
+		return h.resume(ctx, scope, in)
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (want one of: list, get, search, rename, annotate, pin, archive)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (want one of: list, get, search, rename, annotate, pin, archive, recap, resume)", in.Op)), nil
 	}
 }
 
@@ -302,6 +316,115 @@ func (h *History) archive(ctx context.Context, scope string, in historyInput) (t
 		archived = *in.Archived
 	}
 	return h.applyMeta(ctx, scope, in.SessionID, "archive", store.SessionMetaPatch{Archived: &archived})
+}
+
+// recap refreshes the chat's stored LLM summary. The fold runs FIRST so a
+// cross-scope/out-of-scope recap is refused with the SAME opaque not-found
+// before any (costly) summarization. The tool never calls a provider itself —
+// h.Recap (wired to Server.RecapSession) does — so a nil Recap simply refuses.
+// Idempotent: re-running replaces the cached summary (SetSessionMeta stamps
+// summary_updated_at). Safe on a live/parked chat — it reads the transcript-so-
+// far and never mutates the run loop.
+func (h *History) recap(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
+	sess, err := h.loadSessionInScope(ctx, scope, "recap", in.SessionID)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	if h.Recap == nil {
+		return errResult("history: recap not configured (no summarizer wired)"), nil
+	}
+	summary, err := h.Recap(ctx, sess.ID)
+	if err != nil {
+		return errResult("history: recap: " + err.Error()), nil
+	}
+	if err := h.Store.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{Summary: &summary}); err != nil {
+		return errResult("history: recap: persist summary: " + err.Error()), nil
+	}
+	updated, err := h.Store.GetSession(ctx, sess.ID)
+	if err != nil {
+		return errResult("history: recap: reload: " + err.Error()), nil
+	}
+	runs, _ := h.Store.RunsForSession(ctx, sess.ID)
+	return okJSON(map[string]any{
+		"scope":   scope,
+		"summary": summary,
+		"chat":    sessionMeta(updated, runs),
+	})
+}
+
+// resume returns a continuation handle for a chat — the pointer a caller uses to
+// keep the conversation going. It does NOT itself spawn a run: loomcycle already
+// continues a session by starting a new run against its session_id, so the tool
+// hands back the coordinates + a hint rather than duplicating the run-trigger
+// surface. Fold-first, like every by-id op.
+func (h *History) resume(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
+	sess, err := h.loadSessionInScope(ctx, scope, "resume", in.SessionID)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	runs, err := h.Store.RunsForSession(ctx, sess.ID)
+	if err != nil {
+		return errResult("history: resume: " + err.Error()), nil
+	}
+	status, lastActivity := deriveChatStatus(sess, runs)
+	return okJSON(map[string]any{
+		"scope": scope,
+		"resume": resumeHandle{
+			SessionID:    sess.ID,
+			Agent:        sess.Agent,
+			TenantID:     sess.TenantID,
+			UserID:       sess.UserID,
+			Status:       string(status),
+			LastActivity: lastActivity,
+			Hint: "Continue this chat by starting a new run against this session_id — " +
+				"POST /v1/runs with {\"session_id\":\"" + sess.ID + "\",\"agent\":\"" + sess.Agent + "\", ...} " +
+				"(or the spawn_run MCP tool). The new run appends to this chat's transcript.",
+		},
+	})
+}
+
+// resumeHandle is the continuation pointer op=resume returns. It carries only
+// the coordinates a caller needs to start a follow-up run plus a plain-language
+// hint — no secrets, no transcript.
+type resumeHandle struct {
+	SessionID    string    `json:"session_id"`
+	Agent        string    `json:"agent,omitempty"`
+	TenantID     string    `json:"tenant_id,omitempty"`
+	UserID       string    `json:"user_id,omitempty"`
+	Status       string    `json:"status,omitempty"`
+	LastActivity time.Time `json:"last_activity,omitempty"`
+	Hint         string    `json:"hint"`
+}
+
+// deriveChatStatus rolls a chat's runs into a single derived status + last-
+// activity timestamp, matching ListSessions' definition so a resume handle and a
+// list row agree: "running" if any run is still in flight, else the most recent
+// run's terminal status ("" when the chat has no runs yet). Last activity is the
+// newest run timestamp (completion when set, else start), falling back to the
+// session's creation time for a chat with no runs.
+func deriveChatStatus(sess store.Session, runs []store.Run) (store.RunStatus, time.Time) {
+	last := sess.CreatedAt
+	var status store.RunStatus
+	running := false
+	for _, r := range runs {
+		if r.Status == store.RunRunning {
+			running = true
+		}
+		ts := r.StartedAt
+		if !r.CompletedAt.IsZero() {
+			ts = r.CompletedAt
+		}
+		if ts.After(last) {
+			last = ts
+		}
+	}
+	if len(runs) > 0 {
+		status = runs[len(runs)-1].Status // RunsForSession is oldest-first.
+	}
+	if running {
+		status = store.RunRunning
+	}
+	return status, last
 }
 
 // applyMeta enforces the scope fold, writes the patch, then returns the updated

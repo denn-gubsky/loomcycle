@@ -6270,6 +6270,96 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	return connector.CompactResult{RunID: runID, Compacted: true, BeforeTokens: before, AfterTokens: after, Applied: applied}, nil
 }
 
+// RecapSession produces a fresh LLM summary of a whole chat (session) for the
+// History tool's op=recap. It is the off-loop, session-scoped twin of
+// compactRunWithSource's summarize step: a chat spans EVERY run, so it replays
+// the full session transcript (like resume) rather than a single run's, and it
+// does NOT mutate the loop or persist a compaction marker — the History tool
+// stores the returned text to sessions.summary. The tool has ALREADY enforced
+// the scope fold on sessionID before calling this, so the lookup here trusts it.
+//
+// Wired onto History.Recap in main.go. Returns a clean error on every failure
+// path (surfaced by the tool as an errResult) — never a panic.
+func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, error) {
+	if s.store == nil {
+		return "", errors.New("recap requires persistence")
+	}
+	sess, err := s.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return "", errors.New("no chat for that session_id")
+	}
+	events, err := s.store.GetTranscript(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("read transcript: %w", err)
+	}
+	msgs := replayTranscript(events)
+	if len(msgs) == 0 {
+		return "", errors.New("chat has no transcript to recap yet")
+	}
+
+	agentDef, ok := s.lookupAgent(ctx, sess.TenantID, sess.Agent)
+	if !ok {
+		return "", errors.New("the chat's agent no longer exists")
+	}
+
+	// RFC AX: carry the chat's operator-key restriction + user tier from its most
+	// recent run (RunsForSession is oldest-first) so the summary call routes only
+	// to tenant-keyable providers for a restricted tenant and against the right
+	// tier overlay. No run yet ⇒ unrestricted, default tier — but a chat with no
+	// run has no transcript, so we already returned above.
+	restricted := false
+	userTier := ""
+	userID := sess.UserID
+	if runs, rerr := s.store.RunsForSession(ctx, sessionID); rerr == nil && len(runs) > 0 {
+		last := runs[len(runs)-1]
+		restricted = last.OperatorKeyRestricted
+		userTier = last.UserTier
+		if userID == "" {
+			userID = last.UserID
+		}
+	}
+
+	providerID, model, _, err := s.resolveAgentDef(ctx, agentDef, sess.TenantID, userID, sess.Agent, userTier, restricted)
+	if err != nil {
+		return "", fmt.Errorf("resolve provider/model: %w", err)
+	}
+	provider, err := s.providers.Get(providerID)
+	if err != nil {
+		return "", fmt.Errorf("provider unavailable: %w", err)
+	}
+
+	// Prefer the agent's cheaper compaction model + target when configured — a
+	// recap is exactly a compaction summary that we persist instead of applying.
+	targetPct := config.CompactionDefaultTargetPct
+	summaryModel := model
+	if c := agentDef.Compaction; c != nil {
+		if c.TargetPercentage != nil {
+			targetPct = *c.TargetPercentage
+		}
+		if c.Model != nil && *c.Model != "" {
+			summaryModel = *c.Model
+		}
+	}
+
+	// Same credential context a run's loopCtx / the compaction path carries: the
+	// WithOperatorKeyAllowed stamp makes the Layer-2 driver backstop enforce RFC
+	// AX for a restricted chat, and the resolver+identity route a restricted
+	// tenant's OWN key correctly (mirrors compactRunWithSource / resume.go).
+	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
+	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
+	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID})
+	summCtx = tools.WithAgentName(summCtx, sess.Agent)
+	summary, err := loop.Summarize(summCtx, provider, summaryModel, msgs, targetPct)
+	if err != nil {
+		return "", fmt.Errorf("summarize: %w", err)
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return "", errors.New("summarization produced no text")
+	}
+	return summary, nil
+}
+
 // compactSource mirrors handleRunInput's api-vs-webui source resolution.
 func compactSource(r *http.Request) string {
 	if hasSessionCookie(r) {

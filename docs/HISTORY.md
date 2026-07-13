@@ -81,6 +81,33 @@ becomes a cross-tenant existence oracle (session ids are not secret).
 | `annotate`| set `description` and/or replace `tags`. |
 | `pin`     | float the chat to the top (`pinned:false` unpins). |
 | `archive` | reversible soft-hide (`archived:false` restores). Distinct from the RFC AV usage-retention pruner, which hard-deletes. |
+| `recap`   | refresh the chat's **stored LLM summary** of the transcript-so-far — idempotent, and safe on a **live / parked** chat. Written to the chat's metadata so `list`/`get`/`search` surface it cheaply. See below. |
+| `resume`  | return a **continuation handle** `{session_id, agent, tenant_id, user_id, status, last_activity, hint}` — the coordinates + hint for continuing the chat in a new run. Does not itself start a run. |
+
+## Recap — a metadata-backed, refreshable summary
+
+`recap` produces an LLM summary of a chat's transcript-so-far and **stores it** on
+the chat's metadata (`sessions.summary`, stamping `summary_updated_at`). It is:
+
+- **Idempotent** — re-running replaces the cached summary; the metadata always
+  holds the latest "what this chat is about".
+- **Live-safe** — it reads the transcript and never touches the run loop, so an
+  in-loop agent (or an operator) can recap a chat that is still running or parked
+  `awaiting_input`. Designed to be called periodically during long user-input
+  waits so `list` / `get` / `search` surface a fresh summary without re-reading
+  the whole transcript.
+- **Fold-first** — the scope fold runs before any summarization, so a cross-scope
+  recap is refused with the same opaque not-found as any other by-id op.
+
+The tool itself never calls a provider — the server injects the summarizer
+(`Server.RecapSession`), the off-loop, session-scoped twin of the context-
+compaction summary step (`loop.Summarize`). It replays the **whole** session
+transcript (a chat spans every run, like resume), resolves provider + model the
+same way compaction does — the agent's `compaction.model` when set, else its
+resolved tier model — and carries the chat's RFC AX operator-key restriction
+(from its most recent run) so a restricted tenant's recap never spends the
+operator key. A recap of an already-compacted chat summarizes its **current
+effective** (post-compaction) view.
 
 ## Redaction
 
@@ -101,6 +128,8 @@ never reaches a History reader.
 
 ## Continuing a chat
 
-History reads and annotates chats — it does not itself start runs. To *continue*
-a chat, issue a `POST /v1/runs` with its `session_id` (loomcycle's existing
-session-continuation path).
+History reads, annotates, and recaps chats — it does not itself start runs. To
+*continue* a chat, issue a `POST /v1/runs` with its `session_id` (loomcycle's
+existing session-continuation path); `resume` hands you exactly those coordinates
+(`session_id` + `agent`) plus a hint, so a UI or agent can offer a one-click
+continue without duplicating the run-trigger surface inside History.
