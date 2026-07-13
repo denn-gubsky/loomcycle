@@ -967,6 +967,18 @@ func (s *Store) migrate(ctx context.Context) error {
 		// at CreateRun from the principal + gate; read back on resume/restore so a
 		// re-dispatched run keeps its restriction. 0 on legacy rows (fail-open).
 		`ALTER TABLE runs ADD COLUMN operator_key_restricted INTEGER NOT NULL DEFAULT 0`,
+		// RFC BE — human/organizational chat metadata on the session row (the
+		// History tool's browse/search/annotate surface). All additive + nullable
+		// so legacy rows read the zero value. tags is a JSON array (NULL = never
+		// set); archived_at / summary_updated_at are unix nanos (NULL = unset);
+		// pinned is 0/1.
+		`ALTER TABLE sessions ADD COLUMN title TEXT`,
+		`ALTER TABLE sessions ADD COLUMN description TEXT`,
+		`ALTER TABLE sessions ADD COLUMN tags TEXT`,
+		`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN archived_at INTEGER`,
+		`ALTER TABLE sessions ADD COLUMN summary TEXT`,
+		`ALTER TABLE sessions ADD COLUMN summary_updated_at INTEGER`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1031,6 +1043,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// (DELETE WHERE expires_at < now() AND expires_at > 0) and the
 		// per-Get expiry filter. Partial: only TTL-bearing rows.
 		`CREATE INDEX IF NOT EXISTS dynamic_agents_by_expires_at ON dynamic_agents(expires_at) WHERE expires_at > 0`,
+		// RFC BE — session-metadata listing. Partial indexes stay small: only
+		// pinned rows / archived rows carry the flag. Live in addIndexes (not the
+		// CREATE TABLE block) so the columns added above are guaranteed present.
+		`CREATE INDEX IF NOT EXISTS sessions_by_pinned ON sessions(pinned) WHERE pinned = 1`,
+		`CREATE INDEX IF NOT EXISTS sessions_by_archived_at ON sessions(archived_at) WHERE archived_at IS NOT NULL`,
 		// v0.8.16 Interruption tool indexes.
 		//   * by_run_status drives "is this run blocked?" + listing.
 		//   * by_user_status drives the Web UI inbox view (the
@@ -1174,10 +1191,14 @@ func (s *Store) CreateSession(ctx context.Context, tenantID, agent, userID strin
 func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
 	var sess store.Session
 	var createdNs int64
-	var userID sql.NullString
+	var userID, title, description, tags, summary sql.NullString
+	var pinned, archivedNs, summaryUpdNs sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, tenant_id, agent, created_at, user_id FROM sessions WHERE id = ?`, sessionID,
-	).Scan(&sess.ID, &sess.TenantID, &sess.Agent, &createdNs, &userID)
+		`SELECT id, tenant_id, agent, created_at, user_id,
+		        title, description, tags, pinned, archived_at, summary, summary_updated_at
+		 FROM sessions WHERE id = ?`, sessionID,
+	).Scan(&sess.ID, &sess.TenantID, &sess.Agent, &createdNs, &userID,
+		&title, &description, &tags, &pinned, &archivedNs, &summary, &summaryUpdNs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 	}
@@ -1187,6 +1208,29 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session
 	sess.CreatedAt = time.Unix(0, createdNs)
 	if userID.Valid {
 		sess.UserID = userID.String
+	}
+	if title.Valid {
+		sess.Title = title.String
+	}
+	if description.Valid {
+		sess.Description = description.String
+	}
+	if tags.Valid {
+		decoded, derr := store.DecodeTags(tags.String)
+		if derr != nil {
+			return store.Session{}, fmt.Errorf("decode session tags: %w", derr)
+		}
+		sess.Tags = decoded
+	}
+	sess.Pinned = pinned.Valid && pinned.Int64 != 0
+	if archivedNs.Valid {
+		sess.ArchivedAt = time.Unix(0, archivedNs.Int64)
+	}
+	if summary.Valid {
+		sess.Summary = summary.String
+	}
+	if summaryUpdNs.Valid {
+		sess.SummaryUpdatedAt = time.Unix(0, summaryUpdNs.Int64)
 	}
 	return sess, nil
 }
@@ -1658,6 +1702,235 @@ func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.R
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ListSessions returns sessions matching the filter, rolled up with their runs'
+// aggregates (RFC BE). The aggregation runs in a derived subquery so the
+// session-level filters (tenant/user/agent/tag/title/pinned/archived) narrow the
+// GROUP BY, and the derived filters (status + the last-activity time window)
+// apply to the aggregate — the count and page queries share the exact filtered
+// set. See store.SessionSummary for the derived Status + LastActivity semantics.
+func (s *Store) ListSessions(ctx context.Context, f store.SessionFilter, limit, offset int) ([]store.SessionSummary, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500 // cap to keep memory bounded (mirrors ListEvents)
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Session-level filters (applied inside the GROUP BY subquery).
+	var innerConds []string
+	var innerArgs []any
+	if f.TenantID != "" {
+		innerConds = append(innerConds, "s.tenant_id = ?")
+		innerArgs = append(innerArgs, f.TenantID)
+	}
+	if f.UserID != "" {
+		innerConds = append(innerConds, "s.user_id = ?")
+		innerArgs = append(innerArgs, f.UserID)
+	}
+	if f.AgentName != "" {
+		innerConds = append(innerConds, "s.agent = ?")
+		innerArgs = append(innerArgs, f.AgentName)
+	}
+	if !f.IncludeArchived {
+		innerConds = append(innerConds, "s.archived_at IS NULL")
+	}
+	if f.IncludePinned {
+		innerConds = append(innerConds, "s.pinned = 1")
+	}
+	if f.Tag != "" {
+		// Literal substring match against the JSON-array text. The tag is
+		// matched WITH its surrounding quotes so `"q3"` cannot match inside
+		// `"q3-plan"`; INSTR (not LIKE) avoids interpreting `%`/`_` in the tag.
+		innerConds = append(innerConds, "INSTR(s.tags, ?) > 0")
+		innerArgs = append(innerArgs, `"`+f.Tag+`"`)
+	}
+	if f.TitleContains != "" {
+		innerConds = append(innerConds, "INSTR(LOWER(s.title), LOWER(?)) > 0")
+		innerArgs = append(innerArgs, f.TitleContains)
+	}
+	innerWhere := ""
+	if len(innerConds) > 0 {
+		innerWhere = "WHERE " + strings.Join(innerConds, " AND ")
+	}
+
+	// Derived filters (applied to the aggregate).
+	var outerConds []string
+	var outerArgs []any
+	if f.Status != "" {
+		outerConds = append(outerConds, "agg.status = ?")
+		outerArgs = append(outerArgs, string(f.Status))
+	}
+	if !f.From.IsZero() {
+		outerConds = append(outerConds, "agg.last_activity >= ?")
+		outerArgs = append(outerArgs, f.From.UnixNano())
+	}
+	if !f.To.IsZero() {
+		outerConds = append(outerConds, "agg.last_activity <= ?")
+		outerArgs = append(outerArgs, f.To.UnixNano())
+	}
+	outerWhere := ""
+	if len(outerConds) > 0 {
+		outerWhere = "WHERE " + strings.Join(outerConds, " AND ")
+	}
+
+	// last_activity = MAX of each run's completed-or-started time, falling back
+	// to the session's created_at when it has no runs. status = "running" if any
+	// run is active, else the most recent run's status ("" for a runless
+	// session). Both are computed as columns so the outer query can filter them.
+	inner := `SELECT
+			s.id, s.tenant_id, s.agent, s.user_id, s.created_at,
+			s.title, s.description, s.tags, s.pinned, s.archived_at, s.summary,
+			COUNT(r.id) AS run_count,
+			COALESCE(SUM(r.input_tokens), 0) AS in_tok,
+			COALESCE(SUM(r.output_tokens), 0) AS out_tok,
+			COALESCE(SUM(r.cost), 0) AS cost,
+			COALESCE(MAX(CASE WHEN r.completed_at IS NOT NULL AND r.completed_at > r.started_at
+			                  THEN r.completed_at ELSE r.started_at END), s.created_at) AS last_activity,
+			CASE WHEN MAX(CASE WHEN r.status = 'running' THEN 1 ELSE 0 END) = 1 THEN 'running'
+			     ELSE COALESCE((SELECT r2.status FROM runs r2 WHERE r2.session_id = s.id
+			                    ORDER BY r2.started_at DESC LIMIT 1), '') END AS status
+		FROM sessions s
+		LEFT JOIN runs r ON r.session_id = s.id
+		` + innerWhere + `
+		GROUP BY s.id`
+
+	countArgs := append(append([]any{}, innerArgs...), outerArgs...)
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM ("+inner+") agg "+outerWhere, countArgs...,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	pageArgs := append(append([]any{}, innerArgs...), outerArgs...)
+	pageArgs = append(pageArgs, limit, offset)
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT agg.id, agg.tenant_id, agg.agent, agg.user_id, agg.created_at, "+
+			"agg.title, agg.description, agg.tags, agg.pinned, agg.archived_at, agg.summary, "+
+			"agg.run_count, agg.in_tok, agg.out_tok, agg.cost, agg.last_activity, agg.status "+
+			"FROM ("+inner+") agg "+outerWhere+
+			" ORDER BY agg.pinned DESC, agg.last_activity DESC LIMIT ? OFFSET ?",
+		pageArgs...,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := make([]store.SessionSummary, 0, limit)
+	for rows.Next() {
+		var ss store.SessionSummary
+		var userID, title, description, tags, summary sql.NullString
+		var createdNs, lastActNs int64
+		var archivedNs sql.NullInt64
+		var pinnedInt int64
+		var statusStr string
+		if err := rows.Scan(
+			&ss.SessionID, &ss.TenantID, &ss.Agent, &userID, &createdNs,
+			&title, &description, &tags, &pinnedInt, &archivedNs, &summary,
+			&ss.RunCount, &ss.InputTokens, &ss.OutputTokens, &ss.Cost, &lastActNs, &statusStr,
+		); err != nil {
+			return nil, 0, err
+		}
+		ss.CreatedAt = time.Unix(0, createdNs)
+		ss.LastActivity = time.Unix(0, lastActNs)
+		if userID.Valid {
+			ss.UserID = userID.String
+		}
+		if title.Valid {
+			ss.Title = title.String
+		}
+		if description.Valid {
+			ss.Description = description.String
+		}
+		if summary.Valid {
+			ss.Summary = summary.String
+		}
+		if tags.Valid {
+			decoded, derr := store.DecodeTags(tags.String)
+			if derr != nil {
+				return nil, 0, fmt.Errorf("decode session tags: %w", derr)
+			}
+			ss.Tags = decoded
+		}
+		ss.Pinned = pinnedInt != 0
+		ss.Archived = archivedNs.Valid
+		if statusStr != "" {
+			ss.Status = store.RunStatus(statusStr)
+		}
+		out = append(out, ss)
+	}
+	return out, total, rows.Err()
+}
+
+// SetSessionMeta writes only the non-nil fields of the patch onto the session
+// row (RFC BE). Returns *store.ErrNotFound when the session does not exist.
+func (s *Store) SetSessionMeta(ctx context.Context, sessionID string, p store.SessionMetaPatch) error {
+	now := time.Now().UnixNano()
+	var sets []string
+	var args []any
+	if p.Title != nil {
+		sets = append(sets, "title = ?")
+		args = append(args, nilIfEmpty(*p.Title))
+	}
+	if p.Description != nil {
+		sets = append(sets, "description = ?")
+		args = append(args, nilIfEmpty(*p.Description))
+	}
+	if p.Summary != nil {
+		// A summary write always stamps summary_updated_at (idempotent recap).
+		sets = append(sets, "summary = ?", "summary_updated_at = ?")
+		args = append(args, nilIfEmpty(*p.Summary), now)
+	}
+	if p.Tags != nil {
+		encoded, err := store.EncodeTags(*p.Tags)
+		if err != nil {
+			return fmt.Errorf("encode session tags: %w", err)
+		}
+		sets = append(sets, "tags = ?")
+		args = append(args, encoded)
+	}
+	if p.Pinned != nil {
+		pv := int64(0)
+		if *p.Pinned {
+			pv = 1
+		}
+		sets = append(sets, "pinned = ?")
+		args = append(args, pv)
+	}
+	if p.Archived != nil {
+		if *p.Archived {
+			sets = append(sets, "archived_at = ?")
+			args = append(args, now)
+		} else {
+			sets = append(sets, "archived_at = NULL")
+		}
+	}
+	if len(sets) == 0 {
+		// Empty patch: still surface ErrNotFound for a missing session so the
+		// caller sees consistent semantics.
+		_, err := s.GetSession(ctx, sessionID)
+		return err
+	}
+	args = append(args, sessionID)
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE sessions SET "+strings.Join(sets, ", ")+" WHERE id = ?", args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "session", ID: sessionID}
+	}
+	return nil
 }
 
 // DeleteSessionCascade deletes a session + all its runs + events in one tx (RFC

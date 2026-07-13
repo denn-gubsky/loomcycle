@@ -87,6 +87,9 @@ func Run(t *testing.T, factory Factory) {
 		{"GetRunByAgentIDNotFound", testGetRunByAgentIDNotFound},
 		{"GetRunByAgentIDReturnsMostRecent", testGetRunByAgentIDReturnsMostRecent},
 		{"ListActiveRunsByUser", testListActiveRunsByUser},
+		{"ListSessions", testListSessions},
+		{"ListSessionsTenantIsolation", testListSessionsTenantIsolation},
+		{"SetSessionMeta", testSetSessionMeta},
 		{"ListUsers", testListUsers},
 		{"ListRunsByParentAgentID", testListRunsByParentAgentID},
 		{"UpdateHeartbeat", testUpdateHeartbeat},
@@ -1600,6 +1603,309 @@ func testListActiveRunsByUser(t *testing.T, s store.Store) {
 
 	if got, _ := s.ListActiveRunsByUser(ctx, "", store.RunRunning); len(got) != 0 {
 		t.Errorf("empty userID should return no rows, got %d", len(got))
+	}
+}
+
+// --- RFC BE: ListSessions + SetSessionMeta ---
+
+func strPtr(s string) *string      { return &s }
+func boolPtr(b bool) *bool         { return &b }
+func tagsPtr(t []string) *[]string { return &t }
+
+func summaryIDs(list []store.SessionSummary) []string {
+	out := make([]string, len(list))
+	for i, x := range list {
+		out[i] = x.SessionID
+	}
+	return out
+}
+
+// testListSessions exercises the RFC BE browse/search surface: every filter axis
+// independently, archived exclude-by-default, pinned-first ordering, the
+// token/cost/run_count aggregation, and offset pagination — across two tenants,
+// two users, and two agents.
+func testListSessions(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// t1 / alice / agentA — 2 completed runs (tokens + cost aggregate).
+	s1, _ := s.CreateSession(ctx, "t1", "agentA", "alice")
+	r11, _ := s.CreateRun(ctx, s1.ID, store.RunIdentity{UserID: "alice", TenantID: "t1"})
+	r12, _ := s.CreateRun(ctx, s1.ID, store.RunIdentity{UserID: "alice", TenantID: "t1"})
+	if err := s.FinishRun(ctx, r11.ID, store.RunCompleted, "end_turn", store.Usage{InputTokens: 100, OutputTokens: 50, Cost: 0.5, CostCurrency: "USD", Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishRun(ctx, r12.ID, store.RunCompleted, "end_turn", store.Usage{InputTokens: 10, OutputTokens: 5, Cost: 0.25, CostCurrency: "USD", Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionMeta(ctx, s1.ID, store.SessionMetaPatch{
+		Title: strPtr("Quarterly Review"),
+		Tags:  tagsPtr([]string{"urgent", "q3"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// t1 / bob / agentB — 1 still-running run.
+	s2, _ := s.CreateSession(ctx, "t1", "agentB", "bob")
+	if _, err := s.CreateRun(ctx, s2.ID, store.RunIdentity{UserID: "bob", TenantID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// t2 / carol / agentA — 1 completed run (different tenant).
+	s3, _ := s.CreateSession(ctx, "t2", "agentA", "carol")
+	r31, _ := s.CreateRun(ctx, s3.ID, store.RunIdentity{UserID: "carol", TenantID: "t2"})
+	_ = s.FinishRun(ctx, r31.ID, store.RunCompleted, "end_turn", store.Usage{InputTokens: 20, OutputTokens: 10, Cost: 0.2, CostCurrency: "USD", Model: "m", Provider: "p"}, "")
+
+	// t1 / alice / agentA — pinned; tag "q3-plan" (quote-boundary check vs "q3").
+	s4, _ := s.CreateSession(ctx, "t1", "agentA", "alice")
+	r41, _ := s.CreateRun(ctx, s4.ID, store.RunIdentity{UserID: "alice", TenantID: "t1"})
+	_ = s.FinishRun(ctx, r41.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, "")
+	if err := s.SetSessionMeta(ctx, s4.ID, store.SessionMetaPatch{Pinned: boolPtr(true), Tags: tagsPtr([]string{"q3-plan"})}); err != nil {
+		t.Fatal(err)
+	}
+
+	// t1 / alice — archived (excluded by default).
+	s5, _ := s.CreateSession(ctx, "t1", "agentA", "alice")
+	if err := s.SetSessionMeta(ctx, s5.ID, store.SessionMetaPatch{Archived: boolPtr(true)}); err != nil {
+		t.Fatal(err)
+	}
+
+	byID := func(list []store.SessionSummary) map[string]store.SessionSummary {
+		m := map[string]store.SessionSummary{}
+		for _, x := range list {
+			m[x.SessionID] = x
+		}
+		return m
+	}
+
+	// 1. Tenant t1, default (archived excluded): S1, S2, S4.
+	list, total, err := s.ListSessions(ctx, store.SessionFilter{TenantID: "t1"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Errorf("t1 total = %d, want 3 (%v)", total, summaryIDs(list))
+	}
+	m := byID(list)
+	if _, ok := m[s1.ID]; !ok {
+		t.Errorf("t1 list missing s1")
+	}
+	if _, ok := m[s3.ID]; ok {
+		t.Errorf("t1 list leaked t2's s3 (tenant isolation)")
+	}
+	if _, ok := m[s5.ID]; ok {
+		t.Errorf("t1 list included archived s5 by default")
+	}
+	// Pinned-first ordering.
+	if len(list) == 0 || list[0].SessionID != s4.ID {
+		t.Errorf("pinned session should sort first; got %v", summaryIDs(list))
+	}
+	// Aggregation on S1.
+	agg := m[s1.ID]
+	if agg.RunCount != 2 || agg.InputTokens != 110 || agg.OutputTokens != 55 {
+		t.Errorf("s1 aggregate = run_count %d in %d out %d, want 2/110/55", agg.RunCount, agg.InputTokens, agg.OutputTokens)
+	}
+	if agg.Cost < 0.75-1e-9 || agg.Cost > 0.75+1e-9 {
+		t.Errorf("s1 cost = %v, want 0.75", agg.Cost)
+	}
+	if agg.Status != store.RunCompleted {
+		t.Errorf("s1 status = %q, want completed", agg.Status)
+	}
+	if agg.Title != "Quarterly Review" {
+		t.Errorf("s1 title = %q, want Quarterly Review", agg.Title)
+	}
+	if len(agg.Tags) != 2 {
+		t.Errorf("s1 tags = %v, want [urgent q3]", agg.Tags)
+	}
+	// S2 (running) reports a "running" derived status.
+	if m[s2.ID].Status != store.RunRunning {
+		t.Errorf("s2 status = %q, want running", m[s2.ID].Status)
+	}
+
+	// 2. Tenant + user filter → S1, S4 (both alice); not S2 (bob).
+	list, _, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", UserID: "alice"}, 50, 0)
+	m = byID(list)
+	if len(list) != 2 || m[s1.ID].SessionID == "" || m[s4.ID].SessionID == "" {
+		t.Errorf("t1/alice = %v, want [s1 s4]", summaryIDs(list))
+	}
+
+	// 3. Agent filter.
+	list, _, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", AgentName: "agentB"}, 50, 0)
+	if len(list) != 1 || list[0].SessionID != s2.ID {
+		t.Errorf("t1/agentB = %v, want [s2]", summaryIDs(list))
+	}
+
+	// 4. Status filter.
+	list, _, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", Status: store.RunRunning}, 50, 0)
+	if len(list) != 1 || list[0].SessionID != s2.ID {
+		t.Errorf("t1/running = %v, want [s2]", summaryIDs(list))
+	}
+	list, _, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", Status: store.RunCompleted}, 50, 0)
+	if m = byID(list); len(list) != 2 || m[s1.ID].SessionID == "" || m[s4.ID].SessionID == "" {
+		t.Errorf("t1/completed = %v, want [s1 s4]", summaryIDs(list))
+	}
+
+	// 5. Archived inclusion → 4 (adds S5).
+	_, total, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", IncludeArchived: true}, 50, 0)
+	if total != 4 {
+		t.Errorf("t1 include-archived total = %d, want 4", total)
+	}
+
+	// 6. Pinned-only filter.
+	list, _, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", IncludePinned: true}, 50, 0)
+	if len(list) != 1 || list[0].SessionID != s4.ID {
+		t.Errorf("t1/pinned-only = %v, want [s4]", summaryIDs(list))
+	}
+
+	// 7. Tag filter — exact-token, quote-boundary safe ("q3" must NOT match "q3-plan").
+	list, _, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", Tag: "q3"}, 50, 0)
+	if len(list) != 1 || list[0].SessionID != s1.ID {
+		t.Errorf("t1/tag=q3 = %v, want [s1] (must not match s4's \"q3-plan\")", summaryIDs(list))
+	}
+
+	// 8. Title-contains (case-insensitive).
+	list, _, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", TitleContains: "quarterly"}, 50, 0)
+	if len(list) != 1 || list[0].SessionID != s1.ID {
+		t.Errorf("t1/title~quarterly = %v, want [s1]", summaryIDs(list))
+	}
+
+	// 9. Pagination (limit/offset + stable total).
+	page1, total, _ := s.ListSessions(ctx, store.SessionFilter{TenantID: "t1"}, 2, 0)
+	if len(page1) != 2 || total != 3 {
+		t.Errorf("page1 = %d rows total %d, want 2/3", len(page1), total)
+	}
+	page2, total2, _ := s.ListSessions(ctx, store.SessionFilter{TenantID: "t1"}, 2, 2)
+	if len(page2) != 1 || total2 != 3 {
+		t.Errorf("page2 = %d rows total %d, want 1/3", len(page2), total2)
+	}
+
+	// 10. All-tenants (empty TenantID) spans t1 + t2 non-archived: S1,S2,S4,S3 = 4.
+	_, total, _ = s.ListSessions(ctx, store.SessionFilter{}, 50, 0)
+	if total != 4 {
+		t.Errorf("all-tenants total = %d, want 4", total)
+	}
+}
+
+// testListSessionsTenantIsolation asserts a tenant-scoped ListSessions never
+// returns another tenant's chats (RFC BE — the load-bearing isolation contract).
+func testListSessionsTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, _ := s.CreateSession(ctx, "A", "agentA", "u1")
+	if _, err := s.CreateRun(ctx, a.ID, store.RunIdentity{UserID: "u1", TenantID: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := s.CreateSession(ctx, "B", "agentB", "u2")
+	if _, err := s.CreateRun(ctx, b.ID, store.RunIdentity{UserID: "u2", TenantID: "B"}); err != nil {
+		t.Fatal(err)
+	}
+
+	list, total, err := s.ListSessions(ctx, store.SessionFilter{TenantID: "A"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(list) != 1 || list[0].SessionID != a.ID {
+		t.Fatalf("tenant A list = %v (total %d), want only [%s]", summaryIDs(list), total, a.ID)
+	}
+	for _, x := range list {
+		if x.SessionID == b.ID || x.TenantID == "B" {
+			t.Errorf("tenant B's session %s leaked into tenant A's list", b.ID)
+		}
+	}
+}
+
+// testSetSessionMeta round-trips every metadata field, asserts a partial patch
+// leaves the rest unchanged, archive sets/clears archived_at, a summary write
+// stamps summary_updated_at, and a missing id returns ErrNotFound (RFC BE).
+func testSetSessionMeta(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agentA", "alice")
+
+	// Round-trip each field.
+	if err := s.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{
+		Title:       strPtr("My Chat"),
+		Description: strPtr("a description"),
+		Summary:     strPtr("a recap"),
+		Tags:        tagsPtr([]string{"a", "b"}),
+		Pinned:      boolPtr(true),
+		Archived:    boolPtr(true),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "My Chat" || got.Description != "a description" || got.Summary != "a recap" {
+		t.Errorf("meta round-trip: title=%q desc=%q summary=%q", got.Title, got.Description, got.Summary)
+	}
+	if len(got.Tags) != 2 || got.Tags[0] != "a" || got.Tags[1] != "b" {
+		t.Errorf("tags round-trip = %v, want [a b]", got.Tags)
+	}
+	if !got.Pinned {
+		t.Errorf("pinned not set")
+	}
+	if got.ArchivedAt.IsZero() {
+		t.Errorf("archived_at not stamped on archive")
+	}
+	if got.SummaryUpdatedAt.IsZero() {
+		t.Errorf("summary_updated_at not stamped on summary write")
+	}
+	firstSummaryStamp := got.SummaryUpdatedAt
+
+	// Partial patch: only description changes; the rest survive untouched.
+	if err := s.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{Description: strPtr("changed")}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetSession(ctx, sess.ID)
+	if got.Description != "changed" {
+		t.Errorf("partial patch description = %q, want changed", got.Description)
+	}
+	if got.Title != "My Chat" || !got.Pinned || len(got.Tags) != 2 || got.Summary != "a recap" {
+		t.Errorf("partial patch clobbered other fields: title=%q pinned=%v tags=%v summary=%q",
+			got.Title, got.Pinned, got.Tags, got.Summary)
+	}
+
+	// Un-archive clears archived_at.
+	if err := s.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{Archived: boolPtr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetSession(ctx, sess.ID)
+	if !got.ArchivedAt.IsZero() {
+		t.Errorf("archived_at not cleared on un-archive: %v", got.ArchivedAt)
+	}
+
+	// A fresh summary write refreshes summary_updated_at (idempotent recap).
+	if err := s.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{Summary: strPtr("newer recap")}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetSession(ctx, sess.ID)
+	if got.Summary != "newer recap" {
+		t.Errorf("summary re-write = %q, want 'newer recap'", got.Summary)
+	}
+	if got.SummaryUpdatedAt.Before(firstSummaryStamp) {
+		t.Errorf("summary_updated_at went backwards on re-write: %v < %v", got.SummaryUpdatedAt, firstSummaryStamp)
+	}
+
+	// Tags can be cleared to an explicit empty set (reads back as no tags).
+	if err := s.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{Tags: tagsPtr([]string{})}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetSession(ctx, sess.ID)
+	if len(got.Tags) != 0 {
+		t.Errorf("cleared tags = %v, want empty", got.Tags)
+	}
+
+	// ErrNotFound on a missing id (patch present).
+	var nf *store.ErrNotFound
+	if err := s.SetSessionMeta(ctx, "s_does_not_exist", store.SessionMetaPatch{Title: strPtr("x")}); !errors.As(err, &nf) {
+		t.Errorf("SetSessionMeta on missing id: got %v (%T), want *store.ErrNotFound", err, err)
+	}
+	// ErrNotFound on a missing id (empty patch).
+	if err := s.SetSessionMeta(ctx, "s_missing2", store.SessionMetaPatch{}); !errors.As(err, &nf) {
+		t.Errorf("empty patch on missing id: got %v, want *store.ErrNotFound", err)
+	}
+	// Empty patch on an existing id is a no-op (nil error).
+	if err := s.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{}); err != nil {
+		t.Errorf("empty patch on existing id: got %v, want nil", err)
 	}
 }
 
