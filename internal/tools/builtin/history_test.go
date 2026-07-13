@@ -417,4 +417,180 @@ func TestHistory_SearchRequiresQuery(t *testing.T) {
 	}
 }
 
+// TestHistory_RecapRefusesWhenNotConfigured: op=recap with a nil Recap closure
+// refuses cleanly (the "no summarizer wired" posture) — the tool never calls a
+// provider itself, mirroring TeamDef op=run on a nil Spawn.
+func TestHistory_RecapRefusesWhenNotConfigured(t *testing.T) {
+	h, s := historyFixture(t)
+	id := seedChat(t, s, "t1", "agentA", "alice")
+	req := fmt.Sprintf(`{"op":"recap","scope":"self","session_id":%q}`, id)
+	res, _ := h.Execute(histCtx([]string{"self"}, "agentA", "alice", "t1"), json.RawMessage(req))
+	if !res.IsError {
+		t.Fatal("recap with no Recap summarizer wired must refuse")
+	}
+}
+
+// TestHistory_RecapStoresSummaryAndSurfaces: recap calls the injected summarizer,
+// persists its output to the chat metadata, and get surfaces the stored summary.
+func TestHistory_RecapStoresSummaryAndSurfaces(t *testing.T) {
+	h, s := historyFixture(t)
+	id := seedChat(t, s, "t1", "agentA", "alice")
+	var gotSession string
+	h.Recap = func(_ context.Context, sessionID string) (string, error) {
+		gotSession = sessionID
+		return "This chat is about launch planning.", nil
+	}
+	req := fmt.Sprintf(`{"op":"recap","scope":"self","session_id":%q}`, id)
+	res, _ := h.Execute(histCtx([]string{"self"}, "agentA", "alice", "t1"), json.RawMessage(req))
+	if res.IsError {
+		t.Fatalf("recap: %s", res.Text)
+	}
+	if gotSession != id {
+		t.Errorf("Recap invoked with %q, want the folded session id %q", gotSession, id)
+	}
+	// The recap response echoes the summary + updated chat.
+	var out struct {
+		Summary string `json:"summary"`
+		Chat    struct {
+			Summary string `json:"summary"`
+		} `json:"chat"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("decode recap: %v (%s)", err, res.Text)
+	}
+	if out.Summary != "This chat is about launch planning." || out.Chat.Summary != out.Summary {
+		t.Errorf("recap response summary mismatch: %+v", out)
+	}
+	// Persisted to the session metadata (with summary_updated_at stamped).
+	sess, _ := s.GetSession(context.Background(), id)
+	if sess.Summary != "This chat is about launch planning." {
+		t.Errorf("summary not persisted; got %q", sess.Summary)
+	}
+	if sess.SummaryUpdatedAt.IsZero() {
+		t.Error("recap must stamp summary_updated_at")
+	}
+	// get surfaces the stored summary.
+	getReq := fmt.Sprintf(`{"op":"get","scope":"self","session_id":%q}`, id)
+	getRes, _ := h.Execute(histCtx([]string{"self"}, "agentA", "alice", "t1"), json.RawMessage(getReq))
+	if getRes.IsError {
+		t.Fatalf("get: %s", getRes.Text)
+	}
+	var got struct {
+		Chat struct {
+			Summary string `json:"summary"`
+		} `json:"chat"`
+	}
+	if err := json.Unmarshal([]byte(getRes.Text), &got); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if got.Chat.Summary != "This chat is about launch planning." {
+		t.Errorf("get should surface the stored summary; got %q", got.Chat.Summary)
+	}
+}
+
+// TestHistory_RecapIdempotentRefreshes: re-running recap replaces the cached
+// summary rather than appending — the metadata always holds the latest.
+func TestHistory_RecapIdempotentRefreshes(t *testing.T) {
+	h, s := historyFixture(t)
+	id := seedChat(t, s, "t1", "agentA", "alice")
+	calls := 0
+	h.Recap = func(_ context.Context, _ string) (string, error) {
+		calls++
+		return fmt.Sprintf("summary v%d", calls), nil
+	}
+	req := fmt.Sprintf(`{"op":"recap","scope":"self","session_id":%q}`, id)
+	ctx := histCtx([]string{"self"}, "agentA", "alice", "t1")
+	if res, _ := h.Execute(ctx, json.RawMessage(req)); res.IsError {
+		t.Fatalf("first recap: %s", res.Text)
+	}
+	if res, _ := h.Execute(ctx, json.RawMessage(req)); res.IsError {
+		t.Fatalf("second recap: %s", res.Text)
+	}
+	if calls != 2 {
+		t.Errorf("recap should invoke the summarizer each call; got %d", calls)
+	}
+	sess, _ := s.GetSession(context.Background(), id)
+	if sess.Summary != "summary v2" {
+		t.Errorf("recap should refresh to the latest; got %q, want summary v2", sess.Summary)
+	}
+}
+
+// TestHistory_RecapCrossTenantOpaqueNotFound: a cross-tenant recap folds to the
+// opaque not-found BEFORE any summarization — the (costly) Recap closure is never
+// invoked for an out-of-scope chat.
+func TestHistory_RecapCrossTenantOpaqueNotFound(t *testing.T) {
+	h, s := historyFixture(t)
+	victim := seedChat(t, s, "t2", "agentB", "bob")
+	called := false
+	h.Recap = func(context.Context, string) (string, error) {
+		called = true
+		return "should not happen", nil
+	}
+	req := fmt.Sprintf(`{"op":"recap","scope":"tenant","session_id":%q}`, victim)
+	res, _ := h.Execute(histCtx([]string{"tenant"}, "agentA", "alice", "t1"), json.RawMessage(req))
+	if !res.IsError {
+		t.Fatal("cross-tenant recap must fold to not-found")
+	}
+	if want := fmt.Sprintf("history: chat %q not found", victim); res.Text != want {
+		t.Errorf("cross-tenant recap refusal = %q, want opaque %q", res.Text, want)
+	}
+	if called {
+		t.Error("Recap must NOT run for an out-of-scope chat (fold-first, before any LLM work)")
+	}
+}
+
+// TestHistory_ResumeReturnsHandle: resume returns the continuation coordinates +
+// a hint, and does not itself start a run.
+func TestHistory_ResumeReturnsHandle(t *testing.T) {
+	h, s := historyFixture(t)
+	bg := context.Background()
+	id := seedChat(t, s, "t1", "agentA", "alice")
+	run, _ := s.CreateRun(bg, id, store.RunIdentity{AgentID: "a_run", UserID: "alice", TenantID: "t1"})
+	_ = s.FinishRun(bg, run.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
+
+	req := fmt.Sprintf(`{"op":"resume","scope":"self","session_id":%q}`, id)
+	res, _ := h.Execute(histCtx([]string{"self"}, "agentA", "alice", "t1"), json.RawMessage(req))
+	if res.IsError {
+		t.Fatalf("resume: %s", res.Text)
+	}
+	var out struct {
+		Resume struct {
+			SessionID string `json:"session_id"`
+			Agent     string `json:"agent"`
+			TenantID  string `json:"tenant_id"`
+			UserID    string `json:"user_id"`
+			Status    string `json:"status"`
+			Hint      string `json:"hint"`
+		} `json:"resume"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("decode resume: %v (%s)", err, res.Text)
+	}
+	if out.Resume.SessionID != id || out.Resume.Agent != "agentA" ||
+		out.Resume.TenantID != "t1" || out.Resume.UserID != "alice" {
+		t.Errorf("resume handle coordinates mismatch: %+v", out.Resume)
+	}
+	if out.Resume.Status != string(store.RunCompleted) {
+		t.Errorf("status = %q, want %q", out.Resume.Status, store.RunCompleted)
+	}
+	if out.Resume.Hint == "" {
+		t.Error("resume handle must carry a continuation hint")
+	}
+}
+
+// TestHistory_ResumeCrossTenantOpaqueNotFound: resume enforces the same tenant
+// fold as every other by-id op.
+func TestHistory_ResumeCrossTenantOpaqueNotFound(t *testing.T) {
+	h, s := historyFixture(t)
+	victim := seedChat(t, s, "t2", "agentB", "bob")
+	req := fmt.Sprintf(`{"op":"resume","scope":"tenant","session_id":%q}`, victim)
+	res, _ := h.Execute(histCtx([]string{"tenant"}, "agentA", "alice", "t1"), json.RawMessage(req))
+	if !res.IsError {
+		t.Fatal("cross-tenant resume must fold to not-found")
+	}
+	if want := fmt.Sprintf("history: chat %q not found", victim); res.Text != want {
+		t.Errorf("cross-tenant resume refusal = %q, want opaque %q", res.Text, want)
+	}
+}
+
 func strptr(s string) *string { return &s }
