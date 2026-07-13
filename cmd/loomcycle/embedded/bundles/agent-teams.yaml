@@ -47,6 +47,7 @@ agents:
     max_tokens: 8192
     effort: medium
     tools: [AgentDef, SkillDef, Context]
+    agent_def_scopes: [any]                 # authors agents by any name (op=create/fork/get/list); default-deny without this
     system_prompt: |
       You are AGENT-ASSISTANT. You help an operator design and author a single
       specialized agent (an AgentDef) at runtime — the reusable building block a
@@ -86,6 +87,7 @@ agents:
     max_tokens: 8192
     effort: medium
     tools: [TeamDef, AgentDef, Context, Interruption]
+    agent_def_scopes: [any]                 # reads all agents (op=list/get) to verify a team's handlers exist; it does NOT create agents (hands off to agent/assistant)
     skills: [team/*]
     system_prompt: |
       You are TEAM-ASSISTANT. You assemble a TEAM WORKFLOW — a state machine whose
@@ -153,6 +155,9 @@ agents:
     # (ephemeral repo volume + git/gh via Bashbox's host-command fallback); unused
     # by Documents-only teams.
     tools: [Agent, Document, TeamDef, Channel, Interruption, Context, Memory, VolumeDef, Bashbox]
+    channels:                               # coordinate parallel team branches on team/* channels (prefix wildcard); default-deny without this
+      publish: [team/*]
+      subscribe: [team/*]
     # Create/purge the ephemeral scratch volume (software teams). Least-privilege:
     # limited to the name the team/repo skill standardizes on ("work"). Overlay to
     # `any` if a team needs other volume names. Default-deny without this.

@@ -4652,10 +4652,33 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	if has("Channel") && len(a.Channels.Publish) == 0 && len(a.Channels.Subscribe) == 0 {
 		w = append(w, fmt.Sprintf("agent %q: tools includes Channel but channels.publish and channels.subscribe are both empty — every Channel op will default-deny", name))
 	}
-	// NOTE: no Interruption warning here — listing the Interruption tool in
-	// `tools` now enables it automatically (interruptionPolicyForAgent derives
-	// Enabled from tool presence), so a missing `interruption.enabled` is no
-	// longer a misconfiguration.
+	// The def-authoring tools are each gated by a per-agent `*_def_scopes`
+	// capability list; an empty list default-denies EVERY op (checkScopeForName
+	// gates reads too, not just mutations), so a tool listed without its scope
+	// is silently dead — the same trap the warnings above catch for
+	// Memory/Evaluation/Channel.
+	if has("AgentDef") && len(a.AgentDefScopes) == 0 {
+		w = append(w, fmt.Sprintf("agent %q: tools includes AgentDef but agent_def_scopes is empty — every AgentDef op will default-deny; add agent_def_scopes (e.g. [any] or [self])", name))
+	}
+	if has("ScheduleDef") && len(a.ScheduleDefScopes) == 0 {
+		w = append(w, fmt.Sprintf("agent %q: tools includes ScheduleDef but schedule_def_scopes is empty — every ScheduleDef op will default-deny; add schedule_def_scopes", name))
+	}
+	if has("A2AServerCardDef") && len(a.A2AServerCardDefScopes) == 0 {
+		w = append(w, fmt.Sprintf("agent %q: tools includes A2AServerCardDef but a2a_server_card_def_scopes is empty — every A2AServerCardDef op will default-deny; add a2a_server_card_def_scopes", name))
+	}
+	if has("A2AAgentDef") && len(a.A2AAgentDefScopes) == 0 {
+		w = append(w, fmt.Sprintf("agent %q: tools includes A2AAgentDef but a2a_agent_def_scopes is empty — every A2AAgentDef op will default-deny; add a2a_agent_def_scopes", name))
+	}
+	if has("VolumeDef") && len(a.VolumeDefScopes) == 0 {
+		w = append(w, fmt.Sprintf("agent %q: tools includes VolumeDef but volume_def_scopes is empty — every VolumeDef op will default-deny; add volume_def_scopes (e.g. [any] or [named:<vol>])", name))
+	}
+	// NOTE: no Interruption warning — listing the Interruption tool in `tools`
+	// now enables it automatically (interruptionPolicyForAgent derives Enabled
+	// from tool presence), so a missing `interruption.enabled` is not a
+	// misconfiguration. Context's history_scope + Memory's sql_scopes are
+	// per-OP gates within multi-op tools (the tool works without them for its
+	// other ops), so a bare tool-presence check would false-positive — omitted
+	// deliberately.
 	return w
 }
 
