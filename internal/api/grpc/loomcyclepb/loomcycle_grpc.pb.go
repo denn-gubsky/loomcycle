@@ -77,6 +77,7 @@ const (
 	Loomcycle_TeamDef_FullMethodName             = "/loomcycle.v1.Loomcycle/TeamDef"
 	Loomcycle_Path_FullMethodName                = "/loomcycle.v1.Loomcycle/Path"
 	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
+	Loomcycle_History_FullMethodName             = "/loomcycle.v1.Loomcycle/History"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
 	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
 	Loomcycle_PublishChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PublishChannel"
@@ -334,6 +335,15 @@ type LoomcycleClient interface {
 	// Op-discriminated input_json (13 ops: document/chunk lifecycle, edges,
 	// query_chunks, type defs); same SubstrateRequest/Response body shape.
 	Document(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// History dispatches to the RFC BE History tool (browse/search/annotate
+	// past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
+	// (ScopeTenant): the owner is resolved from the operator-trust ctx +
+	// caller's authoritative tenant, NEVER the wire — a scope:"user" op keys on
+	// the principal's own subject, scope:"tenant" on its tenant; the cross-tenant
+	// scope:"global" is admin-only. Op-discriminated input_json (list / get /
+	// search / rename / annotate / pin / archive / recap / resume); same
+	// SubstrateRequest/Response body shape (is_error carries tool refusals).
+	History(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -796,6 +806,16 @@ func (c *loomcycleClient) Document(ctx context.Context, in *SubstrateRequest, op
 	return out, nil
 }
 
+func (c *loomcycleClient) History(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_History_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListChannelsResponse)
@@ -1132,6 +1152,15 @@ type LoomcycleServer interface {
 	// Op-discriminated input_json (13 ops: document/chunk lifecycle, edges,
 	// query_chunks, type defs); same SubstrateRequest/Response body shape.
 	Document(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// History dispatches to the RFC BE History tool (browse/search/annotate
+	// past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
+	// (ScopeTenant): the owner is resolved from the operator-trust ctx +
+	// caller's authoritative tenant, NEVER the wire — a scope:"user" op keys on
+	// the principal's own subject, scope:"tenant" on its tenant; the cross-tenant
+	// scope:"global" is admin-only. Op-discriminated input_json (list / get /
+	// search / rename / annotate / pin / archive / recap / resume); same
+	// SubstrateRequest/Response body shape (is_error carries tool refusals).
+	History(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -1293,6 +1322,9 @@ func (UnimplementedLoomcycleServer) Path(context.Context, *SubstrateRequest) (*S
 }
 func (UnimplementedLoomcycleServer) Document(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Document not implemented")
+}
+func (UnimplementedLoomcycleServer) History(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method History not implemented")
 }
 func (UnimplementedLoomcycleServer) ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListChannels not implemented")
@@ -2020,6 +2052,24 @@ func _Loomcycle_Document_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_History_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).History(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_History_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).History(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_ListChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListChannelsRequest)
 	if err := dec(in); err != nil {
@@ -2307,6 +2357,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Document",
 			Handler:    _Loomcycle_Document_Handler,
+		},
+		{
+			MethodName: "History",
+			Handler:    _Loomcycle_History_Handler,
 		},
 		{
 			MethodName: "ListChannels",

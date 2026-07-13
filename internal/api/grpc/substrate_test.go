@@ -247,6 +247,58 @@ func TestSubstrateGRPCUserCtx_ResolvesPrincipalSubject(t *testing.T) {
 	}
 }
 
+// TestSubstrateGRPCCtx_HistoryScopesAdminGatesGlobal pins the RFC BE security
+// seam on the gRPC transport: the operator-trust ctx grants the History tool
+// its own scopes (self/user/tenant) always but the cross-tenant `global` scope
+// ONLY for an admin principal — mirroring the HTTP substrateAdminUserCtx grant.
+// A tenant operator reaching the History RPC is confined to its own tenant even
+// though the route gate (ScopeTenant) admits the call.
+//
+// It also guards the vocabulary bug this PR fixed: History matches its scope
+// selector EXACTLY (no "any" wildcard), so the earlier def-family "any" grant
+// would have refused EVERY op — this test fails on that grant because "self"
+// is then absent.
+func TestSubstrateGRPCCtx_HistoryScopesAdminGatesGlobal(t *testing.T) {
+	has := func(scopes []string, want string) bool {
+		for _, s := range scopes {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Non-admin tenant operator: own scopes granted, global withheld.
+	tenantCtx := auth.WithPrincipal(context.Background(), auth.Principal{
+		Subject:  "alice",
+		TenantID: "acme",
+		Scopes:   []string{auth.ScopeTenant},
+	})
+	got := tools.HistoryPolicy(substrateGRPCCtx(tenantCtx)).Scopes
+	for _, want := range []string{"self", "user", "tenant"} {
+		if !has(got, want) {
+			t.Errorf("tenant operator: scope %q not granted (got %v)", want, got)
+		}
+	}
+	if has(got, "global") {
+		t.Errorf("tenant operator MUST NOT get the cross-tenant global scope (got %v)", got)
+	}
+	if has(got, "any") {
+		t.Errorf("history scopes must use the {self,user,tenant,global} vocabulary, not the def-family \"any\" (got %v)", got)
+	}
+
+	// Admin principal: global additionally granted.
+	adminCtx := auth.WithPrincipal(context.Background(), auth.Principal{
+		Subject:  "root",
+		TenantID: "acme",
+		Scopes:   []string{auth.ScopeAdmin},
+	})
+	gotAdmin := tools.HistoryPolicy(substrateGRPCCtx(adminCtx)).Scopes
+	if !has(gotAdmin, "global") {
+		t.Errorf("admin principal must get the global scope (got %v)", gotAdmin)
+	}
+}
+
 func TestGrpcPath_HappyPath(t *testing.T) {
 	mc := &substrateMock{
 		pathResult: connector.ToolResult{
@@ -297,6 +349,33 @@ func TestGrpcDocument_HappyPath(t *testing.T) {
 		t.Errorf("connector wasn't called with the input")
 	}
 	if string(resp.GetOutputJson()) != `{"document_id":"d1","root_chunk_id":"c0"}` {
+		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
+func TestGrpcHistory_HappyPath(t *testing.T) {
+	mc := &substrateMock{
+		historyResult: connector.ToolResult{
+			Text:    `{"scope":"tenant","chats":[],"total":0}`,
+			IsError: false,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.History(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"list","scope":"tenant"}`),
+	})
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true, want false")
+	}
+	if string(mc.gotHistoryInput) == "" {
+		t.Errorf("connector wasn't called with the input")
+	}
+	if string(resp.GetOutputJson()) != `{"scope":"tenant","chats":[],"total":0}` {
 		t.Errorf("output_json = %s", resp.GetOutputJson())
 	}
 }
