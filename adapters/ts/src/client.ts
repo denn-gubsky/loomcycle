@@ -129,6 +129,8 @@ import type {
   PathToolResponse,
   DocumentToolInput,
   DocumentToolResponse,
+  HistoryToolInput,
+  HistoryToolResponse,
   TranscriptResponse,
   WhoamiResponse,
   UsageDimension,
@@ -1364,6 +1366,30 @@ export class LoomcycleClient {
       signal: opts?.signal,
       query: browseQuery(opts),
     });
+  }
+
+  /** Invoke the RFC BE History tool over HTTP (`POST /v1/_history`). Browse,
+   *  search, and annotate PAST CHATS — a chat is a session (it may span
+   *  several runs). Op-discriminated (`list`/`get`/`search`/`rename`/
+   *  `annotate`/`pin`/`archive`/`recap`/`resume`).
+   *
+   *  The owner is resolved server-side from the authenticated principal, NEVER
+   *  the wire: `scope:"user"` keys on your own subject, `scope:"tenant"` on your
+   *  tenant. The cross-tenant `scope:"global"` is admin-only — a tenant operator
+   *  requesting it is refused ({@link SubstrateToolRefusedError}).
+   *
+   *  Response varies per op — `list`/`search` return `{scope, chats, total}`,
+   *  `get` returns the chat metadata + transcript (or Markdown when
+   *  `format:"markdown"`), `recap` returns a summary. Narrow as needed.
+   *
+   *  Raises {@link SubstrateToolRefusedError} on tool-level refusals (unknown
+   *  session, disallowed scope); {@link InvalidArgumentError} on 400;
+   *  {@link AuthError} on 401. */
+  async history(
+    input: HistoryToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<HistoryToolResponse> {
+    return postJSON<HistoryToolResponse>(this.ctx, "/v1/_history", input, opts);
   }
 
   /** List the PERSISTENT volume universe for the caller's tenant — every
