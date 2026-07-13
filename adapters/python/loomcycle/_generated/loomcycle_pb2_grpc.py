@@ -233,6 +233,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.History = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/History',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.ListChannels = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ListChannels',
                 request_serializer=loomcycle__pb2.ListChannelsRequest.SerializeToString,
@@ -747,6 +752,20 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def History(self, request, context):
+        """History dispatches to the RFC BE History tool (browse/search/annotate
+        past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
+        (ScopeTenant): the owner is resolved from the operator-trust ctx +
+        caller's authoritative tenant, NEVER the wire — a scope:"user" op keys on
+        the principal's own subject, scope:"tenant" on its tenant; the cross-tenant
+        scope:"global" is admin-only. Op-discriminated input_json (list / get /
+        search / rename / annotate / pin / archive / recap / resume); same
+        SubstrateRequest/Response body shape (is_error carries tool refusals).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ListChannels(self, request, context):
         """----- v0.9.x n8n RFC Phase 0 -----
 
@@ -1016,6 +1035,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'Document': grpc.unary_unary_rpc_method_handler(
                     servicer.Document,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'History': grpc.unary_unary_rpc_method_handler(
+                    servicer.History,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -2115,6 +2139,33 @@ class Loomcycle(object):
             request,
             target,
             '/loomcycle.v1.Loomcycle/Document',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def History(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/History',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,

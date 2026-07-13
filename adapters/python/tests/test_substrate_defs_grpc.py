@@ -49,6 +49,9 @@ _CASES = [
     ("operator_token_def", "OperatorTokenDef"),
     ("volume_def", "VolumeDef"),
     ("team_def", "TeamDef"),
+    # RFC BE History — not a versioned def, but shares the op-discriminated
+    # SubstrateRequest→SubstrateResponse dispatch shape exactly.
+    ("history", "History"),
 ]
 
 

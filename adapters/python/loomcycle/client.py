@@ -729,6 +729,17 @@ class LoomcycleClient:
         sidecar. Mirror of :meth:`agent_def`."""
         return await self._dispatch_substrate("Document", input)
 
+    async def history(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the History tool — browse/search/annotate PAST CHATS, where a
+        chat is a session (RFC BE). Op-discriminated: list / get / search /
+        rename / annotate / pin / archive / recap / resume. The owner is
+        resolved server-side from the authenticated principal, NEVER the wire —
+        you pass a ``scope`` selector (self/user/tenant/global), not an owner id.
+        Tenant-confined: ``scope="tenant"`` keys on your tenant; the
+        cross-tenant ``scope="global"`` is admin-only (a tenant caller
+        requesting it is refused). Mirror of :meth:`document`."""
+        return await self._dispatch_substrate("History", input)
+
     async def _dispatch_substrate(
         self, tool: str, input: Mapping[str, Any]
     ) -> Mapping[str, Any]:
