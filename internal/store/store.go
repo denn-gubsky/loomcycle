@@ -776,6 +776,22 @@ func EncodeTags(tags []string) (string, error) {
 	return string(b), nil
 }
 
+// EncodeTagMatch returns the JSON-encoded form of a SINGLE tag — i.e. exactly
+// how that tag appears as an element inside an EncodeTags array, including its
+// surrounding quotes and any escaping (a `"`/`\`/`<` etc. is escaped identically
+// to how it was stored). The tag filter uses this as a substring needle so a tag
+// containing an escaped character still matches its stored form; the surrounding
+// quotes also keep `"q3"` from matching inside `"q3-plan"`. It shares
+// json.Marshal with EncodeTags so the needle can never drift from the storage
+// encoding.
+func EncodeTagMatch(tag string) (string, error) {
+	b, err := json.Marshal(tag)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 // DecodeTags parses a stored sessions.tags value. An empty string (NULL column
 // / legacy row) and an empty JSON array both decode to nil, so the round-tripped
 // SessionSummary.Tags stays clean for JSON omitempty.
