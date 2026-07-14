@@ -98,6 +98,32 @@ skills:
 	}
 }
 
+// TestEmbedded_DefaultStackValidates is the v1.20.1 regression: the full default
+// preset stack the TrueNAS/Docker deploy ships (base + the four bundles) must
+// LOAD AND VALIDATE cleanly. v1.20.0 shipped a fatal boot error here —
+// team/orchestrator granted `channels: [team/*]` but no team/* channel was
+// declared, so validate() rejected the whole config ("no declared channel
+// matches the prefix") and the server crash-looped on boot. LoadLayers runs
+// validate(), so this fails on the unfixed bundles.
+func TestEmbedded_DefaultStackValidates(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	cfg, err := config.LoadLayers(layersFor(t, "base", "document-agent", "chat", "agent-teams", "team-examples")...)
+	if err != nil {
+		t.Fatalf("the default preset stack must load + validate cleanly: %v", err)
+	}
+	// The orchestrator's team/* channel ACL now resolves to a declared channel.
+	if _, ok := cfg.Channels["team/coordination"]; !ok {
+		names := make([]string, 0, len(cfg.Channels))
+		for n := range cfg.Channels {
+			names = append(names, n)
+		}
+		t.Errorf("agent-teams bundle should declare the team/coordination channel; channels=%v", names)
+	}
+	if _, ok := cfg.Agents["team/orchestrator"]; !ok {
+		t.Errorf("team/orchestrator should be registered")
+	}
+}
+
 // hasToolPreset reports whether tools contains name.
 func hasToolPreset(tools []string, name string) bool {
 	for _, t := range tools {
