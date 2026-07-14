@@ -210,6 +210,9 @@ func (h *History) filterForScope(ctx context.Context, scope string, in historyIn
 		IncludeArchived: in.IncludeArchived,
 	}
 	if in.Status != "" {
+		if !validChatStatus(in.Status) {
+			return store.SessionFilter{}, fmt.Errorf("history: unknown status %q (want one of: running, completed, failed, cancelled)", in.Status)
+		}
 		f.Status = store.RunStatus(in.Status)
 	}
 	if in.From != "" {
@@ -226,11 +229,25 @@ func (h *History) filterForScope(ctx context.Context, scope string, in historyIn
 		}
 		f.To = t
 	}
+	// self/user resolve the owner id from ctx identity. An EMPTY resolved id
+	// must NOT silently drop the constraint — SessionFilter treats "" as "no
+	// filter on that axis", which would widen the listing to the whole tenant
+	// (e.g. a no-user Schedule/Webhook run with history_scope:[user] seeing every
+	// user's chats). The by-id fold (loadSessionInScope) stays strict, so we
+	// refuse here to keep list/search/related symmetric with it: no identity ⇒
+	// no identity-scoped listing.
 	switch scope {
 	case "self":
-		f.AgentName = tools.AgentName(ctx)
+		agent := tools.AgentName(ctx)
+		if agent == "" {
+			return store.SessionFilter{}, fmt.Errorf("history: self scope needs an agent identity in the run context (none present — use tenant or user scope)")
+		}
+		f.AgentName = agent
 		f.TenantID = ident.TenantID
 	case "user":
+		if ident.UserID == "" {
+			return store.SessionFilter{}, fmt.Errorf("history: user scope needs a user identity in the run context (none present — use tenant scope)")
+		}
 		f.UserID = ident.UserID
 		f.TenantID = ident.TenantID
 	case "tenant":
@@ -240,6 +257,35 @@ func (h *History) filterForScope(ctx context.Context, scope string, in historyIn
 		// principal (policy resolution dropped `global` otherwise).
 	}
 	return f, nil
+}
+
+// validChatStatus reports whether s is one of the derived chat statuses
+// ListSessions can filter on. Rejecting an unknown value up front turns a silent
+// empty page (a typo like "complete") into a clear error.
+func validChatStatus(s string) bool {
+	switch store.RunStatus(s) {
+	case store.RunRunning, store.RunCompleted, store.RunFailed, store.RunCancelled:
+		return true
+	}
+	return false
+}
+
+// list-page clamp — mirrors the store's ListSessions clamp so the tool passes,
+// and echoes, the SAME limit the store will use (truthful pagination metadata
+// when the caller omits or overshoots it).
+const (
+	listLimitDefault = 50
+	listLimitMax     = 500
+)
+
+func effectiveListLimit(limit int) int {
+	if limit <= 0 {
+		return listLimitDefault
+	}
+	if limit > listLimitMax {
+		return listLimitMax
+	}
+	return limit
 }
 
 func (h *History) list(ctx context.Context, scope string, in historyInput, isSearch bool) (tools.Result, error) {
@@ -255,7 +301,8 @@ func (h *History) list(ctx context.Context, scope string, in historyInput, isSea
 		// full-text search is deferred (an FTS index, additive later).
 		f.TitleContains = in.Query
 	}
-	rows, total, err := h.Store.ListSessions(ctx, f, in.Limit, in.Offset)
+	limit := effectiveListLimit(in.Limit)
+	rows, total, err := h.Store.ListSessions(ctx, f, limit, in.Offset)
 	if err != nil {
 		return errResult("history: list: " + err.Error()), nil
 	}
@@ -263,7 +310,7 @@ func (h *History) list(ctx context.Context, scope string, in historyInput, isSea
 		"scope":  scope,
 		"chats":  rows,
 		"total":  total,
-		"limit":  in.Limit,
+		"limit":  limit, // the effective limit the store applied, not the raw request
 		"offset": in.Offset,
 	})
 }

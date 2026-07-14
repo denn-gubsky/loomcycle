@@ -171,6 +171,69 @@ func TestHistory_GlobalRefusedForNonAdmin(t *testing.T) {
 	}
 }
 
+// TestHistory_UserScopeRefusesWithoutUserIdentity is the RFC BE review
+// regression: scope=user must NOT widen to the whole tenant when the run carries
+// no user identity. Before the fix an empty UserID dropped the owner filter, so
+// list/search/related returned EVERY user's chats in the tenant (a within-tenant
+// leak); the by-id fold stayed strict, so the two paths disagreed.
+func TestHistory_UserScopeRefusesWithoutUserIdentity(t *testing.T) {
+	h, s := historyFixture(t)
+	seedChat(t, s, "t1", "agentA", "bob") // another user's chat in the tenant
+	// Caller granted user scope but carrying NO user identity (empty UserID).
+	res, _ := h.Execute(histCtx([]string{"user"}, "agentA", "", "t1"),
+		json.RawMessage(`{"op":"list","scope":"user"}`))
+	if !res.IsError {
+		t.Fatalf("user scope with no user identity must refuse, not widen to the tenant; got %s", res.Text)
+	}
+}
+
+// TestHistory_SelfScopeRefusesWithoutAgentIdentity: scope=self must refuse when
+// no agent identity is present (an off-run operator call) rather than silently
+// listing every agent's chats in the tenant.
+func TestHistory_SelfScopeRefusesWithoutAgentIdentity(t *testing.T) {
+	h, s := historyFixture(t)
+	seedChat(t, s, "t1", "agentB", "alice")
+	res, _ := h.Execute(histCtx([]string{"self"}, "", "alice", "t1"),
+		json.RawMessage(`{"op":"list","scope":"self"}`))
+	if !res.IsError {
+		t.Fatalf("self scope with no agent identity must refuse; got %s", res.Text)
+	}
+}
+
+// TestHistory_ListEchoesEffectiveLimit: with no limit supplied, the response
+// reports the effective limit the store applied (50), not the raw request (0),
+// so a client that paginates by the echoed limit advances correctly.
+func TestHistory_ListEchoesEffectiveLimit(t *testing.T) {
+	h, s := historyFixture(t)
+	seedChat(t, s, "t1", "agentA", "alice")
+	res, _ := h.Execute(histCtx([]string{"self"}, "agentA", "alice", "t1"),
+		json.RawMessage(`{"op":"list","scope":"self"}`))
+	if res.IsError {
+		t.Fatalf("list: %s", res.Text)
+	}
+	var out struct {
+		Limit int `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("decode list: %v (%s)", err, res.Text)
+	}
+	if out.Limit != 50 {
+		t.Errorf("echoed limit = %d, want 50 (the effective default)", out.Limit)
+	}
+}
+
+// TestHistory_ListRejectsInvalidStatus: an unknown status value is rejected up
+// front rather than silently returning an empty page (a typo like "complete").
+func TestHistory_ListRejectsInvalidStatus(t *testing.T) {
+	h, s := historyFixture(t)
+	seedChat(t, s, "t1", "agentA", "alice")
+	res, _ := h.Execute(histCtx([]string{"self"}, "agentA", "alice", "t1"),
+		json.RawMessage(`{"op":"list","scope":"self","status":"complete"}`))
+	if !res.IsError {
+		t.Fatalf("invalid status should be rejected; got %s", res.Text)
+	}
+}
+
 // TestHistory_GlobalSpansTenantsWhenGranted: an admin (policy includes global)
 // sees chats across tenants.
 func TestHistory_GlobalSpansTenantsWhenGranted(t *testing.T) {
