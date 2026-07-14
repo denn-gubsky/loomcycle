@@ -40,6 +40,23 @@
 # Run team/orchestrator INTERACTIVELY (start it with interactive:true from the /run
 # terminal) so it is the human's steerable contact point.
 
+# Coordination bus for team/orchestrator (RFC BD). Channels are STATIC-declared
+# (the Channel tool refuses any channel not in a channels: block), so
+# team/orchestrator's `channels: publish/subscribe: [team/*]` grant needs a
+# declared channel under the team/* prefix — without this the whole config fails
+# to load ("no declared channel matches the prefix"). This gives the orchestrator
+# a durable side-channel for cross-branch status (agents publish progress, the
+# orchestrator subscribes to fan them in); parallel fan-out itself still uses the
+# Agent parallel_spawn envelope. scope=user so the orchestrator and the
+# sub-agents it spawns (which inherit the user) share one bus.
+channels:
+  team/coordination:
+    description: "Team coordination bus — agents publish branch status/results; team/orchestrator subscribes to fan them in."
+    scope: user
+    default_ttl: 86400
+    max_messages: 10000
+    semantic: broadcast
+
 agents:
   agent/assistant:
     tier: middle
