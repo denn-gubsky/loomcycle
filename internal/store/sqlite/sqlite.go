@@ -1766,11 +1766,17 @@ func (s *Store) ListSessions(ctx context.Context, f store.SessionFilter, limit, 
 		innerConds = append(innerConds, "s.pinned = 1")
 	}
 	if f.Tag != "" {
-		// Literal substring match against the JSON-array text. The tag is
-		// matched WITH its surrounding quotes so `"q3"` cannot match inside
-		// `"q3-plan"`; INSTR (not LIKE) avoids interpreting `%`/`_` in the tag.
+		// Substring match against the JSON-array text. The needle is the tag
+		// JSON-encoded (store.EncodeTagMatch) so it matches the stored element
+		// byte-for-byte even when the tag contains a quote/backslash (which
+		// EncodeTags escapes); its surrounding quotes keep `"q3"` from matching
+		// inside `"q3-plan"`; INSTR (not LIKE) avoids interpreting `%`/`_`.
+		needle, err := store.EncodeTagMatch(f.Tag)
+		if err != nil {
+			return nil, 0, fmt.Errorf("encode tag filter: %w", err)
+		}
 		innerConds = append(innerConds, "INSTR(s.tags, ?) > 0")
-		innerArgs = append(innerArgs, `"`+f.Tag+`"`)
+		innerArgs = append(innerArgs, needle)
 	}
 	if f.TitleContains != "" {
 		innerConds = append(innerConds, "INSTR(LOWER(s.title), LOWER(?)) > 0")

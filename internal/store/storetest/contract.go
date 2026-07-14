@@ -88,6 +88,7 @@ func Run(t *testing.T, factory Factory) {
 		{"GetRunByAgentIDReturnsMostRecent", testGetRunByAgentIDReturnsMostRecent},
 		{"ListActiveRunsByUser", testListActiveRunsByUser},
 		{"ListSessions", testListSessions},
+		{"ListSessionsTagEscaping", testListSessionsTagEscaping},
 		{"ListSessionsTenantIsolation", testListSessionsTenantIsolation},
 		{"SetSessionMeta", testSetSessionMeta},
 		// RFC BE op=related — the per-session embedding index. Unlike
@@ -1629,6 +1630,38 @@ func summaryIDs(list []store.SessionSummary) []string {
 // independently, archived exclude-by-default, pinned-first ordering, the
 // token/cost/run_count aggregation, and offset pagination — across two tenants,
 // two users, and two agents.
+// testListSessionsTagEscaping is the RFC BE review regression: a tag containing
+// a JSON-special character (a double-quote) must still be matched by the tag
+// filter. Before the fix the filter searched for the raw `"tag"` needle while
+// EncodeTags stored the tag JSON-escaped, so such a tag could never match its
+// own chat. Runs on both backends (the fix is shared store.EncodeTagMatch).
+func testListSessionsTagEscaping(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "t1", "agentA", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const quoted = `he said "hi"`
+	if err := s.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{
+		Tags: tagsPtr([]string{quoted, "plain"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The quote-bearing tag matches its chat.
+	list, _, err := s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", Tag: quoted}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].SessionID != sess.ID {
+		t.Fatalf("tag=%q = %v, want [%s]", quoted, summaryIDs(list), sess.ID)
+	}
+	// A different quoted tag does NOT match (no accidental widening).
+	list, _, _ = s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", Tag: `she said "bye"`}, 50, 0)
+	if len(list) != 0 {
+		t.Fatalf("tag=%q = %v, want []", `she said "bye"`, summaryIDs(list))
+	}
+}
+
 func testListSessions(t *testing.T, s store.Store) {
 	ctx := context.Background()
 

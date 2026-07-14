@@ -27,7 +27,7 @@ import (
 // agents narrow the output instead of paying for a kitchen-sink dump
 // on every call.
 //
-// Nine ops total — PR 1 ships four of them:
+// Ten ops:
 //
 //	self        — identity bundle (agent name, run/agent ids, user, tenant,
 //	              tier, resolved provider + model + sampling; the `principal`
@@ -36,9 +36,10 @@ import (
 //	tools       — post-filter tool catalog
 //	doc         — detailed schema/docstring for one tool by name
 //	permissions — gates that apply to the caller (tool ACL, host policy, scopes)
+//	agents / lineage / evaluations / channels / help / time
 //
-// PR 2 adds:  agents / lineage / evaluations
-// PR 3 adds:  channels / history + default-add + opt-out
+// (A former `history` op was removed — superseded by the standalone History
+// tool, which adds owner scopes + listing/search/annotation; see its docs.)
 //
 // All op results are deterministic and side-effect-free. Calling
 // Context never modifies anything in storage or in-process state.
