@@ -4,6 +4,20 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.20.1
+
+**🚑 Hotfix: the default preset stack boots again.** v1.20.0 **crash-looped on boot** with the standard deploy preset stack (`LOOMCYCLE_PRESETS=base,document-agent,chat,agent-teams,team-examples`): config validation failed fatally with
+
+```
+agent "team/orchestrator": channels.publish[0]: channel "team/*": no declared channel matches the prefix
+```
+
+Root cause: v1.19.2 (#717, folded into v1.20.0) added `channels: {publish: [team/*], subscribe: [team/*]}` to `team/orchestrator` to clear the empty-ACL boot warning, but channels are **static-declared** (the Channel tool refuses any channel not in a `channels:` block) and the `agent-teams` bundle declared none — so `validateAgentChannelEntry` rejected the wildcard grant at config load and the server never started. No test exercised the full embedded preset stack through `validate()`, so it shipped. Fixed by declaring a `team/coordination` channel (`scope: user`, `broadcast`) under the `team/*` prefix in both the embedded bundle and its mirror — **completing** the grant (the orchestrator's Channel tool is now functional) rather than reverting it. New regression `TestEmbedded_DefaultStackValidates` loads the whole default stack through `validate()` and fails on the unfixed bundles (#726).
+
+**🔒 Also: `golang.org/x` security-module bumps.** `x/net` 0.52.0 → **0.57.0**, `x/crypto` 0.49.0 → **0.54.0**, `x/sys` 0.42.0 → **0.47.0** (with `x/sync`/`x/term`/`x/text` pulled up transitively) — the CVE fixes the gbash project flagged on its unreleased `main`, taken directly into loomcycle so the alpha-pinned gbash sandbox stays on its clean v0.0.38 tag (#725).
+
+Bundle YAML + `go.mod`/`go.sum` + one regression test; no wire/schema change; adapters unchanged (1.20.0).
+
 ## What's in v1.20.0
 
 **📜 The History tool — browse, search, recap, and resume past chats (RFC BE).** A new built-in tool gives an agent or an operator a first-class handle on prior conversations. A "chat" is a session (session → runs → events); History adds the human/organizational layer on top and supersedes the removed `Context op=history` (which was agent-relationship-scoped, had no listing/search/annotation, and — with `any` — read cross-tenant transcripts flat).
