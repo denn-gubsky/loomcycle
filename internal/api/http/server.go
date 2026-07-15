@@ -2406,6 +2406,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
+	// RFC BF P2c: publish this run's provider into the ancestor-held set so any
+	// sub-agents it spawns skip the gate for the SAME provider (the deadlock
+	// carve-out) while still gating on any OTHER provider. No-op for an
+	// uncapped/noop slot, so uncapped runs stay zero-overhead.
+	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, provSlot)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
@@ -3965,7 +3970,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loopRes, runErr := loop.Run(loopCtx, runOpts)
+	// RFC BF P2c: the synchronous run holds provSlot for the whole loop, so
+	// publish its provider into the ancestor-held set — sub-agents it spawns skip
+	// the gate for the SAME provider (carve-out). The interactive-detached branch
+	// above does NOT do this: it releases provSlot at hand-off (fbSlot=nil), so its
+	// sub-agents must gate normally. No-op for uncapped/noop slots.
+	loopRes, runErr := loop.Run(s.heldSlotCtx(loopCtx, provSlot), runOpts)
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
 	}
@@ -4422,6 +4432,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer deregGate()
 	// RFC X Phase 3: expose the gate to the Agent tool (parallel_spawn parent park).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
+	// RFC BF P2c: publish this run's provider into the ancestor-held set so its
+	// sub-agents skip the gate for the SAME provider (deadlock carve-out). No-op
+	// for uncapped/noop slots.
+	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, provSlot)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
@@ -5228,6 +5242,21 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		return "", "", fmt.Errorf("provider for sub-agent %q: %w", name, err)
 	}
 
+	// RFC BF P2c: gate the sub-agent on ITS resolved provider so a fan-out parent's
+	// same-provider children run at most `max_concurrent` at a time (the rest queue
+	// inside acquireProviderSlot), EXCEPT when an ANCESTOR already holds that
+	// provider — acquireProviderSlot then returns a noop carve-out holder so the
+	// parent never awaits a child queued behind the parent's own slot (self-
+	// deadlock). Acquired BEFORE the sub-session row so a saturated cap fails fast
+	// without leaving an orphan run. The whole run tree still takes ONE global slot
+	// (the parent's) — sub-runs never touch s.sem, so there is no global-semaphore
+	// deadlock. Uncapped ⇒ noop, zero overhead.
+	subSlot, provErr := s.acquireProviderSlot(ctx, providerID)
+	if provErr != nil {
+		return "", "", fmt.Errorf("sub-agent %q provider gate: %w", name, provErr)
+	}
+	defer subSlot.releaseCurrent()
+
 	// Generate a fresh agent_id for the sub-run. Always generated;
 	// callers can't override (the sub is loomcycle-controlled).
 	subAgentID := newAgentID()
@@ -5522,12 +5551,15 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// that itself parallel_spawns) can park mid-tool-call too.
 	subCtx = tools.WithPauseGate(subCtx, subGate)
 
-	// RFC BF P2b: sub-agents take NO per-provider gate slot (they run under the
-	// parent's admission, never acquiring a global slot either). Gating them would
-	// risk a parent holding provider P's slot while awaiting children that queue
-	// on the same gate — a self-deadlock. nil slot ⇒ fallback doesn't swap.
-	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, nil)
-	res, runErr := loop.Run(subCtx, loop.RunOptions{
+	// RFC BF P2c: the sub-agent's fallback moves ITS OWN provider slot (subSlot,
+	// acquired above), mirroring a top-level run — so a mid-run failover to another
+	// capped provider re-gates on the new one. A carve-out (noop) subSlot never
+	// swaps (it's deliberately ungated). Sub-runs still take no GLOBAL slot.
+	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, subSlot)
+	// RFC BF P2c: publish the sub-agent's provider into the ancestor-held set on
+	// its OWN loop ctx (copy-on-add) so grandchildren it spawns take the carve-out
+	// for the same provider. No-op for a carve-out/uncapped subSlot.
+	res, runErr := loop.Run(s.heldSlotCtx(subCtx, subSlot), loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
 		Tools:               subTools,

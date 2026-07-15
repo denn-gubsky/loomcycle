@@ -392,6 +392,12 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		provSlot.release = provRelease
 		provSlot.providerID = providerID
 		defer provSlot.releaseCurrent()
+		// RFC BF P2c: a resumed run holds provSlot for its whole re-entered loop,
+		// so publish its provider into the ancestor-held set — sub-agents it spawns
+		// (a resumed fan-out parent) skip the gate for the SAME provider (deadlock
+		// carve-out). Without this a same-provider parent→child spawn after resume
+		// would self-deadlock. No-op for uncapped/noop slots.
+		loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 
 		// Respect the per-tenant fairness semaphore so a boot that resumes many
 		// runs doesn't blow past MAX_CONCURRENT_RUNS. Acquired inside the

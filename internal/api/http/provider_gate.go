@@ -41,6 +41,12 @@ const providerFallbackAcquireTimeout = 2 * time.Second
 type providerSlot struct {
 	release    func()
 	providerID string
+	// noop marks a P2c deadlock carve-out holder: an ANCESTOR in this run tree
+	// already holds providerID's gate slot, so this run runs UNGATED (acquiring
+	// again would make the ancestor await its own descendant behind the same cap).
+	// A noop holder never acquired a gate — swap() and releaseCurrent() are inert
+	// on it, and it deliberately stays ungated even across a mid-run fallback.
+	noop bool
 }
 
 // releaseCurrent releases whatever provider slot the holder currently owns.
@@ -60,9 +66,13 @@ func (ps *providerSlot) releaseCurrent() {
 // interactive-detached runs, which never own a swappable slot) or when the
 // resolver returned the same provider (a same-provider/different-model retry
 // keeps its slot — releasing then re-acquiring could hand our only slot to a
-// competitor).
+// competitor). No-op too on a P2c carve-out holder (ps.noop): that run is
+// deliberately ungated because an ancestor holds the provider, and it must stay
+// ungated across a fallback — acquiring the fallback target's gate here could
+// reintroduce the parent-awaiting-its-own-descendant deadlock the carve-out
+// exists to prevent.
 func (ps *providerSlot) swap(ctx context.Context, gates *concurrency.ProviderGates, newProviderID string) {
-	if ps == nil || newProviderID == ps.providerID {
+	if ps == nil || ps.noop || newProviderID == ps.providerID {
 		return
 	}
 	// Free the old provider's slot FIRST so a run queued on it can proceed; this
@@ -85,17 +95,54 @@ func (ps *providerSlot) swap(ctx context.Context, gates *concurrency.ProviderGat
 }
 
 // acquireProviderSlot reserves the per-provider concurrency slot for providerID
-// (RFC BF P2b). Returns a populated holder on success; on a saturated cap it
+// (RFC BF P2b/P2c). Returns a populated holder on success; on a saturated cap it
 // returns the raw *concurrency.ErrProviderConcurrencyExhausted so HTTP handlers
 // can hand it to writeQuotaError and RunOnce can reclassify via
 // providerAcquireErrToRunner. Uncapped providers get a noop holder with zero
 // overhead. Keeps the acquire identical across the admission sites.
+//
+// P2c deadlock carve-out: when an ANCESTOR in this run tree already holds
+// providerID's gate slot (holdsProviderSlot), this run runs UNGATED — a noop
+// holder, no gate touched. Gating it would let a fan-out parent await its own
+// descendant queued behind the same cap (a self-deadlock). At the top-level
+// admission sites the held-set is always empty, so the carve-out never fires and
+// behavior is byte-identical to P2b; it fires only for sub-agents whose provider
+// their parent already holds.
+//
+// A run that DOES take a real slot must run its protected work under
+// heldSlotCtx(ctx, slot) so descendants see providerID as held (that stamp is a
+// separate call, not folded in here, so the interactive-detach path — which
+// releases its slot at hand-off — can opt out).
 func (s *Server) acquireProviderSlot(ctx context.Context, providerID string) (*providerSlot, error) {
+	if holdsProviderSlot(ctx, providerID) {
+		return &providerSlot{noop: true}, nil
+	}
 	release, err := s.providerGates.Acquire(ctx, providerID)
 	if err != nil {
 		return nil, err
 	}
 	return &providerSlot{release: release, providerID: providerID}, nil
+}
+
+// heldSlotCtx augments ctx with slot's provider in the ancestor-held set (P2c)
+// so descendants spawned under the returned ctx take the deadlock carve-out for
+// that provider. It stamps ONLY when the slot is a real CAPPED holder that
+// persists for the loop it guards:
+//   - a nil / carve-out (noop) / empty holder holds no fresh gate → ctx unchanged;
+//   - an UNCAPPED provider has no gate at all → nothing for a descendant to skip,
+//     so ctx is returned unchanged, preserving P2b's zero-overhead-when-uncapped.
+//
+// Callers wrap the ctx passed to loop.Run with this. A run whose slot is released
+// before its loop runs (the interactive-detached top-level run) deliberately does
+// NOT call this — its descendants gate normally because nothing is held.
+func (s *Server) heldSlotCtx(ctx context.Context, slot *providerSlot) context.Context {
+	if slot == nil || slot.noop || slot.providerID == "" {
+		return ctx
+	}
+	if !s.providerGates.Has(slot.providerID) {
+		return ctx
+	}
+	return withHeldProviderSlot(ctx, slot.providerID)
 }
 
 // providerAcquireErrToRunner maps a provider-gate acquire failure to the runner
