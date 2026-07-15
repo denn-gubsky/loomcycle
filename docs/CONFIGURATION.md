@@ -595,6 +595,35 @@ All of this is wired together in [`loomcycle.local-interactive.example.yaml`](..
 
 ---
 
+## 6c. Config-driven providers — add a 3rd-party or self-hosted provider
+
+The built-in providers (anthropic / openai / gemini / deepseek / ollama / ollama-local) need no declaration — they ship as an embedded default layer prepended to every config. To add a **3rd-party or self-hosted** provider (vLLM, groq, together, a second Ollama), declare it in a top-level `providers:` map; the id then becomes a valid `provider:` everywhere the patterns above use one — a `models:` alias, a tier candidate, a `provider_priority` entry, an agent pin.
+
+```yaml
+# loomcycle.yaml
+providers:
+  my-vllm:                    # the id you reference in provider:
+    driver: openai            # the wire family it speaks (see below)
+    base_url: http://vllm.local:8000/v1
+    api_key_env: MY_VLLM_KEY  # env-var NAME; OMIT for a keyless endpoint
+    max_concurrent: 4         # optional per-provider concurrency cap
+
+models:
+  qwen-big: { provider: my-vllm, model: qwen2.5-72b }
+tiers:
+  high: [qwen-big]            # my-vllm now serves the high tier
+```
+
+- **`driver`** picks the compiled-in wire family: `openai` (OpenAI-compatible — vLLM / groq / together / most self-hosted), `anthropic`, `gemini`, `deepseek`, `ollama`. A typo lists the compiled-in set at `loomcycle validate`.
+- **Keyless** endpoints omit `api_key_env` — declaring the provider *is* the opt-in.
+- Operator entries **deep-merge over** the built-ins, so you can also override a built-in (re-point `ollama-local`'s `base_url`, add a `max_concurrent`) without restating it. `LOOMCYCLE_NO_DEFAULT_PROVIDERS=1` drops the built-ins and declares only your own.
+
+**Per-provider concurrency (`max_concurrent`)** caps in-flight runs to one provider; the rest queue inside loomcycle (then `429 provider_concurrency_exhausted`). Its point is a **local model on one GPU**: `ollama-local: { driver: ollama, max_concurrent: 2 }` runs a stable batch to completion without VRAM context-swapping, draining a fan-out in pairs. The gate is taken **before** the global concurrency slot so a saturated local cap never starves cloud runs — leave cloud providers uncapped.
+
+Full field reference (dialect, `options`, capability overrides) + the concurrency internals: [`docs/PROVIDERS.md`](PROVIDERS.md#config-driven-providers-providers-map).
+
+---
+
 ## 7. Agent `.md` frontmatter reference
 
 Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file). Each `<name>.md` has YAML frontmatter between `---` delimiters; the body is the system prompt.

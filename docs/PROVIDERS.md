@@ -1,6 +1,6 @@
 # Provider configuration
 
-loomcycle dispatches LLM calls through a pluggable provider matrix. Each provider has its own driver (`internal/providers/<id>/`) and is registered at boot. Operators select a provider per-agent (yaml `provider:` field) or per-tier (`user_tiers.<tier>.tiers.<level>[].provider`).
+loomcycle dispatches LLM calls through a pluggable provider matrix. Each provider has its own compiled-in **driver** (`internal/providers/<id>/`); *which* providers exist — the built-ins below plus any 3rd-party or self-hosted ones — is **declared in config** via the `providers:` map (see [Config-driven providers](#config-driven-providers-providers-map)). Operators select a provider per-agent (yaml `provider:` field) or per-tier (`user_tiers.<tier>.tiers.<level>[].provider`).
 
 This page covers operator-facing setup for each provider. The substrate, resolver, and tier-fallback design live in `docs/CONFIGURATION.md`.
 
@@ -15,6 +15,74 @@ This page covers operator-facing setup for each provider. The substrate, resolve
 | `ollama` | Bearer (`OLLAMA_API_KEY`) | `https://ollama.com` (configurable via `OLLAMA_CLOUD_BASE_URL`) | Production. Hosted ollama.com. |
 | `ollama-local` | None (local trust) | `OLLAMA_BASE_URL` (default `http://localhost:11434`) | Production. Local-network Ollama. |
 | `anthropic-oauth-dev` | OAuth subscription | `https://api.anthropic.com` | **Opt-in. Research/dev only.** Reverse-engineered Anthropic subscription billing via Claude Code's OAuth flow. See below. |
+
+## Config-driven providers (`providers:` map)
+
+Providers are declared in a top-level `providers:` map, keyed by the provider id agents reference in `provider:`. Each entry names the compiled-in **driver** that serves it plus how it's wired. This is what lets an operator point loomcycle at a **3rd-party or self-hosted** OpenAI-compatible endpoint (vLLM, groq, together, a second Ollama) **without a code change**.
+
+The built-in providers in the table above ship as an **embedded default layer** that is prepended to every config, so a config with **no `providers:` block** resolves them exactly as before — you add a `providers:` entry only to introduce a new provider or override a built-in. Operator entries deep-merge over the defaults (last wins). Set `LOOMCYCLE_NO_DEFAULT_PROVIDERS=1` to drop the built-ins entirely and declare only your own.
+
+### Entry fields
+
+| Field | Meaning |
+|---|---|
+| `driver` | **Required.** The compiled-in driver family: `anthropic`, `openai`, `gemini`, `deepseek`, `ollama`, `mock`, `code-js`. (`loomcycle validate` lists the compiled-in set on a typo.) |
+| `dialect` | Wire dialect when a driver speaks more than one; omit for the driver's default (today each has one: `anthropic-messages`, `openai-chat`, `gemini-v1beta`, `ollama-chat`). |
+| `base_url` | Override the driver's default endpoint (a self-hosted mirror, Vertex Gemini, a LAN Ollama). Empty = driver default. |
+| `api_key_env` | The **env-var NAME** (never the value) whose credential authenticates this provider — resolved server-side, and overridable per-tenant/user (a tenant's own key shadows the operator's — see [CREDENTIALS.md](CREDENTIALS.md)). **Omit for a keyless endpoint.** |
+| `max_concurrent` | Cap in-flight runs to this provider (see below). `0` / unset = unbounded. |
+| `options` | Driver-specific tuning, passed opaquely: `ollama` `num_ctx` / `num_gpu`; `code-js` `code_root` / `deterministic` / `run_timeout_seconds`; `mock` `stable`. Unknown keys log a warning, never fatal. |
+| `capabilities` | Override the driver's advertised capabilities (`supports_thinking` / `supports_vision` / `supports_effort` / `native_prompt_cache` / `parallel_tool_calls` / `max_context_tokens`). Only the coarse flag is overridable; per-model heuristics stay in the driver. |
+
+### Add a 3rd-party OpenAI-compatible provider
+
+```yaml
+providers:
+  # A self-hosted vLLM / llama.cpp / groq / together endpoint.
+  # driver: openai speaks the OpenAI Chat Completions wire shape.
+  my-vllm:
+    driver: openai
+    base_url: http://vllm.local:8000/v1
+    api_key_env: MY_VLLM_KEY        # omit entirely for a no-auth endpoint
+    max_concurrent: 4
+
+models:
+  qwen-big: { provider: my-vllm, model: qwen2.5-72b }
+tiers:
+  high: [qwen-big]
+```
+
+A **keyless** endpoint (no auth) is declared by simply omitting `api_key_env` — declaring the provider *is* the opt-in; loomcycle calls `base_url` with no key. (Before v1.21.0 a declared provider without `api_key_env` was silently treated as "not configured".)
+
+### Per-provider concurrency (`max_concurrent`)
+
+`max_concurrent` caps how many runs whose resolved provider is that id execute at once; the rest **queue inside loomcycle** (then `429 provider_concurrency_exhausted` / gRPC `ResourceExhausted` on queue timeout). The motivating case is a **local model on one GPU**: cap `ollama-local` so a stable batch runs to completion without VRAM context-swapping, and the next batch starts only when a slot frees.
+
+```yaml
+providers:
+  ollama-local:
+    driver: ollama
+    max_concurrent: 2     # ≤2 local runs in flight; a fan-out of 10 drains in pairs
+```
+
+- The provider gate is acquired **before** the global concurrency slot, so a run queued on a full provider cap never starves runs targeting other (uncapped) providers.
+- Cloud providers are vendor-rate-limited — leave them uncapped.
+- Sub-agents gate on their own resolved provider too, with a deadlock carve-out: a fan-out parent holding provider P's slot does not make its P-targeting children queue behind it.
+- Advisory / per-replica (exact for the single-replica local case). Tune the shared queue with `LOOMCYCLE_PROVIDER_QUEUE_DEPTH` / `LOOMCYCLE_PROVIDER_QUEUE_TIMEOUT_MS` (both default to the global concurrency knobs). It complements — does not replace — Ollama's own `OLLAMA_NUM_PARALLEL`.
+
+### Capability overrides
+
+```yaml
+providers:
+  my-vllm:
+    driver: openai
+    base_url: http://vllm.local:8000/v1
+    capabilities:
+      supports_vision: true       # this mirror serves a multimodal model
+      max_context_tokens: 131072
+```
+
+Only the flag you set changes; the rest keep the driver's defaults. `deepseek` gates vision off by default (its text models 400 on an image); an operator running a multimodal DeepSeek mirror behind `base_url` can re-enable it here.
 
 ## `anthropic-oauth-dev` — Anthropic subscription billing (research/dev only)
 
