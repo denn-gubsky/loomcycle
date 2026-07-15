@@ -101,6 +101,12 @@ func TestValidate_Providers(t *testing.T) {
 			base(map[string]ProviderConfig{"bad": {Driver: ""}}), "driver is required"},
 		{"negative max_concurrent",
 			base(map[string]ProviderConfig{"bad": {Driver: "openai", MaxConcurrent: -1}}), "max_concurrent must be >= 0"},
+		// RFC BF P2a registry-aware checks (drivers_registry_test.go populates the
+		// registry so these exercise the real registered factories).
+		{"unknown driver",
+			base(map[string]ProviderConfig{"bad": {Driver: "not-a-driver"}}), "unknown driver"},
+		{"unsupported dialect",
+			base(map[string]ProviderConfig{"bad": {Driver: "anthropic", Dialect: "openai-chat"}}), "does not speak dialect"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,5 +115,82 @@ func TestValidate_Providers(t *testing.T) {
 				t.Errorf("got %v, want error containing %q", err, tc.wantSub)
 			}
 		})
+	}
+}
+
+// TestValidate_Providers_DialectAccepted proves a driver's canonical dialect is
+// accepted when explicitly set (the counterpart to the "unsupported dialect"
+// rejection above).
+func TestValidate_Providers_DialectAccepted(t *testing.T) {
+	cfg := &Config{
+		Defaults:    Defaults{Provider: "anthropic", Model: "x"},
+		Concurrency: Concurrency{MaxConcurrentRuns: 1},
+		Providers: map[string]ProviderConfig{
+			"anthropic": {Driver: "anthropic", Dialect: "anthropic-messages"},
+		},
+	}
+	if err := validate(cfg); err != nil {
+		t.Errorf("canonical dialect rejected: %v", err)
+	}
+}
+
+// TestValidate_ThirdPartyProvider_AcceptedAsReference proves RFC BF P2a's headline
+// capability: a config-declared 3rd-party provider id (not in the built-in floor)
+// is a valid provider reference in tiers / agent pins / provider_priority, while a
+// truly undeclared id is still rejected.
+func TestValidate_ThirdPartyProvider_AcceptedAsReference(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			Defaults:    Defaults{Provider: "anthropic", Model: "x"},
+			Concurrency: Concurrency{MaxConcurrentRuns: 1},
+			Providers: map[string]ProviderConfig{
+				// A self-hosted OpenAI-compatible mirror declared by the operator.
+				"my-vllm": {Driver: "openai", BaseURL: "http://vllm.local", APIKeyEnv: "MY_VLLM_KEY"},
+			},
+			ProviderPriority: []string{"my-vllm", "anthropic"},
+			Tiers:            map[string][]TierCandidate{"middle": {{Provider: "my-vllm", Model: "qwen"}}},
+			Agents:           map[string]AgentDef{"a": {Provider: "my-vllm", Model: "qwen"}},
+		}
+	}
+	if err := validate(base()); err != nil {
+		t.Errorf("declared 3rd-party provider rejected as reference: %v", err)
+	}
+
+	// An UNDECLARED id must still fail — the floor + declared set is the ceiling.
+	bad := base()
+	bad.ProviderPriority = []string{"ghost"}
+	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Errorf("undeclared provider accepted: %v", err)
+	}
+}
+
+// TestValidate_ModelAliasProvider covers the new models[*].provider check: a
+// built-in provider on an alias passes (floor), a declared 3rd-party passes, and
+// a bogus provider is rejected. An empty-provider alias is left to the pin/tier
+// that names it, so it must NOT be rejected here.
+func TestValidate_ModelAliasProvider(t *testing.T) {
+	base := func(models map[string]ModelRef, providers map[string]ProviderConfig) *Config {
+		return &Config{
+			Defaults:    Defaults{Provider: "anthropic", Model: "x"},
+			Concurrency: Concurrency{MaxConcurrentRuns: 1},
+			Models:      models,
+			Providers:   providers,
+		}
+	}
+	if err := validate(base(map[string]ModelRef{"a": {Provider: "anthropic", Model: "claude"}}, nil)); err != nil {
+		t.Errorf("built-in alias provider rejected: %v", err)
+	}
+	if err := validate(base(
+		map[string]ModelRef{"a": {Provider: "my-vllm", Model: "qwen"}},
+		map[string]ProviderConfig{"my-vllm": {Driver: "openai", APIKeyEnv: "MY_VLLM_KEY"}},
+	)); err != nil {
+		t.Errorf("declared 3rd-party alias provider rejected: %v", err)
+	}
+	if err := validate(base(map[string]ModelRef{"a": {Model: "just-a-model"}}, nil)); err != nil {
+		t.Errorf("empty-provider alias must not be validated here: %v", err)
+	}
+	err := validate(base(map[string]ModelRef{"a": {Provider: "bogus", Model: "x"}}, nil))
+	if err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Errorf("bogus alias provider accepted: %v", err)
 	}
 }

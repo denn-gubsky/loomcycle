@@ -56,14 +56,19 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
-	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
+	// RFC BF P2a — the resolver now builds providers via providers.NewDriver, not
+	// each driver's New(), so these driver packages are imported ONLY for their
+	// init() self-registration into the RFC BF driver registry. Blank imports keep
+	// their factories registered; codejs + anthropic_oauth_dev stay named below
+	// (still referenced directly: code-agent validation and the residual OAuth path).
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	anthropic_oauth_dev "github.com/denn-gubsky/loomcycle/internal/providers/anthropic_oauth_dev"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
-	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
-	"github.com/denn-gubsky/loomcycle/internal/providers/gemini"
-	mockprov "github.com/denn-gubsky/loomcycle/internal/providers/mock"
-	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
-	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/mock"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/ollama"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	// Deterministic stub embedder for runtime tests; its init() registers the
@@ -636,8 +641,19 @@ func main() {
 			log.Printf("auth.env: loaded %d var(s) from %s (a shell export overrides them)", n, authEnvPath)
 		}
 	}
-	// Build the full ordered layer list: embedded presets (base) ++ disk files.
-	layers := make([]config.Layer, 0, len(presetLayers)+len(diskFiles))
+	// Build the full ordered layer list. RFC BF P2a: the embedded default-providers
+	// layer is the UNCONDITIONAL base (before opt-in presets) so a config with no
+	// `providers:` block resolves providers identically to pre-P2a; operator
+	// `providers:` entries deep-merge over it. LOOMCYCLE_NO_DEFAULT_PROVIDERS=1 drops
+	// it (then only explicitly-declared providers exist). It is kept OUT of
+	// presetLayers so the "no config found" error above still fires on a bare run
+	// (a lone default-providers layer is not, on its own, a usable config). Order,
+	// base→top (last wins):
+	//   providers.default → opt-in presets → CONFIG_DIR → CONFIG_FILES/--config
+	layers := make([]config.Layer, 0, 1+len(presetLayers)+len(diskFiles))
+	if os.Getenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS") != "1" {
+		layers = append(layers, config.Layer{Name: "providers.default", Data: embedded.DefaultProviders()})
+	}
 	layers = append(layers, presetLayers...)
 	for _, f := range diskFiles {
 		layers = append(layers, config.Layer{Name: f})
@@ -675,7 +691,10 @@ func main() {
 		log.Printf("otel: disabled (set LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}
 
-	pr := newProviderResolver(cfg)
+	pr, err := newProviderResolver(cfg)
+	if err != nil {
+		log.Fatalf("provider resolver: %v", err)
+	}
 	validateCodeAgents(cfg, pr)
 	sem := concurrency.New(
 		cfg.Concurrency.MaxConcurrentRuns,
@@ -2916,47 +2935,24 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 	}
 }
 
-// providerResolver constructs Provider instances at startup based on which
-// env vars are set. A provider that wasn't configured returns a clear error
-// when an agent tries to use it (rather than failing the whole startup).
+// providerResolver holds the constructed Provider instances keyed by the id
+// agents reference in `provider:` (RFC BF P2a). newProviderResolver builds byID
+// from cfg.Providers via the driver registry (providers.NewDriver) — a
+// config-driven flip of the pre-P2a hardcoded per-provider fields. It is
+// byte-identical when no operator `providers:` block is declared, because the
+// embedded default-providers layer (cmd/loomcycle/embedded/providers.default.yaml)
+// supplies the built-ins. A provider whose enabling env is absent is simply not
+// in byID; Get reproduces the pre-P2a "not configured" error for it.
 type providerResolver struct {
-	anthropic providers.Provider
-	openai    providers.Provider
-	// ollama = hosted ollama.com (Bearer auth via OLLAMA_API_KEY).
-	// ollamaLocal = local-network endpoint (no auth, default
-	// localhost:11434). Both wrap the same internal driver; only the
-	// providerID, auth header, and base URL differ. See v0.8.3 split.
-	ollama      providers.Provider
-	ollamaLocal providers.Provider
-	deepseek    providers.Provider
-	gemini      providers.Provider
-	// v0.11.9 OAuth-dev provider. Registered only when
-	// LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 AND a token file exists.
-	// nil otherwise — Get("anthropic-oauth-dev") returns a clear error
-	// pointing at `loomcycle anthropic login`.
-	anthropicOAuthDev       providers.Provider
+	byID map[string]providers.Provider
+	// cfg is retained so Get can tell a declared-but-disabled provider (a
+	// bespoke "not configured" error) apart from a truly unknown id.
+	cfg *config.Config
+	// anthropic-oauth-dev remains a residual hardcoded path: its Refresher
+	// lifecycle is main-owned (Start here, Stop at shutdown). The provider goes
+	// into byID like any other; this field only carries the refresher handle for
+	// teardown. See newProviderResolver.
 	anthropicOAuthRefresher *anthropic_oauth_dev.Refresher
-	// v0.12.8 — synthetic mock provider for cost-free stress testing.
-	// Registered only when LOOMCYCLE_MOCK_ENABLED=1. Drives the
-	// canonical 3-agent circuit-stress pipeline with no real-LLM
-	// cost; injection knobs (LOOMCYCLE_MOCK_429_RATE, 500_RATE,
-	// LATENCY_MS, LATENCY_JITTER_MS) exercise the resolver matrix
-	// + runtime-fallback paths under load. See
-	// internal/providers/mock/driver.go.
-	mock providers.Provider
-
-	// v0.12.9 — companion `mock-stable` provider. Same driver
-	// shape, failure rates pinned at zero regardless of env. Lets
-	// operators configure `[mock, mock-stable]` as a tier candidate
-	// list with `fallback_on_error: true`, so a 429 on the primary
-	// escalates to the stable variant under tryProviderFallback —
-	// exercising the recovery path against a known-good target.
-	mockStable providers.Provider
-
-	// RFC J — synthetic code-js provider (operator-authored JS via goja).
-	// Registered only when LOOMCYCLE_CODE_AGENTS_ENABLED=1; nil otherwise,
-	// so Get("code-js") returns a clear "code agents are disabled" error.
-	codeJS providers.Provider
 }
 
 // buildEmbedder turns cfg.Memory.Embedder into a constructed
@@ -3014,79 +3010,62 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	})
 }
 
-func newProviderResolver(cfg *config.Config) *providerResolver {
-	pr := &providerResolver{}
-	streamOpts := streamhttp.Options{
-		HeaderTimeout: cfg.Env.ProviderHeaderTimeout,
-		IdleTimeout:   cfg.Env.ProviderIdleTimeout,
-	}
-	if cfg.Env.AnthropicAPIKey != "" {
-		pr.anthropic = anthropic.New(cfg.Env.AnthropicAPIKey, "", streamOpts, nil)
-	}
-	if cfg.Env.OpenAIAPIKey != "" {
-		pr.openai = openai.New(cfg.Env.OpenAIAPIKey, "", streamOpts, nil)
-	}
-	// Hosted ollama.com — opts in via OLLAMA_API_KEY. Bearer-auth on the
-	// same /api/chat wire shape as local Ollama; the driver is shared,
-	// only the providerID + auth header + base URL differ.
-	// OLLAMA_CLOUD_BASE_URL overrides the public endpoint for staged
-	// rollouts or vendor mirrors.
-	if cfg.Env.OllamaAPIKey != "" {
-		pr.ollama = ollama.New("ollama", cfg.Env.OllamaAPIKey, cfg.Env.OllamaCloudBaseURL, streamOpts, nil).
-			WithNumCtx(cfg.Env.OllamaNumCtx)
-	}
-	// Local-network Ollama — no API key, local trust model. The loader
-	// defaults OLLAMA_BASE_URL to http://localhost:11434, so this is
-	// effectively always-on. Operators disable it via
-	// OLLAMA_BASE_URL=disabled (or an empty string in shell env).
-	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
-		// Local Ollama is slow on first-token (cold model load + large-context
-		// eval), so it gets its own, more generous timeout pair rather than the
-		// cloud-shaped global defaults — see Env.OllamaLocalHeaderTimeout.
-		localStreamOpts := streamhttp.Options{
-			HeaderTimeout: cfg.Env.OllamaLocalHeaderTimeout,
-			IdleTimeout:   cfg.Env.OllamaLocalIdleTimeout,
+// expectedBuiltinProviderIDs is the set the embedded default-providers layer
+// declares. Used only by the boot divergence WARN (RFC BF P2a Deliverable 5) —
+// resolution itself is fully config-driven, this just catches a default-layer
+// typo or a surprise LOOMCYCLE_NO_DEFAULT_PROVIDERS run.
+var expectedBuiltinProviderIDs = []string{
+	"anthropic", "code-js", "deepseek", "gemini", "mock", "mock-stable",
+	"ollama", "ollama-local", "openai",
+}
+
+// newProviderResolver builds every enabled provider from cfg.Providers via the
+// RFC BF driver registry (config-driven flip of the pre-P2a hardcoded per-provider
+// construction). It is byte-identical when no operator `providers:` block is
+// declared, because the embedded default-providers layer supplies the built-ins
+// and toDriverOptions/providerEnabled port the exact env behaviour. An
+// unconstructable provider (bad driver/dialect/base_url) is a boot error.
+func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
+	pr := &providerResolver{byID: map[string]providers.Provider{}, cfg: cfg}
+
+	for id, pc := range cfg.Providers {
+		if !providerEnabled(id, pc, cfg) {
+			continue
 		}
-		pr.ollamaLocal = ollama.New("ollama-local", "", cfg.Env.OllamaBaseURL, localStreamOpts, nil).
-			WithNumCtx(cfg.Env.OllamaLocalNumCtx).
-			WithNumGpu(cfg.Env.OllamaLocalNumGpu)
-	}
-	// DeepSeek opts in via DEEPSEEK_API_KEY. Optional DEEPSEEK_BASE_URL
-	// overrides the public endpoint for self-hosted OpenAI-compatible
-	// mirrors. Same on/off semantics as Anthropic + OpenAI.
-	if cfg.Env.DeepSeekAPIKey != "" {
-		pr.deepseek = deepseek.New(cfg.Env.DeepSeekAPIKey, cfg.Env.DeepSeekBaseURL, streamOpts, nil)
-	}
-	// Gemini opts in via GEMINI_API_KEY. Optional GEMINI_BASE_URL
-	// points at a Vertex AI Gemini endpoint instead of the public
-	// generativelanguage.googleapis.com surface.
-	if cfg.Env.GeminiAPIKey != "" {
-		pr.gemini = gemini.New(cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL, streamOpts, nil)
+		p, err := providers.NewDriver(pc.Driver, toDriverOptions(id, pc, cfg))
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", id, err)
+		}
+		pr.byID[id] = p
 	}
 
-	// v0.12.8 — synthetic mock provider. Single gate: LOOMCYCLE_MOCK_ENABLED=1.
-	// Registers as provider id "mock" with four model variants
-	// (mock-researcher / mock-editor / mock-evaluator / mock-generic)
-	// for the canonical circuit-stress 3-agent pipeline. Failure
-	// injection knobs (LOOMCYCLE_MOCK_429_RATE etc.) are read by the
-	// driver itself; logged here so the boot output makes the active
-	// scenario obvious.
-	if os.Getenv("LOOMCYCLE_MOCK_ENABLED") == "1" {
-		pr.mock = mockprov.New()
-		pr.mockStable = mockprov.NewStableProvider()
+	// Residual per-provider boot diagnostics (operator-facing knob echoes, NOT
+	// resolution logic) — kept id-keyed so the boot log is unchanged from pre-P2a
+	// for the mock/code-js paths. anthropic-oauth-dev logs its own below.
+	if _, ok := pr.byID["mock"]; ok {
 		log.Printf("mock provider: enabled (LATENCY_MS=%q LATENCY_JITTER_MS=%q 429_RATE=%q 500_RATE=%q)",
 			os.Getenv("LOOMCYCLE_MOCK_LATENCY_MS"),
 			os.Getenv("LOOMCYCLE_MOCK_LATENCY_JITTER_MS"),
 			os.Getenv("LOOMCYCLE_MOCK_429_RATE"),
 			os.Getenv("LOOMCYCLE_MOCK_500_RATE"))
+	}
+	if _, ok := pr.byID["mock-stable"]; ok {
 		log.Printf("mock-stable provider: enabled (failure injection always off; fallback target for [mock, mock-stable] tier policies)")
 	}
+	if _, ok := pr.byID["code-js"]; ok {
+		log.Printf("code-js provider: enabled (root=%q deterministic=%v run_timeout=%s abi=%s)",
+			cfg.Env.CodeAgentsRoot, cfg.Env.CodeAgentsDeterministic, cfg.Env.CodeAgentsRunTimeout, codejs.ABIVersion)
+	}
 
-	// v0.11.9 — anthropic-oauth-dev. Two gates: env var + tokens on
-	// disk. Without either, the provider is absent from the resolver
-	// matrix and any agent yaml that pins `provider: anthropic-oauth-dev`
-	// fails resolution at request time with a clear error.
+	// v0.11.9 — anthropic-oauth-dev stays a residual hardcoded path (main-owned
+	// Refresher lifecycle; not a registry driver). Two gates: env var + tokens on
+	// disk. The provider (when live) joins byID like any other; the refresher
+	// handle is kept for shutdown teardown.
 	if os.Getenv(anthropic_oauth_dev.EnvEnabled) == "1" {
+		streamOpts := streamhttp.Options{
+			HeaderTimeout: cfg.Env.ProviderHeaderTimeout,
+			IdleTimeout:   cfg.Env.ProviderIdleTimeout,
+		}
 		storePath, pathErr := anthropic_oauth_dev.DefaultTokenStorePath()
 		switch {
 		case pathErr != nil:
@@ -3099,7 +3078,7 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 				refresher := anthropic_oauth_dev.NewRefresher(store, anthropic_oauth_dev.ExchangeOptions{}, log.Printf)
 				refresher.Start(context.Background())
 				pr.anthropicOAuthRefresher = refresher
-				pr.anthropicOAuthDev = anthropic_oauth_dev.New(
+				pr.byID["anthropic-oauth-dev"] = anthropic_oauth_dev.New(
 					refresher, streamOpts, anthropic_oauth_dev.ResolveClaudeCodeVersion(), nil,
 				)
 				log.Printf("anthropic-oauth-dev: registered (token expires %s; user-agent=claude-cli/%s)",
@@ -3110,22 +3089,156 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 		}
 	}
 
-	// RFC J — synthetic code-js provider. Single gate:
-	// LOOMCYCLE_CODE_AGENTS_ENABLED=1. Runs operator-authored JS via goja
-	// instead of an LLM. Registered as provider id "code-js"; resolves each
-	// agent's code from agent_code/<name>/index.js under the configured root.
-	if cfg.Env.CodeAgentsEnabled {
-		pr.codeJS = codejs.New(codejs.Config{
-			CodeRoot:      cfg.Env.CodeAgentsRoot,
-			Deterministic: cfg.Env.CodeAgentsDeterministic,
-			RunTimeout:    cfg.Env.CodeAgentsRunTimeout,
-			Logf:          log.Printf,
-		})
-		log.Printf("code-js provider: enabled (root=%q deterministic=%v run_timeout=%s abi=%s)",
-			cfg.Env.CodeAgentsRoot, cfg.Env.CodeAgentsDeterministic, cfg.Env.CodeAgentsRunTimeout, codejs.ABIVersion)
-	}
+	logProviderSummary(pr, cfg)
+	return pr, nil
+}
 
-	return pr
+// providerEnabled reproduces the exact pre-P2a env gates: a keyed provider needs
+// its api_key_env set; ollama-local needs a base URL that isn't the "disabled"
+// opt-out; mock/mock-stable need LOOMCYCLE_MOCK_ENABLED=1; code-js needs
+// CodeAgentsEnabled. anthropic-oauth-dev is intentionally NOT handled here — it is
+// the residual hardcoded path in newProviderResolver.
+func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bool {
+	switch id {
+	case "ollama-local":
+		// The loader defaults OLLAMA_BASE_URL to http://localhost:11434; the opt-out
+		// is the "disabled" sentinel. Read the RESOLVED value (cfg.Env), not
+		// os.Getenv, so the getenvDefault behaviour is preserved exactly.
+		return cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled"
+	case "mock", "mock-stable":
+		return os.Getenv("LOOMCYCLE_MOCK_ENABLED") == "1"
+	case "code-js":
+		return cfg.Env.CodeAgentsEnabled
+	default:
+		// Keyed providers (anthropic/openai/deepseek/gemini/ollama + any declared
+		// 3rd-party): enabled iff their api_key_env names a set variable.
+		return pc.APIKeyEnv != "" && os.Getenv(pc.APIKeyEnv) != ""
+	}
+}
+
+// toDriverOptions ports the pre-P2a per-provider construction 1:1 into the driver
+// factory input so an absent `providers:` block is byte-identical. BaseURL:
+// explicit config wins, else the per-id env/driver default (incl. the
+// OLLAMA_*_BASE_URL / DEEPSEEK_BASE_URL / GEMINI_BASE_URL defaults). APIKey +
+// KeyEnvName come from api_key_env (RFC AR per-tenant override). StreamOpts +
+// Options carry the per-provider timeouts and ollama num_ctx/num_gpu.
+func toDriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) providers.DriverOptions {
+	baseURL := pc.BaseURL
+	stream := streamhttp.Options{
+		HeaderTimeout: cfg.Env.ProviderHeaderTimeout,
+		IdleTimeout:   cfg.Env.ProviderIdleTimeout,
+	}
+	opts := map[string]any{}
+	switch id {
+	case "ollama": // hosted ollama.com
+		if baseURL == "" {
+			baseURL = cfg.Env.OllamaCloudBaseURL
+		}
+		if cfg.Env.OllamaNumCtx > 0 {
+			opts["num_ctx"] = cfg.Env.OllamaNumCtx
+		}
+	case "ollama-local":
+		if baseURL == "" {
+			baseURL = cfg.Env.OllamaBaseURL
+		}
+		// Local Ollama is slow on first-token (cold model load + large-context
+		// eval), so it gets its own, more generous timeout pair.
+		stream = streamhttp.Options{
+			HeaderTimeout: cfg.Env.OllamaLocalHeaderTimeout,
+			IdleTimeout:   cfg.Env.OllamaLocalIdleTimeout,
+		}
+		if cfg.Env.OllamaLocalNumCtx > 0 {
+			opts["num_ctx"] = cfg.Env.OllamaLocalNumCtx
+		}
+		if cfg.Env.OllamaLocalNumGpu > 0 {
+			opts["num_gpu"] = cfg.Env.OllamaLocalNumGpu
+		}
+	case "deepseek":
+		if baseURL == "" {
+			baseURL = cfg.Env.DeepSeekBaseURL
+		}
+	case "gemini":
+		if baseURL == "" {
+			baseURL = cfg.Env.GeminiBaseURL
+		}
+	}
+	// Operator-declared options override the env-derived defaults (e.g. mock-stable's
+	// `stable: true`, or a per-provider num_ctx).
+	for k, v := range pc.Options {
+		opts[k] = v
+	}
+	return providers.DriverOptions{
+		ID:           id,
+		Dialect:      pc.Dialect,
+		BaseURL:      baseURL,
+		APIKey:       os.Getenv(pc.APIKeyEnv),
+		KeyEnvName:   pc.APIKeyEnv,
+		StreamOpts:   stream,
+		Options:      opts,
+		Capabilities: toCapabilityPatch(pc.Capabilities),
+		Logf:         log.Printf,
+	}
+}
+
+// notConfiguredError reproduces the pre-P2a "not configured" error for a
+// declared-but-disabled provider so callers (and the probe) see the exact same
+// message they did before the flip. Built-in ids keep their bespoke text; a
+// declared 3rd-party id gets the generic "(set <api_key_env>)" form.
+func notConfiguredError(id string, cfg *config.Config) error {
+	switch id {
+	case "ollama":
+		return fmt.Errorf("ollama provider not configured (set OLLAMA_API_KEY for hosted ollama.com; use provider id \"ollama-local\" for a local-network Ollama)")
+	case "ollama-local":
+		return fmt.Errorf("ollama-local provider not configured (set OLLAMA_BASE_URL, or it's been opted out via OLLAMA_BASE_URL=disabled)")
+	case "mock":
+		return fmt.Errorf("mock provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
+	case "mock-stable":
+		return fmt.Errorf("mock-stable provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
+	case "code-js":
+		return fmt.Errorf("code-js provider not configured: code agents are disabled (set LOOMCYCLE_CODE_AGENTS_ENABLED=1)")
+	case "anthropic-oauth-dev":
+		return fmt.Errorf("anthropic-oauth-dev not registered (set LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 + run `loomcycle anthropic login`)")
+	default:
+		env := cfg.Providers[id].APIKeyEnv
+		if env == "" {
+			return fmt.Errorf("%s provider not configured", id)
+		}
+		return fmt.Errorf("%s provider not configured (set %s)", id, env)
+	}
+}
+
+// providerDisabledReason is the probe's short exclusion reason for a
+// declared-but-disabled provider, byte-identical to the pre-P2a jobs slice.
+func providerDisabledReason(id string, pc config.ProviderConfig) string {
+	switch id {
+	case "ollama-local":
+		return "OLLAMA_BASE_URL not configured"
+	case "mock", "mock-stable":
+		return "LOOMCYCLE_MOCK_ENABLED not set"
+	default:
+		return fmt.Sprintf("%s not set", pc.APIKeyEnv)
+	}
+}
+
+// logProviderSummary logs the config-sourced provider inventory (RFC BF P2a
+// Deliverable 5) + a WARN if the merged config is missing a built-in the
+// default-providers layer should have supplied (catches a default-layer typo).
+func logProviderSummary(pr *providerResolver, cfg *config.Config) {
+	enabled := make([]string, 0, len(pr.byID))
+	for id := range pr.byID {
+		enabled = append(enabled, id)
+	}
+	sort.Strings(enabled)
+	log.Printf("providers: %d configured, %d enabled (%s)", len(cfg.Providers), len(pr.byID), strings.Join(enabled, ", "))
+	// Skip the divergence check when the operator deliberately dropped the layer.
+	if os.Getenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS") == "1" {
+		return
+	}
+	for _, id := range expectedBuiltinProviderIDs {
+		if _, ok := cfg.Providers[id]; !ok {
+			log.Printf("providers: WARNING — built-in %q missing from the merged config (default-providers layer dropped or overridden)", id)
+		}
+	}
 }
 
 // toCapabilityPatch translates a config.CapabilityOverride (the `capabilities:`
@@ -3161,7 +3274,9 @@ func toCapabilityPatch(o *config.CapabilityOverride) *providers.CapabilityPatch 
 // Dynamic AgentDefs (created at runtime via the AgentDef tool) are not seen
 // here; their JS validates on first Call and surfaces as an EventError.
 func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
-	cp, _ := pr.codeJS.(*codejs.Provider)
+	// nil interface → (nil,false): cp stays nil when code-js is disabled, matching
+	// the pre-P2a pr.codeJS==nil path.
+	cp, _ := pr.byID["code-js"].(*codejs.Provider)
 	var broken []string
 	for name, def := range cfg.Agents {
 		if def.Provider != "code-js" {
@@ -3206,61 +3321,22 @@ func countCodeAgents(cfg *config.Config) int {
 	return n
 }
 
+// Get returns the constructed provider for id, or the pre-P2a-identical error.
+// A hit is a map lookup. On a miss: a declared-but-disabled provider (present in
+// cfg.Providers, skipped by providerEnabled) — or the residual anthropic-oauth-dev
+// — gets its bespoke "not configured" message; a truly unknown id gets the
+// "unknown provider" error.
 func (p *providerResolver) Get(id string) (providers.Provider, error) {
-	switch id {
-	case "anthropic":
-		if p.anthropic == nil {
-			return nil, fmt.Errorf("anthropic provider not configured (set ANTHROPIC_API_KEY)")
-		}
-		return p.anthropic, nil
-	case "openai":
-		if p.openai == nil {
-			return nil, fmt.Errorf("openai provider not configured (set OPENAI_API_KEY)")
-		}
-		return p.openai, nil
-	case "ollama":
-		if p.ollama == nil {
-			return nil, fmt.Errorf("ollama provider not configured (set OLLAMA_API_KEY for hosted ollama.com; use provider id \"ollama-local\" for a local-network Ollama)")
-		}
-		return p.ollama, nil
-	case "ollama-local":
-		if p.ollamaLocal == nil {
-			return nil, fmt.Errorf("ollama-local provider not configured (set OLLAMA_BASE_URL, or it's been opted out via OLLAMA_BASE_URL=disabled)")
-		}
-		return p.ollamaLocal, nil
-	case "deepseek":
-		if p.deepseek == nil {
-			return nil, fmt.Errorf("deepseek provider not configured (set DEEPSEEK_API_KEY)")
-		}
-		return p.deepseek, nil
-	case "gemini":
-		if p.gemini == nil {
-			return nil, fmt.Errorf("gemini provider not configured (set GEMINI_API_KEY)")
-		}
-		return p.gemini, nil
-	case "anthropic-oauth-dev":
-		if p.anthropicOAuthDev == nil {
-			return nil, fmt.Errorf("anthropic-oauth-dev not registered (set LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 + run `loomcycle anthropic login`)")
-		}
-		return p.anthropicOAuthDev, nil
-	case "mock":
-		if p.mock == nil {
-			return nil, fmt.Errorf("mock provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
-		}
-		return p.mock, nil
-	case "mock-stable":
-		if p.mockStable == nil {
-			return nil, fmt.Errorf("mock-stable provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
-		}
-		return p.mockStable, nil
-	case "code-js":
-		if p.codeJS == nil {
-			return nil, fmt.Errorf("code-js provider not configured: code agents are disabled (set LOOMCYCLE_CODE_AGENTS_ENABLED=1)")
-		}
-		return p.codeJS, nil
-	default:
-		return nil, fmt.Errorf("unknown provider %q", id)
+	if prov, ok := p.byID[id]; ok {
+		return prov, nil
 	}
+	if id == "anthropic-oauth-dev" {
+		return nil, notConfiguredError(id, p.cfg)
+	}
+	if _, declared := p.cfg.Providers[id]; declared {
+		return nil, notConfiguredError(id, p.cfg)
+	}
+	return nil, fmt.Errorf("unknown provider %q", id)
 }
 
 // buildResolver constructs the model-resolution matrix
@@ -3303,38 +3379,32 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 		provider   providers.Provider // nil when excluded
 	}
 
-	jobs := []probeJob{
-		{id: "anthropic", excluded: cfg.Env.AnthropicAPIKey == "",
-			exclReason: "ANTHROPIC_API_KEY not set"},
-		{id: "openai", excluded: cfg.Env.OpenAIAPIKey == "",
-			exclReason: "OPENAI_API_KEY not set"},
-		{id: "deepseek", excluded: cfg.Env.DeepSeekAPIKey == "",
-			exclReason: "DEEPSEEK_API_KEY not set"},
-		{id: "gemini", excluded: cfg.Env.GeminiAPIKey == "",
-			exclReason: "GEMINI_API_KEY not set"},
-		{id: "ollama", excluded: cfg.Env.OllamaAPIKey == "",
-			exclReason: "OLLAMA_API_KEY not set"},
-		{id: "ollama-local", excluded: cfg.Env.OllamaBaseURL == "" || cfg.Env.OllamaBaseURL == "disabled",
-			exclReason: "OLLAMA_BASE_URL not configured"},
-		// v0.11.10 anthropic-oauth-dev. The provider self-registers
-		// only when LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 AND a
-		// token file is present (cf. lines ~1775-1810). Gate the
-		// probe on the resolver actually having the provider —
-		// pr.Get below catches both the env-var-off case (returns
-		// the canonical "not registered" error) and the
-		// resolver-misconfigured case.
-		{id: "anthropic-oauth-dev"},
-		// v0.12.8 — synthetic mock provider. Excluded unless the
-		// operator opted in via LOOMCYCLE_MOCK_ENABLED=1. The probe
-		// itself is trivial (ListModels returns a fixed slice) so
-		// the matrix populates instantly when enabled.
-		{id: "mock", excluded: os.Getenv("LOOMCYCLE_MOCK_ENABLED") != "1",
-			exclReason: "LOOMCYCLE_MOCK_ENABLED not set"},
-		// v0.12.9 — companion stable variant for fallback testing.
-		// Same gate as `mock` — when one is enabled, both are.
-		{id: "mock-stable", excluded: os.Getenv("LOOMCYCLE_MOCK_ENABLED") != "1",
-			exclReason: "LOOMCYCLE_MOCK_ENABLED not set"},
+	// RFC BF P2a — build the probe set from cfg.Providers (config-driven), deriving
+	// excluded/reason from providerEnabled + providerDisabledReason (byte-identical
+	// to the pre-P2a jobs slice). code-js is skipped: pre-P2a never probed it, so
+	// its resolver-matrix presence is unchanged. Sorted for deterministic log order
+	// (the reachable probes below run concurrently, so line order was never stable).
+	// The residual anthropic-oauth-dev job (not in cfg.Providers) is appended — its
+	// env/token gates are caught by pr.Get in the loop below.
+	ids := make([]string, 0, len(cfg.Providers))
+	for id := range cfg.Providers {
+		if id == "code-js" {
+			continue
+		}
+		ids = append(ids, id)
 	}
+	sort.Strings(ids)
+	jobs := make([]probeJob, 0, len(ids)+1)
+	for _, id := range ids {
+		pc := cfg.Providers[id]
+		excluded := !providerEnabled(id, pc, cfg)
+		reason := ""
+		if excluded {
+			reason = providerDisabledReason(id, pc)
+		}
+		jobs = append(jobs, probeJob{id: id, excluded: excluded, exclReason: reason})
+	}
+	jobs = append(jobs, probeJob{id: "anthropic-oauth-dev"})
 	for i := range jobs {
 		if jobs[i].excluded {
 			continue
