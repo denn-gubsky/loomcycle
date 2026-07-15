@@ -3128,6 +3128,29 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 	return pr
 }
 
+// toCapabilityPatch translates a config.CapabilityOverride (the `capabilities:`
+// block on an RFC BF `providers:` entry) into the providers-side
+// providers.CapabilityPatch the driver registry applies inside Capabilities().
+// internal/providers cannot import internal/config (config depends on downstream
+// consumers of providers — the edge would cycle), so this boundary translation
+// lives here at the composition root. Nil in → nil out (no override → advertise
+// driver defaults). Defined for P2's registry wiring; deliberately NOT called by
+// newProviderResolver in P1 (the hardcoded resolver stays authoritative), so P2
+// is a clean flip rather than a rewrite.
+func toCapabilityPatch(o *config.CapabilityOverride) *providers.CapabilityPatch {
+	if o == nil {
+		return nil
+	}
+	return &providers.CapabilityPatch{
+		SupportsThinking:  o.SupportsThinking,
+		SupportsVision:    o.SupportsVision,
+		SupportsEffort:    o.SupportsEffort,
+		NativePromptCache: o.NativePromptCache,
+		ParallelToolCalls: o.ParallelToolCalls,
+		MaxContextTokens:  o.MaxContextTokens,
+	}
+}
+
 // validateCodeAgents fails loud at startup for any statically-configured
 // `provider: code-js` agent whose JS is missing or won't parse (RFC J
 // Deliverable 3) — so a broken code-agent fails the boot, NOT the first

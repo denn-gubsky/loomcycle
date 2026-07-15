@@ -64,6 +64,14 @@ type Driver struct {
 	rate429       float64
 	rate500       float64
 
+	// id is the provider identity reported by ID(). Defaults to "mock" in New();
+	// the RFC BF driver registry sets it from DriverOptions.ID. (The mock-stable
+	// variant overrides ID() via the stableDriver wrapper, unaffected by this.)
+	id string
+	// capsPatch is an optional operator override applied inside Capabilities()
+	// (RFC BF). Nil = advertise the driver defaults.
+	capsPatch *providers.CapabilityPatch
+
 	mu  sync.Mutex
 	rng *rand.Rand
 }
@@ -82,6 +90,7 @@ func New() *Driver {
 		// produce different failure-injection patterns; tests that
 		// need determinism use the WithRNG variant below.
 		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+		id:  "mock",
 	}
 	return d
 }
@@ -126,10 +135,10 @@ func NewStableProvider() providers.Provider {
 	return &stableDriver{Driver: NewStable()}
 }
 
-func (d *Driver) ID() string { return "mock" }
+func (d *Driver) ID() string { return d.id }
 
 func (d *Driver) Capabilities() providers.Capabilities {
-	return providers.Capabilities{
+	return d.capsPatch.Apply(providers.Capabilities{
 		Streaming:         false,
 		ParallelToolCalls: false,
 		// MaxContextTokens left at 0 — the loop treats 0 as "no cap"
@@ -142,7 +151,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// The mock is a test double — accept image content so loop-level
 		// vision tests (RFC AT) can route an image through to a provider.
 		SupportsVision: true,
-	}
+	})
 }
 
 func (d *Driver) Probe(_ context.Context) error { return nil }

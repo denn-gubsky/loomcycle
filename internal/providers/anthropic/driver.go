@@ -33,6 +33,12 @@ type Driver struct {
 	baseURL     string
 	http        *http.Client
 	idleTimeout time.Duration
+	// id is the provider identity reported by ID(). Defaults to "anthropic" in
+	// New(); the RFC BF driver registry sets it from DriverOptions.ID.
+	id string
+	// capsPatch is an optional operator override applied inside Capabilities()
+	// (RFC BF). Nil = advertise the driver defaults.
+	capsPatch *providers.CapabilityPatch
 }
 
 // New constructs a Driver. baseURL may be empty for the default endpoint.
@@ -47,10 +53,10 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 	if httpClient == nil {
 		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
+	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout, id: "anthropic"}
 }
 
-func (d *Driver) ID() string { return "anthropic" }
+func (d *Driver) ID() string { return d.id }
 
 // resolveKey returns the API key to authenticate an inference request AND which
 // credential scope it came from. A tenant/user credential named
@@ -69,7 +75,7 @@ func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string, e
 func (d *Driver) KeyEnvName() string { return "ANTHROPIC_API_KEY" }
 
 func (d *Driver) Capabilities() providers.Capabilities {
-	return providers.Capabilities{
+	return d.capsPatch.Apply(providers.Capabilities{
 		NativePromptCache: true,
 		ParallelToolCalls: true,
 		Streaming:         true,
@@ -77,7 +83,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		SupportsThinking:  true,
 		SupportsEffort:    true,
 		SupportsVision:    true, // per-model refined by anthropicSupportsVision
-	}
+	})
 }
 
 // Call sends the request and returns a channel of Events. The channel is

@@ -55,6 +55,10 @@ type Driver struct {
 	idleTimeout time.Duration
 	numCtx      int // 0 = omit (Ollama server default applies)
 	numGpu      int // 0 = omit (Ollama auto-detects GPU layers); >0 forces offload
+	// capsPatch is an optional operator override applied inside Capabilities()
+	// (RFC BF). Nil = advertise the driver defaults. ID() already comes from
+	// providerID, so no separate id field is needed here.
+	capsPatch *providers.CapabilityPatch
 	// ctxCache memoises each model's loaded context window read from
 	// /api/ps (model name → ctxCacheEntry), so the gauge lookup costs one
 	// cheap request per model, not per turn. Concurrent-safe (the Driver is
@@ -252,7 +256,7 @@ func (d *Driver) KeyEnvName() string {
 }
 
 func (d *Driver) Capabilities() providers.Capabilities {
-	return providers.Capabilities{
+	return d.capsPatch.Apply(providers.Capabilities{
 		NativePromptCache: false,
 		ParallelToolCalls: true, // model-dependent; we report the optimistic case
 		Streaming:         true,
@@ -277,7 +281,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// (RFC AT §5.4); a non-vision model's failure surfaces via the existing
 		// provider-fallback error rather than a silent drop.
 		SupportsVision: true,
-	}
+	})
 }
 
 // Call sends the chat request and streams Events. The goroutine that reads
