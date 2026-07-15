@@ -321,6 +321,12 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		if errors.Is(runErr, runner.ErrPerUserQuotaExhausted) {
 			status = "skipped"
 		}
+		// RFC BF P2b: a per-provider cap refusal is transient load, not a run
+		// failure — label it "skipped" like the other backpressure flavors so a
+		// saturated provider doesn't burn the schedule's max_fires budget.
+		if errors.Is(runErr, runner.ErrProviderConcurrencyExhausted) {
+			status = "skipped"
+		}
 		if errors.Is(runErr, runner.ErrUnknownAgent) {
 			countAsFire = false
 			s.logf("scheduler: schedule %q could not resolve agent %q in tenant %q — not counting toward max_fires; check the agent exists in this tenant (F38)",
