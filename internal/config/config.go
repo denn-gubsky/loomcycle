@@ -4528,16 +4528,26 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// validProviderIDs is the built-in provider FLOOR — the ids the pre-RFC-BF
-// resolver hardcoded. RFC BF P2a: provider references (agent pins, tier
-// candidates, model aliases, provider_priority) validate against
-// knownProviderIDs() = this floor UNION the operator's declared `providers:` keys,
-// so a config-declared 3rd-party provider validates too, while every existing
-// config stays valid whether or not it declares a `providers:` block. Kept as a
-// floor (not replaced by cfg.Providers keys) because validate() also runs on
-// configs assembled WITHOUT the embedded default-providers layer — CLI/unit
-// paths, and LOOMCYCLE_NO_DEFAULT_PROVIDERS — where the built-ins would otherwise
-// vanish from the valid set.
+// validProviderIDs is the built-in provider VALIDATION FLOOR. Provider
+// references (agent pins, tier candidates, model aliases, provider_priority)
+// validate against knownProviderIDs() = this floor UNION the operator's declared
+// `providers:` keys, so a config-declared 3rd-party provider validates too, while
+// every config referencing a built-in stays valid whether or not it declares a
+// `providers:` block.
+//
+// This floor is deliberate and permanent — NOT transitional scaffolding. The
+// hardcoded provider *construction/registration* was removed under RFC BF (the
+// embedded default-providers layer, cmd/loomcycle/embedded/providers.default.yaml,
+// is the sole source of the built-ins at runtime, and both the server and the CLI
+// prepend it). This set exists only so validate() stays a total function that does
+// not depend on that layer having been applied first — it still runs on configs
+// assembled WITHOUT the default layer: unit tests that build a Config directly,
+// and LOOMCYCLE_NO_DEFAULT_PROVIDERS runs. Removing it would make validate() reject
+// a built-in reference in those contexts (see
+// TestValidate_ThirdPartyProvider_AcceptedAsReference, which asserts the
+// floor-plus-declared behavior). anthropic-oauth-dev is the only member the
+// default layer does NOT declare (its Refresher lifecycle is owned by main), so
+// the floor is the sole thing that keeps it a valid reference.
 var validProviderIDs = map[string]bool{
 	"anthropic":    true,
 	"openai":       true,
@@ -4923,12 +4933,17 @@ func validate(c *Config) error {
 	// model aliases) validates against this so a config-declared 3rd-party provider
 	// is accepted while every built-in stays valid.
 	known := c.knownProviderIDs()
+	knownList := make([]string, 0, len(known))
+	for id := range known {
+		knownList = append(knownList, id)
+	}
+	sort.Strings(knownList)
 	// Library-level provider priority — validate every entry is a
 	// known provider name. Empty list is fine (resolver falls back
 	// to its hardcoded default order).
 	for i, p := range c.ProviderPriority {
 		if !known[p] {
-			return fmt.Errorf("provider_priority[%d]: unknown provider %q (want one of anthropic/openai/deepseek/gemini/ollama)", i, p)
+			return fmt.Errorf("provider_priority[%d]: unknown provider %q (known: %v)", i, p, knownList)
 		}
 	}
 	// Search providers (RFC BB): validate the enabled set against the known
