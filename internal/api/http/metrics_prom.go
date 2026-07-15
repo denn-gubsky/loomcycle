@@ -27,6 +27,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 )
 
 // handleMetricsProm serves GET /metrics. Bearer-authed (middleware
@@ -86,6 +88,32 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w)
 	}
 
+	// RFC BF P2b per-provider concurrency gates — only emitted when at least one
+	// provider sets max_concurrent (otherwise no gates exist and the series would
+	// be empty). Two gauges (slots in use + queue depth), labelled by provider,
+	// sorted for deterministic scrape output.
+	if pg := providerGateSnapshot(s); len(pg) > 0 {
+		provs := make([]string, 0, len(pg))
+		for id := range pg {
+			provs = append(provs, id)
+		}
+		sort.Strings(provs)
+		fmt.Fprintln(w, "# HELP loomcycle_provider_slots_in_use Runs currently holding a per-provider concurrency slot (providers.<id>.max_concurrent).")
+		fmt.Fprintln(w, "# TYPE loomcycle_provider_slots_in_use gauge")
+		for _, id := range provs {
+			labels := mergeLabels(replicaLabels, map[string]string{"provider": id})
+			fmt.Fprintf(w, "loomcycle_provider_slots_in_use%s %d\n", labels, pg[id].Active)
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "# HELP loomcycle_provider_queue_depth Runs waiting for a per-provider concurrency slot.")
+		fmt.Fprintln(w, "# TYPE loomcycle_provider_queue_depth gauge")
+		for _, id := range provs {
+			labels := mergeLabels(replicaLabels, map[string]string{"provider": id})
+			fmt.Fprintf(w, "loomcycle_provider_queue_depth%s %d\n", labels, pg[id].Queued)
+		}
+		fmt.Fprintln(w)
+	}
+
 	// Build info as a single-series gauge=1 with version metadata as
 	// labels. Standard Prometheus convention — operators alert on
 	// version churn or filter by version in a multi-replica cluster.
@@ -112,6 +140,15 @@ func semaphoreSnapshot(s *Server) (active, queued int, perUser map[string]int) {
 	}
 	stats := s.sem.Stats()
 	return stats.Active, stats.Queued, stats.PerUser
+}
+
+// providerGateSnapshot is a nil-safe view of the RFC BF P2b per-provider gates.
+// Returns nil when none are wired (the common case), so the gauges are omitted.
+func providerGateSnapshot(s *Server) map[string]concurrency.Stats {
+	if s == nil {
+		return nil
+	}
+	return s.providerGates.Stats()
 }
 
 // promReplicaLabels returns `{replica_id="..."}` when running in

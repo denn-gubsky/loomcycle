@@ -129,6 +129,41 @@ func TestMetricsProm_ReplicaIDLabelWhenSet(t *testing.T) {
 	}
 }
 
+// TestMetricsProm_ProviderGateSeries pins the RFC BF P2b per-provider gauges:
+// slots-in-use + queue-depth appear (labelled by provider) only when a provider
+// is capped, and stay absent otherwise (empty-series guard).
+func TestMetricsProm_ProviderGateSeries(t *testing.T) {
+	// No gates wired → the provider gauges must be absent.
+	srv := newMetricsPromServer(t, false)
+	rec := httptest.NewRecorder()
+	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if strings.Contains(rec.Body.String(), "loomcycle_provider_slots_in_use") {
+		t.Errorf("provider gauges should be omitted when no provider is capped; body:\n%s", rec.Body.String())
+	}
+
+	// Cap provider "P" at 2 and hold one slot → slots_in_use{P}=1, queue_depth{P}=0.
+	gates := concurrency.NewProviderGates(map[string]int{"P": 2}, 4, time.Second)
+	srv.SetProviderGates(gates)
+	rel, err := gates.Acquire(t.Context(), "P")
+	if err != nil {
+		t.Fatalf("acquire P: %v", err)
+	}
+	defer rel()
+
+	rec = httptest.NewRecorder()
+	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "# TYPE loomcycle_provider_slots_in_use gauge") {
+		t.Errorf("missing slots_in_use TYPE line; body:\n%s", body)
+	}
+	if !strings.Contains(body, `loomcycle_provider_slots_in_use{provider="P"} 1`) {
+		t.Errorf("expected slots_in_use{P}=1; body:\n%s", body)
+	}
+	if !strings.Contains(body, `loomcycle_provider_queue_depth{provider="P"} 0`) {
+		t.Errorf("expected queue_depth{P}=0; body:\n%s", body)
+	}
+}
+
 // TestMetricsProm_TextFormatShape pins the Prometheus exposition
 // format invariants: every metric line that isn't a comment must
 // match `<name>[{labels}] <value>` and every named series must have
