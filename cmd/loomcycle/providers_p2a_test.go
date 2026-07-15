@@ -199,6 +199,39 @@ func TestToDriverOptions_PortsEnvBaseURLsAndTimeouts(t *testing.T) {
 	}
 }
 
+// TestToDriverOptions_CodeJSPortsEnvRoot is the regression for the P2a code-js
+// boot break: the switch in toDriverOptions ported the ollama/deepseek/gemini env
+// defaults but NOT code-js, so the driver factory (codejs.newFromOptions) got no
+// code_root and built a compiler with an empty root — every static `provider:
+// code-js` agent then failed to load ("no index.js at <name>/index.js", a
+// relative path = the empty-root tell), crash-looping boot (the "Runtime suites
+// (code-js)" CI job). This asserts the three code-js env knobs are ported into
+// the driver options.
+//
+// Fail-before: drop the `case "code-js"` in toDriverOptions and code_root is
+// absent (StringOption ok=false) → this fails.
+func TestToDriverOptions_CodeJSPortsEnvRoot(t *testing.T) {
+	t.Setenv("LOOMCYCLE_CODE_AGENTS_ROOT", "/srv/agent_code")
+	t.Setenv("LOOMCYCLE_CODE_AGENTS_DETERMINISTIC", "1")
+	t.Setenv("LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", "45")
+
+	cfg := loadDefaultProvidersOnly(t)
+	if cfg.Env.CodeAgentsRoot != "/srv/agent_code" {
+		t.Fatalf("cfg.Env.CodeAgentsRoot = %q, want /srv/agent_code (env not parsed?)", cfg.Env.CodeAgentsRoot)
+	}
+
+	opts := toDriverOptions("code-js", cfg.Providers["code-js"], cfg)
+	if root, ok := providers.StringOption(opts.Options, "code_root"); !ok || root != "/srv/agent_code" {
+		t.Errorf("code-js code_root option = %q (ok=%v), want /srv/agent_code — without it the compiler root is empty and every static code agent fails to load", root, ok)
+	}
+	if det, _ := providers.BoolOption(opts.Options, "deterministic"); !det {
+		t.Errorf("code-js deterministic option = false, want true (LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1)")
+	}
+	if secs, ok := providers.IntOption(opts.Options, "run_timeout_seconds"); !ok || secs != 45 {
+		t.Errorf("code-js run_timeout_seconds = %d (ok=%v), want 45", secs, ok)
+	}
+}
+
 // TestGet_MockStable_IsStableVariant proves mock-stable, built through the driver
 // registry with `options: {stable: true}` (from the default-providers layer),
 // reports the right id — the config-driven replacement for the pre-P2a
