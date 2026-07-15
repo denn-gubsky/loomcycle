@@ -27,13 +27,16 @@ type tieredProvider struct {
 	errors         []error // returned by Call() at the same index; nil → use responses[idx]
 	calls          int
 	supportsVision bool
+	// nativePromptCache mirrors the real driver capability the loop's cache-loss
+	// event now keys on (RFC BF P2a) — Anthropic sets it, others don't.
+	nativePromptCache bool
 }
 
 func (p *tieredProvider) ID() string                                     { return p.id }
 func (p *tieredProvider) Probe(_ context.Context) error                  { return nil }
 func (p *tieredProvider) ListModels(_ context.Context) ([]string, error) { return []string{"m"}, nil }
 func (p *tieredProvider) Capabilities() providers.Capabilities {
-	return providers.Capabilities{Streaming: true, SupportsVision: p.supportsVision}
+	return providers.Capabilities{Streaming: true, SupportsVision: p.supportsVision, NativePromptCache: p.nativePromptCache}
 }
 func (p *tieredProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
 	p.mu.Lock()
@@ -306,8 +309,9 @@ func TestFallback_OperatorKeyForbidden_NotCascaded(t *testing.T) {
 // this run are cache-cold.
 func TestFallback_AnthropicToOther_EmitsCacheInvalidated(t *testing.T) {
 	failing := &tieredProvider{
-		id:     "anthropic",
-		errors: []error{fmt.Errorf("anthropic 503: backend unavailable")},
+		id:                "anthropic",
+		nativePromptCache: true, // the loop keys the cache-loss event on this cap
+		errors:            []error{fmt.Errorf("anthropic 503: backend unavailable")},
 	}
 	healthy := &tieredProvider{
 		id:        "deepseek",

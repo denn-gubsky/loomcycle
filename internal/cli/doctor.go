@@ -96,7 +96,15 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		r.warn("Providers", "none configured in provider_priority or per-agent providers")
 	}
 	for _, p := range providers {
-		envVar := providerEnvVarName(p)
+		// RFC BF P2a — prefer the config-declared api_key_env for this id (so a
+		// 3rd-party `providers:` entry's key var is checked), falling back to the
+		// hardcoded canonical name for the built-ins. doctor doesn't layer the
+		// embedded default-providers block, so cfg.Providers is empty for a stock
+		// config and the fallback keeps the built-in checks byte-identical.
+		envVar := cfg.ProviderAPIKeyEnv(p)
+		if envVar == "" {
+			envVar = providerEnvVarName(p)
+		}
 		if envVar == "" {
 			r.pass(fmt.Sprintf("Provider %s", p), "no API key required (local provider)")
 			continue
@@ -262,6 +270,10 @@ type configForDoctor interface {
 	// AgentProviderHints — overlays can introduce providers the
 	// top-level list doesn't carry.
 	UserTierProviderHints() []string
+	// ProviderAPIKeyEnv returns the api_key_env declared for a provider id in the
+	// `providers:` block (RFC BF P2a), or "" when the id isn't declared (then the
+	// caller falls back to the hardcoded canonical name for a built-in).
+	ProviderAPIKeyEnv(id string) string
 	StorageBackend() string
 	StoragePgDSN() string
 	StorageDataDir() string

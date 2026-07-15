@@ -17,6 +17,7 @@ type stubConfig struct {
 	providers      []string
 	agentProviders []string
 	tierProviders  []string
+	providerKeyEnv map[string]string // id → api_key_env (RFC BF P2a)
 	backend        string
 	pgDSN          string
 	dataDir        string
@@ -26,10 +27,13 @@ type stubConfig struct {
 func (s *stubConfig) ProviderPriorityList() []string  { return s.providers }
 func (s *stubConfig) AgentProviderHints() []string    { return s.agentProviders }
 func (s *stubConfig) UserTierProviderHints() []string { return s.tierProviders }
-func (s *stubConfig) StorageBackend() string          { return s.backend }
-func (s *stubConfig) StoragePgDSN() string            { return s.pgDSN }
-func (s *stubConfig) StorageDataDir() string          { return s.dataDir }
-func (s *stubConfig) ListenAddrValue() string         { return s.listen }
+func (s *stubConfig) ProviderAPIKeyEnv(id string) string {
+	return s.providerKeyEnv[id]
+}
+func (s *stubConfig) StorageBackend() string  { return s.backend }
+func (s *stubConfig) StoragePgDSN() string    { return s.pgDSN }
+func (s *stubConfig) StorageDataDir() string  { return s.dataDir }
+func (s *stubConfig) ListenAddrValue() string { return s.listen }
 
 // withStubLoader swaps loadConfigForDoctor for the duration of one
 // test. Restored on cleanup so other tests see the real loader.

@@ -598,18 +598,19 @@ func tryProviderFallback(
 		},
 	})
 
-	// Cache-loss event when switching AWAY from Anthropic. The
-	// cache_control breakpoints in the system block (and on system_
-	// prompt segments) are Anthropic-specific; no other provider
-	// carries the equivalent state today. A switch FROM anthropic
-	// means downstream iterations on the new provider get cache-
-	// cold rates. Switches INTO anthropic don't emit this event —
-	// the new provider has no cache to begin with, and Anthropic's
-	// implicit cache will warm naturally.
-	if failedProvider == "anthropic" && newProvider.ID() != "anthropic" {
+	// Cache-loss event when switching AWAY from a native-prompt-cache provider
+	// (Anthropic today) to one without it. The cache_control breakpoints in the
+	// system block (and on system_prompt segments) live only on providers that
+	// advertise NativePromptCache; a switch off one drops that state so downstream
+	// iterations run cache-cold. Keyed on Capabilities().NativePromptCache rather
+	// than the literal id "anthropic" (RFC BF P2a) so an operator who names their
+	// Anthropic provider anything still gets the event, and a hypothetical second
+	// native-cache provider is covered without a code change. Switches INTO a
+	// native-cache provider don't emit — the new provider has no cache to lose.
+	if opts.Provider.Capabilities().NativePromptCache && !newProvider.Capabilities().NativePromptCache {
 		emit(providers.Event{
 			Type: providers.EventCacheInvalidated,
-			Text: fmt.Sprintf("Anthropic cache_control breakpoints lost on switch to %s; this run's downstream iterations will be cache-cold", newProvider.ID()),
+			Text: fmt.Sprintf("native prompt-cache breakpoints lost on switch from %s to %s; this run's downstream iterations will be cache-cold", failedProvider, newProvider.ID()),
 		})
 	}
 
