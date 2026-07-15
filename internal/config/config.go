@@ -4923,12 +4923,17 @@ func validate(c *Config) error {
 	// model aliases) validates against this so a config-declared 3rd-party provider
 	// is accepted while every built-in stays valid.
 	known := c.knownProviderIDs()
+	knownList := make([]string, 0, len(known))
+	for id := range known {
+		knownList = append(knownList, id)
+	}
+	sort.Strings(knownList)
 	// Library-level provider priority — validate every entry is a
 	// known provider name. Empty list is fine (resolver falls back
 	// to its hardcoded default order).
 	for i, p := range c.ProviderPriority {
 		if !known[p] {
-			return fmt.Errorf("provider_priority[%d]: unknown provider %q (want one of anthropic/openai/deepseek/gemini/ollama)", i, p)
+			return fmt.Errorf("provider_priority[%d]: unknown provider %q (known: %v)", i, p, knownList)
 		}
 	}
 	// Search providers (RFC BB): validate the enabled set against the known
