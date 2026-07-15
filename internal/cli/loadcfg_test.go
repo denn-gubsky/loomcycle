@@ -55,3 +55,33 @@ func TestLoadLayeredConfig_NoPresetsUnchanged(t *testing.T) {
 		t.Error("deepseek-pro alias present without presets — layering leaked the base preset")
 	}
 }
+
+// TestLoadLayeredConfig_PrependsDefaultProviders is the RFC BF P3 CLI/server-parity
+// guard: a --config that references a built-in provider (anthropic) with NO
+// providers: block validates through the CLI loader because loadLayeredConfig
+// prepends the embedded default-providers layer — exactly as cmd/loomcycle/main.go
+// does. P3 deleted the hardcoded validation floor, so without the prepend the CLI
+// would falsely reject a config the server runs fine.
+//
+// Fail-before: drop the default-providers prepend in loadLayeredConfig → the first
+// load fails "unknown provider anthropic".
+func TestLoadLayeredConfig_PrependsDefaultProviders(t *testing.T) {
+	t.Setenv("LOOMCYCLE_PRESETS", "")
+	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
+	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "c.yaml")
+	if err := os.WriteFile(cfgPath, []byte("provider_priority: [anthropic]\nagents:\n  a: { provider: anthropic, model: claude }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadLayeredConfig(cfgPath); err != nil {
+		t.Fatalf("a built-in ref without a providers: block was rejected — the default-providers layer isn't prepended: %v", err)
+	}
+
+	// LOOMCYCLE_NO_DEFAULT_PROVIDERS drops the layer → the undeclared built-in ref
+	// must now fail validation (the operator opted into full provider control).
+	t.Setenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS", "1")
+	if _, err := loadLayeredConfig(cfgPath); err == nil {
+		t.Error("with LOOMCYCLE_NO_DEFAULT_PROVIDERS=1 an undeclared built-in ref must fail validation")
+	}
+}

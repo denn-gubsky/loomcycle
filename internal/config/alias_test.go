@@ -43,19 +43,23 @@ func TestValidateTierCandidate_AliasAware(t *testing.T) {
 	models := map[string]ModelRef{
 		"local-qwen": {Provider: "ollama-local", Model: "qwen3.6:max"},
 	}
-	if err := validateTierCandidate(TierCandidate{Model: "local-qwen"}, models, validProviderIDs); err != nil {
+	// RFC BF P3: the hardcoded built-in floor (validProviderIDs) is gone — provider
+	// references validate against the declared providers: keys. Pass an explicit
+	// known set standing in for what the default-providers layer would supply.
+	known := map[string]bool{"deepseek": true, "ollama-local": true}
+	if err := validateTierCandidate(TierCandidate{Model: "local-qwen"}, models, known); err != nil {
 		t.Errorf("bare alias rejected: %v", err)
 	}
-	if err := validateTierCandidate(TierCandidate{Model: "not-an-alias"}, models, validProviderIDs); err == nil {
+	if err := validateTierCandidate(TierCandidate{Model: "not-an-alias"}, models, known); err == nil {
 		t.Error("empty provider + non-alias model accepted, want error")
 	}
-	if err := validateTierCandidate(TierCandidate{Provider: "deepseek", Model: "deepseek-v4-pro"}, models, validProviderIDs); err != nil {
+	if err := validateTierCandidate(TierCandidate{Provider: "deepseek", Model: "deepseek-v4-pro"}, models, known); err != nil {
 		t.Errorf("explicit literal candidate rejected: %v", err)
 	}
-	if err := validateTierCandidate(TierCandidate{Provider: "bogus", Model: "x"}, models, validProviderIDs); err == nil {
+	if err := validateTierCandidate(TierCandidate{Provider: "bogus", Model: "x"}, models, known); err == nil {
 		t.Error("unknown provider accepted, want error")
 	}
-	if err := validateTierCandidate(TierCandidate{Provider: "deepseek"}, models, validProviderIDs); err == nil {
+	if err := validateTierCandidate(TierCandidate{Provider: "deepseek"}, models, known); err == nil {
 		t.Error("explicit provider + empty model accepted, want error")
 	}
 }

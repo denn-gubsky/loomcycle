@@ -142,7 +142,9 @@ agents:
   code-guru:
     system_prompt: review code
 `)
-	cfg, err := Load(bundle, operator)
+	// RFC BF P3: prepend the default-providers layer (as the server/CLI do) so the
+	// operator's `mock` provider reference validates — the hardcoded floor is gone.
+	cfg, err := LoadLayers(withDefaultProviders(Layer{Name: bundle}, Layer{Name: operator})...)
 	if err != nil {
 		t.Fatalf("Load(bundle, operator): %v", err)
 	}
@@ -194,7 +196,9 @@ func TestLoad_PerLayerEnvExpansion(t *testing.T) {
 	dir := t.TempDir()
 	f1 := writeYAML(t, dir, "f1.yaml", "defaults:\n  model: m\n")
 	f2 := writeYAML(t, dir, "f2.yaml", "provider_priority: [\"${LOOMCYCLE_TEST_PROVIDER}\"]\n")
-	cfg, err := Load(f1, f2)
+	// RFC BF P3: prepend the default-providers layer so the expanded `mock`
+	// provider reference validates (the hardcoded floor is gone).
+	cfg, err := LoadLayers(withDefaultProviders(Layer{Name: f1}, Layer{Name: f2})...)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

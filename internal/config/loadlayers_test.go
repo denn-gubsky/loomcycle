@@ -17,7 +17,9 @@ provider_priority: [anthropic, openai]
 models:
   base-sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
 `)
-	cfg, err := LoadLayers(Layer{Name: "base", Data: base}, Layer{Name: overlay})
+	// RFC BF P3: the built-ins are only valid when the default-providers layer is
+	// present (the hardcoded floor is gone), so prepend it — as the server/CLI do.
+	cfg, err := LoadLayers(withDefaultProviders(Layer{Name: "base", Data: base}, Layer{Name: overlay})...)
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
@@ -34,8 +36,13 @@ models:
 // TestLoadLayers_SingleInMemoryLayer: a presets-only stack (one in-memory layer,
 // no disk file) resolves — the bare-start case (RFC AQ §2.2).
 func TestLoadLayers_SingleInMemoryLayer(t *testing.T) {
+	// RFC BF P3: a valid config needs its providers declared (no hardcoded floor).
+	// Declared inline here to keep this the SINGLE-in-memory-layer case the test
+	// exercises (prepending the default-providers layer would make it two).
 	base := []byte(`
 provider_priority: [anthropic]
+providers:
+  anthropic: { driver: anthropic }
 models:
   base-sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
 `)
@@ -56,8 +63,14 @@ models:
 // take the same byte-identical single-file fast path and produce the same result.
 func TestLoadLayers_SingleFileMatchesLoad(t *testing.T) {
 	dir := t.TempDir()
+	// RFC BF P3: providers declared inline so the single-file fast path validates
+	// on BOTH Load and LoadLayers (this test asserts they are byte-identical, so it
+	// can't prepend a default-providers layer to just one side).
 	p := writeYAML(t, dir, "loomcycle.yaml", `
 provider_priority: [anthropic, openai]
+providers:
+  anthropic: { driver: anthropic }
+  openai: { driver: openai }
 `)
 	viaLoad, err := Load(p)
 	if err != nil {

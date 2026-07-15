@@ -3014,15 +3014,6 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	})
 }
 
-// expectedBuiltinProviderIDs is the set the embedded default-providers layer
-// declares. Used only by the boot divergence WARN (RFC BF P2a Deliverable 5) —
-// resolution itself is fully config-driven, this just catches a default-layer
-// typo or a surprise LOOMCYCLE_NO_DEFAULT_PROVIDERS run.
-var expectedBuiltinProviderIDs = []string{
-	"anthropic", "code-js", "deepseek", "gemini", "mock", "mock-stable",
-	"ollama", "ollama-local", "openai",
-}
-
 // newProviderResolver builds every enabled provider from cfg.Providers via the
 // RFC BF driver registry (config-driven flip of the pre-P2a hardcoded per-provider
 // construction). It is byte-identical when no operator `providers:` block is
@@ -3272,9 +3263,10 @@ func providerDisabledReason(id string, pc config.ProviderConfig) string {
 	}
 }
 
-// logProviderSummary logs the config-sourced provider inventory (RFC BF P2a
-// Deliverable 5) + a WARN if the merged config is missing a built-in the
-// default-providers layer should have supplied (catches a default-layer typo).
+// logProviderSummary logs the config-sourced provider inventory. RFC BF P3: the
+// built-ins are now sourced SOLELY from the embedded default-providers layer, so
+// the hardcoded-vs-config divergence WARN (a P2a transition scaffold) is gone —
+// there is no hardcoded expected set left to diverge from.
 func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 	enabled := make([]string, 0, len(pr.byID))
 	for id := range pr.byID {
@@ -3282,15 +3274,6 @@ func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 	}
 	sort.Strings(enabled)
 	log.Printf("providers: %d configured, %d enabled (%s)", len(cfg.Providers), len(pr.byID), strings.Join(enabled, ", "))
-	// Skip the divergence check when the operator deliberately dropped the layer.
-	if os.Getenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS") == "1" {
-		return
-	}
-	for _, id := range expectedBuiltinProviderIDs {
-		if _, ok := cfg.Providers[id]; !ok {
-			log.Printf("providers: WARNING — built-in %q missing from the merged config (default-providers layer dropped or overridden)", id)
-		}
-	}
 }
 
 // toCapabilityPatch translates a config.CapabilityOverride (the `capabilities:`

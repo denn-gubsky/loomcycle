@@ -29,7 +29,10 @@ func TestLoadExample(t *testing.T) {
 	}
 
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-	cfg, err := Load(examplePath)
+	// RFC BF P3: the example config references built-in providers but declares no
+	// providers: block (the server supplies them via the embedded default layer),
+	// so load it WITH that layer — as the running server does.
+	cfg, err := loadWithDefaults(examplePath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -1352,7 +1355,9 @@ user_tiers:
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Load(yamlPath)
+	// RFC BF P3: default-providers layer supplies the built-ins so validation
+	// reaches the badtier typo rather than tripping on the (valid) default tier.
+	_, err := loadWithDefaults(yamlPath)
 	if err == nil {
 		t.Fatal("expected validation error for unknown provider")
 	}
@@ -1387,7 +1392,7 @@ user_tiers:
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load(yamlPath)
+	cfg, err := loadWithDefaults(yamlPath) // RFC BF P3: built-ins via the default-providers layer
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -1424,7 +1429,9 @@ user_tiers:
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Load(yamlPath)
+	// RFC BF P3: built-ins via the default-providers layer so validation reaches
+	// the negative max_fallback_attempts check rather than the provider check.
+	_, err := loadWithDefaults(yamlPath)
 	if err == nil {
 		t.Fatal("expected error for negative max_fallback_attempts")
 	}

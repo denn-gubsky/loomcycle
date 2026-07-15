@@ -4528,54 +4528,49 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// validProviderIDs is the built-in provider FLOOR — the ids the pre-RFC-BF
-// resolver hardcoded. RFC BF P2a: provider references (agent pins, tier
-// candidates, model aliases, provider_priority) validate against
-// knownProviderIDs() = this floor UNION the operator's declared `providers:` keys,
-// so a config-declared 3rd-party provider validates too, while every existing
-// config stays valid whether or not it declares a `providers:` block. Kept as a
-// floor (not replaced by cfg.Providers keys) because validate() also runs on
-// configs assembled WITHOUT the embedded default-providers layer — CLI/unit
-// paths, and LOOMCYCLE_NO_DEFAULT_PROVIDERS — where the built-ins would otherwise
-// vanish from the valid set.
-var validProviderIDs = map[string]bool{
-	"anthropic":    true,
-	"openai":       true,
-	"deepseek":     true,
-	"ollama":       true, // hosted ollama.com (Bearer auth)
-	"ollama-local": true, // local-network Ollama (no auth)
-	"gemini":       true,
-	// v0.11.9 — opt-in OAuth-dev provider. config-load accepts the ID;
-	// the resolver returns a clear "not registered" error at request
-	// time if LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 isn't set or no
-	// token file exists. See docs/PROVIDERS.md.
+// residualProviderIDs are the provider ids valid to REFERENCE but deliberately
+// NOT declared in the `providers:` map — today just anthropic-oauth-dev. RFC BF
+// locked decision #7 keeps it a thin hardcoded registration (its background token
+// Refresher lifecycle is main-owned), so it is neither a registry driver nor a
+// providers.default.yaml entry, yet an operator may still name it in a tier /
+// priority list.
+//
+// RFC BF P3 deleted the old built-in FLOOR: the six real providers +
+// mock/mock-stable/code-js now come SOLELY from the embedded default-providers
+// layer (→ cfg.Providers), which BOTH the server (cmd/loomcycle/main.go) and the
+// CLI (internal/cli.loadLayeredConfig) prepend. Under LOOMCYCLE_NO_DEFAULT_PROVIDERS
+// the operator takes full control and must declare its own `providers:` block;
+// only this residual stays referenceable without one.
+var residualProviderIDs = map[string]bool{
 	"anthropic-oauth-dev": true,
-	// v0.12.8 — synthetic mock provider for cost-free stress testing.
-	// config-load accepts the ID; the resolver returns a clear "not
-	// configured" error at request time if LOOMCYCLE_MOCK_ENABLED=1
-	// isn't set. See internal/providers/mock/driver.go.
-	"mock": true,
-	// v0.12.9 — companion stable variant; same gate as `mock`.
-	// Lets operators configure tier candidate lists like
-	// `[{provider: mock, ...}, {provider: mock-stable, ...}]` for
-	// fallback-recovery testing without a real second provider.
-	"mock-stable": true,
 }
 
-// knownProviderIDs is the set a provider reference may name: the built-in floor
-// (validProviderIDs) UNION the operator's declared `providers:` keys (RFC BF P2a).
-// A declared 3rd-party provider validates in tier candidates / agent pins /
-// provider_priority / model aliases; the built-ins always validate so no existing
-// config regresses.
+// knownProviderIDs is the set a provider reference may name: the operator's
+// declared `providers:` keys (the embedded default-providers layer supplies the
+// built-ins) UNION the anthropic-oauth-dev residual (RFC BF P3). A declared
+// 3rd-party provider validates in tier candidates / agent pins / provider_priority
+// / model aliases.
 func (c *Config) knownProviderIDs() map[string]bool {
-	out := make(map[string]bool, len(validProviderIDs)+len(c.Providers))
-	for id := range validProviderIDs {
+	out := make(map[string]bool, len(residualProviderIDs)+len(c.Providers))
+	for id := range residualProviderIDs {
 		out[id] = true
 	}
 	for id := range c.Providers {
 		out[id] = true
 	}
 	return out
+}
+
+// sortedProviderIDs returns the keys of a known-provider set in deterministic
+// order — for the "unknown provider" validation messages, so the hint reflects
+// the config's ACTUAL declared providers rather than a frozen hardcoded list.
+func sortedProviderIDs(known map[string]bool) []string {
+	ids := make([]string, 0, len(known))
+	for id := range known {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // validTierNames is the closed set of tier names. Operators choose
@@ -4928,7 +4923,7 @@ func validate(c *Config) error {
 	// to its hardcoded default order).
 	for i, p := range c.ProviderPriority {
 		if !known[p] {
-			return fmt.Errorf("provider_priority[%d]: unknown provider %q (want one of anthropic/openai/deepseek/gemini/ollama)", i, p)
+			return fmt.Errorf("provider_priority[%d]: unknown provider %q (declare it under providers:; known: %v)", i, p, sortedProviderIDs(known))
 		}
 	}
 	// Search providers (RFC BB): validate the enabled set against the known

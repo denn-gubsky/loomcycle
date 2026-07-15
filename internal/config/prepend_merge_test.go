@@ -117,7 +117,10 @@ func TestLoad_PrependNotAConflictUnderStrict(t *testing.T) {
 	dir := t.TempDir()
 	base := writeYAML(t, dir, "base.yaml", "provider_priority: [deepseek]\n")
 	over := writeYAML(t, dir, "over.yaml", "provider_priority: !prepend [anthropic]\n")
-	cfg, err := Load(base, over)
+	// RFC BF P3: prepend the default-providers layer so deepseek/anthropic validate
+	// (no hardcoded floor). It sets only providers:, so it neither participates in
+	// the !prepend compose nor trips STRICT (no cross-layer key clobber).
+	cfg, err := LoadLayers(withDefaultProviders(Layer{Name: base}, Layer{Name: over})...)
 	if err != nil {
 		t.Fatalf("strict Load with a !prepend merge should succeed: %v", err)
 	}
@@ -141,7 +144,9 @@ tiers:
 tiers:
   middle: !prepend [oauth-sonnet]
 `)
-	cfg, err := Load(base, over)
+	// RFC BF P3: prepend the default-providers layer so the `deepseek` alias
+	// provider validates (anthropic-oauth-dev stays valid as the residual).
+	cfg, err := LoadLayers(withDefaultProviders(Layer{Name: base}, Layer{Name: over})...)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

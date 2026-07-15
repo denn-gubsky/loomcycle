@@ -10,15 +10,21 @@ import (
 
 // layersFor resolves embedded unit names to config layers, the same mapping
 // main() does for LOOMCYCLE_PRESETS (kept in lockstep with selectPresetLayers).
+// RFC BF P3: it prepends the embedded default-providers layer as the base — the
+// SOLE source of the built-in providers now that the hardcoded validation floor
+// is gone — exactly as main() assembles the real stack. Without it, a preset
+// stack that references built-ins in provider_priority/tiers would fail to
+// validate.
 func layersFor(t *testing.T, names ...string) []config.Layer {
 	t.Helper()
 	units, err := embedded.ResolveUnits(names)
 	if err != nil {
 		t.Fatalf("ResolveUnits(%v): %v", names, err)
 	}
-	layers := make([]config.Layer, len(units))
-	for i, u := range units {
-		layers[i] = config.Layer{Name: u.Name, Data: u.Data}
+	layers := make([]config.Layer, 0, len(units)+1)
+	layers = append(layers, config.Layer{Name: "providers.default", Data: embedded.DefaultProviders()})
+	for _, u := range units {
+		layers = append(layers, config.Layer{Name: u.Name, Data: u.Data})
 	}
 	return layers
 }

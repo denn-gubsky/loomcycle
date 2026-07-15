@@ -146,6 +146,10 @@ func TestValidate_ThirdPartyProvider_AcceptedAsReference(t *testing.T) {
 			Providers: map[string]ProviderConfig{
 				// A self-hosted OpenAI-compatible mirror declared by the operator.
 				"my-vllm": {Driver: "openai", BaseURL: "http://vllm.local", APIKeyEnv: "MY_VLLM_KEY"},
+				// RFC BF P3: built-ins have no hardcoded floor — a raw Config passed to
+				// validate() must declare every provider it references (the default
+				// layer does this in the real load path).
+				"anthropic": {Driver: "anthropic"},
 			},
 			ProviderPriority: []string{"my-vllm", "anthropic"},
 			Tiers:            map[string][]TierCandidate{"middle": {{Provider: "my-vllm", Model: "qwen"}}},
@@ -156,7 +160,8 @@ func TestValidate_ThirdPartyProvider_AcceptedAsReference(t *testing.T) {
 		t.Errorf("declared 3rd-party provider rejected as reference: %v", err)
 	}
 
-	// An UNDECLARED id must still fail — the floor + declared set is the ceiling.
+	// An UNDECLARED id must still fail — the declared providers: set (+ the
+	// anthropic-oauth-dev residual) is the ceiling (RFC BF P3 removed the floor).
 	bad := base()
 	bad.ProviderPriority = []string{"ghost"}
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "unknown provider") {
@@ -164,10 +169,54 @@ func TestValidate_ThirdPartyProvider_AcceptedAsReference(t *testing.T) {
 	}
 }
 
-// TestValidate_ModelAliasProvider covers the new models[*].provider check: a
-// built-in provider on an alias passes (floor), a declared 3rd-party passes, and
-// a bogus provider is rejected. An empty-provider alias is left to the pin/tier
-// that names it, so it must NOT be rejected here.
+// TestValidate_NoBuiltinFloor_AfterP3 locks the RFC BF P3 removal of the hardcoded
+// built-in provider floor: a config that references a built-in (anthropic) with no
+// providers: block (and no default-providers layer) is REJECTED. Fail-before: on
+// the pre-P3 9-id floor, anthropic was always "known" and this validated.
+func TestValidate_NoBuiltinFloor_AfterP3(t *testing.T) {
+	cfg := &Config{
+		Defaults:         Defaults{Provider: "anthropic", Model: "x"},
+		Concurrency:      Concurrency{MaxConcurrentRuns: 1},
+		ProviderPriority: []string{"anthropic"},
+	}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Errorf("validate() = %v; want an unknown-provider error (P3 removed the built-in floor)", err)
+	}
+}
+
+// TestValidate_OAuthDevResidualValidWithoutDeclaration locks RFC BF locked decision
+// #7 through P3: anthropic-oauth-dev is NOT in the providers: map (it is a residual
+// hardcoded registration, never a registry driver nor a default-providers entry)
+// yet stays a valid provider reference with no declaration.
+func TestValidate_OAuthDevResidualValidWithoutDeclaration(t *testing.T) {
+	cfg := &Config{
+		Defaults:         Defaults{Provider: "anthropic-oauth-dev", Model: "x"},
+		Concurrency:      Concurrency{MaxConcurrentRuns: 1},
+		ProviderPriority: []string{"anthropic-oauth-dev"},
+	}
+	if err := validate(cfg); err != nil {
+		t.Errorf("anthropic-oauth-dev residual rejected without a providers: entry: %v", err)
+	}
+}
+
+// TestValidate_BuiltinValidViaDefaultProvidersLayer proves the built-ins ARE valid
+// once the embedded default-providers layer supplies them (the P3 sole source) —
+// the same layer the server and CLI prepend. This is the back-compat guarantee: a
+// providers:-less operator config still validates in the real load path.
+func TestValidate_BuiltinValidViaDefaultProvidersLayer(t *testing.T) {
+	overlay := []byte("defaults: { provider: anthropic, model: x }\nprovider_priority: [anthropic]\nconcurrency: { max_concurrent_runs: 1 }\n")
+	if _, err := LoadLayers(withDefaultProviders(Layer{Name: "overlay", Data: overlay})...); err != nil {
+		t.Errorf("built-in anthropic rejected even WITH the default-providers layer: %v", err)
+	}
+}
+
+// TestValidate_ModelAliasProvider covers the models[*].provider check: a declared
+// provider on an alias passes, a declared 3rd-party passes, and a bogus provider
+// is rejected. An empty-provider alias is left to the pin/tier that names it, so
+// it must NOT be rejected here. RFC BF P3: there is no built-in floor — a
+// referenced built-in must be declared (the default layer does this in the real
+// load path; here it's declared inline).
 func TestValidate_ModelAliasProvider(t *testing.T) {
 	base := func(models map[string]ModelRef, providers map[string]ProviderConfig) *Config {
 		return &Config{
@@ -177,8 +226,11 @@ func TestValidate_ModelAliasProvider(t *testing.T) {
 			Providers:   providers,
 		}
 	}
-	if err := validate(base(map[string]ModelRef{"a": {Provider: "anthropic", Model: "claude"}}, nil)); err != nil {
-		t.Errorf("built-in alias provider rejected: %v", err)
+	if err := validate(base(
+		map[string]ModelRef{"a": {Provider: "anthropic", Model: "claude"}},
+		map[string]ProviderConfig{"anthropic": {Driver: "anthropic"}},
+	)); err != nil {
+		t.Errorf("declared built-in alias provider rejected: %v", err)
 	}
 	if err := validate(base(
 		map[string]ModelRef{"a": {Provider: "my-vllm", Model: "qwen"}},
