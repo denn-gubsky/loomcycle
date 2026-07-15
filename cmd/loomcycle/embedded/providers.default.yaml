@@ -1,0 +1,53 @@
+# providers.default.yaml — RFC BF P2a embedded default-providers layer.
+#
+# Declares EVERY provider the pre-P2a hardcoded resolver built, and NOTHING else
+# (no models/tiers/user_tiers — those would clobber an operator's config). This
+# is why it is a separate layer rather than part of base.yaml. cmd/loomcycle
+# prepends it as the UNCONDITIONAL base of the config stack (before any opt-in
+# preset), so a config with no `providers:` block resolves providers exactly as
+# it did before P2a. Operator `providers:` entries deep-merge OVER this layer
+# (last wins), and the whole layer is skipped when LOOMCYCLE_NO_DEFAULT_PROVIDERS=1.
+#
+# base_url is deliberately EMPTY for every entry: cmd/loomcycle's toDriverOptions
+# supplies the per-provider env/driver default (DEEPSEEK_BASE_URL / GEMINI_BASE_URL
+# / OLLAMA_BASE_URL / OLLAMA_CLOUD_BASE_URL — incl. the OLLAMA_BASE_URL=disabled
+# opt-out) so this file hardcodes no endpoint. api_key_env is a NAME, never a value.
+providers:
+  anthropic:
+    driver: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+  openai:
+    driver: openai
+    api_key_env: OPENAI_API_KEY
+  gemini:
+    driver: gemini
+    api_key_env: GEMINI_API_KEY
+  deepseek:
+    driver: deepseek
+    api_key_env: DEEPSEEK_API_KEY
+  ollama:
+    # Hosted ollama.com — Bearer auth via OLLAMA_API_KEY; base URL from
+    # OLLAMA_CLOUD_BASE_URL (default https://ollama.com). num_ctx flows in from
+    # LOOMCYCLE_OLLAMA_NUM_CTX via toDriverOptions.
+    driver: ollama
+    api_key_env: OLLAMA_API_KEY
+    options: {}
+  ollama-local:
+    # Local-network Ollama — keyless; reachability + base URL from OLLAMA_BASE_URL
+    # (default http://localhost:11434; OLLAMA_BASE_URL=disabled opts out). num_ctx
+    # and num_gpu flow in from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX / _NUM_GPU via
+    # toDriverOptions.
+    driver: ollama
+    options: {}
+  mock:
+    # Synthetic cost-free provider — gated on LOOMCYCLE_MOCK_ENABLED=1.
+    driver: mock
+  mock-stable:
+    # Companion mock with failure injection pinned off (fallback-recovery target).
+    driver: mock
+    options:
+      stable: true
+  code-js:
+    # Synthetic goja provider — gated on LOOMCYCLE_CODE_AGENTS_ENABLED=1;
+    # code_root/deterministic/run_timeout flow from the LOOMCYCLE_CODE_AGENTS_* env.
+    driver: code-js

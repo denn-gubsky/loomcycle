@@ -33,6 +33,16 @@ var bundleFS embed.FS
 //go:embed env.insecure.example
 var envInsecureExample []byte
 
+// providers.default.yaml — RFC BF P2a. A `providers:`-ONLY config layer declaring
+// every provider the pre-P2a hardcoded resolver built. cmd/loomcycle prepends it
+// as the unconditional base of the config stack (unless LOOMCYCLE_NO_DEFAULT_PROVIDERS=1)
+// so a config with no `providers:` block resolves providers byte-identically to
+// pre-P2a. It is NOT a selectable preset/bundle (not under presets/ or bundles/)
+// — it is always the base, never chosen by name.
+//
+//go:embed providers.default.yaml
+var providersDefault []byte
+
 // Unit is one embedded, selectable config layer — a preset or a bundle.
 type Unit struct {
 	Name        string // selector name (filename without .yaml)
@@ -134,6 +144,11 @@ func ResolveUnits(names []string) ([]Unit, error) {
 // EnvTemplate returns the embedded env.insecure.example (for `loomcycle
 // env-template` and RFC AR's install dialog).
 func EnvTemplate() []byte { return envInsecureExample }
+
+// DefaultProviders returns the embedded providers.default.yaml bytes — the RFC BF
+// P2a unconditional base layer (see providersDefault). cmd/loomcycle wraps it in a
+// config.Layer and prepends it under any opt-in preset.
+func DefaultProviders() []byte { return providersDefault }
 
 func unitNames() []string {
 	out := make([]string, 0, len(units))
