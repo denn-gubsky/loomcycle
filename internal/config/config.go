@@ -73,6 +73,15 @@ type Config struct {
 	// TAVILY_API_KEY), overridable per-tenant via CredentialDef.
 	SearchProviders map[string]SearchProviderConfig `yaml:"search_providers"`
 
+	// Providers is the RFC BF config-driven LLM provider registry: each entry
+	// declares one provider instance (its driver, wire dialect, base URL, key
+	// env, concurrency, driver options, capability overrides) keyed by the
+	// provider id agents reference in `provider:`. Empty = the hardcoded
+	// env-driven resolver in cmd/loomcycle is authoritative (P1 default — this
+	// block is parsed + validated but not yet consumed on the hot path; P2 wires
+	// it into the resolver). See ProviderConfig.
+	Providers map[string]ProviderConfig `yaml:"providers"`
+
 	// SearchPriority is the global default fallback order the WebSearch tool
 	// walks when an agent declares no per-agent `search_providers:` list.
 	// Every entry must be an enabled SearchProviders key. Empty = the enabled
@@ -569,6 +578,61 @@ type TierCandidate struct {
 // from the env var the driver names); SearXNG needs its self-hosted base_url.
 type SearchProviderConfig struct {
 	BaseURL string `json:"base_url,omitempty" yaml:"base_url"` // SearXNG only, e.g. http://searxng:8080
+}
+
+// ProviderConfig is one entry in the RFC BF `providers:` map — a config-declared
+// LLM provider instance. The map key is the provider id agents reference in
+// `provider:` (e.g. "anthropic", "ollama-local"); this struct says which driver
+// serves it and how it is wired. Additive in P1: parsed + lightly validated but
+// not yet consumed by the resolver (cmd/loomcycle's hardcoded construction stays
+// authoritative until P2 flips the seam).
+//
+// The json: tags mirror SearchProviderConfig's style so an admin JSON surface
+// can serialize the block; the resolver ordering — not this shape — carries the
+// substrate content_sha256 concerns.
+type ProviderConfig struct {
+	// Driver names the compiled-in driver that serves this provider (one of
+	// providers.RegisteredDrivers() — anthropic/openai/gemini/ollama/deepseek/
+	// mock/code-js). Required. The driver-name-against-registry cross-check is
+	// deferred to P2 (config.go must not import internal/providers in P1).
+	Driver string `json:"driver" yaml:"driver"`
+	// Dialect selects the wire dialect when a driver speaks more than one; empty
+	// = the driver's canonical default. Validated against the driver's dialect
+	// set in P2 (registry-aware).
+	Dialect string `json:"dialect,omitempty" yaml:"dialect,omitempty"`
+	// BaseURL overrides the driver's default endpoint (self-hosted mirror, Vertex
+	// Gemini, local Ollama, …). Empty = driver default.
+	BaseURL string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
+	// APIKeyEnv is the env-var NAME (never the value) whose credential keys this
+	// provider and can be overridden per-tenant (RFC AR). Empty = the driver's
+	// built-in default (e.g. OPENAI_API_KEY).
+	APIKeyEnv string `json:"api_key_env,omitempty" yaml:"api_key_env,omitempty"`
+	// MaxConcurrent caps in-flight calls to this provider. 0 = unbounded (the
+	// current behaviour). Must be >= 0.
+	MaxConcurrent int `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty"`
+	// Options carries driver-specific tuning (ollama num_ctx/num_gpu, code-js
+	// code_root, …), passed opaquely to the driver factory. Unknown keys are
+	// logged and ignored by the driver, never fatal.
+	Options map[string]any `json:"options,omitempty" yaml:"options,omitempty"`
+	// Capabilities is an optional operator override of the driver's advertised
+	// Capabilities (a model behind an OpenAI-compatible base URL that DOES
+	// support vision, say). Nil = advertise the driver defaults.
+	Capabilities *CapabilityOverride `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+}
+
+// CapabilityOverride is the operator-facing override of a driver's advertised
+// providers.Capabilities (RFC BF), under a `providers:` entry's `capabilities:`
+// block. Every field is a pointer so "unset" (nil) is distinct from "false"/"0":
+// an override that only flips one capability must not silently zero the rest.
+// The nil-safe overlay lives on the providers side (providers.CapabilityPatch);
+// cmd/loomcycle translates this → that at the composition root.
+type CapabilityOverride struct {
+	SupportsThinking  *bool `json:"supports_thinking,omitempty" yaml:"supports_thinking,omitempty"`
+	SupportsVision    *bool `json:"supports_vision,omitempty" yaml:"supports_vision,omitempty"`
+	SupportsEffort    *bool `json:"supports_effort,omitempty" yaml:"supports_effort,omitempty"`
+	NativePromptCache *bool `json:"native_prompt_cache,omitempty" yaml:"native_prompt_cache,omitempty"`
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty" yaml:"parallel_tool_calls,omitempty"`
+	MaxContextTokens  *int  `json:"max_context_tokens,omitempty" yaml:"max_context_tokens,omitempty"`
 }
 
 // SearchHostKey returns the operator host API key for a search-provider id
@@ -4815,6 +4879,22 @@ func validate(c *Config) error {
 	for i, id := range c.SearchPriority {
 		if !enabledSearch[id] {
 			return fmt.Errorf("search_priority[%d]: %q is not an enabled search_providers entry", i, id)
+		}
+	}
+	// RFC BF provider registry (P1): light structural validation only. Each
+	// declared entry needs a driver and a non-negative concurrency cap. The
+	// registry-aware checks — driver name ∈ providers.RegisteredDrivers(),
+	// dialect ∈ the driver's set, models[*].provider ∈ this map — are P2, where
+	// the resolver (which may import internal/providers) becomes authoritative;
+	// config.go stays free of an internal/providers import in P1. An absent
+	// `providers:` block skips the loop entirely, so every existing config
+	// validates identically.
+	for id, pc := range c.Providers {
+		if strings.TrimSpace(pc.Driver) == "" {
+			return fmt.Errorf("providers.%s: driver is required", id)
+		}
+		if pc.MaxConcurrent < 0 {
+			return fmt.Errorf("providers.%s: max_concurrent must be >= 0", id)
 		}
 	}
 	// Library-level tier definitions.
