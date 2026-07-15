@@ -76,10 +76,11 @@ type Config struct {
 	// Providers is the RFC BF config-driven LLM provider registry: each entry
 	// declares one provider instance (its driver, wire dialect, base URL, key
 	// env, concurrency, driver options, capability overrides) keyed by the
-	// provider id agents reference in `provider:`. Empty = the hardcoded
-	// env-driven resolver in cmd/loomcycle is authoritative (P1 default — this
-	// block is parsed + validated but not yet consumed on the hot path; P2 wires
-	// it into the resolver). See ProviderConfig.
+	// provider id agents reference in `provider:`. The resolver builds every
+	// enabled provider from this map via the driver registry; the embedded
+	// default-providers layer supplies the built-ins, so an operator adds a
+	// 3rd-party provider by declaring another entry here (or drops the built-ins
+	// with LOOMCYCLE_NO_DEFAULT_PROVIDERS). See ProviderConfig.
 	Providers map[string]ProviderConfig `yaml:"providers"`
 
 	// SearchPriority is the global default fallback order the WebSearch tool
@@ -583,9 +584,9 @@ type SearchProviderConfig struct {
 // ProviderConfig is one entry in the RFC BF `providers:` map — a config-declared
 // LLM provider instance. The map key is the provider id agents reference in
 // `provider:` (e.g. "anthropic", "ollama-local"); this struct says which driver
-// serves it and how it is wired. Additive in P1: parsed + lightly validated but
-// not yet consumed by the resolver (cmd/loomcycle's hardcoded construction stays
-// authoritative until P2 flips the seam).
+// serves it and how it is wired. The resolver constructs every enabled provider
+// from these entries via the driver registry (providers.NewDriver); the embedded
+// default-providers layer declares the built-ins.
 //
 // The json: tags mirror SearchProviderConfig's style so an admin JSON surface
 // can serialize the block; the resolver ordering — not this shape — carries the

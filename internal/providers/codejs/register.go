@@ -15,12 +15,12 @@ func init() {
 	providers.RegisterDriver("code-js", []string{"code-js"}, newFromOptions)
 }
 
-// newFromOptions builds a code-js Provider from the registry DriverOptions. P1
-// equivalent of cmd/loomcycle/main.go's hardcoded codejs.New(codejs.Config{});
-// NOT yet on the hot path (P2 wires the registry into the resolver). code-js has
-// no HTTP shape — its Config comes from the options map (code_root /
-// deterministic / run_timeout_seconds), a natural mapping for when P2 sources it
-// from a `providers:` entry rather than the env.
+// newFromOptions builds a code-js Provider from the registry DriverOptions — the
+// config-driven construction the resolver uses (the RFC BF replacement for the
+// pre-registry hardcoded codejs.New(codejs.Config{})). code-js has no HTTP shape
+// — its Config comes from the options map (code_root / deterministic /
+// run_timeout_seconds), which cmd/loomcycle's toDriverOptions populates from the
+// LOOMCYCLE_CODE_AGENTS_* env (an explicit `providers:` entry overrides that).
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	cfg := Config{Logf: o.Logf}
 	if root, ok := providers.StringOption(o.Options, "code_root"); ok {
