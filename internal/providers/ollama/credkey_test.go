@@ -15,7 +15,7 @@ func TestCallKey_HostedOverride_LocalNever(t *testing.T) {
 		return providers.CredentialResolution{Value: "tenant-ollama"}, name == "OLLAMA_API_KEY"
 	})
 
-	hosted := &Driver{providerID: "ollama", apiKey: "host-key"}
+	hosted := &Driver{providerID: "ollama", apiKey: "host-key", keyEnvName: "OLLAMA_API_KEY"}
 	if got, _, _, err := hosted.resolveKey(ctx); err != nil || got != "tenant-ollama" {
 		t.Errorf("hosted with override: resolveKey = (%q, %v), want (tenant-ollama, nil)", got, err)
 	}
@@ -35,7 +35,7 @@ func TestCallKey_HostedOverride_LocalNever(t *testing.T) {
 func TestResolveKey_RestrictedHostedRefuses_LocalUnaffected(t *testing.T) {
 	restricted := providers.WithOperatorKeyAllowed(context.Background(), false)
 
-	hosted := &Driver{providerID: "ollama", apiKey: "host-key"}
+	hosted := &Driver{providerID: "ollama", apiKey: "host-key", keyEnvName: "OLLAMA_API_KEY"}
 	if got, _, _, err := hosted.resolveKey(restricted); !errors.Is(err, providers.ErrOperatorKeyForbidden) || got != "" {
 		t.Errorf("hosted restricted: (%q, %v), want (\"\", ErrOperatorKeyForbidden)", got, err)
 	}

@@ -9,7 +9,7 @@ import (
 )
 
 func TestCallKey_OverridesHostKey(t *testing.T) {
-	d := &Driver{apiKey: "host-key"}
+	d := &Driver{apiKey: "host-key", keyEnvName: "GEMINI_API_KEY"}
 	if got, _, _, err := d.resolveKey(context.Background()); err != nil || got != "host-key" {
 		t.Errorf("no resolver: resolveKey = (%q, %v), want (host-key, nil)", got, err)
 	}
@@ -23,7 +23,7 @@ func TestCallKey_OverridesHostKey(t *testing.T) {
 
 // RFC AX: a restricted run with no override refuses with ErrOperatorKeyForbidden.
 func TestResolveKey_RestrictedRefusesHostKey(t *testing.T) {
-	d := &Driver{apiKey: "host-key"}
+	d := &Driver{apiKey: "host-key", keyEnvName: "GEMINI_API_KEY"}
 	restricted := providers.WithOperatorKeyAllowed(context.Background(), false)
 	if got, _, _, err := d.resolveKey(restricted); !errors.Is(err, providers.ErrOperatorKeyForbidden) || got != "" {
 		t.Errorf("restricted, no override: (%q, %v), want (\"\", ErrOperatorKeyForbidden)", got, err)

@@ -12,7 +12,7 @@ import (
 // (and the resolved scope is reported for usage attribution); a run without one
 // uses the operator host key with source "operator" (RFC AR / RFC AV).
 func TestResolveKey_OverridesHostKey(t *testing.T) {
-	d := &Driver{apiKey: "host-key"}
+	d := &Driver{apiKey: "host-key", keyEnvName: "ANTHROPIC_API_KEY"}
 
 	if key, source, _, err := d.resolveKey(context.Background()); err != nil || key != "host-key" || source != "operator" {
 		t.Errorf("no resolver: (%q, %q, %v), want (host-key, operator, nil)", key, source, err)
@@ -42,7 +42,7 @@ func TestResolveKey_OverridesHostKey(t *testing.T) {
 // override still wins regardless of the restriction; an allowed run uses the
 // host key as before.
 func TestResolveKey_RestrictedRefusesHostKey(t *testing.T) {
-	d := &Driver{apiKey: "host-key"}
+	d := &Driver{apiKey: "host-key", keyEnvName: "ANTHROPIC_API_KEY"}
 
 	restricted := providers.WithOperatorKeyAllowed(context.Background(), false)
 	if key, _, _, err := d.resolveKey(restricted); !errors.Is(err, providers.ErrOperatorKeyForbidden) || key != "" {

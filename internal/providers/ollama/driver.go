@@ -55,6 +55,13 @@ type Driver struct {
 	idleTimeout time.Duration
 	numCtx      int // 0 = omit (Ollama server default applies)
 	numGpu      int // 0 = omit (Ollama auto-detects GPU layers); >0 forces offload
+	// keyEnvName is the env-var NAME whose tenant/user credential overrides the
+	// host key (RFC AR/AX), and whether this registration is keyable at all: ""
+	// means keyless (ollama-local) so resolveKey bypasses the RFC AX backstop.
+	// New() derives it from providerID ("ollama"→OLLAMA_API_KEY, else ""); a
+	// config-declared api_key_env re-points it via SetKeyEnvName so a custom-id
+	// ollama-driver provider resolves tenant overrides under its OWN var.
+	keyEnvName string
 	// capsPatch is an optional operator override applied inside Capabilities()
 	// (RFC BF). Nil = advertise the driver defaults. ID() already comes from
 	// providerID, so no separate id field is needed here.
@@ -92,8 +99,22 @@ func New(providerID, apiKey, baseURL string, streamOpts streamhttp.Options, http
 	if httpClient == nil {
 		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{providerID: providerID, apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
+	// Only the hosted "ollama" registration has an operator key to protect;
+	// "ollama-local" (and any other id) is keyless by default until a
+	// config-declared api_key_env re-points it via SetKeyEnvName.
+	keyEnvName := ""
+	if providerID == "ollama" {
+		keyEnvName = "OLLAMA_API_KEY"
+	}
+	return &Driver{providerID: providerID, apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout, keyEnvName: keyEnvName}
 }
+
+// SetKeyEnvName overrides the env-var name whose tenant/user credential shadows
+// the host key (RFC AR). New() derives it from providerID; the RFC BF registry
+// factory forwards a config-declared api_key_env through here so a custom-id
+// ollama-driver provider's tenant overrides resolve under the SAME var the host
+// key was read from. A non-empty name also makes the provider keyable (RFC AX).
+func (d *Driver) SetKeyEnvName(name string) { d.keyEnvName = name }
 
 // WithNumCtx sets the Ollama options.num_ctx that the driver includes
 // on every chat request. Returns the same Driver for chaining at
@@ -238,22 +259,18 @@ func (d *Driver) ID() string { return d.providerID }
 // (RFC AV). Model-availability probes (queryLoadedContext) stay on the operator
 // key.
 func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string, err error) {
-	if d.providerID == "ollama" {
-		return providers.ResolveKeyOrOperator(ctx, "OLLAMA_API_KEY", d.apiKey)
+	if d.keyEnvName != "" {
+		return providers.ResolveKeyOrOperator(ctx, d.keyEnvName, d.apiKey)
 	}
 	return d.apiKey, "operator", "", nil
 }
 
 // KeyEnvName reports the env-var name whose tenant/user credential can key this
-// provider (RFC AX Layer-1 routing). Only the hosted "ollama" registration has
-// an operator key to protect; "ollama-local" returns "" so it is always keyable
-// (a restricted run may always route to a keyless local endpoint).
-func (d *Driver) KeyEnvName() string {
-	if d.providerID == "ollama" {
-		return "OLLAMA_API_KEY"
-	}
-	return ""
-}
+// provider (RFC AX Layer-1 routing). Empty for a keyless registration
+// ("ollama-local" by default) so it is always keyable (a restricted run may
+// always route to a keyless local endpoint). A config-declared api_key_env
+// (via SetKeyEnvName) makes a custom-id ollama provider keyable under its own var.
+func (d *Driver) KeyEnvName() string { return d.keyEnvName }
 
 func (d *Driver) Capabilities() providers.Capabilities {
 	return d.capsPatch.Apply(providers.Capabilities{

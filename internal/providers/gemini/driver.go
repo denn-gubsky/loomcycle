@@ -59,6 +59,12 @@ type Driver struct {
 	// id is the provider identity reported by ID(). Defaults to "gemini" in
 	// New(); the RFC BF driver registry sets it from DriverOptions.ID.
 	id string
+	// keyEnvName is the env-var NAME whose tenant/user credential overrides the
+	// host key (RFC AR/AX). Defaults to "GEMINI_API_KEY" in New(); a
+	// config-declared api_key_env re-points it via SetKeyEnvName so a custom-id
+	// gemini provider resolves tenant overrides under its OWN var, matching the
+	// var toDriverOptions already sourced the host key from.
+	keyEnvName string
 	// capsPatch is an optional operator override applied inside Capabilities()
 	// (RFC BF). Nil = advertise the driver defaults.
 	capsPatch *providers.CapabilityPatch
@@ -79,10 +85,17 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 	if httpClient == nil {
 		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout, id: "gemini"}
+	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout, id: "gemini", keyEnvName: "GEMINI_API_KEY"}
 }
 
 func (d *Driver) ID() string { return d.id }
+
+// SetKeyEnvName overrides the env-var name whose tenant/user credential shadows
+// the host key (RFC AR). New() defaults it to GEMINI_API_KEY; the RFC BF registry
+// factory forwards a config-declared api_key_env through here so a custom-id
+// gemini provider's tenant overrides resolve under the SAME var the host key was
+// read from.
+func (d *Driver) SetKeyEnvName(name string) { d.keyEnvName = name }
 
 // resolveKey returns the API key to authenticate an inference request AND which
 // credential scope it came from. A tenant/user credential named GEMINI_API_KEY
@@ -93,12 +106,12 @@ func (d *Driver) ID() string { return d.id }
 // Model-availability probes (fetchModels) stay on the host key — which models
 // are reachable is an operator concern.
 func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string, err error) {
-	return providers.ResolveKeyOrOperator(ctx, "GEMINI_API_KEY", d.apiKey)
+	return providers.ResolveKeyOrOperator(ctx, d.keyEnvName, d.apiKey)
 }
 
 // KeyEnvName reports the env-var name whose tenant/user credential can key this
-// provider (RFC AX Layer-1 routing). Same literal resolveKey resolves.
-func (d *Driver) KeyEnvName() string { return "GEMINI_API_KEY" }
+// provider (RFC AX Layer-1 routing). Same var resolveKey resolves.
+func (d *Driver) KeyEnvName() string { return d.keyEnvName }
 
 func (d *Driver) Capabilities() providers.Capabilities {
 	return d.capsPatch.Apply(providers.Capabilities{
