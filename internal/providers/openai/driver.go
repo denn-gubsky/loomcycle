@@ -40,6 +40,13 @@ type Driver struct {
 	// Defaults to "OPENAI_API_KEY"; the DeepSeek wrapper points it at
 	// "DEEPSEEK_API_KEY" via SetKeyEnvName since it reuses this driver.
 	keyEnvName string
+	// id is the provider identity reported by ID(). Defaults to "openai" in
+	// New(); the RFC BF driver registry sets it from DriverOptions.ID so one
+	// driver can serve a config-declared provider under any id.
+	id string
+	// capsPatch is an optional operator override applied inside Capabilities()
+	// (RFC BF). Nil = advertise the driver defaults.
+	capsPatch *providers.CapabilityPatch
 }
 
 // New constructs a Driver. baseURL may be empty for the default endpoint, or
@@ -56,7 +63,7 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 	if httpClient == nil {
 		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout, keyEnvName: "OPENAI_API_KEY"}
+	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout, keyEnvName: "OPENAI_API_KEY", id: "openai"}
 }
 
 // SetKeyEnvName overrides the env-var name whose tenant/user credential shadows
@@ -82,10 +89,10 @@ func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string, e
 // DeepSeek wrapper's SetKeyEnvName reflows this to "DEEPSEEK_API_KEY".
 func (d *Driver) KeyEnvName() string { return d.keyEnvName }
 
-func (d *Driver) ID() string { return "openai" }
+func (d *Driver) ID() string { return d.id }
 
 func (d *Driver) Capabilities() providers.Capabilities {
-	return providers.Capabilities{
+	return d.capsPatch.Apply(providers.Capabilities{
 		NativePromptCache: false, // OpenAI auto-caches; no explicit knob like Anthropic
 		ParallelToolCalls: true,
 		Streaming:         true,
@@ -99,7 +106,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// models will see the API's 400 surface clearly.
 		SupportsEffort: true,
 		SupportsVision: true, // per-model refined by openaiSupportsVision
-	}
+	})
 }
 
 // Call sends the request and returns a channel of Events. The goroutine that

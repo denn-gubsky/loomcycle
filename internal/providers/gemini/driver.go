@@ -56,6 +56,12 @@ type Driver struct {
 	baseURL     string
 	http        *http.Client
 	idleTimeout time.Duration
+	// id is the provider identity reported by ID(). Defaults to "gemini" in
+	// New(); the RFC BF driver registry sets it from DriverOptions.ID.
+	id string
+	// capsPatch is an optional operator override applied inside Capabilities()
+	// (RFC BF). Nil = advertise the driver defaults.
+	capsPatch *providers.CapabilityPatch
 }
 
 // New constructs a Driver. baseURL may be empty for the default
@@ -73,10 +79,10 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 	if httpClient == nil {
 		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
+	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout, id: "gemini"}
 }
 
-func (d *Driver) ID() string { return "gemini" }
+func (d *Driver) ID() string { return d.id }
 
 // resolveKey returns the API key to authenticate an inference request AND which
 // credential scope it came from. A tenant/user credential named GEMINI_API_KEY
@@ -95,7 +101,7 @@ func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string, e
 func (d *Driver) KeyEnvName() string { return "GEMINI_API_KEY" }
 
 func (d *Driver) Capabilities() providers.Capabilities {
-	return providers.Capabilities{
+	return d.capsPatch.Apply(providers.Capabilities{
 		// Gemini has implicit prompt caching on long contexts but no
 		// operator-controlled cache_control like Anthropic. Mark
 		// false until we add the explicit-cache surface.
@@ -117,7 +123,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// No per-model gate — operator-trust per RFC AT §5.3; a non-vision
 		// model surfaces via the existing provider-fallback error.
 		SupportsVision: true,
-	}
+	})
 }
 
 // Call sends the request and returns a channel of Events.

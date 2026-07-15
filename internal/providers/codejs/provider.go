@@ -57,6 +57,13 @@ type Provider struct {
 	deterministic bool
 	runTimeout    time.Duration
 	logf          func(string, ...any)
+	// id is the provider identity reported by ID(). Defaults to providerID
+	// ("code-js") in New(); the RFC BF driver registry sets it from
+	// DriverOptions.ID.
+	id string
+	// capsPatch is an optional operator override applied inside Capabilities()
+	// (RFC BF). Nil = advertise the driver defaults.
+	capsPatch *providers.CapabilityPatch
 
 	counter atomic.Uint64 // mints unique tool_use IDs for the transcript
 }
@@ -75,10 +82,11 @@ func New(cfg Config) *Provider {
 		deterministic: cfg.Deterministic,
 		runTimeout:    cfg.RunTimeout,
 		logf:          logf,
+		id:            providerID,
 	}
 }
 
-func (p *Provider) ID() string { return providerID }
+func (p *Provider) ID() string { return p.id }
 
 // Capabilities: code-js streams events but has no LLM-shaped knobs — no native
 // cache, no parallel tool calls (one frontier at a time), no thinking/effort.
@@ -90,7 +98,7 @@ func (p *Provider) Capabilities() providers.Capabilities {
 	// MetadataViaInput: code-js receives run metadata structurally as
 	// input.metadata / input.payload_metadata (see buildInput), so the
 	// run-build path must not also serialize it into prompt segments.
-	return providers.Capabilities{Streaming: true, UnboundedIterations: true, MetadataViaInput: true}
+	return p.capsPatch.Apply(providers.Capabilities{Streaming: true, UnboundedIterations: true, MetadataViaInput: true})
 }
 
 // Probe always succeeds — code-js is in-process, always reachable.

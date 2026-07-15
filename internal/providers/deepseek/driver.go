@@ -45,6 +45,12 @@ const defaultBaseURL = "https://api.deepseek.com/v1"
 // tool-call shape) comes from the embedded driver.
 type Driver struct {
 	inner *openai.Driver
+	// id is the provider identity reported by ID(). Defaults to "deepseek" in
+	// New(); the RFC BF driver registry sets it from DriverOptions.ID.
+	id string
+	// capsPatch is an optional operator override applied inside Capabilities()
+	// (RFC BF), AFTER the DeepSeek-specific patches. Nil = advertise defaults.
+	capsPatch *providers.CapabilityPatch
 }
 
 // New constructs a Driver. baseURL may be empty for the public
@@ -61,20 +67,27 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 	// DEEPSEEK_API_KEY, not OPENAI_API_KEY — the wrapped driver would otherwise
 	// resolve the OpenAI name.
 	inner.SetKeyEnvName("DEEPSEEK_API_KEY")
-	return &Driver{inner: inner}
+	return &Driver{inner: inner, id: "deepseek"}
 }
 
-// ID returns "deepseek" so the provider resolver in cmd/loomcycle
-// dispatches per-agent `provider: deepseek` config to this driver
-// rather than the OpenAI one. Distinct from the inner driver's ID()
-// — that's what makes the wrapper worth its weight.
-func (d *Driver) ID() string { return "deepseek" }
+// ID returns "deepseek" (by default) so the provider resolver in cmd/loomcycle
+// dispatches per-agent `provider: deepseek` config to this driver rather than
+// the OpenAI one. Distinct from the inner driver's ID() — that's what makes the
+// wrapper worth its weight. The RFC BF registry may override it via the factory.
+func (d *Driver) ID() string { return d.id }
 
 // KeyEnvName reports the env-var name whose tenant/user credential can key this
 // provider (RFC AX Layer-1 routing). Delegates to the inner OpenAI driver, whose
 // SetKeyEnvName was pointed at "DEEPSEEK_API_KEY" in New — the same literal the
 // inner driver's resolveKey resolves.
 func (d *Driver) KeyEnvName() string { return d.inner.KeyEnvName() }
+
+// SetKeyEnvName overrides the env-var name whose tenant/user credential shadows
+// the host key (RFC AR), delegating to the inner OpenAI driver. New() already
+// points it at DEEPSEEK_API_KEY; the RFC BF registry factory forwards a
+// config-declared api_key_env through here (e.g. a self-hosted OpenAI-compatible
+// DeepSeek mirror naming its own key var).
+func (d *Driver) SetKeyEnvName(name string) { d.inner.SetKeyEnvName(name) }
 
 // Capabilities reports the provider's MAXIMUM surface — what at
 // least one model on DeepSeek can do — not the per-model details.
@@ -98,7 +111,9 @@ func (d *Driver) Capabilities() providers.Capabilities {
 	// loop then gates an image to DeepSeek upstream with a clear error rather
 	// than the inner OpenAI wire builder producing an image_url DeepSeek 400s on.
 	caps.SupportsVision = false
-	return caps
+	// RFC BF operator override applies last, so an operator can, e.g., re-enable
+	// vision for a self-hosted multimodal DeepSeek mirror behind base_url.
+	return d.capsPatch.Apply(caps)
 }
 
 // IsThinkingModel reports whether the named DeepSeek model is a
