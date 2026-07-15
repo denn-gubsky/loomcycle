@@ -28,7 +28,21 @@ import (
 func loadLayeredConfig(explicitPath string) (*config.Config, error) {
 	var layers []config.Layer
 
-	// Embedded presets — the base of the stack.
+	// Embedded default-providers layer (RFC BF) — the true base of the stack, so
+	// CLI introspection resolves the built-in providers from the SAME source the
+	// server assembles (cmd/loomcycle/main.go prepends it identically). Without
+	// this, validate/doctor/agents fell back on the config package's built-in
+	// floor and could disagree with the running server. LOOMCYCLE_NO_DEFAULT_PROVIDERS=1
+	// drops it (matching the server).
+	if os.Getenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS") != "1" {
+		layers = append(layers, config.Layer{Name: "providers.default", Data: embedded.DefaultProviders()})
+	}
+	// The default-providers layer is always-on infrastructure, NOT operator-supplied
+	// config — the explicit-path check below must not treat it as "a config was
+	// already provided", or a missing --config file would be silently ignored.
+	baseLayers := len(layers)
+
+	// Embedded presets — layered over the default providers.
 	var presetNames []string
 	for _, n := range strings.Split(os.Getenv("LOOMCYCLE_PRESETS"), ",") {
 		if n = strings.TrimSpace(n); n != "" {
@@ -65,10 +79,11 @@ func loadLayeredConfig(explicitPath string) (*config.Config, error) {
 
 	// The explicit --config path (highest precedence). When it's absent from
 	// disk but the presets/env layers already provide a config, skip it (a
-	// presets-only stack, RFC AQ); when there are no other layers, keep it so
-	// LoadLayers surfaces the same file-not-found error the CLI produced before.
+	// presets-only stack, RFC AQ); when there are no other operator layers, keep
+	// it so LoadLayers surfaces the same file-not-found error the CLI produced
+	// before (baseLayers excludes the always-on default-providers layer).
 	if explicitPath = strings.TrimSpace(explicitPath); explicitPath != "" {
-		if _, err := os.Stat(explicitPath); err == nil || len(layers) == 0 {
+		if _, err := os.Stat(explicitPath); err == nil || len(layers) == baseLayers {
 			layers = append(layers, config.Layer{Name: explicitPath})
 		}
 	}
