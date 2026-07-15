@@ -3200,6 +3200,19 @@ func toDriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) pr
 		if baseURL == "" {
 			baseURL = cfg.Env.GeminiBaseURL
 		}
+	case "code-js":
+		// RFC BF P2a regression fix (b8d3f42d line): the code-js driver factory
+		// (codejs.newFromOptions) sources code_root/deterministic/run_timeout_seconds
+		// from this options map — but P2a's flip to the registry never ported the
+		// pre-P2a codejs.New(Config{CodeRoot: cfg.Env.CodeAgentsRoot, ...}) mapping,
+		// so with no `providers: code-js: options:` block the compiler root was empty
+		// and EVERY static `provider: code-js` agent failed to load ("no index.js at
+		// <name>/index.js" — a relative path, the empty-root tell). CodeAgentsRoot
+		// defaults to ./agent_code (never empty), so this is byte-identical to
+		// pre-P2a; an explicit options entry still wins via the pc.Options merge below.
+		opts["code_root"] = cfg.Env.CodeAgentsRoot
+		opts["deterministic"] = cfg.Env.CodeAgentsDeterministic
+		opts["run_timeout_seconds"] = int(cfg.Env.CodeAgentsRunTimeout / time.Second)
 	}
 	// Operator-declared options override the env-derived defaults (e.g. mock-stable's
 	// `stable: true`, or a per-provider num_ctx).
