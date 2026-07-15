@@ -11,11 +11,11 @@ func init() {
 	providers.RegisterDriver("deepseek", []string{"openai-chat"}, newFromOptions)
 }
 
-// newFromOptions builds a deepseek Driver from the registry DriverOptions. P1
-// equivalent of cmd/loomcycle/main.go's hardcoded deepseek.New(...); NOT yet on
-// the hot path (P2 wires the registry into the resolver). New() already points
-// the inner key resolution at DEEPSEEK_API_KEY; a config-declared api_key_env
-// re-points it via SetKeyEnvName.
+// newFromOptions builds a deepseek Driver from the registry DriverOptions — the
+// config-driven construction the resolver uses (the RFC BF replacement for the
+// pre-registry hardcoded deepseek.New(...)). New() already points the inner key
+// resolution at DEEPSEEK_API_KEY; a config-declared api_key_env re-points it via
+// SetKeyEnvName.
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	d := New(o.APIKey, o.BaseURL, o.StreamOpts, nil)
 	if o.ID != "" {

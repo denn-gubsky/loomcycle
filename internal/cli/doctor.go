@@ -96,11 +96,13 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		r.warn("Providers", "none configured in provider_priority or per-agent providers")
 	}
 	for _, p := range providers {
-		// RFC BF P2a — prefer the config-declared api_key_env for this id (so a
-		// 3rd-party `providers:` entry's key var is checked), falling back to the
-		// hardcoded canonical name for the built-ins. doctor doesn't layer the
-		// embedded default-providers block, so cfg.Providers is empty for a stock
-		// config and the fallback keeps the built-in checks byte-identical.
+		// RFC BF — prefer the config-declared api_key_env for this id (so a
+		// 3rd-party `providers:` entry's key var is checked). loadLayeredConfig
+		// prepends the embedded default-providers layer (unless
+		// LOOMCYCLE_NO_DEFAULT_PROVIDERS=1), so cfg.Providers carries the built-ins
+		// with their canonical key vars. The providerEnvVarName fallback covers the
+		// opt-out case (no default layer → empty cfg.Providers) and keeps the
+		// built-in checks byte-identical there.
 		envVar := cfg.ProviderAPIKeyEnv(p)
 		if envVar == "" {
 			envVar = providerEnvVarName(p)

@@ -66,13 +66,32 @@ func (ps *providerSlot) releaseCurrent() {
 // interactive-detached runs, which never own a swappable slot) or when the
 // resolver returned the same provider (a same-provider/different-model retry
 // keeps its slot — releasing then re-acquiring could hand our only slot to a
-// competitor). No-op too on a P2c carve-out holder (ps.noop): that run is
-// deliberately ungated because an ancestor holds the provider, and it must stay
-// ungated across a fallback — acquiring the fallback target's gate here could
-// reintroduce the parent-awaiting-its-own-descendant deadlock the carve-out
-// exists to prevent.
+// competitor). A P2c carve-out holder (ps.noop) also does NOT acquire the
+// fallback target's gate: that run is deliberately ungated because an ancestor
+// holds its original provider, and it must stay ungated across a fallback —
+// acquiring here could reintroduce the parent-awaiting-its-own-descendant
+// deadlock the carve-out exists to prevent (the run's ctx held-set is fixed at
+// admission, so a slot taken now can't be published to the descendants that
+// would then queue behind it). The cost is a bounded cap-escape: if the fallback
+// target is itself capped and NOT ancestor-held, this run runs ungated on it and
+// may briefly exceed that provider's max_concurrent. That's logged (below) so the
+// over-subscription is visible rather than silent (RFC BF review finding); true
+// enforcement across the carve-out+fallback boundary would need a mutable,
+// subtree-scoped held-set, deferred as a larger change.
 func (ps *providerSlot) swap(ctx context.Context, gates *concurrency.ProviderGates, newProviderID string) {
-	if ps == nil || ps.noop || newProviderID == ps.providerID {
+	if ps == nil || newProviderID == ps.providerID {
+		return
+	}
+	if ps.noop {
+		// Carve-out holder stays ungated across the fallback (deadlock-avoidance,
+		// see the doc comment). Surface the escape when the target is a cap this
+		// run now evades and no ancestor holds it — a same-provider or
+		// ancestor-held target is not an escape (the cap is already respected).
+		if gates.Has(newProviderID) && !holdsProviderSlot(ctx, newProviderID) {
+			log.Printf("provider-gate: carve-out run failed over %s->%s and stays UNGATED on capped %s (deadlock-avoidance); its max_concurrent may be briefly exceeded",
+				ps.providerID, newProviderID, newProviderID)
+		}
+		ps.providerID = newProviderID
 		return
 	}
 	// Free the old provider's slot FIRST so a run queued on it can proceed; this

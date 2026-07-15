@@ -12,11 +12,11 @@ func init() {
 	providers.RegisterDriver("mock", []string{"mock"}, newFromOptions)
 }
 
-// newFromOptions builds a mock Driver from the registry DriverOptions. P1
-// equivalent of cmd/loomcycle/main.go's hardcoded mockprov.New(); NOT yet on
-// the hot path (P2 wires the registry into the resolver). The mock ignores
-// APIKey/BaseURL (no real HTTP); its behaviour comes from the LOOMCYCLE_MOCK_*
-// env that New() reads.
+// newFromOptions builds a mock Driver from the registry DriverOptions — the
+// config-driven construction the resolver uses (the RFC BF replacement for the
+// pre-registry hardcoded mockprov.New()). The mock ignores APIKey/BaseURL (no
+// real HTTP); its behaviour comes from the LOOMCYCLE_MOCK_* env that New() reads,
+// plus the `stable` option below.
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	d := New()
 	if o.ID != "" {

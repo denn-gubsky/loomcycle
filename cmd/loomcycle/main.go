@@ -3105,9 +3105,21 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 	case "code-js":
 		return cfg.Env.CodeAgentsEnabled
 	default:
-		// Keyed providers (anthropic/openai/deepseek/gemini/ollama + any declared
-		// 3rd-party): enabled iff their api_key_env names a set variable.
-		return pc.APIKeyEnv != "" && os.Getenv(pc.APIKeyEnv) != ""
+		// Keyed provider (anthropic/openai/deepseek/gemini/ollama + any declared
+		// 3rd-party naming an api_key_env): enabled iff that env var is set — the
+		// exact pre-RFC-BF gate for the built-ins.
+		if pc.APIKeyEnv != "" {
+			return os.Getenv(pc.APIKeyEnv) != ""
+		}
+		// Keyless declared provider — a self-hosted OpenAI-compatible endpoint
+		// with no auth (vLLM/llama.cpp/a second Ollama behind base_url), the RFC BF
+		// headline case. Declaring it in `providers:` IS the opt-in, so it is
+		// enabled; the driver calls base_url with no key. Without this a keyless
+		// 3rd-party provider was silently treated as "not configured" and could
+		// never be used. No built-in reaches here with an empty api_key_env
+		// (ollama-local/mock/code-js are special-cased above), so this only newly
+		// enables an operator-declared keyless provider.
+		return true
 	}
 }
 
@@ -3278,12 +3290,10 @@ func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 // toCapabilityPatch translates a config.CapabilityOverride (the `capabilities:`
 // block on an RFC BF `providers:` entry) into the providers-side
 // providers.CapabilityPatch the driver registry applies inside Capabilities().
-// internal/providers cannot import internal/config (config depends on downstream
-// consumers of providers — the edge would cycle), so this boundary translation
-// lives here at the composition root. Nil in → nil out (no override → advertise
-// driver defaults). Defined for P2's registry wiring; deliberately NOT called by
-// newProviderResolver in P1 (the hardcoded resolver stays authoritative), so P2
-// is a clean flip rather than a rewrite.
+// The providers package can't import config (it would need config.CapabilityOverride,
+// and providers is a dependency of config), so this boundary translation lives
+// here at the composition root and toDriverOptions feeds the result to every
+// driver factory. Nil in → nil out (no override → advertise driver defaults).
 func toCapabilityPatch(o *config.CapabilityOverride) *providers.CapabilityPatch {
 	if o == nil {
 		return nil

@@ -13,15 +13,20 @@ func init() {
 	providers.RegisterDriver("ollama", []string{"ollama-chat"}, newFromOptions)
 }
 
-// newFromOptions builds an ollama Driver from the registry DriverOptions. P1
-// equivalent of cmd/loomcycle/main.go's hardcoded ollama.New(...).WithNumCtx().
-// WithNumGpu(); NOT yet on the hot path (P2 wires the registry into the
-// resolver). The provider id (DriverOptions.ID → New's providerID) also selects
-// the auth + KeyEnvName behaviour: "ollama-local" is keyless, "ollama" uses
-// OLLAMA_API_KEY. num_ctx / num_gpu come from the options map.
+// newFromOptions builds an ollama Driver from the registry DriverOptions — the
+// config-driven construction the resolver uses (the RFC BF replacement for the
+// pre-registry hardcoded ollama.New(...).WithNumCtx().WithNumGpu()). The
+// provider id (DriverOptions.ID → New's providerID) selects the default auth +
+// KeyEnvName behaviour: "ollama-local" is keyless, "ollama" uses OLLAMA_API_KEY.
+// A config-declared api_key_env re-points that via SetKeyEnvName (so a custom-id
+// ollama provider is keyable under its own var). num_ctx / num_gpu come from the
+// options map.
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	// New defaults providerID to "ollama" when o.ID == "".
 	d := New(o.ID, o.APIKey, o.BaseURL, o.StreamOpts, nil)
+	if o.KeyEnvName != "" {
+		d.SetKeyEnvName(o.KeyEnvName)
+	}
 	d.capsPatch = o.Capabilities
 	if n, ok := providers.IntOption(o.Options, "num_ctx"); ok {
 		d.WithNumCtx(n)

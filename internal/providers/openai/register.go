@@ -11,10 +11,11 @@ func init() {
 	providers.RegisterDriver("openai", []string{"openai-chat"}, newFromOptions)
 }
 
-// newFromOptions builds an openai Driver from the registry DriverOptions. It is
-// the P1 equivalent of cmd/loomcycle/main.go's hardcoded openai.New(...) — NOT
-// yet on the hot path (P2 wires the registry into the resolver). It exists so
-// P2 is a clean flip and the seam is testable now.
+// newFromOptions builds an openai Driver from the registry DriverOptions — the
+// config-driven construction the resolver uses (the RFC BF replacement for the
+// pre-registry hardcoded openai.New(...)). A config-declared api_key_env
+// re-points tenant/user credential resolution via SetKeyEnvName, so a self-hosted
+// OpenAI-compatible mirror can name its own key var.
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	d := New(o.APIKey, o.BaseURL, o.StreamOpts, nil)
 	if o.ID != "" {
