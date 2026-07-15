@@ -303,7 +303,12 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(run.ID)
-	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
+	// RFC BF P2b: the per-provider slot is acquired INSIDE the resume goroutine
+	// (below), after the fan-out reconcile, so the caller's resume loop never
+	// blocks on a full gate. Create the holder empty here so fallbackForRun's
+	// reResolve closure can capture it; it's populated before loop.Run runs.
+	provSlot := &providerSlot{}
+	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, provSlot)
 	gate, deregGate := s.newPauseGate(run.ID)
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
@@ -372,6 +377,21 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 			}
 			runOpts.PriorMessages = append(runOpts.PriorMessages, toolResult)
 		}
+
+		// RFC BF P2b per-provider gate: acquire BEFORE the global slot (same
+		// ordering rationale as a fresh run) and AFTER the fan-out reconcile
+		// above (holding a provider slot while awaiting children could deadlock).
+		// Populate the holder so a mid-run fallback swaps the slot; released via
+		// the holder at run end. A saturated cap fails the resume loudly rather
+		// than silently un-resuming.
+		provRelease, provErr := s.providerGates.Acquire(runCtx, providerID)
+		if provErr != nil {
+			s.finishRunFailedReason(run.ID, "resume: acquire provider slot: "+provErr.Error(), meta)
+			return
+		}
+		provSlot.release = provRelease
+		provSlot.providerID = providerID
+		defer provSlot.releaseCurrent()
 
 		// Respect the per-tenant fairness semaphore so a boot that resumes many
 		// runs doesn't blow past MAX_CONCURRENT_RUNS. Acquired inside the

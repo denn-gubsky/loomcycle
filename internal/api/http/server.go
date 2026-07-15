@@ -67,7 +67,14 @@ type Server struct {
 	providers ProviderResolver
 	tools     []tools.Tool
 	sem       *concurrency.Semaphore
-	store     store.Store // optional; nil means "don't persist"
+	// providerGates caps in-flight runs PER provider id (RFC BF P2b,
+	// providers.<id>.max_concurrent). Acquired at admission BEFORE the global
+	// sem so a run blocked on a full per-provider cap doesn't hold a global slot
+	// (see internal/api/http/provider_gate.go for the ordering rationale). nil /
+	// empty ⇒ every provider is uncapped and every Acquire is a noop (its methods
+	// are nil-safe). Wired at boot via SetProviderGates.
+	providerGates *concurrency.ProviderGates
+	store         store.Store // optional; nil means "don't persist"
 
 	// sqlMem is the RFC AA SQL Memory manager (per-scope sqlite databases
 	// backing the Memory tool's sql_query/sql_exec). Nil when the subsystem
@@ -919,6 +926,12 @@ func (s *Server) SessionLocks() *runner.SessionLockMap { return s.sessionLocks }
 // (cfg.ResolveAgentModel) — back-compat with v0.6.x.
 func (s *Server) SetResolver(r *resolve.Resolver) { s.resolver = r }
 
+// SetProviderGates wires the RFC BF P2b per-provider concurrency gates. Call
+// from cmd/loomcycle/main.go after building them from cfg.Providers. Optional:
+// when unset (nil), every provider is uncapped and admission is unchanged —
+// ProviderGates' methods are nil-safe.
+func (s *Server) SetProviderGates(g *concurrency.ProviderGates) { s.providerGates = g }
+
 // SetCredentialResolver wires the RFC AR credential resolver (env-var-name →
 // tenant/user credential value, scope agent>user>tenant). The Server stamps it
 // onto each run's ctx so provider drivers + WebSearch prefer a tenant-supplied
@@ -1075,6 +1088,9 @@ func writeResolveError(w http.ResponseWriter, err error) {
 //     The user has hit their personal cap; they specifically need to
 //     wait. Body carries `user_id` + `cap` so the adapter can surface
 //     it in error messages or rate-limit telemetry.
+//   - `code: "provider_concurrency_exhausted"` + `Retry-After: 5`. A
+//     specific provider's `max_concurrent` cap is saturated (RFC BF P2b).
+//     Body carries `provider` + `cap`; retry a different tier immediately.
 //   - `code: "backpressure"`. The global queue is full (or timed out).
 //     Operator-wide load signal; back off with longer jitter.
 //
@@ -1082,6 +1098,19 @@ func writeResolveError(w http.ResponseWriter, err error) {
 // shouldn't happen with the current AcquireForUser implementation but
 // the safe-default keeps a panic from surfacing as an opaque 200.
 func writeQuotaError(w http.ResponseWriter, err error) {
+	var pce *concurrency.ErrProviderConcurrencyExhausted
+	if errors.As(err, &pce) {
+		// RFC BF P2b: a specific provider's max_concurrent cap is saturated.
+		// 429 + Retry-After like per-user quota, but a distinct `code` +
+		// `provider`/`cap` fields so an adapter can retry a different tier
+		// immediately rather than backing off operator-wide.
+		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintf(w, `{"code":"provider_concurrency_exhausted","error":%q,"provider":%q,"cap":%d}`,
+			pce.Error(), pce.Provider, pce.Cap)
+		return
+	}
 	var pue *concurrency.ErrPerUserQuotaExhausted
 	if errors.As(err, &pue) {
 		w.Header().Set("Retry-After", "5")
@@ -1909,7 +1938,12 @@ func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (strin
 // On no-more-candidates the closure returns an error — the loop
 // then surfaces the ORIGINAL provider error to the caller (the
 // fallback path is terminal for this run).
-func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, restricted bool) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
+// slot (RFC BF P2b) is the run's per-provider concurrency slot; on a committed
+// fallback the closure moves it from the failed provider to the new one so the
+// gate counters track the provider actually in use. nil for runs that hold no
+// swappable slot (sub-agents — they never take a provider slot — and
+// interactive-detached runs, which release their slots at hand-off).
+func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, restricted bool, slot *providerSlot) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
 	overlay := s.userTierOverlay(userTier)
 	if overlay == nil || !overlay.FallbackOnError {
 		return loop.FallbackPolicy{}, nil
@@ -1942,6 +1976,16 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		if err != nil {
 			return nil, "", "", err
 		}
+		// RFC BF P2b: move the per-provider concurrency slot to the fallback
+		// target so a capped provider's counter tracks the provider actually in
+		// use — releasing the failed provider's slot for a queued run there and
+		// (short-timeout) acquiring the new one. Done here rather than at the
+		// loop's commit point to keep the loop package free of admission
+		// concerns; in the rare case tryProviderFallback then refuses the switch
+		// (e.g. the RFC AT vision re-check), the run terminates and the deferred
+		// releaseCurrent frees the newly-acquired slot — a negligible transient
+		// on a failing run. No-op when slot is nil.
+		slot.swap(ctx, s.providerGates, newProviderID)
 		return newProvider, newModel, newEffort, nil
 	}
 	return policy, reResolve
@@ -2087,6 +2131,18 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := s.pausedRunErr(); err != nil {
 		return err
 	}
+
+	// ---- Per-provider concurrency gate (RFC BF P2b) ----
+	// Acquire the provider slot BEFORE the global slot so a run blocked on a full
+	// per-provider cap doesn't already hold a global slot (which would starve
+	// runs targeting other, uncapped providers). Uncapped providers get a noop
+	// holder — zero overhead. The holder is threaded into fallbackForRun so a
+	// mid-run provider switch moves the slot with it.
+	provSlot, provErr := s.acquireProviderSlot(ctx, providerID)
+	if provErr != nil {
+		return providerAcquireErrToRunner(provErr)
+	}
+	defer provSlot.releaseCurrent()
 
 	// ---- Concurrency slot ----
 	acquireStart := time.Now()
@@ -2350,7 +2406,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
+	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, provSlot)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -3466,6 +3522,17 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-provider concurrency gate (RFC BF P2b): acquire BEFORE the global slot
+	// so a run queued on a full per-provider cap doesn't hold a global slot and
+	// starve uncapped-provider runs. Reported as 429 (provider_concurrency_
+	// exhausted) before the SSE stream opens. Uncapped ⇒ noop.
+	provSlot, provErr := s.acquireProviderSlot(r.Context(), providerID)
+	if provErr != nil {
+		writeQuotaError(w, provErr)
+		return
+	}
+	defer provSlot.releaseCurrent()
+
 	// Acquire concurrency slot first so backpressure is reported as 429
 	// before we open the SSE stream.
 	acquireStart := time.Now()
@@ -3798,7 +3865,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// minutes → presumed dead). Cheap (~10–100 calls per run).
 	heartbeat := s.makeHeartbeat(runID)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
+	// RFC BF P2b: an interactive run detaches into a goroutine that OUTLIVES this
+	// handler, and the deferred releaseCurrent frees the provider slot at
+	// hand-off (mirroring the global slot). Pass nil so the detached loop doesn't
+	// swap an already-released holder (which would acquire + leak a slot with no
+	// releaser). Synchronous runs get the real holder and swap on fallback.
+	fbSlot := provSlot
+	if req.Interactive && s.store != nil {
+		fbSlot = nil
+	}
+	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, fbSlot)
 	runOpts := loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -4084,6 +4160,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-provider concurrency gate (RFC BF P2b): a continuation starts a new
+	// turn, so gate it too — before the global slot, same ordering rationale as a
+	// fresh run. Uncapped ⇒ noop.
+	provSlot, provErr := s.acquireProviderSlot(r.Context(), providerID)
+	if provErr != nil {
+		writeQuotaError(w, provErr)
+		return
+	}
+	defer provSlot.releaseCurrent()
+
 	// Acquire concurrency slot before opening the SSE stream so backpressure
 	// is reported as 429. user_id comes from the session (set at original
 	// creation); continuations don't accept a new user_id.
@@ -4336,7 +4422,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer deregGate()
 	// RFC X Phase 3: expose the gate to the Agent tool (parallel_spawn parent park).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
-	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
+	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, provSlot)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -5436,7 +5522,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// that itself parallel_spawns) can park mid-tool-call too.
 	subCtx = tools.WithPauseGate(subCtx, subGate)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted)
+	// RFC BF P2b: sub-agents take NO per-provider gate slot (they run under the
+	// parent's admission, never acquiring a global slot either). Gating them would
+	// risk a parent holding provider P's slot while awaiting children that queue
+	// on the same gate — a self-deadlock. nil slot ⇒ fallback doesn't swap.
+	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, nil)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
 		Provider:            provider,
 		Model:               model,

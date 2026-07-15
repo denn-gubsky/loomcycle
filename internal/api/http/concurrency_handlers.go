@@ -18,6 +18,16 @@ type concurrencyStatsResponse struct {
 	Active  int            `json:"active"`
 	Queued  int            `json:"queued"`
 	PerUser map[string]int `json:"per_user,omitempty"`
+	// Providers is the RFC BF P2b per-provider gate breakdown, keyed by provider
+	// id. omitempty so the (common) no-max_concurrent deployment returns the
+	// leaner shape without a providers block.
+	Providers map[string]providerGateStat `json:"providers,omitempty"`
+}
+
+// providerGateStat is one gated provider's live counts in the stats response.
+type providerGateStat struct {
+	Active int `json:"active"`
+	Queued int `json:"queued"`
 }
 
 // handleConcurrencyStats serves a point-in-time snapshot of the
@@ -37,10 +47,19 @@ func (s *Server) handleConcurrencyStats(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	st := s.sem.Stats()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(concurrencyStatsResponse{
+	resp := concurrencyStatsResponse{
 		Active:  st.Active,
 		Queued:  st.Queued,
 		PerUser: st.PerUser,
-	})
+	}
+	// RFC BF P2b: fold in the per-provider gate breakdown when any provider is
+	// capped. nil (no gates) leaves the field omitted.
+	if pg := s.providerGates.Stats(); len(pg) > 0 {
+		resp.Providers = make(map[string]providerGateStat, len(pg))
+		for id, gs := range pg {
+			resp.Providers[id] = providerGateStat{Active: gs.Active, Queued: gs.Queued}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }

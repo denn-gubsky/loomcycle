@@ -1248,9 +1248,11 @@ func mapRunnerErr(err error) error {
 	case errors.Is(err, runner.ErrAgentIDInUse):
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, runner.ErrBackpressure),
-		errors.Is(err, runner.ErrPerUserQuotaExhausted):
-		// Both backpressure flavors share ResourceExhausted on the
-		// gRPC wire. HTTP distinguishes the two via the JSON body's
+		errors.Is(err, runner.ErrPerUserQuotaExhausted),
+		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
+		// All backpressure flavors share ResourceExhausted on the gRPC
+		// wire — global queue, per-user cap, and the RFC BF P2b per-
+		// provider cap. HTTP distinguishes them via the JSON body's
 		// `code` field + Retry-After header; gRPC consumers branch on
 		// the error message if they need to distinguish.
 		return status.Error(codes.ResourceExhausted, err.Error())

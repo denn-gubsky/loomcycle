@@ -1631,6 +1631,10 @@ func main() {
 	// server's tool set, which isn't in allTools here (F45). New re-points any
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	srv = lchttp.New(cfg, pr, allTools, sem, storeIface)
+	// RFC BF P2b: per-provider concurrency gates (providers.<id>.max_concurrent).
+	// Acquired at run admission before the global slot; empty ⇒ every provider
+	// uncapped, admission unchanged.
+	srv.SetProviderGates(newProviderGates(cfg))
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
 	srv.SetCredentialResolver(credResolver)
@@ -3114,6 +3118,41 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 		// 3rd-party): enabled iff their api_key_env names a set variable.
 		return pc.APIKeyEnv != "" && os.Getenv(pc.APIKeyEnv) != ""
 	}
+}
+
+// newProviderGates builds the RFC BF P2b per-provider concurrency gates from
+// cfg.Providers: one gate per provider whose max_concurrent > 0 (the rest are
+// uncapped → a noop at admission). Shared queue depth + timeout come from the
+// concurrency block (LOOMCYCLE_PROVIDER_QUEUE_DEPTH / _TIMEOUT_MS, defaulting to
+// the global MaxQueueDepth / QueueTimeout). Returns empty gates — hence zero
+// admission overhead — when no provider sets a cap (the default deployment).
+func newProviderGates(cfg *config.Config) *concurrency.ProviderGates {
+	caps := make(map[string]int)
+	for id, pc := range cfg.Providers {
+		if pc.MaxConcurrent > 0 {
+			caps[id] = pc.MaxConcurrent
+		}
+	}
+	depth := cfg.Concurrency.ProviderQueueDepthOrDefault()
+	timeout := cfg.Concurrency.ProviderQueueTimeout()
+	gates := concurrency.NewProviderGates(caps, depth, timeout)
+	if len(caps) > 0 {
+		ids := make([]string, 0, len(caps))
+		for id := range caps {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids) // deterministic log order
+		var b strings.Builder
+		for i, id := range ids {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%s=%d", id, caps[id])
+		}
+		log.Printf("providers: per-provider concurrency caps enabled — %s (queue_depth=%d timeout=%s)",
+			b.String(), depth, timeout)
+	}
+	return gates
 }
 
 // toDriverOptions ports the pre-P2a per-provider construction 1:1 into the driver
