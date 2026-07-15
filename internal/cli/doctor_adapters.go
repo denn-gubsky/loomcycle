@@ -38,6 +38,9 @@ func (r *realConfig) UserTierProviderHints() []string {
 	return out
 }
 
+func (r *realConfig) ProviderAPIKeyEnv(id string) string {
+	return r.cfg.Providers[id].APIKeyEnv
+}
 func (r *realConfig) StorageBackend() string  { return r.cfg.Storage.Backend }
 func (r *realConfig) StoragePgDSN() string    { return r.cfg.Storage.PgDSN }
 func (r *realConfig) StorageDataDir() string  { return r.cfg.Env.DataDir }

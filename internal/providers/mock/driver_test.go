@@ -490,3 +490,37 @@ func TestStableDriverID_OverridesParent(t *testing.T) {
 		t.Errorf("ID() = %q, want mock-stable", got)
 	}
 }
+
+// TestNewFromOptions_StableOption_ZeroesRates — RFC BF P2a: the config-driven
+// mock-stable is built via the registry factory with `options: {stable: true}`
+// and an id override, replacing the pre-P2a NewStableProvider() wiring. It must be
+// behaviour-identical to NewStable(): 429/500 rates zeroed regardless of a hostile
+// env, and the id set from DriverOptions.
+func TestNewFromOptions_StableOption_ZeroesRates(t *testing.T) {
+	t.Setenv("LOOMCYCLE_MOCK_429_RATE", "1.0")
+	t.Setenv("LOOMCYCLE_MOCK_500_RATE", "1.0")
+
+	p, err := newFromOptions(providers.DriverOptions{ID: "mock-stable", Options: map[string]any{"stable": true}})
+	if err != nil {
+		t.Fatalf("newFromOptions: %v", err)
+	}
+	if p.ID() != "mock-stable" {
+		t.Errorf("ID() = %q, want mock-stable", p.ID())
+	}
+	d, ok := p.(*Driver)
+	if !ok {
+		t.Fatalf("newFromOptions returned %T, want *Driver", p)
+	}
+	if d.rate429 != 0 || d.rate500 != 0 {
+		t.Errorf("stable option: rate429=%v rate500=%v, want both 0 even with env=1.0", d.rate429, d.rate500)
+	}
+
+	// Without the option, the driver honours the env rates (non-stable "mock").
+	plain, err := newFromOptions(providers.DriverOptions{ID: "mock"})
+	if err != nil {
+		t.Fatalf("newFromOptions(plain): %v", err)
+	}
+	if pd := plain.(*Driver); pd.rate429 == 0 && pd.rate500 == 0 {
+		t.Error("plain mock should honour the hostile env rates, got both 0")
+	}
+}

@@ -186,7 +186,10 @@ func (d *Driver) NonThinkingSibling(model string) (string, bool) {
 // operators filtering by `provider="deepseek"` see DeepSeek calls
 // distinctly with correct streaming-attempt durations.
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
-	return d.inner.Call(lcotel.WithProviderOverride(ctx, "deepseek"), req)
+	// Use the instance ID() (not the literal "deepseek") so a config-declared
+	// provider id (RFC BF P2a) shows up correctly on the inner OpenAI driver's
+	// span; defaults to "deepseek" so the stock case is unchanged.
+	return d.inner.Call(lcotel.WithProviderOverride(ctx, d.ID()), req)
 }
 
 // Probe delegates to the OpenAI driver, which hits GET /v1/models

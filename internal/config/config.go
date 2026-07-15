@@ -4484,9 +4484,16 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// validProviderIDs is the set of provider names the resolver knows
-// how to dispatch to. Adding a new driver requires extending this set
-// AND wiring the driver into cmd/loomcycle/main.go's resolver.
+// validProviderIDs is the built-in provider FLOOR — the ids the pre-RFC-BF
+// resolver hardcoded. RFC BF P2a: provider references (agent pins, tier
+// candidates, model aliases, provider_priority) validate against
+// knownProviderIDs() = this floor UNION the operator's declared `providers:` keys,
+// so a config-declared 3rd-party provider validates too, while every existing
+// config stays valid whether or not it declares a `providers:` block. Kept as a
+// floor (not replaced by cfg.Providers keys) because validate() also runs on
+// configs assembled WITHOUT the embedded default-providers layer — CLI/unit
+// paths, and LOOMCYCLE_NO_DEFAULT_PROVIDERS — where the built-ins would otherwise
+// vanish from the valid set.
 var validProviderIDs = map[string]bool{
 	"anthropic":    true,
 	"openai":       true,
@@ -4509,6 +4516,22 @@ var validProviderIDs = map[string]bool{
 	// `[{provider: mock, ...}, {provider: mock-stable, ...}]` for
 	// fallback-recovery testing without a real second provider.
 	"mock-stable": true,
+}
+
+// knownProviderIDs is the set a provider reference may name: the built-in floor
+// (validProviderIDs) UNION the operator's declared `providers:` keys (RFC BF P2a).
+// A declared 3rd-party provider validates in tier candidates / agent pins /
+// provider_priority / model aliases; the built-ins always validate so no existing
+// config regresses.
+func (c *Config) knownProviderIDs() map[string]bool {
+	out := make(map[string]bool, len(validProviderIDs)+len(c.Providers))
+	for id := range validProviderIDs {
+		out[id] = true
+	}
+	for id := range c.Providers {
+		out[id] = true
+	}
+	return out
 }
 
 // validTierNames is the closed set of tier names. Operators choose
@@ -4805,14 +4828,14 @@ func validateStaticWebhook(name string, w Webhook) error {
 // provider is valid IFF the model is a defined alias. Otherwise the provider
 // must be a known ID and the model non-empty. Without the alias carve-out an
 // all-aliases tier list fails load with `unknown provider ""`.
-func validateTierCandidate(cand TierCandidate, models map[string]ModelRef) error {
+func validateTierCandidate(cand TierCandidate, models map[string]ModelRef, known map[string]bool) error {
 	if cand.Provider == "" {
 		if _, ok := models[cand.Model]; !ok {
 			return fmt.Errorf("empty provider and %q is not a model alias (define it under models: or set an explicit provider)", cand.Model)
 		}
 		return nil
 	}
-	if !validProviderIDs[cand.Provider] {
+	if !known[cand.Provider] {
 		return fmt.Errorf("unknown provider %q", cand.Provider)
 	}
 	if cand.Model == "" {
@@ -4851,11 +4874,16 @@ func validate(c *Config) error {
 			return fmt.Errorf("skills: inline skill %q: %w", name, err)
 		}
 	}
+	// known = the built-in floor UNION the declared `providers:` keys (RFC BF P2a).
+	// Every provider reference below (priority lists, tier candidates, agent pins,
+	// model aliases) validates against this so a config-declared 3rd-party provider
+	// is accepted while every built-in stays valid.
+	known := c.knownProviderIDs()
 	// Library-level provider priority — validate every entry is a
 	// known provider name. Empty list is fine (resolver falls back
 	// to its hardcoded default order).
 	for i, p := range c.ProviderPriority {
-		if !validProviderIDs[p] {
+		if !known[p] {
 			return fmt.Errorf("provider_priority[%d]: unknown provider %q (want one of anthropic/openai/deepseek/gemini/ollama)", i, p)
 		}
 	}
@@ -4881,20 +4909,44 @@ func validate(c *Config) error {
 			return fmt.Errorf("search_priority[%d]: %q is not an enabled search_providers entry", i, id)
 		}
 	}
-	// RFC BF provider registry (P1): light structural validation only. Each
-	// declared entry needs a driver and a non-negative concurrency cap. The
-	// registry-aware checks — driver name ∈ providers.RegisteredDrivers(),
-	// dialect ∈ the driver's set, models[*].provider ∈ this map — are P2, where
-	// the resolver (which may import internal/providers) becomes authoritative;
-	// config.go stays free of an internal/providers import in P1. An absent
-	// `providers:` block skips the loop entirely, so every existing config
-	// validates identically.
+	// RFC BF provider registry (P2a): structural + registry-aware validation. Each
+	// declared entry needs a driver compiled into the binary (∈ RegisteredDrivers),
+	// a dialect the driver speaks (when set), and a non-negative concurrency cap.
+	// The driver registry is populated by the driver packages' init() — present in
+	// the server binary (blank imports in cmd/loomcycle) and the config test binary
+	// (blank imports in drivers_registry_test.go). An absent `providers:` block
+	// skips the loop, so a config that declares none validates unchanged.
 	for id, pc := range c.Providers {
 		if strings.TrimSpace(pc.Driver) == "" {
 			return fmt.Errorf("providers.%s: driver is required", id)
 		}
 		if pc.MaxConcurrent < 0 {
 			return fmt.Errorf("providers.%s: max_concurrent must be >= 0", id)
+		}
+		dialects, ok := providers.DriverDialects(pc.Driver)
+		if !ok {
+			return fmt.Errorf("providers.%s: unknown driver %q (compiled-in: %v)", id, pc.Driver, providers.RegisteredDrivers())
+		}
+		if pc.Dialect != "" {
+			supported := false
+			for _, d := range dialects {
+				if d == pc.Dialect {
+					supported = true
+					break
+				}
+			}
+			if !supported {
+				return fmt.Errorf("providers.%s: driver %q does not speak dialect %q (supported: %v)", id, pc.Driver, pc.Dialect, dialects)
+			}
+		}
+	}
+	// Model aliases (top-level models:) — a non-empty provider on an alias must be a
+	// known provider (RFC BF P2a; an empty provider defers to the pin/candidate that
+	// names the alias, so it is left unvalidated here). Built-ins always pass via the
+	// floor, so this only newly rejects a typo'd or undeclared 3rd-party provider.
+	for name, ref := range c.Models {
+		if ref.Provider != "" && !known[ref.Provider] {
+			return fmt.Errorf("models.%s: unknown provider %q", name, ref.Provider)
 		}
 	}
 	// Library-level tier definitions.
@@ -4903,7 +4955,7 @@ func validate(c *Config) error {
 			return fmt.Errorf("tiers.%s: unknown tier (want one of low/middle/high)", tierName)
 		}
 		for i, cand := range candidates {
-			if err := validateTierCandidate(cand, c.Models); err != nil {
+			if err := validateTierCandidate(cand, c.Models, known); err != nil {
 				return fmt.Errorf("tiers.%s[%d]: %v", tierName, i, err)
 			}
 		}
@@ -4924,7 +4976,7 @@ func validate(c *Config) error {
 				return fmt.Errorf("user_tiers: empty tier name")
 			}
 			for i, p := range ut.ProviderPriority {
-				if !validProviderIDs[p] {
+				if !known[p] {
 					return fmt.Errorf("user_tiers.%s.provider_priority[%d]: unknown provider %q", tierName, i, p)
 				}
 			}
@@ -4933,7 +4985,7 @@ func validate(c *Config) error {
 					return fmt.Errorf("user_tiers.%s.tiers.%s: unknown tier (want one of low/middle/high)", tierName, taskTier)
 				}
 				for i, cand := range candidates {
-					if err := validateTierCandidate(cand, c.Models); err != nil {
+					if err := validateTierCandidate(cand, c.Models, known); err != nil {
 						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: %v", tierName, taskTier, i, err)
 					}
 				}
@@ -5028,7 +5080,7 @@ func validate(c *Config) error {
 		}
 		// Per-agent provider override.
 		for i, p := range agent.Providers {
-			if !validProviderIDs[p] {
+			if !known[p] {
 				return fmt.Errorf("agent %q: providers[%d]: unknown provider %q", name, i, p)
 			}
 		}
@@ -5045,7 +5097,7 @@ func validate(c *Config) error {
 				return fmt.Errorf("agent %q: models.%s: unknown tier", name, tierName)
 			}
 			for i, cand := range candidates {
-				if err := validateTierCandidate(cand, c.Models); err != nil {
+				if err := validateTierCandidate(cand, c.Models, known); err != nil {
 					return fmt.Errorf("agent %q: models.%s[%d]: %v", name, tierName, i, err)
 				}
 			}

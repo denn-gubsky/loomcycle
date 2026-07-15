@@ -43,19 +43,19 @@ func TestValidateTierCandidate_AliasAware(t *testing.T) {
 	models := map[string]ModelRef{
 		"local-qwen": {Provider: "ollama-local", Model: "qwen3.6:max"},
 	}
-	if err := validateTierCandidate(TierCandidate{Model: "local-qwen"}, models); err != nil {
+	if err := validateTierCandidate(TierCandidate{Model: "local-qwen"}, models, validProviderIDs); err != nil {
 		t.Errorf("bare alias rejected: %v", err)
 	}
-	if err := validateTierCandidate(TierCandidate{Model: "not-an-alias"}, models); err == nil {
+	if err := validateTierCandidate(TierCandidate{Model: "not-an-alias"}, models, validProviderIDs); err == nil {
 		t.Error("empty provider + non-alias model accepted, want error")
 	}
-	if err := validateTierCandidate(TierCandidate{Provider: "deepseek", Model: "deepseek-v4-pro"}, models); err != nil {
+	if err := validateTierCandidate(TierCandidate{Provider: "deepseek", Model: "deepseek-v4-pro"}, models, validProviderIDs); err != nil {
 		t.Errorf("explicit literal candidate rejected: %v", err)
 	}
-	if err := validateTierCandidate(TierCandidate{Provider: "bogus", Model: "x"}, models); err == nil {
+	if err := validateTierCandidate(TierCandidate{Provider: "bogus", Model: "x"}, models, validProviderIDs); err == nil {
 		t.Error("unknown provider accepted, want error")
 	}
-	if err := validateTierCandidate(TierCandidate{Provider: "deepseek"}, models); err == nil {
+	if err := validateTierCandidate(TierCandidate{Provider: "deepseek"}, models, validProviderIDs); err == nil {
 		t.Error("explicit provider + empty model accepted, want error")
 	}
 }

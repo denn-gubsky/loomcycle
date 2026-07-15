@@ -22,7 +22,16 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	if o.ID != "" {
 		d.id = o.ID
 	}
+	// RFC BF P2a — a `stable: true` option builds the failure-injection-off variant
+	// (the pre-P2a "mock-stable"): 429/500 rates pinned to zero regardless of the
+	// LOOMCYCLE_MOCK_* env, latency knobs still apply. Behaviour matches
+	// NewStableProvider() but with the id set from DriverOptions, so the config can
+	// declare `mock-stable: {driver: mock, options: {stable: true}}`.
+	if stable, _ := providers.BoolOption(o.Options, "stable"); stable {
+		d.rate429 = 0
+		d.rate500 = 0
+	}
 	d.capsPatch = o.Capabilities
-	providers.WarnUnknownOptions(o.Logf, "mock", o.Options)
+	providers.WarnUnknownOptions(o.Logf, "mock", o.Options, "stable")
 	return d, nil
 }
