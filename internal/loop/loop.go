@@ -101,6 +101,17 @@ type RunOptions struct {
 	// bound it. Set an explicit MaxIterations to cap an interactive session.
 	Interactive bool
 
+	// ArmTurnCancel, when non-nil, makes THIS run turn-cancellable (RFC BH). At
+	// the start of each turn the loop calls it with the turn's CancelCauseFunc to
+	// register the run's currently-armed per-turn cancel token; the returned
+	// disarm is called at the turn boundary. Firing the token (cause
+	// ErrTurnCancelled, with the RUN ctx still alive) stops the current turn's
+	// model call + tool dispatch and parks the run at awaiting_input instead of
+	// terminating it. nil = not turn-cancellable — the loop behaves EXACTLY as it
+	// did before (the wrapping turn ctx is never fired). Wired for interactive
+	// runs only; the server passes a closure that arms its turncancel.Registry.
+	ArmTurnCancel func(turnCancel context.CancelCauseFunc) (disarm func())
+
 	// PauseGate, when non-nil, cooperatively quiesces this run for the
 	// runtime-wide pause/snapshot protocol (RFC X / F41). At the TOP of each
 	// iteration the loop asks PauseRequested(); if true it calls Park, which
@@ -729,6 +740,80 @@ type RunResult struct {
 	Usage      providers.Usage // sum across iterations
 }
 
+// ErrTurnCancelled is the cancel cause the server fires on a run's armed per-turn
+// token (RFC BH). The loop catches it — the RUN ctx is still alive — and parks
+// the interactive run instead of terminating (a whole-run cancel cause, e.g.
+// cancel.ErrCancelledByAPI, is NOT this and still terminates). Callers wrap it
+// with an operator reason via TurnCancelCause; errors.Is still matches.
+var ErrTurnCancelled = errors.New("turn cancelled by operator")
+
+// turnCancel wraps ErrTurnCancelled with an operator reason. It Unwraps to the
+// sentinel so errors.Is(cause, ErrTurnCancelled) holds; reasonFromCause pulls the
+// reason back out for the EventTurnCancelled payload.
+type turnCancel struct{ reason string }
+
+func (t *turnCancel) Error() string { return ErrTurnCancelled.Error() + ": " + t.reason }
+func (t *turnCancel) Unwrap() error { return ErrTurnCancelled }
+
+// TurnCancelCause builds the cancel cause the server fires on the per-turn token.
+// reason == "" returns the bare sentinel; a non-empty reason is carried through
+// to EventTurnCancelled. It lives here (not in internal/turncancel) so the leaf
+// registry stays free of the loop package — the server imports loop already.
+func TurnCancelCause(reason string) error {
+	if reason == "" {
+		return ErrTurnCancelled
+	}
+	return &turnCancel{reason: reason}
+}
+
+// reasonFromCause returns the operator reason carried by a TurnCancelCause, or ""
+// for the bare sentinel / any other error.
+func reasonFromCause(cause error) string {
+	var t *turnCancel
+	if errors.As(cause, &t) {
+		return t.reason
+	}
+	return ""
+}
+
+// cancelledToolResults synthesizes an error-shaped tool_result for every pending
+// tool_use a turn-cancelled turn started but never dispatched, so the next model
+// call sees a well-formed assistant(tool_use)/user(tool_result) pairing — a
+// dangling tool_use 400s Anthropic (RFC BH §9.1). Shape + IsError match how
+// executePendingTools reports a ctx-cancelled tool, so a cancel mid-generation
+// and a cancel mid-dispatch leave byte-comparable history.
+func cancelledToolResults(pending []providers.ToolUse) []providers.ContentBlock {
+	out := make([]providers.ContentBlock, len(pending))
+	for i, tu := range pending {
+		out[i] = providers.ContentBlock{
+			Type:      "tool_result",
+			ToolUseID: tu.ID,
+			ToolName:  tu.Name,
+			Text:      "cancelled by operator",
+			IsError:   true,
+		}
+	}
+	return out
+}
+
+// finishTurnCancel completes an operator-cancelled turn: it emits the
+// turn_cancelled marker, disarms the turn-cancel token (the run is no longer
+// mid-turn, so a racing cancel 409s), and parks an interactive run at
+// awaiting_input. It returns the updated messages, the refreshed footprint, and
+// resumed=true when the operator's next message arrives (the caller continues the
+// loop) or false to terminate — ctx cancelled during the park, or a
+// non-interactive run (the handler 409s that case, so it is only a safety net:
+// stopping a non-interactive run's only turn would terminate it).
+func finishTurnCancel(ctx context.Context, opts RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, reason string, emit func(providers.Event), disarm func()) ([]providers.Message, int, bool) {
+	emit(providers.Event{Type: providers.EventTurnCancelled,
+		TurnCancelled: &providers.TurnCancelledEventInfo{Reason: reason, SinceTurn: sinceTurn}})
+	disarm()
+	if opts.Interactive && opts.SteerQueue != nil {
+		return parkForOperatorTurn(ctx, opts, messages, sinceTurn, lastCtxTokens, emit)
+	}
+	return messages, lastCtxTokens, false
+}
+
 // Run drives the agent loop to completion.
 // parkHeartbeatInterval is how often a parked interactive run pulses
 // OnHeartbeat while idle, so the staleness sweeper doesn't reap it (the
@@ -755,6 +840,42 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func())
 		case <-ctx.Done():
 			return steer.Message{}, false
 		}
+	}
+}
+
+// parkForOperatorTurn parks a persistent interactive run at awaiting_input until
+// the operator's next real message. It emits EventAwaitingInput, then blocks on
+// the steer queue, handling a steer.KindCompact control inline (replace history
+// with the summary pair + re-park; compaction is not itself new input) exactly
+// like the terminal park it was extracted from. Returns the updated messages,
+// the refreshed context footprint (changed only when a compaction ran), and
+// whether a real operator turn arrived — false ⇒ ctx cancelled / queue closed ⇒
+// the caller terminates the run.
+func parkForOperatorTurn(ctx context.Context, opts RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
+	emit(providers.Event{Type: providers.EventAwaitingInput,
+		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
+	for {
+		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
+		if !resumed {
+			return messages, lastCtxTokens, false // ctx cancelled (or queue closed) → terminate
+		}
+		if m.Kind == steer.KindCompact {
+			messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
+			// Refresh the footprint so the next operator turn's op=self reports the
+			// compacted size, not the stale pre-compaction value. Without this a
+			// parked run that compacted kept reporting its old ~full context
+			// (used_tokens / used_pct) until the next real turn's usage landed.
+			lastCtxTokens = estimateMessageTokens(messages)
+			continue // re-park: wait for the operator's actual next turn
+		}
+		messages = append(messages, providers.Message{
+			Role:    "user",
+			Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+		})
+		if opts.OnSteer != nil {
+			opts.OnSteer(m)
+		}
+		return messages, lastCtxTokens, true
 	}
 }
 
@@ -1275,6 +1396,20 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}()
 	}
 
+	// RFC BH turn-scoped cancel: turnCancelFn cancels the CURRENT turn's ctx and
+	// disarmTurn removes its armed registry token. Both are re-created per turn
+	// (below, right before the model call) and released here on Run exit — any
+	// path, including a panic unwinding through a caller's recover — so a
+	// turn-cancel can never fire against a finished run. Initialised to no-ops so
+	// the first turn's setup + a non-turn-cancellable run (ArmTurnCancel nil) are
+	// clean.
+	turnCancelFn := context.CancelCauseFunc(func(error) {})
+	disarmTurn := func() {}
+	defer func() {
+		disarmTurn()
+		turnCancelFn(nil)
+	}()
+
 outerLoop:
 	for iter := 0; iter < iterCap; iter++ {
 		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
@@ -1285,6 +1420,15 @@ outerLoop:
 		// so End() is called explicitly at each — Go's `defer` runs
 		// at function-scope only, not loop-iteration-scope.
 		iterCtx, iterSpan := lcotel.RecordIteration(ctx, iter)
+
+		// RFC BH: release the PREVIOUS turn's cancel ctx + registry token at the top
+		// of each iteration — before any early-return path below (pause-gate,
+		// context-transform) — so nothing leaks and a cancel racing the inter-turn
+		// boundary finds no armed token (409). This turn re-arms lower, right before
+		// the model call. No-ops on the first iteration and after a park (already
+		// disarmed there).
+		disarmTurn()
+		turnCancelFn(nil)
 
 		// Stamp the CURRENTLY-resolved provider/model onto the per-iteration
 		// ctx so the Context tool's op=self can report them to the agent
@@ -1385,6 +1529,20 @@ outerLoop:
 			reqSystem, reqMessages = cs, cm
 		}
 
+		// RFC BH: arm the per-turn cancel token covering THIS turn's model call +
+		// tool dispatch (the previous turn was released at the top of the loop).
+		// turnCtx is a child of the RUN ctx, so a whole-run cancel STILL cascades to
+		// the turn; a turn-cancel fires only turnCtx (cause ErrTurnCancelled, run ctx
+		// alive) and is caught below. When ArmTurnCancel is nil the token is never
+		// fired, so turnCtx behaves exactly like iterCtx — the loop stays
+		// byte-identical.
+		var turnCtx context.Context
+		turnCtx, turnCancelFn = context.WithCancelCause(iterCtx)
+		disarmTurn = func() {}
+		if opts.ArmTurnCancel != nil {
+			disarmTurn = opts.ArmTurnCancel(turnCancelFn)
+		}
+
 		req := providers.Request{
 			Model:     opts.Model,
 			System:    reqSystem,
@@ -1409,7 +1567,7 @@ outerLoop:
 			req.Seed = s.Seed
 			req.Stop = s.Stop
 		}
-		ch, err := opts.Provider.Call(iterCtx, req)
+		ch, err := opts.Provider.Call(turnCtx, req)
 		if err != nil {
 			// v0.12.9 same-provider retry: when the operator opted
 			// into MaxSameProviderRetries > 0, retryable errors
@@ -1438,6 +1596,7 @@ outerLoop:
 				case <-ctx.Done():
 					lcotel.SetSpanError(iterSpan, ctx.Err())
 					iterSpan.End()
+					turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 					return RunResult{Iterations: iter}, ctx.Err()
 				case <-time.After(backoff):
 				}
@@ -1498,6 +1657,7 @@ outerLoop:
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 			lcotel.SetSpanError(iterSpan, err)
 			iterSpan.End()
+			turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 			return RunResult{Iterations: iter}, err
 		}
 		// Call() succeeded — the connection / driver was healthy
@@ -1568,6 +1728,17 @@ outerLoop:
 				iterReasoning = ev.Reasoning
 				iterReasoningSignature = ev.ReasoningSignature
 			case providers.EventError:
+				// RFC BH: an operator turn-cancel aborted this turn's stream (turnCtx
+				// cancelled, RUN ctx still alive) — not a provider fault. Skip the
+				// retry / fallback / matrix-feedback machinery below (which would
+				// MarkStalled the model + could swap providers), drain the channel so
+				// the sender goroutine doesn't leak, and let the post-stream
+				// turn-cancel handler park the run.
+				if ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+					for range ch {
+					}
+					break
+				}
 				// v0.8.2 classification: build the RAW error string so
 				// the status-prefix regex sees the bare "<name>
 				// <code>:" shape. The streamErr wrap below would
@@ -1600,6 +1771,7 @@ outerLoop:
 					case <-ctx.Done():
 						lcotel.SetSpanError(iterSpan, ctx.Err())
 						iterSpan.End()
+						turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 						return RunResult{Iterations: iter}, ctx.Err()
 					case <-time.After(backoff):
 					}
@@ -1642,9 +1814,18 @@ outerLoop:
 				}
 				lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
 				iterSpan.End()
+				turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
 			}
 		}
+
+		// RFC BH: did the operator cancel THIS turn while the model was generating
+		// (run ctx still alive)? Covers both a driver that surfaced EventError on
+		// the turnCtx-cancel (short-circuited above) and one that just closed the
+		// stream. The run-level cancel is checked FIRST (ctx.Err()==nil): a
+		// whole-run cancel terminates as before, never mistaken for a turn-cancel.
+		turnCancelledMidGen := opts.ArmTurnCancel != nil && ctx.Err() == nil &&
+			errors.Is(context.Cause(turnCtx), ErrTurnCancelled)
 
 		// Prepend any text before tool_use blocks so the assistant turn is well-formed.
 		if iterText != "" {
@@ -1723,6 +1904,31 @@ outerLoop:
 		stopReason = iterStop
 		finalText = iterText
 
+		// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
+		// the model was streaming. Keep the partial assistant output (appended
+		// above; a completed call's usage was billed above too), but leave the
+		// history VALID before parking:
+		//   - drop a content-less assistant turn (cancel before anything streamed) —
+		//     an empty assistant message 400s the next call;
+		//   - synthesize a "cancelled by operator" tool_result for every tool_use the
+		//     model started but we never dispatched — a dangling tool_use 400s too.
+		// Then route into the interactive park (not the terminate/break path).
+		if turnCancelledMidGen {
+			if n := len(messages); n > 0 && messages[n-1].Role == "assistant" && len(messages[n-1].Content) == 0 {
+				messages = messages[:n-1]
+			}
+			if len(pendingTools) > 0 {
+				messages = append(messages, providers.Message{Role: "user", Content: cancelledToolResults(pendingTools)})
+			}
+			var resumed bool
+			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, opts, messages, iter, lastCtxTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
+			iterSpan.End()
+			if !resumed {
+				break
+			}
+			continue outerLoop
+		}
+
 		// Terminal: model is done.
 		if iterStop != "tool_use" || len(pendingTools) == 0 {
 			// Persistent interactive run: park instead of terminating. Wait
@@ -1731,39 +1937,12 @@ outerLoop:
 			// trade-off of an always-on terminal agent (bounded by the
 			// existing per-user / global run caps).
 			if opts.Interactive && opts.SteerQueue != nil {
-				emit(providers.Event{Type: providers.EventAwaitingInput,
-					AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: iter}})
-				// Park until a real operator turn arrives. A steer.KindCompact
-				// control replaces the in-memory history with the summary pair
-				// and RE-parks (compaction is not itself new input — the
-				// operator's next message is), so the loop never calls the
-				// provider on the bare summary.
-				resumedWithInput := false
-				for {
-					m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
-					if !resumed {
-						break // ctx cancelled (or queue closed) → terminate
-					}
-					if m.Kind == steer.KindCompact {
-						messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
-						// Refresh the footprint so the next operator turn's op=self
-						// reports the compacted size, not the stale pre-compaction
-						// value. Without this a parked run that compacted kept
-						// reporting its old ~full context (used_tokens / used_pct)
-						// until the next real turn's usage landed.
-						lastCtxTokens = estimateMessageTokens(messages)
-						continue // re-park: wait for the operator's actual next turn
-					}
-					messages = append(messages, providers.Message{
-						Role:    "user",
-						Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
-					})
-					if opts.OnSteer != nil {
-						opts.OnSteer(m)
-					}
-					resumedWithInput = true
-					break
-				}
+				// RFC BH: the turn ended and the run is about to park — no longer
+				// mid-turn, so disarm the turn-cancel token (a cancel while parked
+				// finds nothing armed → the handler 409s it).
+				disarmTurn()
+				var resumedWithInput bool
+				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, opts, messages, iter, lastCtxTokens, emit)
 				iterSpan.End()
 				if !resumedWithInput {
 					break
@@ -1797,12 +1976,38 @@ outerLoop:
 			// Tenant=="", still fire on all).
 			Tenant: ident.TenantID,
 		}
-		toolResults := executePendingTools(iterCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
+		toolResults := executePendingTools(turnCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
-		// Normal fall-through to next iteration. End the iteration span
-		// here — the for loop's continue will open a fresh one.
+
+		// RFC BH turn-cancel (mid-tool-dispatch): the operator stopped this turn
+		// while its tools ran. executePendingTools returns one result per pending
+		// tool (a ctx-cancelled tool is reported error-shaped), so the
+		// assistant(tool_use)/user(tool_result) pairing above is already VALID — no
+		// synthesis needed. The completed model call was billed above; the
+		// interrupted tools just carry an error result. Park instead of looping into
+		// another model turn. Run-cancel is checked first (ctx.Err()==nil).
+		if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+			var resumed bool
+			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, opts, messages, iter, lastCtxTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
+			iterSpan.End()
+			if !resumed {
+				break
+			}
+			continue outerLoop
+		}
+
+		// Normal fall-through to next iteration. Disarm the turn-cancel token at
+		// this turn boundary so a cancel racing the inter-turn gap finds nothing
+		// armed (409) rather than firing a spent token (RFC BH §9.4); the next turn
+		// re-arms. End the iteration span here — the for loop's continue opens a
+		// fresh one.
+		disarmTurn()
 		iterSpan.End()
 	}
+	// RFC BH: release the last turn's cancel ctx once the loop has exited (break or
+	// MaxIterations exhaustion). The run-exit defer would catch it too, but calling
+	// it here keeps the context lifecycle explicit + go-vet clean.
+	turnCancelFn(nil)
 
 	// If the for loop exited by exhausting MaxIterations while the model was
 	// still mid-tool-use, the stop_reason will be stuck at "tool_use" but no

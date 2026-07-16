@@ -529,6 +529,18 @@ const (
 	// through the server's makeRecordingEmit path (soft-at-admission + in-flight
 	// crossing), so the /run terminal + chat render a budget banner.
 	EventLimit EventType = "limit"
+
+	// EventTurnCancelled is emitted by the loop when an operator cancels the
+	// CURRENT TURN of an interactive run (RFC BH) — the in-flight generation +
+	// the tool calls it started are stopped, but the run is NOT terminated: it
+	// parks at awaiting_input (an EventAwaitingInput follows) with its session +
+	// transcript intact, and the operator's next message continues it. Distinct
+	// from the run-level "cancelled" stop_reason (whole-run cancel, terminal) so a
+	// UI can render "turn stopped, input re-enabled" vs "run ended". The
+	// TurnCancelled field carries the optional operator reason + the turn index.
+	// Server-persisted + forwarded via makeRecordingEmit, and auto-replayed on
+	// re-attach (runEventToFrame's default round-trips it).
+	EventTurnCancelled EventType = "turn_cancelled"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -582,6 +594,10 @@ type Event struct {
 	// AwaitingInput carries the structured payload on EventAwaitingInput (a
 	// persistent interactive run parked at end_turn). Nil otherwise.
 	AwaitingInput *AwaitingInputEventInfo `json:"awaiting_input,omitempty"`
+
+	// TurnCancelled carries the structured payload on EventTurnCancelled (an
+	// operator turn-cancel, RFC BH). Nil on all other event types.
+	TurnCancelled *TurnCancelledEventInfo `json:"turn_cancelled,omitempty"`
 
 	// SpawnChild carries the structured payload on EventSpawnChildStarted /
 	// EventSpawnChildResult (RFC X Phase 3 spawn ledger). Nil otherwise.
@@ -768,6 +784,17 @@ type UserInputEventInfo struct {
 type AwaitingInputEventInfo struct {
 	// SinceTurn is the iteration index the run parked at. Informational —
 	// lets the UI show "idle after N turns".
+	SinceTurn int `json:"since_turn"`
+}
+
+// TurnCancelledEventInfo is the structured payload on EventTurnCancelled — the
+// operator stopped the current turn of an interactive run (RFC BH). The run then
+// parks at awaiting_input (an EventAwaitingInput follows).
+type TurnCancelledEventInfo struct {
+	// Reason is the operator's optional free-text reason (empty when none was
+	// given). Non-secret; surfaced for the UI's "turn stopped" notice.
+	Reason string `json:"reason,omitempty"`
+	// SinceTurn is the iteration index the turn was cancelled at. Informational.
 	SinceTurn int `json:"since_turn"`
 }
 
