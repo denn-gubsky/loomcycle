@@ -176,6 +176,55 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
     goarch: arm64
 
+  # loomcycle-toolbox — the SAME binary on a non-distroless Debian base with a
+  # dev toolchain (Python/Go/Rust/C++/Node + git/gh/curl) so agents can run
+  # scripts + compile/test code via Bash / Bashbox fallback. Weak isolation
+  # (code runs in loomcycle's own container) — single-tenant/trusted only; see
+  # Dockerfile.toolbox + docs/TOOLBOX_IMAGE.md. Reuses the same pre-built
+  # `loomcycle` binary (ids: [loomcycle]) — only the runtime base differs.
+  #
+  # NOTE: the toolbox layers run apt-get + toolchain downloads, so the arm64
+  # build executes under QEMU emulation on the amd64 release runner and is
+  # SLOW (tens of minutes) vs the trivial distroless COPY. Watch the release
+  # job's duration; if it times out, drop the -arm64 block + its manifest arm64
+  # entry to ship amd64-only until a native arm64 runner is available.
+  - id: loomcycle-toolbox-amd64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-toolbox:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-toolbox:latest-amd64"
+    dockerfile: Dockerfile.toolbox
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=loomcycle-toolbox"
+      - "--label=org.opencontainers.image.description=loomcycle + a developer toolchain (Python/Go/Rust/C++/Node) for single-tenant code execution"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: amd64
+  - id: loomcycle-toolbox-arm64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-toolbox:{{ .Version }}-arm64"
+      - "denngubsky/loomcycle-toolbox:latest-arm64"
+    dockerfile: Dockerfile.toolbox
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=loomcycle-toolbox"
+      - "--label=org.opencontainers.image.description=loomcycle + a developer toolchain (Python/Go/Rust/C++/Node) for single-tenant code execution"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: arm64
+
 # docker_manifests joins per-arch images into one multi-arch manifest
 # the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
 # regardless of their host arch.
@@ -188,3 +237,11 @@ docker_manifests:
     image_templates:
       - "denngubsky/loomcycle:latest-amd64"
       - "denngubsky/loomcycle:latest-arm64"
+  - name_template: "denngubsky/loomcycle-toolbox:{{ .Version }}"
+    image_templates:
+      - "denngubsky/loomcycle-toolbox:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-toolbox:{{ .Version }}-arm64"
+  - name_template: "denngubsky/loomcycle-toolbox:latest"
+    image_templates:
+      - "denngubsky/loomcycle-toolbox:latest-amd64"
+      - "denngubsky/loomcycle-toolbox:latest-arm64"
