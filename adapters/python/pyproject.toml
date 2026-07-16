@@ -27,7 +27,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loomcycle"
-version = "1.20.0"
+version = "1.21.0"
 description = "Async Python client for loomcycle's gRPC API — full 44-RPC parity (run streaming, interactive sessions, batch fan-out, compaction, pause/resume/snapshot, substrate defs, volumes, Path VFS, chunked-graph Documents, channels)"
 readme = "README.md"
 license = { text = "Apache-2.0" }
