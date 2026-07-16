@@ -702,6 +702,19 @@ func (it *Interruption) toolResultForStatus(row store.InterruptRow) tools.Result
 			"resolved_by":  row.ResolvedBy,
 		})
 		return tools.Result{Text: string(out)}
+	case store.InterruptStatusDeclined:
+		// RFC BH P2: the operator declined to answer. This is deliberately
+		// a NON-error result (no IsError) — an error could make the agent
+		// retry the question or abort, but the operator's intent is for the
+		// agent to PROCEED without this input. Distinct from the cancelled
+		// branch below, which stays IsError (run-cancel / timeout).
+		out, _ := json.Marshal(map[string]any{
+			"declined":     true,
+			"note":         "The operator declined to answer; proceed without this input.",
+			"interrupt_id": row.InterruptID,
+			"resolved_by":  row.ResolvedBy,
+		})
+		return tools.Result{Text: string(out)}
 	case store.InterruptStatusTimedOut:
 		return tools.Result{
 			IsError: true,
