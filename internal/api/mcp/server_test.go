@@ -227,6 +227,14 @@ func (m *mockConnector) StreamRunEvents(context.Context, string, int64, connecto
 	return connector.ErrRunNotInFlight
 }
 
+// RFC BH turn-cancel + resolve stubs.
+func (m *mockConnector) CancelTurn(context.Context, string, string) (bool, bool, error) {
+	return false, false, connector.ErrRunNotInFlight
+}
+func (m *mockConnector) ResolveInterrupt(context.Context, string, string, string, string, string, string) (string, error) {
+	return "", connector.ErrInterruptNotFound
+}
+
 // v0.9.x MCPServerDef stub.
 func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil

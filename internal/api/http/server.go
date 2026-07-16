@@ -6050,171 +6050,49 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, fmt.Sprintf("invalid JSON body: %v", err), http.StatusBadRequest)
 		return
 	}
-	if req.Kind == "" {
-		req.Kind = store.InterruptKindQuestion
-	}
-	if req.Kind != store.InterruptKindQuestion {
-		// v0.8.16 supports only "question". Future kinds add their
-		// own validators here; the closed-enum contract means the
-		// resolve handler is the gate, not the model or the
-		// caller.
-		http.Error(w, fmt.Sprintf("unsupported kind %q (v0.8.16 supports: question)", req.Kind), http.StatusUnprocessableEntity)
-		return
-	}
-	if req.ResolvedBy == "" {
-		// Authoritative attribution: cookie session (Web UI) writes
-		// "webui"; bearer-only API calls write "api". The Web UI
-		// resolve flow runs through the same handler.
+	// Resolve the authoritative attribution at the HTTP auth boundary (cookie
+	// session → webui; bearer-only API → api), then dispatch through the shared
+	// connector core (kind/disposition/answer validation + tenant gate + persist
+	// + wake + system-publish). The core returns typed connector sentinels
+	// (wrapped with the verbatim message) that map back to the byte-identical
+	// status codes + bodies this handler shipped pre-P3b.
+	resolvedBy := req.ResolvedBy
+	if resolvedBy == "" {
 		if hasSessionCookie(r) {
-			req.ResolvedBy = store.InterruptResolvedByWebUI
+			resolvedBy = store.InterruptResolvedByWebUI
 		} else {
-			req.ResolvedBy = store.InterruptResolvedByAPI
+			resolvedBy = store.InterruptResolvedByAPI
 		}
 	}
 
-	// Disposition gate (RFC BH P2). Only "" / "answer" / "declined" are
-	// valid; an unknown value is a client error, not a silent answer.
-	switch req.Disposition {
-	case "", dispositionAnswer, dispositionDeclined:
-		// ok
-	default:
-		http.Error(w, fmt.Sprintf("unsupported disposition %q (valid: answer, declined)", req.Disposition), http.StatusUnprocessableEntity)
+	// The store==nil 503 is handled above (byte-identical), so the core's
+	// ErrInterruptStoreUnavailable is unreachable here — it exists for the gRPC
+	// twin, which has no such early guard.
+	st, err := s.ResolveInterrupt(r.Context(), runID, interruptID, req.Kind, req.Answer, resolvedBy, req.Disposition)
+	switch {
+	case errors.Is(err, connector.ErrInterruptUnsupportedKind),
+		errors.Is(err, connector.ErrInterruptUnsupportedDisposition),
+		errors.Is(err, connector.ErrInterruptDeclineWithAnswer),
+		errors.Is(err, connector.ErrInterruptInvalidAnswer):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
-	}
-	declined := req.Disposition == dispositionDeclined
-	if declined && req.Answer != "" {
-		// A decline carries no answer — an answer alongside it is
-		// contradictory. Reject rather than silently dropping it.
-		http.Error(w, "declined disposition must not carry an answer", http.StatusUnprocessableEntity)
+	case errors.Is(err, connector.ErrInterruptNotFound):
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
-	}
-
-	// Validate the answer against the stored row's options + expiry.
-	row, err := s.store.InterruptGet(r.Context(), interruptID)
-	var nf *store.ErrNotFound
-	if errors.As(err, &nf) {
-		http.Error(w, "interrupt not found", http.StatusNotFound)
+	case errors.Is(err, connector.ErrInterruptAlreadyTerminal):
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
-	}
-	if err != nil {
+	case errors.Is(err, connector.ErrInterruptExpired):
+		http.Error(w, err.Error(), http.StatusGone)
+		return
+	case err != nil:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	if row.RunID != runID {
-		// Defensive: the URL path's run_id must match the stored
-		// row's run_id. Prevents one user's resolve from being
-		// retargeted at another run's interrupt by URL manipulation.
-		http.Error(w, "interrupt does not belong to that run", http.StatusNotFound)
-		return
-	}
-	// Tenant ownership gate (RFC L/N): the run this interrupt belongs to must be
-	// in the caller's tenant — otherwise a resolve injects the caller's answer
-	// into ANOTHER tenant's paused run, steering it (e.g. approving a gated
-	// action). run/interrupt ids are not secret; the row.RunID==runID check
-	// above only blocks URL retargeting WITHIN a tenant, it is NOT a tenant
-	// check. tenantStore folds a cross-tenant/missing run into an opaque 404.
-	if _, err := s.tenantStore(r.Context()).GetRun(r.Context(), row.RunID); err != nil {
-		if errors.As(err, &nf) {
-			http.Error(w, "interrupt not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if row.Status != store.InterruptStatusPending {
-		if row.Status == store.InterruptStatusTimedOut && !row.ExpiresAt.IsZero() && row.ExpiresAt.Before(time.Now()) {
-			http.Error(w, "interrupt expired", http.StatusGone)
-			return
-		}
-		http.Error(w, fmt.Sprintf("interrupt already %s", row.Status), http.StatusConflict)
-		return
-	}
-	if !row.ExpiresAt.IsZero() && row.ExpiresAt.Before(time.Now()) {
-		http.Error(w, "interrupt expired", http.StatusGone)
-		return
-	}
-
-	// A decline (RFC BH P2) carries no answer, so it SKIPS option-list
-	// validation entirely — the operator is declining to answer, not
-	// submitting one. The answer path is unchanged.
-	if !declined {
-		// Option-list validation: when the original ask declared
-		// options, the answer must be one of them. Free-text answers
-		// (no options) accept any non-empty string.
-		if len(row.Options) > 0 {
-			var opts []string
-			if err := json.Unmarshal(row.Options, &opts); err == nil && len(opts) > 0 {
-				ok := false
-				for _, o := range opts {
-					if o == req.Answer {
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					http.Error(w, fmt.Sprintf("answer %q is not one of the declared options: %v", req.Answer, opts), http.StatusUnprocessableEntity)
-					return
-				}
-			}
-		} else if req.Answer == "" {
-			http.Error(w, "answer is required for free-text interrupts", http.StatusUnprocessableEntity)
-			return
-		}
-	}
-
-	// Persist the terminal state. A decline uses InterruptFinish (the
-	// answer-less terminal writer) → status=declined; an answer uses
-	// InterruptResolve → status=resolved. Both reject an already-terminal
-	// row with ErrInterruptAlreadyTerminal → 409. finalStatus drives the
-	// wake publish + response so the answer path stays byte-identical.
-	finalStatus := store.InterruptStatusResolved
-	var persistErr error
-	if declined {
-		finalStatus = store.InterruptStatusDeclined
-		persistErr = s.store.InterruptFinish(r.Context(), interruptID, store.InterruptStatusDeclined, req.ResolvedBy)
-	} else {
-		persistErr = s.store.InterruptResolve(r.Context(), interruptID, req.Answer, req.ResolvedBy, nil)
-	}
-	if persistErr != nil {
-		if errors.Is(persistErr, store.ErrInterruptAlreadyTerminal) {
-			http.Error(w, "interrupt already resolved, timed out, or cancelled", http.StatusConflict)
-			return
-		}
-		http.Error(w, persistErr.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Wake the blocked tool. Bus.Notify is best-effort — if no
-	// waiter, it's a no-op. If we crash before Notify fires, the
-	// next bus.Wait cycle exits via timeout and the storage row
-	// is the source of truth.
-	if s.interruptionBus != nil {
-		s.interruptionBus.Notify("intr:" + interruptID)
-	}
-
-	// Publish the external `_system/interrupts/resolved` signal so
-	// non-run Channel subscribers (dashboards, Slack bots) see the
-	// terminal state. Best-effort.
-	if s.systemPublisher != nil && row.UserID != "" {
-		payload, _ := json.Marshal(map[string]any{
-			"interrupt_id": interruptID,
-			"run_id":       runID,
-			"kind":         row.Kind,
-			"status":       finalStatus,
-			"answer":       req.Answer,
-			"resolved_by":  req.ResolvedBy,
-		})
-		_, _ = s.systemPublisher.PublishNow(
-			r.Context(),
-			"_system/interrupts/resolved",
-			store.MemoryScopeUser, row.UserID,
-			payload, channels.SystemPublisherUserID, 0, 0,
-		)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"interrupt_id": interruptID,
-		"status":       finalStatus,
+		"status":       st,
 		"resolved_at":  time.Now().UTC().Format(time.RFC3339Nano),
 	})
 }
@@ -6317,73 +6195,27 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 	// decode error (incl. EOF) is not fatal; the reason is a non-secret annotation.
 	var req cancelTurnRequest
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
-	ctx := r.Context()
-	reason := strings.TrimSpace(req.Reason)
 
-	// Local fast path: the run is live on THIS replica. Gate on its session's
-	// tenant (mirrors SteerRun), then fire the local armed token. Byte-identical
-	// to P1.
-	if entry, ok := s.steerReg.Get(runID); ok {
-		if entry.SessionID != "" && s.store != nil {
-			if sess, err := s.store.GetSession(ctx, entry.SessionID); err == nil {
-				if !sessionOwnershipOK(ctx, sess) {
-					http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
-					return
-				}
-			}
-		}
-		// Mid-turn? Only an armed run (interactive + in-flight) is turn-cancellable.
-		if !s.turnCancelReg.IsArmed(runID) {
-			code, msg := "not_mid_turn", "run is not mid-turn (already parked or terminal)"
-			// Distinguish a non-interactive run for a clearer error (best-effort;
-			// the caller already passed the ownership gate above).
-			if s.store != nil {
-				if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err == nil && !run.Interactive {
-					code = "not_interactive"
-					msg = "turn-cancel applies only to interactive runs; use POST /v1/agents/{id}/cancel to stop this run"
-				}
-			}
-			writeJSONError(w, http.StatusConflict, code, msg)
-			return
-		}
-		// Fire the local armed token (builds loop.TurnCancelCause via the
-		// registry's causeFor). A false return means the token vanished between
-		// IsArmed and here (the turn just ended / a concurrent cancel won) → 409.
-		if !s.turnCancelReg.CancelLocal(runID, reason) {
-			writeJSONError(w, http.StatusConflict, "not_mid_turn", "run is not mid-turn (already parked or terminal)")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "stopped": true, "parked": true})
+	// Dispatch through the shared connector core (session-ownership gate + local
+	// token / cross-replica owner-routing). The typed connector sentinels map
+	// back to the byte-identical status codes + bodies this handler shipped
+	// pre-P3b (the 409s carry a machine `code` via writeJSONError).
+	stopped, parked, err := s.CancelTurn(r.Context(), runID, req.Reason)
+	switch {
+	case errors.Is(err, connector.ErrTurnNotInteractive):
+		writeJSONError(w, http.StatusConflict, "not_interactive", "turn-cancel applies only to interactive runs; use POST /v1/agents/{id}/cancel to stop this run")
 		return
-	}
-
-	// Cross-replica fallback: the run is not live here. Gate ownership via the
-	// shared store (a cross-tenant / unknown run folds into an opaque 404), then
-	// route the cancel to the run's owning replica by runs.replica_id.
-	if s.store == nil {
+	case errors.Is(err, connector.ErrTurnNotMidTurn):
+		writeJSONError(w, http.StatusConflict, "not_mid_turn", "run is not mid-turn (already parked or terminal)")
+		return
+	case errors.Is(err, connector.ErrRunNotInFlight):
 		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
 		return
-	}
-	if _, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil {
-		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
-		return
-	}
-	fired, err := s.turnCancelReg.Cancel(ctx, runID, reason)
-	if err != nil {
+	case err != nil:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if !fired {
-		// Not armed on any reachable replica (already parked / just ended / owner
-		// gone) — and in single-process mode (no coordinator) a steer-registry miss
-		// always lands here. "No in-flight turn to cancel" → 404, byte-identical to
-		// P1's steer-miss response.
-		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
-		return
-	}
-	// The owning replica's loop caught the cause and parks the run at
-	// awaiting_input; report the intended outcome for an interactive run.
-	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "stopped": true, "parked": true})
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "stopped": stopped, "parked": parked})
 }
 
 // minCompactMessages: a conversation shorter than this isn't worth a model call.
