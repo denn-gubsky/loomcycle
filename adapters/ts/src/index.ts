@@ -39,10 +39,14 @@
  *     listMemoryEntries(scope, scopeID, opts?): Promise<MemoryEntriesResponse>
  *     getMemoryEntry(scope, scopeID, key): Promise<MemoryEntryResponse>
  *
- *     // Interruption (v0.8.16)
+ *     // Interruption (v0.8.16; decline RFC BH)
  *     listUserInterrupts(userId, opts?): Promise<InterruptListResponse>
  *     listRunInterrupts(runId, opts?): Promise<InterruptListResponse>
  *     resolveInterrupt(runId, interruptId, opts): Promise<unknown>
+ *     cancelInterrupt(runId, interruptId, opts?): Promise<unknown>
+ *
+ *     // Turn-scoped run control (RFC BH)
+ *     cancelTurn(runId, opts?): Promise<CancelTurnResult>
  *
  *     // Substrate admin (v0.8.22; mcpServerDef v0.9.x; scheduleDef v1.x)
  *     agentDef(input): Promise<SubstrateToolResponse>
@@ -143,6 +147,7 @@ export type {
   RunBatchResult,
   SpawnRunResult,
   CompactRunResult,
+  CancelTurnResult,
   // Transcript
   TranscriptEvent,
   TranscriptResponse,

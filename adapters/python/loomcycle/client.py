@@ -826,6 +826,63 @@ class LoomcycleClient:
             "applied": resp.applied,
         }
 
+    async def cancel_turn(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
+        """Stop the CURRENT turn of a live interactive run and park it at
+        awaiting_input — session + transcript intact (RFC BH; mirror of
+        ``POST /v1/runs/{run_id}/cancel``). This is NOT whole-run cancel
+        (:meth:`cancel_agent`), which terminates the run. ``reason`` is an
+        optional operator annotation. Returns ``{run_id, stopped, parked}``.
+        A run that isn't mid-turn / isn't interactive maps to
+        :class:`NotPausedError` (FailedPrecondition); an unknown /
+        cross-tenant run to :class:`AgentNotFoundError` (NotFound)."""
+        req = pb.CancelTurnRequest(run_id=run_id, reason=reason)
+        try:
+            resp = await self._stub.CancelTurn(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {"run_id": resp.run_id, "stopped": resp.stopped, "parked": resp.parked}
+
+    async def resolve_interrupt(
+        self,
+        run_id: str,
+        interrupt_id: str,
+        *,
+        answer: str = "",
+        resolved_by: str = "",
+        disposition: str = "",
+    ) -> Mapping[str, Any]:
+        """Resolve a pending interruption (RFC BH; mirror of
+        ``POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve``). With
+        ``disposition`` "" / "answer" the ``answer`` is validated against the
+        declared options; ``disposition="declined"`` (see :meth:`cancel_interrupt`)
+        carries no answer and skips option validation so the waiting Question
+        tool proceeds. ``resolved_by`` defaults server-side to "api" over gRPC.
+        Returns ``{interrupt_id, status}`` (status "resolved" | "declined").
+
+        A bad kind / disposition / answer maps to :class:`LoomcycleError`
+        (INVALID_ARGUMENT); an unknown / cross-tenant interrupt to
+        :class:`AgentNotFoundError` (NotFound); an already-terminal or expired
+        interrupt to :class:`NotPausedError` (FailedPrecondition)."""
+        req = pb.ResolveInterruptRequest(
+            run_id=run_id,
+            interrupt_id=interrupt_id,
+            answer=answer,
+            resolved_by=resolved_by,
+            disposition=disposition,
+        )
+        try:
+            resp = await self._stub.ResolveInterrupt(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {"interrupt_id": resp.interrupt_id, "status": resp.status}
+
+    async def cancel_interrupt(self, run_id: str, interrupt_id: str) -> Mapping[str, Any]:
+        """Decline a pending interruption WITHOUT answering it (RFC BH) — the
+        waiting Question tool returns a non-error "declined" result so the agent
+        proceeds, and the run keeps going. Thin wrapper over
+        :meth:`resolve_interrupt` with ``disposition="declined"``."""
+        return await self.resolve_interrupt(run_id, interrupt_id, disposition="declined")
+
     async def run_input(self, run_id: str, text: str) -> Mapping[str, Any]:
         """Push an operator steering message into a LIVE interactive run
         (RFC AI; mirror of ``POST /v1/runs/{run_id}/input``). The run must

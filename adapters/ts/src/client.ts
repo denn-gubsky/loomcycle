@@ -105,6 +105,7 @@ import type {
   ResumeResult,
   ResolverMatrix,
   CompactRunResult,
+  CancelTurnResult,
   CompactionOptions,
   RunBatchOptions,
   RunBatchResult,
@@ -399,6 +400,31 @@ export class LoomcycleClient {
     return postJSON<CompactRunResult>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/compact`,
+      body,
+      opts,
+    );
+  }
+
+  /**
+   * Stop the CURRENT turn of a live interactive run (its in-flight generation +
+   * the tool calls it started) and park it at awaiting_input — session +
+   * transcript intact, ready for the next message. This is the "Esc" gesture,
+   * NOT whole-run cancel ({@link LoomcycleClient.cancelAgent}), which terminates
+   * the run. Returns `{ run_id, stopped, parked }`.
+   *
+   * Rejects with RunBusyError (409) when the run isn't mid-turn or isn't
+   * interactive, and AgentNotFoundError (404) for an unknown / cross-tenant run.
+   * Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
+   */
+  async cancelTurn(
+    runId: string,
+    opts?: { reason?: string; signal?: AbortSignal },
+  ): Promise<CancelTurnResult> {
+    const body: Record<string, unknown> = {};
+    if (opts?.reason !== undefined) body.reason = opts.reason;
+    return postJSON<CancelTurnResult>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/cancel`,
       body,
       opts,
     );
@@ -828,22 +854,45 @@ export class LoomcycleClient {
   /** Resolve a pending Interruption.ask from outside the agent
    *  loop. Lets a TS-side dashboard or service act as the human
    *  answerer when operator yaml configures the consumer-MCP
-   *  backend. */
+   *  backend. Pass `disposition: "declined"` (or use
+   *  {@link LoomcycleClient.cancelInterrupt}) to decline WITHOUT an
+   *  answer so the waiting Question tool proceeds (RFC BH). */
   async resolveInterrupt(
     runId: string,
     interruptId: string,
     opts: ResolveInterruptOptions & { signal?: AbortSignal },
   ): Promise<unknown> {
+    const body: Record<string, unknown> = {
+      kind: opts.kind ?? "question",
+      resolved_by: opts.resolvedBy ?? "client",
+    };
+    // A decline carries no answer; omit it rather than sending "" so the
+    // server's "declined must not carry an answer" gate isn't tripped.
+    if (opts.answer !== undefined) body.answer = opts.answer;
+    if (opts.disposition !== undefined) body.disposition = opts.disposition;
     return postJSON<unknown>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/interrupts/${encodeURIComponent(interruptId)}/resolve`,
-      {
-        kind: opts.kind ?? "question",
-        answer: opts.answer,
-        resolved_by: opts.resolvedBy ?? "client",
-      },
+      body,
       opts,
     );
+  }
+
+  /** Decline a pending Interruption.ask WITHOUT answering it (RFC BH) — the
+   *  waiting Question tool returns a non-error "declined" result so the agent
+   *  proceeds, and the run keeps going. A thin wrapper over
+   *  {@link LoomcycleClient.resolveInterrupt} with `disposition: "declined"`
+   *  (no answer). Mirrors POST .../resolve `{ disposition: "declined" }`. */
+  async cancelInterrupt(
+    runId: string,
+    interruptId: string,
+    opts?: { resolvedBy?: string; signal?: AbortSignal },
+  ): Promise<unknown> {
+    return this.resolveInterrupt(runId, interruptId, {
+      disposition: "declined",
+      resolvedBy: opts?.resolvedBy,
+      signal: opts?.signal,
+    });
   }
 
   // ---- Hook management (hooks-connector series, PR C) ----

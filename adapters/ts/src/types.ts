@@ -515,6 +515,16 @@ export interface CompactRunResult {
   applied: "live" | "marker" | "noop";
 }
 
+/** Result of {@link LoomcycleClient.cancelTurn} (RFC BH) — the current turn was
+ *  stopped and the interactive run parked at awaiting_input (session +
+ *  transcript intact). This is NOT whole-run cancel ({@link
+ *  LoomcycleClient.cancelAgent}). */
+export interface CancelTurnResult {
+  run_id: string;
+  stopped: boolean;
+  parked: boolean;
+}
+
 // ---- Transcript ----
 
 /** TranscriptEvent — one persisted store.Event from
@@ -791,14 +801,19 @@ export interface InterruptListResponse {
 
 export interface ResolveInterruptOptions {
   /** The human's answer. When the original ask declared options,
-   *  MUST be one of them (server-side validated). */
-  answer: string;
+   *  MUST be one of them (server-side validated). Optional so a
+   *  decline ({@link LoomcycleClient.cancelInterrupt}) can omit it. */
+  answer?: string;
   /** Audit attribution for who resolved it (free-form). Defaults
    *  server-side to "client" when omitted. */
   resolvedBy?: string;
   /** Discriminator. v0.8.16 supports only "question"; reserved
    *  for v0.9.x future kinds. */
   kind?: string;
+  /** Disposition (RFC BH). Omit / "answer" carry the answer; "declined"
+   *  resolves the interrupt WITHOUT an answer (skips option validation) so
+   *  the waiting Question tool proceeds. */
+  disposition?: "answer" | "declined";
 }
 
 // ---- Hook management (hooks-connector series, PR C) ----
