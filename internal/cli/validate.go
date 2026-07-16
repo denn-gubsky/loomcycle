@@ -77,9 +77,14 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stdout, "Agents           : %d\n", len(names))
 		for _, name := range names {
-			provider, model, err := cfg.ResolveAgentModel(name)
+			provider, model, pattern, err := cfg.ResolveAgentModel(name)
 			if err != nil {
 				return fail(stderr, "agent %q: %v", name, err)
+			}
+			// RFC BG: a model_pattern alias resolves to a concrete model only at
+			// run time (against the live catalog), so show the glob here.
+			if pattern != "" {
+				model = pattern
 			}
 			fmt.Fprintf(stdout, "  %-24s provider=%-10s model=%s\n", name, provider, model)
 		}

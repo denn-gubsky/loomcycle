@@ -1248,9 +1248,32 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 	if !hasPin && s.cfg.Defaults.Model == "" {
 		return "", "", "", fmt.Errorf("%w: agent %q has no pin, no tier, and no defaults", runner.ErrInvalidArgument, agentName)
 	}
-	providerID, model, err = s.cfg.ResolveAgentDefModel(agentName, def)
+	var pattern string
+	providerID, model, pattern, err = s.cfg.ResolveAgentDefModel(agentName, def)
 	if err != nil {
 		return "", "", "", fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+	}
+	// RFC BG: a pinned agent naming a model_pattern alias has no concrete model
+	// yet — config surfaced the glob (config can't see the live catalog). Resolve
+	// it once here, at admission, through the resolver's pin path so Decision.Model
+	// carries the concrete id everything downstream records. A pattern that
+	// matches nothing available fails with ErrPinUnavailable (a pin has no
+	// fallthrough). Concrete pins (pattern == "") take the unchanged path.
+	if pattern != "" {
+		if s.resolver == nil {
+			return "", "", "", fmt.Errorf("%w: agent %q pins model_pattern %q but resolver is not configured",
+				runner.ErrInvalidArgument, agentName, pattern)
+		}
+		dec, rerr := s.resolver.Resolve(resolve.AgentRequest{
+			Name:            agentName,
+			PinProvider:     providerID,
+			PinModelPattern: pattern,
+			Effort:          def.Effort,
+		})
+		if rerr != nil {
+			return "", "", "", rerr
+		}
+		return dec.Provider, dec.Model, dec.Effort, nil
 	}
 	// Effort still flows through on the pin path — an explicit-pin
 	// agent can declare effort and the driver will translate it
@@ -2007,9 +2030,11 @@ func convertConfigCandidates(in map[string][]config.TierCandidate, models map[st
 			// Expand model aliases (top-level models:) the same way the
 			// pin path does — so model: <alias> works in a tier candidate
 			// too, not only as a pin. The resolver matches literal model
-			// strings, so expansion must happen here at the boundary.
-			prov, mdl := config.ExpandModelAlias(models, c.Provider, c.Model)
-			conv = append(conv, resolve.Candidate{Provider: prov, Model: mdl})
+			// strings, so expansion must happen here at the boundary. RFC BG:
+			// a pattern alias surfaces a glob (pat) the resolver turns into a
+			// concrete model against the live catalog.
+			prov, mdl, pat := config.ExpandModelAlias(models, c.Provider, c.Model)
+			conv = append(conv, resolve.Candidate{Provider: prov, Model: mdl, ModelPattern: pat})
 		}
 		out[tier] = conv
 	}

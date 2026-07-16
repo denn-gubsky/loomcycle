@@ -43,7 +43,7 @@ func TestLoadExample(t *testing.T) {
 		t.Errorf("env not loaded: %q", cfg.Env.AnthropicAPIKey)
 	}
 
-	provider, model, err := cfg.ResolveAgentModel("default")
+	provider, model, _, err := cfg.ResolveAgentModel("default")
 	if err != nil {
 		t.Fatalf("ResolveAgentModel: %v", err)
 	}
