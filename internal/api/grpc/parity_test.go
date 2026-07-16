@@ -24,6 +24,21 @@ type parityMock struct {
 	lastCompactID string
 	compactResult connector.CompactResult
 	compactErr    error
+
+	// RFC BH turn-cancel + resolve capture/inject.
+	lastCancelTurnID string
+	lastCancelReason string
+	cancelStopped    bool
+	cancelParked     bool
+	cancelErr        error
+	lastResolve      resolveCall
+	resolveStatus    string
+	resolveErr       error
+}
+
+// resolveCall records the args the gRPC ResolveInterrupt handler forwarded.
+type resolveCall struct {
+	runID, interruptID, kind, answer, resolvedBy, disposition string
 }
 
 func (m *parityMock) SpawnRunBatch(_ context.Context, req connector.BatchSpawnRequest) (connector.BatchSpawnResult, error) {
@@ -34,6 +49,17 @@ func (m *parityMock) SpawnRunBatch(_ context.Context, req connector.BatchSpawnRe
 func (m *parityMock) CompactRun(_ context.Context, runID string) (connector.CompactResult, error) {
 	m.lastCompactID = runID
 	return m.compactResult, m.compactErr
+}
+
+func (m *parityMock) CancelTurn(_ context.Context, runID, reason string) (bool, bool, error) {
+	m.lastCancelTurnID = runID
+	m.lastCancelReason = reason
+	return m.cancelStopped, m.cancelParked, m.cancelErr
+}
+
+func (m *parityMock) ResolveInterrupt(_ context.Context, runID, interruptID, kind, answer, resolvedBy, disposition string) (string, error) {
+	m.lastResolve = resolveCall{runID, interruptID, kind, answer, resolvedBy, disposition}
+	return m.resolveStatus, m.resolveErr
 }
 
 // statusErr is a connector error that carries an HTTP status, like the http
@@ -181,5 +207,171 @@ func TestCompactRun_MidTurnIsFailedPrecondition(t *testing.T) {
 	_, err := client.CompactRun(context.Background(), &loomcyclepb.CompactRunRequest{RunId: "r_x"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("code = %s, want FailedPrecondition", status.Code(err))
+	}
+}
+
+// RFC BH P3b — CancelTurn RPC dispatch + error→code mapping.
+
+func TestCancelTurn_DispatchesAndMaps(t *testing.T) {
+	mc := &parityMock{cancelStopped: true, cancelParked: true}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.CancelTurn(context.Background(), &loomcyclepb.CancelTurnRequest{RunId: "run-1", Reason: "too slow"})
+	if err != nil {
+		t.Fatalf("CancelTurn: %v", err)
+	}
+	if mc.lastCancelTurnID != "run-1" || mc.lastCancelReason != "too slow" {
+		t.Errorf("connector saw run_id=%q reason=%q, want run-1/too slow", mc.lastCancelTurnID, mc.lastCancelReason)
+	}
+	if !resp.GetStopped() || !resp.GetParked() || resp.GetRunId() != "run-1" {
+		t.Errorf("resp = %+v, want {run-1, stopped, parked}", resp)
+	}
+}
+
+func TestCancelTurn_NotMidTurnIsFailedPrecondition(t *testing.T) {
+	mc := &parityMock{cancelErr: connector.ErrTurnNotMidTurn}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.CancelTurn(context.Background(), &loomcyclepb.CancelTurnRequest{RunId: "run-1"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("code = %s, want FailedPrecondition", status.Code(err))
+	}
+}
+
+func TestCancelTurn_NotInteractiveIsFailedPrecondition(t *testing.T) {
+	mc := &parityMock{cancelErr: connector.ErrTurnNotInteractive}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.CancelTurn(context.Background(), &loomcyclepb.CancelTurnRequest{RunId: "run-1"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("code = %s, want FailedPrecondition", status.Code(err))
+	}
+}
+
+func TestCancelTurn_UnknownRunIsNotFound(t *testing.T) {
+	// Opaque: an unknown / cross-tenant run folds into ErrRunNotInFlight → NotFound.
+	mc := &parityMock{cancelErr: connector.ErrRunNotInFlight}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.CancelTurn(context.Background(), &loomcyclepb.CancelTurnRequest{RunId: "ghost"})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("code = %s, want NotFound", status.Code(err))
+	}
+}
+
+func TestCancelTurn_BadRunIDIsInvalidArgument(t *testing.T) {
+	mc := &parityMock{}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.CancelTurn(context.Background(), &loomcyclepb.CancelTurnRequest{RunId: "bad id!"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %s, want InvalidArgument", status.Code(err))
+	}
+	if mc.lastCancelTurnID != "" {
+		t.Error("connector was called despite an invalid run_id")
+	}
+}
+
+// RFC BH P3b — ResolveInterrupt RPC dispatch + error→code mapping.
+
+func TestResolveInterrupt_AnswerDispatchesAndMaps(t *testing.T) {
+	mc := &parityMock{resolveStatus: "resolved"}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.ResolveInterrupt(context.Background(), &loomcyclepb.ResolveInterruptRequest{
+		RunId: "run-1", InterruptId: "intr-1", Answer: "Yes",
+	})
+	if err != nil {
+		t.Fatalf("ResolveInterrupt: %v", err)
+	}
+	// resolved_by defaults to "api" over gRPC (no cookie).
+	if mc.lastResolve.runID != "run-1" || mc.lastResolve.interruptID != "intr-1" ||
+		mc.lastResolve.answer != "Yes" || mc.lastResolve.resolvedBy != "api" {
+		t.Errorf("connector saw %+v, want run-1/intr-1/answer=Yes/resolved_by=api", mc.lastResolve)
+	}
+	if resp.GetStatus() != "resolved" || resp.GetInterruptId() != "intr-1" {
+		t.Errorf("resp = %+v, want {intr-1, resolved}", resp)
+	}
+}
+
+func TestResolveInterrupt_DeclineThreadsDisposition(t *testing.T) {
+	mc := &parityMock{resolveStatus: "declined"}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.ResolveInterrupt(context.Background(), &loomcyclepb.ResolveInterruptRequest{
+		RunId: "run-1", InterruptId: "intr-1", Disposition: "declined",
+	})
+	if err != nil {
+		t.Fatalf("ResolveInterrupt: %v", err)
+	}
+	if mc.lastResolve.disposition != "declined" || mc.lastResolve.answer != "" {
+		t.Errorf("connector saw disposition=%q answer=%q, want declined/empty", mc.lastResolve.disposition, mc.lastResolve.answer)
+	}
+	if resp.GetStatus() != "declined" {
+		t.Errorf("status = %q, want declined", resp.GetStatus())
+	}
+}
+
+func TestResolveInterrupt_BadAnswerIsInvalidArgument(t *testing.T) {
+	// A wrapped ErrInterruptInvalidAnswer (WithMessage) must still classify via
+	// errors.Is at the gRPC boundary → InvalidArgument.
+	mc := &parityMock{resolveErr: connector.WithMessage(connector.ErrInterruptInvalidAnswer, `answer "Maybe" is not one of the declared options: [Yes No]`)}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.ResolveInterrupt(context.Background(), &loomcyclepb.ResolveInterruptRequest{
+		RunId: "run-1", InterruptId: "intr-1", Answer: "Maybe",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %s, want InvalidArgument", status.Code(err))
+	}
+}
+
+func TestResolveInterrupt_UnknownIsNotFound(t *testing.T) {
+	mc := &parityMock{resolveErr: connector.WithMessage(connector.ErrInterruptNotFound, "interrupt not found")}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.ResolveInterrupt(context.Background(), &loomcyclepb.ResolveInterruptRequest{
+		RunId: "run-1", InterruptId: "ghost",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("code = %s, want NotFound", status.Code(err))
+	}
+}
+
+func TestResolveInterrupt_AlreadyTerminalIsFailedPrecondition(t *testing.T) {
+	mc := &parityMock{resolveErr: connector.WithMessage(connector.ErrInterruptAlreadyTerminal, "interrupt already resolved")}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.ResolveInterrupt(context.Background(), &loomcyclepb.ResolveInterruptRequest{
+		RunId: "run-1", InterruptId: "intr-1", Answer: "Yes",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("code = %s, want FailedPrecondition", status.Code(err))
+	}
+}
+
+func TestResolveInterrupt_BadIDIsInvalidArgument(t *testing.T) {
+	mc := &parityMock{}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.ResolveInterrupt(context.Background(), &loomcyclepb.ResolveInterruptRequest{
+		RunId: "run-1", InterruptId: "bad id!",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %s, want InvalidArgument", status.Code(err))
+	}
+	if mc.lastResolve.runID != "" {
+		t.Error("connector was called despite an invalid interrupt_id")
 	}
 }

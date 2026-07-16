@@ -43,6 +43,8 @@ const (
 	Loomcycle_SpawnRunBatch_FullMethodName       = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
 	Loomcycle_CompactRun_FullMethodName          = "/loomcycle.v1.Loomcycle/CompactRun"
 	Loomcycle_RunInput_FullMethodName            = "/loomcycle.v1.Loomcycle/RunInput"
+	Loomcycle_CancelTurn_FullMethodName          = "/loomcycle.v1.Loomcycle/CancelTurn"
+	Loomcycle_ResolveInterrupt_FullMethodName    = "/loomcycle.v1.Loomcycle/ResolveInterrupt"
 	Loomcycle_StreamRun_FullMethodName           = "/loomcycle.v1.Loomcycle/StreamRun"
 	Loomcycle_GetTranscript_FullMethodName       = "/loomcycle.v1.Loomcycle/GetTranscript"
 	Loomcycle_GetAgent_FullMethodName            = "/loomcycle.v1.Loomcycle/GetAgent"
@@ -127,6 +129,25 @@ type LoomcycleClient interface {
 	// (never wire-trusted). Cross-replica routing is inherited from the
 	// steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
 	RunInput(ctx context.Context, in *RunInputRequest, opts ...grpc.CallOption) (*RunInputResponse, error)
+	// CancelTurn stops the CURRENT turn of a LIVE interactive run (its in-flight
+	// model generation + the tool calls it started) and parks it at
+	// awaiting_input — session + transcript intact. This is NOT whole-run cancel
+	// (CancelAgent), which terminates the run. FailedPrecondition when the run
+	// isn't mid-turn (not_mid_turn) or isn't interactive (not_interactive);
+	// NotFound (opaque) for an unknown / cross-tenant / not-reachable run.
+	// Owner-routed cross-replica by runs.replica_id.
+	//
+	// Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
+	CancelTurn(ctx context.Context, in *CancelTurnRequest, opts ...grpc.CallOption) (*CancelTurnResponse, error)
+	// ResolveInterrupt resolves a pending interruption — either an answer
+	// (disposition "" / "answer", validated against the declared options) or a
+	// decline (disposition "declined": no answer, skips option validation) so the
+	// waiting Question tool proceeds. InvalidArgument on a bad kind / disposition
+	// / answer; NotFound (opaque) for an unknown / cross-tenant interrupt;
+	// FailedPrecondition when already terminal or expired.
+	//
+	// Mirrors POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve. (RFC BH)
+	ResolveInterrupt(ctx context.Context, in *ResolveInterruptRequest, opts ...grpc.CallOption) (*ResolveInterruptResponse, error)
 	// StreamRun re-attaches to a run's event stream by run_id, replaying
 	// from from_seq and then live-tailing — the gRPC twin of
 	// GET /v1/runs/{run_id}/stream. For a PARKED interactive run (non-
@@ -451,6 +472,26 @@ func (c *loomcycleClient) RunInput(ctx context.Context, in *RunInputRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RunInputResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_RunInput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) CancelTurn(ctx context.Context, in *CancelTurnRequest, opts ...grpc.CallOption) (*CancelTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelTurnResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_CancelTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ResolveInterrupt(ctx context.Context, in *ResolveInterruptRequest, opts ...grpc.CallOption) (*ResolveInterruptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveInterruptResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ResolveInterrupt_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -944,6 +985,25 @@ type LoomcycleServer interface {
 	// (never wire-trusted). Cross-replica routing is inherited from the
 	// steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
 	RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error)
+	// CancelTurn stops the CURRENT turn of a LIVE interactive run (its in-flight
+	// model generation + the tool calls it started) and parks it at
+	// awaiting_input — session + transcript intact. This is NOT whole-run cancel
+	// (CancelAgent), which terminates the run. FailedPrecondition when the run
+	// isn't mid-turn (not_mid_turn) or isn't interactive (not_interactive);
+	// NotFound (opaque) for an unknown / cross-tenant / not-reachable run.
+	// Owner-routed cross-replica by runs.replica_id.
+	//
+	// Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
+	CancelTurn(context.Context, *CancelTurnRequest) (*CancelTurnResponse, error)
+	// ResolveInterrupt resolves a pending interruption — either an answer
+	// (disposition "" / "answer", validated against the declared options) or a
+	// decline (disposition "declined": no answer, skips option validation) so the
+	// waiting Question tool proceeds. InvalidArgument on a bad kind / disposition
+	// / answer; NotFound (opaque) for an unknown / cross-tenant interrupt;
+	// FailedPrecondition when already terminal or expired.
+	//
+	// Mirrors POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve. (RFC BH)
+	ResolveInterrupt(context.Context, *ResolveInterruptRequest) (*ResolveInterruptResponse, error)
 	// StreamRun re-attaches to a run's event stream by run_id, replaying
 	// from from_seq and then live-tailing — the gRPC twin of
 	// GET /v1/runs/{run_id}/stream. For a PARKED interactive run (non-
@@ -1221,6 +1281,12 @@ func (UnimplementedLoomcycleServer) CompactRun(context.Context, *CompactRunReque
 func (UnimplementedLoomcycleServer) RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RunInput not implemented")
 }
+func (UnimplementedLoomcycleServer) CancelTurn(context.Context, *CancelTurnRequest) (*CancelTurnResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelTurn not implemented")
+}
+func (UnimplementedLoomcycleServer) ResolveInterrupt(context.Context, *ResolveInterruptRequest) (*ResolveInterruptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveInterrupt not implemented")
+}
 func (UnimplementedLoomcycleServer) StreamRun(*StreamRunRequest, grpc.ServerStreamingServer[Event]) error {
 	return status.Error(codes.Unimplemented, "method StreamRun not implemented")
 }
@@ -1443,6 +1509,42 @@ func _Loomcycle_RunInput_Handler(srv interface{}, ctx context.Context, dec func(
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).RunInput(ctx, req.(*RunInputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_CancelTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).CancelTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_CancelTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).CancelTurn(ctx, req.(*CancelTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ResolveInterrupt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveInterruptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ResolveInterrupt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ResolveInterrupt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ResolveInterrupt(ctx, req.(*ResolveInterruptRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2225,6 +2327,14 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RunInput",
 			Handler:    _Loomcycle_RunInput_Handler,
+		},
+		{
+			MethodName: "CancelTurn",
+			Handler:    _Loomcycle_CancelTurn_Handler,
+		},
+		{
+			MethodName: "ResolveInterrupt",
+			Handler:    _Loomcycle_ResolveInterrupt_Handler,
 		},
 		{
 			MethodName: "GetTranscript",

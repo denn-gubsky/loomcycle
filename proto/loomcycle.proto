@@ -69,6 +69,27 @@ service Loomcycle {
   // steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
   rpc RunInput(RunInputRequest) returns (RunInputResponse);
 
+  // CancelTurn stops the CURRENT turn of a LIVE interactive run (its in-flight
+  // model generation + the tool calls it started) and parks it at
+  // awaiting_input — session + transcript intact. This is NOT whole-run cancel
+  // (CancelAgent), which terminates the run. FailedPrecondition when the run
+  // isn't mid-turn (not_mid_turn) or isn't interactive (not_interactive);
+  // NotFound (opaque) for an unknown / cross-tenant / not-reachable run.
+  // Owner-routed cross-replica by runs.replica_id.
+  //
+  // Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
+  rpc CancelTurn(CancelTurnRequest) returns (CancelTurnResponse);
+
+  // ResolveInterrupt resolves a pending interruption — either an answer
+  // (disposition "" / "answer", validated against the declared options) or a
+  // decline (disposition "declined": no answer, skips option validation) so the
+  // waiting Question tool proceeds. InvalidArgument on a bad kind / disposition
+  // / answer; NotFound (opaque) for an unknown / cross-tenant interrupt;
+  // FailedPrecondition when already terminal or expired.
+  //
+  // Mirrors POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve. (RFC BH)
+  rpc ResolveInterrupt(ResolveInterruptRequest) returns (ResolveInterruptResponse);
+
   // StreamRun re-attaches to a run's event stream by run_id, replaying
   // from from_seq and then live-tailing — the gRPC twin of
   // GET /v1/runs/{run_id}/stream. For a PARKED interactive run (non-
@@ -592,6 +613,37 @@ message RunInputRequest {
 message RunInputResponse {
   string run_id = 1;
   bool delivered = 2;
+}
+
+// CancelTurnRequest stops the current turn of a live interactive run (RFC BH).
+message CancelTurnRequest {
+  string run_id = 1;
+  string reason = 2;  // optional operator annotation carried on the cancel cause
+}
+
+// CancelTurnResponse mirrors the HTTP POST /v1/runs/{run_id}/cancel reply.
+message CancelTurnResponse {
+  string run_id = 1;
+  bool stopped = 2;
+  bool parked = 3;
+}
+
+// ResolveInterruptRequest resolves a pending interruption (RFC BH). The
+// disposition selects the terminal path: "" / "answer" carry an answer;
+// "declined" carries none and skips option validation.
+message ResolveInterruptRequest {
+  string run_id = 1;
+  string interrupt_id = 2;
+  string kind = 3;         // "question" (default when empty)
+  string answer = 4;       // for the answer disposition
+  string resolved_by = 5;  // audit attribution; server stamps "api" when empty
+  string disposition = 6;  // "" | "answer" | "declined"
+}
+
+// ResolveInterruptResponse mirrors the HTTP resolve reply.
+message ResolveInterruptResponse {
+  string interrupt_id = 1;
+  string status = 2;  // "resolved" | "declined"
 }
 
 // StreamRunRequest re-attaches to a run's event stream by run_id (RFC AI).

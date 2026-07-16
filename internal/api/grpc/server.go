@@ -571,6 +571,8 @@ var grpcConsumerScopes = map[string]string{
 	"Run":                 auth.ScopeRunsCreate,
 	"Continue":            auth.ScopeRunsCreate,
 	"RunInput":            auth.ScopeRunsCreate, // RFC AI — steering injects instructions (mutation)
+	"CancelTurn":          auth.ScopeRunsCreate, // RFC BH — turn-cancel is a run mutation (mirrors POST .../cancel)
+	"ResolveInterrupt":    auth.ScopeRunsCreate, // RFC BH — resolve/decline steers the run (mirrors POST .../resolve)
 	"StreamRun":           auth.ScopeRunsRead,   // RFC AI — pure read tail (mirrors handleRunStream)
 	"SpawnRunBatch":       auth.ScopeRunsCreate,
 	"CompactRun":          auth.ScopeRunsCreate,
