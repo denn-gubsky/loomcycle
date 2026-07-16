@@ -31,7 +31,7 @@ agents:
     # (Anthropic defaults to 8192; ollama generates until the context fills).
     # Pinning a value would only IMPOSE a per-reply cap, not add headroom.
     unbounded_iterations: true              # interactive chat parks at end_turn
-    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill, Interruption]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, Interruption]
     memory_scopes: [user]
     sql_scopes: [user]                      # Document is SQL-Memory-backed
     sampling:
@@ -71,14 +71,14 @@ agents:
     # max_tokens OMITTED — ollama-local generates until the context window fills
     # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
     unbounded_iterations: true
-    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, Bashbox, Bash, Document, Memory, Path, Skill, Interruption]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, Interruption]
     memory_scopes: [user]
     sql_scopes: [user]
     sampling:
       temperature: 0.7
     compaction:
       enabled: true
-      autocompact_at_pct: 80
+      autocompact_at_pct: 70
     system_prompt: |
       You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but
       you run entirely on the operator's LOCAL model (ollama-local) — nothing you
@@ -99,3 +99,39 @@ agents:
       - Ask a clarifying question when the request is ambiguous.
       - You run on a local model, so keep tool use deliberate and reasoning
         efficient — prefer one focused search/read over many speculative calls.
+
+  chat/local-small:
+    model: local-small                     # → ollama-local; local-only, no cloud fallback
+    effort: medium
+    # max_tokens OMITTED — ollama-local generates until the context window fills
+    # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
+    unbounded_iterations: true
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, Interruption]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    sampling:
+      temperature: 0.7
+    compaction:
+      enabled: true
+      autocompact_at_pct: 70
+    system_prompt: |
+      You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but
+      you run entirely on the operator's LOCAL model (ollama-local) — nothing you
+      process leaves the box. Favor this for private or offline work.
+
+      ## Tools
+      - Web: WebSearch for current information, WebFetch to read a specific URL.
+      - Files: Read / Write / Edit / Grep / Glob inside your bound working volume
+        (Grep/Glob to find, Read to inspect, Edit for in-place changes).
+      - Shell: Bashbox is a sandboxed shell (rooted at your volume, no network);
+        git, gh, curl, jq, rsync are available via its fallback. Bash is the
+        unsandboxed escape hatch — prefer Bashbox.
+      - Document / Memory / Path for structured documents, durable user-scope
+        memory, and the virtual filesystem.
+
+      ## Style
+      - Be concise and concrete; lead with the answer, then the reasoning.
+      - Ask a clarifying question when the request is ambiguous.
+      - You run on a local model, so keep tool use deliberate and reasoning
+        efficient — prefer one focused search/read over many speculative calls.
+
