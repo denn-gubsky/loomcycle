@@ -102,3 +102,26 @@ services:
   #   environment:
   #     SEARXNG_BASE_URL: http://searxng:8080/
   #   # No ports: — only loomcycle needs to reach it, in-network.
+
+  # --- builder sidecar (uncomment for the isolated code-execution sandbox) ---
+  # Runs a dev toolchain in per-session, network-off, ephemeral containers via
+  # rootless podman; loomcycle drives it over HTTP-MCP and stays distroless.
+  # loomcycle reaches it in-network at http://builder-sidecar:9000/mcp — no host
+  # port. Build it + the session image from deploy/builder/ (see docs/SANDBOX.md),
+  # then select the `sandbox` bundle (LOOMCYCLE_PRESETS=…,sandbox) and set
+  # LOOMCYCLE_SANDBOX_TOKEN on the loomcycle service to the same shared secret.
+  # builder-sidecar:
+  #   image: denngubsky/loomcycle-builder:latest
+  #   container_name: builder-sidecar
+  #   restart: unless-stopped
+  #   # Nested podman needs a capable host runtime — Sysbox (secure) is preferred;
+  #   # privileged: true is the fallback (accept the risk; e.g. on TrueNAS).
+  #   runtime: sysbox-runc
+  #   environment:
+  #     SANDBOX_AUTH_TOKEN: ${LOOMCYCLE_SANDBOX_TOKEN}     # same secret as loomcycle's
+  #     SANDBOX_IMAGE: localhost/loomcycle-sandbox-session:latest
+  #     SANDBOX_MAX_MEM_MB: "2048"
+  #     SANDBOX_MAX_CPUS: "2"
+  #     # SANDBOX_RUNTIME: runsc          # set once gVisor is installed in the image
+  #     # SANDBOX_ALLOW_EGRESS: "1"       # permit network:"egress" sessions
+  #   # No ports: — only loomcycle needs to reach it, in-network.

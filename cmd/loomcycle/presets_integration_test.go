@@ -124,6 +124,42 @@ func TestEmbedded_DefaultStackValidates(t *testing.T) {
 	}
 }
 
+// TestEmbedded_SandboxBundleValidates: the opt-in sandbox bundle loads +
+// validates on top of base, registering the dev/sandbox agent (with its skill
+// and the mcp__sandbox__* tool grants) and the sandbox MCP server. The bundle is
+// NOT in the default stack (it needs the builder sidecar + a token), so it gets
+// its own guard here — an ACL grant without a matching declaration would fail
+// validate() fatally, exactly as the v1.20.1 default-stack regression did.
+func TestEmbedded_SandboxBundleValidates(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	cfg, err := config.LoadLayers(layersFor(t, "base", "sandbox")...)
+	if err != nil {
+		t.Fatalf("base + sandbox must load + validate cleanly: %v", err)
+	}
+	agent, ok := cfg.Agents["dev/sandbox"]
+	if !ok {
+		t.Fatalf("dev/sandbox agent not registered (agents: %v)", agentNames(cfg))
+	}
+	// The agent must grant the sandbox tools + the auto-added Skill tool.
+	for _, want := range []string{"mcp__sandbox__sandbox_open", "mcp__sandbox__sandbox_exec", "Skill"} {
+		if !hasToolPreset(agent.Tools, want) {
+			t.Errorf("dev/sandbox should grant %q; tools=%v", want, agent.Tools)
+		}
+	}
+	// The inline skill is in the on-demand catalog with its body intact.
+	if sk, ok := cfg.Skills["dev/sandbox"]; !ok || strings.TrimSpace(sk.Body) == "" {
+		t.Errorf("dev/sandbox skill missing or empty in cfg.Skills")
+	}
+	// The MCP server the tools resolve through is declared (http transport + url).
+	sv, ok := cfg.MCPServers["sandbox"]
+	if !ok {
+		t.Fatalf("sandbox MCP server not declared")
+	}
+	if sv.Transport != "http" || sv.URL == "" {
+		t.Errorf("sandbox MCP server should be http with a url; got transport=%q url=%q", sv.Transport, sv.URL)
+	}
+}
+
 // hasToolPreset reports whether tools contains name.
 func hasToolPreset(tools []string, name string) bool {
 	for _, t := range tools {
