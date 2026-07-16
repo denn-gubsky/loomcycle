@@ -4,6 +4,21 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.22.0
+
+**⏹️ Turn-scoped cancellation (RFC BH) — stop a turn without ending the session; decline a question.** loomboard's "Esc": an operator can now stop the CURRENT turn of an interactive run — the in-flight model generation + the tool calls it started — and park it at `awaiting_input` with the session, transcript, and context intact, instead of the only prior stop (whole-run cancel) which threw the session away. And a pending interruption (a Question tool call) can be DECLINED so the agent proceeds without an answer.
+
+- **`POST /v1/runs/{run_id}/cancel` `{reason?}`** → `{run_id, stopped, parked}` (scope `runs:create`). Stops the turn via a new per-turn cancel ctx (a child of the run ctx, so whole-run cancel still cascades) and routes into the existing interactive park; the loop keeps the partial output and synthesizes `cancelled by operator` tool_results for any in-flight `tool_use` so the next turn's history stays valid. Run-cancel vs. turn-cancel is **double-guarded** (`ctx.Err()==nil` AND the `ErrTurnCancelled` cause) so a real cancel is never mistaken for a turn-stop. A new **`turn_cancelled`** SSE frame (distinct from run-level `cancelled`). Interactive runs only (409 otherwise); idempotent. (P1, #738)
+- **Interruption decline** — `POST .../interrupts/{id}/resolve` `{disposition:"declined"}` (alongside `{answer}`) skips option validation, writes a new terminal `declined` status, and the waiting Question tool returns a NON-error "proceed" result (distinct from the error-shaped run-cancel `cancelled`). (P2, #739)
+- **Cross-replica** — a turn-cancel that lands on a replica not running the target run is owner-routed by `runs.replica_id` to the owning replica (mirrors the steer coordinator; new `internal/turncancel` registry + `internal/coord.TurnCancelCoordinator`). Decline is already cross-replica via the shared-store write + the poll backstop. (P3a, #740)
+- **Every transport** — gRPC `CancelTurn` + `ResolveInterrupt` RPCs, `@loomcycle/client` `cancelTurn()` / `cancelInterrupt()`, and the Python adapter `cancel_turn` / `resolve_interrupt` / `cancel_interrupt` (Python gains answer-resolve it previously lacked). The HTTP + gRPC handlers share extracted connector cores, so it's one implementation. (P3b, #741)
+
+**🎯 Model-pattern / "latest" resolution (RFC BG P1, #737).** A `models:` alias can now use `model_pattern: "claude-haiku-*"` instead of a pinned `model:` — the resolver picks the NEWEST listed model matching the glob against the provider's live catalog, so the config never needs a manual model-id bump when a provider ships a new snapshot (Anthropic exposes no `-latest` aliases, so this is the only way to auto-track a family). A generic **numeric-run comparator** orders dotted (`qwen3.6` < `qwen3.10`), hyphenated, and timestamped (`…-4-5-20251001`) ids correctly, with an opt-in Anthropic bare-rolling-alias override; the resolved concrete model is recorded on the run so usage/cost stays attributable. Byte-identical when no pattern is configured.
+
+**💬 Bundled chat agents.** `chat/medium` + `chat/local` gain the `HTTP` tool (call a JSON/API endpoint directly, not only fetch a page); `chat/local` compacts earlier (`autocompact_at_pct` 70); and a new **`chat/local-small`** agent runs on the lighter `local-small` local model (#742).
+
+No schema migration (the `declined` interrupt status is an additive TEXT value). `@loomcycle/client` + Python → **1.22.0** (the turn-cancel + interruption adapter methods). Merged across #737 (RFC BG P1), #738–741 (RFC BH P1–P3b), #742 (chat bundle).
+
 ## What's in v1.21.0
 
 **🧩 Config-driven LLM provider registry (RFC BF) — declare 3rd-party & self-hosted providers in YAML, and cap concurrency per provider.** Before this, the LLM providers were 100% hardcoded in Go: adding a provider — or pointing loomcycle at a self-hosted OpenAI-compatible endpoint — meant editing the binary. Providers are now a top-level **`providers:` map** backed by a driver registry, and the built-ins ship as an embedded default layer so **every existing config keeps working byte-for-byte**.
