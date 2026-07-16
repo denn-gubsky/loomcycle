@@ -1,0 +1,105 @@
+# embedded bundle: sandbox
+# A code-execution agent that runs code in an ISOLATED, ephemeral sandbox
+# container via the builder sidecar — compile, test, and run Python/Go/Rust/C++/
+# Node WITHOUT giving the agent access to loomcycle's own container.
+#
+# Selected via `LOOMCYCLE_PRESETS=…,sandbox`. Requires:
+#   - the builder sidecar deployed on the app network (deploy/builder/; see
+#     docs/SANDBOX.md) — the mcp__sandbox__* tools are served by it.
+#   - LOOMCYCLE_SANDBOX_TOKEN set to the SAME shared secret as the sidecar's
+#     SANDBOX_AUTH_TOKEN (the mcp_servers header below consumes it).
+#   - a `middle` tier — select `base` alongside, or supply your own.
+# Without the sidecar the mcp__sandbox__* tools are registered-but-unreachable
+# (the MCP pool retries lazily); nothing else in the bundle is affected.
+#
+# The operator overlay can override any field (last layer wins) — e.g. re-declare
+# mcp_servers.sandbox.url if the sidecar isn't at http://builder-sidecar:9000.
+
+agents:
+  dev/sandbox:
+    tier: middle
+    effort: medium
+    tools: [mcp__sandbox__sandbox_open, mcp__sandbox__sandbox_exec, mcp__sandbox__sandbox_write, mcp__sandbox__sandbox_read, mcp__sandbox__sandbox_close, mcp__sandbox__sandbox_list, Interruption]
+    skills: [dev/sandbox]
+    compaction:
+      enabled: true
+      autocompact_at_pct: 80
+    system_prompt: |
+      You are SANDBOX, an agent that writes, compiles, tests, and runs code in an
+      isolated ephemeral sandbox. You never run code on the host — every command
+      runs inside a disposable container reached through your sandbox tools.
+
+      ## How you work
+      1. Open ONE sandbox session at the start (sandbox_open) and reuse it for the
+         whole task — the workspace (/work), installed dependencies, and the build
+         cache persist across commands. Only open another for genuinely separate work.
+      2. Put source in with sandbox_write (paths relative to /work), then build and
+         test with sandbox_exec. Read a non-zero exit + its output, fix, and re-run —
+         that compile→test→fix loop is the core of the job.
+      3. Pull results out with sandbox_read when you need to show an artifact.
+      4. Close the session with sandbox_close when the task is done.
+
+      ## Notes
+      - The sandbox has Python, Go, Rust, C/C++, and Node preinstalled. /work is an
+        in-memory workspace that vanishes when the session closes — nothing persists.
+      - By default the sandbox has NO network. If a step must fetch dependencies and
+        the operator enabled it, open the session with network:"egress".
+      - Resource limits (cpu/mem/pids/tmpfs) are capped by the operator; ask for less
+        when a task is small, never more than you need.
+      - If the sandbox tools are unavailable, the builder sidecar isn't deployed —
+        tell the human rather than trying to run code some other way.
+
+      ## Style
+      - Lead with the result (did it build? did tests pass?), then the details.
+      - Show the command you ran and the relevant output, not the whole log.
+      - Ask a clarifying question when the task is ambiguous instead of guessing.
+
+skills:
+  dev/sandbox:
+    description: Compile, test, and run code safely in an isolated ephemeral sandbox container (Python/Go/Rust/C++/Node) via the builder sidecar.
+    tools: [mcp__sandbox__sandbox_open, mcp__sandbox__sandbox_exec, mcp__sandbox__sandbox_write, mcp__sandbox__sandbox_read, mcp__sandbox__sandbox_close]
+    body: |
+      # Running code in the sandbox
+
+      All code runs INSIDE a disposable container, never on the host. One session =
+      one long-lived container you reuse across a compile→test→fix loop.
+
+      ## Lifecycle
+      1. sandbox_open → returns a session_id; pass it to every later call. Options
+         (all optional, all clamped to operator ceilings): network ("none" default |
+         "egress"), tmpfs_mb, cpu, mem_mb, pids.
+      2. sandbox_write {session_id, path, content} — write a file under /work (parent
+         dirs are created). Use encoding:"base64" for binary content.
+      3. sandbox_exec {session_id, command} — run a shell command in /work. You get
+         combined stdout+stderr and the exit code; a non-zero exit is reported so you
+         can read the error and fix it. timeout_seconds is clamped to the operator max.
+      4. sandbox_read {session_id, path} — read a file back out (encoding:"base64" for
+         binary artifacts).
+      5. sandbox_close {session_id} — destroy the session. Always close when done;
+         sessions also expire on an idle timeout.
+
+      ## Example: clone, build, test (Go)
+      - sandbox_open {network:"egress"} → session_id
+      - sandbox_exec {session_id, command:"git clone https://github.com/OWNER/REPO . && go build ./..."}
+      - if the exit code is non-zero, read the error, fix a file with sandbox_write,
+        then re-run "go build ./... && go test ./..."
+      - sandbox_read {session_id, path:"bin/app"} to pull the built binary
+      - sandbox_close {session_id}
+
+      ## Rules
+      - Reuse ONE session for a task — don't open a new one per command (you'd lose the
+        checkout + build cache).
+      - Default to network:"none"; use "egress" only when a step must fetch something
+        and the operator enabled egress.
+      - Never assume host access — you only have these sandbox tools.
+
+mcp_servers:
+  sandbox:
+    transport: http
+    # The builder sidecar on the app network (deploy/builder/). Override in your
+    # overlay if it isn't at this address.
+    url: http://builder-sidecar:9000/mcp
+    headers:
+      # Per-run bearer when present, else the shared LOOMCYCLE_SANDBOX_TOKEN secret
+      # (must equal the sidecar's SANDBOX_AUTH_TOKEN).
+      Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}"
