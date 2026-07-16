@@ -340,6 +340,7 @@ func Run(t *testing.T, factory Factory) {
 		{"InterruptResolveRejectsAlreadyTerminal", testInterruptResolveRejectsAlreadyTerminal},
 		{"InterruptResolveRoundTripsAnswerMeta", testInterruptResolveRoundTripsAnswerMeta},
 		{"InterruptFinishSetsTimedOut", testInterruptFinishSetsTimedOut},
+		{"InterruptFinishSetsDeclined", testInterruptFinishSetsDeclined},
 		{"InterruptFinishRejectsAlreadyTerminal", testInterruptFinishRejectsAlreadyTerminal},
 		{"InterruptListByRunFiltersByStatus", testInterruptListByRunFiltersByStatus},
 		{"InterruptListByUserFiltersByStatus", testInterruptListByUserFiltersByStatus},
@@ -8000,6 +8001,33 @@ func testInterruptFinishSetsTimedOut(t *testing.T, s store.Store) {
 	}
 	if r.Answer != "" {
 		t.Errorf("Answer = %q on timeout path; want empty", r.Answer)
+	}
+}
+
+// testInterruptFinishSetsDeclined pins RFC BH P2: InterruptFinish accepts the
+// new "declined" terminal status (it was previously whitelist-rejected as an
+// invalid terminal status) and records it answer-less with the resolver source.
+func testInterruptFinishSetsDeclined(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_dec", "batch")
+
+	id := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id, RunID: runID, UserID: "u_alice",
+		Question: "Q?", CreatedAt: time.Now(),
+	})
+	if err := s.InterruptFinish(ctx, id, store.InterruptStatusDeclined, store.InterruptResolvedByWebUI); err != nil {
+		t.Fatalf("InterruptFinish(declined): %v", err)
+	}
+	r, _ := s.InterruptGet(ctx, id)
+	if r.Status != store.InterruptStatusDeclined {
+		t.Errorf("Status = %q, want declined", r.Status)
+	}
+	if r.Answer != "" {
+		t.Errorf("Answer = %q on decline path; want empty", r.Answer)
+	}
+	if r.ResolvedBy != store.InterruptResolvedByWebUI {
+		t.Errorf("ResolvedBy = %q, want webui", r.ResolvedBy)
 	}
 }
 
