@@ -1,0 +1,98 @@
+# Dockerfile.toolbox — goreleaser variant, NON-distroless developer-toolbox image.
+#
+# Ships the SAME statically-built loomcycle binary as the distroless image, but
+# on a shell-bearing Debian base preloaded with a development toolchain
+# (Python, Go, Rust, C/C++, Node + npm, git, gh, curl). Agents can then run
+# scripts and compile/test code via the Bash tool (LOOMCYCLE_BASH_ENABLED=1)
+# or Bashbox's operator-allowlisted host-command fallback — neither of which
+# works in the distroless image, which has no shell and no compilers.
+#
+# ⚠️  WEAK ISOLATION — READ BEFORE USE.
+# Code runs in loomcycle's OWN container, NOT a per-session sandbox: a command
+# can reach anything the loomcycle process can (mounted volumes, env, network).
+# Use this image ONLY for single-tenant, trusted deployments — the same trust
+# boundary an operator already accepts by enabling the Bash tool / Bashbox
+# host-command fallback. For untrusted or multi-tenant code execution use the
+# builder-sidecar sandbox (docs/TOOLBOX_IMAGE.md → "When NOT to use this"),
+# which runs each session in an isolated, ephemeral, network-off container.
+#
+# Like Dockerfile.release, this variant COPIES the pre-built binary rather than
+# compiling — goreleaser builds every arch in its `builds:` stage. Referenced
+# by .goreleaser.yaml's dockers[] (loomcycle-toolbox-*). For a local build,
+# `make build` the binary first, then `docker build -f Dockerfile.toolbox .`
+# from a context that has ./loomcycle at its root.
+#
+# Published to docker.io/denngubsky/loomcycle-toolbox.
+
+FROM debian:bookworm-slim
+
+# buildx supplies TARGETARCH (amd64 / arm64) automatically when --platform is
+# set (goreleaser passes it per image). GO_VERSION tracks the go-builder stage
+# in the main Dockerfile.
+ARG TARGETARCH
+ARG GO_VERSION=1.26.0
+
+# ---- OS packages + language toolchains --------------------------------------
+# One apt layer; lists cleaned at the end to keep the (already large) image
+# from carrying the package cache.
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl git bash gnupg \
+        python3 python3-pip python3-venv \
+        build-essential clang make cmake pkg-config \
+        nodejs npm; \
+    # GitHub CLI (gh) from its official apt repo — the loop's git/gh workflows
+    # (ephemeral repo volumes, PR creation) rely on it.
+    mkdir -p -m 755 /etc/apt/keyrings; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+# ---- Go (official tarball; Debian's package lags too far behind) -------------
+# buildx sets TARGETARCH under --platform (goreleaser's path); fall back to
+# dpkg so a plain `docker build` (no buildx) also resolves the right tarball —
+# dpkg's amd64/arm64 match Go's linux-<arch> naming exactly.
+RUN set -eux; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" \
+        -o /tmp/go.tar.gz; \
+    tar -C /usr/local -xzf /tmp/go.tar.gz; \
+    rm /tmp/go.tar.gz
+
+# ---- Rust (rustup, minimal profile, shared under /usr/local) ----------------
+# Installed system-wide so the non-root runtime user can invoke + update it.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo
+RUN set -eux; \
+    curl -fsSL https://sh.rustup.rs \
+        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable; \
+    chmod -R go+rwX /usr/local/rustup /usr/local/cargo
+
+# ---- non-root runtime user (mirror the distroless "nonroot" posture) --------
+# uid/gid 65532 + home /home/nonroot match gcr.io/distroless/static:nonroot, so
+# config (/home/nonroot/.config/loomcycle) and data mounts carry over unchanged
+# between the distroless and toolbox images — a drop-in image swap.
+RUN set -eux; \
+    groupadd --gid 65532 nonroot; \
+    useradd --uid 65532 --gid 65532 --create-home --home-dir /home/nonroot \
+        --shell /bin/bash nonroot; \
+    install -d -o 65532 -g 65532 /home/nonroot/go
+
+# PATH must expose the toolchains to the runtime user's shell. GOPATH lands in
+# the writable home so `go install` / module cache work as uid 65532.
+ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/home/nonroot/go/bin:${PATH}" \
+    GOPATH="/home/nonroot/go"
+
+COPY loomcycle /usr/local/bin/loomcycle
+
+USER 65532:65532
+WORKDIR /home/nonroot
+EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/loomcycle"]

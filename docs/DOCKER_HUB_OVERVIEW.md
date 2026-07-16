@@ -107,6 +107,10 @@ The compose file documents the Postgres backend upgrade path (commented out by d
 - **No `docker exec ... sh`** — distroless has no shell. Use `docker logs` to debug.
 - **OCI labels** identify source, version, commit SHA, and Apache-2.0 license for supply-chain inspectors.
 
+### Variant: `denngubsky/loomcycle-toolbox`
+
+Need agents to run scripts or compile/test code? The distroless image has no shell, Python, or compilers. `denngubsky/loomcycle-toolbox` is the **same binary on a Debian base with a dev toolchain** (Python / Go / Rust / C++ / Node + `git`/`gh`/`curl`), a drop-in image swap (same uid 65532, same mount paths). ⚠️ Weak isolation — code runs in loomcycle's own container, so **single-tenant / trusted deployments only**. See [`docs/TOOLBOX_IMAGE.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/TOOLBOX_IMAGE.md).
+
 ## What you get inside
 
 - **`POST /v1/runs`** — run an agent with SSE event stream (tool-use loop, native cache_control on Anthropic, retries with backoff).
