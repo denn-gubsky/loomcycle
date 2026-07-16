@@ -10,16 +10,41 @@
 // it started — without terminating the run: the loop catches the sentinel cause,
 // synthesizes valid history, and parks the interactive run at awaiting_input.
 //
-// It deliberately does NOT import internal/loop: the caller passes the cancel
-// cause (loop.ErrTurnCancelled, optionally wrapped with an operator reason) as
-// an opaque error, so this leaf package stays dependency-free. Single-process
-// (P1); cross-replica owner-routing by runs.replica_id is P3 (mirror steer).
+// It deliberately does NOT import internal/loop: the caller INJECTS a causeFor
+// (SetCauseFor(loop.TurnCancelCause)) that builds the cancel cause from an
+// operator reason string, so this leaf package stays free of internal/loop AND
+// internal/coord. That same reason-string boundary is what lets P3a route a
+// cancel cross-replica — the wire carries the reason string, and each replica's
+// registry rebuilds the proper loop cause locally via its own causeFor.
+//
+// Cross-replica owner-routing (P3a) mirrors internal/cancel + internal/steer: on
+// a LOCAL MISS, Cancel delegates to a ClusterCanceller (implemented by
+// internal/coord.TurnCancelCoordinator) that routes the cancel to the run's
+// owning replica by runs.replica_id over the backplane. nil ClusterCanceller =
+// single-process mode, byte-identical to P1 (a local miss fires nothing).
 package turncancel
 
 import (
 	"context"
 	"sync"
 )
+
+// ClusterCanceller is the cross-replica fallback (mirror of
+// cancel.ClusterCanceller / steer.ClusterSteerer). When set, a Cancel that
+// misses the local armed map delegates to CancelRemote, which routes the cancel
+// by runs.replica_id over the backplane to the run's owning replica. nil =
+// single-replica mode; a local miss fires nothing (P1 behaviour, byte-identical).
+//
+// The wire carries the REASON STRING, not a cause error: this leaf can't build a
+// loop cause, and the owning replica rebuilds it locally via its own causeFor.
+// found reports whether the owning replica had the run armed and fired it.
+//
+// The interface lives here (not in internal/coord) so this leaf package stays
+// free of the coord dependency — internal/coord implements it on
+// TurnCancelCoordinator.
+type ClusterCanceller interface {
+	CancelRemote(ctx context.Context, runID, reason string) (found bool, err error)
+}
 
 // Registry maps a live run_id → its currently-armed per-turn CancelCauseFunc.
 // At most one token is armed per run at a time (the loop overwrites it on each
@@ -34,6 +59,13 @@ type Registry struct {
 	// be told apart from the live token and made a no-op — a missed disarm can
 	// therefore never delete a newer turn's token.
 	seq uint64
+	// causeFor builds the cancel cause from an operator reason string. Injected
+	// (SetCauseFor(loop.TurnCancelCause)) so the leaf stays loop-free; a cause
+	// the loop DOESN'T recognize as a turn-cancel would terminate the run, so a
+	// nil causeFor makes the fire methods refuse to fire (fail-safe).
+	causeFor func(reason string) error
+	// cluster is the cross-replica fallback; nil in single-process mode.
+	cluster ClusterCanceller
 }
 
 type entry struct {
@@ -41,9 +73,27 @@ type entry struct {
 	gen    uint64
 }
 
-// NewRegistry returns an empty registry.
+// NewRegistry returns an empty registry. Wire SetCauseFor before use (the fire
+// methods refuse to fire without it); SetClusterCanceller is cluster-mode only.
 func NewRegistry() *Registry {
 	return &Registry{armed: make(map[string]entry)}
+}
+
+// SetCauseFor installs the reason→cause builder (the server passes
+// loop.TurnCancelCause). Called once at server construction; not for mid-flight
+// swaps.
+func (r *Registry) SetCauseFor(fn func(reason string) error) {
+	r.mu.Lock()
+	r.causeFor = fn
+	r.mu.Unlock()
+}
+
+// SetClusterCanceller installs the cross-replica fallback. Called from main.go
+// in cluster mode after the backplane is wired; not for mid-flight swaps.
+func (r *Registry) SetClusterCanceller(c ClusterCanceller) {
+	r.mu.Lock()
+	r.cluster = c
+	r.mu.Unlock()
 }
 
 // Arm registers cancel as run_id's live per-turn token and returns a disarm that
@@ -65,12 +115,45 @@ func (r *Registry) Arm(runID string, cancel context.CancelCauseFunc) func() {
 	}
 }
 
-// Cancel fires run_id's armed token with cause and removes it, returning whether
-// a token was armed. Removing on fire makes a double-cancel idempotent: the
-// second call finds nothing armed and returns false (the handler 409s it), so a
-// cancel that races the turn ending / a repeat click can never double-fire.
-func (r *Registry) Cancel(runID string, cause error) bool {
+// Cancel is the handler-facing entry: it fires run_id's armed per-turn token with
+// the operator reason and reports whether a cancel fired. On a LOCAL hit it fires
+// here (building the proper loop cause via causeFor). On a local miss in cluster
+// mode it delegates to the ClusterCanceller, which routes to the owning replica
+// by runs.replica_id. Single-process (cluster == nil) → a local miss is
+// (false, nil), byte-identical to P1.
+func (r *Registry) Cancel(ctx context.Context, runID, reason string) (bool, error) {
+	if r.CancelLocal(runID, reason) {
+		return true, nil
+	}
 	r.mu.Lock()
+	cluster := r.cluster
+	r.mu.Unlock()
+	if cluster == nil {
+		return false, nil
+	}
+	return cluster.CancelRemote(ctx, runID, reason)
+}
+
+// CancelLocal fires run_id's LOCALLY-armed token with the operator reason and
+// removes it, returning whether a token was armed here. It NEVER delegates to the
+// cluster (the CancelLocal lesson — a cluster subscriber dispatching an inbound
+// backplane event must not re-broadcast on a local miss), so it is what both the
+// handler's local fast path and the coordinator's owning-side subscriber call.
+//
+// Removing on fire makes a double-cancel idempotent: the second call finds
+// nothing armed and returns false (the handler 409s it), so a cancel that races
+// the turn ending / a repeat click can never double-fire.
+func (r *Registry) CancelLocal(runID, reason string) bool {
+	r.mu.Lock()
+	causeFor := r.causeFor
+	if causeFor == nil {
+		// Defensive floor — never hit in production (the server wires SetCauseFor
+		// at construction). Without a cause builder we can't produce a cause the
+		// loop recognizes as a turn-cancel, and firing a wrong cause would
+		// TERMINATE the run instead of parking it. Refuse, leaving the token armed.
+		r.mu.Unlock()
+		return false
+	}
 	e, ok := r.armed[runID]
 	if ok {
 		delete(r.armed, runID)
@@ -79,7 +162,7 @@ func (r *Registry) Cancel(runID string, cause error) bool {
 	if !ok {
 		return false
 	}
-	e.cancel(cause)
+	e.cancel(causeFor(reason))
 	return true
 }
 
