@@ -2216,8 +2216,8 @@ type Store interface {
 
 	// InterruptFinish transitions a pending interrupt to a terminal
 	// status WITHOUT an answer (used for timeout sweeper + agent-side
-	// cancel). status must be one of: "timed_out" / "cancelled".
-	// resolvedBy is recorded for audit. Returns
+	// cancel + operator decline). status must be one of: "timed_out" /
+	// "cancelled" / "declined". resolvedBy is recorded for audit. Returns
 	// ErrInterruptAlreadyTerminal on a non-pending row.
 	InterruptFinish(ctx context.Context, interruptID, status, resolvedBy string) error
 
@@ -3481,6 +3481,12 @@ const (
 	InterruptStatusResolved  = "resolved"
 	InterruptStatusTimedOut  = "timed_out"
 	InterruptStatusCancelled = "cancelled"
+	// InterruptStatusDeclined is terminal like cancelled, but semantically
+	// distinct (RFC BH P2): the operator declined to answer a pending
+	// question so the agent should PROCEED without input — not an error.
+	// The waiting Question tool maps it to a NON-error tool_result, whereas
+	// cancelled (run-cancel / timeout) maps to an error result.
+	InterruptStatusDeclined = "declined"
 
 	InterruptPriorityLow    = "low"
 	InterruptPriorityNormal = "normal"

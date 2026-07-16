@@ -127,6 +127,68 @@ func TestInterruption_AskBlockUntilResolve(t *testing.T) {
 	}
 }
 
+// TestInterruption_DeclineReturnsNonErrorResult pins RFC BH P2: when the
+// operator declines a pending question (InterruptFinish → declined + wake),
+// the blocked ask returns a NON-error tool_result telling the agent to
+// proceed — distinct from the error-shaped cancelled/timeout results, so the
+// loop continues rather than retrying or aborting. The interrupt declares
+// options to prove a decline needs no valid answer.
+func TestInterruption_DeclineReturnsNonErrorResult(t *testing.T) {
+	tool, ctx, _, cleanup := interruptionFixture(t)
+	defer cleanup()
+
+	resCh := make(chan tools.Result, 1)
+	go func() {
+		res, err := tool.Execute(ctx, json.RawMessage(`{
+			"op":"ask",
+			"question":"Proceed with delete?",
+			"options":["Yes","No"],
+			"timeout_ms":5000
+		}`))
+		if err != nil {
+			t.Errorf("Execute: %v", err)
+		}
+		resCh <- res
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	pending, err := tool.Store.InterruptListByRun(ctx, tools.RunID(ctx), store.InterruptStatusPending)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending interrupt, got %d", len(pending))
+	}
+	id := pending[0].InterruptID
+
+	// Decline (no answer) — mirrors what the HTTP handler does for the
+	// declined disposition: InterruptFinish(declined) + Notify.
+	if err := tool.Store.InterruptFinish(ctx, id, store.InterruptStatusDeclined, store.InterruptResolvedByWebUI); err != nil {
+		t.Fatalf("InterruptFinish(declined): %v", err)
+	}
+	tool.Bus.Notify("intr:" + id)
+
+	select {
+	case res := <-resCh:
+		if res.IsError {
+			t.Fatalf("declined result must NOT be is_error (agent should proceed); got %+v", res)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("result not JSON: %v (raw %q)", err, res.Text)
+		}
+		if out["declined"] != true {
+			t.Errorf("declined=%v, want true (raw %q)", out["declined"], res.Text)
+		}
+		if out["resolved_by"] != store.InterruptResolvedByWebUI {
+			t.Errorf("resolved_by=%v, want webui", out["resolved_by"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ask did not wake after decline")
+	}
+}
+
 // TestInterruption_AskWakesOnCrossRuntimeResolve guards the F15 durable-wake
 // backstop. In a multi-full-runtime topology the resolve lands on a DIFFERENT
 // runtime: the DB row flips to resolved but THIS process's in-memory Bus is

@@ -8073,7 +8073,7 @@ func (s *Store) InterruptResolve(ctx context.Context, interruptID, answer, resol
 
 func (s *Store) InterruptFinish(ctx context.Context, interruptID, status, resolvedBy string) error {
 	switch status {
-	case store.InterruptStatusTimedOut, store.InterruptStatusCancelled:
+	case store.InterruptStatusTimedOut, store.InterruptStatusCancelled, store.InterruptStatusDeclined:
 		// ok
 	default:
 		return fmt.Errorf("interrupts: finish: invalid terminal status %q", status)

@@ -5998,11 +5998,24 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 // resolveInterruptRequest is the JSON body for the resolve endpoint.
 // kind-discriminated: v0.8.16 supports only kind="question"; future
 // kinds (pause/wait_until/approval) parse different fields.
+//
+// Disposition (RFC BH P2) is optional: "" / "answer" take the existing
+// answer path (Answer validated against declared options); "declined"
+// resolves the interrupt WITHOUT an answer (skips option validation) so
+// the agent PROCEEDS rather than being answered.
 type resolveInterruptRequest struct {
-	Kind       string `json:"kind"`
-	Answer     string `json:"answer"`
-	ResolvedBy string `json:"resolved_by,omitempty"`
+	Kind        string `json:"kind"`
+	Answer      string `json:"answer"`
+	ResolvedBy  string `json:"resolved_by,omitempty"`
+	Disposition string `json:"disposition,omitempty"`
 }
+
+// Resolve dispositions (RFC BH P2). The "declined" disposition maps to
+// the store.InterruptStatusDeclined terminal status.
+const (
+	dispositionAnswer   = "answer"
+	dispositionDeclined = "declined"
+)
 
 // handleResolveInterrupt accepts a human's answer to a pending
 // interruption + wakes the blocked tool. The path captures
@@ -6047,6 +6060,23 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 		} else {
 			req.ResolvedBy = store.InterruptResolvedByAPI
 		}
+	}
+
+	// Disposition gate (RFC BH P2). Only "" / "answer" / "declined" are
+	// valid; an unknown value is a client error, not a silent answer.
+	switch req.Disposition {
+	case "", dispositionAnswer, dispositionDeclined:
+		// ok
+	default:
+		http.Error(w, fmt.Sprintf("unsupported disposition %q (valid: answer, declined)", req.Disposition), http.StatusUnprocessableEntity)
+		return
+	}
+	declined := req.Disposition == dispositionDeclined
+	if declined && req.Answer != "" {
+		// A decline carries no answer — an answer alongside it is
+		// contradictory. Reject rather than silently dropping it.
+		http.Error(w, "declined disposition must not carry an answer", http.StatusUnprocessableEntity)
+		return
 	}
 
 	// Validate the answer against the stored row's options + expiry.
@@ -6094,35 +6124,53 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Option-list validation: when the original ask declared
-	// options, the answer must be one of them. Free-text answers
-	// (no options) accept any non-empty string.
-	if len(row.Options) > 0 {
-		var opts []string
-		if err := json.Unmarshal(row.Options, &opts); err == nil && len(opts) > 0 {
-			ok := false
-			for _, o := range opts {
-				if o == req.Answer {
-					ok = true
-					break
+	// A decline (RFC BH P2) carries no answer, so it SKIPS option-list
+	// validation entirely — the operator is declining to answer, not
+	// submitting one. The answer path is unchanged.
+	if !declined {
+		// Option-list validation: when the original ask declared
+		// options, the answer must be one of them. Free-text answers
+		// (no options) accept any non-empty string.
+		if len(row.Options) > 0 {
+			var opts []string
+			if err := json.Unmarshal(row.Options, &opts); err == nil && len(opts) > 0 {
+				ok := false
+				for _, o := range opts {
+					if o == req.Answer {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					http.Error(w, fmt.Sprintf("answer %q is not one of the declared options: %v", req.Answer, opts), http.StatusUnprocessableEntity)
+					return
 				}
 			}
-			if !ok {
-				http.Error(w, fmt.Sprintf("answer %q is not one of the declared options: %v", req.Answer, opts), http.StatusUnprocessableEntity)
-				return
-			}
+		} else if req.Answer == "" {
+			http.Error(w, "answer is required for free-text interrupts", http.StatusUnprocessableEntity)
+			return
 		}
-	} else if req.Answer == "" {
-		http.Error(w, "answer is required for free-text interrupts", http.StatusUnprocessableEntity)
-		return
 	}
 
-	if err := s.store.InterruptResolve(r.Context(), interruptID, req.Answer, req.ResolvedBy, nil); err != nil {
-		if errors.Is(err, store.ErrInterruptAlreadyTerminal) {
+	// Persist the terminal state. A decline uses InterruptFinish (the
+	// answer-less terminal writer) → status=declined; an answer uses
+	// InterruptResolve → status=resolved. Both reject an already-terminal
+	// row with ErrInterruptAlreadyTerminal → 409. finalStatus drives the
+	// wake publish + response so the answer path stays byte-identical.
+	finalStatus := store.InterruptStatusResolved
+	var persistErr error
+	if declined {
+		finalStatus = store.InterruptStatusDeclined
+		persistErr = s.store.InterruptFinish(r.Context(), interruptID, store.InterruptStatusDeclined, req.ResolvedBy)
+	} else {
+		persistErr = s.store.InterruptResolve(r.Context(), interruptID, req.Answer, req.ResolvedBy, nil)
+	}
+	if persistErr != nil {
+		if errors.Is(persistErr, store.ErrInterruptAlreadyTerminal) {
 			http.Error(w, "interrupt already resolved, timed out, or cancelled", http.StatusConflict)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, persistErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -6142,7 +6190,7 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 			"interrupt_id": interruptID,
 			"run_id":       runID,
 			"kind":         row.Kind,
-			"status":       store.InterruptStatusResolved,
+			"status":       finalStatus,
 			"answer":       req.Answer,
 			"resolved_by":  req.ResolvedBy,
 		})
@@ -6156,7 +6204,7 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"interrupt_id": interruptID,
-		"status":       store.InterruptStatusResolved,
+		"status":       finalStatus,
 		"resolved_at":  time.Now().UTC().Format(time.RFC3339Nano),
 	})
 }
