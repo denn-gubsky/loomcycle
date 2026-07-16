@@ -64,9 +64,14 @@ func runAgentsList(args []string, stdout, stderr io.Writer) int {
 	// chatty column we truncate to keep things readable.
 	for _, name := range names {
 		def := cfg.Agents[name]
-		provider, model, err := cfg.ResolveAgentModel(name)
+		provider, model, pattern, err := cfg.ResolveAgentModel(name)
 		if err != nil {
 			return fail(stderr, "agent %q: %v", name, err)
+		}
+		// RFC BG: a model_pattern alias has no concrete model until run time;
+		// show the glob so the operator sees what the alias points at.
+		if pattern != "" {
+			model = pattern
 		}
 		tools := strings.Join(def.Tools, ",")
 		if tools == "" {
@@ -105,9 +110,13 @@ func runAgentsListJSON(stdout, stderr io.Writer, cfg *config.Config, names []str
 	fmt.Fprintln(stdout, "[")
 	for i, name := range names {
 		def := cfg.Agents[name]
-		provider, model, err := cfg.ResolveAgentModel(name)
+		provider, model, pattern, err := cfg.ResolveAgentModel(name)
 		if err != nil {
 			return fail(stderr, "agent %q: %v", name, err)
+		}
+		// RFC BG: surface the glob for a model_pattern alias (resolved at run time).
+		if pattern != "" {
+			model = pattern
 		}
 		fmt.Fprintln(stdout, "  {")
 		fmt.Fprintf(stdout, "    \"name\": %s,\n", jsonString(name))

@@ -3398,6 +3398,10 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 func buildResolver(cfg *config.Config, pr *providerResolver) *resolve.Resolver {
 	libraryTiers := convertTiers(cfg.Tiers, cfg.Models)
 	r := resolve.NewResolver(cfg.ProviderPriority, libraryTiers)
+	// RFC BG: surface a silent model-pattern bump (a pattern resolving to a new
+	// concrete model) in the operator log. Set before the first probe so an
+	// initial resolution is recorded (first-seen never warns; only a MOVE does).
+	r.SetLogf(log.Printf)
 
 	// First-round probe — synchronous, so the matrix is hot before
 	// the listener accepts traffic.
@@ -3521,9 +3525,10 @@ func convertTiers(in map[string][]config.TierCandidate, models map[string]config
 		for _, c := range cands {
 			// Expand model aliases (top-level models:) — mirrors the pin
 			// path and the per-agent converter so a library tier candidate
-			// can name an alias too.
-			prov, mdl := config.ExpandModelAlias(models, c.Provider, c.Model)
-			conv = append(conv, resolve.Candidate{Provider: prov, Model: mdl})
+			// can name an alias too. RFC BG: a pattern alias surfaces a glob
+			// (pat) the resolver resolves against the live catalog.
+			prov, mdl, pat := config.ExpandModelAlias(models, c.Provider, c.Model)
+			conv = append(conv, resolve.Candidate{Provider: prov, Model: mdl, ModelPattern: pat})
 		}
 		out[tier] = conv
 	}

@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -552,10 +553,20 @@ type Defaults struct {
 	Model    string `yaml:"model"`
 }
 
-// ModelRef points one alias at a (provider, model) pair.
+// ModelRef points one alias at a (provider, model) pair, or — RFC BG — at a
+// (provider, model_pattern) glob that resolves to the newest LISTED model
+// matching the pattern at resolve time. Exactly one of Model / ModelPattern is
+// set (validated at load). ModelRef carries only yaml tags because the alias
+// map is NOT content-hashed (unlike the per-agent TierCandidate map), so
+// ModelPattern needs no json tag to keep any hash byte-stable.
 type ModelRef struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
+
+	// ModelPattern is a path.Match glob ("claude-haiku-*") matched against the
+	// provider's listed catalog; the resolver picks the newest match (RFC BG).
+	// Mutually exclusive with Model and requires an explicit Provider.
+	ModelPattern string `yaml:"model_pattern"`
 }
 
 // TierCandidate is one entry in a tier's ordered candidate list.
@@ -3922,41 +3933,52 @@ func validateVolumes(c *Config) error {
 	return nil
 }
 
-// ResolveAgentModel returns (provider, model) for the named agent, walking
-// model aliases and provider defaults.
-func (c *Config) ResolveAgentModel(agent string) (provider string, model string, err error) {
+// ResolveAgentModel returns (provider, model, pattern) for the named agent,
+// walking model aliases and provider defaults. pattern is non-empty (and model
+// "") when the agent pins a RFC BG model_pattern alias — the resolver turns the
+// glob into a concrete model at run admission.
+func (c *Config) ResolveAgentModel(agent string) (provider string, model string, pattern string, err error) {
 	def, ok := c.Agents[agent]
 	if !ok {
-		return "", "", fmt.Errorf("unknown agent %q", agent)
+		return "", "", "", fmt.Errorf("unknown agent %q", agent)
 	}
 	return c.ResolveAgentDefModel(agent, def)
 }
 
 // ExpandModelAlias resolves a model-alias (a key in the top-level models:
-// map) to its concrete provider/model. The alias only fills an EMPTY
-// provider — an explicit provider on the pin/candidate always wins — so the
-// tier path and the pin path expand aliases identically. A nil/absent map or
-// a non-alias model is a no-op (the model is treated as a literal). This is
-// the single source of truth for alias expansion, shared by the pin path
+// map) to its concrete provider/model, plus (RFC BG) a model_pattern glob when
+// the alias is a pattern alias. The alias only fills an EMPTY provider — an
+// explicit provider on the pin/candidate always wins — so the tier path and the
+// pin path expand aliases identically. A nil/absent map or a non-alias model is
+// a no-op (the model is treated as a literal, pattern ""). This is the single
+// source of truth for alias expansion, shared by the pin path
 // (ResolveAgentDefModel) and the tier path (the resolver-boundary converters
 // in internal/api/http and cmd/loomcycle); keeping it in one place stops the
 // two paths from drifting.
-func ExpandModelAlias(models map[string]ModelRef, provider, model string) (string, string) {
+//
+// For a pattern alias the returned model is "" and pattern is the glob — the
+// resolver (which owns the live catalog) turns the glob into a concrete model.
+func ExpandModelAlias(models map[string]ModelRef, provider, model string) (rProvider, rModel, rPattern string) {
 	if ref, ok := models[model]; ok {
 		model = ref.Model
+		rPattern = ref.ModelPattern
 		if provider == "" {
 			provider = ref.Provider
 		}
 	}
-	return provider, model
+	return provider, model, rPattern
 }
 
 // ResolveAgentDefModel mirrors ResolveAgentModel but resolves against
 // a caller-supplied AgentDef instead of looking it up in c.Agents.
 // Used by the sub-agent path when an overlay has already produced an
 // effective def whose Provider/Model differ from the static yaml.
-// Same alias-expansion + defaults-fallback rules as ResolveAgentModel.
-func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider string, model string, err error) {
+// Same alias-expansion + defaults-fallback rules as ResolveAgentModel. A
+// non-empty pattern return (with model "") means the def pins a RFC BG
+// model_pattern alias; the caller (the HTTP resolver boundary) resolves the
+// glob against the live catalog. config can't resolve it here — it has no
+// access to the availability matrix.
+func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider string, model string, pattern string, err error) {
 	model = def.Model
 	provider = def.Provider
 
@@ -3967,24 +3989,26 @@ func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider stri
 	// meaningful identifier. Usage/OTEL report loomcycle/code-js regardless
 	// (see internal/providers/codejs). An explicit model still wins.
 	if provider == "code-js" && model == "" {
-		return provider, agent, nil
+		return provider, agent, "", nil
 	}
 
-	// If model is an alias in models:, expand it.
-	provider, model = ExpandModelAlias(c.Models, provider, model)
+	// If model is an alias in models:, expand it (may surface a pattern).
+	provider, model, pattern = ExpandModelAlias(c.Models, provider, model)
 	if provider == "" {
 		provider = c.Defaults.Provider
 	}
-	if model == "" {
+	// A pattern alias supplies no concrete model — the defaults fallback and
+	// the "no model resolved" check below apply only to the non-pattern path.
+	if model == "" && pattern == "" {
 		model = c.Defaults.Model
 	}
 	if provider == "" {
-		return "", "", fmt.Errorf("agent %q: no provider resolved", agent)
+		return "", "", "", fmt.Errorf("agent %q: no provider resolved", agent)
 	}
-	if model == "" {
-		return "", "", fmt.Errorf("agent %q: no model resolved", agent)
+	if model == "" && pattern == "" {
+		return "", "", "", fmt.Errorf("agent %q: no model resolved", agent)
 	}
-	return provider, model, nil
+	return provider, model, pattern, nil
 }
 
 // envVarRe matches ${VAR} interpolation tokens in the YAML source.
@@ -5005,6 +5029,27 @@ func validate(c *Config) error {
 	// names the alias, so it is left unvalidated here). Built-ins always pass via the
 	// floor, so this only newly rejects a typo'd or undeclared 3rd-party provider.
 	for name, ref := range c.Models {
+		// RFC BG: exactly one of model / model_pattern. Both or neither is a
+		// config error — a pattern alias has no concrete model, a concrete alias
+		// has no glob, and an empty alias resolves to nothing.
+		hasModel := ref.Model != ""
+		hasPattern := ref.ModelPattern != ""
+		if hasModel == hasPattern {
+			return fmt.Errorf("models.%s: exactly one of model or model_pattern is required (got model=%q model_pattern=%q)", name, ref.Model, ref.ModelPattern)
+		}
+		if hasPattern {
+			// A pattern is scoped to one provider's catalog, so the provider can't
+			// be deferred to the referencing candidate the way a concrete alias can.
+			if ref.Provider == "" {
+				return fmt.Errorf("models.%s: model_pattern requires an explicit provider", name)
+			}
+			// Reject a malformed glob at load, not at first resolve. path.Match's
+			// only error is ErrBadPattern; the empty name still forces a full scan
+			// of the pattern's syntax (e.g. an unterminated character class).
+			if _, perr := path.Match(ref.ModelPattern, ""); perr != nil {
+				return fmt.Errorf("models.%s: invalid model_pattern %q: %v", name, ref.ModelPattern, perr)
+			}
+		}
 		if ref.Provider != "" && !known[ref.Provider] {
 			return fmt.Errorf("models.%s: unknown provider %q", name, ref.Provider)
 		}

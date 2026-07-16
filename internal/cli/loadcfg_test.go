@@ -23,7 +23,7 @@ func TestLoadLayeredConfig_PresetAliasResolvesInOverlayAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadLayeredConfig: %v", err)
 	}
-	prov, model, err := cfg.ResolveAgentModel("probe")
+	prov, model, _, err := cfg.ResolveAgentModel("probe")
 	if err != nil {
 		t.Fatalf("ResolveAgentModel: %v", err)
 	}

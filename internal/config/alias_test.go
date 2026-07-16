@@ -69,9 +69,9 @@ func TestExpandModelAlias_ExpandsModelAndFillsEmptyProvider(t *testing.T) {
 	models := map[string]ModelRef{
 		"local-gemma": {Provider: "ollama-local", Model: "gemma4:max"},
 	}
-	prov, mdl := ExpandModelAlias(models, "", "local-gemma")
-	if prov != "ollama-local" || mdl != "gemma4:max" {
-		t.Fatalf("got (%q, %q), want (ollama-local, gemma4:max)", prov, mdl)
+	prov, mdl, pat := ExpandModelAlias(models, "", "local-gemma")
+	if prov != "ollama-local" || mdl != "gemma4:max" || pat != "" {
+		t.Fatalf("got (%q, %q, %q), want (ollama-local, gemma4:max, \"\")", prov, mdl, pat)
 	}
 }
 
@@ -82,9 +82,9 @@ func TestExpandModelAlias_ExplicitProviderWins(t *testing.T) {
 	models := map[string]ModelRef{
 		"local-gemma": {Provider: "ollama-local", Model: "gemma4:max"},
 	}
-	prov, mdl := ExpandModelAlias(models, "openai", "local-gemma")
-	if prov != "openai" || mdl != "gemma4:max" {
-		t.Fatalf("got (%q, %q), want (openai, gemma4:max)", prov, mdl)
+	prov, mdl, pat := ExpandModelAlias(models, "openai", "local-gemma")
+	if prov != "openai" || mdl != "gemma4:max" || pat != "" {
+		t.Fatalf("got (%q, %q, %q), want (openai, gemma4:max, \"\")", prov, mdl, pat)
 	}
 }
 
@@ -92,15 +92,15 @@ func TestExpandModelAlias_NonAliasIsLiteralNoop(t *testing.T) {
 	models := map[string]ModelRef{
 		"local-gemma": {Provider: "ollama-local", Model: "gemma4:max"},
 	}
-	prov, mdl := ExpandModelAlias(models, "anthropic", "claude-sonnet-4-6")
-	if prov != "anthropic" || mdl != "claude-sonnet-4-6" {
-		t.Fatalf("got (%q, %q), want (anthropic, claude-sonnet-4-6)", prov, mdl)
+	prov, mdl, pat := ExpandModelAlias(models, "anthropic", "claude-sonnet-4-6")
+	if prov != "anthropic" || mdl != "claude-sonnet-4-6" || pat != "" {
+		t.Fatalf("got (%q, %q, %q), want (anthropic, claude-sonnet-4-6, \"\")", prov, mdl, pat)
 	}
 }
 
 func TestExpandModelAlias_NilMapNoop(t *testing.T) {
-	prov, mdl := ExpandModelAlias(nil, "ollama-local", "local-gemma")
-	if prov != "ollama-local" || mdl != "local-gemma" {
-		t.Fatalf("got (%q, %q), want (ollama-local, local-gemma)", prov, mdl)
+	prov, mdl, pat := ExpandModelAlias(nil, "ollama-local", "local-gemma")
+	if prov != "ollama-local" || mdl != "local-gemma" || pat != "" {
+		t.Fatalf("got (%q, %q, %q), want (ollama-local, local-gemma, \"\")", prov, mdl, pat)
 	}
 }
