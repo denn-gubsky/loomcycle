@@ -460,6 +460,11 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		startedAt:      time.Now(),
 	}
+	// RFC BH: the turn-cancel registry builds its cancel cause via loop.TurnCancelCause
+	// (the loop recognizes it to PARK the run instead of terminating). Injected here
+	// so the leaf turncancel package stays free of internal/loop; wired at
+	// construction so single-process AND cluster paths both fire the correct cause.
+	s.turnCancelReg.SetCauseFor(loop.TurnCancelCause)
 	// RFC AW: per-scope token-budget tracker. limits.New(nil) is a no-op tracker
 	// (Check always allows, Add no-ops), so a store-less server keeps today's
 	// unlimited behavior. Seeded from the ledger at boot via SeedLimits.
@@ -2502,6 +2507,11 @@ func (s *Server) CancelRegistry() *cancel.Registry { return s.cancelReg }
 // cross-replica SteerCoordinator (SetClusterSteerer + the subscriber
 // goroutines). nil when steering isn't enabled.
 func (s *Server) SteerRegistry() *steer.Registry { return s.steerReg }
+
+// TurnCancelRegistry exposes the per-turn cancel registry so main.go can wire the
+// cross-replica TurnCancelCoordinator (SetClusterCanceller + the subscriber
+// goroutines, RFC BH P3a). Always non-nil (constructed in NewServer).
+func (s *Server) TurnCancelRegistry() *turncancel.Registry { return s.turnCancelReg }
 
 // trySessionLock try-locks the session-scoped mutex for id. Returns
 // (release, true) on success and (nil, false) if another caller already
@@ -6282,8 +6292,17 @@ type cancelTurnRequest struct {
 // the run. 409 when the run isn't mid-turn (already parked / terminal) or isn't
 // interactive; a cross-tenant / unknown run folds into an opaque 404 — run_ids
 // are not secrets (returned to callers + shown in the UI), so the gate must not
-// become an existence oracle (mirrors handleRunInput / SteerRun). Idempotent: a
-// second call once the run has parked → 409 not_mid_turn.
+// become an existence oracle. Idempotent: a second call once the run has parked
+// → 409 not_mid_turn.
+//
+// Two paths (RFC BH P3a — cross-replica):
+//   - The run is live on THIS replica (steer registry hit): the P1 local flow —
+//     session-ownership gate + IsArmed + fire the local token.
+//   - The run is NOT live here (steer registry miss): gate ownership via the
+//     SHARED store (works cluster-wide, unlike the per-replica steer registry)
+//     and route the cancel to the owning replica by runs.replica_id via the
+//     turn-cancel registry's cluster fallback. Single-process (no coordinator
+//     wired) folds this back to the P1 "no in-flight run" 404, byte-identical.
 func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 	if s.turnCancelReg == nil || s.steerReg == nil {
 		http.Error(w, "turn-cancel is not enabled on this server", http.StatusServiceUnavailable)
@@ -6299,48 +6318,71 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 	var req cancelTurnRequest
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
 	ctx := r.Context()
+	reason := strings.TrimSpace(req.Reason)
 
-	// Tenant-ownership gate (mirrors SteerRun): resolve the live run via the steer
-	// registry, then verify the caller owns its session. A cross-tenant or unknown
-	// run folds into an opaque 404.
-	entry, ok := s.steerReg.Get(runID)
-	if !ok {
+	// Local fast path: the run is live on THIS replica. Gate on its session's
+	// tenant (mirrors SteerRun), then fire the local armed token. Byte-identical
+	// to P1.
+	if entry, ok := s.steerReg.Get(runID); ok {
+		if entry.SessionID != "" && s.store != nil {
+			if sess, err := s.store.GetSession(ctx, entry.SessionID); err == nil {
+				if !sessionOwnershipOK(ctx, sess) {
+					http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+					return
+				}
+			}
+		}
+		// Mid-turn? Only an armed run (interactive + in-flight) is turn-cancellable.
+		if !s.turnCancelReg.IsArmed(runID) {
+			code, msg := "not_mid_turn", "run is not mid-turn (already parked or terminal)"
+			// Distinguish a non-interactive run for a clearer error (best-effort;
+			// the caller already passed the ownership gate above).
+			if s.store != nil {
+				if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err == nil && !run.Interactive {
+					code = "not_interactive"
+					msg = "turn-cancel applies only to interactive runs; use POST /v1/agents/{id}/cancel to stop this run"
+				}
+			}
+			writeJSONError(w, http.StatusConflict, code, msg)
+			return
+		}
+		// Fire the local armed token (builds loop.TurnCancelCause via the
+		// registry's causeFor). A false return means the token vanished between
+		// IsArmed and here (the turn just ended / a concurrent cancel won) → 409.
+		if !s.turnCancelReg.CancelLocal(runID, reason) {
+			writeJSONError(w, http.StatusConflict, "not_mid_turn", "run is not mid-turn (already parked or terminal)")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "stopped": true, "parked": true})
+		return
+	}
+
+	// Cross-replica fallback: the run is not live here. Gate ownership via the
+	// shared store (a cross-tenant / unknown run folds into an opaque 404), then
+	// route the cancel to the run's owning replica by runs.replica_id.
+	if s.store == nil {
 		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
 		return
 	}
-	if entry.SessionID != "" && s.store != nil {
-		if sess, err := s.store.GetSession(ctx, entry.SessionID); err == nil {
-			if !sessionOwnershipOK(ctx, sess) {
-				http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
-				return
-			}
-		}
-	}
-
-	// Mid-turn? Only an armed run (interactive + in-flight) is turn-cancellable.
-	if !s.turnCancelReg.IsArmed(runID) {
-		code, msg := "not_mid_turn", "run is not mid-turn (already parked or terminal)"
-		// Distinguish a non-interactive run for a clearer error (best-effort; the
-		// caller already passed the ownership gate above).
-		if s.store != nil {
-			if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err == nil && !run.Interactive {
-				code = "not_interactive"
-				msg = "turn-cancel applies only to interactive runs; use POST /v1/agents/{id}/cancel to stop this run"
-			}
-		}
-		writeJSONError(w, http.StatusConflict, code, msg)
+	if _, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil {
+		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
 		return
 	}
-
-	// Fire the armed token with the operator reason. A false return means the
-	// token vanished between the IsArmed check and here (the turn just ended / a
-	// concurrent cancel won the race) → 409.
-	if !s.turnCancelReg.Cancel(runID, loop.TurnCancelCause(strings.TrimSpace(req.Reason))) {
-		writeJSONError(w, http.StatusConflict, "not_mid_turn", "run is not mid-turn (already parked or terminal)")
+	fired, err := s.turnCancelReg.Cancel(ctx, runID, reason)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// The loop catches the sentinel cause and parks the run at awaiting_input;
-	// report the intended outcome for an interactive run.
+	if !fired {
+		// Not armed on any reachable replica (already parked / just ended / owner
+		// gone) — and in single-process mode (no coordinator) a steer-registry miss
+		// always lands here. "No in-flight turn to cancel" → 404, byte-identical to
+		// P1's steer-miss response.
+		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		return
+	}
+	// The owning replica's loop caught the cause and parks the run at
+	// awaiting_input; report the intended outcome for an interactive run.
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "stopped": true, "parked": true})
 }
 

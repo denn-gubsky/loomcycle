@@ -2237,6 +2237,26 @@ func main() {
 			go steerCoord.RunSteerAckSubscriber(bgCtx)
 		}
 
+		// Cross-replica turn-cancel (RFC BH P3a; the twin of cancel/steer): a
+		// POST /v1/runs/{run_id}/cancel that lands on a replica not running the
+		// target run routes over the backplane to the owning replica by
+		// runs.replica_id, so a turn-cancel works cluster-wide.
+		if tcReg := srv.TurnCancelRegistry(); tcReg != nil {
+			tcCoord, err := coord.NewTurnCancelCoordinator(coord.TurnCancelCoordinatorConfig{
+				Backplane:    bp,
+				ReplicaID:    cfg.Env.ReplicaID,
+				Store:        pgStore,
+				ReplicaStore: replicaStore,
+				AckTimeout:   ackTimeout,
+			})
+			if err != nil {
+				log.Fatalf("coord: turn-cancel coordinator init: %v", err)
+			}
+			tcReg.SetClusterCanceller(tcCoord)
+			go tcCoord.RunTurnCancelSubscriber(bgCtx, tcReg)
+			go tcCoord.RunTurnCancelAckSubscriber(bgCtx)
+		}
+
 		// v0.12.3 Phase 4: runstate + channel bus backplane fanout.
 		// Both buses were constructed earlier (lines ~1003/1012) and
 		// wired into the server via SetRunStateBus / SetChannelBus.

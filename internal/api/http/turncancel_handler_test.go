@@ -22,6 +22,9 @@ func turnCancelFixture(t *testing.T) (*Server, func()) {
 	srv, cleanup := channelFanFixture(t)
 	srv.SetSteerRegistry(steer.NewRegistry(4))
 	srv.turnCancelReg = turncancel.NewRegistry()
+	// The fixture replaces the NewServer-built registry, so re-wire the cause
+	// builder it needs to fire (NewServer does this in production).
+	srv.turnCancelReg.SetCauseFor(loop.TurnCancelCause)
 	return srv, cleanup
 }
 
@@ -155,6 +158,101 @@ func TestRequiredScopeFor_TurnCancel(t *testing.T) {
 	// Whole-run cancel (a distinct path) still maps to runs:create — unchanged.
 	if got := requiredScopeFor(http.MethodPost, "/v1/agents/ag-1/cancel"); got != auth.ScopeRunsCreate {
 		t.Errorf("whole-run cancel scope = %q, want %q", got, auth.ScopeRunsCreate)
+	}
+}
+
+// stubClusterCanceller records the cross-replica delegation from the handler's
+// fallback path.
+type stubClusterCanceller struct {
+	calls  int
+	runID  string
+	reason string
+	found  bool
+	err    error
+}
+
+func (s *stubClusterCanceller) CancelRemote(_ context.Context, runID, reason string) (bool, error) {
+	s.calls++
+	s.runID, s.reason = runID, reason
+	return s.found, s.err
+}
+
+// A cross-replica turn-cancel: the run is NOT live on this replica (steer
+// registry miss) but exists in the shared store — the handler gates via the store
+// and routes to the owning replica via the cluster canceller, returning 200.
+func TestHandleCancelTurn_RoutesCrossReplicaAndParks(t *testing.T) {
+	srv, cleanup := turnCancelFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "agent-x", "alice")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "agent-x", UserID: "alice", Interactive: true})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// Deliberately NOT registered in the steer registry → the handler takes the
+	// cross-replica fallback and delegates to the cluster canceller.
+	stub := &stubClusterCanceller{found: true}
+	srv.turnCancelReg.SetClusterCanceller(stub)
+
+	rec := doJSON(t, srv, "POST", "/v1/runs/"+run.ID+"/cancel", `{"reason":"remote stop"}`)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if stub.calls != 1 || stub.runID != run.ID || stub.reason != "remote stop" {
+		t.Fatalf("CancelRemote calls=%d runID=%q reason=%q, want 1/%s/remote stop", stub.calls, stub.runID, stub.reason, run.ID)
+	}
+}
+
+// A cross-replica cancel that the owning replica did not fire (parked / gone) →
+// 404 (no in-flight turn to cancel), and a cross-tenant/unknown run never reaches
+// the cluster canceller (opaque 404 at the store gate — no existence oracle).
+func TestHandleCancelTurn_CrossReplicaNotFired_404(t *testing.T) {
+	srv, cleanup := turnCancelFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "agent-x", "alice")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "agent-x", UserID: "alice", Interactive: true})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	stub := &stubClusterCanceller{found: false}
+	srv.turnCancelReg.SetClusterCanceller(stub)
+
+	if rec := doJSON(t, srv, "POST", "/v1/runs/"+run.ID+"/cancel", `{}`); rec.Code != 404 {
+		t.Fatalf("not-fired remote status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	// Unknown run → opaque 404 at the store gate, cluster canceller untouched.
+	if rec := doJSON(t, srv, "POST", "/v1/runs/ghost/cancel", `{}`); rec.Code != 404 {
+		t.Fatalf("unknown run status = %d, want 404", rec.Code)
+	}
+	if stub.calls != 1 {
+		t.Fatalf("cluster canceller calls=%d, want 1 (only the existing run reaches it)", stub.calls)
+	}
+}
+
+// Single-process (no coordinator wired): an existing run that isn't live on this
+// replica → 404, byte-identical to P1's steer-miss response.
+func TestHandleCancelTurn_SingleProcessExistingRunNotLive_404(t *testing.T) {
+	srv, cleanup := turnCancelFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "agent-x", "alice")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "agent-x", UserID: "alice", Interactive: true})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// No steer registration, no cluster canceller → fallback finds nothing → 404.
+	if rec := doJSON(t, srv, "POST", "/v1/runs/"+run.ID+"/cancel", `{}`); rec.Code != 404 {
+		t.Fatalf("status = %d, want 404 (no in-flight run); body=%s", rec.Code, rec.Body.String())
 	}
 }
 
