@@ -22,8 +22,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"sync"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/modelver"
 )
 
 // Sentinel errors. Wire surfaces (HTTP / gRPC) translate these into
@@ -96,6 +99,14 @@ type AgentRequest struct {
 	// through to a different provider).
 	PinProvider string
 	PinModel    string
+
+	// PinModelPattern (RFC BG) is an alternative to PinModel: a glob the
+	// resolver expands against PinProvider's live catalog to the newest listed
+	// model, once, at admission. Set instead of PinModel when a pinned agent
+	// names a model_pattern alias. PinProvider is still required. A pattern that
+	// matches nothing available fails with ErrPinUnavailable (a pin has no
+	// fallthrough).
+	PinModelPattern string
 
 	// Tier path. When set, the resolver walks the candidate list
 	// (Models[Tier] if non-empty, else library Tiers[Tier]) in the
@@ -192,6 +203,13 @@ type UserTierOverlay struct {
 type Candidate struct {
 	Provider string
 	Model    string
+
+	// ModelPattern (RFC BG) is a path.Match glob that resolves to the newest
+	// listed model on Provider at resolve time. Mutually exclusive with Model
+	// (the config boundary sets exactly one). When set, Resolve/Cascade expand
+	// it against the live catalog; a candidate whose pattern matches nothing
+	// available is skipped like any unavailable candidate (no hard fail).
+	ModelPattern string
 }
 
 // Resolver picks (provider, model) for an agent against the
@@ -225,6 +243,17 @@ type Resolver struct {
 	// SetForceProbeCallback writes under the write lock; ForceProbe
 	// reads under the read lock.
 	forceProbe func(ctx context.Context)
+
+	// logf is the RFC BG change-log sink (nil = no logging, preserving the
+	// resolver's no-log-dependency shape). Written once via SetLogf under the
+	// write lock; read by noteResolved under the read lock Resolve already holds.
+	logf func(string, ...any)
+
+	// lastResolved records the last concrete model a (provider, pattern) resolved
+	// to, so noteResolved can WARN when a pattern silently moves to a new model.
+	// A sync.Map (not the matrix mutex) so the WARN path never upgrades the RLock
+	// Resolve holds. Key: provider + "\x00" + pattern; value: string (model).
+	lastResolved sync.Map
 }
 
 // Availability is the resolver's view of one provider's reachability
@@ -359,20 +388,20 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 		return Decision{}, fmt.Errorf("%w: agent name is required", ErrInvalidArgument)
 	}
 
-	// Pin path. Explicit provider+model bypasses tier resolution
-	// entirely — caller asked for THAT model. Still gated by the
-	// matrix so a stalled pin surfaces as ErrPinUnavailable rather
-	// than the driver's 5xx.
-	if req.PinProvider != "" && req.PinModel != "" {
+	// Pin path. Explicit provider + (model OR RFC BG model_pattern) bypasses
+	// tier resolution entirely — caller asked for THAT model / THAT family.
+	// Still gated by the matrix so a stalled pin surfaces as ErrPinUnavailable
+	// rather than the driver's 5xx.
+	if req.PinProvider != "" && (req.PinModel != "" || req.PinModelPattern != "") {
 		return r.resolvePin(req)
 	}
-	if req.PinProvider != "" || req.PinModel != "" {
+	if req.PinProvider != "" || req.PinModel != "" || req.PinModelPattern != "" {
 		// Half a pin — provider without model or vice versa — is
 		// almost certainly a config typo. The validator should
 		// catch this at load time, but we double-check for cases
 		// where AgentRequest is constructed directly (tests).
-		return Decision{}, fmt.Errorf("%w: pin requires both provider and model (got provider=%q model=%q)",
-			ErrInvalidArgument, req.PinProvider, req.PinModel)
+		return Decision{}, fmt.Errorf("%w: pin requires both provider and model (got provider=%q model=%q model_pattern=%q)",
+			ErrInvalidArgument, req.PinProvider, req.PinModel, req.PinModelPattern)
 	}
 
 	// Tier path.
@@ -452,10 +481,30 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 				continue
 			}
 			sawKeyable = true
-			if r.isAvailableLocked(cand.Provider, cand.Model) {
+			// RFC BG: a pattern candidate resolves to the newest listed model on
+			// its provider. A pattern that matches nothing available is treated as
+			// an unavailable candidate — fall through to the next one (§4.2.5,
+			// never hard-fail on a pattern miss). A concrete candidate takes the
+			// unchanged path (ModelPattern == "" → model := cand.Model), so a
+			// pattern-free config resolves byte-identically.
+			model := cand.Model
+			if cand.ModelPattern != "" {
+				m, ok := r.newestMatchingLocked(cand.Provider, cand.ModelPattern)
+				if !ok {
+					continue
+				}
+				model = m
+			}
+			if r.isAvailableLocked(cand.Provider, model) {
+				// Log a silent model bump only for the candidate we actually
+				// select (not merely one that matched) — so the WARN maps 1:1 to
+				// what runs.
+				if cand.ModelPattern != "" {
+					r.noteResolved(cand.Provider, cand.ModelPattern, model)
+				}
 				return Decision{
 					Provider: cand.Provider,
-					Model:    cand.Model,
+					Model:    model,
 					Effort:   req.Effort,
 				}, nil
 			}
@@ -481,17 +530,33 @@ func keyable(req AgentRequest, provider string) bool {
 
 // resolvePin consults the matrix for the explicit pin and returns
 // either the Decision or ErrPinUnavailable. Caller already checked
-// that both PinProvider and PinModel are set.
+// that PinProvider plus one of PinModel / PinModelPattern is set.
 func (r *Resolver) resolvePin(req AgentRequest) (Decision, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if !r.isAvailableLocked(req.PinProvider, req.PinModel) {
+	model := req.PinModel
+	if req.PinModelPattern != "" {
+		// RFC BG: expand the pattern once, here at admission, against the live
+		// catalog. A pin has no fallthrough, so a pattern that matches nothing
+		// available surfaces as ErrPinUnavailable — same shape as a stalled
+		// concrete pin.
+		m, ok := r.newestMatchingLocked(req.PinProvider, req.PinModelPattern)
+		if !ok {
+			return Decision{}, fmt.Errorf("%w: agent %q wants %s/%s (pattern matched no available model)",
+				ErrPinUnavailable, req.Name, req.PinProvider, req.PinModelPattern)
+		}
+		model = m
+	}
+	if !r.isAvailableLocked(req.PinProvider, model) {
 		return Decision{}, fmt.Errorf("%w: agent %q wants %s/%s",
-			ErrPinUnavailable, req.Name, req.PinProvider, req.PinModel)
+			ErrPinUnavailable, req.Name, req.PinProvider, model)
+	}
+	if req.PinModelPattern != "" {
+		r.noteResolved(req.PinProvider, req.PinModelPattern, model)
 	}
 	return Decision{
 		Provider: req.PinProvider,
-		Model:    req.PinModel,
+		Model:    model,
 		Effort:   req.Effort,
 	}, nil
 }
@@ -525,9 +590,24 @@ func (r *Resolver) Cascade(req AgentRequest) []Candidate {
 			continue
 		}
 		for _, c := range candidates {
-			if c.Provider == p {
-				out = append(out, c)
+			if c.Provider != p {
+				continue
 			}
+			// RFC BG: expand a pattern candidate to the concrete model it resolves
+			// to now, so the routing view shows what would actually run. If it
+			// resolves to nothing (empty/renamed catalog), fall back to the raw
+			// glob in Model for display — availStatus then shows it unavailable.
+			// Cascade is display-only, so it never notes/warns a move (that would
+			// spam on every routing-view poll). newestMatching takes its own
+			// RLock — Cascade holds none here.
+			if c.ModelPattern != "" {
+				if m, ok := r.newestMatching(c.Provider, c.ModelPattern); ok {
+					c.Model = m
+				} else {
+					c.Model = c.ModelPattern
+				}
+			}
+			out = append(out, c)
 		}
 	}
 	return out
@@ -622,6 +702,81 @@ func (r *Resolver) isAvailableLocked(provider, model string) bool {
 		return false
 	}
 	return true
+}
+
+// newestMatchingLocked returns the newest LISTED, non-stalled, non-rate-limited
+// model on provider that matches the path.Match glob (RFC BG), and whether a
+// ranked match exists. Caller holds r.mu (read or write). Applies the SAME
+// availability predicate as isAvailableLocked, so the returned model is callable
+// by construction — the caller need not re-gate it, though it may.
+//
+// ok=false when the provider is excluded/unreachable, no listed model matches,
+// or the only matches are digit-less ids the comparator can't rank (RFC BG
+// "narrow the glob or pin") — in every case the caller treats the candidate as
+// unavailable and falls through.
+func (r *Resolver) newestMatchingLocked(provider, glob string) (string, bool) {
+	avail, ok := r.matrix[provider]
+	if !ok || avail.Excluded || !avail.Reachable {
+		return "", false
+	}
+	now := time.Now()
+	var matches []string
+	for model, status := range avail.Models {
+		if !status.Listed || status.Stalled {
+			continue
+		}
+		if status.RateLimited && now.Before(status.RateLimitedUntil) {
+			continue
+		}
+		// path.Match's only error is ErrBadPattern; config validation already
+		// rejected a malformed glob at load, and a bad pattern yields matched
+		// false anyway, so a non-match on error is safe.
+		if matched, _ := path.Match(glob, model); matched {
+			matches = append(matches, model)
+		}
+	}
+	// bareIsNewer is a provider convention, not arithmetic: Anthropic publishes a
+	// bare major (claude-sonnet-5) as a rolling alias for the newest snapshot of
+	// its generation, so a bare stem outranks a dated one there. Hardcoded per
+	// the approved RFC BG P1 scope (a per-driver override registry is P2).
+	best, ok := modelver.Newest(matches, provider == "anthropic")
+	if !ok {
+		return "", false
+	}
+	return best, true
+}
+
+// newestMatching is the lock-taking companion to newestMatchingLocked for
+// callers that do NOT already hold r.mu (Cascade). Resolve/resolvePin hold the
+// read lock and call the Locked form directly.
+func (r *Resolver) newestMatching(provider, glob string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.newestMatchingLocked(provider, glob)
+}
+
+// noteResolved records that (provider, pattern) resolved to model and logs a
+// WARN via logf when the resolution MOVED (a different concrete model than the
+// last time it resolved) — so an operator sees a silent model bump (RFC BG
+// §4.3). Uses lastResolved (a sync.Map), never the matrix mutex, so it is safe
+// to call while Resolve holds the RLock (upgrading to the write lock would
+// deadlock). No-op logging when logf is nil.
+func (r *Resolver) noteResolved(provider, pattern, model string) {
+	key := provider + "\x00" + pattern
+	prev, loaded := r.lastResolved.Swap(key, model)
+	if loaded && prev.(string) != model && r.logf != nil {
+		r.logf("model-pattern: %s %q moved %s → %s", provider, pattern, prev.(string), model)
+	}
+}
+
+// SetLogf wires the RFC BG change-log sink (typically log.Printf). Nil disables
+// logging. Written under the write lock, mirroring SetForceProbeCallback;
+// noteResolved reads it under the RLock Resolve holds, so the field access is
+// race-free without the WARN path ever taking the write lock.
+func (r *Resolver) SetLogf(fn func(string, ...any)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logf = fn
 }
 
 // SetReachable updates the matrix for a probe outcome. PR 1 calls
