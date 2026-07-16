@@ -1,0 +1,143 @@
+# loomcycle-builder — sandbox sidecar
+
+A reference **sidecar** that gives loomcycle agents a safe, isolated, ephemeral
+place to run a real dev toolchain (Python / Go / Rust / C++ / Node) — compile,
+test, run code — **without loomcycle leaving its distroless image or touching a
+container engine**.
+
+## Why a sidecar
+
+loomcycle ships distroless (no shell, no compilers, no podman) and runs non-root
+(uid 65532) — it *cannot* run podman itself (no subuid range, no `newuidmap`),
+and mounting a host podman socket into the process that runs model-authored code
+would be ≈ host root. So the container engine lives here, in a separate service,
+and loomcycle drives it over the one distroless-safe channel it already speaks:
+**MCP over HTTP**. The sidecar owns all podman + isolation + tmpfs complexity; a
+compromised loomcycle can only call the constrained `sandbox_*` API, never craft
+a privileged container.
+
+```
+agent (loomcycle · distroless)
+   │  mcp__sandbox__sandbox_exec        (HTTP-MCP, bearer-authed)
+   ▼
+loomcycle-builder (this sidecar)  ──►  per-session container
+   rootless podman + runsc/tmpfs        --network none --read-only
+                                        --cap-drop=ALL --tmpfs /work
+```
+
+## Tools (MCP `mcp__sandbox__*`)
+
+| Tool | Purpose |
+|---|---|
+| `sandbox_open` | Create a session container; returns a `session_id`. Params: `network` (none/egress), `tmpfs_mb`, `cpu`, `mem_mb`, `pids` (all clamped to operator ceilings). |
+| `sandbox_exec` | Run a command in a session (`/work`); returns combined output + exit code. |
+| `sandbox_write` / `sandbox_read` | Put files in / pull artifacts out (paths relative to `/work`; `base64` for binary). |
+| `sandbox_close` | Destroy a session (idempotent). |
+| `sandbox_list` | List your own sessions. |
+
+Sessions are long-lived — open once, run many commands (the workspace, deps, and
+build cache persist across `sandbox_exec` calls), close when done. They also
+expire on an idle / absolute TTL, and any leftover container is reaped at sidecar
+startup (`loomcycle.managed=1` label).
+
+## Build
+
+```bash
+# The sidecar image (podman-capable):
+docker build -t denngubsky/loomcycle-builder:dev --build-arg VERSION=dev .
+
+# The session image agents run in (pin by digest in prod):
+docker build -t localhost/loomcycle-sandbox-session:latest ./session
+```
+
+## Deploy
+
+Run the sidecar on loomcycle's compose/app network, **no host port** — only
+loomcycle reaches it in-network:
+
+```yaml
+services:
+  builder-sidecar:
+    image: denngubsky/loomcycle-builder:latest
+    container_name: builder-sidecar
+    restart: unless-stopped
+    # Nested podman needs one of:
+    #   runtime: sysbox-runc        # recommended — secure nested containers
+    #   privileged: true            # fallback (accept the risk; e.g. TrueNAS)
+    runtime: sysbox-runc
+    environment:
+      SANDBOX_AUTH_TOKEN: ${LOOMCYCLE_SANDBOX_TOKEN}       # shared secret (see below)
+      SANDBOX_IMAGE: localhost/loomcycle-sandbox-session:latest
+      SANDBOX_RUNTIME: ""            # "" = engine default; set runsc once gVisor is installed
+      SANDBOX_MAX_TMPFS_MB: "2048"
+      SANDBOX_MAX_MEM_MB: "2048"
+      SANDBOX_MAX_CPUS: "2"
+      SANDBOX_SESSION_IDLE_TTL: "15m"
+    # No ports: — in-network only.
+```
+
+Then point loomcycle at it (in the operator config or by selecting the `sandbox`
+bundle — see `docs/SANDBOX.md`):
+
+```yaml
+mcp_servers:
+  sandbox:
+    transport: http
+    url: http://builder-sidecar:9000/mcp
+    headers:
+      Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}"
+```
+
+The **shared secret** (`LOOMCYCLE_SANDBOX_TOKEN`) goes in loomcycle's env and the
+sidecar's `SANDBOX_AUTH_TOKEN` — set both to the same value. Per-run bearers, when
+present, take precedence (the `${run.user_bearer:-…}` fallback form).
+
+## Configuration (environment)
+
+| Var | Default | Purpose |
+|---|---|---|
+| `SANDBOX_LISTEN_ADDR` | `:9000` | Listen address. |
+| `SANDBOX_AUTH_TOKEN` | — (required) | Shared bearer every MCP request must present. |
+| `SANDBOX_ALLOW_ANON` | `0` | `1` = run unauthenticated (LOCAL DEV ONLY). |
+| `SANDBOX_IMAGE` | — (required) | The session toolchain image. |
+| `SANDBOX_RUNTIME` | `""` | OCI runtime: `""`\|`runc`\|`crun`\|`runsc`\|`kata`. |
+| `SANDBOX_CONTAINER_USER` | `1000:1000` | In-container user (never root). |
+| `SANDBOX_ALLOW_EGRESS` | `0` | `1` permits `network:"egress"` sessions. |
+| `SANDBOX_DEFAULT_TMPFS_MB` / `SANDBOX_MAX_TMPFS_MB` | `512` / `2048` | Workspace tmpfs size + ceiling. |
+| `SANDBOX_MAX_CPUS` / `SANDBOX_MAX_MEM_MB` / `SANDBOX_MAX_PIDS` | `2` / `2048` / `512` | Per-session resource ceilings. |
+| `SANDBOX_SESSION_IDLE_TTL` / `SANDBOX_SESSION_MAX_TTL` | `15m` / `1h` | Idle + absolute session TTL. |
+| `SANDBOX_GC_INTERVAL` | `1m` | GC tick. |
+| `SANDBOX_MAX_SESSIONS` | `32` | Concurrent session cap. |
+| `SANDBOX_MAX_OUTPUT_BYTES` | `1048576` | Per-exec output cap. |
+
+## Security posture
+
+- **Bearer required** on every request (constant-time check); the sidecar
+  refuses to start without a token unless `SANDBOX_ALLOW_ANON=1`.
+- **Every session container** launches `--network none` (unless egress is both
+  operator-enabled and requested), `--read-only`, `--cap-drop=ALL`,
+  `--security-opt no-new-privileges`, non-root user, with `--pids-limit` /
+  `--memory` / `--cpus` caps and an in-memory `--tmpfs /work` (nothing the agent
+  writes touches disk).
+- **No host shell injection**: podman is exec'd directly (no host shell); file
+  paths ride in env vars and content via stdin.
+- **Session ownership**: each session is bound to the caller's principal; a
+  leaked/guessed `session_id` from another principal never resolves. In this
+  release the principal is the shared bearer (single-tenant); the per-tenant
+  attested-identity binding is the next phase.
+
+## Scope (this release)
+
+This is the first phase: single shared bearer, TTL + explicit close for cleanup,
+`runc`/`runsc` runtimes. Deferred: attested per-tenant identity (multi-tenant
+isolation via loomcycle-filled `X-Loom-Tenant`/`X-Loom-Root-Run` headers),
+run-liveness-poll GC, Kata microVM tier, and a bind-mounted shared workspace.
+
+## Tests
+
+```bash
+go test ./...        # arg-construction, MCP wire contract, auth, GC — no podman needed
+```
+
+End-to-end (needs a podman host): build both images, run the sidecar, and drive
+`sandbox_open` → `sandbox_exec` → `sandbox_read` → `sandbox_close` via loomcycle.
