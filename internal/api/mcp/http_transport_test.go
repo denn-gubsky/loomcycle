@@ -126,6 +126,12 @@ func (m *httpMockConnector) DeleteSnapshot(context.Context, string) error {
 func (m *httpMockConnector) InterruptionResolve(context.Context, connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
 	return connector.InterruptionResolveResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) CancelTurn(context.Context, string, string) (bool, bool, error) {
+	return false, false, errors.New("not implemented")
+}
+func (m *httpMockConnector) ResolveInterrupt(context.Context, string, string, string, string, string, string) (string, error) {
+	return "", errors.New("not implemented")
+}
 func (m *httpMockConnector) RegisterHook(context.Context, connector.RegisterHookRequest) (connector.RegisterHookResponse, error) {
 	return connector.RegisterHookResponse{}, errors.New("not implemented")
 }

@@ -828,6 +828,12 @@ func (m *mockConnector) SteerRun(context.Context, string, string, string) (bool,
 func (m *mockConnector) StreamRunEvents(context.Context, string, int64, connector.RunEventVisitor) error {
 	return connector.ErrRunNotInFlight
 }
+func (m *mockConnector) CancelTurn(context.Context, string, string) (bool, bool, error) {
+	return false, false, connector.ErrRunNotInFlight
+}
+func (m *mockConnector) ResolveInterrupt(context.Context, string, string, string, string, string, string) (string, error) {
+	return "", connector.ErrInterruptNotFound
+}
 
 // v0.9.x MCPServerDef stub.
 func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connector.ToolResult, error) {

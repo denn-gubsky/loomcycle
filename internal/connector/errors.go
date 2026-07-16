@@ -158,4 +158,81 @@ var (
 	// full (back-pressure against a stuck run). Transports map to
 	// ResourceExhausted / HTTP 429.
 	ErrSteerQueueFull = errors.New("connector: run input queue full")
+
+	// --- RFC BH turn-cancel (stop the current turn, keep the session) ---
+
+	// ErrTurnCancelUnavailable is returned by CancelTurn when the server has no
+	// turn-cancel / steer registry wired. Transports map to Unavailable / 503.
+	ErrTurnCancelUnavailable = errors.New("connector: turn-cancel not configured on this server")
+
+	// ErrTurnNotMidTurn is returned by CancelTurn when the run holds no armed
+	// per-turn token (already parked / terminal, or the turn just ended). The
+	// HTTP surface renders this as 409 {code:"not_mid_turn"}; gRPC maps it to
+	// FailedPrecondition.
+	ErrTurnNotMidTurn = errors.New("connector: run is not mid-turn")
+
+	// ErrTurnNotInteractive is returned by CancelTurn for a non-interactive run
+	// (stopping its only turn would terminate it — use whole-run cancel). HTTP
+	// renders 409 {code:"not_interactive"}; gRPC maps to FailedPrecondition.
+	ErrTurnNotInteractive = errors.New("connector: turn-cancel applies only to interactive runs")
+
+	// --- RFC BH interruption resolve / decline ---
+	//
+	// ResolveInterrupt returns these wrapped via WithMessage so each transport
+	// classifies with errors.Is while rendering the exact caller-facing text
+	// verbatim (the HTTP surface's byte-identical bodies). These back the new
+	// gRPC ResolveInterrupt RPC + are distinct from the MCP InterruptionResolve
+	// method, which keeps its own shipped wording.
+
+	// ErrInterruptStoreUnavailable — no persistence backend wired. HTTP 503 /
+	// gRPC Unavailable.
+	ErrInterruptStoreUnavailable = errors.New("connector: interrupts require persistence")
+
+	// ErrInterruptUnsupportedKind — kind is not the supported "question". HTTP
+	// 422 / gRPC InvalidArgument.
+	ErrInterruptUnsupportedKind = errors.New("connector: unsupported interrupt kind")
+
+	// ErrInterruptUnsupportedDisposition — disposition is not "" / "answer" /
+	// "declined". HTTP 422 / gRPC InvalidArgument.
+	ErrInterruptUnsupportedDisposition = errors.New("connector: unsupported disposition")
+
+	// ErrInterruptDeclineWithAnswer — a decline must carry no answer. HTTP 422 /
+	// gRPC InvalidArgument.
+	ErrInterruptDeclineWithAnswer = errors.New("connector: declined disposition must not carry an answer")
+
+	// ErrInterruptInvalidAnswer — the answer is missing (free-text) or not one
+	// of the declared options. HTTP 422 / gRPC InvalidArgument.
+	ErrInterruptInvalidAnswer = errors.New("connector: invalid answer")
+
+	// ErrInterruptNotFound — unknown interrupt, wrong run, or cross-tenant
+	// (opaque, no existence oracle). HTTP 404 / gRPC NotFound.
+	ErrInterruptNotFound = errors.New("connector: interrupt not found")
+
+	// ErrInterruptAlreadyTerminal — the interrupt is already resolved / declined
+	// / timed out / cancelled. HTTP 409 / gRPC FailedPrecondition.
+	ErrInterruptAlreadyTerminal = errors.New("connector: interrupt already terminal")
+
+	// ErrInterruptExpired — the interrupt's TTL elapsed before resolution. HTTP
+	// 410 / gRPC FailedPrecondition.
+	ErrInterruptExpired = errors.New("connector: interrupt expired")
 )
+
+// codedError pairs a classification sentinel (matched via errors.Is) with the
+// exact caller-facing message a transport renders verbatim. It lets the shared
+// connector core preserve each transport's byte-identical wording (the HTTP
+// error bodies) while every transport still maps the error to its own status
+// code by matching the sentinel. (RFC BH P3b.)
+type codedError struct {
+	sentinel error
+	msg      string
+}
+
+func (e *codedError) Error() string { return e.msg }
+func (e *codedError) Unwrap() error { return e.sentinel }
+
+// WithMessage wraps sentinel with an exact caller-facing message.
+// errors.Is(WithMessage(s, m), s) is true and the wrapper's Error() is m —
+// so a transport classifies on the sentinel yet surfaces the verbatim text.
+func WithMessage(sentinel error, msg string) error {
+	return &codedError{sentinel: sentinel, msg: msg}
+}

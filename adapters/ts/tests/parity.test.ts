@@ -98,6 +98,71 @@ describe("compactRun", () => {
   });
 });
 
+describe("cancelTurn (RFC BH)", () => {
+  it("POSTs /v1/runs/{run_id}/cancel with the reason + returns the result", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "run-1", stopped: true, parked: true }),
+    ]);
+
+    const res = await client.cancelTurn("run-1", { reason: "too slow" });
+    expect(res.stopped).toBe(true);
+    expect(res.parked).toBe(true);
+    expect(res.run_id).toBe("run-1");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/runs/run-1/cancel");
+    expect(call[1]!.method).toBe("POST");
+    expect(JSON.parse(call[1]!.body as string)).toEqual({ reason: "too slow" });
+  });
+
+  it("omits the reason (empty body) when not given + url-encodes the run_id", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "a/b", stopped: true, parked: true }),
+    ]);
+    await client.cancelTurn("a/b");
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/runs/a%2Fb/cancel");
+    expect(JSON.parse(call[1]!.body as string)).toEqual({});
+  });
+});
+
+describe("resolveInterrupt / cancelInterrupt (RFC BH decline)", () => {
+  it("resolveInterrupt answer path sends kind + answer + resolved_by, no disposition", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ status: "resolved" })]);
+    await client.resolveInterrupt("run-1", "intr-1", { answer: "Yes" });
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe(
+      "http://test-loomcycle:8787/v1/runs/run-1/interrupts/intr-1/resolve",
+    );
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      kind: "question",
+      resolved_by: "client",
+      answer: "Yes",
+    });
+  });
+
+  it("resolveInterrupt threads an explicit disposition", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ status: "declined" })]);
+    await client.resolveInterrupt("run-1", "intr-1", { disposition: "declined" });
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.disposition).toBe("declined");
+    expect("answer" in body).toBe(false);
+  });
+
+  it("cancelInterrupt POSTs a decline with NO answer", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ status: "declined" })]);
+    await client.cancelInterrupt("run-1", "intr-1");
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe(
+      "http://test-loomcycle:8787/v1/runs/run-1/interrupts/intr-1/resolve",
+    );
+    expect(call[1]!.method).toBe("POST");
+    const body = JSON.parse(call[1]!.body as string);
+    expect(body.disposition).toBe("declined");
+    expect("answer" in body).toBe(false);
+  });
+});
+
 describe("per-run sampling + compaction on the run body", () => {
   it("runStreaming maps sampling + compaction into the snake_case body", async () => {
     const { client, fetchMock } = makeClient([

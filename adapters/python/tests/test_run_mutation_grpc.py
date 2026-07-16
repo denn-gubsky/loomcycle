@@ -98,6 +98,49 @@ async def test_compact_run_decodes_result():
 
 
 @pytest.mark.asyncio
+async def test_cancel_turn_decodes_result():
+    client = _make_client()
+    resp = pb.CancelTurnResponse(run_id="r1", stopped=True, parked=True)
+    fake, captured = _async_returning(resp)
+    client._stub.CancelTurn = fake  # type: ignore[attr-defined]
+
+    out = await client.cancel_turn("r1", reason="too slow")
+    assert captured["req"].run_id == "r1"
+    assert captured["req"].reason == "too slow"
+    assert out == {"run_id": "r1", "stopped": True, "parked": True}
+
+
+@pytest.mark.asyncio
+async def test_resolve_interrupt_answer_decodes_result():
+    client = _make_client()
+    resp = pb.ResolveInterruptResponse(interrupt_id="i1", status="resolved")
+    fake, captured = _async_returning(resp)
+    client._stub.ResolveInterrupt = fake  # type: ignore[attr-defined]
+
+    out = await client.resolve_interrupt("r1", "i1", answer="Yes")
+    req = captured["req"]
+    assert req.run_id == "r1"
+    assert req.interrupt_id == "i1"
+    assert req.answer == "Yes"
+    assert req.disposition == ""
+    assert out == {"interrupt_id": "i1", "status": "resolved"}
+
+
+@pytest.mark.asyncio
+async def test_cancel_interrupt_sends_declined_without_answer():
+    client = _make_client()
+    resp = pb.ResolveInterruptResponse(interrupt_id="i1", status="declined")
+    fake, captured = _async_returning(resp)
+    client._stub.ResolveInterrupt = fake  # type: ignore[attr-defined]
+
+    out = await client.cancel_interrupt("r1", "i1")
+    req = captured["req"]
+    assert req.disposition == "declined"
+    assert req.answer == ""
+    assert out == {"interrupt_id": "i1", "status": "declined"}
+
+
+@pytest.mark.asyncio
 async def test_resolve_probe_decodes_matrix():
     client = _make_client()
     resp = pb.ResolverMatrixResponse()

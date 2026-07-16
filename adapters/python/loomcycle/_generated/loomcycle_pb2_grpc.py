@@ -63,6 +63,16 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.RunInputRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.RunInputResponse.FromString,
                 _registered_method=True)
+        self.CancelTurn = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/CancelTurn',
+                request_serializer=loomcycle__pb2.CancelTurnRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.CancelTurnResponse.FromString,
+                _registered_method=True)
+        self.ResolveInterrupt = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ResolveInterrupt',
+                request_serializer=loomcycle__pb2.ResolveInterruptRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ResolveInterruptResponse.FromString,
+                _registered_method=True)
         self.StreamRun = channel.unary_stream(
                 '/loomcycle.v1.Loomcycle/StreamRun',
                 request_serializer=loomcycle__pb2.StreamRunRequest.SerializeToString,
@@ -342,6 +352,35 @@ class LoomcycleServicer(object):
         the run's steer queue is full. The injected `source` is server-stamped
         (never wire-trusted). Cross-replica routing is inherited from the
         steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CancelTurn(self, request, context):
+        """CancelTurn stops the CURRENT turn of a LIVE interactive run (its in-flight
+        model generation + the tool calls it started) and parks it at
+        awaiting_input — session + transcript intact. This is NOT whole-run cancel
+        (CancelAgent), which terminates the run. FailedPrecondition when the run
+        isn't mid-turn (not_mid_turn) or isn't interactive (not_interactive);
+        NotFound (opaque) for an unknown / cross-tenant / not-reachable run.
+        Owner-routed cross-replica by runs.replica_id.
+
+        Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResolveInterrupt(self, request, context):
+        """ResolveInterrupt resolves a pending interruption — either an answer
+        (disposition "" / "answer", validated against the declared options) or a
+        decline (disposition "declined": no answer, skips option validation) so the
+        waiting Question tool proceeds. InvalidArgument on a bad kind / disposition
+        / answer; NotFound (opaque) for an unknown / cross-tenant interrupt;
+        FailedPrecondition when already terminal or expired.
+
+        Mirrors POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve. (RFC BH)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -868,6 +907,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.RunInputRequest.FromString,
                     response_serializer=loomcycle__pb2.RunInputResponse.SerializeToString,
             ),
+            'CancelTurn': grpc.unary_unary_rpc_method_handler(
+                    servicer.CancelTurn,
+                    request_deserializer=loomcycle__pb2.CancelTurnRequest.FromString,
+                    response_serializer=loomcycle__pb2.CancelTurnResponse.SerializeToString,
+            ),
+            'ResolveInterrupt': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResolveInterrupt,
+                    request_deserializer=loomcycle__pb2.ResolveInterruptRequest.FromString,
+                    response_serializer=loomcycle__pb2.ResolveInterruptResponse.SerializeToString,
+            ),
             'StreamRun': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamRun,
                     request_deserializer=loomcycle__pb2.StreamRunRequest.FromString,
@@ -1223,6 +1272,60 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/RunInput',
             loomcycle__pb2.RunInputRequest.SerializeToString,
             loomcycle__pb2.RunInputResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CancelTurn(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/CancelTurn',
+            loomcycle__pb2.CancelTurnRequest.SerializeToString,
+            loomcycle__pb2.CancelTurnResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResolveInterrupt(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ResolveInterrupt',
+            loomcycle__pb2.ResolveInterruptRequest.SerializeToString,
+            loomcycle__pb2.ResolveInterruptResponse.FromString,
             options,
             channel_credentials,
             insecure,

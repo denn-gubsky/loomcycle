@@ -50,6 +50,76 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 	return &loomcyclepb.RunInputResponse{RunId: runID, Delivered: delivered}, nil
 }
 
+// CancelTurn stops the CURRENT turn of a live interactive run and parks it at
+// awaiting_input — the gRPC twin of POST /v1/runs/{run_id}/cancel (RFC BH). It
+// dispatches through connector.CancelTurn, which owns the session-ownership gate
+// + cross-replica owner-routing, so a gRPC turn-cancel reaches an HTTP-started
+// run and vice versa. Error mapping mirrors the HTTP codes: Unavailable
+// (turn-cancel off), NotFound (no in-flight / cross-tenant, opaque),
+// FailedPrecondition (not mid-turn / not interactive).
+func (s *Server) CancelTurn(ctx context.Context, req *loomcyclepb.CancelTurnRequest) (*loomcyclepb.CancelTurnResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	runID := req.GetRunId()
+	if !validIdent(runID) {
+		return nil, status.Error(codes.InvalidArgument, "run_id must match [A-Za-z0-9_-]{1,128}")
+	}
+	stopped, parked, err := s.connector.CancelTurn(ctx, runID, req.GetReason())
+	switch {
+	case errors.Is(err, connector.ErrTurnCancelUnavailable):
+		return nil, status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, connector.ErrRunNotInFlight):
+		return nil, status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, connector.ErrTurnNotMidTurn), errors.Is(err, connector.ErrTurnNotInteractive):
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	case err != nil:
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &loomcyclepb.CancelTurnResponse{RunId: runID, Stopped: stopped, Parked: parked}, nil
+}
+
+// ResolveInterrupt resolves a pending interruption — answer or decline — the
+// gRPC twin of POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve (RFC
+// BH). It dispatches through connector.ResolveInterrupt (tenant gate +
+// validation + persist + wake). `resolved_by` is server-stamped "api" when the
+// caller leaves it empty (gRPC has no cookie), never wire-trusted for a webui
+// attribution. Error mapping: InvalidArgument (bad kind/disposition/answer),
+// NotFound (unknown / cross-tenant, opaque), FailedPrecondition (already
+// terminal / expired), Unavailable (no store).
+func (s *Server) ResolveInterrupt(ctx context.Context, req *loomcyclepb.ResolveInterruptRequest) (*loomcyclepb.ResolveInterruptResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	runID := req.GetRunId()
+	interruptID := req.GetInterruptId()
+	if !validIdent(runID) || !validIdent(interruptID) {
+		return nil, status.Error(codes.InvalidArgument, "run_id / interrupt_id must match [A-Za-z0-9_-]{1,128}")
+	}
+	resolvedBy := req.GetResolvedBy()
+	if resolvedBy == "" {
+		// gRPC has no cookie → the API attribution class (mirrors RunInput).
+		resolvedBy = store.InterruptResolvedByAPI
+	}
+	st, err := s.connector.ResolveInterrupt(ctx, runID, interruptID, req.GetKind(), req.GetAnswer(), resolvedBy, req.GetDisposition())
+	switch {
+	case errors.Is(err, connector.ErrInterruptStoreUnavailable):
+		return nil, status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, connector.ErrInterruptNotFound):
+		return nil, status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, connector.ErrInterruptAlreadyTerminal), errors.Is(err, connector.ErrInterruptExpired):
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, connector.ErrInterruptUnsupportedKind),
+		errors.Is(err, connector.ErrInterruptUnsupportedDisposition),
+		errors.Is(err, connector.ErrInterruptDeclineWithAnswer),
+		errors.Is(err, connector.ErrInterruptInvalidAnswer):
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	case err != nil:
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &loomcyclepb.ResolveInterruptResponse{InterruptId: interruptID, Status: st}, nil
+}
+
 // StreamRun re-attaches to a run's event stream by run_id, replaying from
 // from_seq then live-tailing. Mirrors GET /v1/runs/{run_id}/stream. The
 // operator's own turns are replayed too (connector.StreamRunEvents / RFC AI S1),

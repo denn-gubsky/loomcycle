@@ -394,6 +394,45 @@ type Connector interface {
 	//   ErrRunNotInFlight      — unknown or cross-tenant run_id. NotFound.
 	StreamRunEvents(ctx context.Context, runID string, fromSeq int64, visit RunEventVisitor) error
 
+	// --- RFC BH turn-scoped run control ---
+
+	// CancelTurn stops the CURRENT turn of a LIVE interactive run (its in-flight
+	// model generation + the tool calls it started) and parks it at
+	// awaiting_input, session + transcript intact — NOT whole-run cancel. The
+	// transport-agnostic core of POST /v1/runs/{run_id}/cancel; the gRPC
+	// CancelTurn RPC dispatches through it, so the tenant-ownership gate and the
+	// cross-replica owner-routing (local token, else the run's replica_id via the
+	// turn-cancel registry) live in one place. On success returns (true, true).
+	//
+	// Typed errors:
+	//   ErrTurnCancelUnavailable — no turn-cancel registry wired. Unavailable / 503.
+	//   ErrRunNotInFlight        — no live/reachable run, or cross-tenant. NotFound / 404.
+	//   ErrTurnNotMidTurn        — the run holds no armed turn. FailedPrecondition / 409.
+	//   ErrTurnNotInteractive    — the run is not interactive. FailedPrecondition / 409.
+	CancelTurn(ctx context.Context, runID, reason string) (stopped, parked bool, err error)
+
+	// ResolveInterrupt resolves a pending interruption — either an answer
+	// (disposition "" / "answer") or a decline (disposition "declined", which
+	// carries no answer and skips option validation so the agent proceeds). The
+	// transport-agnostic core of POST /v1/runs/{run_id}/interrupts/{id}/resolve;
+	// the gRPC ResolveInterrupt RPC dispatches through it. `resolvedBy` is
+	// resolved at the caller's auth boundary (HTTP cookie→webui else api; gRPC
+	// api). Returns the terminal status ("resolved" | "declined").
+	//
+	// Distinct from the MCP-facing InterruptionResolve (which keeps its own
+	// shipped wording + "mcp" attribution default). Typed errors are returned
+	// wrapped via WithMessage so each transport maps the sentinel while
+	// rendering the verbatim message:
+	//   ErrInterruptStoreUnavailable       — no persistence. Unavailable / 503.
+	//   ErrInterruptUnsupportedKind        — kind != question. InvalidArgument / 422.
+	//   ErrInterruptUnsupportedDisposition — bad disposition. InvalidArgument / 422.
+	//   ErrInterruptDeclineWithAnswer      — decline + answer. InvalidArgument / 422.
+	//   ErrInterruptInvalidAnswer          — missing / out-of-options answer. InvalidArgument / 422.
+	//   ErrInterruptNotFound               — unknown / wrong-run / cross-tenant. NotFound / 404.
+	//   ErrInterruptAlreadyTerminal        — already terminal. FailedPrecondition / 409.
+	//   ErrInterruptExpired                — TTL elapsed. FailedPrecondition / 410.
+	ResolveInterrupt(ctx context.Context, runID, interruptID, kind, answer, resolvedBy, disposition string) (status string, err error)
+
 	// Channel CRUD (v0.9.x): admin + per-user publish / subscribe /
 	// peek / ack on operator-declared channels. Bearer-authed at the
 	// HTTP transport boundary; scope + scope_id select the cursor
