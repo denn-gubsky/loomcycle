@@ -1,0 +1,3 @@
+# Compiled sidecar binary (produced by `go build` in this dir).
+/builder
+/loomcycle-builder
