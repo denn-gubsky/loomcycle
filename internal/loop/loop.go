@@ -758,6 +758,42 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func())
 	}
 }
 
+// parkForOperatorTurn parks a persistent interactive run at awaiting_input until
+// the operator's next real message. It emits EventAwaitingInput, then blocks on
+// the steer queue, handling a steer.KindCompact control inline (replace history
+// with the summary pair + re-park; compaction is not itself new input) exactly
+// like the terminal park it was extracted from. Returns the updated messages,
+// the refreshed context footprint (changed only when a compaction ran), and
+// whether a real operator turn arrived — false ⇒ ctx cancelled / queue closed ⇒
+// the caller terminates the run.
+func parkForOperatorTurn(ctx context.Context, opts RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
+	emit(providers.Event{Type: providers.EventAwaitingInput,
+		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
+	for {
+		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
+		if !resumed {
+			return messages, lastCtxTokens, false // ctx cancelled (or queue closed) → terminate
+		}
+		if m.Kind == steer.KindCompact {
+			messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
+			// Refresh the footprint so the next operator turn's op=self reports the
+			// compacted size, not the stale pre-compaction value. Without this a
+			// parked run that compacted kept reporting its old ~full context
+			// (used_tokens / used_pct) until the next real turn's usage landed.
+			lastCtxTokens = estimateMessageTokens(messages)
+			continue // re-park: wait for the operator's actual next turn
+		}
+		messages = append(messages, providers.Message{
+			Role:    "user",
+			Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+		})
+		if opts.OnSteer != nil {
+			opts.OnSteer(m)
+		}
+		return messages, lastCtxTokens, true
+	}
+}
+
 // CompactionMessages builds the replacement conversation for a compaction: an
 // optional pinned task (kept verbatim), the summary of the middle span, and the
 // kept recent tail. Shape: [user(<pinned?> + <summary>), assistant(ack)] ++ keptTail.
@@ -1731,39 +1767,8 @@ outerLoop:
 			// trade-off of an always-on terminal agent (bounded by the
 			// existing per-user / global run caps).
 			if opts.Interactive && opts.SteerQueue != nil {
-				emit(providers.Event{Type: providers.EventAwaitingInput,
-					AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: iter}})
-				// Park until a real operator turn arrives. A steer.KindCompact
-				// control replaces the in-memory history with the summary pair
-				// and RE-parks (compaction is not itself new input — the
-				// operator's next message is), so the loop never calls the
-				// provider on the bare summary.
-				resumedWithInput := false
-				for {
-					m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
-					if !resumed {
-						break // ctx cancelled (or queue closed) → terminate
-					}
-					if m.Kind == steer.KindCompact {
-						messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
-						// Refresh the footprint so the next operator turn's op=self
-						// reports the compacted size, not the stale pre-compaction
-						// value. Without this a parked run that compacted kept
-						// reporting its old ~full context (used_tokens / used_pct)
-						// until the next real turn's usage landed.
-						lastCtxTokens = estimateMessageTokens(messages)
-						continue // re-park: wait for the operator's actual next turn
-					}
-					messages = append(messages, providers.Message{
-						Role:    "user",
-						Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
-					})
-					if opts.OnSteer != nil {
-						opts.OnSteer(m)
-					}
-					resumedWithInput = true
-					break
-				}
+				var resumedWithInput bool
+				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, opts, messages, iter, lastCtxTokens, emit)
 				iterSpan.End()
 				if !resumedWithInput {
 					break
