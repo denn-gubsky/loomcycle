@@ -49,6 +49,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
+	"github.com/denn-gubsky/loomcycle/internal/turncancel"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
 
 	"go.opentelemetry.io/otel/trace"
@@ -106,6 +107,12 @@ type Server struct {
 	// interactive terminal). nil disables steering (POST /v1/runs/{id}/input
 	// → 404). Set at boot via SetSteerRegistry.
 	steerReg *steer.Registry
+
+	// turnCancelReg maps a live run_id → its currently-armed per-turn cancel
+	// token (RFC BH). Firing it stops the CURRENT turn of an interactive run and
+	// parks it at awaiting_input (vs the whole-run cancel registry, which
+	// terminates). Always non-nil after New(); armed only for interactive runs.
+	turnCancelReg *turncancel.Registry
 
 	// sessionLocks tracks per-session mutexes used by continuation
 	// requests (handleMessages, or handleRuns with a non-empty
@@ -447,6 +454,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		sem:            sem,
 		store:          st,
 		cancelReg:      cancel.NewRegistry(),
+		turnCancelReg:  turncancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
@@ -2893,6 +2901,7 @@ func (s *Server) Mux() http.Handler {
 	// PR 2 / interactive terminal: inject an operator "steering" instruction
 	// into an in-flight run (appended to the live conversation mid-turn).
 	mux.Handle("POST /v1/runs/{run_id}/input", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInput))))
+	mux.Handle("POST /v1/runs/{run_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelTurn))))
 	mux.Handle("POST /v1/runs/{run_id}/compact", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCompactRun))))
 	// Re-attach to a running (or finished) run's event stream — the operator
 	// leaves the interactive /run terminal and returns to the same live run.
@@ -3947,6 +3956,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
 	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
+	// RFC BH: make an INTERACTIVE run turn-cancellable — POST /v1/runs/{id}/cancel
+	// stops the current turn and parks it (vs whole-run cancel, which terminates).
+	// Non-interactive runs stay unarmable so a turn-cancel on them 409s.
+	if req.Interactive {
+		runOpts.ArmTurnCancel = s.armTurnCancel(runID)
+	}
 
 	if req.Interactive && s.store != nil {
 		// Detached run: execute the loop in a background goroutine that
@@ -4487,6 +4502,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Metadata:               body.Metadata,
 		RunTimeoutSeconds:      pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            body.Interactive,
+		ArmTurnCancel:          s.armTurnCancelIf(body.Interactive, run.ID),                  // RFC BH: turn-cancellable when interactive
 		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
 		Compaction:             config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
 		ContextPlugins:         s.contextPlugins,                                             // RFC Z runtime-wide chain (code-js exempt in the loop)
@@ -4834,6 +4850,27 @@ func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSession
 // (EventChannelPublish / EventChannelDelivery) emit directly from inside
 // tool.Execute() — which runs in a tool goroutine, not the loop. The
 // mutex makes that safe for any concurrent caller.
+// armTurnCancel returns a loop.RunOptions.ArmTurnCancel closure that registers
+// the run's per-turn cancel token in turnCancelReg (RFC BH). The loop invokes it
+// at each turn start with that turn's CancelCauseFunc; the returned disarm clears
+// the token at the turn boundary. POST /v1/runs/{id}/cancel fires the armed token
+// to stop the current turn and park the run.
+func (s *Server) armTurnCancel(runID string) func(context.CancelCauseFunc) func() {
+	return func(tc context.CancelCauseFunc) func() {
+		return s.turnCancelReg.Arm(runID, tc)
+	}
+}
+
+// armTurnCancelIf returns armTurnCancel(runID) for an interactive run, nil
+// otherwise — a non-interactive run stays unarmable so a turn-cancel on it 409s
+// (stopping its only turn would terminate it; use whole-run cancel instead).
+func (s *Server) armTurnCancelIf(interactive bool, runID string) func(context.CancelCauseFunc) func() {
+	if !interactive {
+		return nil
+	}
+	return s.armTurnCancel(runID)
+}
+
 // makeSteer wires a run's operator steering queue (PR 2 / interactive
 // terminal). It registers the run in the steer registry and returns the
 // loop's SteerQueue, the OnSteer callback, and a deregister func (defer it so
@@ -6183,6 +6220,80 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "delivered": delivered})
+}
+
+// cancelTurnRequest is the (optional) JSON body for POST /v1/runs/{run_id}/cancel.
+type cancelTurnRequest struct {
+	Reason string `json:"reason"`
+}
+
+// handleCancelTurn serves POST /v1/runs/{run_id}/cancel (RFC BH) — stop the
+// CURRENT turn of an interactive run (its in-flight model generation + the tool
+// calls it started) and park it at awaiting_input, session + transcript intact.
+// This is NOT whole-run cancel (POST /v1/agents/{id}/cancel), which terminates
+// the run. 409 when the run isn't mid-turn (already parked / terminal) or isn't
+// interactive; a cross-tenant / unknown run folds into an opaque 404 — run_ids
+// are not secrets (returned to callers + shown in the UI), so the gate must not
+// become an existence oracle (mirrors handleRunInput / SteerRun). Idempotent: a
+// second call once the run has parked → 409 not_mid_turn.
+func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
+	if s.turnCancelReg == nil || s.steerReg == nil {
+		http.Error(w, "turn-cancel is not enabled on this server", http.StatusServiceUnavailable)
+		return
+	}
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	// The body is optional — an absent/empty body is a reason-less cancel — so a
+	// decode error (incl. EOF) is not fatal; the reason is a non-secret annotation.
+	var req cancelTurnRequest
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
+	ctx := r.Context()
+
+	// Tenant-ownership gate (mirrors SteerRun): resolve the live run via the steer
+	// registry, then verify the caller owns its session. A cross-tenant or unknown
+	// run folds into an opaque 404.
+	entry, ok := s.steerReg.Get(runID)
+	if !ok {
+		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		return
+	}
+	if entry.SessionID != "" && s.store != nil {
+		if sess, err := s.store.GetSession(ctx, entry.SessionID); err == nil {
+			if !sessionOwnershipOK(ctx, sess) {
+				http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+				return
+			}
+		}
+	}
+
+	// Mid-turn? Only an armed run (interactive + in-flight) is turn-cancellable.
+	if !s.turnCancelReg.IsArmed(runID) {
+		code, msg := "not_mid_turn", "run is not mid-turn (already parked or terminal)"
+		// Distinguish a non-interactive run for a clearer error (best-effort; the
+		// caller already passed the ownership gate above).
+		if s.store != nil {
+			if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err == nil && !run.Interactive {
+				code = "not_interactive"
+				msg = "turn-cancel applies only to interactive runs; use POST /v1/agents/{id}/cancel to stop this run"
+			}
+		}
+		writeJSONError(w, http.StatusConflict, code, msg)
+		return
+	}
+
+	// Fire the armed token with the operator reason. A false return means the
+	// token vanished between the IsArmed check and here (the turn just ended / a
+	// concurrent cancel won the race) → 409.
+	if !s.turnCancelReg.Cancel(runID, loop.TurnCancelCause(strings.TrimSpace(req.Reason))) {
+		writeJSONError(w, http.StatusConflict, "not_mid_turn", "run is not mid-turn (already parked or terminal)")
+		return
+	}
+	// The loop catches the sentinel cause and parks the run at awaiting_input;
+	// report the intended outcome for an interactive run.
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "stopped": true, "parked": true})
 }
 
 // minCompactMessages: a conversation shorter than this isn't worth a model call.

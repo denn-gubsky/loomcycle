@@ -643,6 +643,12 @@ func requiredScopeFor(method, path string) string {
 		return auth.ScopeRunsCreate
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/compact"):
 		return auth.ScopeRunsCreate
+	// RFC BH turn-cancel: stop the current turn of an interactive run + park it —
+	// a run-state mutation, same scope as steer/resolve/compact. Distinct path
+	// from whole-run cancel (POST /v1/agents/{id}/cancel). Without this case the
+	// POST /v1/runs/.../cancel would default-deny as ScopeAdmin below.
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/cancel"):
+		return auth.ScopeRunsCreate
 	// Operator steering / continuation input is a run-state MUTATION (it injects
 	// text into a live run), so it requires runs:create like cancel/resolve/
 	// compact — NOT the read scope. (exp7 I1: it previously fell through to the
