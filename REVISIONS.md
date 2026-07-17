@@ -4,6 +4,10 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.23.1
+
+**🩹 Patch — the `loomcycle-toolbox` (and sandbox session) images gain `jq`, `rsync`, `wget`, `unzip`, `sqlite3`.** Common utilities agents reach for that weren't in the v1.23.0 dev images. Note `jq`/`awk` are already native to **Bashbox** (pure-Go) — so this is mainly for the raw **`Bash`** tool (which had no host `jq`) plus `rsync`/`wget`/`unzip`/`sqlite3`, absent from both images. Added to `Dockerfile.toolbox` (published `denngubsky/loomcycle-toolbox:1.23.1`) and `deploy/builder/session/Dockerfile` (the sandbox toolchain image, operator-built) for parity. Also documents (in [`docs/TOOLBOX_IMAGE.md`](docs/TOOLBOX_IMAGE.md)) the **`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=HOME`** requirement — `go`/`cargo`/`npm`/`pip` need `HOME` for their caches and the fallback scrubs the child env to `PATH` only (`python3 script.py` and `gcc`/`clang` don't) — the fuller recommended fallback-command list, and the compiled-binary caveat (`./a.out` can't run via Bashbox; use `go run`/`cargo run` or the raw `Bash` tool). Images + docs only — the loomcycle binary is byte-identical to v1.23.0 (bar the version stamp); no wire/schema change; adapters unchanged at 1.23.0. (#748)
+
 ## What's in v1.23.0
 
 **🧪 Safe code execution — a dev-toolchain image and an isolated sandbox (RFC BI P1).** The distroless runtime image has no shell, no Python, and no compilers, so an agent couldn't run a script or compile/test code (the `Bash` tool execs a missing `/bin/sh`; Bashbox is pure-Go with no toolchain). v1.23.0 ships two complementary, opt-in answers — the default distroless image is untouched.

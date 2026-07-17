@@ -25,6 +25,7 @@ RUN set -eux; \
         ca-certificates curl git bash coreutils \
         python3 python3-pip python3-venv \
         build-essential clang make cmake pkg-config \
+        jq rsync wget unzip sqlite3 \
         nodejs npm; \
     apt-get clean; rm -rf /var/lib/apt/lists/*
 
