@@ -1,0 +1,42 @@
+# loomcycle-builder — HOST-DOCKER-SOCKET variant of the sandbox sidecar.
+#
+# Instead of running its own container engine (the podman-nested model in the main
+# Dockerfile), this variant drives the HOST's Docker engine over a mounted socket,
+# launching each sandbox session as a SIBLING container on the host. That's the
+# best fit for a Docker-based host that has no Sysbox — notably TrueNAS SCALE — and
+# it avoids nested-engine fragility + the `privileged` flag the nested model needs.
+#
+# Run it with:
+#   - the host Docker socket mounted:  /var/run/docker.sock:/var/run/docker.sock
+#   - SANDBOX_PODMAN_BIN=docker        (the engine shells `docker` instead of podman)
+# See ./INSTALL.md for the full TrueNAS walkthrough.
+#
+# ⚠️  Mounting the docker socket lets THIS sidecar control the host engine (≈ host
+# root). That is the sidecar's designated privileged role — a compromised loomcycle
+# still only reaches the constrained sandbox_* API, never the socket. Keep the
+# sidecar in-network (no host port), bearer-authed, single-tenant/trusted.
+#
+# Build:
+#   docker build -t denngubsky/loomcycle-builder-docker:dev \
+#     -f deploy/builder/Dockerfile.docker --build-arg VERSION=dev deploy/builder
+
+# ---- Stage 1: build the sidecar (stdlib only, static) -----------------------
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY *.go ./
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags "-s -w -X main.version=${VERSION}" \
+    -o /out/loomcycle-builder .
+
+# ---- Stage 2: runtime on the Docker CLI image (client only, no daemon) ------
+# docker:cli is Alpine + the docker client. Pin a concrete tag (e.g. docker:28-cli)
+# for production reproducibility.
+FROM docker:cli
+COPY --from=build /out/loomcycle-builder /usr/local/bin/loomcycle-builder
+EXPOSE 9000
+# SANDBOX_IMAGE (the toolchain session image, resolvable by the HOST Docker) +
+# SANDBOX_AUTH_TOKEN + SANDBOX_PODMAN_BIN=docker are required at runtime — see
+# ./INSTALL.md.
+ENTRYPOINT ["/usr/local/bin/loomcycle-builder"]
