@@ -14,6 +14,9 @@ type Session struct {
 	Image     string
 	Network   string
 	Workspace string // durable workspace name (RFC BI P2a); empty = tmpfs /work
+	RootRun   string // owning loomcycle root_run_id (RFC BI P2b, from the attested
+	//                     X-Loom-Root-Run header); empty = untagged. Enables
+	//                     sandbox_close_run + run-liveness GC.
 	CreatedAt time.Time
 	LastUsed  time.Time // touched on every exec/read/write; drives idle TTL
 }
@@ -57,6 +60,26 @@ func (s *Store) Remove(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, id)
+}
+
+// RemoveByRun removes + returns every session owned by principal whose RootRun
+// matches rootRun (RFC BI P2b — sandbox_close_run). Principal-scoped, so a caller
+// only ever closes its own sessions; rootRun must be non-empty (guarding against a
+// close_run("") that would sweep every untagged session).
+func (s *Store) RemoveByRun(principal, rootRun string) []*Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rootRun == "" {
+		return nil
+	}
+	var out []*Session
+	for id, sess := range s.m {
+		if sess.Principal == principal && sess.RootRun == rootRun {
+			out = append(out, sess)
+			delete(s.m, id)
+		}
+	}
+	return out
 }
 
 // Count returns the number of live sessions (global; P1 caps globally).

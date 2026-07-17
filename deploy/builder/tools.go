@@ -45,33 +45,51 @@ func (d *Dispatcher) Tools() []toolDescriptor {
 		{Name: "sandbox_write", Description: "Write a file into the sandbox workspace at a path relative to /work (parent dirs are created). Use this to put source files in before compiling.", InputSchema: schemaWrite},
 		{Name: "sandbox_read", Description: "Read a file from the sandbox workspace (path relative to /work). Use this to pull out build output or a generated artifact.", InputSchema: schemaRead},
 		{Name: "sandbox_close", Description: "Destroy a sandbox session and free its resources. Always close a session when finished; sessions also expire on their own after an idle timeout.", InputSchema: schemaClose},
+		{Name: "sandbox_touch", Description: "Reset a session's idle timer (a heartbeat) to keep its container alive across a gap between commands. Use it when you'll return to a session after a pause longer than the idle timeout.", InputSchema: schemaTouch},
+		{Name: "sandbox_close_run", Description: "Close ALL of your sandbox sessions that belong to a given run (bulk teardown by root_run_id). Use it to tear down a whole run's containers at once.", InputSchema: schemaCloseRun},
 		{Name: "sandbox_list", Description: "List your currently open sandbox sessions.", InputSchema: schemaList},
 	}
+}
+
+// caller carries the server-attested identity of an MCP request: the principal
+// derived from the bearer, plus the non-secret run identifiers loomcycle forwards
+// as headers (X-Loom-Root-Run / X-Loom-Tenant, RFC BI P2b). RootRun and Tenant are
+// "" when the caller didn't send them (e.g. a direct client, or loomcycle without
+// the run-id substitution). Unforgeable — they come from the request headers the
+// MCP handler read, not from tool arguments.
+type caller struct {
+	Principal string
+	RootRun   string
+	Tenant    string
 }
 
 // Call dispatches a tools/call. It returns model-facing text and an isError flag
 // (a tool-level failure the model should see + react to), or a non-nil error for
 // a protocol-level fault (malformed arguments) which becomes a JSON-RPC error.
-func (d *Dispatcher) Call(ctx context.Context, principal, name string, args json.RawMessage) (text string, isError bool, err error) {
+func (d *Dispatcher) Call(ctx context.Context, c caller, name string, args json.RawMessage) (text string, isError bool, err error) {
 	switch name {
 	case "sandbox_open":
-		return d.open(ctx, principal, args)
+		return d.open(ctx, c, args)
 	case "sandbox_exec":
-		return d.exec(ctx, principal, args)
+		return d.exec(ctx, c.Principal, args)
 	case "sandbox_write":
-		return d.write(ctx, principal, args)
+		return d.write(ctx, c.Principal, args)
 	case "sandbox_read":
-		return d.read(ctx, principal, args)
+		return d.read(ctx, c.Principal, args)
 	case "sandbox_close":
-		return d.close(ctx, principal, args)
+		return d.close(ctx, c.Principal, args)
+	case "sandbox_close_run":
+		return d.closeRun(ctx, c.Principal, args)
+	case "sandbox_touch":
+		return d.touch(c.Principal, args)
 	case "sandbox_list":
-		return d.list(principal)
+		return d.list(c.Principal)
 	default:
 		return "", false, fmt.Errorf("unknown tool %q", name)
 	}
 }
 
-func (d *Dispatcher) open(ctx context.Context, principal string, raw json.RawMessage) (string, bool, error) {
+func (d *Dispatcher) open(ctx context.Context, c caller, raw json.RawMessage) (string, bool, error) {
 	var in struct {
 		Network   string  `json:"network"`
 		TmpfsMB   int64   `json:"tmpfs_mb"`
@@ -95,7 +113,7 @@ func (d *Dispatcher) open(ctx context.Context, principal string, raw json.RawMes
 	// (never a raw caller path); the request is refused when durable workspaces are
 	// not enabled.
 	if in.Workspace != "" {
-		dir, werr := d.resolveWorkspaceDir(principal, in.Workspace)
+		dir, werr := d.resolveWorkspaceDir(c.Principal, in.Workspace)
 		if werr != nil {
 			return werr.Error(), true, nil
 		}
@@ -111,7 +129,7 @@ func (d *Dispatcher) open(ctx context.Context, principal string, raw json.RawMes
 		return "opening sandbox failed: " + err.Error(), true, nil
 	}
 	now := d.now()
-	sess := &Session{ID: id, Name: name, Principal: principal, Image: o.Image, Network: o.Network, Workspace: in.Workspace, CreatedAt: now, LastUsed: now}
+	sess := &Session{ID: id, Name: name, Principal: c.Principal, Image: o.Image, Network: o.Network, Workspace: in.Workspace, RootRun: c.RootRun, CreatedAt: now, LastUsed: now}
 	d.store.Add(sess)
 
 	respObj := map[string]any{
@@ -349,6 +367,44 @@ func (d *Dispatcher) close(ctx context.Context, principal string, raw json.RawMe
 	return "closed " + sess.ID, false, nil
 }
 
+// touch resets a session's idle timer (RFC BI P2b keepalive) — a driver holding a
+// container across a known gap calls it so the idle TTL doesn't reap the session
+// mid-wait. Get() already refreshes LastUsed as a side effect; this is the explicit
+// keepalive surface.
+func (d *Dispatcher) touch(principal string, raw json.RawMessage) (string, bool, error) {
+	var in struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := unmarshalArgs(raw, &in); err != nil {
+		return "", false, err
+	}
+	sess, ok := d.store.Get(in.SessionID, principal, d.now())
+	if !ok {
+		return "no such session (open one with sandbox_open, or it may have expired)", true, nil
+	}
+	return "touched " + sess.ID + " — idle timer reset", false, nil
+}
+
+// closeRun bulk-closes every session the caller owns for a given loomcycle run
+// tree (RFC BI P2b). Principal-scoped (a caller only closes its own) and requires
+// a non-empty root_run_id. Idempotent — a run with no live sessions returns 0.
+func (d *Dispatcher) closeRun(ctx context.Context, principal string, raw json.RawMessage) (string, bool, error) {
+	var in struct {
+		RootRunID string `json:"root_run_id"`
+	}
+	if err := unmarshalArgs(raw, &in); err != nil {
+		return "", false, err
+	}
+	if in.RootRunID == "" {
+		return "root_run_id is required", true, nil
+	}
+	closed := d.store.RemoveByRun(principal, in.RootRunID)
+	for _, s := range closed {
+		_ = d.eng.Close(ctx, s.Name) // best-effort; store row already removed
+	}
+	return fmt.Sprintf("closed %d session(s) for run %s", len(closed), in.RootRunID), false, nil
+}
+
 func (d *Dispatcher) list(principal string) (string, bool, error) {
 	sessions := d.store.ListByPrincipal(principal)
 	out := make([]map[string]any, 0, len(sessions))
@@ -510,6 +566,16 @@ var (
 		"type": "object",
 		"properties": {"session_id": {"type": "string"}},
 		"required": ["session_id"]
+	}`)
+	schemaTouch = json.RawMessage(`{
+		"type": "object",
+		"properties": {"session_id": {"type": "string", "description": "The session to keep alive (resets its idle timer)."}},
+		"required": ["session_id"]
+	}`)
+	schemaCloseRun = json.RawMessage(`{
+		"type": "object",
+		"properties": {"root_run_id": {"type": "string", "description": "Close every session belonging to this run."}},
+		"required": ["root_run_id"]
 	}`)
 	schemaList = json.RawMessage(`{"type": "object", "properties": {}}`)
 )
