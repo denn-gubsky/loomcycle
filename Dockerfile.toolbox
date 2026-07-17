@@ -41,6 +41,7 @@ RUN set -eux; \
         ca-certificates curl git bash gnupg \
         python3 python3-pip python3-venv \
         build-essential clang make cmake pkg-config \
+        jq rsync wget unzip sqlite3 \
         nodejs npm; \
     # GitHub CLI (gh) from its official apt repo — the loop's git/gh workflows
     # (ephemeral repo volumes, PR creation) rely on it.

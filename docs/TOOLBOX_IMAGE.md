@@ -50,7 +50,8 @@ exposes `sandbox_*` tools; loomcycle stays distroless and drives it over MCP).
 | Rust + Cargo | `rustup` (stable, minimal), system-wide under `/usr/local` |
 | C / C++ | `build-essential` (gcc/g++/make), `clang`, `cmake`, `pkg-config` |
 | Node + npm | Debian packages |
-| `git`, `gh`, `curl` | for cloning, PRs, and agent HTTP/API calls |
+| `git`, `gh`, `curl`, `wget` | cloning, PRs, and agent HTTP / API calls |
+| `jq`, `rsync`, `unzip`, `sqlite3` | JSON wrangling, file sync, archives, a local SQL CLI |
 
 - **User:** `nonroot`, uid/gid **65532**, home `/home/nonroot` — identical to the
   distroless image, so config (`/home/nonroot/.config/loomcycle`) and data mounts
@@ -68,10 +69,26 @@ image just makes the underlying binaries exist:
 
 1. **The `Bash` tool** — set `LOOMCYCLE_BASH_ENABLED=1` and bind the agent a
    `volumes:` working directory. `Bash` now has a real `/bin/sh` + the toolchain.
-2. **Bashbox host-command fallback** — allowlist the binaries you want
-   (`LOOMCYCLE_BASHBOX_ENABLED=1`,
-   `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=python3,go,cargo,npm,gcc,git,gh`,
-   plus `..._FALLBACK_ALLOWED_ENV` / `..._FALLBACK_ALLOWED_CREDS` as needed).
+2. **Bashbox host-command fallback** — Bashbox stays sandboxed except for the host
+   commands you allowlist. Enable it and list the toolchain drivers:
+   ```yaml
+   LOOMCYCLE_BASHBOX_ENABLED: "1"
+   LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS: "git,gh,curl,python3,pip3,go,gofmt,cargo,rustc,node,npm,npx,gcc,g++,cc,c++,clang,clang++,make,cmake,pkg-config"
+   LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: "HOME"     # REQUIRED for go/cargo/npm/pip
+   ```
+   - **`HOME` is not optional for `go`/`cargo`/`npm`/`pip`.** The fallback scrubs the
+     child environment down to `PATH`, and those tools need `HOME` for their caches
+     (`go build` errors *"neither $XDG_CACHE_HOME nor $HOME are defined"* without it).
+     `python3 script.py` and `gcc`/`clang` need no `HOME`. Add `GOCACHE` / `CARGO_HOME`
+     / `npm_config_cache` to the allowlist too if you set them explicitly.
+   - Only allowlist a command gbash LACKS. `jq` / `awk` are built into Bashbox —
+     allowlisting them overrides the native ones with host binaries. Never allowlist
+     `bash` / `sh` / `env` (they exec anything, defeating the sandbox — that's what the
+     raw `Bash` tool is for).
+   - **Running a compiled binary directly (`./a.out`) doesn't work via Bashbox** — gbash
+     can't exec an arbitrary path, only allowlisted command *names*. Use a driver that
+     compiles+runs in one call (`go run`, `cargo run`), let `make` run it, or use the
+     raw `Bash` tool.
 
 Both require the agent to have a `volumes:` binding — that bound directory is the
 compile/test workspace (see `docs/TOOLS.md` on volumes).
