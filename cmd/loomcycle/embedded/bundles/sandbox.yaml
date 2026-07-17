@@ -14,6 +14,11 @@
 #
 # The operator overlay can override any field (last layer wins) — e.g. re-declare
 # mcp_servers.sandbox.url if the sidecar isn't at http://builder-sidecar:9000.
+#
+# Besides the dev/sandbox AGENT, this bundle ships a `dev/sandbox-usage` SKILL so any
+# agent with the `Agent` tool (e.g. the chat/* agents) can DELEGATE to dev/sandbox —
+# spawn it for a one-shot task, or drive a multi-step session by sharing a session_id
+# — without holding the powerful mcp__sandbox__* tools itself.
 
 agents:
   dev/sandbox:
@@ -37,7 +42,10 @@ agents:
          test with sandbox_exec. Read a non-zero exit + its output, fix, and re-run —
          that compile→test→fix loop is the core of the job.
       3. Pull results out with sandbox_read when you need to show an artifact.
-      4. Close the session with sandbox_close when the task is done.
+      4. Close the session with sandbox_close when the task is done — UNLESS you were
+         asked to keep it open (a parent driving a multi-step session): then leave it
+         open and report the session_id. Likewise, if you're GIVEN a session_id, reuse
+         it instead of opening a new one.
 
       ## Notes
       - The sandbox has Python, Go, Rust, C/C++, and Node preinstalled. /work is an
@@ -89,9 +97,57 @@ skills:
       ## Rules
       - Reuse ONE session for a task — don't open a new one per command (you'd lose the
         checkout + build cache).
+      - If a caller GIVES you a session_id, reuse it (don't open a new one); if asked to
+        KEEP a session open for follow-up, report the session_id and leave it open — a
+        parent agent may drive several commands against the same container.
       - Default to network:"none"; use "egress" only when a step must fetch something
         and the operator enabled egress.
       - Never assume host access — you only have these sandbox tools.
+
+  dev/sandbox-usage:
+    description: How to run/compile/test code by delegating to the dev/sandbox agent — a one-shot task, or a multi-step session you drive command by command. For agents that have the Agent tool but not the sandbox tools.
+    tools: [Agent]
+    body: |
+      # Using the sandbox (delegate to the dev/sandbox agent)
+
+      You don't hold the sandbox tools directly — by design. To run, compile, or test
+      code, delegate to the `dev/sandbox` sub-agent (it has an isolated, ephemeral
+      container with a full toolchain). You drive it with the `Agent` tool.
+
+      ## One-shot task (simplest)
+      When you can describe the whole job upfront, spawn once and let dev/sandbox run
+      the compile→test→fix loop itself:
+
+        Agent {op:"spawn", name:"dev/sandbox",
+               prompt:"Clone https://github.com/OWNER/REPO, run 'go build ./... && go test ./...', fix any failures, and report the result."}
+
+      It opens a session, iterates, closes it, and returns the result.
+
+      ## Multi-step session (drive it command by command)
+      When you want to inspect each result and decide the next command, keep ONE
+      container alive across spawns by sharing its session_id:
+
+      1. Open + first command — tell it to KEEP the session open and report the id:
+         Agent {op:"spawn", name:"dev/sandbox",
+                prompt:"Open a sandbox session and KEEP IT OPEN (do not close it). Run: <command>. Report the session_id and the output."}
+         → capture the session_id from the returned text.
+      2. Next commands — reuse that session (same container, state preserved):
+         Agent {op:"spawn", name:"dev/sandbox",
+                prompt:"Reuse sandbox session <session_id> — do not open a new one, do not close it. Run: <command>. Report the output."}
+      3. Shut it down when finished:
+         Agent {op:"spawn", name:"dev/sandbox", prompt:"Close sandbox session <session_id>."}
+
+      ## Notes
+      - The container persists between spawns (the sandbox holds it), so the checkout,
+        installed deps, and build cache carry over — as long as you pass the same
+        session_id and don't leave it idle too long.
+      - If a step reports the session is gone (it idled out), reopen it — you'll start
+        fresh unless the operator configured a durable workspace.
+      - Always close the session when the task is done; don't leave sandboxes running.
+      - Compiled binaries run inside the sandbox (it's a real container), so
+        `./your-binary` works there.
+      - If dev/sandbox reports the sandbox tools are unavailable, the builder sidecar
+        isn't deployed — tell the human rather than trying to run code another way.
 
 mcp_servers:
   sandbox:
