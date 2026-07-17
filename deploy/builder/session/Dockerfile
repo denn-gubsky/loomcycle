@@ -22,11 +22,20 @@ ARG GO_VERSION=1.26.0
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl git bash coreutils \
+        ca-certificates curl git bash coreutils gnupg \
         python3 python3-pip python3-venv \
         build-essential clang make cmake pkg-config \
         jq rsync wget unzip sqlite3 \
         nodejs npm; \
+    # GitHub CLI (gh) from its official apt repo — for git/gh workflows in the sandbox.
+    mkdir -p -m 755 /etc/apt/keyrings; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh; \
     apt-get clean; rm -rf /var/lib/apt/lists/*
 
 # Go (official tarball). Arch from buildx TARGETARCH, dpkg fallback for plain builds.

@@ -52,27 +52,37 @@ docker build -t localhost/loomcycle-sandbox-session:latest ./session
 
 ## Deploy
 
-Run the sidecar on loomcycle's compose/app network, **no host port** — only
-loomcycle reaches it in-network:
+**Full step-by-step (TrueNAS + any Docker host): [`INSTALL.md`](INSTALL.md).**
+
+The sidecar needs a container engine to launch sessions — pick a model:
+
+- **Host Docker socket** (recommended for TrueNAS / any Docker host) — build the
+  [`Dockerfile.docker`](Dockerfile.docker) image, mount `/var/run/docker.sock`, and
+  set `SANDBOX_PODMAN_BIN=docker`. Sessions are sibling containers on the host
+  engine; no nested engine, no Sysbox, no `privileged`.
+- **Nested rootless podman** — build the [`Dockerfile`](Dockerfile) image (self-
+  contained: sessions live inside the sidecar). Needs `runtime: sysbox-runc`
+  (secure) or `privileged: true` (fallback; TrueNAS has no Sysbox).
+
+Run it on loomcycle's compose/app network, **no host port** — only loomcycle reaches
+it in-network. On TrueNAS put it in the **same compose as loomcycle** (separate custom
+apps don't share a network). Socket-model service:
 
 ```yaml
 services:
   builder-sidecar:
-    image: denngubsky/loomcycle-builder:latest
+    image: denngubsky/loomcycle-builder-docker:latest   # or loomcycle-builder for the podman model
     container_name: builder-sidecar
     restart: unless-stopped
-    # Nested podman needs one of:
-    #   runtime: sysbox-runc        # recommended — secure nested containers
-    #   privileged: true            # fallback (accept the risk; e.g. TrueNAS)
-    runtime: sysbox-runc
     environment:
-      SANDBOX_AUTH_TOKEN: ${LOOMCYCLE_SANDBOX_TOKEN}       # shared secret (see below)
-      SANDBOX_IMAGE: localhost/loomcycle-sandbox-session:latest
-      SANDBOX_RUNTIME: ""            # "" = engine default; set runsc once gVisor is installed
-      SANDBOX_MAX_TMPFS_MB: "2048"
+      SANDBOX_PODMAN_BIN: docker                         # drive the host Docker (socket model)
+      SANDBOX_AUTH_TOKEN: ${LOOMCYCLE_SANDBOX_TOKEN}     # shared secret (see below)
+      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:latest
       SANDBOX_MAX_MEM_MB: "2048"
       SANDBOX_MAX_CPUS: "2"
       SANDBOX_SESSION_IDLE_TTL: "15m"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock        # socket model only
     # No ports: — in-network only.
 ```
 
