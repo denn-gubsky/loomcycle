@@ -13,6 +13,12 @@ loomcycle stays distroless and drives it over HTTP-MCP. The bundle wires the
 `mcp__sandbox__*` tools + the `dev/sandbox` agent + skill. This is a **first-class,
 reusable bundle** — not an `examples/` experiment.
 
+It also ships a **`dev/sandbox-usage` skill** so any agent with the `Agent` tool
+(e.g. the `chat/*` agents, which now carry it) can **delegate** to `dev/sandbox` —
+spawn it for a one-shot task, or drive a multi-step session by sharing a `session_id`
+— without holding the powerful `mcp__sandbox__*` tools itself (see `docs/SANDBOX.md`
+→ "Delegating from other agents").
+
 ```
 bundles/sandbox/
 ├── loomcycle.yaml   # the dev/sandbox agent + skill + mcp_servers.sandbox (identical to the embedded copy)

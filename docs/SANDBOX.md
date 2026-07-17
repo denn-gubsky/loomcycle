@@ -85,6 +85,22 @@ compile→test→fix loop (workspace + build cache persist), close when done.
 Sessions also expire on an idle/absolute TTL, and orphans are reaped at sidecar
 startup.
 
+## Delegating from other agents
+
+An agent doesn't hold the `mcp__sandbox__*` tools directly (by design — tool ceilings
+are per operator-vetted agent, and skills can't widen them). To let a general agent run
+code, it **delegates to `dev/sandbox`** via the `Agent` tool — the sub-agent has the
+sandbox tools; the parent never does. The `sandbox` bundle ships a **`dev/sandbox-usage`
+skill** teaching exactly this, and the bundled **`chat/*` agents get the `Agent` tool**,
+so with `LOOMCYCLE_PRESETS=…,chat,sandbox` a chat agent can:
+
+- **one-shot:** `Agent {op:"spawn", name:"dev/sandbox", prompt:"clone X, build + test, report"}` — dev/sandbox opens a session, iterates, closes, returns; or
+- **multi-step:** open once telling it to keep the session open + report the `session_id`, then reuse that `session_id` on later spawns (same container, state preserved), and close it at the end.
+
+To let your own agent delegate, grant it the `Agent` tool (and, optionally, put
+`dev/sandbox-usage` in its `skills:`). To let an agent run the sandbox *itself* rather
+than delegate, grant it the `mcp__sandbox__*` tools directly.
+
 ## Sidecar configuration
 
 See the environment reference in
