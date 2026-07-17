@@ -68,10 +68,13 @@ not source `.env.local` in a container — only real env + the mounted overlay.
 ### Route A — custom app (paste compose)
 
 1. Edit [`deploy/truenas/docker-compose.yaml`](../deploy/truenas/docker-compose.yaml):
-   set the env values (`LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_PG_DSN`, provider keys,
-   `LOOMCYCLE_PRESETS`) and the host-path mounts to your datasets. **Pin the image
-   tag** to a release that includes RFC AQ (the preset machinery) — `:latest` is for
-   testing only.
+   put your **secrets** (`LOOMCYCLE_AUTH_TOKEN`, the Postgres DSNs, provider keys) in
+   the root-only `loomcycle.secrets.env` the compose's `env_file:` points at — never
+   inline (TrueNAS's paste-YAML can't resolve `${VAR}`); set the non-secret env
+   (`LOOMCYCLE_PRESETS`, `LOOMCYCLE_PUBLIC_URL`, the pool/host placeholders) inline;
+   and point the host-path mounts at your datasets. **Pin the image tag** (`:latest`
+   is for testing only) — and choose toolbox vs distroless per the image-choice note
+   below and in [`INSTALL.md`](../deploy/truenas/INSTALL.md).
 2. Apps → **Discover Apps** → the **⋮** menu → **Install via YAML**. Name it
    `loomcycle`, paste the file, install.
 3. The `loomcycle-migrate` service runs `migrate up` once; the runtime waits for it,
@@ -131,6 +134,31 @@ a `searxng/settings.yml` with three required knobs (`secret_key`, `limiter: fals
 `formats: [html, json]`), and `search_providers: { searxng: { base_url: … } }` +
 `search_priority:` in the overlay. Full recipe + verification: **[`docs/SEARCH.md`](SEARCH.md)**
 (the commented sidecar is in [`docker-compose.example.yaml`](../docker-compose.example.yaml)).
+
+## Code execution (the toolbox image)
+
+By default the app runs the **distroless** image — no shell, no compilers, so agents
+can't run scripts or compile code. To let them, switch both services to the
+**`denngubsky/loomcycle-toolbox`** image (same uid + mount paths — a drop-in swap; it
+bakes in python / go / rust / c++ / node + git/gh/curl/jq/rsync/wget/unzip/sqlite3)
+and enable a shell tool, then grant it to an agent via its `tools:`:
+
+- **`LOOMCYCLE_BASH_ENABLED=1`** — the raw `Bash` tool (unsandboxed: the whole
+  toolchain, and it can run a compiled `./binary`). Simplest for a trusted box.
+- **`LOOMCYCLE_BASHBOX_ENABLED=1`** + `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=<drivers>`
+  + **`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=HOME`** — the mostly-sandboxed Bashbox,
+  where only allowlisted host commands escape. `HOME` is **required** or `go`/`cargo`/
+  `npm`/`pip` fail (they need it for their caches); don't allowlist `jq`/`awk` (native
+  to Bashbox) or `bash`/`sh`/`env`; a bare `./binary` can't run via Bashbox (use
+  `go run` / `cargo run`, or the raw `Bash` tool).
+
+⚠️ Code runs in loomcycle's OWN container — **single-tenant / trusted only**. For
+untrusted or multi-tenant code, keep the distroless image and run each session in an
+isolated, ephemeral container via the **builder sidecar** ([`SANDBOX.md`](SANDBOX.md)).
+Full tradeoff + tool reference: [`TOOLBOX_IMAGE.md`](TOOLBOX_IMAGE.md). The paste
+compose in [`deploy/truenas/docker-compose.yaml`](../deploy/truenas/docker-compose.yaml)
+ships this block ready to use (toolbox image); walkthrough in
+[`INSTALL.md`](../deploy/truenas/INSTALL.md).
 
 ## Volumes → datasets (RFC AH)
 
