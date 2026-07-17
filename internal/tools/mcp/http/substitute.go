@@ -121,6 +121,38 @@ func substituteCredentialRefs(s string, creds map[string]string) (out string, dr
 	return out, drop, missing
 }
 
+// runIDRe matches the NON-secret per-run identifier tokens (RFC BI P2b):
+//
+//	${run.root_run_id}   — the top-level run id of this spawn tree
+//	${run.tenant_id}     — the run's tenant
+//
+// Unlike the bearer/credential tokens, these are non-secret identifiers an
+// operator forwards to a downstream MCP server so it can attribute a request to
+// a run/tenant (e.g. the sandbox sidecar tagging a session for run-liveness GC).
+// An unresolved token therefore substitutes to EMPTY rather than dropping the
+// whole header — an empty identifier is harmless (the server treats it as
+// "unknown"), whereas dropping would silently strip a header the operator wired.
+var runIDRe = regexp.MustCompile(`\$\{run\.(root_run_id|tenant_id)\}`)
+
+// substituteRunIDs replaces ${run.root_run_id} / ${run.tenant_id} in s with the
+// run's (non-secret) identifiers, or empty when the run carries none. Pure
+// function; never drops. Runs after the bearer/credential passes (the regexes
+// are disjoint, so order is irrelevant).
+func substituteRunIDs(s, rootRunID, tenantID string) string {
+	if !strings.Contains(s, "${run.") {
+		return s
+	}
+	return runIDRe.ReplaceAllStringFunc(s, func(m string) string {
+		switch m {
+		case "${run.root_run_id}":
+			return rootRunID
+		case "${run.tenant_id}":
+			return tenantID
+		}
+		return ""
+	})
+}
+
 // tokenPrefix returns a triage-safe 4-char prefix + ellipsis for a
 // bearer-shaped string, or "(empty)" for the empty string. Used only
 // on WARN paths; never invoked on the happy path. Satisfies CLAUDE.md

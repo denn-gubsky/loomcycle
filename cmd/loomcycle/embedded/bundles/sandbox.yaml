@@ -159,3 +159,7 @@ mcp_servers:
       # Per-run bearer when present, else the shared LOOMCYCLE_SANDBOX_TOKEN secret
       # (must equal the sidecar's SANDBOX_AUTH_TOKEN).
       Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}"
+      # Non-secret run identifiers the sidecar tags each session with, for
+      # run-liveness GC + sandbox_close_run (empty when the run carries none).
+      X-Loom-Root-Run: "${run.root_run_id}"
+      X-Loom-Tenant: "${run.tenant_id}"
