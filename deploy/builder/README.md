@@ -113,12 +113,44 @@ present, take precedence (the `${run.user_bearer:-…}` fallback form).
 | `SANDBOX_RUNTIME` | `""` | OCI runtime: `""`\|`runc`\|`crun`\|`runsc`\|`kata`. |
 | `SANDBOX_CONTAINER_USER` | `1000:1000` | In-container user (never root). |
 | `SANDBOX_ALLOW_EGRESS` | `0` | `1` permits `network:"egress"` sessions. |
+| `SANDBOX_WORKSPACE_ROOT` | (unset) | Absolute host dir enabling **durable workspaces** — a session opened with `workspace:<name>` bind-mounts `<root>/<principal>/<name>` at `/work` instead of tmpfs (see below). Unset = tmpfs-only. |
 | `SANDBOX_DEFAULT_TMPFS_MB` / `SANDBOX_MAX_TMPFS_MB` | `512` / `2048` | Workspace tmpfs size + ceiling. |
 | `SANDBOX_MAX_CPUS` / `SANDBOX_MAX_MEM_MB` / `SANDBOX_MAX_PIDS` | `2` / `2048` / `512` | Per-session resource ceilings. |
 | `SANDBOX_SESSION_IDLE_TTL` / `SANDBOX_SESSION_MAX_TTL` | `15m` / `1h` | Idle + absolute session TTL. |
 | `SANDBOX_GC_INTERVAL` | `1m` | GC tick. |
 | `SANDBOX_MAX_SESSIONS` | `32` | Concurrent session cap. |
 | `SANDBOX_MAX_OUTPUT_BYTES` | `1048576` | Per-exec output cap. |
+
+## Durable workspaces (persistent `/work`)
+
+By default `/work` is an in-memory tmpfs that vanishes when the session container
+is closed or reaped — great for one-shot tasks, wrong for long iterative dev
+(you'd re-clone + rebuild every time, and a TTL/restart loses everything). Set
+`SANDBOX_WORKSPACE_ROOT` to enable **durable workspaces**: a session opened with
+`workspace:<name>` bind-mounts a persistent host dir at `/work`, so the checkout
+and the build cache (`GOCACHE`/`CARGO_HOME`/`npm` cache all redirect onto `/work`)
+**survive container close, reap, and sidecar restart** — reopen the same
+`workspace` name to resume warm. The container is cattle; the work persists.
+
+- **Fenced, never caller-controlled.** The host dir is derived as
+  `<SANDBOX_WORKSPACE_ROOT>/<principal>/<name>`: the name is charset-gated
+  (`[a-z0-9_-]`, no `/`/`.`/`..`), the principal comes from the bearer (so one
+  principal can't reach another's workspace), and the resolved path is asserted
+  strictly inside the root (symlink-escape defence) — the same posture as
+  loomcycle's VolumeDef fencing. Unset root → a `workspace:` request is refused.
+- **Docker-socket model — path identity matters.** Sessions are siblings on the
+  *host* engine, so the bind-mount source is a *host* path. Mount your workspace
+  root into the sidecar **at the same path** it has on the host (e.g.
+  `-v /mnt/tank/loomcycle/workspaces:/mnt/tank/loomcycle/workspaces`) and set
+  `SANDBOX_WORKSPACE_ROOT` to it, so the dir the sidecar creates is the dir the
+  host engine mounts.
+- **Ownership.** The session runs as `SANDBOX_CONTAINER_USER` (uid 1000); the
+  sidecar `chown`s each workspace to it (works in the socket model, where the
+  sidecar runs as root). On a rootless nested sidecar, pre-`chown` the root to
+  `1000:1000`.
+- **Retention is yours.** A durable workspace persists until you remove it
+  (`sandbox_close` only removes the *container*). Back it with ZFS snapshots on
+  TrueNAS; prune stale workspaces out of band.
 
 ## Security posture
 
@@ -138,10 +170,11 @@ present, take precedence (the `${run.user_bearer:-…}` fallback form).
 
 ## Scope (this release)
 
-This is the first phase: single shared bearer, TTL + explicit close for cleanup,
-`runc`/`runsc` runtimes. Deferred: attested per-tenant identity (multi-tenant
-isolation via loomcycle-filled `X-Loom-Tenant`/`X-Loom-Root-Run` headers),
-run-liveness-poll GC, Kata microVM tier, and a bind-mounted shared workspace.
+Single shared bearer, TTL + explicit close for cleanup, `runc`/`runsc` runtimes,
+and (P2a) **durable workspaces** (above). Deferred: a keepalive + run-liveness-poll
+GC + `sandbox_close_run` (P2b), attested per-tenant identity (multi-tenant isolation
+via loomcycle-filled `X-Loom-Tenant`/`X-Loom-Root-Run` headers), and the Kata
+microVM tier.
 
 ## Tests
 

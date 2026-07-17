@@ -75,7 +75,7 @@ builder-sidecar                    ──►  per-session container
 
 | Tool | Purpose |
 |---|---|
-| `sandbox_open` | Create a session → `session_id`. Params (clamped to operator ceilings): `network` (`none`/`egress`), `tmpfs_mb`, `cpu`, `mem_mb`, `pids`. |
+| `sandbox_open` | Create a session → `session_id`. Params (clamped to operator ceilings): `network` (`none`/`egress`), `tmpfs_mb`, `cpu`, `mem_mb`, `pids`, and `workspace` (a **durable** `/work` — see below). |
 | `sandbox_exec` | Run a command in the session's `/work`; returns combined output + exit code. |
 | `sandbox_write` / `sandbox_read` | Files in / artifacts out (relative to `/work`; `base64` for binary). |
 | `sandbox_close` / `sandbox_list` | Destroy / enumerate your sessions. |
@@ -84,6 +84,20 @@ A session is one long-lived container — open once, run many commands across a
 compile→test→fix loop (workspace + build cache persist), close when done.
 Sessions also expire on an idle/absolute TTL, and orphans are reaped at sidecar
 startup.
+
+### Durable workspaces (persistent `/work`)
+
+By default `/work` is tmpfs — it dies with the container, so a TTL/reap/restart
+loses the checkout + build cache. For **long-running iterative dev**, set
+`SANDBOX_WORKSPACE_ROOT` on the sidecar and open with a `workspace` name:
+`sandbox_open {workspace:"my-project"}` bind-mounts a persistent host dir at
+`/work`. The container becomes disposable — reopen the same `workspace` name (even
+after a reap or a sidecar restart) to resume warm. The host dir is fenced as
+`<root>/<principal>/<name>` (charset-gated name, per-principal subtree,
+symlink-escape-checked — never a caller path). Docker-socket model: mount the
+workspace root into the sidecar at the **same host path** so the dir the sidecar
+creates is the dir the host engine bind-mounts. Full detail:
+[`../deploy/builder/README.md`](../deploy/builder/README.md#durable-workspaces-persistent-work).
 
 ## Delegating from other agents
 
@@ -123,7 +137,7 @@ bearer-authed, and behind Sysbox or an accepted `privileged` grant.
 
 ## Scope
 
-This is the first phase: a single shared bearer (single-tenant), TTL + explicit
-`sandbox_close` for cleanup, and the `runc`/`runsc` runtimes. Attested
-per-tenant identity (multi-tenant isolation), run-liveness-poll GC, the Kata
-tier, and a bind-mounted shared workspace are planned follow-ups.
+Shipped: a single shared bearer (single-tenant), TTL + explicit `sandbox_close`
+cleanup, the `runc`/`runsc` runtimes, and **durable workspaces** (above). Planned
+follow-ups: a keepalive + run-liveness-poll GC + `sandbox_close_run`, attested
+per-tenant identity (multi-tenant isolation), and the Kata microVM tier.

@@ -7,6 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,7 +40,7 @@ func (d *Dispatcher) now() time.Time { return d.nowFn() }
 // concrete and free of internal jargon.
 func (d *Dispatcher) Tools() []toolDescriptor {
 	return []toolDescriptor{
-		{Name: "sandbox_open", Description: "Open an isolated ephemeral sandbox container with a dev toolchain (Python/Go/Rust/C++/Node) and an in-memory /work directory. Returns a session_id to pass to the other sandbox tools. Reuse one session across a compile/test/fix loop; close it when done.", InputSchema: schemaOpen},
+		{Name: "sandbox_open", Description: "Open an isolated sandbox container with a dev toolchain (Python/Go/Rust/C++/Node) and a /work directory. Returns a session_id to pass to the other sandbox tools. /work is in-memory by default; pass a `workspace` name for a PERSISTENT /work that survives close + restart (reopen the same name to resume). Reuse one session across a compile/test/fix loop; close it when done.", InputSchema: schemaOpen},
 		{Name: "sandbox_exec", Description: "Run a shell command inside a sandbox session (working directory /work). Returns combined stdout+stderr and the exit code. Non-zero exit is reported so you can read the error and fix it.", InputSchema: schemaExec},
 		{Name: "sandbox_write", Description: "Write a file into the sandbox workspace at a path relative to /work (parent dirs are created). Use this to put source files in before compiling.", InputSchema: schemaWrite},
 		{Name: "sandbox_read", Description: "Read a file from the sandbox workspace (path relative to /work). Use this to pull out build output or a generated artifact.", InputSchema: schemaRead},
@@ -70,11 +73,12 @@ func (d *Dispatcher) Call(ctx context.Context, principal, name string, args json
 
 func (d *Dispatcher) open(ctx context.Context, principal string, raw json.RawMessage) (string, bool, error) {
 	var in struct {
-		Network string  `json:"network"`
-		TmpfsMB int64   `json:"tmpfs_mb"`
-		CPUs    float64 `json:"cpu"`
-		MemMB   int64   `json:"mem_mb"`
-		Pids    int64   `json:"pids"`
+		Network   string  `json:"network"`
+		TmpfsMB   int64   `json:"tmpfs_mb"`
+		CPUs      float64 `json:"cpu"`
+		MemMB     int64   `json:"mem_mb"`
+		Pids      int64   `json:"pids"`
+		Workspace string  `json:"workspace"`
 	}
 	if err := unmarshalArgs(raw, &in); err != nil {
 		return "", false, err
@@ -85,6 +89,19 @@ func (d *Dispatcher) open(ctx context.Context, principal string, raw json.RawMes
 	o := clampOpen(d.cfg, in.Network, in.TmpfsMB, in.CPUs, in.MemMB, in.Pids)
 	o.Image = d.cfg.Image
 
+	// RFC BI P2a — a named durable workspace: bind-mount a persistent host dir at
+	// /work instead of tmpfs, so a checkout + build cache survive container churn.
+	// The dir is derived + fenced from the operator root + the caller's principal
+	// (never a raw caller path); the request is refused when durable workspaces are
+	// not enabled.
+	if in.Workspace != "" {
+		dir, werr := d.resolveWorkspaceDir(principal, in.Workspace)
+		if werr != nil {
+			return werr.Error(), true, nil
+		}
+		o.WorkspaceHostDir = dir
+	}
+
 	id, err := newID()
 	if err != nil {
 		return "", false, err
@@ -94,16 +111,115 @@ func (d *Dispatcher) open(ctx context.Context, principal string, raw json.RawMes
 		return "opening sandbox failed: " + err.Error(), true, nil
 	}
 	now := d.now()
-	sess := &Session{ID: id, Name: name, Principal: principal, Image: o.Image, Network: o.Network, CreatedAt: now, LastUsed: now}
+	sess := &Session{ID: id, Name: name, Principal: principal, Image: o.Image, Network: o.Network, Workspace: in.Workspace, CreatedAt: now, LastUsed: now}
 	d.store.Add(sess)
 
-	resp, _ := json.Marshal(map[string]any{
+	respObj := map[string]any{
 		"session_id":     id,
 		"workspace_path": workDir,
 		"network":        o.Network,
 		"expires_at":     now.Add(d.cfg.SessionMaxTTL).UTC().Format(time.RFC3339),
-	})
+	}
+	if in.Workspace != "" {
+		respObj["workspace"] = in.Workspace
+		respObj["persistent"] = true // /work survives close/reap; reopen with the same workspace to resume
+	}
+	resp, _ := json.Marshal(respObj)
 	return string(resp), false, nil
+}
+
+// resolveWorkspaceDir derives + provisions the durable /work host directory for a
+// named workspace (RFC BI P2a), fenced under the operator's SANDBOX_WORKSPACE_ROOT
+// and the caller's principal. The name is charset-gated and the resolved path is
+// asserted strictly inside the root (symlink-escape defence), so one principal can
+// never reach another's workspace and a hostile name can't escape the root — the
+// same posture as loomcycle's VolumeDef fencing. Returns the host path to mount.
+func (d *Dispatcher) resolveWorkspaceDir(principal, name string) (string, error) {
+	root := d.cfg.WorkspaceRoot
+	if root == "" {
+		return "", fmt.Errorf("durable workspaces are not enabled (the operator must set SANDBOX_WORKSPACE_ROOT); omit `workspace` for an in-memory session")
+	}
+	if err := validateWorkspaceName(name); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, principalSegment(principal), name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("provision workspace: %w", err)
+	}
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("workspace root: %w", err)
+	}
+	dirResolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("workspace dir: %w", err)
+	}
+	if dirResolved != rootResolved && !strings.HasPrefix(dirResolved, rootResolved+string(os.PathSeparator)) {
+		return "", fmt.Errorf("workspace path escapes the workspace root")
+	}
+	// The session runs as the non-root container user; make the workspace writable
+	// by it. Best-effort: it works in the docker-socket model (the sidecar runs as
+	// root and can chown); on a rootless nested sidecar the operator pre-chowns the
+	// root (documented).
+	if uid, gid, ok := parseUserGID(d.cfg.CtrUser); ok {
+		_ = os.Chown(dirResolved, uid, gid)
+	}
+	return dirResolved, nil
+}
+
+// validateWorkspaceName gates a caller-supplied workspace name: lowercase alnum +
+// `_`/`-`, starting alnum, ≤64 chars — no `/`, no `.`, no `..`, no control bytes.
+// The first line of the no-caller-controlled-path defence (mirrors VolumeDef).
+func validateWorkspaceName(p string) error {
+	if p == "" {
+		return fmt.Errorf("workspace name is required")
+	}
+	if len(p) > 64 {
+		return fmt.Errorf("workspace name too long (max 64)")
+	}
+	for i, r := range p {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		if !ok {
+			return fmt.Errorf("workspace name must be [a-z0-9_-] (no '/', '.', or '..')")
+		}
+		if i == 0 && (r == '_' || r == '-') {
+			return fmt.Errorf("workspace name must start with a letter or digit")
+		}
+	}
+	return nil
+}
+
+// principalSegment renders a principal as a filesystem-safe path segment so each
+// principal's workspaces live in their own subtree.
+func principalSegment(principal string) string {
+	if principal == "" {
+		return "_anon"
+	}
+	var b strings.Builder
+	for _, r := range principal {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// parseUserGID parses a "uid[:gid]" string (e.g. the container user "1000:1000").
+func parseUserGID(s string) (uid, gid int, ok bool) {
+	parts := strings.SplitN(s, ":", 2)
+	u, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, false
+	}
+	g := u
+	if len(parts) == 2 {
+		if pg, err2 := strconv.Atoi(strings.TrimSpace(parts[1])); err2 == nil {
+			g = pg
+		}
+	}
+	return u, g, true
 }
 
 func (d *Dispatcher) exec(ctx context.Context, principal string, raw json.RawMessage) (string, bool, error) {
@@ -237,12 +353,16 @@ func (d *Dispatcher) list(principal string) (string, bool, error) {
 	sessions := d.store.ListByPrincipal(principal)
 	out := make([]map[string]any, 0, len(sessions))
 	for _, s := range sessions {
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"session_id": s.ID,
 			"network":    s.Network,
 			"created_at": s.CreatedAt.UTC().Format(time.RFC3339),
 			"last_used":  s.LastUsed.UTC().Format(time.RFC3339),
-		})
+		}
+		if s.Workspace != "" {
+			row["workspace"] = s.Workspace
+		}
+		out = append(out, row)
 	}
 	b, _ := json.Marshal(map[string]any{"sessions": out})
 	return string(b), false, nil
@@ -352,7 +472,8 @@ var (
 			"tmpfs_mb": {"type": "integer", "description": "Size of the in-memory /work workspace in MiB (clamped to the operator maximum)."},
 			"cpu": {"type": "number", "description": "CPU cores (clamped to the operator maximum)."},
 			"mem_mb": {"type": "integer", "description": "Memory limit in MiB (clamped to the operator maximum)."},
-			"pids": {"type": "integer", "description": "Max process count (clamped to the operator maximum)."}
+			"pids": {"type": "integer", "description": "Max process count (clamped to the operator maximum)."},
+			"workspace": {"type": "string", "description": "Name of a PERSISTENT workspace (durable /work that survives close + restart, for iterative dev — reopen with the same name to resume with your checkout + build cache intact). Omit for an in-memory tmpfs /work. Requires the operator to have enabled durable workspaces; [a-z0-9_-], starts alnum."}
 		}
 	}`)
 	schemaExec = json.RawMessage(`{

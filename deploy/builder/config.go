@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -24,6 +25,15 @@ type Config struct {
 	Image     string // SANDBOX_IMAGE — the toolchain image sessions run
 	Runtime   string // SANDBOX_RUNTIME → --runtime (runc|runsc|kata; "" = engine default)
 	CtrUser   string // SANDBOX_CONTAINER_USER → --user (default "1000:1000"; never root)
+
+	// WorkspaceRoot enables DURABLE workspaces (RFC BI P2a): when set (an absolute
+	// host dir), a session opened with `workspace:<name>` bind-mounts a persistent
+	// dir under <WorkspaceRoot>/<principal>/<name> at /work instead of tmpfs — so a
+	// checkout + build cache survive container close/reap/restart. Unset = durable
+	// workspaces disabled (a `workspace:` request is refused; tmpfs-only, byte-
+	// identical to P1). NEVER a caller-supplied path — the sidecar derives + fences
+	// it. SANDBOX_WORKSPACE_ROOT.
+	WorkspaceRoot string
 
 	// Network. Sessions are --network none by default; an agent may request
 	// network:"egress" only when the operator opts in.
@@ -64,6 +74,7 @@ func LoadConfig() (*Config, error) {
 		Image:          os.Getenv("SANDBOX_IMAGE"),
 		Runtime:        os.Getenv("SANDBOX_RUNTIME"),
 		CtrUser:        envStr("SANDBOX_CONTAINER_USER", "1000:1000"),
+		WorkspaceRoot:  os.Getenv("SANDBOX_WORKSPACE_ROOT"),
 		AllowEgress:    os.Getenv("SANDBOX_ALLOW_EGRESS") == "1",
 		DefTmpfsMB:     envInt("SANDBOX_DEFAULT_TMPFS_MB", 512),
 		MaxTmpfsMB:     envInt("SANDBOX_MAX_TMPFS_MB", 2048),
@@ -92,6 +103,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if c.Runtime != "" && c.Runtime != "runc" && c.Runtime != "runsc" && c.Runtime != "crun" && c.Runtime != "kata" && c.Runtime != "kata-runtime" {
 		return nil, fmt.Errorf("SANDBOX_RUNTIME %q not recognised (use runc|crun|runsc|kata)", c.Runtime)
+	}
+	if c.WorkspaceRoot != "" && !filepath.IsAbs(c.WorkspaceRoot) {
+		return nil, fmt.Errorf("SANDBOX_WORKSPACE_ROOT must be an absolute path (got %q)", c.WorkspaceRoot)
 	}
 	return c, nil
 }

@@ -149,6 +149,26 @@ Notes:
   root/`docker` group); run it as root inside its own container (the default). It only
   ever issues the constrained engine calls the sandbox tools make.
 
+### Optional — durable workspaces (persistent `/work`)
+
+For long-running iterative dev, enable **durable workspaces** so a checkout + build
+cache survive container churn/restarts (P2a). Add to the `builder-sidecar` service:
+
+```yaml
+    environment:
+      SANDBOX_WORKSPACE_ROOT: /mnt/tank/loomcycle/sandbox-workspaces
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Docker-socket model: mount the workspace root at the SAME host path so the
+      # dir the sidecar creates is the dir the host engine bind-mounts into sessions.
+      - /mnt/tank/loomcycle/sandbox-workspaces:/mnt/tank/loomcycle/sandbox-workspaces
+```
+
+Create + own the root (`mkdir -p …; chown -R 1000:1000 …` so the uid-1000 session
+user can write — the sidecar also chowns per-workspace best-effort). Then an agent
+opens `sandbox_open {workspace:"my-project"}` and reopens the same name to resume
+warm. Full detail: [`README.md`](README.md#durable-workspaces-persistent-work).
+
 ---
 
 ## Phase 4 — Wire loomcycle to the sidecar
