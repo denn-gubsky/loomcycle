@@ -6,14 +6,22 @@ A complete, copy-paste install for **TrueNAS SCALE Electric Eel 24.10+** using
 [`../../docs/TRUENAS.md`](../../docs/TRUENAS.md) for the reference runbook).
 
 Replace `APPS2` with your pool name, `PG_HOST` with your Postgres host,
-`TRUENAS_SCALE_HOST` with your TrueNAS host, and fill the `CHANGE_ME` / `PASTE_…`
-placeholders throughout. **All secrets live in an external env file (Phase 4) —
+`TRUENAS_SCALE_HOST` with your TrueNAS host, `OLLAMA_HOST` with your Ollama host (if
+you use local models), and fill the `CHANGE_ME` / `PASTE_…` placeholders throughout. **All secrets live in an external env file (Phase 4) —
 never in the YAML you paste into the TrueNAS UI.**
 
-> **Image prerequisite.** Pin **`denngubsky/loomcycle:1.6.0` or newer** — v1.6.0 is
-> the first release with the embedded presets (RFC AQ) that this app's
-> `LOOMCYCLE_PRESETS` relies on. Older tags (≤ v1.5.0) have no presets and will fail
-> to boot with `no config found`.
+> **Image choice.** This walkthrough enables in-container code execution, so it uses
+> the **`denngubsky/loomcycle-toolbox:1.23.1`** image — a dev toolchain (python / go /
+> rust / c++ / node + git/gh/curl/jq/rsync/wget/unzip/sqlite3) on a shell-bearing base.
+> Code runs in loomcycle's OWN container, so this is a **single-tenant / trusted**
+> posture ([`../../docs/TOOLBOX_IMAGE.md`](../../docs/TOOLBOX_IMAGE.md)). For a
+> locked-down / multi-tenant deploy, use the secure distroless
+> **`denngubsky/loomcycle:1.23.1`** instead and DELETE the "code execution" env block
+> in Phase 5 (its shell tools have no shell/toolchain in distroless); for ISOLATED
+> untrusted code, keep distroless and add the builder sidecar
+> ([`../../docs/SANDBOX.md`](../../docs/SANDBOX.md)). Either way pin **≥ v1.6.0** — the
+> first release with the embedded presets (RFC AQ) this app's `LOOMCYCLE_PRESETS`
+> relies on; older tags fail to boot with `no config found`.
 
 ---
 
@@ -142,7 +150,7 @@ Notes:
 name: loomcycle
 services:
   loomcycle-migrate:
-    image: denngubsky/loomcycle:1.12.0
+    image: denngubsky/loomcycle-toolbox:1.23.1
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -151,7 +159,7 @@ services:
     environment:
       LOOMCYCLE_STORAGE_BACKEND: postgres
   loomcycle:
-    image: denngubsky/loomcycle:1.12.0
+    image: denngubsky/loomcycle-toolbox:1.23.1
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
@@ -165,7 +173,7 @@ services:
       # --- non-secret ("insecure") operational config — safe to keep inline ---
       LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
       LOOMCYCLE_PUBLIC_URL: "http://TRUENAS_SCALE_HOST:8787"   # externally-reachable base URL (your tunnel/proxy host, or this for direct LAN); agents read it via `Context op=self` (≥ v1.6.7)
-      LOOMCYCLE_PRESETS: "base,document-agent"   # base matrix + the Document Assistant
+      LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples"   # matrix + built-in agents
       LOOMCYCLE_CONFIG_DIR: /config
       LOOMCYCLE_STORAGE_BACKEND: postgres
       LOOMCYCLE_SQLMEM_ENABLED: "1"              # document-agent needs it
@@ -181,24 +189,33 @@ services:
       LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log   # a FILE, not the /data dir
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
-      OLLAMA_BASE_URL: http://TRUENAS_SCALE_HOST:11434
+      OLLAMA_BASE_URL: http://OLLAMA_HOST:11434
+      LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX: "65535"     # pin the local model's context window
+      LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: "99"        # force GPU offload where Ollama falls back to CPU
 
-      # --- shell tools (opt-in; grant per agent via tools) ---
-      # Bashbox: in-process gbash sandbox (no OS process, rooted at the agent's
-      # rw volume, no network). The safe default.
+      # --- code execution (TOOLBOX IMAGE ONLY; single-tenant/trusted) ---
+      # Delete this whole block on the distroless image. Grant Bash/Bashbox to an
+      # agent via its tools:.
+      # Bashbox: in-process gbash sandbox (rooted at the agent's rw volume, no
+      # network); host commands you allowlist ESCAPE to the real toolchain.
       LOOMCYCLE_BASHBOX_ENABLED: "1"
-      # Bash: NOT a sandbox — reaches arbitrary files via absolute paths and the
-      # network. Enabled here per request; only grant it to trusted agents.
+      # Bash: NOT a sandbox — reaches arbitrary files + the network; only grant it
+      # to trusted agents (needs the toolbox image's real /bin/sh + toolchain).
       LOOMCYCLE_BASH_ENABLED: "1"
-      # Host-command fallback: these named commands ESCAPE the gbash sandbox and
-      # run on the real host (rw volume required). Keep the list tight.
-      LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS: git,gh,curl,jq,rsync
+      # Fallback = the toolchain drivers. Don't add jq/awk (native to Bashbox) or
+      # bash/sh/env (they'd defeat the sandbox). ./compiled-binary won't run via
+      # Bashbox — use `go run`/`cargo run` or the raw Bash tool.
+      LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS: git,gh,curl,rsync,python3,pip3,go,gofmt,cargo,rustc,node,npm,npx,gcc,g++,cc,c++,clang,clang++,make,cmake,pkg-config
+      # REQUIRED for go/cargo/npm/pip — the fallback scrubs the child env to PATH
+      # only, and those need HOME for their caches (go build errors otherwise).
+      LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: HOME
 
       # --- HTTP / WebFetch host policy ---
-      # No wildcard exists; this suffix-list allows whole TLDs (e.g. "com" ⇒ any
-      # *.com). Broadly open to public hosts; private IPs stay hard-blocked.
-      # CALLER_AUTHORITATIVE lets a run further narrow this per-call.
-      LOOMCYCLE_HTTP_HOST_ALLOWLIST: com,org,net,io,ai,dev,gov,edu,co,me,app,xyz,uk,de
+      # "*" allows any host — an SSRF surface, acceptable for a TRUSTED single-tenant
+      # box behind a private network/tunnel (this deploy's posture). For multi-tenant,
+      # NARROW it to a suffix list (e.g. com,org,net,io,ai,dev — allows whole TLDs).
+      # Private IPs stay hard-blocked; a run can further narrow per-call.
+      LOOMCYCLE_HTTP_HOST_ALLOWLIST: "*"
     volumes:
       - /mnt/APPS2/loomcycle/data:/data
       - /mnt/APPS2/loomcycle/config:/config:ro

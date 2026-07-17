@@ -1,98 +1,130 @@
 # loomcycle on TrueNAS SCALE — custom-app (paste-compose) deployment.
 #
-# RFC AR Phase 1. This is the FAST route: TrueNAS SCALE (Electric Eel 24.10+) →
-# Apps → Discover → ⋮ → "Install via YAML" → paste this file. (The formal catalog
-# app with an install wizard lives in ./catalog/ — see ../docs/TRUENAS.md.)
+# Fast route: Apps → Discover → ⋮ → "Install via YAML" → paste this file. The full
+# step-by-step (Postgres, datasets, the secrets env file) is in ./INSTALL.md; the
+# reference runbook is ../docs/TRUENAS.md; the catalog-app (wizard) route is in
+# ./catalog/. Applies to TrueNAS SCALE Electric Eel 24.10+.
 #
-# Before you install — on the TrueNAS host:
-#   1. Create datasets and chown them to the distroless uid (65532):
+# Before you install (copy-paste commands in INSTALL.md) — replace `tank` with your
+# pool name throughout:
+#   1. Datasets, chowned to the container uid 65532:
 #        mkdir -p /mnt/tank/loomcycle/{data,config,work}
 #        chown -R 65532:65532 /mnt/tank/loomcycle
-#   2. Create the loomcycle databases in your existing Postgres ≥ 14 (DB-per-service):
-#        CREATE DATABASE loomcycle;  CREATE DATABASE loomcycle_sqlmem;
-#      and a least-privilege role (see ../docs/TRUENAS.md §Postgres).
-#   3. Drop a thin overlay at /mnt/tank/loomcycle/config/loomcycle.yaml that maps
-#      your agent Volumes to the mounted host paths — copy loomcycle.overlay.example.yaml.
-#   4. Edit the env values + host paths below, then paste.
+#   2. Postgres ≥ 14 with the `loomcycle` + `loomcycle_sqlmem` DBs and a CREATEROLE
+#      login role (see ../docs/TRUENAS.md §Postgres).
+#   3. A thin overlay at /mnt/tank/loomcycle/config/loomcycle.yaml (the agent
+#      `volumes:` block) — copy loomcycle.overlay.example.yaml.
+#   4. A root-only secrets env file at
+#      /mnt/tank/loomcycle/config/loomcycle.secrets.env holding LOOMCYCLE_AUTH_TOKEN,
+#      LOOMCYCLE_OPERATOR_TOKEN_PEPPER, LOOMCYCLE_PG_DSN, LOOMCYCLE_SQLMEM_PG_DSN and
+#      your provider keys. Secrets go in THAT file, never here — TrueNAS's "Install
+#      via YAML" cannot resolve ${VAR}, so `env_file:` (an absolute host path read at
+#      container-create) is the mechanism that works. (INSTALL.md Phase 4.)
+#   5. Fill the placeholders below (TRUENAS_HOST, OLLAMA_HOST, the pool) and paste.
 #
-# loomcycle's provider/tier matrix comes from the EMBEDDED presets (RFC AQ) via
-# LOOMCYCLE_PRESETS — you don't write provider yaml. Secrets are TrueNAS-managed
-# env here, never a yaml layer. Ingress (TLS) is out of scope: the container binds
-# 0.0.0.0:8787 on the app network; front it with your existing tunnel/proxy.
+# ── IMAGE CHOICE (this file uses the toolbox image; read this) ────────────────
+#   • denngubsky/loomcycle-toolbox — SHIPS A DEV TOOLCHAIN (python/go/rust/c++/node
+#     + git/gh/curl/jq/rsync/wget/unzip/sqlite3), so agents can run + compile + test
+#     code via Bash/Bashbox. Code runs in loomcycle's OWN container → WEAK isolation:
+#     use for SINGLE-TENANT / TRUSTED deployments only (docs/TOOLBOX_IMAGE.md).
+#   • denngubsky/loomcycle — the secure DISTROLESS default (no shell/toolchain). For
+#     a locked-down / multi-tenant deploy, switch BOTH images to this and DELETE the
+#     "code execution" env block below. For ISOLATED untrusted code execution, keep
+#     distroless and add the builder sidecar (docs/SANDBOX.md).
 
 name: loomcycle
 
 services:
-  # One-shot schema migration. Runs `loomcycle migrate up` against Postgres, then
-  # exits; the runtime waits for it to complete. Decoupled from the image deploy
-  # (LOOMCYCLE_PG_AUTOMIGRATE=0 on the runtime) so a schema bump is explicit.
+  # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
+  # waits for it (LOOMCYCLE_PG_AUTOMIGRATE=0 below keeps schema bumps explicit).
   loomcycle-migrate:
-    image: denngubsky/loomcycle:1.12.0 # bump to a newer tag as you upgrade (≥1.6.0 required — embedded presets, RFC AQ)
+    image: denngubsky/loomcycle-toolbox:1.23.1   # keep in lockstep with the runtime
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
+    env_file:
+      # PG DSNs come from here (LOOMCYCLE_PG_DSN / LOOMCYCLE_SQLMEM_PG_DSN).
+      - /mnt/tank/loomcycle/config/loomcycle.secrets.env
     environment:
       LOOMCYCLE_STORAGE_BACKEND: postgres
-      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN}
-      LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:-}
 
   loomcycle:
-    image: denngubsky/loomcycle:1.12.0 # bump to a newer tag as you upgrade (≥1.6.0 required — embedded presets, RFC AQ)
+    image: denngubsky/loomcycle-toolbox:1.23.1
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
       loomcycle-migrate:
         condition: service_completed_successfully
     ports:
-      # The app network port. Front with your tunnel/proxy — no public bind here.
+      # App-network port. Front with your tunnel/proxy — no public bind here.
       - "8787:8787"
+    env_file:
+      # Tokens, PG DSNs, provider keys. NEVER put a secret in `environment:` below
+      # (an inline key would also OVERRIDE the same key from the env file).
+      - /mnt/tank/loomcycle/config/loomcycle.secrets.env
     environment:
-      # Bind all interfaces inside the container (the port mapping above reaches it).
+      # ── core ──────────────────────────────────────────────────────────────
       LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
-      # The externally-reachable base URL agents see via `Context op=self`
-      # (server.url) so an agent — especially over MCP — can identify the server
-      # it's talking to. Set it to however you front this app (your tunnel/proxy
-      # hostname). Optional (≥ v1.6.7; older tags ignore it).
-      LOOMCYCLE_PUBLIC_URL: ${LOOMCYCLE_PUBLIC_URL:-}
+      # Externally-reachable base URL (your tunnel/proxy host); agents read it via
+      # `Context op=self`. Set to how you actually front the app.
+      LOOMCYCLE_PUBLIC_URL: "http://TRUENAS_HOST:8787"
+      # Provider/tier matrix + built-in agents from the embedded presets (RFC AQ).
+      LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples"
+      LOOMCYCLE_CONFIG_DIR: /config           # the thin overlay (volumes: block)
+      LOOMCYCLE_DATA_DIR: /data               # loomcycle's own state
 
-      # Provider/tier base from the embedded presets (RFC AQ). Add bundles/overlays:
-      #   base,oauth          → OAuth on top of the base matrix
-      #   base,document-agent → also register the Document Assistant agent
-      LOOMCYCLE_PRESETS: ${LOOMCYCLE_PRESETS:-base}
-      # The thin overlay (your volumes: block etc.) layered over the presets.
-      LOOMCYCLE_CONFIG_DIR: /config
-
-      # Storage — your existing Postgres ≥ 14 (the app does NOT bundle a DB).
+      # ── storage — your external Postgres (DSNs live in the secrets env file) ──
       LOOMCYCLE_STORAGE_BACKEND: postgres
-      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN}
-      LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:-}
-      LOOMCYCLE_SQLMEM_ENABLED: ${LOOMCYCLE_SQLMEM_ENABLED:-0}
-      # Migrations run in the init service above; the runtime must NOT auto-migrate.
-      LOOMCYCLE_PG_AUTOMIGRATE: "0"
-      # Local state (sqlmem cache, snapshots) on the data dataset.
-      LOOMCYCLE_DATA_DIR: /data
+      LOOMCYCLE_PG_AUTOMIGRATE: "0"           # the migrate service handles migrations
+      LOOMCYCLE_SQLMEM_ENABLED: "1"           # Documents / SQL Memory (needs the sqlmem DSN)
+      LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
+      LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
 
-      # Secrets — TrueNAS-managed env, never a yaml layer. Generate the token with
-      # `openssl rand -hex 32`; the pepper hardens minted operator-token hashes.
-      LOOMCYCLE_AUTH_TOKEN: ${LOOMCYCLE_AUTH_TOKEN:?set LOOMCYCLE_AUTH_TOKEN}
-      LOOMCYCLE_OPERATOR_TOKEN_PEPPER: ${LOOMCYCLE_OPERATOR_TOKEN_PEPPER:-}
-      # Provider keys — set whichever the selected presets route to.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # ── operability ───────────────────────────────────────────────────────
+      LOOMCYCLE_SCHEDULER_ENABLED: "1"
+      LOOMCYCLE_WEBHOOKS_ENABLED: "1"
+      LOOMCYCLE_METRICS_ENABLED: "1"
+      LOOMCYCLE_METRICS_COLLECT_SYSTEM: "1"
+      LOOMCYCLE_METRICS_RETENTION_DAYS: "7"
+      LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log   # a FILE, not the /data dir
+      # The code-js synthetic provider (pure-Go JS agents; works on any image).
+      LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
+
+      # ── local models (optional; point at your Ollama) ─────────────────────
+      OLLAMA_BASE_URL: "http://OLLAMA_HOST:11434"
+      LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX: "65535"     # pin the local context window
+      LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: "99"        # force GPU offload where auto-detect falls back to CPU
+
+      # ── code execution — TOOLBOX IMAGE ONLY, single-tenant/trusted ─────────
+      # DELETE this whole block on the distroless image. Grant Bash/Bashbox to an
+      # agent via its tools:. Bashbox is the in-process sandbox (rooted at the
+      # agent's rw volume, no network); Bash is the unsandboxed escape hatch.
+      LOOMCYCLE_BASHBOX_ENABLED: "1"
+      LOOMCYCLE_BASH_ENABLED: "1"
+      # Host commands that ESCAPE the gbash sandbox to the real toolchain. Only list
+      # what gbash LACKS — do NOT add jq/awk (native to Bashbox) or bash/sh/env
+      # (they'd defeat the sandbox; that's what raw Bash is for).
+      LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS: >-
+        git,gh,curl,rsync,python3,pip3,go,gofmt,cargo,rustc,node,npm,npx,gcc,g++,cc,c++,clang,clang++,make,cmake,pkg-config
+      # REQUIRED for go/cargo/npm/pip: the fallback scrubs the child env down to
+      # PATH only, and those tools need HOME for their caches (go build errors
+      # "neither $XDG_CACHE_HOME nor $HOME are defined" without it).
+      LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: HOME
+
+      # ── HTTP / WebFetch host policy ───────────────────────────────────────
+      # "*" allows any host — an SSRF surface, fine for a TRUSTED single-tenant box
+      # behind a private network/tunnel. NARROW it for multi-tenant (a suffix list
+      # like com,org,net,io,ai,dev). Private IPs stay hard-blocked either way.
+      LOOMCYCLE_HTTP_HOST_ALLOWLIST: "*"
     volumes:
-      # loomcycle's own data (sqlmem cache, snapshots). chown 65532:65532.
       - /mnt/tank/loomcycle/data:/data
-      # The thin overlay dir (read-only) — drop loomcycle.yaml here (volumes: block).
       - /mnt/tank/loomcycle/config:/config:ro
-      # Agent filesystem Volume(s) (RFC AH) → ZFS datasets. The overlay's volumes:
-      # block maps a name to the IN-CONTAINER path (e.g. work → /mnt/work). Add a
-      # mount + an overlay entry per agent volume. (The catalog app turns this into
-      # repeating form rows — RFC AR Phase 2.)
+      # Agent filesystem Volume(s) (RFC AH): the overlay's volumes: block maps a
+      # name to the IN-CONTAINER path (e.g. work → /mnt/work). Add a mount + overlay
+      # entry per agent volume.
       - /mnt/tank/loomcycle/work:/mnt/work
     healthcheck:
-      # distroless has no curl — the binary's own probe GETs /healthz.
+      # The binary's own probe GETs /healthz — image-agnostic (no curl needed).
       test: ["CMD", "/usr/local/bin/loomcycle", "health"]
       interval: 30s
       timeout: 5s
