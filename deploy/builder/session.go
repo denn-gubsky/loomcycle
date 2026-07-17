@@ -13,6 +13,7 @@ type Session struct {
 	//                     shared principal; P2 derives it from the attested tenant)
 	Image     string
 	Network   string
+	Workspace string // durable workspace name (RFC BI P2a); empty = tmpfs /work
 	CreatedAt time.Time
 	LastUsed  time.Time // touched on every exec/read/write; drives idle TTL
 }

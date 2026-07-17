@@ -68,6 +68,11 @@ type openOpts struct {
 	MemMB   int64
 	Pids    int64
 	Image   string
+	// WorkspaceHostDir, when set, is a persistent host directory bind-mounted at
+	// /work (durable workspace, RFC BI P2a) instead of the in-memory tmpfs. It is
+	// a resolved + fenced path (see Dispatcher.resolveWorkspaceDir) — never a raw
+	// caller value.
+	WorkspaceHostDir string
 }
 
 // runArgs builds the `podman run` argv for a session container. Pure + exported
@@ -89,12 +94,19 @@ func (e *Engine) runArgs(name string, o openOpts) []string {
 	} else {
 		a = append(a, "--network", "none")
 	}
-	// Hardening: read-only rootfs; the only writable surfaces are the two
-	// tmpfs mounts; drop every capability; no privilege escalation; non-root
-	// user; resource caps.
+	// Hardening: read-only rootfs; the only writable surfaces are /work and /tmp;
+	// drop every capability; no privilege escalation; non-root user; resource caps.
+	a = append(a, "--read-only")
+	// /work is either an in-memory, size-capped tmpfs (default — vanishes with the
+	// container) or a persistent bind-mounted workspace (RFC BI P2a — durable across
+	// container churn) when the caller requested one and the operator enabled
+	// SANDBOX_WORKSPACE_ROOT.
+	if o.WorkspaceHostDir != "" {
+		a = append(a, "-v", o.WorkspaceHostDir+":"+workDir+":rw")
+	} else {
+		a = append(a, "--tmpfs", fmt.Sprintf("%s:rw,size=%dm,mode=0700,exec", workDir, o.TmpfsMB))
+	}
 	a = append(a,
-		"--read-only",
-		"--tmpfs", fmt.Sprintf("%s:rw,size=%dm,mode=0700,exec", workDir, o.TmpfsMB),
 		"--tmpfs", "/tmp:rw,size=64m,exec",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
