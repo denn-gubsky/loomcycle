@@ -1263,14 +1263,28 @@ func main() {
 	// mcp__<server>__<tool> tool triggers the handshake there. Server
 	// mode keeps eager init — fail-fast is correct when the operator
 	// is starting a long-lived daemon.
+	// Static MCP servers that failed (or, in `loomcycle mcp` mode, never attempted)
+	// their boot handshake. Threaded into the run-start re-probe
+	// (mcp.StaticToolsForRun) so a peer that comes up AFTER loomcycle self-heals on
+	// the next run that references it — no restart. A static server's tools reach
+	// the catalog ONLY via this boot loop, and the lazy resolver advertises nothing
+	// to a fresh model, so without the re-probe a boot-skipped server (e.g. a
+	// sidecar that started second) stays invisible until a loomcycle restart.
+	// Populated here (single-threaded boot), then read-only once the enumerator is
+	// set below.
+	skippedStaticMCP := map[string]bool{}
 	if mcpMode {
-		log.Printf("mcp mode: skipping eager upstream MCP init for %d server(s); lazy resolver will handshake on first agent call", len(cfg.MCPServers))
+		log.Printf("mcp mode: skipping eager upstream MCP init for %d server(s); run-start re-probe + lazy resolver handshake on first agent use", len(cfg.MCPServers))
+		for name := range cfg.MCPServers {
+			skippedStaticMCP[name] = true
+		}
 	} else {
 		mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		for name, srv := range cfg.MCPServers {
 			_, descs, err := mcpPool.GetWithRetry(mcpInitCtx, name, log.Printf)
 			if err != nil {
-				log.Printf("mcp[%s]: skipped — %v", name, err)
+				log.Printf("mcp[%s]: skipped — %v — run-start re-probe will retry when a run references it", name, err)
+				skippedStaticMCP[name] = true
 				continue
 			}
 			filtered := applyToolsFilter(descs, srv.Tools)
@@ -1896,6 +1910,11 @@ func main() {
 		// bounded run-start handshake for a REFERENCED server whose cache is
 		// empty) lives in the testable mcp.DynamicToolsForRun helper.
 		out := mcp.DynamicToolsForRun(ctx, mcpPool, dynamicMCPRegistry, mcpActiveDefReader{storeIface}, tenant, wantServers, runStartMCPDiscoveryTimeout, log.Printf)
+		// Recover STATIC (yaml) MCP servers skipped at boot without a restart —
+		// the static sibling of the F33 dynamic re-probe above. Scoped to the
+		// servers this run references (wantServers) and to those that actually
+		// failed boot (skippedStaticMCP), so a healthy server is never re-dialed.
+		out = append(out, mcp.StaticToolsForRun(ctx, mcpPool, cfg.MCPServers, skippedStaticMCP, tenant, wantServers, runStartMCPDiscoveryTimeout, log.Printf)...)
 		if cfg.Env.A2AServerEnabled {
 			resolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
 				// RFC N: the enumerator's `tenant` is authoritative (server
