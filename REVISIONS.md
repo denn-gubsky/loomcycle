@@ -4,6 +4,18 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.25.0
+
+**🧬 RFC BJ — personalize a chat agent: clone it, grant a tool family, keep the conversation.** A cohesive line that removes the friction of extending a bundled chat agent while keeping the security invariant intact — only an operator (on the bearer) may widen a tool ceiling; an in-run LLM never can. Five merges (#758–#762).
+
+- **Clone action (Web UI).** A per-row **Clone** on Library → Agents derives a NEW agent from an existing one, pre-filled with the tools list **editable — including *adding* tools**, which fork can't. Distinct from fork: clone is a brand-new independent agent that may widen (over the operator bearer); fork is a lineage version that only narrows. `@loomcycle/library` → 0.2.0. (#760)
+- **Self-service skills.** All `chat/*` agents now hold **`SkillDef`** (alongside `Skill`), so a chat agent can save a procedure as a reusable skill mid-conversation — bounded to its own tool ceiling (a skill's tools stay ⊆ the agent's, so it can't escalate). (#759)
+- **Wildcard MCP grants understood by the ceiling check.** `mcp__<server>__*` already matched at the exposure layer; the fork/create **ceiling** check (`assertToolsSubset`, shared by AgentDef + SkillDef) is now glob-aware too, so a fork of an agent granted a whole MCP server can keep or narrow that grant without it reading as widening. Never widens — precise prefix boundary, a broader proposed wildcard is still refused. (#761)
+- **Context replay (all transports).** New **`POST /v1/sessions/{id}/replay`** `{agent, compress?}` copies a source session's transcript into a NEW session bound to a (possibly different) target agent, so a clone continues from the same context. **Durable** (persisted as the new session's opening events, replays on continuation), **cross-provider safe** (provider-specific reasoning stripped), **tenant-gated** (opaque not-found); `compress` collapses a long history to a summary + recent tail. Lifted to gRPC (`ReplaySession`), `@loomcycle/client` (`replaySession`), and the Python adapter (`replay_session`). (#762)
+- **Docs + model-facing help.** New **[`docs/CUSTOMIZING_AGENTS.md`](docs/CUSTOMIZING_AGENTS.md)** (the operator algorithm: a skill within the ceiling is free; a new tool needs a clone; a dynamic agent can be widened in place) + a **`Context op=help topic=adding-capabilities`** topic so agents read the same algorithm at run time (you can't widen your own tools — delegate to a sub-agent, or ask the operator). (#758)
+
+The replay endpoint + `ReplaySession` RPC are new wire, so **`@loomcycle/client` + Python bump to 1.25.0** (the `replaySession` / `replay_session` methods). Images `denngubsky/loomcycle` + `denngubsky/loomcycle-toolbox` rebuild at 1.25.0 (goreleaser). Merged across #758–#762.
+
 ## What's in v1.24.0
 
 **🧪 Sandbox long-session lifecycle (RFC BI P2b) + a static-MCP boot-recovery fix.** Two related MCP improvements — the code-execution sandbox gains keepalive + bulk-teardown with attested run tagging, and any static MCP server skipped at boot now self-heals at run start instead of needing a loomcycle restart. Additive; no wire/schema change; adapters unchanged at 1.23.0.
