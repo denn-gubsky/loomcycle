@@ -63,6 +63,7 @@ export interface LineageTreeProps {
   // pointer for the name to this row. Buttons stopPropagation so
   // they don't toggle content / selection on click.
   onEditRow?: (row: DefRow) => void;
+  onCloneRow?: (row: DefRow) => void;
   onRetireRow?: (row: DefRow) => void;
   onPromoteRow?: (row: DefRow) => void;
 }
@@ -75,6 +76,7 @@ export default function LineageTree({
   onSelect,
   renderDefinition,
   onEditRow,
+  onCloneRow,
   onRetireRow,
   onPromoteRow,
 }: LineageTreeProps) {
@@ -143,6 +145,7 @@ export default function LineageTree({
           onSelect={onSelect}
           renderDefinition={renderDefinition}
           onEditRow={onEditRow}
+          onCloneRow={onCloneRow}
           onRetireRow={onRetireRow}
           onPromoteRow={onPromoteRow}
         />
@@ -164,6 +167,7 @@ function LineageNodeRow({
   onSelect,
   renderDefinition,
   onEditRow,
+  onCloneRow,
   onRetireRow,
   onPromoteRow,
 }: {
@@ -179,6 +183,7 @@ function LineageNodeRow({
   onSelect?: (defID: string) => void;
   renderDefinition?: (row: DefRow) => React.ReactNode;
   onEditRow?: (row: DefRow) => void;
+  onCloneRow?: (row: DefRow) => void;
   onRetireRow?: (row: DefRow) => void;
   onPromoteRow?: (row: DefRow) => void;
 }) {
@@ -265,7 +270,7 @@ function LineageNodeRow({
             {isDetailOpen ? "▾" : "▸"} content
           </span>
         )}
-        {(onEditRow || onRetireRow || onPromoteRow) && (
+        {(onEditRow || onCloneRow || onRetireRow || onPromoteRow) && (
           <span className="lineage-row-actions">
             {onEditRow && (
               <button
@@ -282,6 +287,19 @@ function LineageNodeRow({
                 }
               >
                 {row.def_id.startsWith("static:") ? "Edit (forks from yaml)" : "Edit ✎"}
+              </button>
+            )}
+            {onCloneRow && (
+              <button
+                type="button"
+                className="lineage-row-action"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCloneRow(row);
+                }}
+                title="Clone into a NEW agent — seeds a create you can edit, including adding tools (unlike Edit/fork, which can only narrow)"
+              >
+                Clone ⧉
               </button>
             )}
             {onPromoteRow && !isActive && !row.def_id.startsWith("static:") && !row.retired && (
@@ -361,6 +379,7 @@ function LineageNodeRow({
               onSelect={onSelect}
               renderDefinition={renderDefinition}
               onEditRow={onEditRow}
+              onCloneRow={onCloneRow}
               onRetireRow={onRetireRow}
               onPromoteRow={onPromoteRow}
             />

@@ -39,7 +39,10 @@ import { useLibraryData } from "../lib/dataLayer";
 // .library-modal-* extensions for the wider layout.
 
 export type ModalKind = "agent" | "skill" | "mcp-server";
-export type ModalMode = "create" | "fork";
+// "clone" seeds a CREATE from an existing def (all fields pre-filled, name
+// suggested + editable). Unlike "fork" it may WIDEN tools — it's a brand-new
+// agent over the operator bearer, not a lineage version. Submit path = create.
+export type ModalMode = "create" | "fork" | "clone";
 
 export interface LibraryEditModalProps {
   kind: ModalKind;
@@ -94,14 +97,19 @@ export default function LibraryEditModal({
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
   // --- Common fields across all flavors
-  const [name, setName] = useState(forkSource?.name ?? "");
+  // Clone suggests a distinct new name (the source can't be recreated under its
+  // own name — a static name is refused and a dynamic one would re-version in
+  // place) but leaves it editable; create/fork keep the source name as-is.
+  const [name, setName] = useState(
+    mode === "clone" ? suggestCloneName(forkSource?.name) : (forkSource?.name ?? ""),
+  );
   const [description, setDescription] = useState<string>(
     pickString(forkSource?.definition, "description"),
   );
   // Promote default: ON for create (operator created it, they want it
   // active), OFF for fork (review the new version before activating).
   // Matches substrate tool defaults.
-  const [promote, setPromote] = useState(mode === "create");
+  const [promote, setPromote] = useState(mode === "create" || mode === "clone");
 
   // --- Agent-flavor structured fields (v0.11.6 — every editable
   // overlay field has its own input; no JSON catch-all).
@@ -257,7 +265,8 @@ export default function LibraryEditModal({
       : entries.map(([key, value]) => ({ key, value }));
   });
 
-  const titlePrefix = mode === "create" ? "Create" : "Edit (fork)";
+  const titlePrefix =
+    mode === "create" ? "Create" : mode === "clone" ? "Clone" : "Edit (fork)";
   const titleLabel =
     kind === "agent"
       ? "agent"
@@ -285,7 +294,7 @@ export default function LibraryEditModal({
 
   const validateLocal = (): string | null => {
     if (!name.trim()) return "Name is required.";
-    if (mode === "create" && existingNames) {
+    if ((mode === "create" || mode === "clone") && existingNames) {
       const hit = existingNames.find((e) => e.name === name.trim());
       // A name is reclaimable when it has NO live active version and isn't
       // static — every version retired (the active pointer was cleared on
@@ -530,7 +539,10 @@ export default function LibraryEditModal({
       const substrateKind = kindToSubstrate(kind);
       const overlay = { ...buildOverlay(), ...advancedOv };
       let row: DefRow;
-      if (mode === "create") {
+      if (mode === "create" || mode === "clone") {
+        // Clone is a create under a new name — the operator bearer path, so it
+        // may carry a wider `tools:` than the source (fork can't). The substrate
+        // still bounds it by the caller's own tools.
         row = await data.createDef(substrateKind, name.trim(), overlay, promote);
       } else {
         // Pass the active def_id as parent_def_id so the fork hangs
@@ -585,7 +597,7 @@ export default function LibraryEditModal({
             onChange={(e) => setName(e.target.value)}
             disabled={mode === "fork" || submitting}
             placeholder="my-agent"
-            autoFocus={mode === "create"}
+            autoFocus={mode === "create" || mode === "clone"}
           />
         </div>
 
@@ -726,7 +738,9 @@ export default function LibraryEditModal({
               ? "Saving…"
               : mode === "create"
                 ? "Create"
-                : "Save fork"}
+                : mode === "clone"
+                  ? "Clone"
+                  : "Save fork"}
           </button>
         </div>
       </div>
@@ -1565,6 +1579,14 @@ function pickString(def: unknown, key: string): string {
   if (!def || typeof def !== "object") return "";
   const v = (def as Record<string, unknown>)[key];
   return typeof v === "string" ? v : "";
+}
+
+// suggestCloneName derives an editable starting name for a clone: "<src>-copy"
+// (keeping any "/"-group prefix, e.g. chat/medium -> chat/medium-copy). Empty
+// source -> empty (the user must name it).
+function suggestCloneName(src: string | undefined): string {
+  const s = (src ?? "").trim();
+  return s ? `${s}-copy` : "";
 }
 
 function pickStringArray(def: unknown, key: string): string[] {
