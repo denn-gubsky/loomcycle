@@ -137,6 +137,8 @@ This is a feature, not a bug. New agents start with no privileges; you grant the
 
 Entries ending in `*` match by prefix. The canonical use is exposing all tools from one MCP server: `"mcp__brave-search__*"`. Built-in names are short and unambiguous so globs aren't usually needed for them, but the same machinery applies.
 
+> Adding a new skill, tool, or MCP server to an existing agent (and the rules on *who* may widen a tool ceiling) is covered end-to-end in [`docs/CUSTOMIZING_AGENTS.md`](CUSTOMIZING_AGENTS.md).
+
 ### Caller-side narrowing
 
 The HTTP request can carry `tools` in the body to further narrow the agent's set on a single run:
