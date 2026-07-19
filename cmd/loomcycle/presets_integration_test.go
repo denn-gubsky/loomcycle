@@ -140,8 +140,10 @@ func TestEmbedded_SandboxBundleValidates(t *testing.T) {
 	if !ok {
 		t.Fatalf("dev/sandbox agent not registered (agents: %v)", agentNames(cfg))
 	}
-	// The agent must grant the sandbox tools + the auto-added Skill tool.
-	for _, want := range []string{"mcp__sandbox__sandbox_open", "mcp__sandbox__sandbox_exec", "Skill"} {
+	// The agent must grant the sandbox tools + the auto-added Skill tool — incl. the
+	// P2b lifecycle tools (touch keepalive + close_run bulk teardown), else the agent
+	// can't reach them even though the sidecar advertises them.
+	for _, want := range []string{"mcp__sandbox__sandbox_open", "mcp__sandbox__sandbox_exec", "mcp__sandbox__sandbox_touch", "mcp__sandbox__sandbox_close_run", "Skill"} {
 		if !hasToolPreset(agent.Tools, want) {
 			t.Errorf("dev/sandbox should grant %q; tools=%v", want, agent.Tools)
 		}

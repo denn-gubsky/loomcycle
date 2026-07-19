@@ -290,6 +290,11 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 			}
 			subV = resolvedV
 		}
+		// RFC BI P2b — non-secret run identifiers (${run.root_run_id} /
+		// ${run.tenant_id}) an operator forwards to a downstream MCP server for
+		// attribution (e.g. the sandbox sidecar tagging a session for
+		// run-liveness GC). Never drops (empty when the run carries none).
+		subV = substituteRunIDs(subV, runIdent.RootRunID, runIdent.TenantID)
 		req.Header.Set(k, subV)
 	}
 	c.sessMu.Lock()

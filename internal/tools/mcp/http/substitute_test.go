@@ -256,3 +256,24 @@ func TestSubstituteCredentialRefs_InvalidKeyCharIgnored(t *testing.T) {
 		t.Errorf("drop = true, want false for non-matching expression")
 	}
 }
+
+func TestSubstituteRunIDs(t *testing.T) {
+	// Both identifiers resolve.
+	got := substituteRunIDs("run=${run.root_run_id} tenant=${run.tenant_id}", "r-123", "acme")
+	if got != "run=r-123 tenant=acme" {
+		t.Errorf("got = %q", got)
+	}
+	// Unresolved (empty run) → empty substitution, NOT a dropped/literal token.
+	got = substituteRunIDs("X-Loom-Root-Run=[${run.root_run_id}]", "", "")
+	if got != "X-Loom-Root-Run=[]" {
+		t.Errorf("empty root_run_id should substitute to empty, got %q", got)
+	}
+	// No token → unchanged (and the fast-path returns it verbatim).
+	if got := substituteRunIDs("Bearer abc", "r-1", "t-1"); got != "Bearer abc" {
+		t.Errorf("no-token passthrough failed: %q", got)
+	}
+	// Disjoint from the bearer/credential tokens — leaves them alone.
+	if got := substituteRunIDs("${run.user_bearer}", "r", "t"); got != "${run.user_bearer}" {
+		t.Errorf("must not touch ${run.user_bearer}: %q", got)
+	}
+}
