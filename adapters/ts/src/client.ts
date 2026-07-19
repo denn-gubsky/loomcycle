@@ -105,6 +105,7 @@ import type {
   ResumeResult,
   ResolverMatrix,
   CompactRunResult,
+  ReplaySessionResult,
   CancelTurnResult,
   CompactionOptions,
   RunBatchOptions,
@@ -400,6 +401,28 @@ export class LoomcycleClient {
     return postJSON<CompactRunResult>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/compact`,
+      body,
+      opts,
+    );
+  }
+
+  /**
+   * Replay a session's transcript into a NEW session bound to a (possibly
+   * different) target agent, so that agent continues from the same context
+   * (RFC BJ Phase 4). `sourceSessionId` is the source; the returned
+   * `new_session_id` is a fresh session you continue with the normal message
+   * path — the carried context replays automatically. Pass `compress` to
+   * collapse the carried history to a summary + recent tail.
+   */
+  async replaySession(
+    sourceSessionId: string,
+    opts: { agent: string; compress?: boolean; signal?: AbortSignal },
+  ): Promise<ReplaySessionResult> {
+    const body: Record<string, unknown> = { agent: opts.agent };
+    if (opts.compress !== undefined) body.compress = opts.compress;
+    return postJSON<ReplaySessionResult>(
+      this.ctx,
+      `/v1/sessions/${encodeURIComponent(sourceSessionId)}/replay`,
       body,
       opts,
     );

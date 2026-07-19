@@ -61,6 +61,9 @@ func (m *httpMockConnector) GetRun(context.Context, string) (connector.Run, erro
 func (m *httpMockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
 	return connector.CompactResult{}, nil
 }
+func (m *httpMockConnector) ReplaySession(context.Context, connector.ReplaySessionRequest) (connector.ReplaySessionResult, error) {
+	return connector.ReplaySessionResult{}, nil
+}
 func (m *httpMockConnector) ListRuns(context.Context, connector.ListRunsFilter) ([]connector.Run, error) {
 	return nil, nil
 }

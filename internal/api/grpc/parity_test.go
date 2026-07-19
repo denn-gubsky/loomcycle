@@ -25,6 +25,11 @@ type parityMock struct {
 	compactResult connector.CompactResult
 	compactErr    error
 
+	// RFC BJ replay capture/inject.
+	lastReplayReq connector.ReplaySessionRequest
+	replayResult  connector.ReplaySessionResult
+	replayErr     error
+
 	// RFC BH turn-cancel + resolve capture/inject.
 	lastCancelTurnID string
 	lastCancelReason string
@@ -49,6 +54,11 @@ func (m *parityMock) SpawnRunBatch(_ context.Context, req connector.BatchSpawnRe
 func (m *parityMock) CompactRun(_ context.Context, runID string) (connector.CompactResult, error) {
 	m.lastCompactID = runID
 	return m.compactResult, m.compactErr
+}
+
+func (m *parityMock) ReplaySession(_ context.Context, req connector.ReplaySessionRequest) (connector.ReplaySessionResult, error) {
+	m.lastReplayReq = req
+	return m.replayResult, m.replayErr
 }
 
 func (m *parityMock) CancelTurn(_ context.Context, runID, reason string) (bool, bool, error) {
@@ -207,6 +217,39 @@ func TestCompactRun_MidTurnIsFailedPrecondition(t *testing.T) {
 	_, err := client.CompactRun(context.Background(), &loomcyclepb.CompactRunRequest{RunId: "r_x"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("code = %s, want FailedPrecondition", status.Code(err))
+	}
+}
+
+func TestReplaySession_DispatchesAndMaps(t *testing.T) {
+	mc := &parityMock{replayResult: connector.ReplaySessionResult{
+		NewSessionID: "s_new", SeedRunID: "r_seed", EventsCopied: 12, Compacted: true,
+	}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.ReplaySession(context.Background(), &loomcyclepb.ReplaySessionRequest{
+		SessionId: "s_src", Agent: "chat/dst", Compress: true,
+	})
+	if err != nil {
+		t.Fatalf("ReplaySession: %v", err)
+	}
+	if mc.lastReplayReq.SourceSessionID != "s_src" || mc.lastReplayReq.Agent != "chat/dst" || !mc.lastReplayReq.Compress {
+		t.Errorf("connector saw %+v, want {s_src chat/dst compress}", mc.lastReplayReq)
+	}
+	if resp.GetNewSessionId() != "s_new" || resp.GetEventsCopied() != 12 || !resp.GetCompacted() {
+		t.Errorf("resp = %+v, want new=s_new copied=12 compacted", resp)
+	}
+}
+
+func TestReplaySession_NotFoundMapsToNotFound(t *testing.T) {
+	// A 404-status connector error (missing/cross-tenant source) maps to NotFound.
+	mc := &parityMock{replayErr: statusErr{code: 404, msg: "no session for that id"}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.ReplaySession(context.Background(), &loomcyclepb.ReplaySessionRequest{SessionId: "s_x", Agent: "chat/dst"})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("code = %s, want NotFound", status.Code(err))
 	}
 }
 

@@ -42,6 +42,7 @@ const (
 	Loomcycle_Continue_FullMethodName            = "/loomcycle.v1.Loomcycle/Continue"
 	Loomcycle_SpawnRunBatch_FullMethodName       = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
 	Loomcycle_CompactRun_FullMethodName          = "/loomcycle.v1.Loomcycle/CompactRun"
+	Loomcycle_ReplaySession_FullMethodName       = "/loomcycle.v1.Loomcycle/ReplaySession"
 	Loomcycle_RunInput_FullMethodName            = "/loomcycle.v1.Loomcycle/RunInput"
 	Loomcycle_CancelTurn_FullMethodName          = "/loomcycle.v1.Loomcycle/CancelTurn"
 	Loomcycle_ResolveInterrupt_FullMethodName    = "/loomcycle.v1.Loomcycle/ResolveInterrupt"
@@ -121,6 +122,10 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
 	CompactRun(ctx context.Context, in *CompactRunRequest, opts ...grpc.CallOption) (*CompactRunResult, error)
+	// ReplaySession copies a source session's transcript into a new session bound
+	// to a (possibly different) target agent (RFC BJ Phase 4). Mirrors
+	// POST /v1/sessions/{id}/replay.
+	ReplaySession(ctx context.Context, in *ReplaySessionRequest, opts ...grpc.CallOption) (*ReplaySessionResult, error)
 	// RunInput pushes an operator steering message into a LIVE interactive
 	// run (one parked at end_turn awaiting input, or mid-turn — the message
 	// is drained at the next iteration boundary). delivered=false +
@@ -462,6 +467,16 @@ func (c *loomcycleClient) CompactRun(ctx context.Context, in *CompactRunRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CompactRunResult)
 	err := c.cc.Invoke(ctx, Loomcycle_CompactRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ReplaySession(ctx context.Context, in *ReplaySessionRequest, opts ...grpc.CallOption) (*ReplaySessionResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReplaySessionResult)
+	err := c.cc.Invoke(ctx, Loomcycle_ReplaySession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -977,6 +992,10 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
 	CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error)
+	// ReplaySession copies a source session's transcript into a new session bound
+	// to a (possibly different) target agent (RFC BJ Phase 4). Mirrors
+	// POST /v1/sessions/{id}/replay.
+	ReplaySession(context.Context, *ReplaySessionRequest) (*ReplaySessionResult, error)
 	// RunInput pushes an operator steering message into a LIVE interactive
 	// run (one parked at end_turn awaiting input, or mid-turn — the message
 	// is drained at the next iteration boundary). delivered=false +
@@ -1278,6 +1297,9 @@ func (UnimplementedLoomcycleServer) SpawnRunBatch(context.Context, *BatchSpawnRe
 func (UnimplementedLoomcycleServer) CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method CompactRun not implemented")
 }
+func (UnimplementedLoomcycleServer) ReplaySession(context.Context, *ReplaySessionRequest) (*ReplaySessionResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReplaySession not implemented")
+}
 func (UnimplementedLoomcycleServer) RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RunInput not implemented")
 }
@@ -1491,6 +1513,24 @@ func _Loomcycle_CompactRun_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).CompactRun(ctx, req.(*CompactRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ReplaySession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReplaySessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ReplaySession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ReplaySession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ReplaySession(ctx, req.(*ReplaySessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2323,6 +2363,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CompactRun",
 			Handler:    _Loomcycle_CompactRun_Handler,
+		},
+		{
+			MethodName: "ReplaySession",
+			Handler:    _Loomcycle_ReplaySession_Handler,
 		},
 		{
 			MethodName: "RunInput",

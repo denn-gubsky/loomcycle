@@ -747,6 +747,9 @@ func (m *mockConnector) GetRun(context.Context, string) (connector.Run, error) {
 func (m *mockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
 	return connector.CompactResult{}, nil
 }
+func (m *mockConnector) ReplaySession(context.Context, connector.ReplaySessionRequest) (connector.ReplaySessionResult, error) {
+	return connector.ReplaySessionResult{}, nil
+}
 func (m *mockConnector) ListRuns(context.Context, connector.ListRunsFilter) ([]connector.Run, error) {
 	return nil, nil
 }

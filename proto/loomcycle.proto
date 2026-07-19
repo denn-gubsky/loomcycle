@@ -59,6 +59,10 @@ service Loomcycle {
   //
   // Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
   rpc CompactRun(CompactRunRequest) returns (CompactRunResult);
+  // ReplaySession copies a source session's transcript into a new session bound
+  // to a (possibly different) target agent (RFC BJ Phase 4). Mirrors
+  // POST /v1/sessions/{id}/replay.
+  rpc ReplaySession(ReplaySessionRequest) returns (ReplaySessionResult);
 
   // RunInput pushes an operator steering message into a LIVE interactive
   // run (one parked at end_turn awaiting input, or mid-turn — the message
@@ -597,6 +601,18 @@ message CompactRunResult {
   int32 before_tokens = 3;
   int32 after_tokens = 4;
   string applied = 5;  // live | marker | noop
+}
+
+message ReplaySessionRequest {
+  string session_id = 1;  // SOURCE session whose transcript is carried over
+  string agent = 2;       // target agent the new session binds
+  bool compress = 3;      // collapse the carried history to a summary + recent tail
+}
+message ReplaySessionResult {
+  string new_session_id = 1;
+  string seed_run_id = 2;
+  int32 events_copied = 3;
+  bool compacted = 4;
 }
 
 // RunInputRequest is one operator steering message for a live run (RFC AI).

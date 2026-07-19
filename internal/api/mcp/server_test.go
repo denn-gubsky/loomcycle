@@ -102,6 +102,9 @@ func (m *mockConnector) CompactRun(_ context.Context, runID string) (connector.C
 	m.compactRunID.Store(runID)
 	return m.compactResult, m.compactErr
 }
+func (m *mockConnector) ReplaySession(context.Context, connector.ReplaySessionRequest) (connector.ReplaySessionResult, error) {
+	return connector.ReplaySessionResult{}, nil
+}
 func (m *mockConnector) ListRuns(_ context.Context, _ connector.ListRunsFilter) ([]connector.Run, error) {
 	if m.listCallback != nil {
 		m.listCallback()
