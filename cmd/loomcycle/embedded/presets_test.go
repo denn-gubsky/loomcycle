@@ -154,9 +154,13 @@ func TestBundle_TeamAndChatToolGrants(t *testing.T) {
 		}
 	}
 	chat := grantsFor(t, "chat")
-	for _, agent := range []string{"chat/medium", "chat/local"} {
-		if !has(chat[agent], "Interruption") {
-			t.Errorf("chat %s must grant Interruption (got %v)", agent, chat[agent])
+	for _, agent := range []string{"chat/medium", "chat/local", "chat/local-small"} {
+		// SkillDef lets a chat agent author a reusable skill mid-conversation
+		// (self-service Case 1); Skill loads them; both must be granted.
+		for _, tool := range []string{"Skill", "SkillDef", "Interruption"} {
+			if !has(chat[agent], tool) {
+				t.Errorf("chat %s must grant %q (got %v)", agent, tool, chat[agent])
+			}
 		}
 	}
 }
