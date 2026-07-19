@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -117,6 +118,89 @@ func DynamicToolsForRun(
 		}
 		if logf != nil {
 			logf("mcp[%s]: run-start discovery advertised %d tool(s) (F33: referenced server had no cached tools)", name, len(descs))
+		}
+	}
+	return out
+}
+
+// StaticToolsForRun recovers the tools of STATIC (yaml `mcp_servers:`) servers that
+// were SKIPPED at boot — the run-start counterpart to the boot handshake loop, and
+// the static-server sibling of DynamicToolsForRun.
+//
+// Why it exists. A static server's tools enter the tool catalog ONLY via the boot
+// handshake loop (cmd/loomcycle/main.go). If the peer is unreachable during
+// loomcycle's boot window it is skipped and its tools never register — invisible to
+// every run until a loomcycle restart. The lazy resolver (lazy.go) does NOT close
+// this: it recovers an actual tool CALL but never ADVERTISES a tool to a fresh
+// model, so an agent whose only access is that server never enters tool-calling
+// mode and can't trigger the lazy path. This advertises + wires the tools at run
+// start instead, so a sidecar that comes up AFTER loomcycle self-heals on the next
+// run that references it.
+//
+// skipped is the set of static server names that failed the boot handshake (in
+// `loomcycle mcp` mode, where eager init is skipped entirely, it is EVERY static
+// server). Only those are considered — a boot-registered server is already in the
+// candidateTools floor, so re-advertising it here would be wasted work + a needless
+// per-tenant handshake.
+//
+// Per skipped server THIS run references (wantServers, from the agent's declared
+// tools):
+//   - cached tools/list in the pool (a prior run already re-probed) → advertise
+//     from cache, no handshake — the fast path once the peer is up.
+//   - else → one bounded handshake under the run's tenant; on success advertise +
+//     leave the entry warm; on failure drop it and continue (the lazy resolver
+//     still backstops the actual call).
+//
+// A server the run does NOT reference is never handshaked, so a single down peer
+// can't slow every run. The operator's per-server tools filter (srv.Tools) is
+// applied exactly as the boot loop does. Best-effort throughout; logf may be nil.
+func StaticToolsForRun(
+	ctx context.Context,
+	pool *Pool,
+	servers map[string]config.MCPServer,
+	skipped map[string]bool,
+	tenant string,
+	wantServers map[string]bool,
+	handshakeTimeout time.Duration,
+	logf func(string, ...any),
+) []tools.Tool {
+	if pool == nil || len(skipped) == 0 {
+		return nil
+	}
+	var out []tools.Tool
+	for name := range skipped {
+		// Only pay for a server this run actually uses (mirror the F33 gate).
+		if !wantServers[sanitiseServerName(name)] {
+			continue
+		}
+		srv, ok := servers[name]
+		if !ok {
+			continue // config no longer declares it (defensive)
+		}
+		// Fast path: a prior run already re-probed this peer → advertise from the
+		// pool's cache without a wire round-trip.
+		if cached := pool.PeekTools(tenant, name); len(cached) > 0 {
+			for _, d := range ApplyToolsFilter(cached, srv.Tools) {
+				out = append(out, NewTool(pool, name, d))
+			}
+			continue
+		}
+		// Empty cache → one bounded handshake under the run's tenant (so pool.Get
+		// dials the tenant's spec, mirroring DynamicToolsForRun).
+		hsCtx, cancel := context.WithTimeout(withTenant(ctx, tenant), handshakeTimeout)
+		_, descs, err := pool.Get(hsCtx, name)
+		cancel()
+		if err != nil {
+			if logf != nil {
+				logf("mcp[%s]: run-start re-probe failed (skipped at boot): %v — lazy first-call fallback still applies", name, err)
+			}
+			continue
+		}
+		for _, d := range ApplyToolsFilter(descs, srv.Tools) {
+			out = append(out, NewTool(pool, name, d))
+		}
+		if logf != nil {
+			logf("mcp[%s]: run-start re-probe advertised %d tool(s) (recovered a server skipped at boot)", name, len(descs))
 		}
 	}
 	return out
