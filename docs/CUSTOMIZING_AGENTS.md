@@ -42,7 +42,7 @@ The tool ceiling can only be widened by an operator, and a **static (bundled) ag
 
 **Why not edit `chat/medium` directly?** It's a static bundled agent (ground truth in the config); it's immutable at runtime. Derive your own agent from it instead.
 
-> ⚠️ **Conversation history does not carry over.** A conversation is bound to its agent (the agent is a column on the session). The chat you had with `chat/medium` does **not** continue under `chat/mine` — the new agent starts fresh. (Carrying a conversation into a derived agent is a planned convenience — see [Planned improvements](#planned-improvements).)
+> **Carry the conversation over.** A conversation is bound to its agent (the agent is a column on the session), so a fresh `chat/mine` session starts empty. To continue your `chat/medium` chat under `chat/mine`, **replay** it: `POST /v1/sessions/{source_session_id}/replay` `{"agent":"chat/mine","compress":false}` mints a new session bound to `chat/mine`, seeded with the source transcript (provider-specific reasoning stripped so it's safe across providers), and returns `{new_session_id}` — continue that normally. Pass `compress:true` to collapse a long history to a summary + recent tail. Also on gRPC (`ReplaySession`), `@loomcycle/client` (`replaySession`), and the Python adapter (`replay_session`).
 
 ### Adding a whole MCP server
 
@@ -76,12 +76,6 @@ Widening a chat agent's own ceiling gives it — and anything that can prompt it
 - **The tool ceiling is a trust boundary.** An in-run LLM can never grant itself or a child a tool beyond its own set, so a prompt injection can't escalate. `fork`/`create` from inside a run are subset-checked; only the operator bearer is unbounded.
 - **Skills are authority-limited** to the agent's tools — they add instructions, not capabilities.
 - **Delegation** to an operator-vetted sub-agent is the safe way to compose a larger capability.
-
-## Planned improvements
-
-These manual steps are being made smoother:
-
-- **Carrying a conversation** into a derived agent (optionally compacted), so widening a capability no longer means starting the chat over.
 
 ## See also
 

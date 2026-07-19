@@ -77,6 +77,16 @@ type Connector interface {
 	// opaque not-found.
 	CompactRun(ctx context.Context, runID string) (CompactResult, error)
 
+	// ReplaySession copies a SOURCE session's transcript into a NEW session bound
+	// to a (possibly different) target agent, so that agent continues from the
+	// same context — mirrors POST /v1/sessions/{id}/replay. Provider-specific
+	// reasoning is stripped so the carried history is safe to replay under a
+	// different-provider target; `compress` collapses it to a summary + recent
+	// tail. The new session is durable — continue it via the normal messages
+	// endpoint and the seeded context replays automatically. A cross-tenant or
+	// missing source is an opaque not-found.
+	ReplaySession(ctx context.Context, req ReplaySessionRequest) (ReplaySessionResult, error)
+
 	// ListRuns enumerates runs matching the filter. Mirrors
 	// GET /v1/runs (with optional user_id / status filters).
 	ListRuns(ctx context.Context, filter ListRunsFilter) ([]Run, error)

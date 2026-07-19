@@ -633,6 +633,9 @@ func requiredScopeFor(method, path string) string {
 		return auth.ScopeRunsCreate
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/sessions/") && strings.HasSuffix(path, "/messages"):
 		return auth.ScopeRunsCreate
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/sessions/") && strings.HasSuffix(path, "/replay"):
+		// RFC BJ Phase 4 — mints a new run (seed) under a target agent.
+		return auth.ScopeRunsCreate
 	// Cancel a run — a write on run state. (The real route is POST
 	// /v1/agents/{id}/cancel; the prior DELETE /v1/agents/ case matched no
 	// registered route, so cancel fell through to any-authenticated.)

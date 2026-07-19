@@ -515,6 +515,17 @@ export interface CompactRunResult {
   applied: "live" | "marker" | "noop";
 }
 
+/** Result of {@link LoomcycleClient.replaySession} (RFC BJ Phase 4) — a NEW
+ * session bound to the target agent, seeded with the source conversation.
+ * Continue `new_session_id` with the normal message/run path; the carried
+ * context replays automatically. */
+export interface ReplaySessionResult {
+  new_session_id: string;
+  seed_run_id: string;
+  events_copied: number;
+  compacted: boolean;
+}
+
 /** Result of {@link LoomcycleClient.cancelTurn} (RFC BH) — the current turn was
  *  stopped and the interactive run parked at awaiting_input (session +
  *  transcript intact). This is NOT whole-run cancel ({@link

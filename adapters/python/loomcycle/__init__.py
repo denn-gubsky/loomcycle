@@ -27,6 +27,7 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
     continue_session(...)     — server-stream events from a continuation
     spawn_run_batch(...)      — spawn up to 32 runs concurrently (RFC Y)
     compact_run(...)          — summarize a parked run's context
+    replay_session(...)       — carry a session's transcript into a new agent
     get_agent(...)            — read one agent's status + usage
     cancel_agent(...)         — cancel a live agent (cascades to children)
     list_user_agents(...)     — list a user's recent runs

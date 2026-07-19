@@ -826,6 +826,33 @@ class LoomcycleClient:
             "applied": resp.applied,
         }
 
+    async def replay_session(
+        self, source_session_id: str, agent: str, *, compress: bool = False
+    ) -> Mapping[str, Any]:
+        """Replay a session's transcript into a NEW session bound to a
+        (possibly different) target ``agent`` (mirror of the HTTP
+        ``POST /v1/sessions/{id}/replay`` + the gRPC ``ReplaySession`` RPC,
+        RFC BJ Phase 4). Provider-specific reasoning is stripped so the carried
+        history is safe under a different-provider target; pass
+        ``compress=True`` to collapse it to a summary + recent tail. Returns
+        ``{new_session_id, seed_run_id, events_copied, compacted}``; continue
+        the new session with the normal run path — the carried context replays
+        automatically. A missing/cross-tenant source maps to
+        :class:`NotFoundError`."""
+        req = pb.ReplaySessionRequest(
+            session_id=source_session_id, agent=agent, compress=compress
+        )
+        try:
+            resp = await self._stub.ReplaySession(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "new_session_id": resp.new_session_id,
+            "seed_run_id": resp.seed_run_id,
+            "events_copied": resp.events_copied,
+            "compacted": resp.compacted,
+        }
+
     async def cancel_turn(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
         """Stop the CURRENT turn of a live interactive run and park it at
         awaiting_input — session + transcript intact (RFC BH; mirror of

@@ -58,6 +58,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.CompactRunRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.CompactRunResult.FromString,
                 _registered_method=True)
+        self.ReplaySession = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ReplaySession',
+                request_serializer=loomcycle__pb2.ReplaySessionRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ReplaySessionResult.FromString,
+                _registered_method=True)
         self.RunInput = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/RunInput',
                 request_serializer=loomcycle__pb2.RunInputRequest.SerializeToString,
@@ -339,6 +344,15 @@ class LoomcycleServicer(object):
         a mid-turn run returns FailedPrecondition. Keyed by run_id.
 
         Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReplaySession(self, request, context):
+        """ReplaySession copies a source session's transcript into a new session bound
+        to a (possibly different) target agent (RFC BJ Phase 4). Mirrors
+        POST /v1/sessions/{id}/replay.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -902,6 +916,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.CompactRunRequest.FromString,
                     response_serializer=loomcycle__pb2.CompactRunResult.SerializeToString,
             ),
+            'ReplaySession': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReplaySession,
+                    request_deserializer=loomcycle__pb2.ReplaySessionRequest.FromString,
+                    response_serializer=loomcycle__pb2.ReplaySessionResult.SerializeToString,
+            ),
             'RunInput': grpc.unary_unary_rpc_method_handler(
                     servicer.RunInput,
                     request_deserializer=loomcycle__pb2.RunInputRequest.FromString,
@@ -1245,6 +1264,33 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/CompactRun',
             loomcycle__pb2.CompactRunRequest.SerializeToString,
             loomcycle__pb2.CompactRunResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReplaySession(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ReplaySession',
+            loomcycle__pb2.ReplaySessionRequest.SerializeToString,
+            loomcycle__pb2.ReplaySessionResult.FromString,
             options,
             channel_credentials,
             insecure,

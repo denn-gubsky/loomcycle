@@ -2613,6 +2613,9 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/runs:batch", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunsBatch))))
 	mux.Handle("GET /v1/sessions/{id}/transcript", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTranscript))))
 	mux.Handle("POST /v1/sessions/{id}/messages", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMessages))))
+	// RFC BJ Phase 4 — replay a session's transcript into a new session under a
+	// (possibly different) target agent. {id} is the SOURCE session.
+	mux.Handle("POST /v1/sessions/{id}/replay", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleReplay))))
 	// v0.4 tracking + cancel API.
 	mux.Handle("GET /v1/agents/{agent_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetAgent))))
 	mux.Handle("POST /v1/agents/{agent_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelAgent))))

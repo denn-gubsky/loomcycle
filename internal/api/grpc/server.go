@@ -576,6 +576,7 @@ var grpcConsumerScopes = map[string]string{
 	"StreamRun":           auth.ScopeRunsRead,   // RFC AI — pure read tail (mirrors handleRunStream)
 	"SpawnRunBatch":       auth.ScopeRunsCreate,
 	"CompactRun":          auth.ScopeRunsCreate,
+	"ReplaySession":       auth.ScopeRunsCreate,
 	"CancelAgent":         auth.ScopeRunsCreate,
 	"GetTranscript":       auth.ScopeRunsRead,
 	"GetAgent":            auth.ScopeRunsRead,
@@ -825,6 +826,54 @@ func (s *Server) CompactRun(ctx context.Context, req *loomcyclepb.CompactRunRequ
 		AfterTokens:  int32(res.AfterTokens),
 		Applied:      res.Applied,
 	}, nil
+}
+
+// ReplaySession mirrors POST /v1/sessions/{id}/replay (RFC BJ Phase 4): copy a
+// source session's transcript into a new session bound to a target agent.
+func (s *Server) ReplaySession(ctx context.Context, req *loomcyclepb.ReplaySessionRequest) (*loomcyclepb.ReplaySessionResult, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "ReplaySession requires a connector; this Server was constructed without one")
+	}
+	if !validIdent(req.GetSessionId()) {
+		return nil, status.Error(codes.InvalidArgument, "session_id must match [A-Za-z0-9_-]{1,128}")
+	}
+	if strings.TrimSpace(req.GetAgent()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "agent is required")
+	}
+	res, err := s.connector.ReplaySession(ctx, connector.ReplaySessionRequest{
+		SourceSessionID: req.GetSessionId(),
+		Agent:           strings.TrimSpace(req.GetAgent()),
+		Compress:        req.GetCompress(),
+	})
+	if err != nil {
+		return nil, replayErrToStatus(err)
+	}
+	return &loomcyclepb.ReplaySessionResult{
+		NewSessionId: res.NewSessionID,
+		SeedRunId:    res.SeedRunID,
+		EventsCopied: int32(res.EventsCopied),
+		Compacted:    res.Compacted,
+	}, nil
+}
+
+// replayErrToStatus maps a ReplaySession error (carrying an HTTPStatus) to a gRPC
+// status. Adds InvalidArgument (400) to the compact mapping — replay validates
+// the target agent name + empty-source in the core.
+func replayErrToStatus(err error) error {
+	var hse interface{ HTTPStatus() int }
+	if errors.As(err, &hse) {
+		switch hse.HTTPStatus() {
+		case nethttp.StatusBadRequest:
+			return status.Error(codes.InvalidArgument, err.Error())
+		case nethttp.StatusNotFound:
+			return status.Error(codes.NotFound, err.Error())
+		case nethttp.StatusConflict:
+			return status.Error(codes.FailedPrecondition, err.Error())
+		case nethttp.StatusServiceUnavailable, nethttp.StatusBadGateway:
+			return status.Error(codes.Unavailable, err.Error())
+		}
+	}
+	return status.Error(codes.Internal, err.Error())
 }
 
 // spawnRequestFromProto maps a proto RunRequest to a connector.SpawnRunRequest

@@ -191,6 +191,26 @@ type CompactResult struct {
 	Applied string `json:"applied"`
 }
 
+// ReplaySessionRequest carries the inputs to ReplaySession: the SOURCE session
+// whose transcript is carried over, the TARGET agent the new session binds, and
+// whether to compress the carried history to a summary + recent tail. Mirrors
+// POST /v1/sessions/{id}/replay.
+type ReplaySessionRequest struct {
+	SourceSessionID string
+	Agent           string // target agent for the new session
+	Compress        bool   // collapse the carried history to a summary + recent tail
+}
+
+// ReplaySessionResult is the outcome of ReplaySession — the new session (bound to
+// the target agent) seeded with the source conversation. Continue it with the
+// normal messages endpoint; the seeded context replays automatically.
+type ReplaySessionResult struct {
+	NewSessionID string `json:"new_session_id"`
+	SeedRunID    string `json:"seed_run_id"`
+	EventsCopied int    `json:"events_copied"`
+	Compacted    bool   `json:"compacted"`
+}
+
 // Run is the status snapshot returned by GetRun / ListRuns. Distinct
 // from store.Run — this is the wire shape (no internal-only fields).
 type Run struct {
