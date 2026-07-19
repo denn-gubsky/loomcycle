@@ -69,7 +69,9 @@ A skill declares its own `tools:` — the tool ceiling for work done
 under it. That set must be a **subset** of your effective `tools`.
 A skill can narrow, never widen. If a skill needs a tool you don't
 hold, the invoke is refused (surfaced as `is_error`) — request the
-tool from the operator, or use a different skill.
+tool from the operator, or use a different skill. When you need a
+capability beyond your tools, see `Context op=help topic=adding-capabilities`
+(delegate to a sub-agent, or ask the operator to widen you).
 
 ## The run-start note
 

@@ -87,6 +87,7 @@ These manual steps are being made smoother:
 
 ## See also
 
+- **Agents themselves** can read the model-facing version of this algorithm at run time via `Context op=help topic=adding-capabilities` (why you can't widen your own tools; load a skill within your ceiling, delegate to a sub-agent, or ask the operator).
 - [`docs/TOOLS.md`](TOOLS.md) — the two-layer default-deny model, every built-in tool, glob support, per-request narrowing.
 - [`docs/CONFIGURATION.md`](CONFIGURATION.md) — agent frontmatter fields, tiers, the `skills:` allowlist.
 - [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md) — declaring and consuming MCP servers.
