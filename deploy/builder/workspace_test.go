@@ -107,7 +107,7 @@ func TestDispatch_OpenWithWorkspace(t *testing.T) {
 	d := NewDispatcher(cfg, NewEngine(cfg, fr), NewStore(cfg.SessionIdleTTL, cfg.SessionMaxTTL))
 
 	args, _ := json.Marshal(map[string]any{"workspace": "proj"})
-	text, isErr, err := d.Call(context.Background(), "op:test", "sandbox_open", args)
+	text, isErr, err := d.Call(context.Background(), caller{Principal: "op:test"}, "sandbox_open", args)
 	if err != nil || isErr {
 		t.Fatalf("open failed: isErr=%v err=%v text=%s", isErr, err, text)
 	}
@@ -125,7 +125,7 @@ func TestDispatch_OpenWithWorkspace(t *testing.T) {
 	// Gate: with no WorkspaceRoot, a workspace request is refused (tmpfs-only).
 	cfg2 := testCfg()
 	d2 := NewDispatcher(cfg2, NewEngine(cfg2, &fakeRunner{}), NewStore(cfg2.SessionIdleTTL, cfg2.SessionMaxTTL))
-	text2, isErr2, _ := d2.Call(context.Background(), "op:test", "sandbox_open", args)
+	text2, isErr2, _ := d2.Call(context.Background(), caller{Principal: "op:test"}, "sandbox_open", args)
 	if !isErr2 || !strings.Contains(text2, "not enabled") {
 		t.Errorf("workspace without a root should be refused: isErr=%v text=%s", isErr2, text2)
 	}

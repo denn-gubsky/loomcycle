@@ -33,7 +33,14 @@ loomcycle-builder (this sidecar)  ──►  per-session container
 | `sandbox_exec` | Run a command in a session (`/work`); returns combined output + exit code. |
 | `sandbox_write` / `sandbox_read` | Put files in / pull artifacts out (paths relative to `/work`; `base64` for binary). |
 | `sandbox_close` | Destroy a session (idempotent). |
+| `sandbox_touch` | Reset a session's idle timer — a keepalive to hold a container across a gap between commands. |
+| `sandbox_close_run` | Close ALL your sessions for a given `root_run_id` (bulk teardown of a run tree). |
 | `sandbox_list` | List your own sessions. |
+
+Sessions are tagged with their owning loomcycle **run** via the attested
+`X-Loom-Root-Run` header loomcycle forwards (`${run.root_run_id}`) — that's what
+`sandbox_close_run` matches on. The tag is set from the request header, never a
+tool argument, and it's principal-scoped (a caller only ever closes its own).
 
 Sessions are long-lived — open once, run many commands (the workspace, deps, and
 build cache persist across `sandbox_exec` calls), close when done. They also
@@ -171,9 +178,11 @@ and the build cache (`GOCACHE`/`CARGO_HOME`/`npm` cache all redirect onto `/work
 ## Scope (this release)
 
 Single shared bearer, TTL + explicit close for cleanup, `runc`/`runsc` runtimes,
-and (P2a) **durable workspaces** (above). Deferred: a keepalive + run-liveness-poll
-GC + `sandbox_close_run` (P2b), attested per-tenant identity (multi-tenant isolation
-via loomcycle-filled `X-Loom-Tenant`/`X-Loom-Root-Run` headers), and the Kata
+(P2a) **durable workspaces** (above), and (P2b) the **`sandbox_touch`** keepalive +
+**`sandbox_close_run`** bulk-teardown with attested `X-Loom-Root-Run` session
+tagging. Deferred: **auto-reap on run-end** (a run-liveness poll or a loomcycle
+run-end push — the absolute TTL is the current backstop), attested per-tenant
+identity (multi-tenant isolation via the forwarded `X-Loom-Tenant`), and the Kata
 microVM tier.
 
 ## Tests

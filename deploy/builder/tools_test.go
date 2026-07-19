@@ -78,7 +78,7 @@ func TestDispatch_OpenExecCloseLifecycle(t *testing.T) {
 	const principal = "op:test"
 
 	// open
-	text, isErr, err := d.Call(ctx, principal, "sandbox_open", json.RawMessage(`{}`))
+	text, isErr, err := d.Call(ctx, caller{Principal: principal}, "sandbox_open", json.RawMessage(`{}`))
 	if err != nil || isErr {
 		t.Fatalf("open failed: isErr=%v err=%v text=%s", isErr, err, text)
 	}
@@ -95,32 +95,32 @@ func TestDispatch_OpenExecCloseLifecycle(t *testing.T) {
 
 	// exec success → isError false
 	args, _ := json.Marshal(map[string]any{"session_id": opened.SessionID, "command": "echo ok"})
-	text, isErr, _ = d.Call(ctx, principal, "sandbox_exec", args)
+	text, isErr, _ = d.Call(ctx, caller{Principal: principal}, "sandbox_exec", args)
 	if isErr || !strings.Contains(text, "ok") {
 		t.Errorf("exec ok: isErr=%v text=%q", isErr, text)
 	}
 
 	// exec failure → isError true + [exit: 1] marker
 	args, _ = json.Marshal(map[string]any{"session_id": opened.SessionID, "command": "fail"})
-	text, isErr, _ = d.Call(ctx, principal, "sandbox_exec", args)
+	text, isErr, _ = d.Call(ctx, caller{Principal: principal}, "sandbox_exec", args)
 	if !isErr || !strings.Contains(text, "[exit: 1]") {
 		t.Errorf("exec fail should be isError with exit marker: isErr=%v text=%q", isErr, text)
 	}
 
 	// a foreign principal cannot exec in this session
-	_, isErr, _ = d.Call(ctx, "op:other", "sandbox_exec", args)
+	_, isErr, _ = d.Call(ctx, caller{Principal: "op:other"}, "sandbox_exec", args)
 	if !isErr {
 		t.Errorf("foreign principal should get an error (no such session)")
 	}
 
 	// close
 	closeArgs, _ := json.Marshal(map[string]any{"session_id": opened.SessionID})
-	_, isErr, _ = d.Call(ctx, principal, "sandbox_close", closeArgs)
+	_, isErr, _ = d.Call(ctx, caller{Principal: principal}, "sandbox_close", closeArgs)
 	if isErr {
 		t.Errorf("close should succeed")
 	}
 	// second close is idempotent (session gone → not an error)
-	_, isErr, _ = d.Call(ctx, principal, "sandbox_close", closeArgs)
+	_, isErr, _ = d.Call(ctx, caller{Principal: principal}, "sandbox_close", closeArgs)
 	if isErr {
 		t.Errorf("idempotent close should not error")
 	}
@@ -131,10 +131,10 @@ func TestDispatch_CapacityLimit(t *testing.T) {
 	cfg.MaxSessions = 1
 	fr := &fakeRunner{}
 	d := NewDispatcher(cfg, NewEngine(cfg, fr), NewStore(cfg.SessionIdleTTL, cfg.SessionMaxTTL))
-	if _, isErr, _ := d.Call(context.Background(), "p", "sandbox_open", json.RawMessage(`{}`)); isErr {
+	if _, isErr, _ := d.Call(context.Background(), caller{Principal: "p"}, "sandbox_open", json.RawMessage(`{}`)); isErr {
 		t.Fatal("first open should succeed")
 	}
-	text, isErr, _ := d.Call(context.Background(), "p", "sandbox_open", json.RawMessage(`{}`))
+	text, isErr, _ := d.Call(context.Background(), caller{Principal: "p"}, "sandbox_open", json.RawMessage(`{}`))
 	if !isErr || !strings.Contains(text, "capacity") {
 		t.Errorf("second open should hit capacity: isErr=%v text=%q", isErr, text)
 	}

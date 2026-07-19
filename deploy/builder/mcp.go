@@ -94,7 +94,15 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeRPCError(w, id, -32602, "invalid params")
 			return
 		}
-		text, isErr, cerr := h.disp.Call(r.Context(), principal, p.Name, p.Arguments)
+		// The run identifiers are attested — read from the headers loomcycle
+		// filled (X-Loom-Root-Run / X-Loom-Tenant, RFC BI P2b), never from tool
+		// args. Empty when the caller didn't send them.
+		c := caller{
+			Principal: principal,
+			RootRun:   strings.TrimSpace(r.Header.Get("X-Loom-Root-Run")),
+			Tenant:    strings.TrimSpace(r.Header.Get("X-Loom-Tenant")),
+		}
+		text, isErr, cerr := h.disp.Call(r.Context(), c, p.Name, p.Arguments)
 		if cerr != nil {
 			// Protocol-level fault (unknown tool, malformed args).
 			writeRPCError(w, id, -32602, cerr.Error())
