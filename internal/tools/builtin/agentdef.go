@@ -752,16 +752,40 @@ func assertToolsSubset(proposed, root []string) error {
 			return nil
 		}
 	}
-	rootSet := make(map[string]bool, len(root))
-	for _, t := range root {
-		rootSet[t] = true
-	}
 	for _, t := range proposed {
-		if !rootSet[t] {
+		if !toolCoveredByRoot(t, root) {
 			return fmt.Errorf("Tools cannot widen — %q is not in the operator-blessed root %v", t, root)
 		}
 	}
 	return nil
+}
+
+// toolCoveredByRoot reports whether a single proposed tool entry is within the
+// ceiling `root`. It understands the trailing-`*` prefix glob the exposure layer
+// (internal/tools/policy) already honors, so a ceiling that grants a whole MCP
+// server via `mcp__<server>__*` covers that server's concrete tools AND the same
+// (or a narrower) wildcard:
+//
+//	root entry      covers proposed
+//	------------    ---------------------------------------------------
+//	*               anything (handled by assertToolsSubset's short-circuit)
+//	mcp__slack__*   mcp__slack__send · mcp__slack__* · mcp__slack__x* (prefix)
+//	mcp__slack__x   mcp__slack__x only (exact)
+//
+// A proposed wildcard is covered ONLY when a root entry's prefix is itself a
+// prefix of the proposed string — so a broader proposed wildcard (`mcp__*`) is
+// NOT covered by a narrower root wildcard (`mcp__slack__*`), and an exact root
+// entry never covers a broader proposed wildcard. Both would be widening.
+func toolCoveredByRoot(proposed string, root []string) bool {
+	for _, r := range root {
+		if r == proposed {
+			return true // exact match (also covers wildcard == identical wildcard)
+		}
+		if strings.HasSuffix(r, "*") && strings.HasPrefix(proposed, r[:len(r)-1]) {
+			return true // root prefix-glob covers a concrete tool or a narrower wildcard
+		}
+	}
+	return false
 }
 
 // bootstrapStatic snapshots the cfg.Agents[name] static MD into a v1
