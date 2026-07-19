@@ -40,6 +40,7 @@ export interface LineagePanelProps {
   // that wants the panel read-only.
   onCreateNew?: () => void;
   onEditRow?: (row: DefRow) => void;
+  onCloneRow?: (row: DefRow) => void;
   onRetireRow?: (row: DefRow) => void;
   onPromoteRow?: (row: DefRow) => void;
   // v0.10.4 — MCP-only "Rediscover tools" button in the header.
@@ -63,6 +64,7 @@ export default function LineagePanel({
   renderDefinition,
   onCreateNew,
   onEditRow,
+  onCloneRow,
   onRetireRow,
   onPromoteRow,
   onRediscover,
@@ -346,6 +348,7 @@ export default function LineagePanel({
           onSelect={setSelectedDefID}
           renderDefinition={renderDefinition}
           onEditRow={onEditRow}
+          onCloneRow={onCloneRow}
           onRetireRow={onRetireRow}
           onPromoteRow={onPromoteRow}
         />

@@ -43,6 +43,7 @@ const DEFAULT_TABS: LibraryTab[] = ["agents", "skills", "mcp"];
 export interface LibraryActionCapabilities {
   create?: boolean;
   fork?: boolean;
+  clone?: boolean;
   promote?: boolean;
   retire?: boolean;
   import?: boolean;
@@ -216,6 +217,9 @@ function LibraryBody({
   // version, so it's gated behind the fork capability.
   const canCreate = actions?.create !== false;
   const canFork = actions?.fork !== false;
+  // Clone is a create-from-template (may widen tools); gate it on create, since
+  // that's the substrate op it uses.
+  const canClone = actions?.clone !== false && canCreate;
   const canPromote = actions?.promote !== false;
   const canRetire = actions?.retire !== false;
   const canImport = actions?.import !== false;
@@ -263,6 +267,10 @@ function LibraryBody({
   const handleCreate = () => setModal({ kind: tabKind, mode: "create" });
   const handleEdit = (row: DefRow) =>
     setModal({ kind: tabKind, mode: "fork", forkSource: row });
+  // Clone seeds a create modal from the row's full definition (name suggested +
+  // editable, tools editable/widenable). Distinct from fork, which can't widen.
+  const handleClone = (row: DefRow) =>
+    setModal({ kind: tabKind, mode: "clone", forkSource: row });
 
   // After an import, "Use with a local LLM" opens the agent-create modal
   // prefilled with the imported skills + mcp tools on a local model. A synthetic
@@ -365,6 +373,7 @@ function LibraryBody({
             renderDefinition={renderAgentDefinition}
             onCreateNew={canCreate ? handleCreate : undefined}
             onEditRow={canFork ? handleEdit : undefined}
+            onCloneRow={canClone ? handleClone : undefined}
             onRetireRow={canRetire ? handleRetire : undefined}
             onPromoteRow={canPromote ? handlePromote : undefined}
             onError={onError}
