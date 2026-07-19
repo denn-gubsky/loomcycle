@@ -57,7 +57,7 @@ To give an agent every tool of an MCP server:
    tools: [Read, Write, WebSearch, "mcp__slack__*"]   # all tools of the "slack" server
    ```
 
-   Prefix globs (`mcp__<server>__*`) are matched at the agent-exposure layer (see [`docs/TOOLS.md`](TOOLS.md) → *Glob support*), so tools later added to that server are covered without editing the agent again.
+   Prefix globs (`mcp__<server>__*`) are matched both at the agent-exposure layer (see [`docs/TOOLS.md`](TOOLS.md) → *Glob support*) — so tools later added to that server are covered without editing the agent again — and by the fork/create **ceiling** check, so a fork or clone can carry a `mcp__<server>__*` grant (or narrow it to specific `mcp__<server>__<tool>` entries) without it reading as widening.
 
 Because that adds a new tool to the ceiling, use the Case 2 flow (create a new agent) to introduce it.
 
@@ -81,8 +81,6 @@ Widening a chat agent's own ceiling gives it — and anything that can prompt it
 
 These manual steps are being made smoother:
 
-- A one-click **Clone** action in the Library (derive a new agent from an existing one with tools pre-filled and editable).
-- Wildcard MCP grants understood by the **fork/create ceiling check**, not just the exposure layer (so derived agents and meta-agents can carry a `mcp__<server>__*` grant).
 - **Carrying a conversation** into a derived agent (optionally compacted), so widening a capability no longer means starting the chat over.
 
 ## See also

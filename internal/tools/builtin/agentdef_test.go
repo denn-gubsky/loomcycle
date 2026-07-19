@@ -472,6 +472,44 @@ func TestAgentDefTool_CreateIdempotentOnSameContent(t *testing.T) {
 	}
 }
 
+// TestAssertToolsSubset_WildcardCoverage exercises the glob-aware ceiling check:
+// an operator-blessed `mcp__<server>__*` grant covers that server's concrete
+// tools (and the same/narrower wildcard) on a fork, mirroring the exposure
+// layer's prefix-glob — but never widens (a broader proposed wildcard, or a
+// different family, is still rejected).
+func TestAssertToolsSubset_WildcardCoverage(t *testing.T) {
+	cases := []struct {
+		name     string
+		proposed []string
+		root     []string
+		wantErr  bool
+	}{
+		{"glob root covers concrete", []string{"mcp__slack__send"}, []string{"mcp__slack__*"}, false},
+		{"glob root covers identical glob", []string{"mcp__slack__*"}, []string{"mcp__slack__*"}, false},
+		{"glob root covers many concretes", []string{"mcp__slack__send", "mcp__slack__list"}, []string{"mcp__slack__*"}, false},
+		{"glob root rejects other family", []string{"mcp__other__x"}, []string{"mcp__slack__*"}, true},
+		{"exact root cannot widen to family", []string{"mcp__slack__*"}, []string{"mcp__slack__send"}, true},
+		{"broad root covers narrow glob", []string{"mcp__slack__*"}, []string{"mcp__*"}, false},
+		{"narrow root cannot cover broad glob", []string{"mcp__*"}, []string{"mcp__slack__*"}, true},
+		{"prefix boundary is precise", []string{"mcp__slack__send"}, []string{"mcp__slacker__*"}, true},
+		{"exact still works", []string{"Read"}, []string{"Read", "Write"}, false},
+		{"exact miss still rejected", []string{"Write"}, []string{"Read"}, true},
+		{"star root allows anything", []string{"mcp__x__y", "mcp__z__*"}, []string{"*"}, false},
+		{"empty proposed is ok", nil, []string{"mcp__slack__*"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := assertToolsSubset(tc.proposed, tc.root)
+			if tc.wantErr && err == nil {
+				t.Errorf("assertToolsSubset(%v, %v) = nil, want error", tc.proposed, tc.root)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("assertToolsSubset(%v, %v) = %v, want nil", tc.proposed, tc.root, err)
+			}
+		})
+	}
+}
+
 func TestAgentDefTool_ForkToolsCannotWiden(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
