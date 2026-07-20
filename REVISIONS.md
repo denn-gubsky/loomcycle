@@ -4,6 +4,18 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.27.0
+
+**🧵 RFC BK Phase 2 — bounded, interruptible resident sub-agents.** Builds on the P1 resident sub-agents (v1.26.0): the in-band `Agent` surface gains a way to bound a long child turn and to interrupt one. New in-band tool surface; **no wire/adapter change — `@loomcycle/client` + Python stay at 1.25.0**.
+
+- **`send` gains `timeout_ms`.** `0` (default) blocks until the child parks (P1 behavior, unchanged); `>0` returns early with `{state:"running", output:"<partial>"}` if the turn is still in flight — so a slow child turn (a long compile, a stuck loop) no longer blocks the parent indefinitely. (#776)
+- **`poll` (new op).** Check a resident child WITHOUT sending new input — returns its current output-so-far + state. `timeout_ms:0` is a non-blocking snapshot; `>0` waits up to that long for the child to park. Use it to await a child after a `send` returned `"running"`. (#776)
+- **`cancel` (new op).** Turn-cancel a resident child's CURRENT turn and re-park it — the child stays alive (distinct from `close`, which terminates it). For a turn that's stuck or no longer worth finishing. A no-op if the child is already parked. (#776)
+
+**Scope note:** because a resident child *is* an ordinary interactive run, much of P2's original wishlist was already delivered by P1 — streamed output for observers (`GET /v1/runs/{child}/stream`), external turn-cancel (`POST /v1/runs/{child}/cancel`), and cross-replica routing all already work, and parent+child are always co-located, so in-band `send`/`poll`/`cancel`/`close` are inherently local. P2 is therefore just the in-band `timeout_ms`/`poll`/`cancel` surface — no speculative cross-replica plumbing. (P3 remains: a true in-band stream; resident children surviving snapshot/resume; Team-Orchestrator + Web-UI surfaces.)
+
+The `resident-sub-agents` help topic documents the new ops. Images `denngubsky/loomcycle` + `denngubsky/loomcycle-toolbox` rebuild at 1.27.0 (goreleaser); the sidecar (`loomcycle-builder-docker`) is unchanged. Adapters stay 1.25.0. Merged in #776.
+
 ## What's in v1.26.0
 
 **🧵 RFC BK — interactive (resident) sub-agents.** A parent agent can now drive a PERSISTENT, steerable sub-agent via three new `Agent` ops instead of re-spawning and re-threading state by hand. New primitive on the (in-band) `Agent` tool; **no wire/adapter change — `@loomcycle/client` + Python stay at 1.25.0**.
