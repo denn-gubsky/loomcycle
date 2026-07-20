@@ -2167,6 +2167,14 @@ type Env struct {
 	// LOOMCYCLE_RESUME_FANOUT=1; should be on at BOTH the capturing and
 	// restoring instances for a cross-instance hand-off.
 	ResumeFanout bool
+	// MaxInteractiveChildren caps how many resident interactive sub-agents (RFC
+	// BK Agent op=open) one run may hold open at once. 0 = the code default (8).
+	// Exceeding it fails op=open (the parent must close one first).
+	MaxInteractiveChildren int
+	// InteractiveChildIdleTTLMs is the default idle-reap window for a resident
+	// interactive sub-agent — reaped after this long with no send. 0 = the code
+	// default (30 min). Per-open overridable via op=open's idle_ttl_seconds.
+	InteractiveChildIdleTTLMs int
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -3011,6 +3019,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		MCPAllowPrivateIPs:          getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", true),
 		HTTPCallerAuthoritative:     os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
 		ResumeFanout:                os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
+		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
+		InteractiveChildIdleTTLMs:   getenvInt("LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS", 0),
 		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
 		SerperAPIKey:                os.Getenv("SERPER_API_KEY"),
 		ExaAPIKey:                   os.Getenv("EXA_API_KEY"),

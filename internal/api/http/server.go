@@ -114,6 +114,11 @@ type Server struct {
 	// terminates). Always non-nil after New(); armed only for interactive runs.
 	turnCancelReg *turncancel.Registry
 
+	// residentReg maps a resident interactive sub-agent's run_id → its live
+	// handle (RFC BK). In-process (P1 single-replica). Non-nil after New();
+	// drives Agent op=open/send/close + the idle sweeper + parent-teardown reap.
+	residentReg *residentRegistry
+
 	// sessionLocks tracks per-session mutexes used by continuation
 	// requests (handleMessages, or handleRuns with a non-empty
 	// SessionID). A concurrent request to the same session fast-fails
@@ -485,6 +490,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	} else {
 		s.contextPlugins = cp
 	}
+	s.residentReg = newResidentRegistry() // RFC BK: resident interactive sub-agents
 	s.tools = append(s.tools, &builtin.AgentTool{
 		// Run drops the run_id (the common sequential/spawn path); RunDetailed
 		// keeps it for the parallel_spawn ledger (RFC X Phase 3). Both drive
@@ -494,6 +500,11 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 			return out, err
 		},
 		RunDetailed: s.runSubAgent,
+		// RFC BK resident sub-agents: open/send/close drive a persistent
+		// interactive child (the interactive fork of runSubAgent).
+		OpenChild:   s.openResidentChild,
+		SendChild:   s.sendResidentChild,
+		CloseChild:  s.closeResidentChild,
 		SpawnLedger: cfg.Env.ResumeFanout, // RFC X Phase 3: record the spawn ledger (default off)
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
@@ -5266,6 +5277,61 @@ func secretEnvValues(environ []string) map[string]string {
 // early resolution/provider error), otherwise the sub-run's id even on failure
 // so the parent's spawn ledger can re-find it. (Wired to AgentTool.Run.)
 func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, string, error) {
+	prep, err := s.prepareSubRun(ctx, name, prompt, defID, false, func(providers.Event) {})
+	if err != nil {
+		return "", "", err
+	}
+	defer prep.Slot.releaseCurrent() // registered first → runs LAST (matches original)
+	defer prep.cleanup()             // registered second → runs first
+	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
+	s.finishRunWithCancel(ctx, prep.SteerCtx, prep.RunID, res, runErr, prep.Meta)
+	if runErr != nil {
+		// Wrap with session/run IDs so a developer reading parent logs
+		// can locate the sub's transcript directly. The parent agent's
+		// model sees the unwrapped error message. agent_id is the v0.4
+		// addressable handle, so include it too — the easiest hint for
+		// "GET /v1/agents/<this>" debugging.
+		return "", prep.RunID, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
+			name, prep.AgentID, prep.SessionID, prep.RunID, runErr)
+	}
+	// Surface the sub agent_id to the parent agent's transcript by
+	// prefixing the tool_result text. Parent caller's model sees this
+	// and can echo it to the UI. Cheap; unblocks future "cancel only
+	// the sub" UX.
+	return formatSubAgentOutput(prep.AgentID, res.FinalText), prep.RunID, nil
+}
+
+// subRunPrep bundles a fully-prepared sub-run ready to enter loop.Run. The
+// synchronous path (runSubAgent) and the resident interactive path (RFC BK)
+// share this setup so tenant/tool-ceiling/credential/policy wiring has ONE
+// source of truth. cleanup() releases the span / pause gate / cancel-registry
+// entry / run-cancel func in the SAME order runSubAgent's defers did (LIFO of
+// their original registration), EXCLUDING the provider Slot — the caller
+// releases Slot itself (sync: defer at return; interactive: after hand-off, so
+// a parked child does not pin the provider gate).
+type subRunPrep struct {
+	AgentID   string
+	SessionID string
+	RunID     string
+	UserID    string
+	TenantID  string
+	LoopCtx   context.Context         // == s.heldSlotCtx(subCtx, Slot); pass to loop.Run
+	SteerCtx  context.Context         // subRunCtx (the WithCancelCause base); for finishRunWithCancel + makeSteer + cancel wiring
+	CancelFn  context.CancelCauseFunc // cancels the sub-run (used by RFC BK close)
+	Meta      runStateMeta
+	Emit      func(providers.Event) // the recording emit (also set as Opts.OnEvent)
+	Opts      loop.RunOptions       // fully built; interactive fields (SteerQueue/OnSteer/Interactive/ArmTurnCancel) left ZERO for the caller to set
+	Slot      *providerSlot         // acquired provider slot; caller releases
+	cleanup   func()
+}
+
+// prepareSubRun does all sub-run setup shared by the synchronous spawn path and
+// the resident interactive path. fwd is the recording emit's forward sink (the
+// sync path passes a no-op; the interactive path passes a turn-capturer).
+// interactive=true means: pass a nil provider slot to fallbackForRun (a parked
+// resident child, like a top-level interactive run, must not swap/hold the
+// provider gate across turns) — everything else is identical.
+func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
 	// RFC N: a parent in tenant T resolves the sub-agent name within T's
 	// view (parent tenant flows via ctx RunIdentity, inherited by every
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
@@ -5273,7 +5339,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// tenant's private agent by name.
 	def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantFromCtx(ctx), name)
 	if !ok {
-		return "", "", fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
+		return nil, fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
 	}
 
 	// v0.8.5 substrate: when defID is set, overlay the named def's
@@ -5284,17 +5350,17 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// the operator's static agent boundary.
 	if defID != "" {
 		if s.store == nil {
-			return "", "", fmt.Errorf("Agent tool: def_id pinning requires a configured store backend")
+			return nil, fmt.Errorf("Agent tool: def_id pinning requires a configured store backend")
 		}
 		row, err := s.store.AgentDefGet(ctx, defID)
 		if err != nil {
-			return "", "", fmt.Errorf("Agent tool: def_id %q lookup failed: %w", defID, err)
+			return nil, fmt.Errorf("Agent tool: def_id %q lookup failed: %w", defID, err)
 		}
 		if row.Name != name {
-			return "", "", fmt.Errorf("Agent tool: def_id %q is for agent %q, not %q (cross-name pinning refused)", defID, row.Name, name)
+			return nil, fmt.Errorf("Agent tool: def_id %q is for agent %q, not %q (cross-name pinning refused)", defID, row.Name, name)
 		}
 		if row.Retired {
-			return "", "", fmt.Errorf("Agent tool: def_id %q is retired", defID)
+			return nil, fmt.Errorf("Agent tool: def_id %q is retired", defID)
 		}
 		def = applyAgentDefOverlay(def, row.Definition)
 	}
@@ -5315,11 +5381,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// credential-aware routing applies to the sub-run too.
 	providerID, model, effort, err := s.resolveAgentDef(ctx, def, parentIdentity.TenantID, parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve sub-agent %q model: %w", name, err)
+		return nil, fmt.Errorf("resolve sub-agent %q model: %w", name, err)
 	}
 	provider, err := s.providers.Get(providerID)
 	if err != nil {
-		return "", "", fmt.Errorf("provider for sub-agent %q: %w", name, err)
+		return nil, fmt.Errorf("provider for sub-agent %q: %w", name, err)
 	}
 
 	// RFC BF P2c: gate the sub-agent on ITS resolved provider so a fan-out parent's
@@ -5333,9 +5399,22 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// deadlock. Uncapped ⇒ noop, zero overhead.
 	subSlot, provErr := s.acquireProviderSlot(ctx, providerID)
 	if provErr != nil {
-		return "", "", fmt.Errorf("sub-agent %q provider gate: %w", name, provErr)
+		return nil, fmt.Errorf("sub-agent %q provider gate: %w", name, provErr)
 	}
-	defer subSlot.releaseCurrent()
+	// prepOK guards the acquired-resource cleanups below. On any early-error
+	// return prepOK is still false, so each guarded defer fires — reproducing
+	// the net effect of runSubAgent's original five defers (no leaked slot /
+	// span / registry entry / cancel func). On success prepOK flips true right
+	// before the return, so NONE of the guarded defers fire: the caller owns
+	// teardown via prep.cleanup() + prep.Slot.releaseCurrent(). The provider
+	// Slot is released here ONLY on the error path — on success it is handed
+	// back in prep.Slot for the caller to release.
+	prepOK := false
+	defer func() {
+		if !prepOK {
+			subSlot.releaseCurrent()
+		}
+	}()
 
 	// Generate a fresh agent_id for the sub-run. Always generated;
 	// callers can't override (the sub is loomcycle-controlled).
@@ -5371,7 +5450,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, parentIdentity.TenantID, parentIdentity.UserID, subIdentity)
 	if err != nil {
-		return "", "", fmt.Errorf("create sub-session for %q: %w", name, err)
+		return nil, fmt.Errorf("create sub-session for %q: %w", name, err)
 	}
 
 	// RFC X Phase 3 spawn ledger: when this sub-run is a parallel_spawn child
@@ -5405,7 +5484,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// the registry entry lets the cascade walk in Cancel() find this
 	// sub explicitly (belt-and-braces against grandchild races).
 	subRunCtx, subCancelFn := context.WithCancelCause(ctx)
-	defer subCancelFn(nil)
+	defer func() {
+		if !prepOK {
+			subCancelFn(nil)
+		}
+	}()
 	regErr := s.cancelReg.Register(cancel.Entry{
 		AgentID:       subAgentID,
 		RunID:         subRunID,
@@ -5414,14 +5497,20 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		ParentAgentID: parentIdentity.AgentID,
 		StartedAt:     time.Now(),
 	}, subCancelFn)
+	registered := false
 	if regErr != nil {
 		// A duplicate-active collision is essentially impossible here
 		// (subAgentID is freshly generated); log and continue without
 		// registering rather than fail the run for a registry hiccup.
 		log.Printf("cancel registry: sub-agent register failed (%s): %v", subAgentID, regErr)
 	} else {
-		defer s.cancelReg.Deregister(subAgentID)
+		registered = true
 	}
+	defer func() {
+		if !prepOK && registered {
+			s.cancelReg.Deregister(subAgentID)
+		}
+	}()
 	// v0.10.0 OTEL: sub-runs open their own loomcycle.run span. The
 	// span is automatically a child of the parent's
 	// loomcycle.iteration span via ctx propagation (the Agent built-in
@@ -5435,7 +5524,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		UserID:        parentIdentity.UserID,
 		ParentAgentID: parentIdentity.AgentID,
 	})
-	defer subRunSpan.End()
+	defer func() {
+		if !prepOK {
+			subRunSpan.End()
+		}
+	}()
 
 	// v0.9.x: sub-agent meta for runstate.Bus. ParentAgentID lets
 	// SSE subscribers see the lineage edge.
@@ -5540,7 +5633,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// stream is fwd=no-op so sub events don't bleed into the parent's
 	// event stream. The parent observes only the wrapping
 	// tool_call/tool_result on its own stream.
-	subEmit := s.makeRecordingEmit(ctx, subRunID, subRID, subSessionID, func(providers.Event) {})
+	subEmit := s.makeRecordingEmit(ctx, subRunID, subRID, subSessionID, fwd)
 
 	// Sub-run gets ITS OWN agent tools attached to ctx — the parent's
 	// tool list does not leak to the child (and vice versa). This
@@ -5627,7 +5720,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// boundary while paused (so a fan-out tree quiesces). NOT admission-gated —
 	// it's a child of an already-admitted run, not new top-level work.
 	subGate, deregSubGate := s.newPauseGate(subRunID)
-	defer deregSubGate()
+	defer func() {
+		if !prepOK {
+			deregSubGate()
+		}
+	}()
 	// RFC X Phase 3: expose the gate so a NESTED fan-out parent (a sub-agent
 	// that itself parallel_spawns) can park mid-tool-call too.
 	subCtx = tools.WithPauseGate(subCtx, subGate)
@@ -5636,11 +5733,18 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// acquired above), mirroring a top-level run — so a mid-run failover to another
 	// capped provider re-gates on the new one. A carve-out (noop) subSlot never
 	// swaps (it's deliberately ungated). Sub-runs still take no GLOBAL slot.
-	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, subSlot)
+	// A resident interactive child (like a top-level interactive run) must NOT
+	// swap/hold the provider gate across parked turns, so it passes a nil slot.
+	fbSlot := subSlot
+	if interactive {
+		fbSlot = nil
+	}
+	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, fbSlot)
 	// RFC BF P2c: publish the sub-agent's provider into the ancestor-held set on
 	// its OWN loop ctx (copy-on-add) so grandchildren it spawns take the carve-out
 	// for the same provider. No-op for a carve-out/uncapped subSlot.
-	res, runErr := loop.Run(s.heldSlotCtx(subCtx, subSlot), loop.RunOptions{
+	loopCtx := s.heldSlotCtx(subCtx, subSlot)
+	opts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
 		Tools:               subTools,
@@ -5676,23 +5780,37 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		ReResolve:              fbReResolve,
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
-	})
-	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr, subMeta)
-
-	if runErr != nil {
-		// Wrap with session/run IDs so a developer reading parent logs
-		// can locate the sub's transcript directly. The parent agent's
-		// model sees the unwrapped error message. agent_id is the v0.4
-		// addressable handle, so include it too — the easiest hint for
-		// "GET /v1/agents/<this>" debugging.
-		return "", subRunID, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
-			name, subAgentID, subSessionID, subRunID, runErr)
 	}
-	// Surface the sub agent_id to the parent agent's transcript by
-	// prefixing the tool_result text. Parent caller's model sees this
-	// and can echo it to the UI. Cheap; unblocks future "cancel only
-	// the sub" UX.
-	return formatSubAgentOutput(subAgentID, res.FinalText), subRunID, nil
+
+	// cleanup fires the SAME releases as the guarded error-defers above, in the
+	// SAME order runSubAgent's original defers ran LIFO (deregSubGate →
+	// subRunSpan.End → cancelReg.Deregister when registered → subCancelFn). The
+	// provider Slot is EXCLUDED — the caller releases prep.Slot itself.
+	cleanup := func() {
+		deregSubGate()
+		subRunSpan.End()
+		if registered {
+			s.cancelReg.Deregister(subAgentID)
+		}
+		subCancelFn(nil)
+	}
+
+	prepOK = true
+	return &subRunPrep{
+		AgentID:   subAgentID,
+		SessionID: subSessionID,
+		RunID:     subRunID,
+		UserID:    parentIdentity.UserID,
+		TenantID:  parentIdentity.TenantID,
+		LoopCtx:   loopCtx,
+		SteerCtx:  subRunCtx,
+		CancelFn:  subCancelFn,
+		Meta:      subMeta,
+		Emit:      subEmit,
+		Opts:      opts,
+		Slot:      subSlot,
+		cleanup:   cleanup,
+	}, nil
 }
 
 // agentResponse is the JSON shape returned by GET /v1/agents/{id} and
@@ -6779,6 +6897,12 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 	if meta.IsTopLevel {
 		defer s.purgeEphemeralVolumesForRun(meta.RootRunID)
 	}
+	// RFC BK: close any resident interactive sub-agents this run opened — the
+	// backstop for a parent that completes/errors without closing them itself. A
+	// parent CANCEL already cascades to them (they register with ParentAgentID);
+	// this defer covers the NORMAL-completion path the cascade misses. Fires on
+	// every terminal branch below; a no-op when the run opened none.
+	defer s.closeResidentChildrenOf(meta.AgentID)
 	if cause := context.Cause(runCtx); errors.Is(cause, cancel.ErrCancelledByAPI) {
 		// API-cancel terminal write. Reason text comes from the
 		// optional wrapper; falls back to the sentinel string.

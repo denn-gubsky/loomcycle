@@ -146,9 +146,26 @@ skills:
 
       It opens a session, iterates, closes it, and returns the result.
 
-      ## Multi-step session (drive it command by command)
-      When you want to inspect each result and decide the next command, keep ONE
-      container alive across spawns by sharing its session_id:
+      ## Resident session (preferred for interactive, multi-step work)
+      When you'll drive several commands and inspect each result, keep dev/sandbox
+      RESIDENT with the Agent open/send/close ops. The child stays alive between your
+      instructions — its container stays warm and it remembers the conversation, so you
+      never re-thread a session_id:
+
+      1. Open — it runs the first command and parks, holding its container:
+         Agent {op:"open", name:"dev/sandbox",
+                prompt:"Open a sandbox session, keep it open, run: <command>, and report the output."}
+         → capture child_run_id from the returned envelope.
+      2. Each next step — no session_id to pass; it sees its whole prior conversation:
+         Agent {op:"send", child_run_id:"<child_run_id>", prompt:"Now run: <command>."}
+      3. When finished — close it (frees the container):
+         Agent {op:"close", child_run_id:"<child_run_id>"}
+
+      Full lifecycle: Context op=help topic=resident-sub-agents.
+
+      ## Multi-step session without resident ops (fallback)
+      If you can't use open/send/close, you can still keep ONE container alive across
+      plain spawns by sharing its session_id (fragile — you must carry the id yourself):
 
       1. Open + first command — tell it to KEEP the session open and report the id:
          Agent {op:"spawn", name:"dev/sandbox",

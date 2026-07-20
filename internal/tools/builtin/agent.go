@@ -44,6 +44,31 @@ type SubAgentRunner func(ctx context.Context, name string, prompt string, defID 
 // callers + tests are unaffected.
 type SubAgentRunnerDetailed func(ctx context.Context, name string, prompt string, defID string) (output string, runID string, err error)
 
+// OpenChildRunner starts a PERSISTENT interactive sub-run (RFC BK), runs its
+// first turn, parks it at awaiting_input, and returns the child's run id, the
+// first turn's assistant output, and the child's state ("awaiting_input" when
+// parked, "completed"/"failed" if the first turn already ended the run). The
+// child stays RESIDENT — reachable via SendChildRunner / CloseChildRunner —
+// until it is closed, idle-reaped, or its parent run's tree tears down. Unlike
+// SubAgentRunner (fire-and-return), the child keeps its conversation + any
+// resources it holds (e.g. a warm sandbox container) between sends.
+//
+// idleTTLSeconds overrides the operator-default idle reap window for THIS child
+// (0 = use the default). The parent owns the child's lifecycle.
+type OpenChildRunner func(ctx context.Context, name, prompt, defID string, idleTTLSeconds int) (childRunID, output, state string, err error)
+
+// SendChildRunner injects the next instruction into a resident child (RFC BK)
+// and BLOCKS until the child re-parks at awaiting_input (or terminates),
+// returning that turn's assistant output + the child's resulting state. The
+// caller must own the child (same run tree / tenant); an unknown or unowned
+// child_run_id is an error.
+type SendChildRunner func(ctx context.Context, childRunID, prompt string) (output, state string, err error)
+
+// CloseChildRunner finalizes a resident child (RFC BK), firing its teardown
+// (e.g. sandbox_close_run). Idempotent — closing an already-gone child is not an
+// error. The caller must own the child.
+type CloseChildRunner func(ctx context.Context, childRunID string) (err error)
+
 // MaxConcurrentChildrenLookup resolves the per-agent
 // `max_concurrent_children` cap for the named CALLING agent (the
 // parent that is invoking Agent.parallel_spawn). Returns 0 when the
@@ -162,6 +187,14 @@ type AgentTool struct {
 	// `max_concurrent_children` override. nil = always use
 	// DefaultMaxConcurrentChildren. Wired by the HTTP server at boot.
 	CapLookup MaxConcurrentChildrenLookup
+
+	// OpenChild / SendChild / CloseChild wire the RFC BK resident-child ops
+	// (open/send/close). nil = the op is unavailable (the tool refuses with a
+	// clear "not wired" message), so a runtime without interactive sub-agents
+	// stays byte-identical for spawn/parallel_spawn. Set by the HTTP server.
+	OpenChild  OpenChildRunner
+	SendChild  SendChildRunner
+	CloseChild CloseChildRunner
 }
 
 // runChild drives one sub-agent, preferring RunDetailed (surfaces the child
@@ -192,6 +225,12 @@ type agentInput struct {
 
 	// Parallel-spawn fields (op="parallel_spawn").
 	Spawns []parallelSpawnEntry `json:"spawns,omitempty"`
+
+	// Resident-child fields (RFC BK). op="open" reuses Name/Prompt/DefID and
+	// optionally IdleTTLSeconds; op="send" uses ChildRunID + Prompt; op="close"
+	// uses ChildRunID.
+	ChildRunID     string `json:"child_run_id,omitempty"`
+	IdleTTLSeconds int    `json:"idle_ttl_seconds,omitempty"`
 }
 
 // parallelSpawnEntry is one row in a parallel_spawn `spawns` array.
@@ -260,15 +299,42 @@ const agentInputSchema = `{
         }
       },
       "required": ["op", "spawns"]
+    },
+    {
+      "title": "open — start a resident, steerable sub-agent",
+      "properties": {
+        "op":     {"type": "string", "enum": ["open"], "description": "Start a PERSISTENT sub-agent you can steer over multiple turns. Returns {child_run_id, state, output}. The child keeps its conversation AND any resources it holds (e.g. a warm sandbox container) between sends — use this instead of re-spawning when the child must stay stateful."},
+        "name":   {"type": "string", "description": "Sub-agent name. Must match a key in the loomcycle.yaml agents map."},
+        "prompt": {"type": "string", "description": "The first instruction for the child. It runs one turn, then parks awaiting your next send."},
+        "def_id": {"type": "string", "description": "Optional. Pin this child to a specific agent_defs row id."},
+        "idle_ttl_seconds": {"type": "integer", "description": "Optional. Reap the child after this many seconds with no send (0 = operator default). You own the child's lifecycle — close it when done."}
+      },
+      "required": ["op", "name", "prompt"]
+    },
+    {
+      "title": "send — give a resident sub-agent its next instruction",
+      "properties": {
+        "op":           {"type": "string", "enum": ["send"], "description": "Steer a resident child's next turn. Blocks until the child finishes the turn and returns its output."},
+        "child_run_id": {"type": "string", "description": "The child_run_id returned by op=open."},
+        "prompt":       {"type": "string", "description": "The next instruction for the child. It sees its full prior conversation."}
+      },
+      "required": ["op", "child_run_id", "prompt"]
+    },
+    {
+      "title": "close — shut down a resident sub-agent",
+      "properties": {
+        "op":           {"type": "string", "enum": ["close"], "description": "Finalize a resident child and free its resources (idempotent). Always close a child you opened once you're done with it."},
+        "child_run_id": {"type": "string", "description": "The child_run_id to close."}
+      },
+      "required": ["op", "child_run_id"]
     }
   ]
 }`
 
-const agentDescription = `Spawn named sub-agents in fresh sessions and return their final outputs. ` +
-	`Two ops: 'spawn' (default; one child, return its text) and 'parallel_spawn' (N children concurrently, return JSON envelope with per-child ok/output/error). ` +
-	`Each sub-agent has its own tool allowlist (from loomcycle.yaml); your tool set does not transfer. ` +
-	`Use 'spawn' when you need the child's output before deciding the next step; use 'parallel_spawn' when N independent specialists can run at once and you'll consolidate after all return. ` +
-	`See Context.help(topic="fan-out-patterns") for guidance on parallel_spawn vs sequential spawn vs Channel.publish.`
+const agentDescription = `Spawn or drive named sub-agents, each with its own tool allowlist (your tool set does not transfer). ` +
+	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error) — best when you describe the whole task up front. ` +
+	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id, 'send' gives it the next instruction and returns that turn's output, 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
+	`See Context.help(topic="fan-out-patterns") for spawn vs parallel_spawn vs Channel.publish, and Context.help(topic="resident-sub-agents") for the open/send/close lifecycle.`
 
 // Name implements tools.Tool.
 func (a *AgentTool) Name() string { return "Agent" }
@@ -300,8 +366,14 @@ func (a *AgentTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return a.executeSpawn(ctx, in)
 	case "parallel_spawn":
 		return a.executeParallelSpawn(ctx, in)
+	case "open":
+		return a.executeOpen(ctx, in)
+	case "send":
+		return a.executeSend(ctx, in)
+	case "close":
+		return a.executeClose(ctx, in)
 	default:
-		return tools.Result{IsError: true, Text: fmt.Sprintf("unknown op %q (expected 'spawn' or 'parallel_spawn')", in.Op)}, nil
+		return tools.Result{IsError: true, Text: fmt.Sprintf("unknown op %q (expected 'spawn', 'parallel_spawn', 'open', 'send', or 'close')", in.Op)}, nil
 	}
 }
 
@@ -550,6 +622,98 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		return tools.Result{IsError: true, Text: fmt.Sprintf("internal: marshal parallel_spawn envelope: %s", err)}, nil
 	}
 	return tools.Result{Text: string(body)}, nil
+}
+
+// residentChildResult is the JSON envelope the resident-child ops (open/send/
+// close) return. child_run_id is the handle the model reuses for send/close;
+// state tells it whether the child is still awaiting_input; output is the turn's
+// assistant text.
+type residentChildResult struct {
+	ChildRunID string `json:"child_run_id,omitempty"`
+	State      string `json:"state"`
+	Output     string `json:"output"`
+}
+
+// residentResult marshals the resident-child envelope.
+func residentResult(childRunID, state, output string) (tools.Result, error) {
+	body, err := json.Marshal(residentChildResult{ChildRunID: childRunID, State: state, Output: output})
+	if err != nil {
+		return tools.Result{IsError: true, Text: fmt.Sprintf("internal: marshal resident-child envelope: %s", err)}, nil
+	}
+	return tools.Result{Text: string(body)}, nil
+}
+
+// executeOpen (RFC BK) starts a resident interactive sub-agent, runs its first
+// turn, parks it at awaiting_input, and returns {child_run_id, state, output}.
+// The child stays alive for follow-up sends until closed / idle-reaped / the
+// parent tree tears down. A resident child counts against the recursion depth
+// exactly like a spawn — it is a sub-run one level deeper.
+func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Result, error) {
+	if a.OpenChild == nil {
+		return tools.Result{IsError: true, Text: "Agent op=open (resident sub-agent) is not available on this runtime"}, nil
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	if in.Name == "" {
+		return tools.Result{IsError: true, Text: "missing required field: name"}, nil
+	}
+	if in.Prompt == "" {
+		return tools.Result{IsError: true, Text: "missing required field: prompt"}, nil
+	}
+	if in.ChildRunID != "" {
+		return tools.Result{IsError: true, Text: "op=open mints a NEW child; do not pass child_run_id (use op=send with the id op=open returns)"}, nil
+	}
+	if in.IdleTTLSeconds < 0 {
+		return tools.Result{IsError: true, Text: "idle_ttl_seconds must be >= 0 (0 = operator default)"}, nil
+	}
+	if AgentDepth(ctx) >= MaxAgentDepth {
+		return tools.Result{IsError: true, Text: fmt.Sprintf(
+			"max sub-agent recursion depth (%d) reached at agent %q; refusing to open deeper", MaxAgentDepth, in.Name)}, nil
+	}
+	subCtx := IncrementAgentDepth(ctx)
+	if !in.Compaction.IsZero() {
+		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
+	}
+	childRunID, output, state, err := a.OpenChild(subCtx, in.Name, in.Prompt, in.DefID, in.IdleTTLSeconds)
+	if err != nil {
+		return tools.Result{IsError: true, Text: err.Error()}, nil
+	}
+	return residentResult(childRunID, state, output)
+}
+
+// executeSend (RFC BK) steers a resident child with the next instruction and
+// blocks until it re-parks (or terminates), returning that turn's output.
+func (a *AgentTool) executeSend(ctx context.Context, in agentInput) (tools.Result, error) {
+	if a.SendChild == nil {
+		return tools.Result{IsError: true, Text: "Agent op=send (resident sub-agent) is not available on this runtime"}, nil
+	}
+	in.ChildRunID = strings.TrimSpace(in.ChildRunID)
+	if in.ChildRunID == "" {
+		return tools.Result{IsError: true, Text: "missing required field: child_run_id (the id op=open returned)"}, nil
+	}
+	if in.Prompt == "" {
+		return tools.Result{IsError: true, Text: "missing required field: prompt"}, nil
+	}
+	output, state, err := a.SendChild(ctx, in.ChildRunID, in.Prompt)
+	if err != nil {
+		return tools.Result{IsError: true, Text: err.Error()}, nil
+	}
+	return residentResult(in.ChildRunID, state, output)
+}
+
+// executeClose (RFC BK) finalizes a resident child (idempotent), firing its
+// teardown so any resources it held (e.g. a sandbox container) are released.
+func (a *AgentTool) executeClose(ctx context.Context, in agentInput) (tools.Result, error) {
+	if a.CloseChild == nil {
+		return tools.Result{IsError: true, Text: "Agent op=close (resident sub-agent) is not available on this runtime"}, nil
+	}
+	in.ChildRunID = strings.TrimSpace(in.ChildRunID)
+	if in.ChildRunID == "" {
+		return tools.Result{IsError: true, Text: "missing required field: child_run_id"}, nil
+	}
+	if err := a.CloseChild(ctx, in.ChildRunID); err != nil {
+		return tools.Result{IsError: true, Text: err.Error()}, nil
+	}
+	return residentResult(in.ChildRunID, "closed", "")
 }
 
 // errAgentBadInput is reserved for future structured errors. Currently

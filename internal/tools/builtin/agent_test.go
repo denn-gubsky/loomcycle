@@ -759,3 +759,177 @@ func TestAgentTool_ParallelSpawn_NoWatcherNoLedgerWhenFlagOff(t *testing.T) {
 		t.Errorf("expected no ledger events with SpawnLedger off, got %d", len(events))
 	}
 }
+
+// --- RFC BK resident sub-agent ops (open / send / close) ---
+
+// parseResident decodes the JSON envelope open/send/close return.
+func parseResident(t *testing.T, res tools.Result) residentChildResult {
+	t.Helper()
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", res.Text)
+	}
+	var out residentChildResult
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("envelope not JSON: %q (%v)", res.Text, err)
+	}
+	return out
+}
+
+func TestAgentTool_Open_HappyPath(t *testing.T) {
+	var gotName, gotPrompt, gotDef string
+	var gotTTL int
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		OpenChild: func(_ context.Context, name, prompt, defID string, ttl int) (string, string, string, error) {
+			gotName, gotPrompt, gotDef, gotTTL = name, prompt, defID, ttl
+			return "run_child_1", "first turn output", "awaiting_input", nil
+		},
+	}
+	res, err := a.Execute(context.Background(),
+		json.RawMessage(`{"op":"open","name":"dev/sandbox","prompt":"build it","def_id":"def_x","idle_ttl_seconds":120}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := parseResident(t, res)
+	if env.ChildRunID != "run_child_1" || env.State != "awaiting_input" || env.Output != "first turn output" {
+		t.Errorf("envelope = %+v", env)
+	}
+	if gotName != "dev/sandbox" || gotPrompt != "build it" || gotDef != "def_x" || gotTTL != 120 {
+		t.Errorf("runner args: name=%q prompt=%q def=%q ttl=%d", gotName, gotPrompt, gotDef, gotTTL)
+	}
+}
+
+func TestAgentTool_Open_NotWired(t *testing.T) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) { return "", nil }}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"open","name":"x","prompt":"y"}`))
+	if !res.IsError || !strings.Contains(res.Text, "not available") {
+		t.Errorf("open with nil OpenChild should refuse: %+v", res)
+	}
+}
+
+func TestAgentTool_Open_MissingFields(t *testing.T) {
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+			return "", "", "", nil
+		},
+	}
+	for _, in := range []string{`{"op":"open","prompt":"y"}`, `{"op":"open","name":"x"}`} {
+		res, _ := a.Execute(context.Background(), json.RawMessage(in))
+		if !res.IsError {
+			t.Errorf("expected error for %s", in)
+		}
+	}
+}
+
+func TestAgentTool_Open_RejectsChildRunID(t *testing.T) {
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+			return "", "", "", nil
+		},
+	}
+	res, _ := a.Execute(context.Background(),
+		json.RawMessage(`{"op":"open","name":"x","prompt":"y","child_run_id":"run_1"}`))
+	if !res.IsError || !strings.Contains(res.Text, "mints a NEW child") {
+		t.Errorf("open must reject a passed child_run_id: %+v", res)
+	}
+}
+
+func TestAgentTool_Open_DepthGuard(t *testing.T) {
+	called := false
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		OpenChild: func(context.Context, string, string, string, int) (string, string, string, error) {
+			called = true
+			return "", "", "", nil
+		},
+	}
+	ctx := context.Background()
+	for i := 0; i < MaxAgentDepth; i++ {
+		ctx = IncrementAgentDepth(ctx)
+	}
+	res, _ := a.Execute(ctx, json.RawMessage(`{"op":"open","name":"x","prompt":"y"}`))
+	if !res.IsError || !strings.Contains(res.Text, "recursion depth") {
+		t.Errorf("open should hit the depth guard: %+v", res)
+	}
+	if called {
+		t.Error("OpenChild must not be called past the depth cap")
+	}
+}
+
+func TestAgentTool_Send_HappyPath(t *testing.T) {
+	var gotID, gotPrompt string
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		SendChild: func(_ context.Context, childRunID, prompt string) (string, string, error) {
+			gotID, gotPrompt = childRunID, prompt
+			return "turn 2 output", "awaiting_input", nil
+		},
+	}
+	res, _ := a.Execute(context.Background(),
+		json.RawMessage(`{"op":"send","child_run_id":"run_child_1","prompt":"now test it"}`))
+	env := parseResident(t, res)
+	if env.Output != "turn 2 output" || env.State != "awaiting_input" || env.ChildRunID != "run_child_1" {
+		t.Errorf("envelope = %+v", env)
+	}
+	if gotID != "run_child_1" || gotPrompt != "now test it" {
+		t.Errorf("runner args: id=%q prompt=%q", gotID, gotPrompt)
+	}
+}
+
+func TestAgentTool_Send_MissingFields(t *testing.T) {
+	a := &AgentTool{
+		Run:       func(context.Context, string, string, string) (string, error) { return "", nil },
+		SendChild: func(context.Context, string, string) (string, string, error) { return "", "", nil },
+	}
+	for _, in := range []string{`{"op":"send","prompt":"y"}`, `{"op":"send","child_run_id":"r"}`} {
+		res, _ := a.Execute(context.Background(), json.RawMessage(in))
+		if !res.IsError {
+			t.Errorf("expected error for %s", in)
+		}
+	}
+}
+
+func TestAgentTool_Send_NotWired(t *testing.T) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) { return "", nil }}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"send","child_run_id":"r","prompt":"y"}`))
+	if !res.IsError || !strings.Contains(res.Text, "not available") {
+		t.Errorf("send with nil SendChild should refuse: %+v", res)
+	}
+}
+
+func TestAgentTool_Close_HappyPath(t *testing.T) {
+	var gotID string
+	a := &AgentTool{
+		Run:        func(context.Context, string, string, string) (string, error) { return "", nil },
+		CloseChild: func(_ context.Context, childRunID string) error { gotID = childRunID; return nil },
+	}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"close","child_run_id":"run_child_1"}`))
+	env := parseResident(t, res)
+	if env.State != "closed" || env.ChildRunID != "run_child_1" {
+		t.Errorf("envelope = %+v", env)
+	}
+	if gotID != "run_child_1" {
+		t.Errorf("close arg = %q", gotID)
+	}
+}
+
+func TestAgentTool_Close_MissingChildRunID(t *testing.T) {
+	a := &AgentTool{
+		Run:        func(context.Context, string, string, string) (string, error) { return "", nil },
+		CloseChild: func(context.Context, string) error { return nil },
+	}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"close"}`))
+	if !res.IsError {
+		t.Errorf("close without child_run_id should error: %+v", res)
+	}
+}
+
+func TestAgentTool_Close_NotWired(t *testing.T) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) { return "", nil }}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"close","child_run_id":"r"}`))
+	if !res.IsError || !strings.Contains(res.Text, "not available") {
+		t.Errorf("close with nil CloseChild should refuse: %+v", res)
+	}
+}
