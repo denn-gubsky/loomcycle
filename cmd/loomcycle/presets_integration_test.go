@@ -164,6 +164,18 @@ func TestEmbedded_SandboxBundleValidates(t *testing.T) {
 	if sv.Transport != "http" || sv.URL == "" {
 		t.Errorf("sandbox MCP server should be http with a url; got transport=%q url=%q", sv.Transport, sv.URL)
 	}
+	// One shared secret under the sidecar's OWN name: the Authorization header
+	// expands SANDBOX_AUTH_TOKEN from the env (allowlisted) — no LOOMCYCLE_ alias,
+	// and no ${run.user_bearer} prefix (the sidecar does shared-secret auth, so a
+	// per-run bearer would only 401).
+	t.Setenv("SANDBOX_AUTH_TOKEN", "sekret-xyz")
+	cfg2, err := config.LoadLayers(layersFor(t, "base", "sandbox")...)
+	if err != nil {
+		t.Fatalf("reload with SANDBOX_AUTH_TOKEN set: %v", err)
+	}
+	if got := cfg2.MCPServers["sandbox"].Headers["Authorization"]; got != "Bearer sekret-xyz" {
+		t.Errorf("sandbox Authorization = %q, want \"Bearer sekret-xyz\" (SANDBOX_AUTH_TOKEN expanded, no user_bearer)", got)
+	}
 }
 
 // hasToolPreset reports whether tools contains name.

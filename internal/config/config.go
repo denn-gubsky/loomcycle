@@ -4128,7 +4128,13 @@ func ExpandEnvAllowed(name string) bool {
 		"TAVILY_API_KEY",
 		"GITHUB_TOKEN",
 		"SLACK_BOT_TOKEN",
-		"REDIS_URL":
+		"REDIS_URL",
+		// SANDBOX_AUTH_TOKEN is the builder-sidecar's shared secret (deploy/builder).
+		// The `sandbox` bundle forwards it in the sidecar's MCP Authorization header,
+		// and the sidecar authenticates against the same name — so both services use
+		// ONE env var instead of a LOOMCYCLE_-prefixed alias. Not a loomcycle infra
+		// secret (those are in expandDenyNames), so allowlisting it here is safe.
+		"SANDBOX_AUTH_TOKEN":
 		return true
 	}
 	return false

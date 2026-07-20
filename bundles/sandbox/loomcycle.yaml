@@ -165,9 +165,10 @@ mcp_servers:
     # overlay if it isn't at this address.
     url: http://builder-sidecar:9000/mcp
     headers:
-      # Per-run bearer when present, else the shared LOOMCYCLE_SANDBOX_TOKEN secret
-      # (must equal the sidecar's SANDBOX_AUTH_TOKEN).
-      Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}"
+      # The sidecar does SHARED-secret auth: set SANDBOX_AUTH_TOKEN to the same
+      # value on loomcycle + the sidecar. (No ${run.user_bearer} — a per-run
+      # loomcycle bearer isn't the sidecar's secret, so forwarding it would 401.)
+      Authorization: "Bearer ${SANDBOX_AUTH_TOKEN}"
       # Non-secret run identifiers the sidecar tags each session with, for
       # run-liveness GC + sandbox_close_run (empty when the run carries none).
       X-Loom-Root-Run: "${run.root_run_id}"
