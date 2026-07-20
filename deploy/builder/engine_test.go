@@ -88,7 +88,7 @@ func TestEngine_RunArgs_HardeningPosture(t *testing.T) {
 			tmpfsWork = args[i+1]
 		}
 	}
-	if tmpfsWork == "" || !strings.Contains(tmpfsWork, "size=512m") || !strings.Contains(tmpfsWork, "mode=0700") {
+	if tmpfsWork == "" || !strings.Contains(tmpfsWork, "size=512m") || !strings.Contains(tmpfsWork, "mode=0777") {
 		t.Errorf("tmpfs /work mount wrong: %q", tmpfsWork)
 	}
 	// Image + entrypoint come last.

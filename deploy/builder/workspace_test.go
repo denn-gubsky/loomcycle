@@ -38,6 +38,34 @@ func TestEngine_RunArgs_DurableWorkspaceBindMount(t *testing.T) {
 	}
 }
 
+// TestEngine_RunArgs_TmpfsWorkWritableByNonRoot is the regression for the /work
+// permission bug: the container runs as a NON-ROOT user (--user CtrUser), but a
+// tmpfs mounts root-owned — so mode=0700 left /work neither writable nor readable
+// by that user (file writes AND `bash -l` reading $HOME/.bash_profile both failed
+// with "permission denied"). /work must be mode=0777.
+func TestEngine_RunArgs_TmpfsWorkWritableByNonRoot(t *testing.T) {
+	e := NewEngine(testCfg(), &fakeRunner{})
+	args := e.runArgs("n", openOpts{Network: "none", TmpfsMB: 512, CPUs: 1, MemMB: 512, Pids: 100, Image: "img"})
+	var workTmpfs string
+	for i, a := range args {
+		if a == "--tmpfs" && i+1 < len(args) && strings.HasPrefix(args[i+1], workDir+":") {
+			workTmpfs = args[i+1]
+		}
+	}
+	if workTmpfs == "" {
+		t.Fatalf("no tmpfs /work mount found: %v", args)
+	}
+	if !strings.Contains(workTmpfs, "mode=0777") {
+		t.Errorf("/work tmpfs must be mode=0777 (writable by the non-root user); got %q", workTmpfs)
+	}
+	if strings.Contains(workTmpfs, "mode=0700") {
+		t.Errorf("/work tmpfs is mode=0700 (root-only) — the non-root user can't write: %q", workTmpfs)
+	}
+	if !strings.Contains(workTmpfs, "exec") {
+		t.Errorf("/work tmpfs lost exec (compiled binaries must run in /work): %q", workTmpfs)
+	}
+}
+
 func TestValidateWorkspaceName(t *testing.T) {
 	for _, n := range []string{"proj", "my-repo", "a1", "build_2", "x"} {
 		if err := validateWorkspaceName(n); err != nil {
