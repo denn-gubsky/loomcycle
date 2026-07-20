@@ -167,7 +167,9 @@ func (s *Server) residentChildIdleTTL() time.Duration {
 // openResidentChild starts a resident interactive sub-run, runs its first turn,
 // parks it at awaiting_input, and returns (childRunID, firstOutput, state).
 func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID string, idleTTLSeconds int) (string, string, string, error) {
-	if s.residentReg == nil {
+	if s.residentReg == nil || s.steerReg == nil {
+		// A resident child parks on its steer queue between turns; without the
+		// steer registry it could not park (nor could send reach it).
 		return "", "", "", fmt.Errorf("resident sub-agents are not enabled on this runtime")
 	}
 	parent := tools.RunIdentity(ctx)
@@ -325,19 +327,29 @@ func (s *Server) RunResidentSweeper(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			for _, rc := range s.residentReg.snapshot() {
-				rc.mu.Lock()
-				idle := now.Sub(rc.lastUsed) > rc.idleTTL
-				done := rc.done
-				rc.mu.Unlock()
-				if done || !idle {
-					continue
-				}
-				log.Printf("resident child %s idle-reaped after %s", rc.runID, rc.idleTTL)
-				if _, found := s.cancelReg.Cancel(rc.agentID, "idle timeout (resident sub-agent)"); !found && rc.cancel != nil {
-					rc.cancel(fmt.Errorf("idle timeout"))
-				}
-			}
+			s.sweepResidentChildren(now)
+		}
+	}
+}
+
+// sweepResidentChildren cancels every resident child idle past its TTL (the
+// per-tick body of RunResidentSweeper; separated so tests can drive one sweep
+// without wall-clock waiting).
+func (s *Server) sweepResidentChildren(now time.Time) {
+	if s.residentReg == nil {
+		return
+	}
+	for _, rc := range s.residentReg.snapshot() {
+		rc.mu.Lock()
+		idle := now.Sub(rc.lastUsed) > rc.idleTTL
+		done := rc.done
+		rc.mu.Unlock()
+		if done || !idle {
+			continue
+		}
+		log.Printf("resident child %s idle-reaped after %s", rc.runID, rc.idleTTL)
+		if _, found := s.cancelReg.Cancel(rc.agentID, "idle timeout (resident sub-agent)"); !found && rc.cancel != nil {
+			rc.cancel(fmt.Errorf("idle timeout"))
 		}
 	}
 }
