@@ -20,7 +20,21 @@ Most sub-agent work is one-shot: `Agent {op:"spawn", …}` runs a child to compl
   Agent {op:"send", child_run_id:"run_…", prompt:"<next instruction>"}
   → {"child_run_id":"run_…", "state":"awaiting_input", "output":"…"}
   ```
-  It blocks until the child finishes the turn and re-parks. The child sees its full prior conversation — you don't restate context.
+  By default it blocks until the child finishes the turn and re-parks. The child sees its full prior conversation — you don't restate context. Pass **`timeout_ms`** to bound the wait: if the turn is still going after that long, `send` returns early with `"state":"running"` and the partial output-so-far, so a long turn doesn't block you indefinitely — then `poll` to await it, or `cancel` to stop it.
+
+- **`poll`** — check on a running child without giving it new input:
+  ```
+  Agent {op:"poll", child_run_id:"run_…", timeout_ms:30000}
+  → {"state":"running"|"awaiting_input", "output":"<output so far>"}
+  ```
+  `timeout_ms:0` (or omitted) is an instant snapshot; a positive value waits up to that long for the child to park. Use it after a `send` returned `"running"`.
+
+- **`cancel`** — stop the child's current turn (it stays alive):
+  ```
+  Agent {op:"cancel", child_run_id:"run_…"}
+  → {"state":"awaiting_input", "output":"<partial>"}
+  ```
+  Turn-cancels the in-flight turn and re-parks the child — for a turn that's stuck or no longer worth finishing. Different from `close` (which terminates the child). A no-op if the child is already parked.
 
 - **`close`** — shut the child down and free its resources:
   ```
