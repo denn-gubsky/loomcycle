@@ -4,6 +4,17 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.25.1
+
+**🩹 Patch — sandbox usability + config ergonomics (RFC BI follow-ups from field use).** No wire/schema change; `@loomcycle/client` + Python stay at 1.25.0.
+
+- **Sandbox `/work` was unwritable (fix).** The default (ephemeral) session mounted `/work` as a root-owned `mode=0700` tmpfs while the container runs as a non-root user — so every `sandbox_write` / `sandbox_exec` file op (and `bash -l` reading `$HOME/.bash_profile`) failed with "permission denied"; only inline `python3 -c` ran. Now mounted `mode=0777` (Docker's `--tmpfs` doesn't reliably honor `uid=`, so mode is the portable knob; the mount is container-private + ephemeral). **The sidecar image is rebuilt at 1.25.1** — pull it to get the fix. (#765)
+- **One env var for the sidecar secret.** The shared secret needed two names — `LOOMCYCLE_SANDBOX_TOKEN` (loomcycle) vs `SANDBOX_AUTH_TOKEN` (sidecar) — and a mismatch surfaced only as a boot `401` on the MCP handshake. Unified on **`SANDBOX_AUTH_TOKEN`** (allowlisted for `${…}` expansion; the bundle header is now `Bearer ${SANDBOX_AUTH_TOKEN}`, dropping the `${run.user_bearer}` prefix — the sidecar does shared-secret auth, so a per-run bearer could only 401). **⚠️ Breaking (sandbox bundle only):** rename `LOOMCYCLE_SANDBOX_TOKEN` → `SANDBOX_AUTH_TOKEN` on the loomcycle service. (#764)
+- **`dev/sandbox` polish.** Moved to the **`low` tier** (it drives a toolchain, not deep reasoning), and its `tools:` are now the **`mcp__sandbox__*`** prefix glob — auto-including any future `sandbox_*` tool (matched at the exposure layer AND the fork/create ceiling check, RFC BJ Phase 3). (#766)
+- **Library: hide retired agents by default.** The Agents tab's "Hide retired" toggle now defaults ON (still user-toggleable; Skills / MCP tabs unchanged). (#767)
+
+Images `denngubsky/loomcycle` + `denngubsky/loomcycle-toolbox` rebuild at 1.25.1 (goreleaser); the sidecar `denngubsky/loomcycle-builder-docker` is republished at 1.25.1 (the `/work` fix). Merged across #764–#767.
+
 ## What's in v1.25.0
 
 **🧬 RFC BJ — personalize a chat agent: clone it, grant a tool family, keep the conversation.** A cohesive line that removes the friction of extending a bundled chat agent while keeping the security invariant intact — only an operator (on the bearer) may widen a tool ceiling; an in-run LLM never can. Five merges (#758–#762).
