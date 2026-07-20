@@ -377,6 +377,7 @@ function LibraryBody({
             onRetireRow={canRetire ? handleRetire : undefined}
             onPromoteRow={canPromote ? handlePromote : undefined}
             onError={onError}
+            defaultHideRetired
           />
         )}
         {activeTab === "skills" && (
