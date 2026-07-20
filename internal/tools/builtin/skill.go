@@ -146,9 +146,12 @@ func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValu
 		return tools.Result{IsError: true, Text: err.Error()}, nil
 	}
 	// SECURITY: enforce skill.tools ⊆ agent.tools at tool-call time. Agent
-	// tools are read from ctx so the SkillTool struct stays per-server.
+	// tools are read from ctx so the SkillTool struct stays per-server. Prefer
+	// the raw patterns (globs intact) over the resolved effective list so a
+	// glob-scoped skill matches a glob-scoped agent (see skillToolsExceedingAgent).
 	agentTools := tools.AgentTools(ctx)
-	if widening := skillToolsExceedingAgent(allowedTools, agentTools); len(widening) > 0 {
+	agentPatterns := tools.AgentToolPatterns(ctx)
+	if widening := skillToolsExceedingAgent(allowedTools, agentTools, agentPatterns); len(widening) > 0 {
 		return tools.Result{
 			IsError: true,
 			Text: fmt.Sprintf(
@@ -285,20 +288,43 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 	return sk.Body, sk.Tools, "static", nil
 }
 
-// skillToolsExceedingAgent returns the subset of skill tools that the
-// agent does NOT grant (literal + glob composition via policy.Matches).
-// Mirrors resolveSkills' check in internal/config so the static and
-// dynamic skill paths apply the same security rule.
-func skillToolsExceedingAgent(skillTools, agentTools []string) []string {
+// skillToolsExceedingAgent returns the subset of skill tools the agent does
+// NOT grant. skill.tools ⊆ agent.tools — a skill may never widen the agent.
+//
+// agentPatterns is the agent's RAW tool declaration (globs preserved, e.g.
+// "mcp__sandbox__*"); agentTools is the run's EFFECTIVE list (that glob already
+// RESOLVED to concrete pool tools like mcp__sandbox__open). When the raw
+// patterns are attached we check against them with toolCoveredByRoot — the same
+// root-covers logic SkillDef authorship uses — so a skill GLOB requirement
+// matches the agent's declared glob (invoke-time and create-time agree). A
+// concrete agent list can never cover a broader skill glob, which is why the
+// resolved list alone gave a false "not granted" for a glob-scoped skill.
+//
+// Fallback (no raw patterns attached — legacy callers/tests): match the skill
+// tool against the effective set via policy.Matches, preserving prior behavior.
+//
+// (RFC BA moved subset enforcement to Skill-invoke + SkillDef authorship;
+// config-load no longer performs it — a pattern allowlist can't be resolved to
+// a concrete skill set there.)
+func skillToolsExceedingAgent(skillTools, agentTools, agentPatterns []string) []string {
 	if len(skillTools) == 0 {
 		return nil
 	}
-	agentSet := make(map[string]bool, len(agentTools))
-	for _, t := range agentTools {
-		agentSet[t] = true
+	var agentSet map[string]bool
+	if len(agentPatterns) == 0 {
+		agentSet = make(map[string]bool, len(agentTools))
+		for _, t := range agentTools {
+			agentSet[t] = true
+		}
 	}
 	var widening []string
 	for _, t := range skillTools {
+		if len(agentPatterns) > 0 {
+			if !toolCoveredByRoot(t, agentPatterns) {
+				widening = append(widening, t)
+			}
+			continue
+		}
 		if !policy.Matches(t, agentSet) {
 			widening = append(widening, t)
 		}
