@@ -109,7 +109,7 @@ services:
   # loomcycle reaches it in-network at http://builder-sidecar:9000/mcp — no host
   # port. Build it + the session image from deploy/builder/ (see docs/SANDBOX.md),
   # then select the `sandbox` bundle (LOOMCYCLE_PRESETS=…,sandbox) and set
-  # LOOMCYCLE_SANDBOX_TOKEN on the loomcycle service to the same shared secret.
+  # SANDBOX_AUTH_TOKEN on the loomcycle service to the same shared secret.
   # builder-sidecar:
   #   image: denngubsky/loomcycle-builder:latest
   #   container_name: builder-sidecar
@@ -118,7 +118,7 @@ services:
   #   # privileged: true is the fallback (accept the risk; e.g. on TrueNAS).
   #   runtime: sysbox-runc
   #   environment:
-  #     SANDBOX_AUTH_TOKEN: ${LOOMCYCLE_SANDBOX_TOKEN}     # same secret as loomcycle's
+  #     SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}     # same secret as loomcycle's
   #     SANDBOX_IMAGE: localhost/loomcycle-sandbox-session:latest
   #     SANDBOX_MAX_MEM_MB: "2048"
   #     SANDBOX_MAX_CPUS: "2"

@@ -41,7 +41,7 @@ builder-sidecar                    ──►  per-session container
    docker build -t localhost/loomcycle-sandbox-session:latest deploy/builder/session
    ```
 
-2. **Set a shared secret.** Add `LOOMCYCLE_SANDBOX_TOKEN=<openssl rand -hex 32>`
+2. **Set a shared secret.** Add `SANDBOX_AUTH_TOKEN=<openssl rand -hex 32>`
    to your `.env.local` — it authenticates loomcycle → sidecar. (It's referenced
    by *name* in the config header below; loomcycle allows `${LOOMCYCLE_*}`
    interpolation into an MCP header.)
@@ -61,7 +61,7 @@ builder-sidecar                    ──►  per-session container
        transport: http
        url: http://builder-sidecar:9000/mcp
        headers:
-         Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}"
+         Authorization: "Bearer ${SANDBOX_AUTH_TOKEN}"
    ```
 
    (Selecting the bundle supplies this block; re-declare `url` in your overlay if

@@ -83,7 +83,7 @@ services:
     restart: unless-stopped
     environment:
       SANDBOX_PODMAN_BIN: docker                         # drive the host Docker (socket model)
-      SANDBOX_AUTH_TOKEN: ${LOOMCYCLE_SANDBOX_TOKEN}     # shared secret (see below)
+      SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}     # shared secret (see below)
       SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:latest
       SANDBOX_MAX_MEM_MB: "2048"
       SANDBOX_MAX_CPUS: "2"
@@ -102,12 +102,14 @@ mcp_servers:
     transport: http
     url: http://builder-sidecar:9000/mcp
     headers:
-      Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}"
+      Authorization: "Bearer ${SANDBOX_AUTH_TOKEN}"
 ```
 
-The **shared secret** (`LOOMCYCLE_SANDBOX_TOKEN`) goes in loomcycle's env and the
-sidecar's `SANDBOX_AUTH_TOKEN` — set both to the same value. Per-run bearers, when
-present, take precedence (the `${run.user_bearer:-…}` fallback form).
+Set **`SANDBOX_AUTH_TOKEN`** to the same value in **both** services' env — one env
+var name shared by loomcycle and the sidecar. The sidecar does shared-secret auth
+(a single constant-time bearer check), so the header is the plain token, not a
+per-run `${run.user_bearer}` (a per-run loomcycle bearer isn't the sidecar's
+secret — forwarding it would 401).
 
 ## Configuration (environment)
 

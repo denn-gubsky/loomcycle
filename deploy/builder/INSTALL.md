@@ -86,8 +86,8 @@ The sidecar authenticates every MCP call with a bearer. Generate one:
 openssl rand -hex 32     # → the sandbox shared secret
 ```
 
-You'll set it as **both** `SANDBOX_AUTH_TOKEN` (the sidecar) and
-`LOOMCYCLE_SANDBOX_TOKEN` (loomcycle) — same value. Keep it in a root-only env file
+You'll set **`SANDBOX_AUTH_TOKEN`** to the same value in **both** the sidecar and
+loomcycle — one env var name, shared by both services. Keep it in a root-only env file
 on the TrueNAS host, e.g. a tiny sidecar file plus a line in loomcycle's existing
 secrets file:
 
@@ -98,7 +98,7 @@ printf 'SANDBOX_AUTH_TOKEN=%s\n' "$THE_SECRET" \
 chmod 600 /mnt/tank/loomcycle/config/sandbox.secrets.env
 
 # and add the same value to loomcycle's secrets file (Phase 4 of the loomcycle install)
-echo "LOOMCYCLE_SANDBOX_TOKEN=$THE_SECRET" \
+echo "SANDBOX_AUTH_TOKEN=$THE_SECRET" \
   >> /mnt/tank/loomcycle/config/loomcycle.secrets.env
 ```
 
@@ -180,10 +180,11 @@ On the **loomcycle** service, two changes:
    ```yaml
    LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples,sandbox"
    ```
-2. Ensure `LOOMCYCLE_SANDBOX_TOKEN` is set (Phase 2 added it to
+2. Ensure `SANDBOX_AUTH_TOKEN` is set (Phase 2 added it to
    `loomcycle.secrets.env`, which the loomcycle service already reads via `env_file`).
-   The bundle's MCP header is `Authorization: Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}`,
-   so it uses that shared secret when there's no per-run bearer.
+   The bundle's MCP header is `Authorization: Bearer ${SANDBOX_AUTH_TOKEN}` — the
+   same env var name the sidecar authenticates against, so both services share one
+   secret under one name.
 
 That's it — the bundle carries the `mcp_servers.sandbox` URL (`http://builder-sidecar:9000/mcp`).
 If your sidecar service has a different name/port, override it in your config overlay:
@@ -194,7 +195,7 @@ mcp_servers:
     transport: http
     url: http://builder-sidecar:9000/mcp
     headers:
-      Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}"
+      Authorization: "Bearer ${SANDBOX_AUTH_TOKEN}"
 ```
 
 Redeploy the app (Save). loomcycle waits on migrate, boots, and the MCP pool connects
@@ -277,7 +278,7 @@ secure nested runtime — `runtime: sysbox-runc` — but TrueNAS SCALE doesn't s
 | Symptom | Cause / fix |
 |---|---|
 | Sidecar exits at start: `SANDBOX_IMAGE is required` / `SANDBOX_AUTH_TOKEN is required` | Set both — `SANDBOX_IMAGE` (env) and `SANDBOX_AUTH_TOKEN` (the `env_file`). For local dev only, `SANDBOX_ALLOW_ANON=1` skips auth (logs a warning). |
-| `mcp__sandbox__*` tools never appear in loomcycle | (a) the sidecar isn't in the SAME compose/network → loomcycle can't resolve `builder-sidecar`; (b) token mismatch → the sidecar 401s (check `SANDBOX_AUTH_TOKEN` == `LOOMCYCLE_SANDBOX_TOKEN`); (c) the `sandbox` preset isn't in `LOOMCYCLE_PRESETS`. |
+| `mcp__sandbox__*` tools never appear in loomcycle | (a) the sidecar isn't in the SAME compose/network → loomcycle can't resolve `builder-sidecar`; (b) token mismatch → the sidecar 401s (check `SANDBOX_AUTH_TOKEN` == `SANDBOX_AUTH_TOKEN`); (c) the `sandbox` preset isn't in `LOOMCYCLE_PRESETS`. |
 | `sandbox_open` fails: `permission denied` on `/var/run/docker.sock` | The socket path is wrong or not mounted, or the container user can't read it — verify `ls -l /var/run/docker.sock` on the host and the `volumes:` mount; run the sidecar as root (no `user:` line). |
 | `sandbox_open` fails: image pull / `no such image` | The HOST Docker can't pull `SANDBOX_IMAGE` — confirm you pushed the session image and, if the registry is private, `docker login` on the TrueNAS host. |
 | Nested-podman sessions fail to start (podman model) | Nested rootless podman storage/kernel quirk — switch to the host-Docker-socket model, or run the sidecar in a VM. |

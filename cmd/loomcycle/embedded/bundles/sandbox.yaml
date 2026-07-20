@@ -6,8 +6,9 @@
 # Selected via `LOOMCYCLE_PRESETS=…,sandbox`. Requires:
 #   - the builder sidecar deployed on the app network (deploy/builder/; see
 #     docs/SANDBOX.md) — the mcp__sandbox__* tools are served by it.
-#   - LOOMCYCLE_SANDBOX_TOKEN set to the SAME shared secret as the sidecar's
-#     SANDBOX_AUTH_TOKEN (the mcp_servers header below consumes it).
+#   - SANDBOX_AUTH_TOKEN set to the SAME value on BOTH loomcycle and the sidecar
+#     — one env var name shared by both services (the sidecar authenticates every
+#     MCP request against it; the mcp_servers header below forwards it).
 #   - a `middle` tier — select `base` alongside, or supply your own.
 # Without the sidecar the mcp__sandbox__* tools are registered-but-unreachable
 # (the MCP pool retries lazily); nothing else in the bundle is affected.
@@ -162,9 +163,10 @@ mcp_servers:
     # overlay if it isn't at this address.
     url: http://builder-sidecar:9000/mcp
     headers:
-      # Per-run bearer when present, else the shared LOOMCYCLE_SANDBOX_TOKEN secret
-      # (must equal the sidecar's SANDBOX_AUTH_TOKEN).
-      Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_SANDBOX_TOKEN}}"
+      # The sidecar does SHARED-secret auth: set SANDBOX_AUTH_TOKEN to the same
+      # value on loomcycle + the sidecar. (No ${run.user_bearer} — a per-run
+      # loomcycle bearer isn't the sidecar's secret, so forwarding it would 401.)
+      Authorization: "Bearer ${SANDBOX_AUTH_TOKEN}"
       # Non-secret run identifiers the sidecar tags each session with, for
       # run-liveness GC + sandbox_close_run (empty when the run carries none).
       X-Loom-Root-Run: "${run.root_run_id}"
