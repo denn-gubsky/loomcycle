@@ -104,7 +104,13 @@ func (e *Engine) runArgs(name string, o openOpts) []string {
 	if o.WorkspaceHostDir != "" {
 		a = append(a, "-v", o.WorkspaceHostDir+":"+workDir+":rw")
 	} else {
-		a = append(a, "--tmpfs", fmt.Sprintf("%s:rw,size=%dm,mode=0700,exec", workDir, o.TmpfsMB))
+		// A tmpfs mounts ROOT-owned; the container runs as the non-root CtrUser
+		// (--user below). At mode=0700 that user can't write OR read/search /work
+		// (file writes AND `bash -l` reading $HOME/.bash_profile both fail with
+		// "permission denied"), so /work must be writable by other — mode=0777.
+		// (Docker's --tmpfs doesn't reliably honor uid=/gid=, so mode is the
+		// portable knob; the mount is container-private + ephemeral, single-user.)
+		a = append(a, "--tmpfs", fmt.Sprintf("%s:rw,size=%dm,mode=0777,exec", workDir, o.TmpfsMB))
 	}
 	a = append(a,
 		"--tmpfs", "/tmp:rw,size=64m,exec",
