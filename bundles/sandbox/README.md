@@ -44,7 +44,7 @@ LOOMCYCLE_PRESETS=base,sandbox
   [`deploy/builder/`](../../deploy/builder/); full operator guide in
   [`docs/SANDBOX.md`](../../docs/SANDBOX.md). Without it the sandbox tools are
   registered-but-unreachable (the MCP pool retries lazily).
-- **`LOOMCYCLE_SANDBOX_TOKEN`** — the shared bearer, set to the SAME value as the
+- **`SANDBOX_AUTH_TOKEN`** — the shared bearer, set to the SAME value as the
   sidecar's `SANDBOX_AUTH_TOKEN`. The `mcp_servers.sandbox` header consumes it.
 - **A `middle` tier** — select `base` alongside, or supply your own.
 

@@ -2324,7 +2324,9 @@ scheduled_runs:
 // and the known third-party names are allowed; provider keys + arbitrary names
 // are NOT (they must never be expandable into outbound fields).
 func TestExpandEnvAllowed_Predicate(t *testing.T) {
-	allowed := []string{"LOOMCYCLE_FOO", "LOOMCYCLE_GITEA_WEBHOOK_SECRET", "GITHUB_TOKEN", "BRAVE_API_KEY"}
+	// SANDBOX_AUTH_TOKEN is the builder-sidecar shared secret — allowlisted so the
+	// sandbox bundle's MCP header can use the SAME name as the sidecar's own env.
+	allowed := []string{"LOOMCYCLE_FOO", "LOOMCYCLE_GITEA_WEBHOOK_SECRET", "GITHUB_TOKEN", "BRAVE_API_KEY", "SANDBOX_AUTH_TOKEN"}
 	for _, n := range allowed {
 		if !ExpandEnvAllowed(n) {
 			t.Errorf("ExpandEnvAllowed(%q) = false, want true", n)
