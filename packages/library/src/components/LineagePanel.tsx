@@ -54,6 +54,10 @@ export interface LineagePanelProps {
   // Optional host error sink — called when the version-lineage load
   // fails (in addition to the inline error banner).
   onError?: (e: unknown) => void;
+  // Initial state of the "Hide retired" toggle (default false). Library sets it
+  // true for the agents tab so retired/inactive lineage versions are hidden by
+  // default; still user-toggleable.
+  defaultHideRetired?: boolean;
 }
 
 export default function LineagePanel({
@@ -70,6 +74,7 @@ export default function LineagePanel({
   onRediscover,
   onImport,
   onError,
+  defaultHideRetired,
 }: LineagePanelProps) {
   const data = useLibraryData();
   const [selectedName, setSelectedName] = useState<string>(() =>
@@ -80,7 +85,7 @@ export default function LineagePanel({
   // filter/type/sort/hide-retired state is naturally independent per tab).
   const [filterText, setFilterText] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
-  const [hideRetired, setHideRetired] = useState(false);
+  const [hideRetired, setHideRetired] = useState(!!defaultHideRetired);
   const [sortMode, setSortMode] = useState<SortMode>("none");
 
   // The list actually rendered = entries ∘ name-filter ∘ type-filter ∘
