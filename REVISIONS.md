@@ -4,6 +4,19 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.26.0
+
+**🧵 RFC BK — interactive (resident) sub-agents.** A parent agent can now drive a PERSISTENT, steerable sub-agent via three new `Agent` ops instead of re-spawning and re-threading state by hand. New primitive on the (in-band) `Agent` tool; **no wire/adapter change — `@loomcycle/client` + Python stay at 1.25.0**.
+
+- **`open` / `send` / `close`.** `Agent {op:"open", name, prompt}` starts a persistent interactive sub-run, runs its first turn, parks it at `awaiting_input`, and returns `{child_run_id, state, output}`. `Agent {op:"send", child_run_id, prompt}` steers the next turn and blocks until the child re-parks, returning that turn's output — the child keeps its full conversation, so you never restate context. `Agent {op:"close", child_run_id}` finalizes it (idempotent; cascades to grandchildren). The child stays **resident** between sends, so anything it holds — a warm sandbox container, a REPL, working memory — survives: a compile→test→fix loop keeps its container hot without re-spawning or carrying a `session_id` by hand. (#774)
+- **Reuses the interactive-run engine.** `open` forks the sub-run setup (a new `prepareSubRun`, extracted behavior-preserving from `runSubAgent` so tenant/tool-ceiling/credential wiring has one source of truth) and runs the loop with `Interactive:true` + a steer queue in a detached goroutine under `context.WithoutCancel`, so the child survives the parent's tool call returning. Synchronous `send` blocks on the child's own `awaiting_input` boundary — no change to the shared steer registry.
+- **Bounded + reaped.** A per-run cap (`LOOMCYCLE_MAX_INTERACTIVE_CHILDREN`, default 8; `open` errors past it — it never queues), an idle-TTL sweeper (`LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS`, default 30 min; per-`open` override via `idle_ttl_seconds`), and a parent-teardown backstop that closes a run's resident children when it ends. Single-replica (P1); a child is addressable only within its opener's tenant.
+- **dev/sandbox** gains a "resident session" path in its usage skill (prefer `open`/`send` for interactive multi-step work), and a new **`Context op=help topic=resident-sub-agents`** documents the lifecycle.
+
+P2/P3 (deferred, per the RFC): cross-replica `send`/`close`, streamed/incremental child output, turn-cancel of a `send`, prompt sandbox-container teardown on close (P1: the container idle-reaps on the sidecar's own TTL), and Team Orchestrator + Web-UI surfaces.
+
+Images `denngubsky/loomcycle` + `denngubsky/loomcycle-toolbox` rebuild at 1.26.0 (goreleaser). Adapters unchanged (1.25.0). Merged in #774.
+
 ## What's in v1.25.2
 
 **🩹 Patch — sandbox toolchain + skill-load fixes (RFC BI/BJ field follow-ups).** No wire/schema change; `@loomcycle/client` + Python stay at 1.25.0.
