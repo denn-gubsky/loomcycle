@@ -144,6 +144,31 @@ func TestEngine_WriteArgs_PathViaEnvNotShell(t *testing.T) {
 	}
 }
 
+// TestEngine_ExecArgs_NonLoginShell is the regression for "go: command not
+// found": the toolchain (go/cargo/rustc) lives on the image's ENV PATH, which a
+// NON-login shell inherits but a login shell (`bash -lc`) resets via /etc/profile.
+// exec must use `bash -c`, not `bash -lc`.
+func TestEngine_ExecArgs_NonLoginShell(t *testing.T) {
+	e := NewEngine(testCfg(), &fakeRunner{})
+	argv := e.execArgs("sess", "go build ./...")
+	// Must run bash -c "<command>" (non-login), NOT bash -lc.
+	var shellFlag string
+	for i, a := range argv {
+		if a == "bash" && i+1 < len(argv) {
+			shellFlag = argv[i+1]
+		}
+	}
+	if shellFlag != "-c" {
+		t.Errorf("exec should use a non-login shell (bash -c); got flag %q in %v", shellFlag, argv)
+	}
+	if shellFlag == "-lc" {
+		t.Errorf("bash -lc resets PATH via /etc/profile — drops /usr/local/go/bin: %v", argv)
+	}
+	if argv[len(argv)-1] != "go build ./..." {
+		t.Errorf("command not passed as the final arg: %v", argv)
+	}
+}
+
 func TestEngine_Exec_TimeoutReported(t *testing.T) {
 	fr := &fakeRunner{fn: func(argv []string, _ []byte) ([]byte, int, error) {
 		return []byte("partial"), -1, nil
