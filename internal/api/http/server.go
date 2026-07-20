@@ -2383,6 +2383,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	defer deregSteer()
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// Raw (glob-preserving) patterns for the Skill tool's subset check — the
+	// resolved names above have the agent's globs already expanded.
+	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools)
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
@@ -3868,6 +3871,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// Skill tool's subset check on each call) read it via ctx instead
 	// of being constructed per-run.
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools) // raw globs for the Skill subset check
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
@@ -4434,6 +4438,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	heartbeat := s.makeHeartbeat(run.ID)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools) // raw globs for the Skill subset check
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
@@ -5546,6 +5551,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// recursive Agent tool call from this sub picks up the right
 	// parent_agent_id (= subAgentID).
 	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
+	subCtx = tools.WithAgentToolPatterns(subCtx, def.Tools) // raw globs for the Skill subset check
 	subCtx = tools.WithRunIdentity(subCtx, subRID)
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's

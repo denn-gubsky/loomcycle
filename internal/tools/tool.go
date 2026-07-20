@@ -117,6 +117,27 @@ func AgentTools(ctx context.Context) []string {
 	return v
 }
 
+// ctxKeyAgentToolPatterns holds the agent's RAW tool declaration — globs
+// preserved (e.g. "mcp__sandbox__*"), unlike ctxKeyAgentTools which carries the
+// glob RESOLVED to concrete pool tool names. The Skill tool's subset check needs
+// the raw form so a glob-scoped skill can be matched against a glob-scoped agent
+// (a resolved concrete list can never cover a broader skill glob).
+type ctxKeyAgentToolPatterns struct{}
+
+// WithAgentToolPatterns attaches the agent's raw tool patterns. Set at run start
+// alongside WithAgentTools; both describe "what the agent can use" — this one
+// before glob resolution, that one after.
+func WithAgentToolPatterns(ctx context.Context, patterns []string) context.Context {
+	return context.WithValue(ctx, ctxKeyAgentToolPatterns{}, patterns)
+}
+
+// AgentToolPatterns returns the agent's raw tool patterns from ctx, or nil if
+// not attached (callers then fall back to the resolved AgentTools list).
+func AgentToolPatterns(ctx context.Context) []string {
+	v, _ := ctx.Value(ctxKeyAgentToolPatterns{}).([]string)
+	return v
+}
+
 type ctxKeySearchProviders struct{}
 
 // WithSearchProviders attaches the agent's per-agent web-search fallback list

@@ -136,6 +136,52 @@ func TestSkillTool_RefusesBroaderGlob(t *testing.T) {
 	}
 }
 
+// Regression (v1.25.2): a GLOB-scoped skill loads for a GLOB-scoped agent.
+// At invoke time AgentTools carries the agent's "mcp__sandbox__*" already
+// RESOLVED to concrete pool tools, so the subset check must consult the RAW
+// patterns (WithAgentToolPatterns) — else the skill glob can't match the
+// concrete list and the agent falsely reports "requires [mcp__sandbox__*] not
+// granted". Reproduces the bundled dev/sandbox agent+skill config.
+func TestSkillTool_GlobSkillCoveredByAgentGlobPattern(t *testing.T) {
+	set := loadSetWithSkills(t, []struct {
+		Name  string
+		Tools []string
+		Body  string
+	}{
+		{Name: "sbx", Tools: []string{"mcp__sandbox__*"}, Body: "OK"},
+	})
+	tool := &SkillTool{Set: set}
+	// AgentTools = the resolved concrete expansion; patterns = the raw glob.
+	ctx := tools.WithAgentTools(context.Background(),
+		[]string{"mcp__sandbox__open", "mcp__sandbox__exec", "mcp__sandbox__close", "Interruption"})
+	ctx = tools.WithAgentToolPatterns(ctx, []string{"mcp__sandbox__*", "Interruption"})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"sbx"}`))
+	if res.IsError {
+		t.Errorf("glob-scoped skill should load for a glob-scoped agent: %s", res.Text)
+	}
+}
+
+// The strict rule still holds via the raw-patterns path: a skill glob is
+// refused when the agent's raw patterns are narrower than the skill demands.
+func TestSkillTool_GlobSkillRefusedByNarrowerAgentPattern(t *testing.T) {
+	set := loadSetWithSkills(t, []struct {
+		Name  string
+		Tools []string
+		Body  string
+	}{
+		{Name: "sbx", Tools: []string{"mcp__sandbox__*"}, Body: "OK"},
+	})
+	tool := &SkillTool{Set: set}
+	ctx := tools.WithAgentTools(context.Background(), []string{"mcp__sandbox__exec"})
+	ctx = tools.WithAgentToolPatterns(ctx, []string{"mcp__sandbox__exec"}) // literal, not the glob
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"sbx"}`))
+	if !res.IsError {
+		t.Error("skill glob must NOT be covered by a narrower agent literal pattern")
+	}
+}
+
 // A skill with empty allowed-tools (pure prose-guidance) attaches
 // regardless of agent's tool set.
 func TestSkillTool_EmptyToolsAlwaysAllowed(t *testing.T) {
