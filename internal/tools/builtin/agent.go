@@ -58,11 +58,24 @@ type SubAgentRunnerDetailed func(ctx context.Context, name string, prompt string
 type OpenChildRunner func(ctx context.Context, name, prompt, defID string, idleTTLSeconds int) (childRunID, output, state string, err error)
 
 // SendChildRunner injects the next instruction into a resident child (RFC BK)
-// and BLOCKS until the child re-parks at awaiting_input (or terminates),
-// returning that turn's assistant output + the child's resulting state. The
-// caller must own the child (same run tree / tenant); an unknown or unowned
-// child_run_id is an error.
-type SendChildRunner func(ctx context.Context, childRunID, prompt string) (output, state string, err error)
+// and waits for that turn's result. timeoutMs bounds the wait: 0 blocks until the
+// child re-parks at awaiting_input (or terminates), matching P1; >0 returns
+// early with state "running" + the partial output-so-far if the turn is still in
+// flight after timeoutMs. The caller must own the child (same tenant); an unknown
+// or unowned child_run_id is an error.
+type SendChildRunner func(ctx context.Context, childRunID, prompt string, timeoutMs int) (output, state string, err error)
+
+// PollChildRunner checks on a resident child WITHOUT sending new input (RFC BK
+// P2): it returns the current turn's output-so-far + state. timeoutMs=0 is a
+// non-blocking snapshot; >0 waits up to that long for the child to park. Used to
+// await a child after a send returned state "running".
+type PollChildRunner func(ctx context.Context, childRunID string, timeoutMs int) (output, state string, err error)
+
+// CancelChildRunner turn-cancels a resident child's CURRENT turn (RFC BK P2):
+// it stops the in-flight model call + tool dispatch and re-parks the child at
+// awaiting_input (the child stays alive — unlike close, which terminates it).
+// A child that is already parked is a no-op.
+type CancelChildRunner func(ctx context.Context, childRunID string) (output, state string, err error)
 
 // CloseChildRunner finalizes a resident child (RFC BK), firing its teardown
 // (e.g. sandbox_close_run). Idempotent — closing an already-gone child is not an
@@ -188,13 +201,16 @@ type AgentTool struct {
 	// DefaultMaxConcurrentChildren. Wired by the HTTP server at boot.
 	CapLookup MaxConcurrentChildrenLookup
 
-	// OpenChild / SendChild / CloseChild wire the RFC BK resident-child ops
-	// (open/send/close). nil = the op is unavailable (the tool refuses with a
-	// clear "not wired" message), so a runtime without interactive sub-agents
-	// stays byte-identical for spawn/parallel_spawn. Set by the HTTP server.
-	OpenChild  OpenChildRunner
-	SendChild  SendChildRunner
-	CloseChild CloseChildRunner
+	// OpenChild / SendChild / PollChild / CancelChild / CloseChild wire the RFC
+	// BK resident-child ops (open/send/poll/cancel/close). nil = the op is
+	// unavailable (the tool refuses with a clear "not wired" message), so a
+	// runtime without interactive sub-agents stays byte-identical for
+	// spawn/parallel_spawn. Set by the HTTP server.
+	OpenChild   OpenChildRunner
+	SendChild   SendChildRunner
+	PollChild   PollChildRunner
+	CancelChild CancelChildRunner
+	CloseChild  CloseChildRunner
 }
 
 // runChild drives one sub-agent, preferring RunDetailed (surfaces the child
@@ -227,10 +243,16 @@ type agentInput struct {
 	Spawns []parallelSpawnEntry `json:"spawns,omitempty"`
 
 	// Resident-child fields (RFC BK). op="open" reuses Name/Prompt/DefID and
-	// optionally IdleTTLSeconds; op="send" uses ChildRunID + Prompt; op="close"
-	// uses ChildRunID.
+	// optionally IdleTTLSeconds; op="send" uses ChildRunID + Prompt (+ optional
+	// TimeoutMs); op="poll" uses ChildRunID (+ optional TimeoutMs); op="close"
+	// and op="cancel" use ChildRunID.
 	ChildRunID     string `json:"child_run_id,omitempty"`
 	IdleTTLSeconds int    `json:"idle_ttl_seconds,omitempty"`
+	// TimeoutMs bounds a send/poll (RFC BK P2). send: 0 = block until the child
+	// parks (P1 behavior); >0 = return {state:"running", partial output} if the
+	// turn is still going after this long. poll: 0 = a non-blocking snapshot; >0 =
+	// wait up to this long for the child to park.
+	TimeoutMs int `json:"timeout_ms,omitempty"`
 }
 
 // parallelSpawnEntry is one row in a parallel_spawn `spawns` array.
@@ -314,11 +336,29 @@ const agentInputSchema = `{
     {
       "title": "send — give a resident sub-agent its next instruction",
       "properties": {
-        "op":           {"type": "string", "enum": ["send"], "description": "Steer a resident child's next turn. Blocks until the child finishes the turn and returns its output."},
+        "op":           {"type": "string", "enum": ["send"], "description": "Steer a resident child's next turn. Waits for the turn and returns its output."},
         "child_run_id": {"type": "string", "description": "The child_run_id returned by op=open."},
-        "prompt":       {"type": "string", "description": "The next instruction for the child. It sees its full prior conversation."}
+        "prompt":       {"type": "string", "description": "The next instruction for the child. It sees its full prior conversation."},
+        "timeout_ms":   {"type": "integer", "description": "Optional. 0 (default) blocks until the child parks. >0 returns early with state \"running\" + the partial output if the turn is still going after this long — then use op=poll to await it, or op=cancel to interrupt."}
       },
       "required": ["op", "child_run_id", "prompt"]
+    },
+    {
+      "title": "poll — check on a resident sub-agent without sending input",
+      "properties": {
+        "op":           {"type": "string", "enum": ["poll"], "description": "Return a resident child's current output-so-far + state, without giving it new input. Use it to await a child after send returned state \"running\"."},
+        "child_run_id": {"type": "string", "description": "The child_run_id to check."},
+        "timeout_ms":   {"type": "integer", "description": "Optional. 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
+      },
+      "required": ["op", "child_run_id"]
+    },
+    {
+      "title": "cancel — stop a resident sub-agent's current turn",
+      "properties": {
+        "op":           {"type": "string", "enum": ["cancel"], "description": "Turn-cancel a resident child: stop its in-flight turn and re-park it (the child stays alive — use op=close to shut it down). A no-op if it's already parked."},
+        "child_run_id": {"type": "string", "description": "The child_run_id whose current turn to stop."}
+      },
+      "required": ["op", "child_run_id"]
     },
     {
       "title": "close — shut down a resident sub-agent",
@@ -333,7 +373,7 @@ const agentInputSchema = `{
 
 const agentDescription = `Spawn or drive named sub-agents, each with its own tool allowlist (your tool set does not transfer). ` +
 	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error) — best when you describe the whole task up front. ` +
-	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id, 'send' gives it the next instruction and returns that turn's output, 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
+	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id; 'send' gives it the next instruction and returns that turn's output (optional timeout_ms bounds the wait — a long turn returns state "running" + partial output); 'poll' checks a running child without new input; 'cancel' stops a child's current turn (it stays alive); 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
 	`See Context.help(topic="fan-out-patterns") for spawn vs parallel_spawn vs Channel.publish, and Context.help(topic="resident-sub-agents") for the open/send/close lifecycle.`
 
 // Name implements tools.Tool.
@@ -370,10 +410,14 @@ func (a *AgentTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return a.executeOpen(ctx, in)
 	case "send":
 		return a.executeSend(ctx, in)
+	case "poll":
+		return a.executePoll(ctx, in)
+	case "cancel":
+		return a.executeCancel(ctx, in)
 	case "close":
 		return a.executeClose(ctx, in)
 	default:
-		return tools.Result{IsError: true, Text: fmt.Sprintf("unknown op %q (expected 'spawn', 'parallel_spawn', 'open', 'send', or 'close')", in.Op)}, nil
+		return tools.Result{IsError: true, Text: fmt.Sprintf("unknown op %q (expected 'spawn', 'parallel_spawn', 'open', 'send', 'poll', 'cancel', or 'close')", in.Op)}, nil
 	}
 }
 
@@ -693,7 +737,48 @@ func (a *AgentTool) executeSend(ctx context.Context, in agentInput) (tools.Resul
 	if in.Prompt == "" {
 		return tools.Result{IsError: true, Text: "missing required field: prompt"}, nil
 	}
-	output, state, err := a.SendChild(ctx, in.ChildRunID, in.Prompt)
+	if in.TimeoutMs < 0 {
+		return tools.Result{IsError: true, Text: "timeout_ms must be >= 0 (0 = block until the child parks)"}, nil
+	}
+	output, state, err := a.SendChild(ctx, in.ChildRunID, in.Prompt, in.TimeoutMs)
+	if err != nil {
+		return tools.Result{IsError: true, Text: err.Error()}, nil
+	}
+	return residentResult(in.ChildRunID, state, output)
+}
+
+// executePoll (RFC BK P2) checks on a resident child without sending new input —
+// returns its current output-so-far + state. Used to await a child after a send
+// returned state "running" (timeout_ms=0 is a non-blocking snapshot).
+func (a *AgentTool) executePoll(ctx context.Context, in agentInput) (tools.Result, error) {
+	if a.PollChild == nil {
+		return tools.Result{IsError: true, Text: "Agent op=poll (resident sub-agent) is not available on this runtime"}, nil
+	}
+	in.ChildRunID = strings.TrimSpace(in.ChildRunID)
+	if in.ChildRunID == "" {
+		return tools.Result{IsError: true, Text: "missing required field: child_run_id"}, nil
+	}
+	if in.TimeoutMs < 0 {
+		return tools.Result{IsError: true, Text: "timeout_ms must be >= 0 (0 = non-blocking snapshot)"}, nil
+	}
+	output, state, err := a.PollChild(ctx, in.ChildRunID, in.TimeoutMs)
+	if err != nil {
+		return tools.Result{IsError: true, Text: err.Error()}, nil
+	}
+	return residentResult(in.ChildRunID, state, output)
+}
+
+// executeCancel (RFC BK P2) turn-cancels a resident child's current turn (stops
+// it and re-parks the child — the child stays alive, unlike close).
+func (a *AgentTool) executeCancel(ctx context.Context, in agentInput) (tools.Result, error) {
+	if a.CancelChild == nil {
+		return tools.Result{IsError: true, Text: "Agent op=cancel (resident sub-agent) is not available on this runtime"}, nil
+	}
+	in.ChildRunID = strings.TrimSpace(in.ChildRunID)
+	if in.ChildRunID == "" {
+		return tools.Result{IsError: true, Text: "missing required field: child_run_id"}, nil
+	}
+	output, state, err := a.CancelChild(ctx, in.ChildRunID)
 	if err != nil {
 		return tools.Result{IsError: true, Text: err.Error()}, nil
 	}

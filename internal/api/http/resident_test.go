@@ -84,7 +84,7 @@ func TestResidentChild_OpenSendClose(t *testing.T) {
 		t.Fatalf("expected 1 resident child, got %d", n)
 	}
 
-	out2, state2, err := srv.sendResidentChild(ctx, runID, "again")
+	out2, state2, err := srv.sendResidentChild(ctx, runID, "again", 0)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestResidentChild_OpenSendClose(t *testing.T) {
 		t.Errorf("second close should be a no-op, got %v", err)
 	}
 	// Sending to a gone child errors (not found).
-	if _, _, err := srv.sendResidentChild(ctx, runID, "x"); err == nil {
+	if _, _, err := srv.sendResidentChild(ctx, runID, "x", 0); err == nil {
 		t.Error("send to a closed child should error")
 	}
 }
@@ -143,7 +143,7 @@ func TestResidentChild_TenantIsolation(t *testing.T) {
 	}
 	defer func() { _ = srv.closeResidentChild(owner, runID) }()
 
-	if _, _, err := srv.sendResidentChild(intruder, runID, "x"); err == nil {
+	if _, _, err := srv.sendResidentChild(intruder, runID, "x", 0); err == nil {
 		t.Error("cross-tenant send should be refused")
 	}
 	if err := srv.closeResidentChild(intruder, runID); err != nil {
@@ -181,4 +181,130 @@ func TestResidentChild_IdleSweepReaps(t *testing.T) {
 	// One sweep far in the future → past any idle TTL → the child is reaped.
 	srv.sweepResidentChildren(time.Now().Add(24 * time.Hour))
 	waitResidentGone(t, srv, runID)
+}
+
+// gatedProvider emits a line of text, then blocks before end_turn until the test
+// releases its gate (or the turn's ctx is cancelled — RFC BH turn-cancel). Lets
+// a test hold a turn "running" to exercise send timeout_ms / poll / cancel.
+type gatedProvider struct {
+	text string
+	gate chan struct{} // one token per turn that should complete
+}
+
+func (g *gatedProvider) ID() string                    { return "stub" }
+func (g *gatedProvider) Probe(_ context.Context) error { return nil }
+func (g *gatedProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"stub-model"}, nil
+}
+func (g *gatedProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (g *gatedProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	ch := make(chan providers.Event, 4)
+	go func() {
+		defer close(ch)
+		ch <- providers.Event{Type: providers.EventText, Text: g.text}
+		select {
+		case <-g.gate:
+			ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		case <-ctx.Done():
+			// turn cancelled → emit nothing more; the loop re-parks the run.
+		}
+	}()
+	return ch, nil
+}
+
+// newGatedResidentServer builds a resident-capable server driven by a gated
+// provider. gate is buffered so the caller pre-fills a token for the open turn.
+func newGatedResidentServer(t *testing.T) (*Server, chan struct{}) {
+	t.Helper()
+	cfg := &config.Config{
+		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents:      map[string]config.AgentDef{"child": {Model: "stub-model", SystemPrompt: "be brief"}},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+	gate := make(chan struct{}, 4)
+	sem := concurrency.New(8, 8, 100*time.Millisecond)
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "gated.db"))
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := New(cfg, &stubResolver{p: &gatedProvider{text: "working", gate: gate}}, []tools.Tool{}, sem, st)
+	srv.SetSteerRegistry(steer.NewRegistry(0))
+	return srv, gate
+}
+
+// TestResidentChild_SendTimeoutThenPoll: a slow turn makes send return
+// state "running" + partial output; poll then awaits its completion.
+func TestResidentChild_SendTimeoutThenPoll(t *testing.T) {
+	srv, gate := newGatedResidentServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+
+	gate <- struct{}{} // let the open turn complete + park
+	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err != nil || state != "awaiting_input" {
+		t.Fatalf("open: state=%q err=%v", state, err)
+	}
+	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
+
+	// send with a short timeout while the turn is gated → returns "running".
+	out, state, err := srv.sendResidentChild(ctx, runID, "do slow work", 100)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if state != "running" {
+		t.Fatalf("expected state=running on a gated turn, got %q (out=%q)", state, out)
+	}
+	if !strings.Contains(out, "working") {
+		t.Errorf("expected partial output while running, got %q", out)
+	}
+
+	// a second send is refused while the turn is still in flight.
+	if _, _, err := srv.sendResidentChild(ctx, runID, "again", 100); err == nil {
+		t.Error("send during a running turn should be refused")
+	}
+
+	gate <- struct{}{} // release the turn
+	out, state, err = srv.pollResidentChild(ctx, runID, 2000)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if state != "awaiting_input" {
+		t.Fatalf("poll after release: state=%q out=%q", state, out)
+	}
+}
+
+// TestResidentChild_CancelStopsTurn: cancel turn-cancels a running turn and the
+// child re-parks (stays alive).
+func TestResidentChild_CancelStopsTurn(t *testing.T) {
+	srv, gate := newGatedResidentServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+
+	gate <- struct{}{} // open turn completes + parks
+	runID, _, state, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err != nil || state != "awaiting_input" {
+		t.Fatalf("open: state=%q err=%v", state, err)
+	}
+	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
+
+	// start a gated (never-released) turn → send times out "running".
+	_, state, err = srv.sendResidentChild(ctx, runID, "loop forever", 100)
+	if err != nil || state != "running" {
+		t.Fatalf("send: state=%q err=%v", state, err)
+	}
+
+	// cancel stops the turn and re-parks the child (alive).
+	_, state, err = srv.cancelResidentChildTurn(ctx, runID)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if state != "awaiting_input" {
+		t.Fatalf("cancel should re-park the child, got state=%q", state)
+	}
+	// the child is still resident (cancel != close).
+	if _, ok := srv.residentReg.get(runID); !ok {
+		t.Error("cancel must keep the child resident")
+	}
 }

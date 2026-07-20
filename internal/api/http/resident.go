@@ -32,6 +32,10 @@ const (
 	defaultMaxResidentChildren    = 8
 	defaultResidentChildIdleTTLMs = 30 * 60 * 1000 // 30 min
 	residentSweepInterval         = 60 * time.Second
+	// residentCancelReparkTimeout bounds how long op=cancel waits for the child's
+	// loop to re-park after its turn is stopped (RFC BK P2). The re-park is near-
+	// instant once the turn ctx cancels; this is only a backstop.
+	residentCancelReparkTimeout = 15 * time.Second
 )
 
 // residentChild is a live handle to one resident interactive sub-agent.
@@ -49,6 +53,7 @@ type residentChild struct {
 	state      string          // "awaiting_input" | "completed" | "failed"
 	turnDone   chan struct{}   // closed once when the current turn parks or the run ends
 	turnClosed bool
+	running    bool // a turn is in flight (between beginTurn and park/terminal) — RFC BK P2
 	lastUsed   time.Time
 	done       bool // loop goroutine exited
 }
@@ -61,6 +66,7 @@ func (rc *residentChild) beginTurn(now time.Time) <-chan struct{} {
 	rc.buf.Reset()
 	rc.turnDone = make(chan struct{})
 	rc.turnClosed = false
+	rc.running = true
 	rc.lastUsed = now
 	return rc.turnDone
 }
@@ -78,10 +84,20 @@ func (rc *residentChild) endTurn(state string) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.state = state
+	rc.running = false
 	if !rc.turnClosed && rc.turnDone != nil {
 		rc.turnClosed = true
 		close(rc.turnDone)
 	}
+}
+
+// currentTurnDone returns the channel the in-flight (or just-ended) turn signals
+// on, and whether a turn is currently running. Used by poll/cancel, which don't
+// start a new turn.
+func (rc *residentChild) currentTurnDone() (<-chan struct{}, bool) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.turnDone, rc.running
 }
 
 func (rc *residentChild) markDone(state string) {
@@ -234,23 +250,71 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 		rc.markDone(st)
 	}()
 
-	out, state, aerr := waitResidentTurn(ctx, rc, turnDone)
+	// open always blocks for the FIRST park (no timeout) — by the time it returns
+	// the child is parked and ready for the first send.
+	out, state, aerr := rc.awaitTurn(ctx, turnDone, 0, true)
 	return prep.RunID, out, state, aerr
 }
 
-// sendResidentChild injects the next instruction into a resident child and
-// blocks until it re-parks (or terminates), returning that turn's output.
-func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt string) (string, string, error) {
+// sendResidentChild injects the next instruction into a resident child and waits
+// for that turn (RFC BK P2: timeoutMs bounds the wait — 0 blocks until re-park,
+// >0 returns state "running" + the partial output if the turn is still going).
+func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt string, timeoutMs int) (string, string, error) {
 	rc, ok := s.lookupOwnedResident(ctx, childRunID)
 	if !ok {
 		return "", "", fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
+	}
+	// A send while the previous turn is still in flight would interleave two
+	// turns. Refuse — the parent should poll to await it, or cancel to interrupt.
+	if _, running := rc.currentTurnDone(); running {
+		return "", "", fmt.Errorf("resident sub-agent %q is still running its previous turn; poll to await it or cancel to interrupt", childRunID)
 	}
 	turnDone := rc.beginTurn(time.Now())
 	if _, err := s.steerReg.Push(ctx, childRunID, steer.Message{Text: prompt, Source: "agent", EnqueuedAt: time.Now()}); err != nil {
 		return "", "", fmt.Errorf("steer resident sub-agent %q: %w", childRunID, err)
 	}
-	out, state, aerr := waitResidentTurn(ctx, rc, turnDone)
-	return out, state, aerr
+	return rc.awaitTurn(ctx, turnDone, time.Duration(timeoutMs)*time.Millisecond, true)
+}
+
+// pollResidentChild checks a resident child without sending new input (RFC BK P2)
+// — returns its current output-so-far + state. timeoutMs=0 is a non-blocking
+// snapshot; >0 waits up to that long for the child to park.
+func (s *Server) pollResidentChild(ctx context.Context, childRunID string, timeoutMs int) (string, string, error) {
+	rc, ok := s.lookupOwnedResident(ctx, childRunID)
+	if !ok {
+		return "", "", fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
+	}
+	td, _ := rc.currentTurnDone()
+	if td == nil {
+		// No turn has ever started (shouldn't happen post-open) — report state.
+		out, st := rc.readTurn()
+		return out, st, nil
+	}
+	return rc.awaitTurn(ctx, td, time.Duration(timeoutMs)*time.Millisecond, false)
+}
+
+// cancelResidentChildTurn turn-cancels a resident child's CURRENT turn (RFC BK
+// P2): it fires the child's armed turn-cancel token so the loop stops the
+// in-flight turn and re-parks at awaiting_input — the child stays alive. The
+// child is co-located (fire the local token directly; ownership already gated by
+// lookupOwnedResident). A child that isn't mid-turn is a no-op.
+func (s *Server) cancelResidentChildTurn(ctx context.Context, childRunID string) (string, string, error) {
+	rc, ok := s.lookupOwnedResident(ctx, childRunID)
+	if !ok {
+		return "", "", fmt.Errorf("resident sub-agent %q not found (it may have been closed or timed out)", childRunID)
+	}
+	td, running := rc.currentTurnDone()
+	if !running {
+		out, st := rc.readTurn() // already parked/idle — nothing to cancel
+		return out, st, nil
+	}
+	if s.turnCancelReg == nil || !s.turnCancelReg.CancelLocal(childRunID, "cancelled by parent (resident sub-agent)") {
+		// Not armed / token vanished (the turn just ended) — treat as parked.
+		out, st := rc.readTurn()
+		return out, st, nil
+	}
+	// Wait (bounded) for the loop to re-park after the turn is stopped.
+	return rc.awaitTurn(ctx, td, residentCancelReparkTimeout, false)
 }
 
 // closeResidentChild finalizes a resident child (idempotent). Cancelling the
@@ -282,17 +346,48 @@ func (s *Server) lookupOwnedResident(ctx context.Context, childRunID string) (*r
 	return rc, true
 }
 
-// waitResidentTurn blocks until the child finishes its current turn (parks or
-// terminates) or the caller's ctx is cancelled.
-func waitResidentTurn(ctx context.Context, rc *residentChild, turnDone <-chan struct{}) (string, string, error) {
+// awaitTurn waits for the child's current turn to finish (park or terminate),
+// returning its output-so-far + state. The zero-timeout behavior differs by
+// caller (blockWhenZero): open/send block until the turn ends (P1 semantics);
+// poll takes a non-blocking snapshot. A positive timeout bounds the wait — on
+// expiry the turn is still in flight, so it returns the partial output with
+// state "running". A cancelled caller ctx returns state "interrupted" (the child
+// keeps running — re-addressable by a later send/poll, or reaped on teardown).
+func (rc *residentChild) awaitTurn(ctx context.Context, turnDone <-chan struct{}, timeout time.Duration, blockWhenZero bool) (string, string, error) {
+	if timeout <= 0 {
+		if blockWhenZero {
+			select {
+			case <-turnDone:
+				out, st := rc.readTurn()
+				return out, st, nil
+			case <-ctx.Done():
+				out, _ := rc.readTurn()
+				return out, "interrupted", ctx.Err()
+			}
+		}
+		// Non-blocking snapshot (poll): a closed turnDone (parked/ended) reports
+		// its terminal state; an open one means a turn is still in flight.
+		select {
+		case <-turnDone:
+			out, st := rc.readTurn()
+			return out, st, nil
+		default:
+			out, _ := rc.readTurn()
+			return out, "running", nil
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-turnDone:
 		out, st := rc.readTurn()
 		return out, st, nil
+	case <-timer.C:
+		out, _ := rc.readTurn()
+		return out, "running", nil
 	case <-ctx.Done():
-		// The caller went away; the child keeps running (re-addressable by a
-		// later send, or reaped on parent teardown / idle).
-		return "", "interrupted", ctx.Err()
+		out, _ := rc.readTurn()
+		return out, "interrupted", ctx.Err()
 	}
 }
 
