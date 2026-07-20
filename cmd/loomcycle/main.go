@@ -2648,6 +2648,9 @@ func main() {
 		sessionGCMaxIdle = 10 * time.Minute
 	}
 	go srv.RunSessionLockGC(bgCtx, sessionGCInterval, sessionGCMaxIdle)
+	// RFC BK: idle-reap resident interactive sub-agents (per-replica; in-process
+	// registry, no cluster coordination needed).
+	go srv.RunResidentSweeper(bgCtx)
 
 	// v0.8.15: LoomCycle MCP — when launched via `loomcycle mcp --config Y`,
 	// expose the runtime as an MCP server over stdio alongside the HTTP

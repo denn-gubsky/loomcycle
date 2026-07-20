@@ -114,6 +114,11 @@ type Server struct {
 	// terminates). Always non-nil after New(); armed only for interactive runs.
 	turnCancelReg *turncancel.Registry
 
+	// residentReg maps a resident interactive sub-agent's run_id → its live
+	// handle (RFC BK). In-process (P1 single-replica). Non-nil after New();
+	// drives Agent op=open/send/close + the idle sweeper + parent-teardown reap.
+	residentReg *residentRegistry
+
 	// sessionLocks tracks per-session mutexes used by continuation
 	// requests (handleMessages, or handleRuns with a non-empty
 	// SessionID). A concurrent request to the same session fast-fails
@@ -485,6 +490,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	} else {
 		s.contextPlugins = cp
 	}
+	s.residentReg = newResidentRegistry() // RFC BK: resident interactive sub-agents
 	s.tools = append(s.tools, &builtin.AgentTool{
 		// Run drops the run_id (the common sequential/spawn path); RunDetailed
 		// keeps it for the parallel_spawn ledger (RFC X Phase 3). Both drive
@@ -494,6 +500,11 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 			return out, err
 		},
 		RunDetailed: s.runSubAgent,
+		// RFC BK resident sub-agents: open/send/close drive a persistent
+		// interactive child (the interactive fork of runSubAgent).
+		OpenChild:   s.openResidentChild,
+		SendChild:   s.sendResidentChild,
+		CloseChild:  s.closeResidentChild,
 		SpawnLedger: cfg.Env.ResumeFanout, // RFC X Phase 3: record the spawn ledger (default off)
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
@@ -6886,6 +6897,12 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 	if meta.IsTopLevel {
 		defer s.purgeEphemeralVolumesForRun(meta.RootRunID)
 	}
+	// RFC BK: close any resident interactive sub-agents this run opened — the
+	// backstop for a parent that completes/errors without closing them itself. A
+	// parent CANCEL already cascades to them (they register with ParentAgentID);
+	// this defer covers the NORMAL-completion path the cascade misses. Fires on
+	// every terminal branch below; a no-op when the run opened none.
+	defer s.closeResidentChildrenOf(meta.AgentID)
 	if cause := context.Cause(runCtx); errors.Is(cause, cancel.ErrCancelledByAPI) {
 		// API-cancel terminal write. Reason text comes from the
 		// optional wrapper; falls back to the sentinel string.
