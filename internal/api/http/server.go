@@ -500,10 +500,12 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 			return out, err
 		},
 		RunDetailed: s.runSubAgent,
-		// RFC BK resident sub-agents: open/send/close drive a persistent
-		// interactive child (the interactive fork of runSubAgent).
+		// RFC BK resident sub-agents: open/send/poll/cancel/close drive a
+		// persistent interactive child (the interactive fork of runSubAgent).
 		OpenChild:   s.openResidentChild,
 		SendChild:   s.sendResidentChild,
+		PollChild:   s.pollResidentChild,
+		CancelChild: s.cancelResidentChildTurn,
 		CloseChild:  s.closeResidentChild,
 		SpawnLedger: cfg.Env.ResumeFanout, // RFC X Phase 3: record the spawn ledger (default off)
 		// v0.11.8 — per-agent max_concurrent_children cap for
