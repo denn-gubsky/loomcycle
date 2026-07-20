@@ -45,10 +45,14 @@ agents:
          test with sandbox_exec. Read a non-zero exit + its output, fix, and re-run —
          that compile→test→fix loop is the core of the job.
       3. Pull results out with sandbox_read when you need to show an artifact.
-      4. Close the session with sandbox_close when the task is done — UNLESS you were
-         asked to keep it open (a parent driving a multi-step session): then leave it
-         open and report the session_id. Likewise, if you're GIVEN a session_id, reuse
-         it instead of opening a new one.
+      4. Session lifecycle — follow the caller's intent exactly:
+         - GIVEN a session_id → reuse it; do NOT open a new one, and do NOT close it
+           (the caller owns that session's lifecycle, even when your task is done).
+         - Asked to KEEP the session open (a parent will drive more commands) → leave
+           it open and end your reply with a clear `session_id: <id>` line so the
+           caller can address the next command to the same container.
+         - Otherwise (a self-contained one-shot) → sandbox_close when done so the
+           container doesn't leak.
 
       ## Notes
       - The sandbox has Python, Go, Rust, C/C++, and Node preinstalled. /work is an
@@ -123,6 +127,16 @@ skills:
       code, delegate to the `dev/sandbox` sub-agent (it has an isolated, ephemeral
       container with a full toolchain). You drive it with the `Agent` tool.
 
+      ## Mental model — there is no live session between your spawns
+      Each `Agent {op:"spawn", name:"dev/sandbox"}` is a FRESH, independent invocation —
+      dev/sandbox does NOT stay running between your calls, and it has no memory of the
+      previous spawn. The only thing that persists is the CONTAINER, which the sandbox
+      holds and addresses by an opaque `session_id`. So YOU are the continuity:
+        - capture the `session_id` dev/sandbox reports on the first spawn,
+        - keep it across your OWN turns (put it in your reply so it survives),
+        - pass it back on EVERY follow-up spawn.
+      Without the id, the next spawn can't find the container and starts from nothing.
+
       ## One-shot task (simplest)
       When you can describe the whole job upfront, spawn once and let dev/sandbox run
       the compile→test→fix loop itself:
@@ -150,9 +164,15 @@ skills:
       - The container persists between spawns (the sandbox holds it), so the checkout,
         installed deps, and build cache carry over — as long as you pass the same
         session_id and don't leave it idle too long.
-      - If a step reports the session is gone (it idled out), reopen it — you'll start
-        fresh unless the operator configured a durable workspace.
-      - Always close the session when the task is done; don't leave sandboxes running.
+      - Idle timeout: the container is reaped after a period with no commands. Across a
+        SHORT gap between your spawns that's fine (each command resets the clock). Across
+        a LONG gap — e.g. you're waiting on the human between turns — it will be reaped:
+        the next spawn should just reopen and start fresh (the previous /work is gone),
+        unless the operator configured a durable workspace. There is no way to keep a
+        container alive across a long human pause from here — that's a limitation of
+        driving the sandbox spawn-by-spawn.
+      - Always close the session when the task is genuinely done; don't leave sandboxes
+        running. (If the human may continue, keep it open and hold onto the session_id.)
       - Compiled binaries run inside the sandbox (it's a real container), so
         `./your-binary` works there.
       - If dev/sandbox reports the sandbox tools are unavailable, the builder sidecar
