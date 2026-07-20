@@ -860,30 +860,31 @@ func TestAgentTool_Open_DepthGuard(t *testing.T) {
 
 func TestAgentTool_Send_HappyPath(t *testing.T) {
 	var gotID, gotPrompt string
+	var gotTimeout int
 	a := &AgentTool{
 		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
-		SendChild: func(_ context.Context, childRunID, prompt string) (string, string, error) {
-			gotID, gotPrompt = childRunID, prompt
+		SendChild: func(_ context.Context, childRunID, prompt string, timeoutMs int) (string, string, error) {
+			gotID, gotPrompt, gotTimeout = childRunID, prompt, timeoutMs
 			return "turn 2 output", "awaiting_input", nil
 		},
 	}
 	res, _ := a.Execute(context.Background(),
-		json.RawMessage(`{"op":"send","child_run_id":"run_child_1","prompt":"now test it"}`))
+		json.RawMessage(`{"op":"send","child_run_id":"run_child_1","prompt":"now test it","timeout_ms":5000}`))
 	env := parseResident(t, res)
 	if env.Output != "turn 2 output" || env.State != "awaiting_input" || env.ChildRunID != "run_child_1" {
 		t.Errorf("envelope = %+v", env)
 	}
-	if gotID != "run_child_1" || gotPrompt != "now test it" {
-		t.Errorf("runner args: id=%q prompt=%q", gotID, gotPrompt)
+	if gotID != "run_child_1" || gotPrompt != "now test it" || gotTimeout != 5000 {
+		t.Errorf("runner args: id=%q prompt=%q timeout=%d", gotID, gotPrompt, gotTimeout)
 	}
 }
 
 func TestAgentTool_Send_MissingFields(t *testing.T) {
 	a := &AgentTool{
 		Run:       func(context.Context, string, string, string) (string, error) { return "", nil },
-		SendChild: func(context.Context, string, string) (string, string, error) { return "", "", nil },
+		SendChild: func(context.Context, string, string, int) (string, string, error) { return "", "", nil },
 	}
-	for _, in := range []string{`{"op":"send","prompt":"y"}`, `{"op":"send","child_run_id":"r"}`} {
+	for _, in := range []string{`{"op":"send","prompt":"y"}`, `{"op":"send","child_run_id":"r"}`, `{"op":"send","child_run_id":"r","prompt":"y","timeout_ms":-1}`} {
 		res, _ := a.Execute(context.Background(), json.RawMessage(in))
 		if !res.IsError {
 			t.Errorf("expected error for %s", in)
@@ -931,5 +932,85 @@ func TestAgentTool_Close_NotWired(t *testing.T) {
 	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"close","child_run_id":"r"}`))
 	if !res.IsError || !strings.Contains(res.Text, "not available") {
 		t.Errorf("close with nil CloseChild should refuse: %+v", res)
+	}
+}
+
+func TestAgentTool_Poll_HappyPath(t *testing.T) {
+	var gotID string
+	var gotTimeout int
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		PollChild: func(_ context.Context, childRunID string, timeoutMs int) (string, string, error) {
+			gotID, gotTimeout = childRunID, timeoutMs
+			return "partial so far", "running", nil
+		},
+	}
+	res, _ := a.Execute(context.Background(),
+		json.RawMessage(`{"op":"poll","child_run_id":"run_child_1","timeout_ms":2000}`))
+	env := parseResident(t, res)
+	if env.State != "running" || env.Output != "partial so far" || env.ChildRunID != "run_child_1" {
+		t.Errorf("envelope = %+v", env)
+	}
+	if gotID != "run_child_1" || gotTimeout != 2000 {
+		t.Errorf("runner args: id=%q timeout=%d", gotID, gotTimeout)
+	}
+}
+
+func TestAgentTool_Poll_MissingChildRunID(t *testing.T) {
+	a := &AgentTool{
+		Run:       func(context.Context, string, string, string) (string, error) { return "", nil },
+		PollChild: func(context.Context, string, int) (string, string, error) { return "", "", nil },
+	}
+	for _, in := range []string{`{"op":"poll"}`, `{"op":"poll","child_run_id":"r","timeout_ms":-5}`} {
+		res, _ := a.Execute(context.Background(), json.RawMessage(in))
+		if !res.IsError {
+			t.Errorf("expected error for %s", in)
+		}
+	}
+}
+
+func TestAgentTool_Poll_NotWired(t *testing.T) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) { return "", nil }}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"poll","child_run_id":"r"}`))
+	if !res.IsError || !strings.Contains(res.Text, "not available") {
+		t.Errorf("poll with nil PollChild should refuse: %+v", res)
+	}
+}
+
+func TestAgentTool_Cancel_HappyPath(t *testing.T) {
+	var gotID string
+	a := &AgentTool{
+		Run: func(context.Context, string, string, string) (string, error) { return "", nil },
+		CancelChild: func(_ context.Context, childRunID string) (string, string, error) {
+			gotID = childRunID
+			return "stopped mid-turn", "awaiting_input", nil
+		},
+	}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"cancel","child_run_id":"run_child_1"}`))
+	env := parseResident(t, res)
+	if env.State != "awaiting_input" || env.ChildRunID != "run_child_1" {
+		t.Errorf("envelope = %+v", env)
+	}
+	if gotID != "run_child_1" {
+		t.Errorf("cancel arg = %q", gotID)
+	}
+}
+
+func TestAgentTool_Cancel_MissingChildRunID(t *testing.T) {
+	a := &AgentTool{
+		Run:         func(context.Context, string, string, string) (string, error) { return "", nil },
+		CancelChild: func(context.Context, string) (string, string, error) { return "", "", nil },
+	}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"cancel"}`))
+	if !res.IsError {
+		t.Errorf("cancel without child_run_id should error: %+v", res)
+	}
+}
+
+func TestAgentTool_Cancel_NotWired(t *testing.T) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) { return "", nil }}
+	res, _ := a.Execute(context.Background(), json.RawMessage(`{"op":"cancel","child_run_id":"r"}`))
+	if !res.IsError || !strings.Contains(res.Text, "not available") {
+		t.Errorf("cancel with nil CancelChild should refuse: %+v", res)
 	}
 }
