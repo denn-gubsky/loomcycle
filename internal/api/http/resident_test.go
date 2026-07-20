@@ -2,6 +2,9 @@ package http
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -306,5 +309,103 @@ func TestResidentChild_CancelStopsTurn(t *testing.T) {
 	// the child is still resident (cancel != close).
 	if _, ok := srv.residentReg.get(runID); !ok {
 		t.Error("cancel must keep the child resident")
+	}
+}
+
+// --- RFC BK P3: Web-UI visibility + operator control ---
+
+// TestResidentP3_ListAndClose drives GET /v1/_resident + POST close through the
+// real HTTP mux (open mode → the caller sees all tenants).
+func TestResidentP3_ListAndClose(t *testing.T) {
+	srv := newResidentTestServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// GET /v1/_resident lists the child with its state.
+	resp, err := http.Get(ts.URL + "/v1/_resident")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	var listBody struct {
+		Resident []residentInfo `json:"resident"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&listBody)
+	resp.Body.Close()
+	if len(listBody.Resident) != 1 {
+		t.Fatalf("expected 1 resident child, got %d (%+v)", len(listBody.Resident), listBody.Resident)
+	}
+	got := listBody.Resident[0]
+	if got.ChildRunID != runID || got.Agent != "child" || got.State != "awaiting_input" {
+		t.Errorf("resident info = %+v", got)
+	}
+
+	// POST close reaps it.
+	cresp, err := http.Post(ts.URL+"/v1/_resident/"+runID+"/close", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST close: %v", err)
+	}
+	if cresp.StatusCode != 200 {
+		t.Fatalf("close status = %d", cresp.StatusCode)
+	}
+	cresp.Body.Close()
+	waitResidentGone(t, srv, runID)
+
+	// GET again → empty.
+	resp2, _ := http.Get(ts.URL + "/v1/_resident")
+	var after struct {
+		Resident []residentInfo `json:"resident"`
+	}
+	_ = json.NewDecoder(resp2.Body).Decode(&after)
+	resp2.Body.Close()
+	if len(after.Resident) != 0 {
+		t.Errorf("expected empty list after close, got %+v", after.Resident)
+	}
+}
+
+// TestResidentP3_FillResidentState checks the Activity-view enrichment: a run
+// that's a live resident child gets resident=true + its state; others don't.
+func TestResidentP3_FillResidentState(t *testing.T) {
+	srv := newResidentTestServer(t)
+	ctx := residentParentCtx("parent-agent", "")
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
+
+	rows := []agentResponse{{RunID: runID}, {RunID: "not-a-resident-run"}}
+	srv.fillResidentState(rows)
+	if !rows[0].Resident || rows[0].ResidentState != "awaiting_input" {
+		t.Errorf("resident row = %+v", rows[0])
+	}
+	if rows[1].Resident {
+		t.Errorf("non-resident row should not be flagged: %+v", rows[1])
+	}
+}
+
+// TestResidentP3_OperatorTenantGate: an operator sees/acts on a child only in
+// its own tenant; admin (all) sees any.
+func TestResidentP3_OperatorTenantGate(t *testing.T) {
+	srv := newResidentTestServer(t)
+	ctx := residentParentCtx("parent-a", "tenant-a")
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
+
+	if _, ok := srv.residentForOperator(runID, "tenant-b", false); ok {
+		t.Error("cross-tenant operator must NOT resolve the child")
+	}
+	if _, ok := srv.residentForOperator(runID, "tenant-a", false); !ok {
+		t.Error("owning-tenant operator should resolve the child")
+	}
+	if _, ok := srv.residentForOperator(runID, "", true); !ok {
+		t.Error("admin (all) should resolve the child")
 	}
 }

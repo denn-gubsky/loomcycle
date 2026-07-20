@@ -2652,6 +2652,13 @@ func (s *Server) Mux() http.Handler {
 	// live availability + the active-providers header. Scope-gated in
 	// requiredScopeFor.
 	mux.Handle("GET /v1/_routing", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRouting))))
+	// RFC BK P3: resident interactive sub-agent visibility + operator control.
+	// GET lists (tenant-scoped); POST close/cancel act on one (tenant-gated).
+	// Per-replica (the resident registry is in-process). Scope-gated in
+	// requiredScopeFor (ScopeTenant).
+	mux.Handle("GET /v1/_resident", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListResident))))
+	mux.Handle("POST /v1/_resident/{run_id}/close", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResidentClose))))
+	mux.Handle("POST /v1/_resident/{run_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResidentCancel))))
 	// Operator-triggered immediate re-probe (issue #88) — unsticks the
 	// availability matrix after a transient outage without a restart,
 	// instead of waiting up to a full probe interval for the next tick.
@@ -5870,6 +5877,13 @@ type agentResponse struct {
 	// cost to the user-initiated request in a single fetch. Omitted when
 	// the run carried no context.
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// RFC BK P3 — resident interactive sub-agent visibility. Resident is true
+	// when this run is a LIVE resident child (open via Agent op=open, in this
+	// replica's registry); ResidentState is its current state ("running" |
+	// "awaiting_input" | "completed" | "failed"). Both omitted for ordinary runs
+	// so the Activity view can badge resident children + show their live state.
+	Resident      bool   `json:"resident,omitempty"`
+	ResidentState string `json:"resident_state,omitempty"`
 }
 
 type agentResponseUsage struct {
@@ -6129,7 +6143,24 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		out = append(out, runToAgentResponse(run, live))
 	}
 	fillAwaitedStateForRunning(r.Context(), s.store, out)
+	s.fillResidentState(out) // RFC BK P3: badge resident children + their live state
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
+}
+
+// fillResidentState enriches agent rows that are LIVE resident children (RFC BK
+// P3) with resident=true + their current state, so the Activity view can badge
+// them. Per-replica (the registry is in-process); a row whose run isn't resident
+// here is left unchanged.
+func (s *Server) fillResidentState(rows []agentResponse) {
+	if s.residentReg == nil {
+		return
+	}
+	for i := range rows {
+		if info, ok := s.residentReg.get(rows[i].RunID); ok {
+			rows[i].Resident = true
+			rows[i].ResidentState = info.snapshotInfo().State
+		}
+	}
 }
 
 // ---- Interruption (v0.8.16) ---------------------------------------

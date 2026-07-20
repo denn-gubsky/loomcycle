@@ -595,6 +595,13 @@ func requiredScopeFor(method, path string) string {
 	// satisfies. Read-only GET.
 	case path == "/v1/_models":
 		return auth.ScopeTenant
+	// RFC BK P3 — resident interactive sub-agent visibility + operator control.
+	// GET /v1/_resident lists (tenant-scoped in the handler); POST
+	// /v1/_resident/{run_id}/close|cancel act on one (tenant-gated in the handler,
+	// opaque-404 cross-tenant). Tenant-readable/actionable so a tenant operator
+	// can see + reap its own runs' resident children; ScopeAdmin also satisfies.
+	case path == "/v1/_resident" || strings.HasPrefix(path, "/v1/_resident/"):
+		return auth.ScopeTenant
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, cross-tenant user focus.
