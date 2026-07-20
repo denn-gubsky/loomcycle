@@ -160,11 +160,15 @@ func (e *Engine) Open(ctx context.Context, name string, o openOpts) error {
 
 // execArgs builds `podman exec` for running a command inside a session's shell.
 func (e *Engine) execArgs(name, command string) []string {
-	// The user command runs inside the CONTAINER's login shell — that's the
-	// sandbox boundary. Host-side there is no shell: podman + its args are
-	// exec'd directly (no host shell interpolation), so `command` cannot inject
-	// into the host.
-	return []string{"exec", name, "bash", "-lc", command}
+	// NON-login shell (`bash -c`, not `-lc`): the toolchain lives on the image's
+	// ENV PATH (/usr/local/go/bin, /usr/local/cargo/bin), which `docker exec`
+	// inherits. A LOGIN shell would source /etc/profile and RESET PATH to the
+	// Debian default — dropping go/cargo/rustc ("go: command not found") while
+	// leaving /usr/bin tools (python3, gcc, node) working. Non-login keeps the
+	// image PATH + the sidecar's --env cache overrides, and also avoids the
+	// login shell reading $HOME/.bash_profile. Host-side there is no shell:
+	// podman + args are exec'd directly, so `command` can't inject into the host.
+	return []string{"exec", name, "bash", "-c", command}
 }
 
 // Exec runs one command in the session, bounded by timeout + maxOut.
@@ -185,7 +189,7 @@ func (e *Engine) Write(ctx context.Context, name, rel string, content []byte) er
 	abs := workDir + "/" + rel
 	argv := prepend(e.cfg.PodmanBin, []string{
 		"exec", "-i", "--env", "SBX_DEST=" + abs, name,
-		"bash", "-lc", `mkdir -p "$(dirname "$SBX_DEST")" && cat > "$SBX_DEST"`,
+		"bash", "-c", `mkdir -p "$(dirname "$SBX_DEST")" && cat > "$SBX_DEST"`,
 	})
 	out, code, err := e.run.Run(ctx, content, e.cfg.MaxOutBytes, argv...)
 	if err != nil {
@@ -202,7 +206,7 @@ func (e *Engine) Read(ctx context.Context, name, rel string, maxBytes int64) ([]
 	abs := workDir + "/" + rel
 	argv := prepend(e.cfg.PodmanBin, []string{
 		"exec", "--env", "SBX_SRC=" + abs, name,
-		"bash", "-lc", `cat "$SBX_SRC"`,
+		"bash", "-c", `cat "$SBX_SRC"`,
 	})
 	out, code, err := e.run.Run(ctx, nil, maxBytes, argv...)
 	if err != nil {
