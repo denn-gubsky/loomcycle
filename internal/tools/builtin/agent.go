@@ -334,7 +334,7 @@ const agentInputSchema = `{
 const agentDescription = `Spawn or drive named sub-agents, each with its own tool allowlist (your tool set does not transfer). ` +
 	`Stateless ops: 'spawn' (default; one child, return its final text) and 'parallel_spawn' (N children concurrently, JSON envelope with per-child ok/output/error) — best when you describe the whole task up front. ` +
 	`Resident ops (stateful): 'open' starts a persistent sub-agent and returns a child_run_id, 'send' gives it the next instruction and returns that turn's output, 'close' shuts it down. Use these when the child must keep state between steps — a warm sandbox container, a REPL, a multi-turn analysis — instead of re-spawning and re-threading state by hand. Close what you open. ` +
-	`See Context.help(topic="fan-out-patterns") for spawn vs parallel_spawn vs Channel.publish.`
+	`See Context.help(topic="fan-out-patterns") for spawn vs parallel_spawn vs Channel.publish, and Context.help(topic="resident-sub-agents") for the open/send/close lifecycle.`
 
 // Name implements tools.Tool.
 func (a *AgentTool) Name() string { return "Agent" }
