@@ -176,6 +176,11 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selectedId, onS
               interactive
             </span>
           )}
+          {a.resident && (
+            <span className="pill-resident" title="Resident sub-agent — a persistent interactive child driven via Agent open/send/close">
+              resident{a.resident_state ? ` · ${a.resident_state}` : ""}
+            </span>
+          )}
         </span>
         {onSelect ? (
           <button

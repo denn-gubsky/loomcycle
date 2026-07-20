@@ -87,10 +87,28 @@ export interface Agent {
   // handle. Absent in single-replica deployments (the server omits
   // the field when its replica_id is unset).
   replica_id?: string;
+  // RFC BK P3: this run is a LIVE resident interactive sub-agent (opened via
+  // Agent op=open). `resident_state` is its current state — "running" (mid-turn)
+  // or "awaiting_input" (parked). Absent for ordinary runs.
+  resident?: boolean;
+  resident_state?: "running" | "awaiting_input" | "completed" | "failed" | "";
 }
 
 export interface ListAgentsResponse {
   agents: Agent[];
+}
+
+// ResidentChild mirrors the server's residentInfo (RFC BK P3) — a live resident
+// interactive sub-agent, from GET /v1/_resident.
+export interface ResidentChild {
+  child_run_id: string;
+  agent_id: string;
+  agent?: string;
+  parent_agent_id?: string;
+  tenant_id?: string;
+  state: "running" | "awaiting_input" | "completed" | "failed";
+  idle_ttl_seconds: number;
+  last_used_at: string;
 }
 
 // LimitEventInfo mirrors providers.LimitInfo — the sidecar on a `limit`
@@ -524,6 +542,33 @@ export async function cancelAgent(agentId: string, reason?: string): Promise<unk
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ reason: reason ?? "" }),
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+  }
+  return resp.json();
+}
+
+// ---- Resident interactive sub-agents (RFC BK P3) -------------------
+
+export async function listResidentChildren(): Promise<{ resident: ResidentChild[] }> {
+  return jsonFetch<{ resident: ResidentChild[] }>(`/v1/_resident`);
+}
+
+// closeResidentChild terminates a resident child; cancelResidentChildTurn
+// turn-cancels its current turn (the child stays alive). run_id = the child's.
+export async function closeResidentChild(runId: string): Promise<unknown> {
+  return residentAction(runId, "close");
+}
+export async function cancelResidentChildTurn(runId: string): Promise<unknown> {
+  return residentAction(runId, "cancel");
+}
+async function residentAction(runId: string, op: "close" | "cancel"): Promise<unknown> {
+  const resp = await fetch(`/v1/_resident/${encodeURIComponent(runId)}/${op}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
   });
   if (!resp.ok) {
     const body = await resp.text();
