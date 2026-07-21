@@ -4444,6 +4444,19 @@ button.primary:disabled {
      cell. justify-self is a no-op in the (non-grid) detail-pane + switcher uses. */
   justify-self: start;
 }
+/* RFC BK P3 — resident interactive sub-agent chip. Distinct hue (amber) from the
+   interactive (green) chip so a resident child is scannable in the runs tree. */
+.pill-resident {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+  background: rgba(230, 168, 84, 0.15);
+  color: var(--warn, #e6a854);
+  border: 1px solid var(--warn, #e6a854);
+  justify-self: start;
+}
 .run-form-advanced {
   margin: 8px 0;
 }

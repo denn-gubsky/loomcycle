@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,7 @@ const (
 type residentChild struct {
 	runID         string
 	agentID       string // cancel-registry key (close/idle cancel by agent_id)
+	agentName     string // the resident child's agent name (for Web-UI visibility)
 	parentAgentID string // the opener's agent id (parent-teardown backstop)
 	tenantID      string // ownership: send/close must come from this tenant
 	userID        string
@@ -113,6 +115,39 @@ func (rc *residentChild) readTurn() (string, string) {
 	return rc.buf.String(), rc.state
 }
 
+// residentInfo is the non-secret read model for Web-UI visibility (RFC BK P3).
+// State: "running" (mid-turn) | "awaiting_input" (parked) | "completed" | "failed".
+type residentInfo struct {
+	ChildRunID     string    `json:"child_run_id"`
+	AgentID        string    `json:"agent_id"`
+	Agent          string    `json:"agent,omitempty"`
+	ParentAgentID  string    `json:"parent_agent_id,omitempty"`
+	TenantID       string    `json:"tenant_id,omitempty"`
+	State          string    `json:"state"`
+	IdleTTLSeconds int       `json:"idle_ttl_seconds"`
+	LastUsedAt     time.Time `json:"last_used_at"`
+}
+
+// snapshotInfo returns the child's current read model.
+func (rc *residentChild) snapshotInfo() residentInfo {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	state := rc.state
+	if rc.running {
+		state = "running"
+	}
+	return residentInfo{
+		ChildRunID:     rc.runID,
+		AgentID:        rc.agentID,
+		Agent:          rc.agentName,
+		ParentAgentID:  rc.parentAgentID,
+		TenantID:       rc.tenantID,
+		State:          state,
+		IdleTTLSeconds: int(rc.idleTTL / time.Second),
+		LastUsedAt:     rc.lastUsed,
+	}
+}
+
 // residentRegistry maps child run_id → residentChild (P1 in-process).
 type residentRegistry struct {
 	mu sync.Mutex
@@ -160,6 +195,18 @@ func (r *residentRegistry) snapshot() []*residentChild {
 	out := make([]*residentChild, 0, len(r.m))
 	for _, rc := range r.m {
 		out = append(out, rc)
+	}
+	return out
+}
+
+// listInfo returns a read-model snapshot of every resident child (RFC BK P3).
+// Snapshots the pointers under the registry lock, then reads each child under
+// its OWN lock — no lock-ordering between the registry and a child.
+func (r *residentRegistry) listInfo() []residentInfo {
+	children := r.snapshot()
+	out := make([]residentInfo, 0, len(children))
+	for _, rc := range children {
+		out = append(out, rc.snapshotInfo())
 	}
 	return out
 }
@@ -216,6 +263,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	}
 	rc.runID = prep.RunID
 	rc.agentID = prep.AgentID
+	rc.agentName = name
 	rc.tenantID = prep.TenantID
 	rc.userID = prep.UserID
 	rc.cancel = prep.CancelFn
@@ -447,4 +495,80 @@ func (s *Server) sweepResidentChildren(now time.Time) {
 			rc.cancel(fmt.Errorf("idle timeout"))
 		}
 	}
+}
+
+// --- RFC BK P3: Web-UI visibility + operator control ---
+
+// residentForOperator resolves a resident child by run_id for an operator HTTP
+// request, gated by the caller's tenant scope (all = admin/legacy/open). A child
+// in another tenant folds into not-found (opaque — run_ids aren't secrets, but
+// the gate must not become a cross-tenant existence oracle).
+func (s *Server) residentForOperator(runID, scopeTenant string, all bool) (*residentChild, bool) {
+	if s.residentReg == nil {
+		return nil, false
+	}
+	rc, ok := s.residentReg.get(runID)
+	if !ok {
+		return nil, false
+	}
+	if !all && rc.tenantID != scopeTenant {
+		return nil, false
+	}
+	return rc, true
+}
+
+// handleListResident serves GET /v1/_resident — the resident interactive
+// sub-agents visible to the caller (RFC BK P3). Tenant-scoped: an operator sees
+// its own tenant's; admin/legacy/open see all (or focus one via ?tenant=).
+// Per-replica (the registry is in-process; a child is co-located with its run).
+func (s *Server) handleListResident(w http.ResponseWriter, r *http.Request) {
+	out := make([]residentInfo, 0)
+	if s.residentReg != nil {
+		scopeTenant, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+		for _, info := range s.residentReg.listInfo() {
+			if !all && info.TenantID != scopeTenant {
+				continue
+			}
+			out = append(out, info)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resident": out})
+}
+
+// handleResidentClose serves POST /v1/_resident/{run_id}/close — terminate a
+// resident child (RFC BK P3), tenant-gated. Idempotent (unknown/other-tenant → 404).
+func (s *Server) handleResidentClose(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	scopeTenant, all := s.principalTenantScope(r.Context(), "")
+	rc, ok := s.residentForOperator(runID, scopeTenant, all)
+	if !ok {
+		http.Error(w, "no resident sub-agent for that run_id", http.StatusNotFound)
+		return
+	}
+	if _, found := s.cancelReg.Cancel(rc.agentID, "closed by operator (resident sub-agent)"); !found && rc.cancel != nil {
+		rc.cancel(fmt.Errorf("closed by operator"))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "closed": true})
+}
+
+// handleResidentCancel serves POST /v1/_resident/{run_id}/cancel — turn-cancel a
+// resident child's CURRENT turn (RFC BK P3), tenant-gated. The child stays alive.
+func (s *Server) handleResidentCancel(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	scopeTenant, all := s.principalTenantScope(r.Context(), "")
+	rc, ok := s.residentForOperator(runID, scopeTenant, all)
+	if !ok {
+		http.Error(w, "no resident sub-agent for that run_id", http.StatusNotFound)
+		return
+	}
+	stopped := s.turnCancelReg != nil && s.turnCancelReg.CancelLocal(rc.runID, "cancelled by operator (resident sub-agent)")
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "stopped": stopped})
 }

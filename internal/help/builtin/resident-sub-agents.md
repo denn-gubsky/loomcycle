@@ -47,6 +47,10 @@ Most sub-agent work is one-shot: `Agent {op:"spawn", …}` runs a child to compl
 - **Use `spawn` / `parallel_spawn`** when you can describe the whole job up front, or when N independent specialists run at once. The child is stateless and returns once.
 - **Use `open` / `send` / `close`** when you'll inspect each result and decide the next step, and the child must stay stateful between steps. A compile→test→fix loop against one warm sandbox container is the canonical case: `open` (write + build), `send` ("now run the tests"), `send` ("fix line 42 and re-run") — the container stays hot the whole time; no re-spawn, no session_id to carry.
 
+## Keeping a helper resident across a long task
+
+A long-lived agent — an interactive session, or an orchestrator driving many steps or states — can keep ONE helper resident for the whole task: `open` it once, `send` it work as each step arrives (across state transitions, tool loops, whatever), and `close` it at the end. The child is parented to your run, so it stays alive as long as you do (and is reaped automatically if you finish without closing it). This is how you give a multi-step workflow a single warm sandbox / REPL / analysis context instead of standing one up per step.
+
 ## Rules & limits
 
 - **You own the lifecycle.** The child stays alive until you `close` it, or it is idle-reaped after a period with no `send` (operator-configured; override per child with `open`'s `idle_ttl_seconds`), or the run that opened it ends.

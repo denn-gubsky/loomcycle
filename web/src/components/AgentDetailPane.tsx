@@ -7,6 +7,8 @@ import {
   TranscriptEvent,
   UserInputPayload,
   cancelAgent,
+  cancelResidentChildTurn,
+  closeResidentChild,
   getAgent,
   getTranscript,
 } from "../api";
@@ -54,6 +56,7 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
   const [events, setEvents] = useState<TranscriptEvent[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [cancelInFlight, setCancelInFlight] = useState(false);
+  const [residentInFlight, setResidentInFlight] = useState(false); // RFC BK P3
   const [parentAgent, setParentAgent] = useState<Agent | null>(null);
   const tailRef = useRef<HTMLDivElement | null>(null);
 
@@ -154,6 +157,14 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
                 interactive
               </span>
             )}
+            {agent.resident && (
+              <span
+                className="pill-resident"
+                title="Resident sub-agent — a persistent interactive child a parent drives via Agent open/send/close; stays warm between turns"
+              >
+                resident{agent.resident_state ? ` · ${agent.resident_state}` : ""}
+              </span>
+            )}
             <strong>{agent.agent || "(unknown agent)"}</strong>
             <code className="agent-id">{agent.agent_id}</code>
             {agent.status === "running" && (
@@ -173,6 +184,48 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
               >
                 {cancelInFlight ? "cancelling…" : "cancel"}
               </button>
+            )}
+            {agent.resident && agent.run_id && (
+              // RFC BK P3 — operator control of a resident child. cancel-turn
+              // stops the current turn (child stays alive); close terminates it.
+              <>
+                {agent.resident_state === "running" && (
+                  <button
+                    className="cancel-btn"
+                    disabled={residentInFlight}
+                    title="Turn-cancel the child's current turn (it stays alive, awaiting the next instruction)"
+                    onClick={async () => {
+                      setResidentInFlight(true);
+                      try {
+                        await cancelResidentChildTurn(agent.run_id);
+                      } catch (e) {
+                        setErr(e instanceof Error ? e.message : String(e));
+                      } finally {
+                        setResidentInFlight(false);
+                      }
+                    }}
+                  >
+                    {residentInFlight ? "…" : "cancel turn"}
+                  </button>
+                )}
+                <button
+                  className="cancel-btn"
+                  disabled={residentInFlight}
+                  title="Close this resident sub-agent (terminate it and free its resources)"
+                  onClick={async () => {
+                    setResidentInFlight(true);
+                    try {
+                      await closeResidentChild(agent.run_id);
+                    } catch (e) {
+                      setErr(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setResidentInFlight(false);
+                    }
+                  }}
+                >
+                  {residentInFlight ? "…" : "close resident"}
+                </button>
+              </>
             )}
             {agent.status === "running" && agent.run_id && (
               // Re-attach to a live (notably interactive/parked) run in the
