@@ -51,7 +51,20 @@ export default defineConfig({
     // ("Cannot read properties of null (reading 'useMemo')"). dedupe forces a
     // single copy from web/node_modules. (@loomcycle/client too, for good
     // measure — a duplicate is wasteful even if not fatal.)
-    dedupe: ["react", "react-dom", "react/jsx-runtime", "@loomcycle/client"],
+    // mermaid / react-markdown / remark-gfm: the @loomcycle/explorer Markdown
+    // renderer (RFC BN) imports them, and web's own TeamsView imports mermaid;
+    // without dedupe Vite bundles a SECOND ~620 KB mermaid from
+    // packages/explorer/node_modules (harmless but wasteful) — collapse to
+    // web/node_modules' single copy.
+    dedupe: [
+      "react",
+      "react-dom",
+      "react/jsx-runtime",
+      "@loomcycle/client",
+      "mermaid",
+      "react-markdown",
+      "remark-gfm",
+    ],
   },
   build: {
     // Output INTO the Go package that owns the go:embed declaration.
