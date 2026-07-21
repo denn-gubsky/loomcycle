@@ -1,157 +1,109 @@
-import { type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
 
-// Markdown is a minimal, dependency-free, safe-by-construction renderer: it
-// builds React elements (never dangerouslySetInnerHTML), so a chunk body —
-// which originates from agents and humans — cannot inject markup or script.
-// It covers the common block constructs (headings, paragraphs, fenced code,
-// blockquotes, ordered/unordered lists) and inline code/bold/italic/links;
-// anything unrecognized renders as escaped text. A viewer-grade subset of
-// CommonMark (RFC AK/AM), not a full implementation.
+// Markdown renders a chunk body as GitHub-flavored Markdown (RFC BN): headings,
+// paragraphs, inline styles, links, fenced code, blockquotes, lists, TABLES, and
+// ```mermaid diagrams. It uses react-markdown + remark-gfm; react-markdown is
+// safe by default (it does not emit raw HTML — no rehype-raw — and its default
+// urlTransform strips javascript:/other dangerous hrefs). Mermaid fences render
+// through a lazy `import("mermaid")` with securityLevel:"strict" (bundled
+// DOMPurify), the same posture as the runtime's TeamsView diagram; mermaid is an
+// OPTIONAL peer dep, so a host without it (or a diagram that fails to parse)
+// degrades gracefully to a code block.
 
 export default function Markdown({ source }: { source: string }) {
-  return <div className="md">{renderBlocks(source)}</div>;
+  return (
+    <div className="md">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+        {source}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
-function renderBlocks(src: string): ReactNode[] {
-  const lines = src.replace(/\r\n/g, "\n").split("\n");
-  const out: ReactNode[] = [];
-  let i = 0;
-  let k = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.trim() === "") {
-      i++;
-      continue;
+const MD_COMPONENTS: Components = {
+  // react-markdown already sanitized the href; add target/rel for external links.
+  a({ href, children }) {
+    const url = href ?? "";
+    const external = /^https?:\/\//i.test(url);
+    return (
+      <a href={url} target={external ? "_blank" : undefined} rel={external ? "noopener noreferrer" : undefined}>
+        {children}
+      </a>
+    );
+  },
+  // Let the code renderer own the block wrapper so a mermaid fence isn't wrapped
+  // in a <pre> (and a normal code block gets exactly one <pre>).
+  pre({ children }) {
+    return <>{children}</>;
+  },
+  code({ className, children }) {
+    const lang = /language-(\w+)/.exec(className ?? "")?.[1];
+    const raw = String(children ?? "");
+    if (lang === "mermaid") {
+      return <MermaidDiagram code={raw.replace(/\n$/, "")} />;
     }
-    // Fenced code block.
-    if (line.startsWith("```")) {
-      const buf: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith("```")) {
-        buf.push(lines[i]);
-        i++;
-      }
-      i++; // consume the closing fence (if present)
-      out.push(
-        <pre key={k++} className="md-pre">
-          <code>{buf.join("\n")}</code>
-        </pre>,
+    // Fenced block (has a language) or a multi-line block without one → <pre>.
+    if (lang || raw.includes("\n")) {
+      return (
+        <pre className="md-pre">
+          <code className={className}>{children}</code>
+        </pre>
       );
-      continue;
     }
-    // Heading.
-    const h = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (h) {
-      out.push(heading(h[1].length, inline(h[2]), k++));
-      i++;
-      continue;
-    }
-    // Blockquote (consecutive `> ` lines).
-    if (/^>\s?/.test(line)) {
-      const buf: string[] = [];
-      while (i < lines.length && /^>\s?/.test(lines[i])) {
-        buf.push(lines[i].replace(/^>\s?/, ""));
-        i++;
-      }
-      out.push(
-        <blockquote key={k++}>{inline(buf.join(" "))}</blockquote>,
-      );
-      continue;
-    }
-    // Unordered / ordered list (consecutive item lines).
-    const ul = /^[-*]\s+(.*)$/;
-    const ol = /^\d+\.\s+(.*)$/;
-    if (ul.test(line) || ol.test(line)) {
-      const ordered = ol.test(line);
-      const re = ordered ? ol : ul;
-      const items: ReactNode[] = [];
-      let j = 0;
-      while (i < lines.length && re.test(lines[i])) {
-        const m = re.exec(lines[i])!;
-        items.push(<li key={j++}>{inline(m[1])}</li>);
-        i++;
-      }
-      out.push(ordered ? <ol key={k++}>{items}</ol> : <ul key={k++}>{items}</ul>);
-      continue;
-    }
-    // Paragraph: gather consecutive non-blank, non-special lines.
-    const buf: string[] = [];
-    while (
-      i < lines.length &&
-      lines[i].trim() !== "" &&
-      !lines[i].startsWith("```") &&
-      !/^(#{1,6})\s+/.test(lines[i]) &&
-      !/^>\s?/.test(lines[i]) &&
-      !ul.test(lines[i]) &&
-      !ol.test(lines[i])
-    ) {
-      buf.push(lines[i]);
-      i++;
-    }
-    out.push(<p key={k++}>{inline(buf.join(" "))}</p>);
-  }
-  return out;
-}
+    return <code>{children}</code>; // inline
+  },
+};
 
-function heading(level: number, children: ReactNode, key: number): ReactNode {
-  switch (level) {
-    case 1:
-      return <h1 key={key}>{children}</h1>;
-    case 2:
-      return <h2 key={key}>{children}</h2>;
-    case 3:
-      return <h3 key={key}>{children}</h3>;
-    case 4:
-      return <h4 key={key}>{children}</h4>;
-    case 5:
-      return <h5 key={key}>{children}</h5>;
-    default:
-      return <h6 key={key}>{children}</h6>;
-  }
-}
+// mermaidSeq gives each render a unique DOM id (mermaid.render requires one).
+// A module counter is fine in the browser (this never runs in the workflow JS
+// sandbox where Math.random / new Date are disallowed).
+let mermaidSeq = 0;
 
-// inline tokenizes a single line into code spans, bold, italic, and links.
-// Links render as an anchor only for http(s)/relative URLs (a javascript: or
-// other scheme renders as plain label text — React does not sanitize href).
-const INLINE_RE = /(`[^`]+`)|(\*\*[^*]+?\*\*)|(\*[^*]+?\*)|(\[[^\]]+\]\([^)]+\))/;
+// MermaidDiagram lazily renders a ```mermaid fence to SVG. Theme is read from the
+// nearest [data-theme] ancestor (the explorer root / host <html>), defaulting to
+// the explorer's dark palette. A parse error or a missing mermaid dep falls back
+// to the raw code so a bad diagram never breaks the document view.
+function MermaidDiagram({ code }: { code: string }): ReactNode {
+  const ref = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<{ svg?: string; err?: boolean }>({});
 
-function inline(text: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let rest = text;
-  let key = 0;
-  while (rest.length > 0) {
-    const m = INLINE_RE.exec(rest);
-    if (!m) {
-      nodes.push(rest);
-      break;
-    }
-    if (m.index > 0) nodes.push(rest.slice(0, m.index));
-    const tok = m[0];
-    if (tok.startsWith("`")) {
-      nodes.push(<code key={key++}>{tok.slice(1, -1)}</code>);
-    } else if (tok.startsWith("**")) {
-      nodes.push(<strong key={key++}>{tok.slice(2, -2)}</strong>);
-    } else if (tok.startsWith("*")) {
-      nodes.push(<em key={key++}>{tok.slice(1, -1)}</em>);
-    } else {
-      const lm = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(tok)!;
-      const label = lm[1];
-      const url = lm[2];
-      // Anchor only for http(s) or a same-origin relative path. Exclude
-      // protocol-relative `//host` (which `startsWith("/")` would otherwise
-      // accept) — it resolves to an off-site URL, not a relative path.
-      const relative = url.startsWith("/") && !url.startsWith("//");
-      if (/^https?:\/\//i.test(url) || relative) {
-        nodes.push(
-          <a key={key++} href={url} target="_blank" rel="noopener noreferrer">
-            {label}
-          </a>,
-        );
-      } else {
-        nodes.push(label); // unsafe scheme → plain text
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mermaid = (await import("mermaid")).default;
+        const attr = ref.current?.closest("[data-theme]")?.getAttribute("data-theme");
+        const dark = attr ? attr === "dark" : true; // explorer default is dark
+        mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
+        const { svg } = await mermaid.render(`lc-mmd-${mermaidSeq++}`, code);
+        if (!cancelled) setState({ svg });
+      } catch {
+        if (!cancelled) setState({ err: true });
       }
-    }
-    rest = rest.slice(m.index + tok.length);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [code]);
+
+  if (state.err) {
+    // No ref here: the effect already captured the theme on the first (loading)
+    // render, and a <pre> ref would conflict with the <div> ref type below.
+    return (
+      <pre className="md-pre md-mermaid-error" title="diagram failed to render">
+        <code>{code}</code>
+      </pre>
+    );
   }
-  return nodes;
+  if (state.svg) {
+    return <div ref={ref} className="md-mermaid" dangerouslySetInnerHTML={{ __html: state.svg }} />;
+  }
+  return (
+    <div ref={ref} className="md-mermaid md-mermaid-loading">
+      rendering diagram…
+    </div>
+  );
 }
