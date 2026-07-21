@@ -1,0 +1,158 @@
+# RFC AQ embedded bundle: doc-colorizer
+#
+# Deterministic, zero-token code-js agent (RFC J) that color-codes Documents under a Path subtree.
+#
+# Stamps per-document color metadata — `color_enabled` + `color_scheme` — onto the ROOT chunk of
+# every Document under a Path subtree. Reusable for newly created documents:
+# re-spawn it (defaults to /loomcycle/rfcs) or point it at another subtree.
+#
+# WHY code-js and not an LLM agent: the work is pure mechanical iteration
+# (Path ls -> Document get_chunk -> merge fields -> update_chunk). There is no
+# reasoning to do, so an LLM would only add token cost, latency, and a
+# hallucination class of bug (a wrong hex value, a skipped doc). The code-agent
+# runs the exact loop deterministically and idempotently, offloaded from the
+# caller's context. An LLM parent can `Agent.spawn` it; the scheduler / a
+# webhook / an operator `spawn_run` can drive it directly.
+#
+# REQUIREMENTS
+#   - LOOMCYCLE_CODE_AGENTS_ENABLED=1  — code agents are opt-in. A `provider:
+#     code-js` agent selected WITHOUT this flag FAILS BOOT by design (it is NOT
+#     a silent idle def). So layer this bundle ONLY with the flag set, and never
+#     add it to a default preset stack.
+#   - LOOMCYCLE_SQLMEM_ENABLED=1 + a user_id on the run — Documents require SQL
+#     Memory, and the tools operate at scope=user.
+#
+# This bundle carries NO provider matrix (a code-js agent needs none — it never
+# calls a model). Layer it over your own config:
+#   ./bin/loomcycle --config <yours> --config bundles/doc-colorizer/loomcycle.yaml
+# The operator overlay can override any field (last layer wins) but cannot WIDEN
+# tools beyond the [Path, Document] ceiling here.
+
+agents:
+  doc/colorizer:
+    provider: code-js
+    description: "Deterministically stamp color_enabled + color_scheme on every Document root chunk under a Path subtree (no LLM, RFC J)."
+    tools: [Path, Document]
+    memory_scopes: [user] # Document chunk bodies live in Memory
+    sql_scopes: [user]    # Document structure lives in SQL Memory
+    code: |
+      // doc/colorizer (RFC J code-js) — stamp color metadata on the ROOT chunk
+      // of every Document under a Path subtree. Deterministic, zero-token,
+      // idempotent (re-running yields the same fields; it only bumps revisions).
+      //
+      // Parameters — JSON in the run PROMPT (preferred); scalar overrides may
+      // also arrive on the non-secret run metadata channel:
+      //   subtree       string  Path subtree to walk          (default "/loomcycle/rfcs")
+      //   scope         string  Path + Document scope          (default "user")
+      //   color_enabled bool    value for fields.color_enabled (default true)
+      //   color_scheme  object  value for fields.color_scheme  (default: DEFAULT_SCHEME)
+      //   dry_run       bool    report what WOULD change, write nothing (default false)
+      //
+      // Reuse on new documents: spawn with an empty prompt (all defaults), or
+      // pass {"subtree":"/loomcycle/docs"} to color another subtree, or a full
+      // {"color_scheme":{...}} to apply a different palette.
+
+      var DEFAULT_SCHEME = {
+        "doc.rfc": "#3a9ad6",
+        "doc.rfc.draft": "#c99a3a",
+        "doc.rfc.review": "#6a7bd6",
+        "doc.rfc.confirmed": "#3a9ad6",
+        "doc.rfc.done": "#2f8fbf",
+        "doc.research": "#8a6ad6",
+        "doc.research.done": "#8a6ad6",
+        "doc.document": "#3aa06a",
+        "doc.document.done": "#3aa06a",
+        "doc.publication": "#c99a3a",
+        "doc.publication.done": "#c99a3a",
+        "chunk.draft": "#c99a3a",
+        "chunk.review": "#6a7bd6",
+        "chunk.confirmed": "#3a9ad6",
+        "chunk.done": "#3aa06a"
+      };
+
+      function run(input) {
+        var p = resolveParams(input);
+
+        // recursive:true so a subtree with nested directories (e.g. /loomcycle
+        // with docs/ + rfcs/) is fully covered; we filter to documents below.
+        var entries = (JSON.parse(Path({ op: "ls", scope: p.scope,
+                                         path: p.subtree, recursive: true })).entries) || [];
+
+        var colored = 0, skipped = 0, failed = [];
+        for (var i = 0; i < entries.length; i++) {
+          var e = entries[i];
+          var docId = (e && e.kind === "document" && e.resource_ref)
+                        ? e.resource_ref.document_id : null;
+          if (!docId) { skipped++; continue; } // directories / non-document dirents
+          try {
+            colorOne(p, docId);
+            colored++;
+          } catch (err) {
+            failed.push({ document_id: docId, error: errText(err) });
+          }
+        }
+
+        var summary = (p.dry_run ? "[dry-run] would color " : "colored ") + colored +
+                      " / skipped " + skipped + " / failed " + failed.length +
+                      " under " + p.subtree;
+        if (failed.length) summary += " :: " + JSON.stringify(failed);
+        return { final_text: summary, colored: colored, skipped: skipped,
+                 failed: failed, subtree: p.subtree, dry_run: p.dry_run };
+      }
+
+      // colorOne stamps the color fields on one document's ROOT chunk, preserving
+      // any pre-existing fields and honoring optimistic concurrency (one retry).
+      function colorOne(p, docId) {
+        var doc = JSON.parse(Document({ op: "get_document", scope: p.scope, id: docId }));
+        var rootId = doc.root_chunk_id;
+        if (!rootId) throw new Error("no root_chunk_id for " + docId);
+
+        var chunk = JSON.parse(Document({ op: "get_chunk", scope: p.scope, id: rootId }));
+        if (p.dry_run) return;
+
+        try {
+          Document({ op: "update_chunk", scope: p.scope, id: rootId,
+                     revision: chunk.revision, fields: mergeFields(chunk.fields, p) });
+        } catch (e) {
+          // Revision conflict (or transient write error): re-read the current
+          // revision + fields once and retry. A second failure propagates.
+          var fresh = JSON.parse(Document({ op: "get_chunk", scope: p.scope, id: rootId }));
+          Document({ op: "update_chunk", scope: p.scope, id: rootId,
+                     revision: fresh.revision, fields: mergeFields(fresh.fields, p) });
+        }
+      }
+
+      // mergeFields copies the chunk's existing fields and sets the two color
+      // keys — never dropping unrelated fields already on the chunk.
+      function mergeFields(existing, p) {
+        var out = {};
+        if (existing && typeof existing === "object") {
+          for (var k in existing) {
+            if (Object.prototype.hasOwnProperty.call(existing, k)) out[k] = existing[k];
+          }
+        }
+        out.color_enabled = p.color_enabled;
+        out.color_scheme = p.color_scheme;
+        return out;
+      }
+
+      function resolveParams(input) {
+        var over = {};
+        if (input && typeof input.prompt === "string" && input.prompt.length) {
+          try { over = JSON.parse(input.prompt); } catch (e) { over = {}; }
+        }
+        var md = (input && input.metadata) || {};
+        return {
+          subtree: over.subtree || md.subtree || "/loomcycle/rfcs",
+          scope: over.scope || md.scope || "user",
+          color_enabled: (over.color_enabled !== undefined) ? !!over.color_enabled : true,
+          color_scheme: (over.color_scheme && typeof over.color_scheme === "object")
+                          ? over.color_scheme : DEFAULT_SCHEME,
+          dry_run: (over.dry_run !== undefined) ? !!over.dry_run
+                   : (md.dry_run === "1" || md.dry_run === "true")
+        };
+      }
+
+      function errText(err) {
+        return (err && err.message) ? String(err.message) : String(err);
+      }

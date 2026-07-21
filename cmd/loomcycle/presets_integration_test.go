@@ -178,6 +178,48 @@ func TestEmbedded_SandboxBundleValidates(t *testing.T) {
 	}
 }
 
+// TestEmbedded_DocColorizerBundleValidates: the opt-in doc-colorizer bundle loads
+// + validates on top of base, registering the doc/colorizer code-js agent with
+// the [Path, Document] tool ceiling and user memory/sql scopes. It is NOT in the
+// default stack (it needs LOOMCYCLE_CODE_AGENTS_ENABLED, and a code-js agent is
+// boot-fatal when disabled), so it gets its own guard here — like sandbox. Note:
+// config load/validate does NOT require code agents enabled (the enable gate is a
+// server-boot provider-registration check), so this validates in CI unchanged.
+func TestEmbedded_DocColorizerBundleValidates(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	cfg, err := config.LoadLayers(layersFor(t, "base", "doc-colorizer")...)
+	if err != nil {
+		t.Fatalf("base + doc-colorizer must load + validate cleanly: %v", err)
+	}
+	agent, ok := cfg.Agents["doc/colorizer"]
+	if !ok {
+		t.Fatalf("doc/colorizer agent not registered (agents: %v)", agentNames(cfg))
+	}
+	if agent.Provider != "code-js" {
+		t.Errorf("doc/colorizer provider = %q, want code-js", agent.Provider)
+	}
+	// The [Path, Document] ceiling the JS needs — Path to walk the subtree,
+	// Document to read+stamp the root chunk.
+	for _, want := range []string{"Path", "Document"} {
+		if !hasToolPreset(agent.Tools, want) {
+			t.Errorf("doc/colorizer should grant %q; tools=%v", want, agent.Tools)
+		}
+	}
+	// Documents live on Memory (chunk bodies) + SQL Memory (structure), both at
+	// user scope — the scopes the tool dispatch checks.
+	if !sliceHas(agent.MemoryScopes, "user") {
+		t.Errorf("doc/colorizer should declare memory_scopes: [user]; got %v", agent.MemoryScopes)
+	}
+	if !sliceHas(agent.SqlScopes, "user") {
+		t.Errorf("doc/colorizer should declare sql_scopes: [user]; got %v", agent.SqlScopes)
+	}
+	// It ships its logic inline (no filesystem agent_code/ bind) — the runtime
+	// prefers the inline body; an empty Code would mean the bundle shipped nothing.
+	if strings.TrimSpace(agent.Code) == "" {
+		t.Errorf("doc/colorizer must carry an inline code body")
+	}
+}
+
 // hasToolPreset reports whether tools contains name.
 func hasToolPreset(tools []string, name string) bool {
 	for _, t := range tools {
