@@ -4,6 +4,17 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.28.0
+
+**🧵 RFC BK Phase 3 — resident sub-agent visibility + operator control.** The final phase of the interactive/resident sub-agent line (P1 v1.26.0, P2 v1.27.0): operators can now SEE a run's live resident children in the Web UI and close / turn-cancel them. New HTTP endpoint + Web-UI surface; **no adapter change — `@loomcycle/client` + Python stay at 1.25.0**.
+
+- **`GET /v1/_resident`** — a tenant-scoped list of live resident interactive sub-agents (`child_run_id`, `agent`, `state` [running | awaiting_input | completed | failed], `parent`, `idle_ttl_s`, `last_used_at`). Per-replica (the registry is in-process; a resident child is co-located with its run). A tenant operator sees its own tenant's; admin sees all (or focuses one via `?tenant=`). (#778)
+- **`POST /v1/_resident/{run_id}/close`** (terminate) + **`/cancel`** (turn-cancel the current turn; the child stays alive) — tenant-gated, opaque-404 cross-tenant. (#778)
+- **Activity-view enrichment.** The runs listing + the agent detail pane now badge a live resident child (`resident · <state>`), and the detail pane adds "cancel turn" / "close resident" actions. Backed by additive `resident` / `resident_state` fields on the agent listing. (#778)
+- **Team-orchestrator resident helpers — already worked.** `team/orchestrator` has the `Agent` tool and is a long-lived interactive run, so it can already `open` a helper and drive it across states with `send`/`poll`/`cancel`; a new **`Context op=help topic=resident-sub-agents`** section ("Keeping a helper resident across a long task") makes it discoverable — no new plumbing.
+
+Images `denngubsky/loomcycle` + `denngubsky/loomcycle-toolbox` rebuild at 1.28.0 (goreleaser re-embeds the Web UI). Sidecar (`loomcycle-builder-docker`) unchanged; adapters stay 1.25.0. Merged in #778.
+
 ## What's in v1.27.0
 
 **🧵 RFC BK Phase 2 — bounded, interruptible resident sub-agents.** Builds on the P1 resident sub-agents (v1.26.0): the in-band `Agent` surface gains a way to bound a long child turn and to interrupt one. New in-band tool surface; **no wire/adapter change — `@loomcycle/client` + Python stay at 1.25.0**.
