@@ -4015,6 +4015,21 @@ button.primary:disabled {
   align-items: center;
   margin-bottom: 16px;
 }
+/* RFC BN P1: a sticky top action bar for the explorer chunk/path edit dialogs
+   (the modal is the scroll container) — gated on .sticky-top so other modals'
+   headers are unaffected. */
+.modal-header.sticky-top {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
+.modal-buttons-top {
+  margin: 0;
+  flex-shrink: 0;
+}
 
 .modal-close {
   background: none;
