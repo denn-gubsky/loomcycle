@@ -116,12 +116,15 @@ loomcycle and `jobs-search-agent` (its primary downstream consumer) are separate
 
 ## Project documentation & RFCs
 
-**RFCs and project design docs are authored INTO loomcycle as Documents via the MCP `document` tool — NOT as files in the `loomcycle-internal` Gitea repo.** (Superseded 2026-07: the old `~/work/loomcycle-internal/doc-internal/rfcs/` flow is retired for *new* docs.)
+**The loomcycle document storage (MCP `document` / `path` tools, scope=user) is the PRIMARY store for ALL loomcycle project documentation — RFCs, design notes, PLANs, AND the product guides.** Create, edit, and extend docs THERE via MCP; do not treat a repo `.md` file as the source of truth. Repo markdown (`README.md`, `docs/*.md`) is an **EXPORT for external / GitHub use**: when a document changes and an external copy is needed, **MD-export it from the store** (`document op=export_md`) and write that into the repo — the store is authoritative, the repo file is the rendered copy. (Supersedes the earlier RFC-only rule and the retired `~/work/loomcycle-internal/doc-internal/rfcs/` flow: as of 2026-07-21 ALL project docs, not just RFCs, live in the store.)
 
-- **Author an RFC:** `document op=import_md markdown:<full RFC markdown>` (headings become the chunk hierarchy) to create the doc, then `document op=set_path id:<document_id> path:/loomcycle/rfcs/<slug>` to name it in the Path tree. Project docs (design notes, PLANs) go under `/loomcycle/docs/<slug>` the same way.
-- **Read an RFC/doc:** `document op=get_document path:/loomcycle/rfcs/<slug>` (metadata) or `op=export_md` (full markdown); browse with `path op=ls path:/loomcycle/rfcs`.
-- **Still RFC-first:** a new wire / cross-transport / new-primitive feature still needs an RFC authored **and approved before implementation** — only the *storage location* changed (a loomcycle Document, not a Gitea file). Draft the design, confirm decisions with the user, write the RFC Document, gate the build on approval.
-- Legacy RFCs already under `loomcycle-internal/doc-internal/rfcs/` stay there for history; migrate opportunistically, don't bulk-move.
+**Layout (Path tree, scope=user):** `/loomcycle/rfcs/<slug>` (RFCs) · `/loomcycle/docs/<slug>` (product guides + design notes + research) · `/loomcycle/marketing/*`. Each document's ROOT chunk carries a `type` (`rfc` | `document` | `research` | `publication`) + a `status` (`draft` | `review` | `confirmed` | `done`); cross-document relations via `document op=link_chunks` (e.g. an RFC `documented_by` its guide, a research `related` to a guide, PLAN `references` an RFC).
+
+- **Create / author:** `document op=import_md markdown:<full markdown>` (headings → chunk hierarchy) → `document op=set_path id:<document_id> path:/loomcycle/{rfcs,docs}/<slug>` → set the root chunk's fields (`op=update_chunk id:<root_chunk_id> type:… status:… revision:…` — `revision` is REQUIRED, get it from `op=get_chunk`). `import_md` auto-creates a `/documents/<title>` dirent — `path op=rm` it after `set_path` so the doc has one canonical path.
+- **Edit / extend:** mutate chunks IN THE STORE (`op=update_chunk` / `create_chunk` / `move_chunk` / `link_chunks`) — never hand-edit the repo `.md` as the primary change. Re-export to the repo only when the file is externally consumed.
+- **Read:** `document op=get_document path:<path>` (metadata) or `op=export_md` (full markdown); browse with `path op=ls path:/loomcycle/...`.
+- **Still RFC-first:** a new wire / cross-transport / new-primitive feature needs an RFC authored (in the store) **and approved before implementation** — draft, confirm decisions with the user, write the RFC Document, gate the build on approval.
+- Legacy RFCs under `loomcycle-internal/doc-internal/rfcs/` stay there for history; migrate opportunistically, don't bulk-move.
 
 ## When in doubt
 
