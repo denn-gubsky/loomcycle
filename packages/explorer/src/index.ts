@@ -19,6 +19,7 @@ export type {
   PathEntry,
   ChunkRow,
   ChunkDetail,
+  DocEdge,
   Principal,
   AssistantContext,
 } from "./types";

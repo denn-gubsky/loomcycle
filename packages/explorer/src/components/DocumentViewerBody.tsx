@@ -4,6 +4,7 @@ import type {
   BrowseScope,
   ChunkDetail,
   ChunkRow,
+  DocEdge,
   DocScope,
   Principal,
 } from "../types";
@@ -21,6 +22,7 @@ import DocumentChunkTree, {
 } from "./DocumentChunkTree";
 import ChunkEditorModal from "./ChunkEditorModal";
 import ColorSchemeEditor from "./ColorSchemeEditor";
+import CrossReferences from "./CrossReferences";
 import Markdown from "./Markdown";
 
 // DocumentViewerBody is the read-mostly surface for one chunked-graph document
@@ -88,6 +90,7 @@ export default function DocumentViewerBody({
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [meta, setMeta] = useState<DocumentMeta | null>(null);
   const [colorsOpen, setColorsOpen] = useState(false);
+  const [edges, setEdges] = useState<DocEdge[]>([]);
 
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
@@ -113,6 +116,15 @@ export default function DocumentViewerBody({
     [chunks],
   );
   const colorEnabled = !!meta?.color_enabled;
+  // Chunk ids with at least one edge → a 🔗 badge on those tiles.
+  const linkedIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const e of edges) {
+      s.add(e.from_id);
+      s.add(e.to_id);
+    }
+    return s;
+  }, [edges]);
   const toolbarTint = useMemo(
     () =>
       colorEnabled
@@ -156,6 +168,19 @@ export default function DocumentViewerBody({
     };
   }, [data, documentId, scope, reload, browse]);
 
+  // Load the cross-reference edges (RFC BN P4) in one call — powers the 🔗 tile
+  // badge, the References list, and the relationship graph. Best-effort.
+  useEffect(() => {
+    let cancelled = false;
+    data
+      .documentGetEdges(documentId, scope, browse)
+      .then((r) => !cancelled && setEdges(r.edges ?? []))
+      .catch(() => !cancelled && setEdges([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [data, documentId, scope, reload, browse]);
+
   // Reset selection + view when the document changes.
   useEffect(() => {
     setSelectedId(undefined);
@@ -163,6 +188,7 @@ export default function DocumentViewerBody({
     setSubtreeMd(null);
     setMode("chunks");
     setMeta(null);
+    setEdges([]);
   }, [documentId, scope]);
 
   // Fetch the selected chunk's body.
@@ -284,6 +310,7 @@ export default function DocumentViewerBody({
               onSelect={onSelect}
               colorEnabled={colorEnabled}
               scheme={meta?.color_scheme}
+              linkedIds={linkedIds}
             />
           )}
         </div>
@@ -343,6 +370,12 @@ export default function DocumentViewerBody({
                   <p className="doc-empty-body">(empty chunk)</p>
                 )}
               </div>
+              <CrossReferences
+                edges={edges}
+                documentId={documentId}
+                selectedId={selectedId}
+                onSelectChunk={setSelectedId}
+              />
             </>
           ) : (
             <div className="empty">

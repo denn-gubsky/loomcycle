@@ -50,6 +50,26 @@ export interface ChunkDetail extends ChunkRow {
   fields?: unknown;
 }
 
+// DocEdge is one cross-reference edge from get_edges (RFC BN P4): a typed link
+// between two chunks (possibly in different documents), enriched with each
+// endpoint's title/type/status/document_id so the viewer can render a References
+// list + a relationship graph without a per-endpoint get_chunk. The endpoint
+// fields are omitted when empty (a dangling endpoint, or a chunk with no
+// type/status).
+export interface DocEdge {
+  from_id: string;
+  to_id: string;
+  kind: string;
+  from_title?: string;
+  from_type?: string;
+  from_status?: string;
+  from_document_id?: string;
+  to_title?: string;
+  to_type?: string;
+  to_status?: string;
+  to_document_id?: string;
+}
+
 // Principal is the authenticated identity behind the session (resolved by the
 // host, e.g. via GET /v1/_me). The explorer only reads `subject` — it is passed
 // into the renderAssistant slot's context so a host-provided Document Assistant
