@@ -32,6 +32,19 @@ export type { Connection } from "./lib/createClient";
 export { dataLayerFromClient } from "./lib/dataLayer";
 export type { ExplorerDataLayer, ChunkPatch } from "./lib/dataLayer";
 
+// RFC BN per-document color schemes: the metadata shapes the data layer produces
+// (documents_summary / get_document) + the palette resolvers, for a host that
+// renders its own colored view.
+export type { ColorScheme, DocSummary, DocumentMeta } from "./lib/colorScheme";
+export {
+  DEFAULT_SCHEME,
+  effectiveScheme,
+  docColor,
+  chunkColor,
+  hexToTint,
+  tintStyle,
+} from "./lib/colorScheme";
+
 // The shared data-source contract (connection | client | dataLayer), for hosts
 // typing their own wrappers.
 export type { ExplorerDataSource } from "./components/ExplorerRoot";

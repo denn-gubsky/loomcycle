@@ -38,7 +38,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -48,12 +48,13 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types","export_md","import_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types","export_md","import_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
 		"title":       {"type": "string"},
 		"document_id": {"type": "string"},
+		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path)."},
 		"parent_id":   {"type": "string", "description": "create_chunk: parent chunk (omit for a child of the root)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
 		"type":        {"type": "string", "description": "Optional supertag-like chunk type."},
@@ -65,7 +66,7 @@ const documentInputSchema = `{
 		"from_id":     {"type": "string"},
 		"to_id":       {"type": "string"},
 		"kind":        {"type": "string", "description": "link/unlink_chunks: edge kind (promotes/targets/...)."},
-		"under_path":  {"type": "string", "description": "query_chunks: restrict to documents at/under this Path-tree path."},
+		"under_path":  {"type": "string", "description": "query_chunks / documents_summary: restrict to documents at/under this Path-tree path."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer"},
 		"name":        {"type": "string", "description": "define/list_types: the type name."},
@@ -84,6 +85,7 @@ type docInput struct {
 	Path        string          `json:"path"`
 	Title       string          `json:"title"`
 	DocumentID  string          `json:"document_id"`
+	DocumentIDs []string        `json:"document_ids"`
 	ParentID    string          `json:"parent_id"`
 	NewParentID string          `json:"new_parent_id"`
 	Type        string          `json:"type"`
@@ -160,7 +162,9 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	case "create_document":
 		return d.createDocument(ctx, key, mscope, in)
 	case "get_document":
-		return d.getDocument(ctx, key, in)
+		return d.getDocument(ctx, key, mscope, in)
+	case "documents_summary":
+		return d.documentsSummary(ctx, key, mscope, in)
 	case "delete_document":
 		return d.deleteDocument(ctx, key, mscope, in)
 	case "set_path":
@@ -616,7 +620,7 @@ func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in d
 	return ref.DocumentID, nil
 }
 
-func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	docID, err := d.docIDFromInput(ctx, key, in)
 	if err != nil {
 		return errResult("get_document: " + err.Error()), nil
@@ -632,10 +636,153 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, in docI
 	for i, c := range res.Columns {
 		m[c] = res.Rows[0][i]
 	}
-	return jsonResult(map[string]any{
+	rootID := asStr(m["root_chunk_id"])
+	resp := map[string]any{
 		"document_id": asStr(m["id"]), "title": asStr(m["title"]),
-		"root_chunk_id": asStr(m["root_chunk_id"]),
-	})
+		"root_chunk_id": rootID,
+	}
+	// Enrich with the ROOT chunk's type/status (the document's own kind/state)
+	// and its RFC BN color settings (persisted in the root chunk's fields) so the
+	// UI can render a document tile/tree row without a second get_chunk.
+	if rootID != "" {
+		if row, ok, rerr := d.getChunkRow(ctx, key, rootID); rerr == nil && ok {
+			if row.Type != "" {
+				resp["type"] = row.Type
+			}
+			if row.Status != "" {
+				resp["status"] = row.Status
+			}
+		}
+		enabled, scheme := docColorMeta(d.readBody(ctx, mscope, key.ScopeID, rootID))
+		resp["color_enabled"] = enabled
+		if len(scheme) > 0 {
+			resp["color_scheme"] = scheme
+		}
+	}
+	return jsonResult(resp)
+}
+
+// docColorMeta extracts the RFC BN per-document color settings from a root
+// chunk's Memory-stored fields. color_enabled toggles tinting for the whole
+// document; color_scheme is an opaque frontend map (doc.<type>.<status> and
+// chunk.<status> → CSS color) the backend stores and returns verbatim — it does
+// not interpret the palette. Both are optional; absent → (false, nil).
+func docColorMeta(cb chunkBody) (enabled bool, scheme json.RawMessage) {
+	if len(cb.Fields) == 0 {
+		return false, nil
+	}
+	var f struct {
+		ColorEnabled *bool           `json:"color_enabled"`
+		ColorScheme  json.RawMessage `json:"color_scheme"`
+	}
+	if err := json.Unmarshal(cb.Fields, &f); err != nil {
+		return false, nil
+	}
+	if f.ColorEnabled != nil {
+		enabled = *f.ColorEnabled
+	}
+	return enabled, f.ColorScheme
+}
+
+// inPlaceholders builds a `?,?,…` list and the matching args for a SQL IN clause
+// (Rebind converts `?`→`$N` on the postgres tier). Caller guarantees len>0.
+func inPlaceholders(ids []string) (string, []any) {
+	var sb strings.Builder
+	args := make([]any, 0, len(ids))
+	for i, id := range ids {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteByte('?')
+		args = append(args, id)
+	}
+	return sb.String(), args
+}
+
+// documentsSummary returns per-document display metadata — title, the ROOT
+// chunk's type/status, and the RFC BN color settings — for a set of document ids
+// and/or every document under a Path-tree path. It powers the Path-tree coloring
+// in ONE call (dirents carry only a document_id, not type/status), avoiding an
+// N+1 of get_document per row. Unknown/out-of-scope ids are silently skipped
+// (opaque — a caller can't probe another scope's documents).
+func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	ids := in.DocumentIDs
+	if in.UnderPath != "" {
+		under, err := d.documentsUnderPath(ctx, key, in.UnderPath)
+		if err != nil {
+			return errResult("documents_summary: " + err.Error()), nil
+		}
+		ids = append(ids, under...)
+	}
+	// Dedup + drop empties (a caller may mix document_ids with under_path, and
+	// the two sets can overlap).
+	seen := map[string]bool{}
+	var uniq []string
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return jsonResult(map[string]any{"documents": []any{}})
+	}
+	// Batch: the documents rows.
+	ph, args := inPlaceholders(uniq)
+	dres, err := d.query(ctx, key, `SELECT id, title, root_chunk_id FROM documents WHERE id IN (`+ph+`)`, args...)
+	if err != nil {
+		return errResult("documents_summary: " + err.Error()), nil
+	}
+	type docMeta struct{ title, root string }
+	docs := map[string]docMeta{}
+	var rootIDs []string
+	for _, r := range dres.Rows {
+		id, title, root := asStr(r[0]), asStr(r[1]), asStr(r[2])
+		docs[id] = docMeta{title: title, root: root}
+		if root != "" {
+			rootIDs = append(rootIDs, root)
+		}
+	}
+	// Batch: the root chunk rows (type/status).
+	rootRows := map[string]chunkRow{}
+	if len(rootIDs) > 0 {
+		rph, rargs := inPlaceholders(rootIDs)
+		rres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE id IN (`+rph+`)`, rargs...)
+		if err != nil {
+			return errResult("documents_summary: " + err.Error()), nil
+		}
+		for _, r := range rres.Rows {
+			row := scanChunkRow(rres.Columns, r)
+			rootRows[row.ID] = row
+		}
+	}
+	out := make([]map[string]any, 0, len(uniq))
+	for _, id := range uniq {
+		dm, ok := docs[id]
+		if !ok {
+			continue // no such document in this scope → skip (opaque)
+		}
+		entry := map[string]any{"document_id": id, "title": dm.title, "color_enabled": false}
+		if dm.root != "" {
+			entry["root_chunk_id"] = dm.root
+			if row, ok := rootRows[dm.root]; ok {
+				if row.Type != "" {
+					entry["type"] = row.Type
+				}
+				if row.Status != "" {
+					entry["status"] = row.Status
+				}
+			}
+			enabled, scheme := docColorMeta(d.readBody(ctx, mscope, key.ScopeID, dm.root))
+			entry["color_enabled"] = enabled
+			if len(scheme) > 0 {
+				entry["color_scheme"] = scheme
+			}
+		}
+		out = append(out, entry)
+	}
+	return jsonResult(map[string]any{"documents": out})
 }
 
 func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {

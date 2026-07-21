@@ -6450,3 +6450,102 @@ button.primary:disabled {
 .limit-banner.hard .tl-payload {
   color: var(--failed);
 }
+
+/* ============================================================
+   RFC BN — per-document color-scheme editor (explorer, dogfooded)
+   ============================================================ */
+.scheme-editor {
+  max-width: 520px;
+}
+.scheme-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.scheme-editor-head h3 {
+  margin: 0;
+}
+.scheme-editor-actions {
+  display: flex;
+  gap: 8px;
+}
+.scheme-editor-actions button {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.scheme-editor-actions button.primary {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+}
+.scheme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: var(--lc-text-sm);
+}
+.scheme-group {
+  margin-top: 14px;
+}
+.scheme-group h4 {
+  margin: 0 0 6px 0;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.scheme-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+}
+.scheme-row input[type="color"] {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+.scheme-key {
+  flex: 1;
+  font-size: var(--lc-text-sm);
+}
+.scheme-hex {
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+}
+.scheme-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.scheme-editor-foot button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.scheme-status {
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+}

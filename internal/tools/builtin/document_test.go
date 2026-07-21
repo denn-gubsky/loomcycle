@@ -790,3 +790,101 @@ func TestDocument_ChunkStatusBoardRoundTrip(t *testing.T) {
 		t.Errorf("SetChunkStatus(nope) err = %v, want 'no such chunk'", err)
 	}
 }
+
+// TestDocument_ColorMetadataAndSummary covers RFC BN P3: get_document surfaces
+// the ROOT chunk's type/status + the per-document color settings, and
+// documents_summary returns the same for a set of ids or a Path subtree in one
+// call (so the Path tree can color rows without an N+1 of get_document).
+func TestDocument_ColorMetadataAndSummary(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"RFC One","path":"/docs/rfc-one"}`)
+	if res.IsError {
+		t.Fatalf("create doc1: %q", res.Text)
+	}
+	doc1, root1 := out["document_id"].(string), out["root_chunk_id"].(string)
+
+	out, res = docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"RFC Two","path":"/docs/rfc-two"}`)
+	if res.IsError {
+		t.Fatalf("create doc2: %q", res.Text)
+	}
+	doc2, root2 := out["document_id"].(string), out["root_chunk_id"].(string)
+
+	// doc1: kind/state + color settings on its ROOT chunk (revision 1).
+	scheme := `{"doc.rfc.done":"#123456","chunk.done":"#654321"}`
+	_, res = docExec(t, d, ctx, `{"op":"update_chunk","scope":"agent","id":"`+root1+`","revision":1,"type":"rfc","status":"done","fields":{"color_enabled":true,"color_scheme":`+scheme+`}}`)
+	if res.IsError {
+		t.Fatalf("update root1: %q", res.Text)
+	}
+	// doc2: a kind/state but NO color settings (disabled by default).
+	_, res = docExec(t, d, ctx, `{"op":"update_chunk","scope":"agent","id":"`+root2+`","revision":1,"type":"rfc","status":"draft"}`)
+	if res.IsError {
+		t.Fatalf("update root2: %q", res.Text)
+	}
+
+	// get_document surfaces the root's type/status + color settings.
+	out, res = docExec(t, d, ctx, `{"op":"get_document","scope":"agent","id":"`+doc1+`"}`)
+	if res.IsError {
+		t.Fatalf("get_document: %q", res.Text)
+	}
+	if out["type"] != "rfc" || out["status"] != "done" {
+		t.Errorf("get_document type/status = %s", res.Text)
+	}
+	if out["color_enabled"] != true {
+		t.Errorf("get_document color_enabled = %v, want true", out["color_enabled"])
+	}
+	if cs, _ := out["color_scheme"].(map[string]any); cs["doc.rfc.done"] != "#123456" {
+		t.Errorf("get_document color_scheme = %v", out["color_scheme"])
+	}
+
+	// A color-less document: color_enabled=false and no color_scheme key.
+	out, res = docExec(t, d, ctx, `{"op":"get_document","scope":"agent","id":"`+doc2+`"}`)
+	if res.IsError {
+		t.Fatalf("get_document doc2: %q", res.Text)
+	}
+	if out["color_enabled"] != false {
+		t.Errorf("doc2 color_enabled = %v, want false", out["color_enabled"])
+	}
+	if _, has := out["color_scheme"]; has {
+		t.Errorf("doc2 should have no color_scheme: %s", res.Text)
+	}
+
+	// documents_summary by explicit ids: both docs, type/status + color flags.
+	out, res = docExec(t, d, ctx, `{"op":"documents_summary","scope":"agent","document_ids":["`+doc1+`","`+doc2+`"]}`)
+	if res.IsError {
+		t.Fatalf("documents_summary ids: %q", res.Text)
+	}
+	docs, _ := out["documents"].([]any)
+	if len(docs) != 2 {
+		t.Fatalf("documents_summary = %d docs, want 2: %s", len(docs), res.Text)
+	}
+	byID := map[string]map[string]any{}
+	for _, dd := range docs {
+		m := dd.(map[string]any)
+		byID[m["document_id"].(string)] = m
+	}
+	if byID[doc1]["type"] != "rfc" || byID[doc1]["status"] != "done" || byID[doc1]["color_enabled"] != true {
+		t.Errorf("summary doc1 = %v", byID[doc1])
+	}
+	if byID[doc2]["color_enabled"] != false {
+		t.Errorf("summary doc2 color_enabled = %v, want false", byID[doc2]["color_enabled"])
+	}
+
+	// documents_summary by under_path resolves the same set via the Path tree.
+	out, res = docExec(t, d, ctx, `{"op":"documents_summary","scope":"agent","under_path":"/docs"}`)
+	if res.IsError {
+		t.Fatalf("documents_summary under_path: %q", res.Text)
+	}
+	if docs, _ := out["documents"].([]any); len(docs) != 2 {
+		t.Errorf("under_path summary = %d docs, want 2: %s", len(docs), res.Text)
+	}
+
+	// An unknown id is silently skipped (opaque), not an error.
+	out, res = docExec(t, d, ctx, `{"op":"documents_summary","scope":"agent","document_ids":["`+doc1+`","nope"]}`)
+	if res.IsError {
+		t.Fatalf("documents_summary unknown: %q", res.Text)
+	}
+	if docs, _ := out["documents"].([]any); len(docs) != 1 {
+		t.Errorf("unknown id should be skipped: %s", res.Text)
+	}
+}

@@ -8,12 +8,19 @@ import type {
   Principal,
 } from "../types";
 import { useExplorerData } from "../lib/dataLayer";
+import {
+  docColor,
+  effectiveScheme,
+  tintStyle,
+  type DocumentMeta,
+} from "../lib/colorScheme";
 import DocumentChunkTree, {
   buildChunkTree,
   findChunkNode,
   type ChunkNode,
 } from "./DocumentChunkTree";
 import ChunkEditorModal from "./ChunkEditorModal";
+import ColorSchemeEditor from "./ColorSchemeEditor";
 import Markdown from "./Markdown";
 
 // DocumentViewerBody is the read-mostly surface for one chunked-graph document
@@ -79,6 +86,8 @@ export default function DocumentViewerBody({
   const [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [meta, setMeta] = useState<DocumentMeta | null>(null);
+  const [colorsOpen, setColorsOpen] = useState(false);
 
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
@@ -90,6 +99,26 @@ export default function DocumentViewerBody({
   const selectedIsRoot = useMemo(
     () => !!selectedDetail && !selectedDetail.parent_id,
     [selectedDetail],
+  );
+
+  // Color (RFC BN). rootChunkId comes from the meta (or the loaded root chunk);
+  // chunkStatuses seeds the editor's per-status pickers; the toolbar tints to the
+  // document's own doc.<type>.<status> color when coloring is enabled.
+  const rootChunkId = useMemo(
+    () => meta?.root_chunk_id ?? chunks.find((c) => !c.parent_id)?.id,
+    [meta, chunks],
+  );
+  const chunkStatuses = useMemo(
+    () => [...new Set(chunks.map((c) => c.status).filter((s): s is string => !!s))],
+    [chunks],
+  );
+  const colorEnabled = !!meta?.color_enabled;
+  const toolbarTint = useMemo(
+    () =>
+      colorEnabled
+        ? tintStyle(docColor(meta?.type, meta?.status, effectiveScheme(meta?.color_scheme)))
+        : undefined,
+    [colorEnabled, meta?.type, meta?.status, meta?.color_scheme],
   );
 
   // Load the chunk list when the document / scope / reload changes. Default the
@@ -113,12 +142,27 @@ export default function DocumentViewerBody({
     };
   }, [data, documentId, scope, reload, browse]);
 
+  // Load the document's color metadata (RFC BN) alongside the chunk list. It
+  // drives the chunk-tree tint, the toolbar tint, and seeds the color editor.
+  // Best-effort — a failure just leaves the document uncolored.
+  useEffect(() => {
+    let cancelled = false;
+    data
+      .documentGet(documentId, scope, browse)
+      .then((m) => !cancelled && setMeta(m))
+      .catch(() => !cancelled && setMeta(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [data, documentId, scope, reload, browse]);
+
   // Reset selection + view when the document changes.
   useEffect(() => {
     setSelectedId(undefined);
     setSelectedDetail(null);
     setSubtreeMd(null);
     setMode("chunks");
+    setMeta(null);
   }, [documentId, scope]);
 
   // Fetch the selected chunk's body.
@@ -194,11 +238,20 @@ export default function DocumentViewerBody({
 
   return (
     <div className="doc-viewer">
-      <div className="doc-toolbar">
+      <div className="doc-toolbar" style={toolbarTint}>
         <strong className="doc-title" title={rootTitle}>
           {rootTitle}
         </strong>
         <div className="doc-toolbar-actions">
+          <button
+            type="button"
+            className={colorEnabled ? "active" : ""}
+            onClick={() => setColorsOpen(true)}
+            disabled={!rootChunkId}
+            title="Colors — tint chunk tiles + the Path tree by type/status"
+          >
+            colors
+          </button>
           <button type="button" onClick={() => void download()} title="Download the whole document as Markdown (.md)">
             ↓ .md
           </button>
@@ -225,7 +278,13 @@ export default function DocumentViewerBody({
               <p>Loading…</p>
             </div>
           ) : (
-            <DocumentChunkTree tree={tree} selectedId={selectedId} onSelect={onSelect} />
+            <DocumentChunkTree
+              tree={tree}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              colorEnabled={colorEnabled}
+              scheme={meta?.color_scheme}
+            />
           )}
         </div>
         <div className="doc-content">
@@ -310,6 +369,19 @@ export default function DocumentViewerBody({
           scope={scope}
           browse={browse}
           onClose={() => setEditing(null)}
+          onSaved={refresh}
+        />
+      )}
+      {colorsOpen && rootChunkId && (
+        <ColorSchemeEditor
+          documentId={documentId}
+          rootChunkId={rootChunkId}
+          docType={meta?.type}
+          docStatus={meta?.status}
+          chunkStatuses={chunkStatuses}
+          scope={scope}
+          browse={browse}
+          onClose={() => setColorsOpen(false)}
           onSaved={refresh}
         />
       )}

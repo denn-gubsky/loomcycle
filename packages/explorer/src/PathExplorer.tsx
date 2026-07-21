@@ -16,6 +16,7 @@ import type {
   Principal,
 } from "./types";
 import { useExplorerData, type ExplorerDataLayer } from "./lib/dataLayer";
+import type { DocSummary } from "./lib/colorScheme";
 import {
   ExplorerRoot,
   useResolvedDataLayer,
@@ -206,6 +207,41 @@ function PathExplorerBody({
   }, [refresh, setSelected]);
 
   const tree = useMemo(() => buildPathTree(entries), [entries]);
+
+  // RFC BN: fetch per-document type/status + color settings for every document
+  // dirent in the tree, in ONE documents_summary call, so PathTree can color +
+  // badge document rows. Best-effort — a failure just leaves rows neutral.
+  const [summaries, setSummaries] = useState<Map<string, DocSummary>>(() => new Map());
+  useEffect(() => {
+    if (scope === "tenant") {
+      setSummaries(new Map()); // documents are agent|user only
+      return;
+    }
+    const ids = entries
+      .filter((e) => e.kind === "document")
+      .map((e) => (e.resource_ref as { document_id?: string } | undefined)?.document_id)
+      .filter((id): id is string => !!id);
+    if (ids.length === 0) {
+      setSummaries(new Map());
+      return;
+    }
+    let cancelled = false;
+    data
+      .documentsSummary({ documentIds: ids }, scope as DocScope, browse)
+      .then((resp) => {
+        if (cancelled) return;
+        const m = new Map<string, DocSummary>();
+        for (const d of resp.documents ?? []) m.set(d.document_id, d);
+        setSummaries(m);
+      })
+      .catch(() => {
+        if (!cancelled) setSummaries(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [data, entries, scope, browse]);
+
   const selected = useMemo(
     () => (selectedPath ? findNode(tree, selectedPath) : undefined),
     [tree, selectedPath],
@@ -386,6 +422,7 @@ function PathExplorerBody({
               tree={tree}
               selectedPath={selectedPath}
               onSelect={(n) => setSelected(n.fullPath)}
+              summaries={summaries}
             />
           )}
         </div>
