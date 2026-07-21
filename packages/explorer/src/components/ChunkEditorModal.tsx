@@ -67,7 +67,25 @@ export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSave
   return (
     <div className="modal-overlay" onClick={onClose}>
       <form className="modal chunk-editor" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <h3>Edit chunk</h3>
+        {/* RFC BN P1: Save/Cancel pinned to the top so a long chunk body never
+            needs scrolling to reach the save button. */}
+        <div className="modal-header sticky-top">
+          <h3>Edit chunk</h3>
+          <div className="modal-buttons modal-buttons-top">
+            <button type="button" onClick={onClose} disabled={busy}>
+              cancel
+            </button>
+            <button type="submit" className="primary" disabled={busy}>
+              {busy ? "saving…" : "save"}
+            </button>
+          </div>
+        </div>
+        {err && (
+          <div className="modal-err">
+            {err}
+            {conflict && " — reopen the chunk to load the latest, then reapply your edit."}
+          </div>
+        )}
         <label className="path-field">
           <span>Title</span>
           <input className="path-modal-input" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -111,20 +129,6 @@ export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSave
             onChange={(e) => setFieldsText(e.target.value)}
           />
         </label>
-        {err && (
-          <div className="modal-err">
-            {err}
-            {conflict && " — reopen the chunk to load the latest, then reapply your edit."}
-          </div>
-        )}
-        <div className="modal-buttons">
-          <button type="button" onClick={onClose} disabled={busy}>
-            cancel
-          </button>
-          <button type="submit" className="primary" disabled={busy}>
-            {busy ? "saving…" : "save"}
-          </button>
-        </div>
       </form>
     </div>
   );

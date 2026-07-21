@@ -481,7 +481,18 @@ function PromptModal({ state, onClose }: { state: ModalState; onClose: () => voi
   return (
     <div className="modal-overlay" onClick={onClose}>
       <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <h3>{state.title}</h3>
+        {/* RFC BN P1: Save/Cancel pinned to the top for consistency with the chunk editor. */}
+        <div className="modal-header sticky-top">
+          <h3>{state.title}</h3>
+          <div className="modal-buttons modal-buttons-top">
+            <button type="button" onClick={onClose} disabled={busy}>
+              cancel
+            </button>
+            <button type="submit" className={state.danger ? "danger" : "primary"} disabled={busy}>
+              {busy ? "working…" : state.submitLabel}
+            </button>
+          </div>
+        </div>
         {state.message && <p className="modal-context">{state.message}</p>}
         {state.fields.map((f, i) => (
           <label key={f.key} className="path-field">
@@ -496,14 +507,6 @@ function PromptModal({ state, onClose }: { state: ModalState; onClose: () => voi
           </label>
         ))}
         {err && <div className="modal-err">{err}</div>}
-        <div className="modal-buttons">
-          <button type="button" onClick={onClose} disabled={busy}>
-            cancel
-          </button>
-          <button type="submit" className={state.danger ? "danger" : "primary"} disabled={busy}>
-            {busy ? "working…" : state.submitLabel}
-          </button>
-        </div>
       </form>
     </div>
   );

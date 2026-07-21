@@ -240,6 +240,31 @@
   font-size: var(--lc-text-sm);
   margin-bottom: 16px;
 }
+/* RFC BN P1: a sticky top action bar (title + Save/Cancel) so a long chunk body
+   never needs scrolling to reach save. The modal itself is the scroll container
+   (max-height:80vh; overflow:auto), so a .sticky-top header pins to its top. */
+.loomcycle-explorer .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.loomcycle-explorer .modal-header.sticky-top {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
+.loomcycle-explorer .modal-header h3 {
+  margin: 0;
+}
+.loomcycle-explorer .modal-buttons-top {
+  margin: 0;
+  flex-shrink: 0;
+}
 .loomcycle-explorer .modal-textarea {
   width: 100%;
   font-family: inherit;
