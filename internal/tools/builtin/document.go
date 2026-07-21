@@ -38,7 +38,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses), query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -48,7 +48,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","query_chunks","define_type","list_types","export_md","import_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","export_md","import_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -183,6 +183,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.linkChunks(ctx, key, in)
 	case "unlink_chunks":
 		return d.unlinkChunks(ctx, key, in)
+	case "get_edges":
+		return d.getEdges(ctx, key, in)
 	case "query_chunks":
 		return d.queryChunks(ctx, key, in)
 	case "define_type":
@@ -1152,6 +1154,55 @@ func (d *Document) unlinkChunks(ctx context.Context, key sqlmem.ScopeKey, in doc
 		return errResult("unlink_chunks: " + err.Error()), nil
 	}
 	return jsonResult(map[string]any{"removed": true})
+}
+
+// edgeEndpointFields are the per-endpoint columns get_edges surfaces (present
+// only when non-empty) — the endpoint's title/type/status/document_id, so the UI
+// can render a References list + a relationship graph without a follow-up
+// get_chunk per endpoint.
+var edgeEndpointFields = []string{
+	"from_title", "from_type", "from_status", "from_document_id",
+	"to_title", "to_type", "to_status", "to_document_id",
+}
+
+// getEdges returns every cross-reference edge with an endpoint in the document
+// (outgoing OR incoming), each enriched via a self-join on chunks with both
+// endpoints' title/type/status/document_id. Powers the viewer's References list +
+// the RFC BN relationship graph in ONE call, replacing the raw-SQL escape hatch.
+// LEFT JOINs so a (defensively) dangling endpoint still lists with empty fields.
+func (d *Document) getEdges(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.DocumentID == "" {
+		return errResult("get_edges: missing required field: document_id"), nil
+	}
+	res, err := d.query(ctx, key, `SELECT e.from_id AS from_id, e.to_id AS to_id, e.kind AS kind,
+       cf.title AS from_title, cf.type AS from_type, cf.status AS from_status, cf.document_id AS from_document_id,
+       ct.title AS to_title, ct.type AS to_type, ct.status AS to_status, ct.document_id AS to_document_id
+FROM chunk_edges e
+LEFT JOIN chunks cf ON cf.id = e.from_id
+LEFT JOIN chunks ct ON ct.id = e.to_id
+WHERE e.from_id IN (SELECT id FROM chunks WHERE document_id = ?)
+   OR e.to_id IN (SELECT id FROM chunks WHERE document_id = ?)
+ORDER BY e.kind, e.created_at`, in.DocumentID, in.DocumentID)
+	if err != nil {
+		return errResult("get_edges: " + err.Error()), nil
+	}
+	edges := make([]map[string]any, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		m := map[string]any{}
+		for i, c := range res.Columns {
+			if i < len(r) {
+				m[c] = r[i]
+			}
+		}
+		e := map[string]any{"from_id": asStr(m["from_id"]), "to_id": asStr(m["to_id"]), "kind": asStr(m["kind"])}
+		for _, f := range edgeEndpointFields {
+			if v := asStr(m[f]); v != "" {
+				e[f] = v
+			}
+		}
+		edges = append(edges, e)
+	}
+	return jsonResult(map[string]any{"edges": edges})
 }
 
 // --- ops: query ---

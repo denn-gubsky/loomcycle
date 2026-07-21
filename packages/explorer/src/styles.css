@@ -933,3 +933,92 @@
   color: var(--fg-soft);
   font-size: var(--lc-text-xs);
 }
+
+/* ============================================================
+   RFC BN P4 — cross-reference links + relationship graph
+   ============================================================ */
+.loomcycle-explorer .chunk-link-badge {
+  font-size: 0.85em;
+  line-height: 1;
+  opacity: 0.85;
+}
+.loomcycle-explorer .doc-refs {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.loomcycle-explorer .doc-refs h4 {
+  margin: 0 0 6px 0;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.loomcycle-explorer .doc-refs-empty {
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+  margin: 0;
+}
+.loomcycle-explorer .doc-refs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.loomcycle-explorer .doc-ref {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-explorer .doc-ref-kind {
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.loomcycle-explorer .doc-ref-arrow {
+  color: var(--fg-muted);
+}
+.loomcycle-explorer .doc-ref-target {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+.loomcycle-explorer .doc-ref-target:hover {
+  text-decoration: underline;
+}
+.loomcycle-explorer .doc-ref-target.external {
+  color: var(--fg-soft);
+  cursor: default;
+}
+.loomcycle-explorer .doc-graph {
+  margin-top: 12px;
+}
+.loomcycle-explorer .doc-graph-toggle,
+.loomcycle-explorer .doc-graph-more {
+  background: none;
+  border: none;
+  color: var(--fg-soft);
+  cursor: pointer;
+  padding: 2px 0;
+  font: inherit;
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-explorer .doc-graph-toggle:hover,
+.loomcycle-explorer .doc-graph-more:hover {
+  color: var(--accent);
+}
+.loomcycle-explorer .doc-graph-more {
+  margin-top: 6px;
+  font-size: var(--lc-text-xs);
+}

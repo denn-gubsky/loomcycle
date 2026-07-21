@@ -4,6 +4,7 @@ import type {
   BrowseScope,
   ChunkDetail,
   ChunkRow,
+  DocEdge,
   DocScope,
   PathEntry,
   PathScope,
@@ -90,6 +91,13 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<ChunkDetail>;
+  // documentGetEdges returns every cross-reference edge touching a document
+  // (RFC BN P4) — the References list + relationship graph source.
+  documentGetEdges(
+    documentId: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ edges: DocEdge[] }>;
   documentUpdateChunk(
     id: string,
     revision: number,
@@ -161,6 +169,13 @@ export function dataLayerFromClient(client: LoomcycleClient): ExplorerDataLayer 
       ) as Promise<{ chunks: ChunkRow[] }>,
     documentGetChunk: (id, scope, browse) =>
       client.document({ op: "get_chunk", id, scope }, browse) as Promise<ChunkDetail>,
+    documentGetEdges: (documentId, scope, browse) =>
+      client.document(
+        // get_edges is an RFC BN P4 wire op the pinned SDK type doesn't
+        // enumerate; the /v1/_document passthrough accepts it verbatim.
+        { op: "get_edges", document_id: documentId, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ edges: DocEdge[] }>,
     documentUpdateChunk: (id, revision, patch, scope, browse) =>
       client.document(
         // `patch.fields` is unknown but DocumentToolInput.fields is a typed

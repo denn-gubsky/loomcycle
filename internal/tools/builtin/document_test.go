@@ -791,6 +791,82 @@ func TestDocument_ChunkStatusBoardRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDocument_GetEdges covers RFC BN P4: get_edges returns every edge touching
+// a document (outgoing + incoming, incl. cross-document), enriched with each
+// endpoint's title/type/status/document_id in one call.
+func TestDocument_GetEdges(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"Doc One"}`)
+	if res.IsError {
+		t.Fatalf("create doc1: %q", res.Text)
+	}
+	doc1, root1 := out["document_id"].(string), out["root_chunk_id"].(string)
+	out, res = docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+doc1+`","parent_id":"`+root1+`","title":"Bee"}`)
+	if res.IsError {
+		t.Fatalf("create B: %q", res.Text)
+	}
+	bee := out["id"].(string)
+
+	out, res = docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"Doc Two"}`)
+	if res.IsError {
+		t.Fatalf("create doc2: %q", res.Text)
+	}
+	doc2, root2 := out["document_id"].(string), out["root_chunk_id"].(string)
+
+	// root1→Bee (same-doc), root1→root2 (cross-doc).
+	for _, l := range []string{
+		`{"op":"link_chunks","scope":"agent","from_id":"` + root1 + `","to_id":"` + bee + `","kind":"has"}`,
+		`{"op":"link_chunks","scope":"agent","from_id":"` + root1 + `","to_id":"` + root2 + `","kind":"xref"}`,
+	} {
+		if _, r := docExec(t, d, ctx, l); r.IsError {
+			t.Fatalf("link: %q", r.Text)
+		}
+	}
+
+	// doc1: both edges touch it (both from root1).
+	out, res = docExec(t, d, ctx, `{"op":"get_edges","scope":"agent","document_id":"`+doc1+`"}`)
+	if res.IsError {
+		t.Fatalf("get_edges doc1: %q", res.Text)
+	}
+	edges, _ := out["edges"].([]any)
+	if len(edges) != 2 {
+		t.Fatalf("doc1 edges = %d, want 2: %s", len(edges), res.Text)
+	}
+	var xref map[string]any
+	for _, e := range edges {
+		m := e.(map[string]any)
+		if m["kind"] == "xref" {
+			xref = m
+		}
+	}
+	if xref == nil {
+		t.Fatalf("no xref edge: %s", res.Text)
+	}
+	// The cross-doc edge is enriched with the FAR endpoint's title + document_id.
+	if xref["to_title"] != "Doc Two" || xref["to_document_id"] != doc2 || xref["from_title"] != "Doc One" {
+		t.Errorf("xref enrichment = %v", xref)
+	}
+
+	// doc2: only the incoming cross-doc edge touches it (to_id = root2).
+	out, res = docExec(t, d, ctx, `{"op":"get_edges","scope":"agent","document_id":"`+doc2+`"}`)
+	if res.IsError {
+		t.Fatalf("get_edges doc2: %q", res.Text)
+	}
+	edges, _ = out["edges"].([]any)
+	if len(edges) != 1 {
+		t.Fatalf("doc2 edges = %d, want 1: %s", len(edges), res.Text)
+	}
+	if m := edges[0].(map[string]any); m["from_document_id"] != doc1 || m["kind"] != "xref" {
+		t.Errorf("doc2 incoming edge = %v", m)
+	}
+
+	// Missing document_id is an error, not a panic.
+	if _, r := docExec(t, d, ctx, `{"op":"get_edges","scope":"agent"}`); !r.IsError {
+		t.Errorf("get_edges without document_id should error")
+	}
+}
+
 // TestDocument_ColorMetadataAndSummary covers RFC BN P3: get_document surfaces
 // the ROOT chunk's type/status + the per-document color settings, and
 // documents_summary returns the same for a set of ids or a Path subtree in one

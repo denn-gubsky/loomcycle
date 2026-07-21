@@ -49,6 +49,9 @@ export interface DocumentChunkTreeProps {
   // (falls back to the default palette). Unset → neutral rows (prior behavior).
   colorEnabled?: boolean;
   scheme?: ColorScheme;
+  // RFC BN P4: chunk ids that have at least one cross-reference edge — those
+  // tiles get a 🔗 badge. Unset → no badges.
+  linkedIds?: Set<string>;
 }
 
 export default function DocumentChunkTree({
@@ -57,6 +60,7 @@ export default function DocumentChunkTree({
   onSelect,
   colorEnabled,
   scheme,
+  linkedIds,
 }: DocumentChunkTreeProps) {
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
   const toggle = useCallback((id: string) => {
@@ -106,6 +110,7 @@ export default function DocumentChunkTree({
           selectedId={selectedId}
           onSelect={onSelect}
           tintScheme={tintScheme}
+          linkedIds={linkedIds}
         />
       ))}
     </ul>
@@ -135,13 +140,15 @@ interface NodeProps {
   selectedId?: string;
   onSelect: (node: ChunkNode) => void;
   tintScheme: ColorScheme | null;
+  linkedIds?: Set<string>;
 }
 
-function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintScheme }: NodeProps) {
+function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintScheme, linkedIds }: NodeProps) {
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.get(node.row.id) !== false; // default-expanded
   const isSelected = selectedId === node.row.id;
   const rowStyle = tintScheme ? tintStyle(chunkColor(node.row.status, tintScheme)) : undefined;
+  const hasLink = linkedIds?.has(node.row.id);
   return (
     <li className={`node chunk-node ${isSelected ? "selected" : ""}`}>
       <div className="row chunk-row" style={rowStyle}>
@@ -166,6 +173,11 @@ function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintSchem
           <span className="chunk-title">{node.row.title || "(untitled)"}</span>
           {node.row.type && <span className="chunk-badge">{node.row.type}</span>}
           {node.row.status && <span className="chunk-badge chunk-status">{node.row.status}</span>}
+          {hasLink && (
+            <span className="chunk-link-badge" title="Has cross-reference links" aria-label="linked">
+              🔗
+            </span>
+          )}
         </button>
       </div>
       {hasChildren && isOpen && (
@@ -179,6 +191,7 @@ function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintSchem
               selectedId={selectedId}
               onSelect={onSelect}
               tintScheme={tintScheme}
+              linkedIds={linkedIds}
             />
           ))}
         </ul>
