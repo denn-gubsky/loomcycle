@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PathEntry } from "../types";
+import {
+  docColor,
+  effectiveScheme,
+  tintStyle,
+  type DocSummary,
+} from "../lib/colorScheme";
 
 // PathTree renders the RFC AL dirent tree. The Path tool's `ls recursive`
 // returns a FLAT list of dirents; buildPathTree reconstructs the hierarchy,
@@ -98,9 +104,12 @@ export interface PathTreeProps {
   tree: PathNode[];
   selectedPath?: string;
   onSelect: (node: PathNode) => void;
+  // RFC BN: per-document display metadata keyed by document_id, used to color a
+  // document row + badge its type/status. Unset → neutral rows (prior behavior).
+  summaries?: Map<string, DocSummary>;
 }
 
-export default function PathTree({ tree, selectedPath, onSelect }: PathTreeProps) {
+export default function PathTree({ tree, selectedPath, onSelect, summaries }: PathTreeProps) {
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
   const toggle = useCallback((p: string) => {
     setExpanded((prev) => {
@@ -146,6 +155,7 @@ export default function PathTree({ tree, selectedPath, onSelect }: PathTreeProps
           toggle={toggle}
           selectedPath={selectedPath}
           onSelect={onSelect}
+          summaries={summaries}
         />
       ))}
     </ul>
@@ -158,15 +168,29 @@ interface NodeProps {
   toggle: (p: string) => void;
   selectedPath?: string;
   onSelect: (node: PathNode) => void;
+  summaries?: Map<string, DocSummary>;
 }
 
-function PathTreeNode({ node, expanded, toggle, selectedPath, onSelect }: NodeProps) {
+// documentSummaryOf returns the summary for a `document` node (by its dirent's
+// document_id), or undefined for a non-document node / missing summary.
+function documentSummaryOf(node: PathNode, summaries?: Map<string, DocSummary>): DocSummary | undefined {
+  if (node.kind !== "document" || !summaries) return undefined;
+  const ref = node.resourceRef as { document_id?: string } | undefined;
+  return ref?.document_id ? summaries.get(ref.document_id) : undefined;
+}
+
+function PathTreeNode({ node, expanded, toggle, selectedPath, onSelect, summaries }: NodeProps) {
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.get(node.fullPath) !== false; // default-expanded
   const isSelected = selectedPath === node.fullPath;
+  const summary = documentSummaryOf(node, summaries);
+  const rowStyle =
+    summary && summary.color_enabled
+      ? tintStyle(docColor(summary.type, summary.status, effectiveScheme(summary.color_scheme)))
+      : undefined;
   return (
     <li className={`node path-node kind-${node.kind} ${isSelected ? "selected" : ""}`}>
-      <div className="row path-row">
+      <div className="row path-row" style={rowStyle}>
         <button
           type="button"
           className="tree-caret"
@@ -189,6 +213,8 @@ function PathTreeNode({ node, expanded, toggle, selectedPath, onSelect }: NodePr
             {KIND_ICON[node.kind] ?? "•"}
           </span>
           <span className="path-name">{node.name}</span>
+          {summary?.type && <span className="chunk-badge">{summary.type}</span>}
+          {summary?.status && <span className="chunk-badge chunk-status">{summary.status}</span>}
           {!node.explicit && (
             <span className="path-implicit" title="Implicit directory (no stored entry)">
               implicit
@@ -206,6 +232,7 @@ function PathTreeNode({ node, expanded, toggle, selectedPath, onSelect }: NodePr
               toggle={toggle}
               selectedPath={selectedPath}
               onSelect={onSelect}
+              summaries={summaries}
             />
           ))}
         </ul>

@@ -8,6 +8,7 @@ import type {
   PathEntry,
   PathScope,
 } from "../types";
+import type { DocSummary, DocumentMeta } from "./colorScheme";
 
 // ChunkPatch is the subset of chunk fields update_chunk accepts. `fields` is
 // unknown (arbitrary typed JSON the chunk carries); a blank/absent value leaves
@@ -66,6 +67,19 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<unknown>;
+  documentGet(
+    id: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<DocumentMeta>;
+  // documentsSummary returns per-document display metadata (type/status + RFC BN
+  // color settings) for a set of ids and/or a Path subtree — the Path tree's
+  // one-call coloring source (dirents carry only a document_id).
+  documentsSummary(
+    opts: { documentIds?: string[]; underPath?: string },
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ documents: DocSummary[] }>;
   documentQueryChunks(
     documentId: string,
     scope: DocScope,
@@ -125,6 +139,21 @@ export function dataLayerFromClient(client: LoomcycleClient): ExplorerDataLayer 
       }>,
     documentDelete: (id, scope, browse) =>
       client.document({ op: "delete_document", id, scope }, browse),
+    documentGet: (id, scope, browse) =>
+      client.document({ op: "get_document", id, scope }, browse) as Promise<DocumentMeta>,
+    documentsSummary: (opts, scope, browse) =>
+      client.document(
+        // documents_summary + document_ids are RFC BN wire additions the pinned
+        // SDK type doesn't enumerate; the /v1/_document passthrough accepts them
+        // verbatim, so cast past DocumentToolInput (same pattern as update_chunk).
+        {
+          op: "documents_summary",
+          scope,
+          ...(opts.documentIds ? { document_ids: opts.documentIds } : {}),
+          ...(opts.underPath ? { under_path: opts.underPath } : {}),
+        } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ documents: DocSummary[] }>,
     documentQueryChunks: (documentId, scope, browse) =>
       client.document(
         { op: "query_chunks", document_id: documentId, scope, limit: 1000 },

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ChunkRow } from "../types";
+import { chunkColor, effectiveScheme, tintStyle, type ColorScheme } from "../lib/colorScheme";
 
 // DocumentChunkTree renders a document's chunk hierarchy (RFC AK), built from
 // the flat query_chunks list by parent_id + position. Mirrors PathTree: a single
@@ -44,9 +45,19 @@ export interface DocumentChunkTreeProps {
   tree: ChunkNode[];
   selectedId?: string;
   onSelect: (node: ChunkNode) => void;
+  // RFC BN: when colorEnabled, chunk rows are tinted by status via `scheme`
+  // (falls back to the default palette). Unset → neutral rows (prior behavior).
+  colorEnabled?: boolean;
+  scheme?: ColorScheme;
 }
 
-export default function DocumentChunkTree({ tree, selectedId, onSelect }: DocumentChunkTreeProps) {
+export default function DocumentChunkTree({
+  tree,
+  selectedId,
+  onSelect,
+  colorEnabled,
+  scheme,
+}: DocumentChunkTreeProps) {
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
   const toggle = useCallback((id: string) => {
     setExpanded((prev) => {
@@ -74,6 +85,9 @@ export default function DocumentChunkTree({ tree, selectedId, onSelect }: Docume
     });
   }, [tree, selectedId]);
 
+  // Resolve the palette once (null → no tinting) and thread it down.
+  const tintScheme = colorEnabled ? effectiveScheme(scheme) : null;
+
   if (tree.length === 0) {
     return (
       <div className="empty">
@@ -91,6 +105,7 @@ export default function DocumentChunkTree({ tree, selectedId, onSelect }: Docume
           toggle={toggle}
           selectedId={selectedId}
           onSelect={onSelect}
+          tintScheme={tintScheme}
         />
       ))}
     </ul>
@@ -119,15 +134,17 @@ interface NodeProps {
   toggle: (id: string) => void;
   selectedId?: string;
   onSelect: (node: ChunkNode) => void;
+  tintScheme: ColorScheme | null;
 }
 
-function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect }: NodeProps) {
+function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintScheme }: NodeProps) {
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.get(node.row.id) !== false; // default-expanded
   const isSelected = selectedId === node.row.id;
+  const rowStyle = tintScheme ? tintStyle(chunkColor(node.row.status, tintScheme)) : undefined;
   return (
     <li className={`node chunk-node ${isSelected ? "selected" : ""}`}>
-      <div className="row chunk-row">
+      <div className="row chunk-row" style={rowStyle}>
         <button
           type="button"
           className="tree-caret"
@@ -161,6 +178,7 @@ function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect }: NodePro
               toggle={toggle}
               selectedId={selectedId}
               onSelect={onSelect}
+              tintScheme={tintScheme}
             />
           ))}
         </ul>
