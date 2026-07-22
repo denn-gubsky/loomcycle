@@ -127,7 +127,12 @@ func TestProviderGate_CappedOverflowDoesNotHoldGlobalSlot(t *testing.T) {
 func TestProviderGate_BatchesToCap(t *testing.T) {
 	const cap = 2
 	const total = 5
-	prov := &countingProvider{delay: 40 * time.Millisecond}
+	// holdUntil=cap makes the two admitted calls rendezvous before releasing, so
+	// the peak deterministically reaches cap — the gate admits cap concurrently,
+	// but a loaded CI race-runner could otherwise stagger them so only one is
+	// ever in-flight (a false peak=1). The gate still bounds true concurrency at
+	// cap regardless.
+	prov := &countingProvider{delay: 40 * time.Millisecond, holdUntil: cap}
 	cfg := gateTestConfig()
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "batch.db"))
 	if err != nil {
@@ -158,6 +163,8 @@ func TestProviderGate_BatchesToCap(t *testing.T) {
 	}
 	wg.Wait()
 
+	// The gate must admit EXACTLY cap concurrently: never more (the ceiling),
+	// and — thanks to the rendezvous barrier — the peak reliably reaches it.
 	if peak := prov.peakInFlight(); peak != cap {
 		t.Errorf("peak concurrent provider.Call = %d, want exactly cap=%d", peak, cap)
 	}
@@ -329,10 +336,20 @@ func TestProviderSlot_SwapMovesSlotNoLeak(t *testing.T) {
 // cap through the full admission + loop path.
 type countingProvider struct {
 	delay time.Duration
+	// holdUntil (0 = off) makes Call RENDEZVOUS: an admitted call blocks until
+	// `holdUntil` calls are simultaneously in-flight (or a generous deadline)
+	// before running its delay. This makes the observed peak deterministically
+	// reach the gate cap regardless of CI scheduling jitter — without it, a
+	// loaded race-runner can stagger the admitted requests so only one is ever
+	// in provider.Call at a time (a false peak=1). A genuine under-admit bug
+	// still leaves peak < holdUntil (the deadline fires) and fails the test.
+	holdUntil int
 
 	mu       sync.Mutex
 	inFlight int
 	peak     int
+	arrived  int
+	barrier  chan struct{}
 }
 
 func (c *countingProvider) ID() string                    { return "counting" }
@@ -349,7 +366,25 @@ func (c *countingProvider) Call(ctx context.Context, _ providers.Request) (<-cha
 	if c.inFlight > c.peak {
 		c.peak = c.inFlight
 	}
+	var barrier chan struct{}
+	if c.holdUntil > 0 {
+		if c.barrier == nil {
+			c.barrier = make(chan struct{})
+		}
+		barrier = c.barrier
+		c.arrived++
+		if c.arrived == c.holdUntil { // fires exactly once → release the batch together
+			close(c.barrier)
+		}
+	}
 	c.mu.Unlock()
+	if barrier != nil {
+		select {
+		case <-barrier:
+		case <-time.After(2 * time.Second): // safety valve: a real under-admit bug won't hang the test
+		case <-ctx.Done():
+		}
+	}
 	ch := make(chan providers.Event, 4)
 	go func() {
 		defer close(ch)

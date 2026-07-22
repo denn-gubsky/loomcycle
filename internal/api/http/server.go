@@ -445,6 +445,19 @@ func (s *Server) maxRequestBytes() int64 {
 	return defaultMaxRequestBytes
 }
 
+// defaultMaxDocumentBytes bounds a POST /v1/_document body (set_asset base64
+// image payloads + large import_md docs). RFC BO.
+const defaultMaxDocumentBytes = 8 << 20
+
+// maxDocumentBytes returns the configured Document-route body cap, falling back
+// to defaultMaxDocumentBytes when unset (<=0).
+func (s *Server) maxDocumentBytes() int64 {
+	if n := s.cfg.Env.MaxDocumentAssetBytes; n > 0 {
+		return n
+	}
+	return defaultMaxDocumentBytes
+}
+
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
 	// Hook registry is constructed with the operator-yaml host-widen
 	// permit list (cfg.Hooks.PermitHostWiden.Owners). Without an entry
@@ -2776,6 +2789,10 @@ func (s *Server) Mux() http.Handler {
 	// the wire. Same dispatch shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_path", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstratePath))))
 	mux.Handle("POST /v1/_document", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocument))))
+	// RFC BO — serve an image chunk's raw bytes. Same auth posture as
+	// /v1/_document (bearer + ScopeTenant, scope resolved from the principal,
+	// opaque-404 cross-scope). GET because the payload is binary, not JSON.
+	mux.Handle("GET /v1/_document/asset/{chunk_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocumentAsset))))
 	// RFC BE History tool — browse/search/annotate past chats. Tenant-confined
 	// (ScopeTenant via isTenantConfinedDefPath); the tool's own scope fold +
 	// admin-gated `global` keep a tenant operator inside its own tenant.

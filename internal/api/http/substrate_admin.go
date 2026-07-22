@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // v0.8.22 substrate admin endpoints. Two handlers (AgentDef +
@@ -127,6 +129,42 @@ func (s *Server) handleSubstrateDocument(w http.ResponseWriter, r *http.Request)
 	s.dispatchSubstrateCtx(w, r, "Document", s.Document, s.substrateBrowseCtxFn(r))
 }
 
+// handleSubstrateDocumentAsset serves GET /v1/_document/asset/{chunk_id} — the
+// raw bytes of an image chunk's stored asset (RFC BO). The existing /v1/_document
+// is a POST JSON passthrough, unsuitable for binary, so this is a dedicated GET.
+// SECURITY: bearer-authed (same middleware + scope gate as /v1/_document); the
+// scope/tenant/subject are resolved from the principal (substrateBrowseCtxFn),
+// NEVER the wire — a caller can only read an asset in a scope it may see, and any
+// miss (no asset / wrong scope / read fault) returns an OPAQUE 404 so chunk ids
+// can't be probed across scopes. Content-Type is the STORED whitelisted media
+// type (never sniffed) + nosniff, so a stored value can't be coerced into HTML.
+func (s *Server) handleSubstrateDocumentAsset(w http.ResponseWriter, r *http.Request) {
+	chunkID := strings.TrimSpace(r.PathValue("chunk_id"))
+	if chunkID == "" {
+		writeJSONError(w, http.StatusBadRequest, "bad_request", "missing chunk id")
+		return
+	}
+	if s.store == nil || s.sqlMem == nil {
+		http.NotFound(w, r) // no doc store configured → nothing to serve (opaque)
+		return
+	}
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	ctx := s.substrateBrowseCtxFn(r)(r.Context())
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	mediaType, data, ok, err := doc.ReadAsset(ctx, scope, chunkID)
+	if err != nil || !ok || !builtin.ValidImageMediaType(mediaType) {
+		http.NotFound(w, r) // opaque — never distinguish missing/forbidden/error
+		return
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", "inline")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 // handleSubstrateHistory serves POST /v1/_history.
 // RFC BE History tool (browse/search/annotate past chats). Bearer-authed;
 // tenant-confined (ScopeTenant via isTenantConfinedDefPath; admin satisfies).
@@ -176,7 +214,10 @@ func (s *Server) dispatchSubstrateCtx(
 	connectorFn func(ctx context.Context, input json.RawMessage) (connector.ToolResult, error),
 	ctxFn func(context.Context) context.Context,
 ) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20)) // 1 MB cap
+	// Operator-authed substrate ops; the cap (default 8 MiB, RFC BO) admits a
+	// set_asset base64 image payload + a large import_md document — the historical
+	// 1 MiB forced large docs to be split.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxDocumentBytes()))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", "read body: "+err.Error())
 		return
