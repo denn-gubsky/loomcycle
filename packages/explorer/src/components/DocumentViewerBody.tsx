@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AssistantContext,
   BrowseScope,
@@ -8,6 +8,7 @@ import type {
   DocScope,
   Principal,
 } from "../types";
+import { readImageAsBase64, imageFileFromPaste } from "../lib/imageUpload";
 import { useExplorerData } from "../lib/dataLayer";
 import {
   docColor,
@@ -95,6 +96,7 @@ export default function DocumentViewerBody({
   // RFC BO — an image chunk's blob object-URL (fetched with auth) + a load error.
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageErr, setImageErr] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null); // hidden upload input (RFC BO)
   const [editing, setEditing] = useState<ChunkDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -316,13 +318,110 @@ export default function DocumentViewerBody({
     }
   }, [data, documentId, scope, browse]);
 
+  // RFC BO authoring — create a media chunk under the selected chunk (or the
+  // root). The runtime marks type=image via set_asset; a diagram is a plain
+  // type=mermaid chunk whose body is the source.
+  const canCreate = !!data.documentCreateChunk && !!rootChunkId;
+  const addImageFile = useCallback(
+    async (file: File) => {
+      if (!data.documentCreateChunk || !data.documentSetAsset) return;
+      const parent = selectedId || rootChunkId;
+      if (!parent) return;
+      setErr(null);
+      try {
+        const { mediaType, data: b64 } = await readImageAsBase64(file);
+        const created = await data.documentCreateChunk(
+          documentId,
+          parent,
+          { title: file.name || "image", type: "image" },
+          scope,
+          browse,
+        );
+        await data.documentSetAsset(created.id, mediaType, b64, file.name, scope, browse);
+        refresh();
+        setSelectedId(created.id);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [data, documentId, scope, browse, selectedId, rootChunkId, refresh],
+  );
+  const addDiagram = useCallback(async () => {
+    if (!data.documentCreateChunk) return;
+    const parent = selectedId || rootChunkId;
+    if (!parent) return;
+    setErr(null);
+    try {
+      const created = await data.documentCreateChunk(
+        documentId,
+        parent,
+        { title: "Diagram", type: "mermaid", body: "graph TD\n  A[Start] --> B[End]" },
+        scope,
+        browse,
+      );
+      refresh();
+      setSelectedId(created.id);
+      setEditing(created); // open the editor (with live preview) on the new diagram
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [data, documentId, scope, browse, selectedId, rootChunkId, refresh]);
+
+  // Paste a screenshot anywhere in the viewer → a new image chunk. Ignored while
+  // a modal or a text field is focused (so an editor paste isn't hijacked).
+  useEffect(() => {
+    if (!canCreate) return;
+    const onPaste = (e: ClipboardEvent) => {
+      if (editing || colorsOpen) return;
+      const ae = document.activeElement;
+      const tag = ae?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (ae as HTMLElement)?.isContentEditable) return;
+      const file = imageFileFromPaste(e.clipboardData?.items);
+      if (file) {
+        e.preventDefault();
+        void addImageFile(file);
+      }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [canCreate, editing, colorsOpen, addImageFile]);
+
   return (
     <div className="doc-viewer">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = ""; // allow re-selecting the same file
+          if (f) void addImageFile(f);
+        }}
+      />
       <div className="doc-toolbar" style={toolbarTint}>
         <strong className="doc-title" title={rootTitle}>
           {rootTitle}
         </strong>
         <div className="doc-toolbar-actions">
+          {canCreate && (
+            <>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                title="Add an image chunk (upload — or paste a screenshot into the view)"
+              >
+                + image
+              </button>
+              <button
+                type="button"
+                onClick={() => void addDiagram()}
+                title="Add a Mermaid diagram chunk"
+              >
+                + diagram
+              </button>
+            </>
+          )}
           <button
             type="button"
             className={colorEnabled ? "active" : ""}

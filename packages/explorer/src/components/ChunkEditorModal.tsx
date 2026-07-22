@@ -1,6 +1,8 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import type { BrowseScope, ChunkDetail, DocScope } from "../types";
 import { useExplorerData } from "../lib/dataLayer";
+import MermaidDiagram from "./Mermaid";
+import { readImageAsBase64 } from "../lib/imageUpload";
 
 // ChunkEditorModal edits one chunk's content — title, type, status, Markdown
 // body, and (optional) typed fields as JSON. Save is an optimistic-concurrency
@@ -30,6 +32,37 @@ export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSave
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
+
+  const isMermaid = type === "mermaid";
+  const isImage = type === "image" || !!chunk.asset;
+
+  // RFC BO — a debounced copy of the body drives the live Mermaid preview so it
+  // re-renders as the author edits the source, but not on every keystroke.
+  const [preview, setPreview] = useState(body);
+  useEffect(() => {
+    if (!isMermaid) return;
+    const t = setTimeout(() => setPreview(body), 400);
+    return () => clearTimeout(t);
+  }, [body, isMermaid]);
+
+  // RFC BO — replace an image chunk's bytes in place (set_asset bumps the
+  // revision, so we hand the updated chunk back and close rather than risk a
+  // stale-revision save afterward).
+  const replaceImage = async (file: File) => {
+    setErr(null);
+    setBusy(true);
+    try {
+      const { mediaType, data: b64 } = await readImageAsBase64(file);
+      const updated = await data.documentSetAsset(chunk.id, mediaType, b64, file.name, scope, browse);
+      onSaved(updated);
+      onClose();
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : String(ex));
+      setBusy(false);
+    }
+  };
+
+  const bodyLabel = isMermaid ? "Mermaid source" : isImage ? "Caption (optional)" : "Body (Markdown)";
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -110,15 +143,41 @@ export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSave
             />
           </label>
         </div>
+        {isImage && (
+          <label className="path-field">
+            <span>Replace image</span>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              disabled={busy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void replaceImage(f);
+              }}
+            />
+          </label>
+        )}
         <label className="path-field">
-          <span>Body (Markdown)</span>
+          <span>{bodyLabel}</span>
           <textarea
             className="modal-textarea chunk-body-input"
-            rows={12}
+            rows={isMermaid ? 8 : 12}
             value={body}
             onChange={(e) => setBody(e.target.value)}
           />
         </label>
+        {isMermaid && (
+          <div className="path-field">
+            <span>Preview</span>
+            <div className="chunk-mermaid-preview">
+              {preview.trim() ? (
+                <MermaidDiagram code={preview} />
+              ) : (
+                <p className="doc-empty-body">(enter Mermaid source above)</p>
+              )}
+            </div>
+          </div>
+        )}
         <label className="path-field">
           <span>Fields (JSON, optional)</span>
           <textarea
