@@ -92,6 +92,24 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<ChunkDetail>;
+  // documentCreateChunk creates a new chunk under a parent (RFC BO authoring).
+  documentCreateChunk(
+    documentId: string,
+    parentId: string,
+    patch: ChunkPatch,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<ChunkDetail>;
+  // documentSetAsset attaches an image's base64 bytes to a chunk (→ type=image,
+  // served by GET /v1/_document/asset/{id}). RFC BO.
+  documentSetAsset(
+    chunkId: string,
+    mediaType: string,
+    dataBase64: string,
+    filename: string | undefined,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<ChunkDetail>;
   // documentGetEdges returns every cross-reference edge touching a document
   // (RFC BN P4) — the References list + relationship graph source.
   documentGetEdges(
@@ -180,6 +198,31 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
       ) as Promise<{ chunks: ChunkRow[] }>,
     documentGetChunk: (id, scope, browse) =>
       client.document({ op: "get_chunk", id, scope }, browse) as Promise<ChunkDetail>,
+    documentCreateChunk: (documentId, parentId, patch, scope, browse) =>
+      client.document(
+        {
+          op: "create_chunk",
+          document_id: documentId,
+          parent_id: parentId,
+          scope,
+          ...patch,
+        } as DocumentToolInput,
+        browse,
+      ) as Promise<ChunkDetail>,
+    documentSetAsset: (chunkId, mediaType, dataBase64, filename, scope, browse) =>
+      client.document(
+        // set_asset is an RFC BO wire op the pinned SDK type doesn't enumerate;
+        // the /v1/_document passthrough accepts it verbatim.
+        {
+          op: "set_asset",
+          id: chunkId,
+          media_type: mediaType,
+          data: dataBase64,
+          ...(filename ? { filename } : {}),
+          scope,
+        } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<ChunkDetail>,
     documentGetEdges: (documentId, scope, browse) =>
       client.document(
         // get_edges is an RFC BN P4 wire op the pinned SDK type doesn't

@@ -1051,3 +1051,11 @@
 .loomcycle-explorer .doc-mermaid-source {
   margin-top: 10px;
 }
+.loomcycle-explorer .chunk-mermaid-preview {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  background: var(--bg-soft);
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
