@@ -1101,6 +1101,16 @@ func (d *Document) assetMeta(ctx context.Context, key sqlmem.ScopeKey, chunkID s
 	return asStr(res.Rows[0][0]), asInt(res.Rows[0][1]), true
 }
 
+// readAssetRow reads an asset's media_type + raw bytes using the CURRENT resolved
+// key (no scope re-resolution — for export_md, which already holds the key).
+func (d *Document) readAssetRow(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (mediaType string, data []byte, ok bool) {
+	res, err := d.query(ctx, key, `SELECT media_type, bytes FROM chunk_assets WHERE chunk_id = ? LIMIT 1`, chunkID)
+	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 2 {
+		return "", nil, false
+	}
+	return asStr(res.Rows[0][0]), asBytes(res.Rows[0][1]), true
+}
+
 // ReadAsset reads an image chunk's raw bytes for the HTTP serving endpoint. scope
 // is "agent"|"user" (default user); the ScopeKey + tenant come from ctx exactly
 // as the tool's own ops resolve them, so a caller can only read an asset in its
@@ -1601,8 +1611,23 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			mj, _ := json.Marshal(meta)
 			b.WriteString("<!-- loom: " + string(mj) + " -->\n")
 		}
-		if cb.Body != "" {
-			b.WriteString("\n" + cb.Body + "\n")
+		// RFC BO — render media chunks self-contained + human-readable (and
+		// re-importable): a mermaid chunk's source as a ```mermaid fence, an image
+		// chunk's bytes as a data-URL. import_md re-detects both (see
+		// classifyMediaBody). A plain chunk emits its body verbatim.
+		switch {
+		case row.Type == "mermaid" && cb.Body != "":
+			b.WriteString("\n```mermaid\n" + cb.Body + "\n```\n")
+		case row.Type == "image":
+			if mt, raw, ok := d.readAssetRow(ctx, key, row.ID); ok {
+				b.WriteString("\n![" + imgAltForExport(cb.Body) + "](data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(raw) + ")\n")
+			} else if cb.Body != "" {
+				b.WriteString("\n" + cb.Body + "\n")
+			}
+		default:
+			if cb.Body != "" {
+				b.WriteString("\n" + cb.Body + "\n")
+			}
 		}
 		b.WriteString("\n")
 		for _, c := range byParent[row.ID] {
@@ -1635,6 +1660,12 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 
 // --- ops: Markdown import ---
 
+// imgAltForExport makes a chunk caption safe as Markdown image alt text: no
+// newlines (one line) and no ']' (which would close the alt early). RFC BO.
+var imgAltReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "]", "")
+
+func imgAltForExport(caption string) string { return imgAltReplacer.Replace(caption) }
+
 // mdChunk is one parsed chunk from an export_md-shaped document.
 type mdChunk struct {
 	level  int
@@ -1644,6 +1675,12 @@ type mdChunk struct {
 	status string
 	fields json.RawMessage
 	body   string
+	// RFC BO — set when the body was a self-contained media form: an image
+	// chunk's decoded bytes to re-attach via set_asset (assetData base64 +
+	// assetMediaType), unwrapped from a data-URL. A mermaid chunk carries its
+	// source in body (fence stripped) with typ="mermaid".
+	assetMediaType string
+	assetData      string
 }
 
 type mdEdge struct{ from, to, kind string }
@@ -1651,7 +1688,30 @@ type mdEdge struct{ from, to, kind string }
 var (
 	mdHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.*)$`)
 	mdEdgeRe    = regexp.MustCompile(`^\s*(\S+)\s*->\s*(\S+)\s*\[(.*)\]\s*$`)
+	// RFC BO — detect a WHOLE-body media form (anchored, so a text chunk that
+	// merely contains a fence/image among prose is NOT reclassified). A mermaid
+	// fence: ```mermaid\n<source>\n```. A data-URL image: ![alt](data:<mt>;base64,<b64>).
+	mdMermaidFenceRe = regexp.MustCompile("(?s)^```mermaid\\s*\\n(.*?)\\n?```$")
+	mdDataImageRe    = regexp.MustCompile(`^!\[([^\]]*)\]\(data:([a-zA-Z0-9.+/-]+);base64,([A-Za-z0-9+/=\s]+)\)$`)
 )
+
+// classifyMediaBody detects a chunk body that is ENTIRELY a media form (RFC BO)
+// and returns the reconstructed chunk type + unwrapped content. typ="" means the
+// body is ordinary Markdown (left untouched). For an image, mediaType+assetData
+// (base64) are the bytes to re-attach via set_asset and newBody is the alt/caption;
+// for mermaid, newBody is the raw source (fence stripped).
+func classifyMediaBody(body string) (typ, mediaType, assetData, newBody string) {
+	trimmed := strings.TrimSpace(body)
+	if m := mdMermaidFenceRe.FindStringSubmatch(trimmed); m != nil {
+		return "mermaid", "", "", m[1]
+	}
+	if m := mdDataImageRe.FindStringSubmatch(trimmed); m != nil {
+		// Strip any whitespace the base64 payload may carry across lines.
+		data := strings.Join(strings.Fields(m[3]), "")
+		return "image", m[2], data, m[1]
+	}
+	return "", "", "", body
+}
 
 // parseLoomMarkdown parses an export_md output: heading lines define the chunk
 // hierarchy (level = heading depth), an optional `<!-- loom: {…} -->` line
@@ -1667,6 +1727,15 @@ func parseLoomMarkdown(md string) ([]mdChunk, []mdEdge) {
 	flush := func() {
 		if cur != nil {
 			cur.body = strings.Trim(strings.Join(bodyLines, "\n"), "\n")
+			// RFC BO — reconstruct a media chunk from a whole-body media form. The
+			// meta comment's type (if any) and the rendered form agree on a loom
+			// round-trip; a clean export (no meta) is inferred purely from the form.
+			if typ, mt, ad, nb := classifyMediaBody(cur.body); typ != "" {
+				if cur.typ == "" {
+					cur.typ = typ
+				}
+				cur.body, cur.assetMediaType, cur.assetData = nb, mt, ad
+			}
 			chunks = append(chunks, *cur)
 		}
 		cur = nil
@@ -1719,6 +1788,16 @@ func resultField(r tools.Result, field string) string {
 	return asStr(m[field])
 }
 
+// importAsset re-attaches an image chunk's bytes during import_md (RFC BO) by
+// reusing setAsset — which validates the media_type + size and marks the chunk
+// type=image. Best-effort: a bad/oversized data-URL is skipped (the chunk stays,
+// just without its image) rather than aborting the whole import.
+func (d *Document) importAsset(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, chunkID string, c mdChunk) {
+	_, _ = d.setAsset(ctx, key, mscope, docInput{
+		ID: chunkID, MediaType: c.assetMediaType, Data: c.assetData,
+	})
+}
+
 // importMD builds a document from export_md-shaped Markdown (RFC AK §4.5 / RFC
 // AM Phase 3). With no document_id it creates a NEW document (the first heading
 // becomes the root); with a document_id (+ optional parent_id) it imports the
@@ -1762,6 +1841,9 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 				return errResult("import_md: " + err.Error()), nil
 			}
 		}
+		if first.assetData != "" {
+			d.importAsset(ctx, key, mscope, rootID, first)
+		}
 		if first.oldID != "" {
 			oldToNew[first.oldID] = rootID
 		}
@@ -1802,6 +1884,9 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			return cc, nil
 		}
 		newID := resultField(cc, "id")
+		if c.assetData != "" {
+			d.importAsset(ctx, key, mscope, newID, c)
+		}
 		if c.oldID != "" {
 			oldToNew[c.oldID] = newID
 		}
