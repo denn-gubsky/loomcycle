@@ -546,6 +546,82 @@ func TestDocument_ImportMD_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestDocument_ExportImport_MediaChunks covers RFC BO P4: export renders a
+// mermaid chunk as a ```mermaid fence and an image chunk as a self-contained
+// data-URL, and import reconstructs both (mermaid source unwrapped; image bytes
+// re-attached to a type=image chunk) — including on a CLEAN (no-metadata) export
+// where the type must be inferred purely from the rendered form.
+func TestDocument_ExportImport_MediaChunks(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Media"}`)
+	docID := out["document_id"].(string)
+	root := out["root_chunk_id"].(string)
+
+	// A mermaid chunk (body = source).
+	docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"Flow","type":"mermaid","body":"graph TD\n  A --> B"}`)
+	// An image chunk (create + set_asset).
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"Shot","body":"a caption"}`)
+	img := out["id"].(string)
+	rawImg := []byte{0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x10, 0x20}
+	b64 := base64.StdEncoding.EncodeToString(rawImg)
+	if _, r := docExec(t, d, ctx, `{"op":"set_asset","scope":"user","id":"`+img+`","media_type":"image/png","data":"`+b64+`"}`); r.IsError {
+		t.Fatalf("set_asset: %s", r.Text)
+	}
+
+	// Export (clean — no loom metadata; type must be inferred from the form).
+	out, res := docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`","include_metadata":false}`)
+	if res.IsError {
+		t.Fatalf("export_md: %s", res.Text)
+	}
+	md := out["markdown"].(string)
+	if !strings.Contains(md, "```mermaid\ngraph TD\n  A --> B\n```") {
+		t.Errorf("mermaid chunk not exported as a fence:\n%s", md)
+	}
+	if !strings.Contains(md, "![a caption](data:image/png;base64,"+b64+")") {
+		t.Errorf("image chunk not exported as a data-URL:\n%s", md)
+	}
+
+	// Import the clean export into a NEW document → types + bytes reconstructed.
+	reqB, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": md})
+	out, res = docExec(t, d, ctx, string(reqB))
+	if res.IsError {
+		t.Fatalf("import_md: %s", res.Text)
+	}
+	newDoc := out["document_id"].(string)
+
+	// Find the reconstructed chunks by title + assert their type + the image bytes.
+	q, _ := docExec(t, d, ctx, `{"op":"query_chunks","scope":"user","document_id":"`+newDoc+`"}`)
+	rows, _ := q["chunks"].([]any)
+	var mermaidOK, imageID string
+	for _, rr := range rows {
+		m := rr.(map[string]any)
+		if m["title"] == "Flow" && m["type"] == "mermaid" {
+			mermaidOK = m["id"].(string)
+		}
+		if m["title"] == "Shot" && m["type"] == "image" {
+			imageID = m["id"].(string)
+		}
+	}
+	if mermaidOK == "" {
+		t.Errorf("mermaid chunk not reconstructed as type=mermaid: %v", rows)
+	} else {
+		gc, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+mermaidOK+`"}`)
+		if gc["body"] != "graph TD\n  A --> B" {
+			t.Errorf("mermaid source not unwrapped: %q", gc["body"])
+		}
+	}
+	if imageID == "" {
+		t.Fatalf("image chunk not reconstructed as type=image: %v", rows)
+	}
+	mt, data, ok, err := d.ReadAsset(ctx, "user", imageID)
+	if err != nil || !ok {
+		t.Fatalf("reimported ReadAsset: ok=%v err=%v", ok, err)
+	}
+	if mt != "image/png" || !bytes.Equal(data, rawImg) {
+		t.Errorf("reimported image bytes mismatch: mt=%q got %v want %v", mt, data, rawImg)
+	}
+}
+
 // Hardening: link_chunks must refuse an edge to a non-existent chunk (no
 // born-dangling edges).
 func TestDocument_LinkChunksValidatesEndpoints(t *testing.T) {

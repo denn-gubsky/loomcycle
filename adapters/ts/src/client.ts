@@ -1440,6 +1440,44 @@ export class LoomcycleClient {
     });
   }
 
+  /** Build the URL of an image chunk's asset (RFC BO) — `GET
+   *  /v1/_document/asset/{chunkId}`. Attach the bytes to a chunk with the
+   *  `set_asset` op via {@link LoomcycleClient.document}, then read them here.
+   *  `scope` is "agent" | "user" (default "user"); `scopeId`/`tenant` are the
+   *  RFC AS browse overrides. NOTE: the URL needs the bearer to fetch — use
+   *  {@link LoomcycleClient.fetchDocumentAsset} for an authenticated GET (a bare
+   *  <img src> can't carry the Authorization header). */
+  documentAssetUrl(
+    chunkId: string,
+    opts?: { scope?: string; scopeId?: string; tenant?: string },
+  ): string {
+    const q = new URLSearchParams({ scope: opts?.scope ?? "user" });
+    if (opts?.scopeId) q.set("scope_id", opts.scopeId);
+    if (opts?.tenant) q.set("tenant", opts.tenant);
+    return `${this.ctx.baseUrl}/v1/_document/asset/${encodeURIComponent(chunkId)}?${q.toString()}`;
+  }
+
+  /** Fetch an image chunk's asset bytes (RFC BO) with authentication — returns
+   *  the raw {@link Response} so a caller can `.blob()` / `.arrayBuffer()` it.
+   *  Adds the bearer header (a bare <img src> can't). Throws on a non-2xx
+   *  (a cross-scope / missing asset is an opaque 404). */
+  async fetchDocumentAsset(
+    chunkId: string,
+    opts?: { scope?: string; scopeId?: string; tenant?: string; signal?: AbortSignal },
+  ): Promise<Response> {
+    const headers: Record<string, string> = {};
+    if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
+    const resp = await this.ctx.fetchImpl(this.documentAssetUrl(chunkId, opts), {
+      method: "GET",
+      headers,
+      signal: opts?.signal,
+    });
+    if (!resp.ok) {
+      throw new Error(`fetchDocumentAsset: ${resp.status} ${resp.statusText}`);
+    }
+    return resp;
+  }
+
   /** Invoke the RFC BE History tool over HTTP (`POST /v1/_history`). Browse,
    *  search, and annotate PAST CHATS — a chat is a session (it may span
    *  several runs). Op-discriminated (`list`/`get`/`search`/`rename`/
