@@ -1,8 +1,10 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"strings"
@@ -788,6 +790,96 @@ func TestDocument_ChunkStatusBoardRoundTrip(t *testing.T) {
 	}
 	if err := d.SetChunkStatus(ctx, "agent", "nope", "x"); err == nil || !strings.Contains(err.Error(), "no such chunk") {
 		t.Errorf("SetChunkStatus(nope) err = %v, want 'no such chunk'", err)
+	}
+}
+
+// TestDocument_ImageAssetRoundTrip covers RFC BO P1: set_asset stores an image
+// chunk's bytes in the chunk_assets BYTEA/BLOB table, marks the chunk type=image,
+// surfaces an asset indicator on get_chunk, ReadAsset returns the exact bytes,
+// scope isolation holds, and delete_chunk drops the asset.
+func TestDocument_ImageAssetRoundTrip(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"Figures"}`)
+	if res.IsError {
+		t.Fatalf("create_document: %s", res.Text)
+	}
+	docID := out["document_id"].(string)
+	out, res = docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","title":"diagram.png"}`)
+	if res.IsError {
+		t.Fatalf("create_chunk: %s", res.Text)
+	}
+	chunkID := out["id"].(string)
+
+	// Arbitrary bytes (incl. a PNG magic prefix + non-UTF-8) — the tool validates
+	// media_type + base64 + size, not the pixel format; non-UTF-8 exercises the
+	// BLOB path (a JSON store would mangle these bytes).
+	rawImg := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x01, 0x02}
+	b64 := base64.StdEncoding.EncodeToString(rawImg)
+	out, res = docExec(t, d, ctx, `{"op":"set_asset","scope":"agent","id":"`+chunkID+`","media_type":"image/png","data":"`+b64+`","filename":"diagram.png"}`)
+	if res.IsError {
+		t.Fatalf("set_asset: %s", res.Text)
+	}
+	if out["type"] != "image" {
+		t.Errorf("set_asset did not mark type=image: %s", res.Text)
+	}
+	asset, _ := out["asset"].(map[string]any)
+	if asset["media_type"] != "image/png" || int(asset["size"].(float64)) != len(rawImg) {
+		t.Errorf("asset indicator = %v (want media_type=image/png size=%d)", out["asset"], len(rawImg))
+	}
+
+	// get_asset returns metadata only.
+	out, res = docExec(t, d, ctx, `{"op":"get_asset","scope":"agent","id":"`+chunkID+`"}`)
+	if res.IsError || out["media_type"] != "image/png" || int(out["size"].(float64)) != len(rawImg) {
+		t.Errorf("get_asset = %s", res.Text)
+	}
+
+	// ReadAsset (the serving path) returns the EXACT bytes.
+	mt, data, ok, err := d.ReadAsset(ctx, "agent", chunkID)
+	if err != nil || !ok {
+		t.Fatalf("ReadAsset: ok=%v err=%v", ok, err)
+	}
+	if mt != "image/png" || !bytes.Equal(data, rawImg) {
+		t.Errorf("ReadAsset bytes mismatch: mt=%q got %v want %v", mt, data, rawImg)
+	}
+
+	// Scope isolation: the SAME chunk id under the USER scope has no asset.
+	if _, _, ok, _ := d.ReadAsset(ctx, "user", chunkID); ok {
+		t.Errorf("ReadAsset(user) unexpectedly found an agent-scope asset (scope isolation broken)")
+	}
+
+	// delete_chunk drops the asset row too.
+	if _, dres := docExec(t, d, ctx, `{"op":"delete_chunk","scope":"agent","id":"`+chunkID+`"}`); dres.IsError {
+		t.Fatalf("delete_chunk: %s", dres.Text)
+	}
+	if _, _, ok, _ := d.ReadAsset(ctx, "agent", chunkID); ok {
+		t.Errorf("asset survived delete_chunk")
+	}
+}
+
+// TestDocument_SetAssetValidation covers set_asset's guards (RFC BO): media_type
+// whitelist, base64 validity, the size cap, and a missing chunk.
+func TestDocument_SetAssetValidation(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	d.MaxAssetBytes = 16 // tiny cap for the over-cap case
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"V"}`)
+	docID := out["document_id"].(string)
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","title":"x"}`)
+	chunkID := out["id"].(string)
+	okData := base64.StdEncoding.EncodeToString([]byte("tiny"))
+
+	if _, res := docExec(t, d, ctx, `{"op":"set_asset","scope":"agent","id":"`+chunkID+`","media_type":"text/html","data":"`+okData+`"}`); !res.IsError || !strings.Contains(res.Text, "unsupported media_type") {
+		t.Errorf("text/html should be rejected: %s", res.Text)
+	}
+	if _, res := docExec(t, d, ctx, `{"op":"set_asset","scope":"agent","id":"`+chunkID+`","media_type":"image/png","data":"!!!not base64!!!"}`); !res.IsError {
+		t.Errorf("invalid base64 should be rejected")
+	}
+	big := base64.StdEncoding.EncodeToString(make([]byte, 17)) // 17 > 16-byte cap
+	if _, res := docExec(t, d, ctx, `{"op":"set_asset","scope":"agent","id":"`+chunkID+`","media_type":"image/png","data":"`+big+`"}`); !res.IsError || !strings.Contains(res.Text, "exceeds") {
+		t.Errorf("over-cap should be rejected: %s", res.Text)
+	}
+	if _, res := docExec(t, d, ctx, `{"op":"set_asset","scope":"agent","id":"nope","media_type":"image/png","data":"`+okData+`"}`); !res.IsError || !strings.Contains(res.Text, "no such chunk") {
+		t.Errorf("missing chunk should be rejected: %s", res.Text)
 	}
 }
 

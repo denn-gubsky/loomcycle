@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -33,12 +34,16 @@ type Document struct {
 	Store  store.Store
 	SqlMem *sqlmem.Manager
 	Bus    *channels.Bus
+	// MaxAssetBytes caps the DECODED size of an image asset (set_asset); 0 = a
+	// conservative built-in default. The wire (base64) payload is bounded
+	// separately by the /v1/_document request-body cap. RFC BO.
+	MaxAssetBytes int
 }
 
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses), query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses), query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -48,7 +53,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","export_md","import_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -66,6 +71,9 @@ const documentInputSchema = `{
 		"from_id":     {"type": "string"},
 		"to_id":       {"type": "string"},
 		"kind":        {"type": "string", "description": "link/unlink_chunks: edge kind (promotes/targets/...)."},
+		"media_type":  {"type": "string", "description": "set_asset: the image MIME type (image/png, image/jpeg, image/gif, image/webp)."},
+		"data":        {"type": "string", "description": "set_asset: the image bytes as standard base64 (no data: prefix)."},
+		"filename":    {"type": "string", "description": "set_asset: an optional original filename (metadata only)."},
 		"under_path":  {"type": "string", "description": "query_chunks / documents_summary: restrict to documents at/under this Path-tree path."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer"},
@@ -97,7 +105,13 @@ type docInput struct {
 	FromID      string          `json:"from_id"`
 	ToID        string          `json:"to_id"`
 	Kind        string          `json:"kind"`
-	UnderPath   string          `json:"under_path"`
+	// MediaType/Data/Filename carry an image asset for set_asset (RFC BO). Data
+	// is standard base64 (no data: prefix); it is decoded to raw bytes and stored
+	// in the chunk_assets BYTEA/BLOB table.
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+	Filename  string `json:"filename"`
+	UnderPath string `json:"under_path"`
 	SQL         string          `json:"sql"`
 	Limit       int             `json:"limit"`
 	Name        string          `json:"name"`
@@ -191,6 +205,10 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.defineType(ctx, key, in)
 	case "list_types":
 		return d.listTypes(ctx, key, in)
+	case "set_asset":
+		return d.setAsset(ctx, key, mscope, in)
+	case "get_asset":
+		return d.getAsset(ctx, key, in)
 	case "export_md":
 		return d.exportMD(ctx, key, mscope, in)
 	case "import_md":
@@ -244,6 +262,21 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 		if _, err := d.SqlMem.Exec(ctx, key, ddl, nil, 0); err != nil {
 			return err
 		}
+	}
+	// chunk_assets (RFC BO) holds image chunk bytes as TRUE binary. The binary
+	// column type is the ONE non-portable part of the doc schema — sqlite BLOB vs
+	// postgres BYTEA — so it is built per-tier here rather than in the static
+	// docSchemaDDL. Bytes are bound/scanned as []byte; base64 exists only on the
+	// wire (set_asset payload / export_md data-URL), decoded before storage.
+	binType := "BLOB"
+	if d.SqlMem.Tier() == "postgres" {
+		binType = "BYTEA"
+	}
+	assetDDL := `CREATE TABLE IF NOT EXISTS chunk_assets (
+		chunk_id TEXT PRIMARY KEY, media_type TEXT NOT NULL, bytes ` + binType + ` NOT NULL,
+		size BIGINT NOT NULL, created_at BIGINT NOT NULL)`
+	if _, err := d.SqlMem.Exec(ctx, key, assetDDL, nil, 0); err != nil {
+		return err
 	}
 	return nil
 }
@@ -377,6 +410,21 @@ func asInt(v any) int {
 		return int(t)
 	default:
 		return 0
+	}
+}
+
+// asBytes extracts raw bytes from a SQL cell — a BYTEA/BLOB column comes back as
+// []byte via database/sql; a string form (defensive) preserves the bytes. Used
+// only for the chunk_assets.bytes column (RFC BO); asStr would work too since a
+// Go string holds arbitrary bytes, but []byte is the honest type.
+func asBytes(v any) []byte {
+	switch t := v.(type) {
+	case []byte:
+		return t
+	case string:
+		return []byte(t)
+	default:
+		return nil
 	}
 }
 
@@ -809,6 +857,11 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID, docID); err != nil {
 			return err
 		}
+		// Drop image assets BEFORE the chunk rows (the subquery resolves against
+		// chunks). RFC BO.
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_assets WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE document_id = ?`, docID); err != nil {
 			return err
 		}
@@ -897,7 +950,13 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return errResult("get_chunk: no such chunk: " + in.ID), nil
 	}
 	cb := d.readBody(ctx, mscope, key.ScopeID, in.ID)
-	return jsonResult(chunkResponse(row, cb))
+	resp := chunkResponse(row, cb)
+	// RFC BO: surface an image chunk's stored asset (metadata only — the bytes
+	// come from GET /v1/_document/asset/{id}) so a viewer knows to render an img.
+	if mt, sz, ok := d.assetMeta(ctx, key, in.ID); ok {
+		resp["asset"] = map[string]any{"media_type": mt, "size": sz}
+	}
+	return jsonResult(resp)
 }
 
 func chunkResponse(row chunkRow, cb chunkBody) map[string]any {
@@ -918,6 +977,154 @@ func chunkResponse(row chunkRow, cb chunkBody) map[string]any {
 		out["fields"] = cb.Fields
 	}
 	return out
+}
+
+// --- asset ops (RFC BO — image chunks) ---
+
+// validImageMediaTypes is the RFC AT vision whitelist (the common denominator
+// across the four vision providers), reused here as the set an image chunk may
+// store — defined locally to avoid importing internal/loop. SVG is deliberately
+// excluded (script-in-SVG is an XSS surface on the serving endpoint).
+var validImageMediaTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// ValidImageMediaType reports whether mt is an allowed image chunk media type
+// (RFC BO) — exported for the serving handler's defense-in-depth Content-Type
+// check (never serve a non-whitelisted type even if one somehow got stored).
+func ValidImageMediaType(mt string) bool { return validImageMediaTypes[mt] }
+
+// defaultMaxAssetBytes bounds a decoded image when the tool has no configured cap.
+const defaultMaxAssetBytes = 8 << 20 // 8 MiB
+
+func (d *Document) maxAssetBytes() int {
+	if d.MaxAssetBytes > 0 {
+		return d.MaxAssetBytes
+	}
+	return defaultMaxAssetBytes
+}
+
+// setAsset attaches (or replaces) an image chunk's binary asset: decode the
+// base64 payload to raw bytes, upsert the chunk_assets row, and mark the chunk
+// type=image with its media_type/size in fields. The chunk must already exist
+// (create_chunk first) — mirrors document create + set_path.
+func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("set_asset: missing required field: id (the chunk id)"), nil
+	}
+	if in.MediaType == "" {
+		return errResult("set_asset: missing required field: media_type"), nil
+	}
+	if !validImageMediaTypes[in.MediaType] {
+		return errResult(fmt.Sprintf("set_asset: unsupported media_type %q (allowed: image/png, image/jpeg, image/gif, image/webp)", in.MediaType)), nil
+	}
+	if in.Data == "" {
+		return errResult("set_asset: missing required field: data (base64 image bytes)"), nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(in.Data)
+	if err != nil {
+		return errResult("set_asset: data must be valid standard base64 (no data: prefix): " + err.Error()), nil
+	}
+	if len(raw) == 0 {
+		return errResult("set_asset: empty image data"), nil
+	}
+	if len(raw) > d.maxAssetBytes() {
+		return errResult(fmt.Sprintf("set_asset: image is %d bytes, exceeds the %d-byte cap", len(raw), d.maxAssetBytes())), nil
+	}
+	row, ok, err := d.getChunkRow(ctx, key, in.ID)
+	if err != nil {
+		return errResult("set_asset: " + err.Error()), nil
+	}
+	if !ok {
+		return errResult("set_asset: no such chunk: " + in.ID), nil
+	}
+	now := time.Now().UnixNano()
+	// Upsert the asset row + mark the chunk type=image in ONE transaction
+	// (portable upsert = delete-then-insert — no ON CONFLICT dialect split).
+	txErr := d.withSqlTxn(ctx, key, func(txnID string) error {
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_assets WHERE chunk_id = ?`, in.ID); err != nil {
+			return err
+		}
+		if err := d.execTxn(ctx, txnID, `INSERT INTO chunk_assets (chunk_id, media_type, bytes, size, created_at) VALUES (?, ?, ?, ?, ?)`,
+			in.ID, in.MediaType, raw, int64(len(raw)), now); err != nil {
+			return err
+		}
+		return d.execTxn(ctx, txnID, `UPDATE chunks SET type = 'image', updated_at = ?, revision = revision + 1 WHERE id = ?`, now, in.ID)
+	})
+	if txErr != nil {
+		return errResult("set_asset: " + txErr.Error()), nil
+	}
+	// Record the asset facts in the chunk's fields (merged — keep any existing
+	// keys + the caption body). Fields live in Memory alongside the body.
+	cb := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	fields := map[string]any{}
+	if len(cb.Fields) > 0 {
+		_ = json.Unmarshal(cb.Fields, &fields)
+	}
+	fields["kind"] = "image"
+	fields["media_type"] = in.MediaType
+	fields["size"] = len(raw)
+	if in.Filename != "" {
+		fields["filename"] = in.Filename
+	}
+	nf, _ := json.Marshal(fields)
+	if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, cb.Body, nf); err != nil {
+		return errResult("set_asset: fields: " + err.Error()), nil
+	}
+	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "set_asset", in.ID)
+	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
+}
+
+// getAsset returns an image chunk's asset METADATA (media_type, size) — never
+// the bytes (those come from GET /v1/_document/asset/{id}).
+func (d *Document) getAsset(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("get_asset: missing required field: id (the chunk id)"), nil
+	}
+	mt, sz, ok := d.assetMeta(ctx, key, in.ID)
+	if !ok {
+		return errResult("get_asset: no asset on chunk: " + in.ID), nil
+	}
+	return jsonResult(map[string]any{"chunk_id": in.ID, "media_type": mt, "size": sz})
+}
+
+// assetMeta reads an asset's media_type + size (no bytes). ok=false when the
+// chunk has no asset in this scope.
+func (d *Document) assetMeta(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (mediaType string, size int, ok bool) {
+	res, err := d.query(ctx, key, `SELECT media_type, size FROM chunk_assets WHERE chunk_id = ? LIMIT 1`, chunkID)
+	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 2 {
+		return "", 0, false
+	}
+	return asStr(res.Rows[0][0]), asInt(res.Rows[0][1]), true
+}
+
+// ReadAsset reads an image chunk's raw bytes for the HTTP serving endpoint. scope
+// is "agent"|"user" (default user); the ScopeKey + tenant come from ctx exactly
+// as the tool's own ops resolve them, so a caller can only read an asset in its
+// OWN scope (cross-scope simply misses → opaque 404 at the handler). ok=false
+// when the chunk has no asset in this scope.
+func (d *Document) ReadAsset(ctx context.Context, scope, chunkID string) (mediaType string, data []byte, ok bool, err error) {
+	if d.Store == nil || d.SqlMem == nil {
+		return "", nil, false, fmt.Errorf("Document asset: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+	}
+	key, _, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if err := d.ensureSchema(ctx, key); err != nil {
+		return "", nil, false, err
+	}
+	res, err := d.query(ctx, key, `SELECT media_type, bytes FROM chunk_assets WHERE chunk_id = ? LIMIT 1`, chunkID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if len(res.Rows) == 0 || len(res.Rows[0]) < 2 {
+		return "", nil, false, nil
+	}
+	return asStr(res.Rows[0][0]), asBytes(res.Rows[0][1]), true, nil
 }
 
 func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, raw json.RawMessage) (tools.Result, error) {
@@ -1046,6 +1253,9 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		for _, cid := range ids {
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_edges WHERE from_id = ? OR to_id = ?`, cid, cid); err != nil {
+				return err
+			}
+			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_assets WHERE chunk_id = ?`, cid); err != nil {
 				return err
 			}
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE id = ?`, cid); err != nil {

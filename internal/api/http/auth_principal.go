@@ -714,6 +714,12 @@ func requiredScopeFor(method, path string) string {
 // The def handlers confine a non-admin principal to its own tenant (write-stamp
 // + opaque-404), so opening these gates to ScopeTenant doesn't widen reach.
 func isTenantConfinedDefPath(path string) bool {
+	// RFC BO — the image-asset serving GET lives UNDER /v1/_document with a
+	// variable {chunk_id} suffix, so it needs a prefix match (the family list
+	// below is exact-match). Same ScopeTenant posture as /v1/_document itself.
+	if strings.HasPrefix(path, "/v1/_document/asset/") {
+		return true
+	}
 	for _, fam := range []string{
 		"/v1/_agentdef", "/v1/_skilldef", "/v1/_teamdef", "/v1/_mcpserverdef", "/v1/_scheduledef",
 		"/v1/_webhookdef", "/v1/_memorybackenddef", "/v1/_a2aagentdef", "/v1/_a2aservercarddef",

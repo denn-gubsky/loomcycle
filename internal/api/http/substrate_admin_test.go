@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -560,6 +561,7 @@ func substratePathDocFixture(t *testing.T) *httptest.Server {
 	pathTool := &builtin.Path{Store: st}
 	docTool := &builtin.Document{Store: st, SqlMem: mgr, Bus: channels.NewBus()}
 	srv := New(cfg, &stubResolver{}, []tools.Tool{pathTool, docTool}, concurrency.New(1, 1, time.Second), st)
+	srv.SetSqlMem(mgr) // RFC BO — the asset-serving GET reads via s.sqlMem (main.go wires this in prod)
 	return httptest.NewServer(srv.Mux())
 }
 
@@ -604,6 +606,91 @@ func TestSubstrateAdmin_Document_HappyPath(t *testing.T) {
 	if out["document_id"] == nil || out["root_chunk_id"] == nil {
 		t.Errorf("create_document response missing ids: %v", out)
 	}
+}
+
+// TestSubstrateAdmin_DocumentAsset_ServesAndIsolates (RFC BO P1): GET
+// /v1/_document/asset/{id} serves an image chunk's bytes with the stored
+// whitelisted Content-Type + nosniff, and returns an OPAQUE 404 for a missing
+// chunk, a cross-scope read, or a missing bearer (401 at the auth layer).
+func TestSubstrateAdmin_DocumentAsset_ServesAndIsolates(t *testing.T) {
+	ts := substratePathDocFixture(t)
+	defer ts.Close()
+
+	// document + a chunk under its root.
+	var doc map[string]any
+	r := postAdmin(t, ts, "/v1/_document", `{"op":"create_document","scope":"user","title":"Figures"}`)
+	_ = json.NewDecoder(r.Body).Decode(&doc)
+	r.Body.Close()
+	docID, root := doc["document_id"].(string), doc["root_chunk_id"].(string)
+	var ch map[string]any
+	r = postAdmin(t, ts, "/v1/_document", `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"img"}`)
+	_ = json.NewDecoder(r.Body).Decode(&ch)
+	r.Body.Close()
+	chunkID := ch["id"].(string)
+
+	// attach an image asset (non-UTF-8 bytes → exercises the BLOB path).
+	raw := []byte{0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x01, 0x02}
+	b64 := base64.StdEncoding.EncodeToString(raw)
+	r = postAdmin(t, ts, "/v1/_document", `{"op":"set_asset","scope":"user","id":"`+chunkID+`","media_type":"image/png","data":"`+b64+`"}`)
+	if r.StatusCode != 200 {
+		body, _ := io.ReadAll(r.Body)
+		t.Fatalf("set_asset: %d %s", r.StatusCode, body)
+	}
+	r.Body.Close()
+
+	// GET the asset → 200 + right headers + exact bytes.
+	g := getAsset(t, ts, "/v1/_document/asset/"+chunkID+"?scope=user", true)
+	if g.StatusCode != 200 {
+		t.Fatalf("serve status = %d, want 200", g.StatusCode)
+	}
+	if ct := g.Header.Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", ct)
+	}
+	if g.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("missing X-Content-Type-Options: nosniff")
+	}
+	body, _ := io.ReadAll(g.Body)
+	g.Body.Close()
+	if !bytes.Equal(body, raw) {
+		t.Errorf("served bytes mismatch: got %v want %v", body, raw)
+	}
+
+	// A nonexistent chunk id → opaque 404.
+	g = getAsset(t, ts, "/v1/_document/asset/deadbeefdeadbeef?scope=user", true)
+	if g.StatusCode != 404 {
+		t.Errorf("nonexistent asset = %d, want 404", g.StatusCode)
+	}
+	g.Body.Close()
+
+	// A DIFFERENT scope (agent) has no such asset → 404 (scope isolation).
+	g = getAsset(t, ts, "/v1/_document/asset/"+chunkID+"?scope=agent", true)
+	if g.StatusCode != 404 {
+		t.Errorf("cross-scope asset = %d, want 404", g.StatusCode)
+	}
+	g.Body.Close()
+
+	// No bearer → 401 at the auth middleware (never reaches the handler).
+	g = getAsset(t, ts, "/v1/_document/asset/"+chunkID+"?scope=user", false)
+	if g.StatusCode != 401 {
+		t.Errorf("no-auth = %d, want 401", g.StatusCode)
+	}
+	g.Body.Close()
+}
+
+func getAsset(t *testing.T, ts *httptest.Server, path string, withAuth bool) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest("GET", ts.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withAuth {
+		req.Header.Set("Authorization", "Bearer test-token")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 // TestSubstrateAdminUserCtx_ResolvesPrincipalSubject: the user-aware ctx used

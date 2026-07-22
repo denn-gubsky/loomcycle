@@ -2099,7 +2099,13 @@ type Env struct {
 	// operators tune it down to shrink the per-request memory ceiling.
 	// LOOMCYCLE_MAX_REQUEST_BYTES (bytes; <=0 ignored, default kept).
 	MaxRequestBytes int64
-	AuthToken       string
+	// MaxDocumentAssetBytes caps BOTH the POST /v1/_document request body (so a
+	// set_asset base64 image payload fits) and the decoded image size the
+	// Document tool stores (RFC BO). Default 8 MiB. A base64 payload is ~1.33× the
+	// decoded bytes, so the request cap is the binding one on upload.
+	// LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES (bytes; <=0 ignored, default kept).
+	MaxDocumentAssetBytes int64
+	AuthToken             string
 	// OperatorTokenPepper is prepended to a bearer before SHA-256 when
 	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
 	// the pepper yields no usable token lookup. Secret — never logged.
@@ -3472,6 +3478,12 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_MAX_REQUEST_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.Env.MaxRequestBytes = n
+		}
+	}
+	cfg.Env.MaxDocumentAssetBytes = 8 << 20 // RFC BO
+	if v := os.Getenv("LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.Env.MaxDocumentAssetBytes = n
 		}
 	}
 	cfg.Env.ChannelsSweepInterval = 15 * time.Minute

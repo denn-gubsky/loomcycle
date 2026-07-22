@@ -962,8 +962,9 @@ func main() {
 
 	// RFC AK — the Document tool (chunked-graph documents). Store late-bound
 	// below; SqlMem bound in the SQL Memory block (Document requires it); Bus
-	// for change events.
-	documentTool := &builtin.Document{Bus: channelBus}
+	// for change events. MaxAssetBytes (RFC BO) caps a stored image's decoded
+	// size (0 → the tool's built-in default).
+	documentTool := &builtin.Document{Bus: channelBus, MaxAssetBytes: int(cfg.Env.MaxDocumentAssetBytes)}
 	allTools = append(allTools, documentTool)
 
 	// RFC BE — the History tool (browse/search/annotate past chats). Store
