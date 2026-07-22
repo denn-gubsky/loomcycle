@@ -93,13 +93,30 @@ export interface ExplorerDataLayer {
     browse?: BrowseScope,
   ): Promise<ChunkDetail>;
   // documentCreateChunk creates a new chunk under a parent (RFC BO authoring).
+  // afterId (RFC BP) inserts the new chunk immediately after that sibling
+  // (server insert-and-shift); when set it overrides parentId.
   documentCreateChunk(
     documentId: string,
     parentId: string,
     patch: ChunkPatch,
     scope: DocScope,
     browse?: BrowseScope,
+    afterId?: string,
   ): Promise<ChunkDetail>;
+  // documentReorderChunk moves a chunk up/down within its level (RFC BP).
+  documentReorderChunk(
+    id: string,
+    direction: "up" | "down",
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<unknown>;
+  // documentDeleteChunk deletes a chunk + its subtree (RFC BP; existing
+  // delete_chunk op — cascades, refuses the document root).
+  documentDeleteChunk(
+    id: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<unknown>;
   // documentSetAsset attaches an image's base64 bytes to a chunk (→ type=image,
   // served by GET /v1/_document/asset/{id}). RFC BO.
   documentSetAsset(
@@ -198,17 +215,27 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
       ) as Promise<{ chunks: ChunkRow[] }>,
     documentGetChunk: (id, scope, browse) =>
       client.document({ op: "get_chunk", id, scope }, browse) as Promise<ChunkDetail>,
-    documentCreateChunk: (documentId, parentId, patch, scope, browse) =>
+    documentCreateChunk: (documentId, parentId, patch, scope, browse, afterId) =>
       client.document(
         {
           op: "create_chunk",
           document_id: documentId,
           parent_id: parentId,
           scope,
+          ...(afterId ? { after_id: afterId } : {}),
           ...patch,
-        } as DocumentToolInput,
+        } as unknown as DocumentToolInput,
         browse,
       ) as Promise<ChunkDetail>,
+    documentReorderChunk: (id, direction, scope, browse) =>
+      client.document(
+        // reorder_chunk is an RFC BP wire op the pinned SDK type doesn't
+        // enumerate; the /v1/_document passthrough accepts it verbatim.
+        { op: "reorder_chunk", id, direction, scope } as unknown as DocumentToolInput,
+        browse,
+      ),
+    documentDeleteChunk: (id, scope, browse) =>
+      client.document({ op: "delete_chunk", id, scope } as unknown as DocumentToolInput, browse),
     documentSetAsset: (chunkId, mediaType, dataBase64, filename, scope, browse) =>
       client.document(
         // set_asset is an RFC BO wire op the pinned SDK type doesn't enumerate;

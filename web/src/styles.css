@@ -5336,6 +5336,15 @@ button.primary:disabled {
   border-radius: 4px;
   cursor: pointer;
 }
+/* RFC BP — up/down reorder + delete controls. */
+.doc-content-controls > button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.doc-content-controls > button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
 /* The selected-chunk view (chunk body OR assembled markdown) scrolls
    independently of the fixed head — both modes can be long. */
 .doc-content-body {
