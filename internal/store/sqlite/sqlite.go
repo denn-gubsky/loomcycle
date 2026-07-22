@@ -4735,6 +4735,89 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 	return out, rows.Err()
 }
 
+// ListPurgeableRetiredDefVersions — RFC BM retention. created_at is an INTEGER
+// unix-nano column here, so olderThan binds as .UnixNano(). SQLite (>=3.25)
+// supports the row_number() window; as in Postgres it's computed in a subselect
+// (SQL disallows window functions in WHERE) so the outer query can filter
+// rn > keepLastN and apply LIMIT.
+func (s *Store) ListPurgeableRetiredDefVersions(ctx context.Context, defType string, olderThan time.Time, keepLastN, limit int) ([]store.RetiredDefRef, error) {
+	defsTable, activeTable, ok := store.RetentionDefTables(defType)
+	if !ok {
+		return nil, fmt.Errorf("retention: unknown def type %q", defType)
+	}
+	if keepLastN < 0 {
+		keepLastN = 0
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	// defsTable/activeTable are allowlisted names (never caller input) — safe to
+	// interpolate. Values stay parameterized. The two NOT EXISTS clauses exclude
+	// (a) the active version and (b) any version still referenced as a
+	// parent_def_id — so we never purge a version whose descendant survives. This
+	// keeps lineage intact AND avoids the postgres parent_def_id FK violation that
+	// a single batched DELETE of a still-referenced parent would trigger; a
+	// retired chain drains leaf-first over successive ticks.
+	q := fmt.Sprintf(`
+		SELECT def_id, tenant_id, name, version, definition, created_at
+		FROM (
+			SELECT d.def_id, d.tenant_id, d.name, d.version, d.definition, d.created_at,
+			       ROW_NUMBER() OVER (PARTITION BY d.tenant_id, d.name ORDER BY d.version DESC) AS rn
+			FROM %s d
+			WHERE d.retired = 1
+			  AND d.created_at < ?
+			  AND NOT EXISTS (SELECT 1 FROM %s a WHERE a.def_id = d.def_id)
+			  AND NOT EXISTS (SELECT 1 FROM %s c WHERE c.parent_def_id = d.def_id)
+		) sub
+		WHERE sub.rn > ?
+		ORDER BY sub.tenant_id, sub.name, sub.version DESC
+		LIMIT ?`, defsTable, activeTable, defsTable)
+	rows, err := s.db.QueryContext(ctx, q, olderThan.UnixNano(), keepLastN, limit)
+	if err != nil {
+		return nil, fmt.Errorf("retention list %s: %w", defType, err)
+	}
+	defer rows.Close()
+
+	var out []store.RetiredDefRef
+	for rows.Next() {
+		ref := store.RetiredDefRef{DefType: defType}
+		var definition string
+		var createdAt int64
+		if err := rows.Scan(&ref.DefID, &ref.TenantID, &ref.Name, &ref.Version, &definition, &createdAt); err != nil {
+			return nil, err
+		}
+		ref.Definition = json.RawMessage(definition)
+		ref.CreatedAt = time.Unix(0, createdAt)
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
+// DeleteDefVersions — RFC BM retention hard-delete. See the store interface.
+func (s *Store) DeleteDefVersions(ctx context.Context, defType string, defIDs []string) (int, error) {
+	defsTable, _, ok := store.RetentionDefTables(defType)
+	if !ok {
+		return 0, fmt.Errorf("retention: unknown def type %q", defType)
+	}
+	if len(defIDs) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(defIDs))
+	args := make([]any, len(defIDs))
+	for i, id := range defIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	// defsTable is allowlisted; the ids are parameterized.
+	q := fmt.Sprintf(`DELETE FROM %s WHERE def_id IN (%s)`, defsTable, strings.Join(placeholders, ", "))
+	res, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("retention delete %s: %w", defType, err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // AgentDefSetActive UPSERTs the agent_def_active pointer for
 // (tenantID, name). RFC N: validates the def belongs to BOTH the named
 // agent AND the supplied tenant — a def can only be promoted within its

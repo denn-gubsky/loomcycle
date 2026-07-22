@@ -129,6 +129,10 @@ var (
 	// rollup-and-prune, so only one replica per tick folds old
 	// token_usage rows into usage_archive and deletes them.
 	LockKeyUsageSweeper int64
+	// LockKeyRetentionSweeper gates the RFC BM data-retention sweep, so only
+	// one replica per tick exports + purges retired-and-old substrate def
+	// versions (agent/skill/team/mcp_server/schedule/a2a/webhook/memory_backend).
+	LockKeyRetentionSweeper int64
 )
 
 func init() {
@@ -142,6 +146,7 @@ func init() {
 	LockKeyResumePausedRuns = fnvKey("resume_paused_runs")
 	LockKeyEphemeralVolumeSweeper = fnvKey("ephemeral_volume_sweeper")
 	LockKeyUsageSweeper = fnvKey("usage_sweeper")
+	LockKeyRetentionSweeper = fnvKey("retention_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

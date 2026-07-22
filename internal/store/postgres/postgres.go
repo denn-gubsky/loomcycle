@@ -4262,6 +4262,86 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 	return out, rows.Err()
 }
 
+// ListPurgeableRetiredDefVersions — RFC BM retention. created_at is TIMESTAMPTZ
+// here, so olderThan binds directly. The row_number() window can't live in a
+// WHERE (SQL disallows window functions there), so it's computed in a subselect
+// (over the retired+old+non-active set) and the outer query filters rn >
+// keepLastN, which also lets LIMIT apply to the final result.
+func (s *Store) ListPurgeableRetiredDefVersions(ctx context.Context, defType string, olderThan time.Time, keepLastN, limit int) ([]store.RetiredDefRef, error) {
+	defsTable, activeTable, ok := store.RetentionDefTables(defType)
+	if !ok {
+		return nil, fmt.Errorf("retention: unknown def type %q", defType)
+	}
+	if keepLastN < 0 {
+		keepLastN = 0
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	// defsTable/activeTable are allowlisted names (never caller input) — safe to
+	// interpolate. Values (cutoff/keepLastN/limit) stay parameterized. The two
+	// NOT EXISTS clauses exclude (a) the active version and (b) any version still
+	// referenced as a parent_def_id — so we never purge a version whose descendant
+	// survives. This keeps lineage intact AND avoids the parent_def_id FK violation
+	// a single batched DELETE of a still-referenced parent would trigger; a retired
+	// chain drains leaf-first over successive ticks.
+	q := fmt.Sprintf(`
+		SELECT def_id, tenant_id, name, version, definition::text, created_at
+		FROM (
+			SELECT d.def_id, d.tenant_id, d.name, d.version, d.definition, d.created_at,
+			       ROW_NUMBER() OVER (PARTITION BY d.tenant_id, d.name ORDER BY d.version DESC) AS rn
+			FROM %s d
+			WHERE d.retired = TRUE
+			  AND d.created_at < $1
+			  AND NOT EXISTS (SELECT 1 FROM %s a WHERE a.def_id = d.def_id)
+			  AND NOT EXISTS (SELECT 1 FROM %s c WHERE c.parent_def_id = d.def_id)
+		) sub
+		WHERE sub.rn > $2
+		ORDER BY sub.tenant_id, sub.name, sub.version DESC
+		LIMIT $3`, defsTable, activeTable, defsTable)
+	rows, err := s.pool.Query(ctx, q, olderThan, keepLastN, limit)
+	if err != nil {
+		return nil, fmt.Errorf("retention list %s: %w", defType, err)
+	}
+	defer rows.Close()
+
+	var out []store.RetiredDefRef
+	for rows.Next() {
+		ref := store.RetiredDefRef{DefType: defType}
+		var definition string
+		if err := rows.Scan(&ref.DefID, &ref.TenantID, &ref.Name, &ref.Version, &definition, &ref.CreatedAt); err != nil {
+			return nil, err
+		}
+		ref.Definition = json.RawMessage(definition)
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
+// DeleteDefVersions — RFC BM retention hard-delete. See the store interface.
+func (s *Store) DeleteDefVersions(ctx context.Context, defType string, defIDs []string) (int, error) {
+	defsTable, _, ok := store.RetentionDefTables(defType)
+	if !ok {
+		return 0, fmt.Errorf("retention: unknown def type %q", defType)
+	}
+	if len(defIDs) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(defIDs))
+	args := make([]any, len(defIDs))
+	for i, id := range defIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	// defsTable is allowlisted; the ids are parameterized.
+	q := fmt.Sprintf(`DELETE FROM %s WHERE def_id IN (%s)`, defsTable, strings.Join(placeholders, ", "))
+	res, err := s.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("retention delete %s: %w", defType, err)
+	}
+	return int(res.RowsAffected()), nil
+}
+
 // AgentDefSetActive UPSERTs the agent_def_active pointer for
 // (tenantID, name). RFC N: validates the def belongs to BOTH the named
 // agent AND the supplied tenant — a def can only be promoted within its

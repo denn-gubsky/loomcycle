@@ -1012,6 +1012,30 @@ type Store interface {
 	// RFC AV Phase 2b2.
 	DeleteSessionCascade(ctx context.Context, sessionID string) error
 
+	// ListPurgeableRetiredDefVersions returns retired-and-old substrate def
+	// versions eligible for the RFC BM data-retention purge, for one def-type
+	// (agent / skill / team / mcp_server / schedule / a2a_server_card /
+	// a2a_agent / webhook / memory_backend — see RetentionDefTables). A row
+	// qualifies when ALL of:
+	//   - retired = true,
+	//   - created_at < olderThan (the age cutoff),
+	//   - it is NOT the current active pointer (defence-in-depth: even a
+	//     retired-but-active "ActiveRetired" corrupt-legacy row is protected),
+	//   - and it is beyond the keepLastN most-recent qualifying versions per
+	//     (tenant_id, name) — so the N newest retired versions survive as
+	//     lineage history. keepLastN=0 keeps none (purge every qualifying row).
+	// Ordered (tenant, name, version DESC), capped at limit (<=0 → a sane
+	// default). An unknown defType is an error (the def-type is looked up in a
+	// hardcoded table allowlist and NEVER interpolated raw). Read-only.
+	ListPurgeableRetiredDefVersions(ctx context.Context, defType string, olderThan time.Time, keepLastN, limit int) ([]RetiredDefRef, error)
+
+	// DeleteDefVersions hard-deletes the given def_ids from one def-type's defs
+	// table (RFC BM purge). Empty defIDs → (0, nil). Returns the rows-affected
+	// count. An unknown defType is an error (allowlist-checked, never
+	// interpolated raw). The caller (the retention sweeper) supplies only ids
+	// that ListPurgeableRetiredDefVersions returned.
+	DeleteDefVersions(ctx context.Context, defType string, defIDs []string) (int, error)
+
 	// GetTranscript returns all events for a session, ordered by Seq.
 	// Returns an empty slice (not error) for a session with no runs yet.
 	GetTranscript(ctx context.Context, sessionID string) ([]Event, error)
@@ -2741,6 +2765,62 @@ type AgentDefNameSummary struct {
 	// until the next retire/promote heals it. Normally false: the
 	// retire-of-active path now clears the pointer.
 	ActiveRetired bool `json:"active_retired,omitempty"`
+}
+
+// RetiredDefRef identifies one purgeable retired substrate def version (RFC BM
+// data retention). Definition carries the full JSON body so the sweeper can
+// export it before deleting (export-then-delete). DefType is the retention
+// def-type key (see RetentionDefTables), not a table name.
+type RetiredDefRef struct {
+	DefType    string          `json:"def_type"`
+	DefID      string          `json:"def_id"`
+	TenantID   string          `json:"tenant_id,omitempty"`
+	Name       string          `json:"name"`
+	Version    int             `json:"version"`
+	Definition json.RawMessage `json:"definition"`
+	CreatedAt  time.Time       `json:"created_at"`
+}
+
+// retentionDefTables is the hardcoded allowlist mapping an RFC BM retention
+// def-type to its (defs, active) physical table pair. Both store backends
+// (SQLite + Postgres) use the SAME physical table names for these 9 uniform
+// versioned def families, so the allowlist is shared here — a single source of
+// truth that can't drift between backends.
+//
+// SECURITY: the retention store methods parameterize the table name INTO SQL via
+// fmt.Sprintf. The table name MUST come from this allowlist and NEVER from a
+// caller-supplied string, or an attacker-influenced def-type would be a SQL
+// injection sink. RetentionDefTables returns ok=false for anything not listed;
+// the store methods turn that into an error before building any query.
+var retentionDefTables = map[string][2]string{
+	"agent":           {"agent_defs", "agent_def_active"},
+	"skill":           {"skill_defs", "skill_def_active"},
+	"team":            {"teamdefs", "teamdef_active"},
+	"mcp_server":      {"mcp_server_defs", "mcp_server_def_active"},
+	"schedule":        {"schedule_defs", "schedule_def_active"},
+	"a2a_server_card": {"a2a_server_card_defs", "a2a_server_card_def_active"},
+	"a2a_agent":       {"a2a_agent_defs", "a2a_agent_def_active"},
+	"webhook":         {"webhook_defs", "webhook_def_active"},
+	"memory_backend":  {"memory_backend_defs", "memory_backend_def_active"},
+}
+
+// RetentionDefTypes is the stable, ordered list of versioned substrate def-types
+// the RFC BM retention sweeper purges. Ordered for deterministic sweeps + reports.
+var RetentionDefTypes = []string{
+	"agent", "skill", "team", "mcp_server", "schedule",
+	"a2a_server_card", "a2a_agent", "webhook", "memory_backend",
+}
+
+// RetentionDefTables returns the (defsTable, activeTable) physical table pair for
+// a retention def-type, or ok=false for an unknown type. Callers MUST reject
+// ok=false before building SQL — the returned strings are the ONLY def-table
+// names that may be interpolated into a retention query.
+func RetentionDefTables(defType string) (defsTable, activeTable string, ok bool) {
+	p, ok := retentionDefTables[defType]
+	if !ok {
+		return "", "", false
+	}
+	return p[0], p[1], true
 }
 
 // ---- v0.8.22 SkillDef substrate types ----
