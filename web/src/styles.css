@@ -6697,3 +6697,32 @@ button.primary:disabled {
   margin-top: 6px;
   font-size: var(--lc-text-xs);
 }
+
+/* ============================================================
+   RFC BO — image & diagram chunks (explorer, dogfooded)
+   ============================================================ */
+.chunk-type-icon {
+  font-size: 0.9em;
+  line-height: 1;
+  margin-right: 2px;
+}
+.doc-image {
+  margin: 0;
+  text-align: center;
+}
+.doc-image img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-soft);
+}
+.doc-image figcaption {
+  margin-top: 6px;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+  font-style: italic;
+}
+.doc-mermaid-source {
+  margin-top: 10px;
+}

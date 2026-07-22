@@ -26,3 +26,23 @@ export function createLoomcycleClient(c: Connection): LoomcycleClient {
     fetch: (input, init) => (impl ? impl(input, init) : fetch(input, init)),
   });
 }
+
+/** AssetFetch does a raw authenticated GET against a relative loomcycle path and
+ *  returns the Response — for BINARY endpoints (RFC BO image assets) the JSON
+ *  client can't model. It mirrors the Connection's transport: the custom `fetch`
+ *  (e.g. the Web UI's same-origin cookie fetch) carries cookie auth, and a bearer
+ *  token is added as an Authorization header when set. */
+export type AssetFetch = (path: string) => Promise<Response>;
+
+/** Build the AssetFetch from a Connection — the SAME auth transport the JSON
+ *  client uses, so an image asset loads under both cookie (web) and bearer
+ *  (standalone package) auth. */
+export function assetFetchFromConnection(c: Connection): AssetFetch {
+  const impl = c.fetch;
+  const doFetch: typeof fetch = (input, init) => (impl ? impl(input, init) : fetch(input, init));
+  return (path) => {
+    const headers: Record<string, string> = {};
+    if (c.token) headers.Authorization = `Bearer ${c.token}`;
+    return doFetch(c.baseUrl + path, { headers });
+  };
+}

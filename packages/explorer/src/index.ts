@@ -25,8 +25,8 @@ export type {
 } from "./types";
 
 // Connection → client factory (the default data-source path).
-export { createLoomcycleClient } from "./lib/createClient";
-export type { Connection } from "./lib/createClient";
+export { createLoomcycleClient, assetFetchFromConnection } from "./lib/createClient";
+export type { Connection, AssetFetch } from "./lib/createClient";
 
 // The data-layer seam: inject a custom implementation, or build one from a
 // @loomcycle/client instance.

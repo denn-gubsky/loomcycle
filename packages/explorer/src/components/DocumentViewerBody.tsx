@@ -24,6 +24,15 @@ import ChunkEditorModal from "./ChunkEditorModal";
 import ColorSchemeEditor from "./ColorSchemeEditor";
 import CrossReferences from "./CrossReferences";
 import Markdown from "./Markdown";
+import MermaidDiagram from "./Mermaid";
+
+// imageAlt derives an image chunk's alt text: the fields.alt override, else the
+// chunk title, else a generic label (RFC BO).
+function imageAlt(chunk: ChunkDetail): string {
+  const f = (chunk.fields ?? {}) as { alt?: unknown };
+  if (typeof f.alt === "string" && f.alt.trim() !== "") return f.alt;
+  return chunk.title || "image";
+}
 
 // DocumentViewerBody is the read-mostly surface for one chunked-graph document
 // (RFC AK). The chunk tree stays on the left for navigation; the right pane
@@ -83,6 +92,9 @@ export default function DocumentViewerBody({
   const [selectedDetail, setSelectedDetail] = useState<ChunkDetail | null>(null);
   const [mode, setMode] = useState<Mode>("chunks");
   const [subtreeMd, setSubtreeMd] = useState<string | null>(null);
+  // RFC BO — an image chunk's blob object-URL (fetched with auth) + a load error.
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageErr, setImageErr] = useState<string | null>(null);
   const [editing, setEditing] = useState<ChunkDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -207,6 +219,36 @@ export default function DocumentViewerBody({
     };
   }, [data, selectedId, scope, reload, browse]);
 
+  // RFC BO — for an image chunk, fetch its bytes WITH auth into a blob object-URL
+  // for <img src> (a bare <img src=/v1/...> can't carry a bearer). Revoke the URL
+  // on change/unmount so blobs don't leak.
+  useEffect(() => {
+    const isImage = selectedDetail?.type === "image" || !!selectedDetail?.asset;
+    if (!selectedDetail || !isImage || !data.documentAssetObjectUrl) {
+      setImageUrl(null);
+      setImageErr(null);
+      return;
+    }
+    let cancelled = false;
+    let url: string | null = null;
+    setImageErr(null);
+    data
+      .documentAssetObjectUrl(selectedDetail.id, scope, browse)
+      .then((u) => {
+        if (cancelled) {
+          URL.revokeObjectURL(u);
+          return;
+        }
+        url = u;
+        setImageUrl(u);
+      })
+      .catch((e) => !cancelled && setImageErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [data, selectedDetail, scope, browse]);
+
   // Assemble the selected chunk + its sub-chunks into one Markdown string for the
   // markdown view (fetches each descendant's body; heading depth is relative to
   // the selected chunk, so it reads as a standalone part — or the whole document
@@ -232,7 +274,19 @@ export default function DocumentViewerBody({
           .map((it, idx) => {
             const lvl = Math.min(it.depth + 1, 6);
             const d = details[idx];
-            return "#".repeat(lvl) + " " + it.node.row.title + (d.body ? "\n\n" + d.body : "") + "\n";
+            const heading = "#".repeat(lvl) + " " + it.node.row.title;
+            // RFC BO — render media child chunks correctly in the assembled view:
+            // a mermaid chunk's body becomes a ```mermaid fence (so it draws);
+            // an image chunk shows a placeholder (its bytes need the auth'd asset
+            // GET, which the plain-string assembler can't inline).
+            if (d.type === "mermaid" && d.body) {
+              return heading + "\n\n```mermaid\n" + d.body + "\n```\n";
+            }
+            if (d.type === "image" || d.asset) {
+              const cap = d.body ? " — " + d.body : "";
+              return heading + "\n\n_🖼 image chunk_" + cap + "\n";
+            }
+            return heading + (d.body ? "\n\n" + d.body : "") + "\n";
           })
           .join("\n");
         setSubtreeMd(md);
@@ -358,7 +412,33 @@ export default function DocumentViewerBody({
                 </div>
               </div>
               <div className="doc-content-body">
-                {mode === "markdown" ? (
+                {selectedDetail.type === "mermaid" ? (
+                  // RFC BO — a diagram chunk: body IS the Mermaid source.
+                  selectedDetail.body ? (
+                    <>
+                      <MermaidDiagram code={selectedDetail.body} />
+                      {mode === "markdown" && (
+                        <pre className="md-pre doc-mermaid-source">
+                          <code>{selectedDetail.body}</code>
+                        </pre>
+                      )}
+                    </>
+                  ) : (
+                    <p className="doc-empty-body">(empty diagram)</p>
+                  )
+                ) : selectedDetail.type === "image" || selectedDetail.asset ? (
+                  // RFC BO — an image chunk: bytes come from the auth'd asset GET.
+                  imageErr ? (
+                    <p className="doc-empty-body">Image failed to load: {imageErr}</p>
+                  ) : imageUrl ? (
+                    <figure className="doc-image">
+                      <img src={imageUrl} alt={imageAlt(selectedDetail)} />
+                      {selectedDetail.body && <figcaption>{selectedDetail.body}</figcaption>}
+                    </figure>
+                  ) : (
+                    <p className="doc-empty-body">Loading image…</p>
+                  )
+                ) : mode === "markdown" ? (
                   subtreeMd !== null ? (
                     <Markdown source={subtreeMd} />
                   ) : (

@@ -48,6 +48,9 @@ export interface ChunkRow {
 export interface ChunkDetail extends ChunkRow {
   body: string;
   fields?: unknown;
+  // asset (RFC BO) is present on an image chunk — metadata only; the bytes are
+  // fetched from GET /v1/_document/asset/{id} via documentAssetObjectUrl.
+  asset?: { media_type: string; size: number };
 }
 
 // DocEdge is one cross-reference edge from get_edges (RFC BN P4): a typed link

@@ -1022,3 +1022,32 @@
   margin-top: 6px;
   font-size: var(--lc-text-xs);
 }
+
+/* ============================================================
+   RFC BO — image & diagram chunks
+   ============================================================ */
+.loomcycle-explorer .chunk-type-icon {
+  font-size: 0.9em;
+  line-height: 1;
+  margin-right: 2px;
+}
+.loomcycle-explorer .doc-image {
+  margin: 0;
+  text-align: center;
+}
+.loomcycle-explorer .doc-image img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-soft);
+}
+.loomcycle-explorer .doc-image figcaption {
+  margin-top: 6px;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+  font-style: italic;
+}
+.loomcycle-explorer .doc-mermaid-source {
+  margin-top: 10px;
+}
