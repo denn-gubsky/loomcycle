@@ -4,6 +4,15 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.31.0
+
+**✏️ RFC BP — per-chunk editing controls in the Document viewer.** The `@loomcycle/explorer` viewer could create image/diagram chunks (RFC BO) and edit a chunk's content, but had no per-chunk **structural** controls. This adds them as first-class buttons, backed by two clean additive backend ops (the current position model couldn't express insert-after or reorder without ties).
+
+- **Backend (#793).** **`create_chunk` gains `after_id`** — insert the new chunk immediately after an existing sibling: adopt that sibling's parent and insert-and-shift the later siblings by +1 in one transaction, so it lands with no position tie (overrides `parent_id`/`position`; a missing/cross-document `after_id` errors). New op **`reorder_chunk {id, direction: "up"|"down"}`** — move a chunk within its level: swap with the neighbor in canonical `(position, id)` order and renumber the whole sibling list to contiguous `0..n-1` in one transaction (self-heals any pre-existing ties/gaps); a boundary or sole child is a no-op success. Delete uses the existing `delete_chunk` (cascades the subtree, refuses the document root). Both new ops are opt-in — existing `create_chunk`/`move_chunk` default behavior is byte-unchanged — and reach every transport through the existing `/v1/_document` + MCP `document` + gRPC passthrough (no route, no per-op gating, no migration). `move_chunk`'s pre-existing footguns are intentionally left untouched. Regression tests `TestDocument_CreateChunkAfterID` + `TestDocument_ReorderChunk`.
+- **Viewer (#794).** `DocumentViewerBody` gains **+ text** (creates a text chunk after the selected chunk via `after_id`, then opens the editor), **↑ / ↓** (reorder via `reorder_chunk`; disabled at the level boundaries, hidden for the root), and **delete** (a danger button + confirm modal → `delete_chunk`, then selects the parent; hidden for the root). Enablement of ↑/↓ is computed client-side from the loaded sibling positions. The chunk/markdown view toggle is unchanged. New data-layer methods `documentReorderChunk` + `documentDeleteChunk` and an optional `afterId` on `documentCreateChunk`, all riding the generic `document()` passthrough.
+
+No wire migration; **`@loomcycle/client` unchanged at 1.30.0** (the new ops need no adapter method); **`@loomcycle/explorer` → 0.4.0** (published on its own `explorer-v0.4.0` tag); Python unchanged. Images `denngubsky/loomcycle` + `denngubsky/loomcycle-toolbox` rebuild at 1.31.0. Merged in #793–794.
+
 ## What's in v1.30.0
 
 **🖼 RFC BO — image & diagram chunks in the Document store.** A loomcycle Document was text-only: a chunk held Markdown + typed fields, with no way to store an image, and a diagram could only live inline in a body. This makes **images and Mermaid diagrams first-class typed chunks** across four phases.
