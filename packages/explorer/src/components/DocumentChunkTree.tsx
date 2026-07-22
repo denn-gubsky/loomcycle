@@ -31,6 +31,14 @@ export function buildChunkTree(chunks: ChunkRow[]): ChunkNode[] {
   return roots;
 }
 
+// typeIcon returns a small glyph for a media chunk type (RFC BO) so the tree
+// distinguishes image / diagram chunks at a glance; "" for a plain text chunk.
+function typeIcon(type: string | undefined): string {
+  if (type === "image") return "🖼";
+  if (type === "mermaid") return "📊";
+  return "";
+}
+
 // findChunkNode locates a node by id within a chunk forest.
 export function findChunkNode(nodes: ChunkNode[], id: string): ChunkNode | undefined {
   for (const n of nodes) {
@@ -170,6 +178,11 @@ function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintSchem
           onClick={() => onSelect(node)}
           title={node.row.title}
         >
+          {typeIcon(node.row.type) && (
+            <span className="chunk-type-icon" aria-hidden>
+              {typeIcon(node.row.type)}
+            </span>
+          )}
           <span className="chunk-title">{node.row.title || "(untitled)"}</span>
           {node.row.type && <span className="chunk-badge">{node.row.type}</span>}
           {node.row.status && <span className="chunk-badge chunk-status">{node.row.status}</span>}

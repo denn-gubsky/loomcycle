@@ -10,6 +10,7 @@ import type {
   PathScope,
 } from "../types";
 import type { DocSummary, DocumentMeta } from "./colorScheme";
+import type { AssetFetch } from "./createClient";
 
 // ChunkPatch is the subset of chunk fields update_chunk accepts. `fields` is
 // unknown (arbitrary typed JSON the chunk carries); a blank/absent value leaves
@@ -98,6 +99,16 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<{ edges: DocEdge[] }>;
+  // documentAssetObjectUrl fetches an image chunk's bytes (RFC BO) WITH auth and
+  // returns a blob object-URL for an <img src> — a bare <img src=/v1/...> can't
+  // carry a bearer header. The CALLER must URL.revokeObjectURL when done. Absent
+  // when the data source can't do a raw binary GET (a bare client with no
+  // connection) → the viewer falls back to a placeholder.
+  documentAssetObjectUrl?(
+    chunkId: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<string>;
   documentUpdateChunk(
     id: string,
     revision: number,
@@ -122,7 +133,7 @@ export interface ExplorerDataLayer {
 // the SDK serializes it to ?scope_id= / ?tenant= (empty/undefined → the caller's
 // own subject, byte-identical to the pre-RFC-AS behaviour). Responses are
 // op-varying `unknown`, cast to the kept shapes the components consume.
-export function dataLayerFromClient(client: LoomcycleClient): ExplorerDataLayer {
+export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetFetch): ExplorerDataLayer {
   return {
     pathLs: (path, scope, recursive, browse) =>
       client.path(
@@ -200,6 +211,24 @@ export function dataLayerFromClient(client: LoomcycleClient): ExplorerDataLayer 
         },
         browse,
       ) as Promise<{ markdown: string; title: string; document_id: string }>,
+    // Present only when an AssetFetch was supplied (the connection path); a bare
+    // client can't do the raw binary GET, so the op is omitted and the viewer
+    // shows a placeholder.
+    ...(assetFetch
+      ? {
+          documentAssetObjectUrl: async (chunkId, scope, browse) => {
+            const q = new URLSearchParams({ scope });
+            if (browse?.scopeId) q.set("scope_id", browse.scopeId);
+            if (browse?.tenant) q.set("tenant", browse.tenant);
+            const resp = await assetFetch(
+              `/v1/_document/asset/${encodeURIComponent(chunkId)}?${q.toString()}`,
+            );
+            if (!resp.ok) throw new Error(`asset fetch failed: ${resp.status}`);
+            const blob = await resp.blob();
+            return URL.createObjectURL(blob);
+          },
+        }
+      : {}),
   };
 }
 
