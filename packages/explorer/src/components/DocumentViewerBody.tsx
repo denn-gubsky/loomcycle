@@ -98,6 +98,7 @@ export default function DocumentViewerBody({
   const [imageErr, setImageErr] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null); // hidden upload input (RFC BO)
   const [editing, setEditing] = useState<ChunkDetail | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false); // RFC BP delete confirm
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
@@ -367,6 +368,73 @@ export default function DocumentViewerBody({
     }
   }, [data, documentId, scope, browse, selectedId, rootChunkId, refresh]);
 
+  // RFC BP — "+ text": a plain text chunk immediately AFTER the selected chunk
+  // (via after_id) when a non-root chunk is selected; otherwise appended under
+  // the root. Opens the editor on the new chunk.
+  const addText = useCallback(async () => {
+    if (!data.documentCreateChunk) return;
+    const insertAfter = selectedId && !selectedIsRoot ? selectedId : undefined;
+    const parent = selectedId || rootChunkId;
+    if (!parent) return;
+    setErr(null);
+    try {
+      const created = await data.documentCreateChunk(
+        documentId,
+        insertAfter ? "" : parent, // after_id resolves the parent server-side
+        { title: "Text", body: "" },
+        scope,
+        browse,
+        insertAfter,
+      );
+      refresh();
+      setSelectedId(created.id);
+      setEditing(created);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [data, documentId, scope, browse, selectedId, selectedIsRoot, rootChunkId, refresh]);
+
+  // RFC BP — the selected chunk's siblings (same parent) in position order, to
+  // gate the up/down buttons at the level boundaries.
+  const siblingBounds = useMemo(() => {
+    if (!selectedDetail || selectedIsRoot) return { canUp: false, canDown: false };
+    const parent = selectedDetail.parent_id ?? "";
+    const sibs = chunks
+      .filter((c) => (c.parent_id ?? "") === parent)
+      .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+    const i = sibs.findIndex((c) => c.id === selectedDetail.id);
+    return { canUp: i > 0, canDown: i >= 0 && i < sibs.length - 1 };
+  }, [chunks, selectedDetail, selectedIsRoot]);
+
+  const reorderSelected = useCallback(
+    async (direction: "up" | "down") => {
+      if (!data.documentReorderChunk || !selectedId) return;
+      setErr(null);
+      try {
+        await data.documentReorderChunk(selectedId, direction, scope, browse);
+        refresh();
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [data, selectedId, scope, browse, refresh],
+  );
+
+  const deleteSelected = useCallback(async () => {
+    if (!data.documentDeleteChunk || !selectedDetail) return;
+    setErr(null);
+    const parentId = selectedDetail.parent_id;
+    try {
+      await data.documentDeleteChunk(selectedDetail.id, scope, browse);
+      setConfirmDelete(false);
+      setSelectedId(parentId || rootChunkId);
+      refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setConfirmDelete(false);
+    }
+  }, [data, selectedDetail, scope, browse, rootChunkId, refresh]);
+
   // Paste a screenshot anywhere in the viewer → a new image chunk. Ignored while
   // a modal or a text field is focused (so an editor paste isn't hijacked).
   useEffect(() => {
@@ -406,6 +474,13 @@ export default function DocumentViewerBody({
         <div className="doc-toolbar-actions">
           {canCreate && (
             <>
+              <button
+                type="button"
+                onClick={() => void addText()}
+                title="Add a text chunk after the selected chunk"
+              >
+                + text
+              </button>
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -508,6 +583,37 @@ export default function DocumentViewerBody({
                   <button type="button" onClick={() => setEditing(selectedDetail)}>
                     edit
                   </button>
+                  {/* RFC BP — reorder within the level + delete (not for the root). */}
+                  {!selectedIsRoot && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void reorderSelected("up")}
+                        disabled={!siblingBounds.canUp}
+                        title="Move this chunk up within its level"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void reorderSelected("down")}
+                        disabled={!siblingBounds.canDown}
+                        title="Move this chunk down within its level"
+                      >
+                        ↓
+                      </button>
+                    </>
+                  )}
+                  {!selectedIsRoot && (
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => setConfirmDelete(true)}
+                      title="Delete this chunk and its sub-chunks"
+                    >
+                      delete
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="doc-content-body">
@@ -596,6 +702,25 @@ export default function DocumentViewerBody({
           onClose={() => setColorsOpen(false)}
           onSaved={refresh}
         />
+      )}
+      {confirmDelete && selectedDetail && (
+        <div className="modal-overlay" onClick={() => setConfirmDelete(false)}>
+          <div className="modal chunk-delete-confirm" onClick={(e) => e.stopPropagation()}>
+            <h3>Delete chunk</h3>
+            <p className="modal-context">
+              Delete “{selectedDetail.title || "(untitled)"}” and all of its sub-chunks? This
+              cannot be undone.
+            </p>
+            <div className="modal-buttons">
+              <button type="button" onClick={() => setConfirmDelete(false)}>
+                cancel
+              </button>
+              <button type="button" className="danger" onClick={() => void deleteSelected()}>
+                delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

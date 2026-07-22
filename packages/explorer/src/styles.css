@@ -655,6 +655,15 @@
   border-radius: 4px;
   cursor: pointer;
 }
+/* RFC BP — up/down reorder + delete controls. */
+.loomcycle-explorer .doc-content-controls > button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.loomcycle-explorer .doc-content-controls > button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
 /* The selected-chunk view (chunk body OR assembled markdown) scrolls
    independently of the fixed head — both modes can be long. */
 .loomcycle-explorer .doc-content-body {
