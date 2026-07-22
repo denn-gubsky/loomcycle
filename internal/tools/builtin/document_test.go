@@ -869,6 +869,102 @@ func TestDocument_ChunkStatusBoardRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDocument_CreateChunkAfterID covers RFC BP: create_chunk with after_id
+// inserts the new chunk immediately after the given sibling (insert-and-shift),
+// so sibling order is A, NEW, B — not a tie.
+func TestDocument_CreateChunkAfterID(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"Doc"}`)
+	docID, root := out["document_id"].(string), out["root_chunk_id"].(string)
+	// Three children A, B, C (appended → positions 0,1,2).
+	mk := func(title string) string {
+		o, r := docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","parent_id":"`+root+`","title":"`+title+`"}`)
+		if r.IsError {
+			t.Fatalf("create %s: %s", title, r.Text)
+		}
+		return o["id"].(string)
+	}
+	a := mk("A")
+	mk("B")
+	mk("C")
+
+	// Insert NEW immediately after A.
+	out, res := docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","after_id":"`+a+`","title":"NEW"}`)
+	if res.IsError {
+		t.Fatalf("create after_id: %s", res.Text)
+	}
+	if out["parent_id"] != root {
+		t.Errorf("after_id chunk should inherit A's parent (root): %s", res.Text)
+	}
+
+	// Order via query_chunks (children of root, by position). Expect A,NEW,B,C.
+	q, _ := docExec(t, d, ctx, `{"op":"query_chunks","scope":"agent","document_id":"`+docID+`","parent_id":"`+root+`"}`)
+	rows, _ := q["chunks"].([]any)
+	var titles []string
+	for _, rr := range rows {
+		titles = append(titles, rr.(map[string]any)["title"].(string))
+	}
+	got := strings.Join(titles, ",")
+	if got != "A,NEW,B,C" {
+		t.Errorf("sibling order = %q, want A,NEW,B,C", got)
+	}
+
+	// after_id to a missing chunk errors; cross-doc after_id errors.
+	if _, r := docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","after_id":"nope","title":"X"}`); !r.IsError || !strings.Contains(r.Text, "no such after_id") {
+		t.Errorf("missing after_id should error: %s", r.Text)
+	}
+}
+
+// TestDocument_ReorderChunk covers RFC BP: reorder_chunk up/down moves a chunk
+// within its level, boundaries are no-ops, and it self-heals tied positions.
+func TestDocument_ReorderChunk(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"Doc"}`)
+	docID, root := out["document_id"].(string), out["root_chunk_id"].(string)
+	mk := func(title string) string {
+		o, _ := docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","parent_id":"`+root+`","title":"`+title+`"}`)
+		return o["id"].(string)
+	}
+	a, b, c := mk("A"), mk("B"), mk("C")
+	_ = a
+	_ = c
+	order := func() string {
+		q, _ := docExec(t, d, ctx, `{"op":"query_chunks","scope":"agent","document_id":"`+docID+`","parent_id":"`+root+`"}`)
+		rows, _ := q["chunks"].([]any)
+		var ts []string
+		for _, rr := range rows {
+			ts = append(ts, rr.(map[string]any)["title"].(string))
+		}
+		return strings.Join(ts, ",")
+	}
+
+	// Move B up → B,A,C.
+	if _, r := docExec(t, d, ctx, `{"op":"reorder_chunk","scope":"agent","id":"`+b+`","direction":"up"}`); r.IsError {
+		t.Fatalf("reorder up: %s", r.Text)
+	}
+	if o := order(); o != "B,A,C" {
+		t.Errorf("after B up = %q, want B,A,C", o)
+	}
+	// Move B down twice → A,C,B (down once → A,B,C; down again → A,C,B).
+	docExec(t, d, ctx, `{"op":"reorder_chunk","scope":"agent","id":"`+b+`","direction":"down"}`)
+	docExec(t, d, ctx, `{"op":"reorder_chunk","scope":"agent","id":"`+b+`","direction":"down"}`)
+	if o := order(); o != "A,C,B" {
+		t.Errorf("after B down x2 = %q, want A,C,B", o)
+	}
+	// B is now last → down is a no-op success (reordered:false).
+	out, res := docExec(t, d, ctx, `{"op":"reorder_chunk","scope":"agent","id":"`+b+`","direction":"down"}`)
+	if res.IsError || out["reordered"] != false {
+		t.Errorf("boundary down should be a no-op success: %s", res.Text)
+	}
+	if o := order(); o != "A,C,B" {
+		t.Errorf("boundary down changed order: %q", o)
+	}
+	// Bad direction errors.
+	if _, r := docExec(t, d, ctx, `{"op":"reorder_chunk","scope":"agent","id":"`+b+`","direction":"sideways"}`); !r.IsError {
+		t.Errorf("bad direction should error")
+	}
+}
+
 // TestDocument_ImageAssetRoundTrip covers RFC BO P1: set_asset stores an image
 // chunk's bytes in the chunk_assets BYTEA/BLOB table, marks the chunk type=image,
 // surfaces an asset indicator on get_chunk, ReadAsset returns the exact bytes,

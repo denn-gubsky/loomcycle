@@ -43,7 +43,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses), query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses), query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -53,7 +53,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -62,6 +62,8 @@ const documentInputSchema = `{
 		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path)."},
 		"parent_id":   {"type": "string", "description": "create_chunk: parent chunk (omit for a child of the root)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
+		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
+		"direction":   {"type": "string", "enum": ["up","down"], "description": "reorder_chunk: move the chunk up or down within its current level."},
 		"type":        {"type": "string", "description": "Optional supertag-like chunk type."},
 		"body":        {"type": "string", "description": "Markdown body."},
 		"fields":      {"type": "object", "description": "Type-specific structured fields."},
@@ -87,24 +89,29 @@ const documentInputSchema = `{
 func (d *Document) InputSchema() json.RawMessage { return json.RawMessage(documentInputSchema) }
 
 type docInput struct {
-	Op          string          `json:"op"`
-	Scope       string          `json:"scope"`
-	ID          string          `json:"id"`
-	Path        string          `json:"path"`
-	Title       string          `json:"title"`
-	DocumentID  string          `json:"document_id"`
-	DocumentIDs []string        `json:"document_ids"`
-	ParentID    string          `json:"parent_id"`
-	NewParentID string          `json:"new_parent_id"`
-	Type        string          `json:"type"`
-	Body        string          `json:"body"`
-	Fields      json.RawMessage `json:"fields"`
-	Status      string          `json:"status"`
-	Position    *int            `json:"position"`
-	Revision    *int            `json:"revision"`
-	FromID      string          `json:"from_id"`
-	ToID        string          `json:"to_id"`
-	Kind        string          `json:"kind"`
+	Op          string   `json:"op"`
+	Scope       string   `json:"scope"`
+	ID          string   `json:"id"`
+	Path        string   `json:"path"`
+	Title       string   `json:"title"`
+	DocumentID  string   `json:"document_id"`
+	DocumentIDs []string `json:"document_ids"`
+	ParentID    string   `json:"parent_id"`
+	NewParentID string   `json:"new_parent_id"`
+	// AfterID (create_chunk, RFC BP) inserts the new chunk immediately after this
+	// sibling — insert-and-shift, overriding parent_id/position. Direction
+	// (reorder_chunk) is "up" | "down".
+	AfterID   string          `json:"after_id"`
+	Direction string          `json:"direction"`
+	Type      string          `json:"type"`
+	Body      string          `json:"body"`
+	Fields    json.RawMessage `json:"fields"`
+	Status    string          `json:"status"`
+	Position  *int            `json:"position"`
+	Revision  *int            `json:"revision"`
+	FromID    string          `json:"from_id"`
+	ToID      string          `json:"to_id"`
+	Kind      string          `json:"kind"`
 	// MediaType/Data/Filename carry an image asset for set_asset (RFC BO). Data
 	// is standard base64 (no data: prefix); it is decoded to raw bytes and stored
 	// in the chunk_assets BYTEA/BLOB table.
@@ -193,6 +200,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.deleteChunk(ctx, key, mscope, in)
 	case "move_chunk":
 		return d.moveChunk(ctx, key, in)
+	case "reorder_chunk":
+		return d.reorderChunk(ctx, key, mscope, in)
 	case "link_chunks":
 		return d.linkChunks(ctx, key, in)
 	case "unlink_chunks":
@@ -906,8 +915,26 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if in.Title == "" {
 		return errResult("create_chunk: missing required field: title"), nil
 	}
+	// RFC BP — after_id inserts the new chunk immediately after an existing
+	// sibling: adopt that sibling's parent, and insert-and-shift the later
+	// siblings by +1 (in one txn) so the new chunk lands at afterPos+1 with no
+	// tie. Overrides parent_id/position.
+	parentID := in.ParentID
 	pos := 0
-	if in.Position != nil {
+	if in.AfterID != "" {
+		sib, ok, err := d.getChunkRow(ctx, key, in.AfterID)
+		if err != nil {
+			return errResult("create_chunk: " + err.Error()), nil
+		}
+		if !ok {
+			return errResult("create_chunk: no such after_id chunk: " + in.AfterID), nil
+		}
+		if sib.DocumentID != in.DocumentID {
+			return errResult("create_chunk: after_id belongs to a different document"), nil
+		}
+		parentID = sib.ParentID
+		pos = sib.Position + 1
+	} else if in.Position != nil {
 		pos = *in.Position
 	} else {
 		// Append: max(position)+1 among siblings. Branch on root-level vs
@@ -915,10 +942,10 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		// `parent_id IS ?` with a non-null bind).
 		var res *sqlmem.QueryResult
 		var err error
-		if in.ParentID == "" {
+		if parentID == "" {
 			res, err = d.query(ctx, key, `SELECT position FROM chunks WHERE document_id = ? AND parent_id IS NULL ORDER BY position DESC LIMIT 1`, in.DocumentID)
 		} else {
-			res, err = d.query(ctx, key, `SELECT position FROM chunks WHERE document_id = ? AND parent_id = ? ORDER BY position DESC LIMIT 1`, in.DocumentID, in.ParentID)
+			res, err = d.query(ctx, key, `SELECT position FROM chunks WHERE document_id = ? AND parent_id = ? ORDER BY position DESC LIMIT 1`, in.DocumentID, parentID)
 		}
 		if err == nil && len(res.Rows) > 0 {
 			pos = asInt(res.Rows[0][0]) + 1
@@ -926,10 +953,34 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	now := time.Now().UnixNano()
 	id := newDocID()
-	if err := d.exec(ctx, key,
-		`INSERT INTO chunks (id, document_id, parent_id, position, type, status, title, created_at, updated_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-		id, in.DocumentID, nullIfEmpty(in.ParentID), pos, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now); err != nil {
-		return errResult("create_chunk: " + err.Error()), nil
+	// The shift (after_id) + insert must be atomic — a txn so a concurrent read
+	// never sees the gap between "shifted" and "inserted".
+	insert := func(exec func(stmt string, args ...any) error) error {
+		if in.AfterID != "" {
+			// Shift later siblings up by one to open the slot at `pos`.
+			if parentID == "" {
+				if err := exec(`UPDATE chunks SET position = position + 1 WHERE document_id = ? AND parent_id IS NULL AND position >= ?`, in.DocumentID, pos); err != nil {
+					return err
+				}
+			} else {
+				if err := exec(`UPDATE chunks SET position = position + 1 WHERE document_id = ? AND parent_id = ? AND position >= ?`, in.DocumentID, parentID, pos); err != nil {
+					return err
+				}
+			}
+		}
+		return exec(`INSERT INTO chunks (id, document_id, parent_id, position, type, status, title, created_at, updated_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+			id, in.DocumentID, nullIfEmpty(parentID), pos, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now)
+	}
+	var insErr error
+	if in.AfterID != "" {
+		insErr = d.withSqlTxn(ctx, key, func(txnID string) error {
+			return insert(func(stmt string, args ...any) error { return d.execTxn(ctx, txnID, stmt, args...) })
+		})
+	} else {
+		insErr = insert(func(stmt string, args ...any) error { return d.exec(ctx, key, stmt, args...) })
+	}
+	if insErr != nil {
+		return errResult("create_chunk: " + insErr.Error()), nil
 	}
 	if err := d.writeBody(ctx, mscope, key.ScopeID, id, in.Body, in.Fields); err != nil {
 		return errResult("create_chunk: body: " + err.Error()), nil
@@ -1330,6 +1381,79 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	}
 	d.publishChange(ctx, store.MemoryScope(key.Scope), key.ScopeID, row.DocumentID, "move_chunk", in.ID)
 	return jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
+}
+
+// reorderChunk moves a chunk one step up or down among its same-parent siblings
+// (RFC BP). It loads the siblings in canonical (position, id) order, swaps the
+// target with its neighbor in `direction`, and RENUMBERS the whole sibling list
+// to contiguous 0..n-1 in one transaction — which also self-heals any
+// pre-existing position ties/gaps. A boundary (already first/last) or a sole
+// child is a no-op success. Never changes parentage; safe on the root (a root is
+// just a sibling among any other root-level chunks).
+func (d *Document) reorderChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("reorder_chunk: missing required field: id"), nil
+	}
+	if in.Direction != "up" && in.Direction != "down" {
+		return errResult(`reorder_chunk: direction must be "up" or "down"`), nil
+	}
+	row, ok, err := d.getChunkRow(ctx, key, in.ID)
+	if err != nil {
+		return errResult("reorder_chunk: " + err.Error()), nil
+	}
+	if !ok {
+		return errResult("reorder_chunk: no such chunk: " + in.ID), nil
+	}
+	// Load same-parent siblings in canonical order (the id tiebreaker makes the
+	// order deterministic even if positions currently tie). NULL-branch for the
+	// portable parent comparison.
+	var sres *sqlmem.QueryResult
+	if row.ParentID == "" {
+		sres, err = d.query(ctx, key, `SELECT id FROM chunks WHERE document_id = ? AND parent_id IS NULL ORDER BY position, id`, row.DocumentID)
+	} else {
+		sres, err = d.query(ctx, key, `SELECT id FROM chunks WHERE document_id = ? AND parent_id = ? ORDER BY position, id`, row.DocumentID, row.ParentID)
+	}
+	if err != nil {
+		return errResult("reorder_chunk: " + err.Error()), nil
+	}
+	ids := make([]string, 0, len(sres.Rows))
+	for _, r := range sres.Rows {
+		ids = append(ids, asStr(r[0]))
+	}
+	idx := -1
+	for i, id := range ids {
+		if id == in.ID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return errResult("reorder_chunk: chunk not found among its siblings"), nil
+	}
+	swap := idx - 1
+	if in.Direction == "down" {
+		swap = idx + 1
+	}
+	if swap < 0 || swap >= len(ids) {
+		// Already at the boundary — nothing to do.
+		return jsonResult(map[string]any{"reordered": false, "id": in.ID})
+	}
+	ids[idx], ids[swap] = ids[swap], ids[idx]
+	// Renumber ALL siblings to contiguous 0..n-1 in the new order (heals ties/
+	// gaps) — atomically.
+	now := time.Now().UnixNano()
+	if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+		for i, id := range ids {
+			if err := d.execTxn(ctx, txnID, `UPDATE chunks SET position = ?, updated_at = ? WHERE id = ?`, i, now, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return errResult("reorder_chunk: " + err.Error()), nil
+	}
+	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "reorder_chunk", in.ID)
+	return jsonResult(map[string]any{"reordered": true, "id": in.ID, "direction": in.Direction})
 }
 
 // --- ops: edges ---
