@@ -112,9 +112,9 @@ type docInput struct {
 	Data      string `json:"data"`
 	Filename  string `json:"filename"`
 	UnderPath string `json:"under_path"`
-	SQL         string          `json:"sql"`
-	Limit       int             `json:"limit"`
-	Name        string          `json:"name"`
+	SQL       string `json:"sql"`
+	Limit     int    `json:"limit"`
+	Name      string `json:"name"`
 	// IncludeMetadata gates export_md's round-trip comments (default true when
 	// omitted; a pointer so an explicit `false` is distinguishable from unset).
 	IncludeMetadata *bool `json:"include_metadata"`
