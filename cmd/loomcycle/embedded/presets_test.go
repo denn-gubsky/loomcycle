@@ -23,6 +23,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 		"agent-teams":    "bundle",
 		"team-examples":  "bundle",
 		"sandbox":        "bundle",
+		"doc-colorizer":  "bundle",
 	}
 	for name, kind := range want {
 		u, ok := byName[name]
