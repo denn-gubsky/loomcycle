@@ -222,6 +222,14 @@ type SubstrateAgentDef struct {
 	// MemoryBackend mirrors config.AgentDef.MemoryBackend — the named
 	// memory backend this agent routes through. RFC I MR-3b.
 	MemoryBackend string `json:"memory_backend,omitempty"`
+	// CoreBlocks / InheritCoreBlocks / MemoryInjectMaxTokens / MemoryProtocol
+	// mirror config.AgentDef (RFC BL P1) so a runtime-authored agent's core-block
+	// config survives the substrate round-trip instead of being dropped before
+	// the run. Kept in sync with builtin.mergedDef (the drift test pins it).
+	CoreBlocks            []config.CoreBlock `json:"core_blocks,omitempty"`
+	InheritCoreBlocks     bool               `json:"inherit_core_blocks,omitempty"`
+	MemoryInjectMaxTokens int                `json:"memory_inject_max_tokens,omitempty"`
+	MemoryProtocol        bool               `json:"memory_protocol,omitempty"`
 	// RetryAttempts mirrors config.AgentDef.RetryAttempts — per-agent
 	// same-provider retry budget override. *int so substrate JSON can
 	// persist the operator-meaningful "force 0" intent as distinct
@@ -277,6 +285,11 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
 		MemoryBackend:         s.MemoryBackend,
+		// RFC BL P1 core memory blocks.
+		CoreBlocks:            s.CoreBlocks,
+		InheritCoreBlocks:     s.InheritCoreBlocks,
+		MemoryInjectMaxTokens: s.MemoryInjectMaxTokens,
+		MemoryProtocol:        s.MemoryProtocol,
 		RetryAttempts:         s.RetryAttempts,
 		Channels:              s.Channels,
 		EvaluationScopes:      s.EvaluationScopes,
