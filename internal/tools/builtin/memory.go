@@ -960,6 +960,44 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 	})
 }
 
+// coreBlockKeyPrefix is the reserved KV namespace for RFC BL P1 core memory
+// blocks (single source of truth in the memrank package, shared with the HTTP
+// injection reader): a block labeled <label> is stored at `core/<label>`.
+const coreBlockKeyPrefix = memrank.CoreBlockKeyPrefix
+
+// enforceCoreBlockWrite gates an agent's Memory `set` to a reserved
+// core/<label> key against the run's resolved core-block policy (RFC BL P1):
+//
+//   - a read_only block → refuse the write (operator-authored; the agent may
+//     read the value via injection but never overwrite it).
+//   - a block with limit_bytes > 0 → refuse a value over the per-block cap
+//     (mirrors the per-scope quota refusal).
+//
+// A write to a core/<label> key with NO matching declared block passes through
+// as a normal key. scope is the already-resolved store scope; the policy
+// block's Scope ("agent"/"user"/"tenant") must match it, so a user-scope block
+// can't gate an agent-scope write of the same label. The policy is
+// operator-resolved on ctx — never model-supplied.
+func enforceCoreBlockWrite(ctx context.Context, scope store.MemoryScope, key string, valueLen int) error {
+	if !strings.HasPrefix(key, coreBlockKeyPrefix) {
+		return nil
+	}
+	label := strings.TrimPrefix(key, coreBlockKeyPrefix)
+	for _, b := range tools.CoreBlocksPolicy(ctx).Blocks {
+		if b.Label != label || b.Scope != string(scope) {
+			continue
+		}
+		if b.ReadOnly {
+			return fmt.Errorf("Memory.set: core block %q (scope=%s) is read_only — operator-authored; agent writes are refused", label, scope)
+		}
+		if b.LimitBytes > 0 && valueLen > b.LimitBytes {
+			return fmt.Errorf("Memory.set: core block %q (scope=%s) value %d bytes exceeds limit_bytes %d", label, scope, valueLen, b.LimitBytes)
+		}
+		return nil
+	}
+	return nil
+}
+
 func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
 		return errResult("set: missing required field: key"), nil
@@ -978,6 +1016,13 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	}
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
 		return errResult(fmt.Sprintf("set: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
+	}
+	// RFC BL P1: a write to a reserved `core/<label>` key is gated by the
+	// agent's core-block config — read_only refuses the write entirely,
+	// limit_bytes caps it (mirroring the quota refusal below). Undeclared
+	// core/* keys pass through as normal memory.
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, len(in.Value)); err != nil {
+		return errResult(err.Error()), nil
 	}
 	// Quota math charges only the k/v row's key + value bytes;
 	// embeddings are excluded per RFC §8. Operators don't pay for
