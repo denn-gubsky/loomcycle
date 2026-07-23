@@ -51,11 +51,11 @@ type MemoryEmbeddingSnapshot struct {
 // Capture failures (e.g. a DB error) bubble out so the snapshot
 // fails loudly rather than silently dropping vectors. Operators
 // re-run capture on a healthy DB.
-func captureEmbedding(ctx context.Context, s store.Store, scope store.MemoryScope, scopeID, key string) (*MemoryEmbeddingSnapshot, error) {
+func captureEmbedding(ctx context.Context, s store.Store, tenantID string, scope store.MemoryScope, scopeID, key string) (*MemoryEmbeddingSnapshot, error) {
 	if !s.SupportsVectors() {
 		return nil, nil
 	}
-	emb, err := s.MemoryEmbedGet(ctx, scope, scopeID, key)
+	emb, err := s.MemoryEmbedGet(ctx, tenantID, scope, scopeID, key)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {

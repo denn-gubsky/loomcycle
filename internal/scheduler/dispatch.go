@@ -33,19 +33,19 @@ type MCPCaller interface {
 // failed schedule to the hook delivery that follow-on consumed.
 func (s *Scheduler) dispatchHooks(ctx context.Context, scheduleName string, def scheduleDef, runID, agentID string) {
 	for i, h := range def.OnComplete {
-		if err := s.dispatchOneHook(ctx, scheduleName, def.UserID, def.Agent, h, runID, agentID); err != nil {
+		if err := s.dispatchOneHook(ctx, scheduleName, def.UserID, def.Agent, def.TenantID, h, runID, agentID); err != nil {
 			s.logf("scheduler: schedule %q on_complete[%d] (%s) failed: %v",
 				scheduleName, i, h.Kind, err)
 		}
 	}
 }
 
-func (s *Scheduler) dispatchOneHook(ctx context.Context, scheduleName, userID, agentName string, h scheduleHook, runID, agentID string) error {
+func (s *Scheduler) dispatchOneHook(ctx context.Context, scheduleName, userID, agentName, tenantID string, h scheduleHook, runID, agentID string) error {
 	switch h.Kind {
 	case "channel.publish":
 		return s.dispatchChannelPublish(ctx, scheduleName, userID, agentName, h, runID, agentID)
 	case "memory.set":
-		return s.dispatchMemorySet(ctx, scheduleName, userID, h)
+		return s.dispatchMemorySet(ctx, scheduleName, userID, tenantID, h)
 	case "mcp.call":
 		return s.dispatchMCPCall(ctx, h)
 	case "":
@@ -132,12 +132,17 @@ func (s *Scheduler) resolvePublishScope(ctx context.Context, channel, userID, ag
 	}
 }
 
-func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID string, h scheduleHook) error {
+func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID, tenantID string, h scheduleHook) error {
 	if h.Scope == "" || h.Key == "" {
 		return fmt.Errorf("memory.set missing `scope` or `key`")
 	}
 	var scope store.MemoryScope
 	scopeID := ""
+	// RFC BL: agent/user-scoped memory is partitioned by the schedule def's
+	// tenant (the run fires as this tenant — sourced from the def row via
+	// migration 0042, NOT a run ctx there is none). global scope is the
+	// cross-tenant shared partition and stays "".
+	memTenant := tenantID
 	switch h.Scope {
 	case "agent":
 		// Agent-scoped memory uses the agent name as scope_id, but
@@ -156,6 +161,7 @@ func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID 
 		scopeID = userID
 	case "global":
 		scope = store.MemoryScopeGlobal
+		memTenant = ""
 	default:
 		return fmt.Errorf("memory.set: unknown scope %q (must be agent|user|global)", h.Scope)
 	}
@@ -163,7 +169,7 @@ func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID 
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	return s.store.MemorySet(ctx, scope, scopeID, h.Key, value, 0)
+	return s.store.MemorySet(ctx, memTenant, scope, scopeID, h.Key, value, 0)
 }
 
 func (s *Scheduler) dispatchMCPCall(ctx context.Context, h scheduleHook) error {

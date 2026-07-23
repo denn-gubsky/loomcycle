@@ -41,7 +41,7 @@ func (s *Store) SupportsVectors() bool {
 // MemoryEmbedSet upserts the embedding for one (scope, scope_id, key).
 // The base memory row must exist — the FK enforces this; absent
 // base row surfaces as a Postgres `foreign_key_violation`.
-func (s *Store) MemoryEmbedSet(ctx context.Context, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
+func (s *Store) MemoryEmbedSet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
 	if !s.pgvectorEnabled {
 		return store.ErrVectorUnsupported
 	}
@@ -57,16 +57,16 @@ func (s *Store) MemoryEmbedSet(ctx context.Context, scope store.MemoryScope, sco
 		createdAt = time.Now().UTC()
 	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO memory_embeddings(scope, scope_id, key, provider, model, dimension, embedding, embed_text, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8, $9)
-		 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+		`INSERT INTO memory_embeddings(tenant_id, scope, scope_id, key, provider, model, dimension, embedding, embed_text, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10)
+		 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 		    provider   = excluded.provider,
 		    model      = excluded.model,
 		    dimension  = excluded.dimension,
 		    embedding  = excluded.embedding,
 		    embed_text = excluded.embed_text,
 		    created_at = excluded.created_at`,
-		string(scope), scopeID, key, e.Provider, e.Model, e.Dimension, vecText, e.EmbedText, createdAt,
+		tenantID, string(scope), scopeID, key, e.Provider, e.Model, e.Dimension, vecText, e.EmbedText, createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("MemoryEmbedSet: %w", err)
@@ -76,7 +76,7 @@ func (s *Store) MemoryEmbedSet(ctx context.Context, scope store.MemoryScope, sco
 
 // MemoryEmbedGet returns the stored embedding, decoding the
 // pgvector text representation back to float32.
-func (s *Store) MemoryEmbedGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
+func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
 	if !s.pgvectorEnabled {
 		return store.MemoryEmbedding{}, store.ErrVectorUnsupported
 	}
@@ -88,8 +88,8 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, scope store.MemoryScope, sco
 	err := s.pool.QueryRow(ctx,
 		`SELECT provider, model, dimension, embedding::text, embed_text, created_at
 		 FROM memory_embeddings
-		 WHERE scope = $1 AND scope_id = $2 AND key = $3`,
-		string(scope), scopeID, key,
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4`,
+		tenantID, string(scope), scopeID, key,
 	).Scan(&provider, &model, &dimension, &embeddingText, &embedText, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.MemoryEmbedding{}, &store.ErrNotFound{Kind: "memory_embedding", ID: key}
@@ -118,7 +118,7 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, scope store.MemoryScope, sco
 //
 // Empty (scope, scope_id) returns ([], nil) — explicit non-error so
 // "no rows yet" doesn't pollute the agent's error path.
-func (s *Store) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	if !s.pgvectorEnabled {
 		return nil, store.ErrVectorUnsupported
 	}
@@ -143,9 +143,9 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, 
 	var storedDim int
 	err := s.pool.QueryRow(ctx,
 		`SELECT dimension FROM memory_embeddings
-		 WHERE scope = $1 AND scope_id = $2
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3
 		 LIMIT 1`,
-		string(scope), scopeID,
+		tenantID, string(scope), scopeID,
 	).Scan(&storedDim)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -167,24 +167,26 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, 
 	// CASCADE handles deletes but not TTL-expired-not-yet-swept.
 	// We JOIN + filter so stale rows don't leak into search results.
 	prefixCondition := ""
-	args := []any{string(scope), scopeID, queryText, topK}
+	args := []any{tenantID, string(scope), scopeID, queryText, topK}
 	if keyPrefix != "" {
-		prefixCondition = " AND me.key LIKE $5"
+		prefixCondition = " AND me.key LIKE $6"
 		args = append(args, keyPrefix+"%")
 	}
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
-	               1.0 - (me.embedding <=> $3::vector) AS score,
+	               1.0 - (me.embedding <=> $4::vector) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text
 	         FROM memory_embeddings me
 	         JOIN memory m
-	            ON me.scope    = m.scope
+	            ON me.tenant_id = m.tenant_id
+	           AND me.scope    = m.scope
 	           AND me.scope_id = m.scope_id
 	           AND me.key      = m.key
-	         WHERE me.scope = $1
-	           AND me.scope_id = $2
+	         WHERE me.tenant_id = $1
+	           AND me.scope = $2
+	           AND me.scope_id = $3
 	           AND (m.expires_at IS NULL OR m.expires_at > now())` + prefixCondition + `
-	         ORDER BY me.embedding <=> $3::vector
-	         LIMIT $4`
+	         ORDER BY me.embedding <=> $4::vector
+	         LIMIT $5`
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("MemoryEmbedSearch query: %w", err)
@@ -239,7 +241,7 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, 
 // MemoryEmbedListByModel returns base-memory rows whose embedding
 // is under a DIFFERENT (provider, model) than the supplied current
 // pair. Drives the reembed admin endpoint (PR 4).
-func (s *Store) MemoryEmbedListByModel(ctx context.Context, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
+func (s *Store) MemoryEmbedListByModel(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
 	if !s.pgvectorEnabled {
 		return nil, store.ErrVectorUnsupported
 	}
@@ -250,13 +252,13 @@ func (s *Store) MemoryEmbedListByModel(ctx context.Context, scope store.MemorySc
 		`SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at
 		 FROM memory_embeddings me
 		 JOIN memory m
-		    ON me.scope = m.scope AND me.scope_id = m.scope_id AND me.key = m.key
-		 WHERE me.scope = $1 AND me.scope_id = $2
-		   AND (me.provider <> $3 OR me.model <> $4)
+		    ON me.tenant_id = m.tenant_id AND me.scope = m.scope AND me.scope_id = m.scope_id AND me.key = m.key
+		 WHERE me.tenant_id = $1 AND me.scope = $2 AND me.scope_id = $3
+		   AND (me.provider <> $4 OR me.model <> $5)
 		   AND (m.expires_at IS NULL OR m.expires_at > now())
 		 ORDER BY me.key
-		 LIMIT $5`,
-		string(scope), scopeID, currentProvider, currentModel, limit,
+		 LIMIT $6`,
+		tenantID, string(scope), scopeID, currentProvider, currentModel, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("MemoryEmbedListByModel: %w", err)
@@ -293,17 +295,17 @@ func (s *Store) MemoryEmbedListByModel(ctx context.Context, scope store.MemorySc
 // as dimension * 4 (float32) per row; not exact (pgvector's on-disk
 // size includes some metadata) but close enough for operator
 // dashboards.
-func (s *Store) MemoryEmbedStats(ctx context.Context, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
+func (s *Store) MemoryEmbedStats(ctx context.Context, tenantID string, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
 	if !s.pgvectorEnabled {
 		return store.MemoryEmbedStats{}, store.ErrVectorUnsupported
 	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT provider, model, dimension, COUNT(*)
 		 FROM memory_embeddings
-		 WHERE scope = $1
+		 WHERE tenant_id = $1 AND scope = $2
 		 GROUP BY provider, model, dimension
 		 ORDER BY provider, model`,
-		string(scope),
+		tenantID, string(scope),
 	)
 	if err != nil {
 		return store.MemoryEmbedStats{}, fmt.Errorf("MemoryEmbedStats: %w", err)

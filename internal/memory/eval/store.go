@@ -40,7 +40,7 @@ func vsKey(scope store.MemoryScope, id, key string) string {
 
 func (v *vectorStore) SupportsVectors() bool { return true }
 
-func (v *vectorStore) MemoryEmbedSet(_ context.Context, scope store.MemoryScope, id, key string, e store.MemoryEmbedding) error {
+func (v *vectorStore) MemoryEmbedSet(_ context.Context, _ string, scope store.MemoryScope, id, key string, e store.MemoryEmbedding) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.embeds[vsKey(scope, id, key)] = e
@@ -51,7 +51,7 @@ func (v *vectorStore) MemoryEmbedSet(_ context.Context, scope store.MemoryScope,
 // returning each row's stored vector on the entry (so the in-process
 // backend's MR-5 dedup pass has vectors to compare — same contract as the
 // real sqlite/pgvector stores after the MR-5 change).
-func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, id, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, id, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if topK > 51 {
@@ -94,7 +94,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryS
 	}
 	out := make([]store.MemorySearchEntry, 0, len(rows))
 	for _, r := range rows {
-		entry, err := v.Store.MemoryGet(ctx, scope, id, r.key)
+		entry, err := v.Store.MemoryGet(ctx, "", scope, id, r.key)
 		if err != nil {
 			continue
 		}

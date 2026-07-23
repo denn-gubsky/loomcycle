@@ -29,7 +29,7 @@ type WebhookStore interface {
 	// interface unchanged; the webhook receiver only needs these two of
 	// the channel/memory surface.
 	ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (id string, dropped int, err error)
-	MemorySet(ctx context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
+	MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
 }
 
 // Webhook resolves a webhook NAME to its effective config.Webhook within

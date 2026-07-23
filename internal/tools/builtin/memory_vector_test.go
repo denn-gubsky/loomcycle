@@ -48,7 +48,7 @@ func vsKey(scope store.MemoryScope, scopeID, key string) string {
 
 func (v *vectorStore) SupportsVectors() bool { return v.enabled }
 
-func (v *vectorStore) MemoryEmbedSet(ctx context.Context, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
+func (v *vectorStore) MemoryEmbedSet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
 	if !v.enabled {
 		return store.ErrVectorUnsupported
 	}
@@ -58,7 +58,7 @@ func (v *vectorStore) MemoryEmbedSet(ctx context.Context, scope store.MemoryScop
 	return nil
 }
 
-func (v *vectorStore) MemoryEmbedGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
+func (v *vectorStore) MemoryEmbedGet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	e, ok := v.embeds[vsKey(scope, scopeID, key)]
@@ -100,7 +100,7 @@ func sqrt(x float64) float64 {
 	return z
 }
 
-func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	if !v.enabled {
 		return nil, store.ErrVectorUnsupported
 	}
@@ -148,7 +148,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryS
 			continue
 		}
 		// Filter expired base rows.
-		entry, err := v.Store.MemoryGet(ctx, scope, scopeID, key)
+		entry, err := v.Store.MemoryGet(ctx, "", scope, scopeID, key)
 		if err != nil {
 			continue
 		}
@@ -161,7 +161,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryS
 	}
 	out := make([]store.MemorySearchEntry, 0, len(rows))
 	for _, r := range rows {
-		entry, err := v.Store.MemoryGet(ctx, scope, scopeID, r.key)
+		entry, err := v.Store.MemoryGet(ctx, "", scope, scopeID, r.key)
 		if err != nil {
 			continue
 		}
@@ -176,11 +176,11 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryS
 	return out, nil
 }
 
-func (v *vectorStore) MemoryEmbedListByModel(ctx context.Context, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
+func (v *vectorStore) MemoryEmbedListByModel(ctx context.Context, _ string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
 	return nil, errors.New("MemoryEmbedListByModel not implemented in fake")
 }
 
-func (v *vectorStore) MemoryEmbedStats(ctx context.Context, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
+func (v *vectorStore) MemoryEmbedStats(ctx context.Context, _ string, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
 	return store.MemoryEmbedStats{}, errors.New("MemoryEmbedStats not implemented in fake")
 }
 
@@ -375,7 +375,7 @@ func TestMemoryVector_SetEmbedTrueSucceeds(t *testing.T) {
 	}
 	// Confirm the embedding is stored under the right scope.
 	vs := tool.Store.(*vectorStore)
-	emb, err := vs.MemoryEmbedGet(ctx, store.MemoryScopeUser, "alice", "profile")
+	emb, err := vs.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, "alice", "profile")
 	if err != nil {
 		t.Fatalf("embedding not stored: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestMemoryVector_SetEmbedFalseDoesNotEmbed(t *testing.T) {
 		t.Errorf("response should NOT mention embedded when embed:false: %s", res.Text)
 	}
 	vs := tool.Store.(*vectorStore)
-	if _, err := vs.MemoryEmbedGet(ctx, store.MemoryScopeUser, "alice", "profile"); err == nil {
+	if _, err := vs.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, "alice", "profile"); err == nil {
 		t.Errorf("embedding should NOT have been written when embed:false")
 	}
 }
@@ -447,7 +447,7 @@ func TestMemoryVector_SetEmbedTrueFallsBackToValueAsText(t *testing.T) {
 		t.Fatalf("set: %s", res.Text)
 	}
 	vs := tool.Store.(*vectorStore)
-	emb, err := vs.MemoryEmbedGet(ctx, store.MemoryScopeUser, "alice", "k")
+	emb, err := vs.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, "alice", "k")
 	if err != nil {
 		t.Fatalf("embedding missing: %v", err)
 	}

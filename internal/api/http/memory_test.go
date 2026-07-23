@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -29,14 +30,14 @@ func memoryAdminFixture(t *testing.T) *Server {
 
 	ctx := t.Context()
 	for _, k := range []string{"voice", "tone"} {
-		if err := st.MemorySet(ctx, store.MemoryScopeUser, "alice", k, []byte(`"`+k+`-value"`), 0); err != nil {
+		if err := st.MemorySet(ctx, "", store.MemoryScopeUser, "alice", k, []byte(`"`+k+`-value"`), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := st.MemorySet(ctx, store.MemoryScopeUser, "bob", "voice", []byte(`"bob-voice"`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeUser, "bob", "voice", []byte(`"bob-voice"`), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "qa-agent", "warnings", []byte(`5`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, "qa-agent", "warnings", []byte(`5`), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -50,6 +51,53 @@ func memoryAdminFixture(t *testing.T) *Server {
 		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
+	}
+}
+
+// TestHandleMemory_TenantIsolation: an admin PUT under principal-tenant A is
+// invisible to a GET under principal-tenant B (opaque 404) and visible to A.
+// RFC BL turn-on — the admin endpoints source the tenant from the authenticated
+// principal (tenantFromCtx), never the URL/body. Fails on the pre-stamp code
+// where both principals keyed tenant "" so B read A's row.
+func TestHandleMemory_TenantIsolation(t *testing.T) {
+	s := memoryAdminFixture(t)
+
+	withTenant := func(r *http.Request, tenant string) *http.Request {
+		return r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{
+			TenantID: tenant, Subject: "op", Scopes: []string{auth.ScopeAdmin},
+		}))
+	}
+	setKeyPath := func(r *http.Request) {
+		r.SetPathValue("scope", "user")
+		r.SetPathValue("scope_id", "alice")
+		r.SetPathValue("key", "secret")
+	}
+
+	// PUT key "secret" under principal tenant A.
+	put := httptest.NewRequest("PUT", "/v1/_memory/scopes/user/alice/keys/secret", strings.NewReader(`{"value":"a-only"}`))
+	setKeyPath(put)
+	putRec := httptest.NewRecorder()
+	s.handlePutMemoryEntry(putRec, withTenant(put, "tenant-a"))
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body = %s", putRec.Code, putRec.Body.String())
+	}
+
+	// GET under principal tenant B → 404 (cross-tenant read is opaque).
+	getB := httptest.NewRequest("GET", "/v1/_memory/scopes/user/alice/keys/secret", nil)
+	setKeyPath(getB)
+	recB := httptest.NewRecorder()
+	s.handleGetMemoryEntry(recB, withTenant(getB, "tenant-b"))
+	if recB.Code != http.StatusNotFound {
+		t.Errorf("GET under tenant B = %d, want 404 (must not see tenant A's row); body=%s", recB.Code, recB.Body.String())
+	}
+
+	// GET under principal tenant A → the row.
+	getA := httptest.NewRequest("GET", "/v1/_memory/scopes/user/alice/keys/secret", nil)
+	setKeyPath(getA)
+	recA := httptest.NewRecorder()
+	s.handleGetMemoryEntry(recA, withTenant(getA, "tenant-a"))
+	if recA.Code != http.StatusOK || !strings.Contains(recA.Body.String(), "a-only") {
+		t.Errorf("GET under tenant A = %d body=%s, want 200 with a-only", recA.Code, recA.Body.String())
 	}
 }
 
@@ -237,7 +285,7 @@ func TestHandleGetMemoryEntry_RoundTrip(t *testing.T) {
 // the full Mux() so the pattern matching is part of the test.
 func TestHandleGetMemoryEntry_MultiSegmentKey(t *testing.T) {
 	s := memoryAdminFixture(t)
-	if err := s.store.MemorySet(t.Context(), store.MemoryScopeAgent, "qa-agent",
+	if err := s.store.MemorySet(t.Context(), "", store.MemoryScopeAgent, "qa-agent",
 		"events/2026-05-09T10:00", []byte(`"first event"`), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +338,7 @@ func TestHandlePutMemoryEntry_CreatesAndOverwrites(t *testing.T) {
 
 	// Read back via the store directly (the admin GET is exercised
 	// in TestHandleGetMemoryEntry_*).
-	got, err := s.store.MemoryGet(t.Context(), store.MemoryScopeUser, "charlie", "profile")
+	got, err := s.store.MemoryGet(t.Context(), "", store.MemoryScopeUser, "charlie", "profile")
 	if err != nil {
 		t.Fatalf("MemoryGet after PUT: %v", err)
 	}
@@ -308,7 +356,7 @@ func TestHandlePutMemoryEntry_CreatesAndOverwrites(t *testing.T) {
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("overwrite status = %d, want 200", rec2.Code)
 	}
-	got2, _ := s.store.MemoryGet(t.Context(), store.MemoryScopeUser, "charlie", "profile")
+	got2, _ := s.store.MemoryGet(t.Context(), "", store.MemoryScopeUser, "charlie", "profile")
 	if string(got2.Value) != `{"role": "director"}` {
 		t.Errorf("overwrite value = %s", got2.Value)
 	}
@@ -352,7 +400,7 @@ func TestHandleDeleteMemoryEntry_RemovesRow(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
 	}
-	if _, err := s.store.MemoryGet(t.Context(), store.MemoryScopeUser, "alice", "voice"); err == nil {
+	if _, err := s.store.MemoryGet(t.Context(), "", store.MemoryScopeUser, "alice", "voice"); err == nil {
 		t.Errorf("expected NotFound after DELETE, got nil error")
 	}
 }
@@ -383,7 +431,7 @@ func memoryAdminAuthedFixture(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	if err := st.MemorySet(t.Context(), store.MemoryScopeUser, "alice", "voice",
+	if err := st.MemorySet(t.Context(), "", store.MemoryScopeUser, "alice", "voice",
 		[]byte(`"alice-voice"`), 0); err != nil {
 		t.Fatal(err)
 	}

@@ -28,18 +28,18 @@ import (
 // webhook NAME, matching the scheduler's stable-key choice).
 func (rec *Receiver) dispatchOnComplete(ctx context.Context, name string, wd config.Webhook, runID, agentID, userID string) {
 	for i, h := range wd.OnComplete {
-		if err := rec.dispatchOneOnComplete(ctx, name, h, runID, agentID, userID); err != nil {
+		if err := rec.dispatchOneOnComplete(ctx, name, wd.TenantID, h, runID, agentID, userID); err != nil {
 			rec.logf("webhook %q: on_complete[%d] (%s) failed: %v", name, i, h.Kind, err)
 		}
 	}
 }
 
-func (rec *Receiver) dispatchOneOnComplete(ctx context.Context, name string, h config.ScheduledRunHook, runID, agentID, userID string) error {
+func (rec *Receiver) dispatchOneOnComplete(ctx context.Context, name, tenantID string, h config.ScheduledRunHook, runID, agentID, userID string) error {
 	switch h.Kind {
 	case "channel.publish":
 		return rec.dispatchOnCompleteChannelPublish(ctx, name, h, runID, agentID, userID)
 	case "memory.set":
-		return rec.dispatchOnCompleteMemorySet(ctx, name, h, userID)
+		return rec.dispatchOnCompleteMemorySet(ctx, name, tenantID, h, userID)
 	case "mcp.call":
 		// The receiver has no MCPCaller wired (exactly like the scheduler's
 		// nil case). Log + skip — never fail the (already-completed) run.
@@ -101,7 +101,7 @@ func (rec *Receiver) dispatchOnCompleteChannelPublish(ctx context.Context, name 
 // scope keys on the webhook NAME (a stable, operator-recognisable key, since
 // a webhook hook doesn't run "as an agent" the way an in-loop tool call
 // does); user scope requires a userID; global has no scope id.
-func (rec *Receiver) dispatchOnCompleteMemorySet(ctx context.Context, name string, h config.ScheduledRunHook, userID string) error {
+func (rec *Receiver) dispatchOnCompleteMemorySet(ctx context.Context, name, tenantID string, h config.ScheduledRunHook, userID string) error {
 	if h.Scope == "" || h.Key == "" {
 		return fmt.Errorf("memory.set missing `scope` or `key`")
 	}
@@ -110,6 +110,11 @@ func (rec *Receiver) dispatchOnCompleteMemorySet(ctx context.Context, name strin
 	}
 	var scope store.MemoryScope
 	scopeID := ""
+	// RFC BL: agent/user-scoped memory is partitioned by the webhook def's tenant
+	// (the spawned run fires as this tenant — sourced from the def row via
+	// migration 0044, NOT a run ctx there is none). global scope is the
+	// cross-tenant shared partition and stays "".
+	memTenant := tenantID
 	switch h.Scope {
 	case "agent":
 		scope = store.MemoryScopeAgent
@@ -122,6 +127,7 @@ func (rec *Receiver) dispatchOnCompleteMemorySet(ctx context.Context, name strin
 		scopeID = userID
 	case "global":
 		scope = store.MemoryScopeGlobal
+		memTenant = ""
 	default:
 		return fmt.Errorf("memory.set: unknown scope %q (must be agent|user|global)", h.Scope)
 	}
@@ -130,5 +136,5 @@ func (rec *Receiver) dispatchOnCompleteMemorySet(ctx context.Context, name strin
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 	// ttl = 0 means no expiry, mirroring the scheduler's memory.set hook.
-	return rec.store.MemorySet(ctx, scope, scopeID, h.Key, value, time.Duration(0))
+	return rec.store.MemorySet(ctx, memTenant, scope, scopeID, h.Key, value, time.Duration(0))
 }

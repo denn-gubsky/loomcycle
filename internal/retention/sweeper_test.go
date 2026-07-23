@@ -479,7 +479,7 @@ func sqlScopeExists(t *testing.T, sm *sqlmem.Manager, tenant, name string) bool 
 
 func memKeyCount(t *testing.T, st *sqlite.Store, name string) int {
 	t.Helper()
-	entries, _, err := st.MemoryList(context.Background(), store.MemoryScopeAgent, name, "", 1000)
+	entries, _, err := st.MemoryList(context.Background(), "", store.MemoryScopeAgent, name, "", 1000)
 	if err != nil {
 		t.Fatalf("memory list %q: %v", name, err)
 	}
@@ -501,14 +501,14 @@ func TestSweeper_MemReclaimsRetiredAgent(t *testing.T) {
 	seedRetiredAgent(t, st, "acme", "dead", 2)
 	seedAgentSQLScope(t, sm, "acme", "dead")
 	seedAgentDirent(t, st, "acme", "dead")
-	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
 		t.Fatal(err)
 	}
 	// Live agent — must be untouched.
 	seedLiveAgent(t, st, "acme", "alive")
 	seedAgentSQLScope(t, sm, "acme", "alive")
 	seedAgentDirent(t, st, "acme", "alive")
-	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "alive", "k1", json.RawMessage(`1`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, "alive", "k1", json.RawMessage(`1`), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -564,7 +564,7 @@ func TestSweeper_MemBaseMemoryOnlyDroppedWhenGloballyDead(t *testing.T) {
 	seedAgentDirent(t, st, "A", "shared")
 	seedAgentDirent(t, st, "B", "shared")
 	// Base memory is keyed by the bare name — a single partition both share.
-	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "shared", "k1", json.RawMessage(`1`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, "shared", "k1", json.RawMessage(`1`), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -609,7 +609,7 @@ func TestSweeper_MemExportThenDelete(t *testing.T) {
 	seedRetiredAgent(t, st, "acme", "dead", 1)
 	seedAgentSQLScope(t, sm, "acme", "dead")
 	seedAgentDirent(t, st, "acme", "dead")
-	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -705,7 +705,7 @@ func TestSweeper_MemDryRunCounts(t *testing.T) {
 
 	seedRetiredAgent(t, st, "acme", "dead", 1)
 	seedAgentSQLScope(t, sm, "acme", "dead")
-	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
 		t.Fatal(err)
 	}
 	seedLiveAgent(t, st, "acme", "alive")
@@ -746,19 +746,19 @@ func TestSweeper_MemBaseMemoryReclaimedBeyondScopeIDsCap(t *testing.T) {
 
 	// The retired agent, with the OLDEST base-memory row.
 	seedRetiredAgent(t, st, "acme", "dead", 1)
-	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
 		t.Fatal(err)
 	}
 	// 200 fresher agent-memory scopes (no defs — they exist only to fill the
 	// MemoryListScopeIDs top-200 window and evict "dead" from it).
 	for i := 0; i < 200; i++ {
 		id := "live-" + strconv.Itoa(i)
-		if err := st.MemorySet(ctx, store.MemoryScopeAgent, id, "k", json.RawMessage(`1`), 0); err != nil {
+		if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, id, "k", json.RawMessage(`1`), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Sanity: "dead" is NOT in the (capped) MemoryListScopeIDs window.
-	ids, err := st.MemoryListScopeIDs(ctx, store.MemoryScopeAgent)
+	ids, err := st.MemoryListScopeIDs(ctx, "", store.MemoryScopeAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -791,7 +791,7 @@ func TestSweeper_MemRunsBeforeDefsPurge(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	seedRetiredAgent(t, st, "acme", "dead", 1) // 1 retired, non-active, old version
-	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+	if err := st.MemorySet(ctx, "", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -812,5 +812,63 @@ func TestSweeper_MemRunsBeforeDefsPurge(t *testing.T) {
 	}
 	if n := memKeyCount(t, st, "dead"); n != 0 {
 		t.Errorf("base memory NOT reclaimed (keys=%d) — the defs purge removed the agent before the mem sweep saw it", n)
+	}
+}
+
+// memKeyCountTenant counts base-memory keys under (tenant, scope=agent, name) —
+// the per-tenant variant of memKeyCount (which reads only the "" partition).
+func memKeyCountTenant(t *testing.T, st *sqlite.Store, tenant, name string) int {
+	t.Helper()
+	entries, _, err := st.MemoryList(context.Background(), tenant, store.MemoryScopeAgent, name, "", 1000)
+	if err != nil {
+		t.Fatalf("memory list %s/%q: %v", tenant, name, err)
+	}
+	return len(entries)
+}
+
+// TestRetentionSweep_PerTenantFanout is the RFC BL fan-out regression: a
+// globally-dead agent whose base memory spans TWO tenant partitions is reclaimed
+// in BOTH, while a live agent's memory survives. Fails on the pre-fan-out code,
+// whose single MemoryDeleteScope(ctx, "", ...) touched only the "" partition and
+// stranded tenants A and B.
+func TestRetentionSweep_PerTenantFanout(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// "dead" is globally dead: retired in BOTH tenant A and tenant B, live nowhere.
+	seedRetiredAgent(t, st, "A", "dead", 1)
+	seedRetiredAgent(t, st, "B", "dead", 1)
+	// Its base memory exists in each tenant's own partition (post-RFC-BL).
+	if err := st.MemorySet(ctx, "A", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MemorySet(ctx, "B", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	// A live agent in tenant A with its own memory — must survive untouched.
+	seedLiveAgent(t, st, "A", "alive")
+	if err := st.MemorySet(ctx, "A", store.MemoryScopeAgent, "alive", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	sw := New(st, Config{MemMode: "prune", Logger: quietLogger, Now: futureHour})
+	if _, err := sw.sweepOnce(ctx); err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+
+	// BOTH tenant partitions of the dead agent's base memory are reclaimed.
+	if n := memKeyCountTenant(t, st, "A", "dead"); n != 0 {
+		t.Errorf("tenant A dead-agent memory = %d, want 0 (fan-out must reclaim it)", n)
+	}
+	if n := memKeyCountTenant(t, st, "B", "dead"); n != 0 {
+		t.Errorf("tenant B dead-agent memory = %d, want 0 (fan-out must reclaim it)", n)
+	}
+	// The live agent's memory is intact.
+	if n := memKeyCountTenant(t, st, "A", "alive"); n != 1 {
+		t.Errorf("live agent memory = %d, want 1 (must not be reclaimed)", n)
 	}
 }

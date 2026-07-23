@@ -104,7 +104,10 @@ func (s *Server) handleListMemoryScopeIDs(w http.ResponseWriter, r *http.Request
 			"scope must be one of: agent, user")
 		return
 	}
-	rows, err := s.store.MemoryListScopeIDs(r.Context(), store.MemoryScope(scope))
+	// RFC BL: scope the admin browse to the authenticated principal's tenant
+	// (server-sourced via tenantFromCtx — never from the URL/body). Open mode /
+	// legacy resolve to "" so single-tenant deployments are unchanged.
+	rows, err := s.store.MemoryListScopeIDs(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -147,7 +150,10 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	if limit > 1000 {
 		limit = 1000
 	}
-	entries, truncated, err := s.store.MemoryList(r.Context(), store.MemoryScope(scope), scopeID, prefix, limit)
+	// RFC BL: tenant from the authenticated principal (server-sourced), one
+	// lookup reused by the entries list + the per-key embedding-metadata probe.
+	tenantID := tenantFromCtx(r.Context())
+	entries, truncated, err := s.store.MemoryList(r.Context(), tenantID, store.MemoryScope(scope), scopeID, prefix, limit)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -169,7 +175,7 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	if r.URL.Query().Get("include_embedding_metadata") == "true" && s.store.SupportsVectors() {
 		meta := make(map[string]memoryEmbedMeta)
 		for _, e := range entries {
-			emb, err := s.store.MemoryEmbedGet(r.Context(), store.MemoryScope(scope), scopeID, e.Key)
+			emb, err := s.store.MemoryEmbedGet(r.Context(), tenantID, store.MemoryScope(scope), scopeID, e.Key)
 			if err != nil || emb.Dimension == 0 {
 				continue // no embedding for this key (or a transient error) → omit
 			}
@@ -206,7 +212,7 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 			"scope_id and key are required")
 		return
 	}
-	entry, err := s.store.MemoryGet(r.Context(), store.MemoryScope(scope), scopeID, key)
+	entry, err := s.store.MemoryGet(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), scopeID, key)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -316,7 +322,7 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	if body.TTLSeconds > 0 {
 		ttl = time.Duration(body.TTLSeconds) * time.Second
 	}
-	if err := s.store.MemorySet(r.Context(), store.MemoryScope(scope), scopeID, key, body.Value, ttl); err != nil {
+	if err := s.store.MemorySet(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), scopeID, key, body.Value, ttl); err != nil {
 		if errors.Is(err, store.ErrMemoryQuotaExceeded) {
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "memory_quota_exceeded", err.Error())
 			return
@@ -366,7 +372,7 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 			"scope_id and key are required")
 		return
 	}
-	if _, err := s.store.MemoryDelete(r.Context(), store.MemoryScope(scope), scopeID, key); err != nil {
+	if _, err := s.store.MemoryDelete(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), scopeID, key); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -394,7 +400,9 @@ func (s *Server) embedMemoryEntry(ctx context.Context, scope store.MemoryScope, 
 	if len(vecs) != 1 {
 		return errors.New("embedder returned unexpected vector count")
 	}
-	return s.store.MemoryEmbedSet(ctx, scope, scopeID, key, store.MemoryEmbedding{
+	// RFC BL: same tenant partition the PUT wrote the k/v row under
+	// (tenantFromCtx reads the principal on the request ctx).
+	return s.store.MemoryEmbedSet(ctx, tenantFromCtx(ctx), scope, scopeID, key, store.MemoryEmbedding{
 		Provider:  s.embedder.Provider(),
 		Model:     s.embedder.Model(),
 		Dimension: s.embedder.Dimension(),

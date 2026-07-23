@@ -299,12 +299,15 @@ type chunkBody struct {
 
 func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scopeID, chunkID, body string, fields json.RawMessage) error {
 	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
-	return d.Store.MemorySet(ctx, mscope, scopeID, chunkBodyKey(chunkID), v, 0)
+	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
+	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
+	// structure never drift across the tenant axis.
+	return d.Store.MemorySet(ctx, direntTenant(ctx), mscope, scopeID, chunkBodyKey(chunkID), v, 0)
 }
 
 func (d *Document) readBody(ctx context.Context, mscope store.MemoryScope, scopeID, chunkID string) chunkBody {
 	var cb chunkBody
-	entry, err := d.Store.MemoryGet(ctx, mscope, scopeID, chunkBodyKey(chunkID))
+	entry, err := d.Store.MemoryGet(ctx, direntTenant(ctx), mscope, scopeID, chunkBodyKey(chunkID))
 	if err == nil {
 		_ = json.Unmarshal(entry.Value, &cb)
 	}
@@ -882,7 +885,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Bodies AFTER commit (separate store; best-effort — an orphaned body is
 	// invisible dead k/v, never reachable once its chunk row is gone).
 	for _, id := range ids {
-		_, _ = d.Store.MemoryDelete(ctx, mscope, key.ScopeID, chunkBodyKey(id))
+		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(id))
 	}
 	n := len(ids)
 	// Drop any Path-tree dirent(s) pointing at this document — best-effort, by
@@ -1330,7 +1333,7 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	// Bodies after commit (best-effort; see delete_document).
 	for _, cid := range ids {
-		_, _ = d.Store.MemoryDelete(ctx, mscope, key.ScopeID, chunkBodyKey(cid))
+		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(cid))
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "delete_chunk", in.ID)
 	return jsonResult(map[string]any{"deleted": true, "cascade_deleted_descendants": len(ids) - 1})

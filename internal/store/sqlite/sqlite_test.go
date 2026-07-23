@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -31,6 +33,108 @@ func TestStoreContract(t *testing.T) {
 		s := newTestStore(t)
 		return s, func() { _ = s.Close() }
 	})
+}
+
+// TestStore_MemoryTenantIsolation is the RFC BL fail-before guard for the
+// tenant axis threaded through the base Memory store: a key written under
+// tenant "a" must be invisible to tenant "b" (get / list / delete) and stay
+// visible under "a". This is new-and-meaningful — on the pre-RFC-BL code the
+// Memory* methods had no tenant parameter and shared a single keyspace, so
+// tenant "b" would read tenant "a"'s row; the test cannot compile against
+// that signature at all. Runs on a FRESH SQLite DB, where the
+// (tenant_id, scope, scope_id, key) PRIMARY KEY enforces the isolation
+// (an upgraded DB keeps the old 3-tuple PK — see the migrate() note).
+func TestStore_MemoryTenantIsolation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const tenantA, tenantB = "a", "b"
+	scope := store.MemoryScopeAgent
+	const scopeID, key = "shared-agent", "note"
+
+	// Same (scope, scope_id, key) under BOTH tenants with distinct values:
+	// no clobber, because tenant_id leads the PK.
+	if err := s.MemorySet(ctx, tenantA, scope, scopeID, key, json.RawMessage(`"from-a"`), 0); err != nil {
+		t.Fatalf("MemorySet(a): %v", err)
+	}
+	if err := s.MemorySet(ctx, tenantB, scope, scopeID, key, json.RawMessage(`"from-b"`), 0); err != nil {
+		t.Fatalf("MemorySet(b): %v", err)
+	}
+
+	// Get: each tenant reads only its own value.
+	if got, err := s.MemoryGet(ctx, tenantA, scope, scopeID, key); err != nil || string(got.Value) != `"from-a"` {
+		t.Errorf("MemoryGet(a) = %q, err=%v; want \"from-a\"", got.Value, err)
+	}
+	if got, err := s.MemoryGet(ctx, tenantB, scope, scopeID, key); err != nil || string(got.Value) != `"from-b"` {
+		t.Errorf("MemoryGet(b) = %q, err=%v; want \"from-b\"", got.Value, err)
+	}
+
+	// A key that exists ONLY under tenant a is invisible to tenant b.
+	if err := s.MemorySet(ctx, tenantA, scope, scopeID, "a-only", json.RawMessage(`1`), 0); err != nil {
+		t.Fatalf("MemorySet(a-only): %v", err)
+	}
+	if _, err := s.MemoryGet(ctx, tenantB, scope, scopeID, "a-only"); !errors.As(err, new(*store.ErrNotFound)) {
+		t.Errorf("tenant b must NOT see tenant a's a-only key; got err=%v", err)
+	}
+
+	// List under b returns only b's row (the shared key), never a-only.
+	if entries, _, err := s.MemoryList(ctx, tenantB, scope, scopeID, "", 100); err != nil || len(entries) != 1 || entries[0].Key != key {
+		t.Errorf("MemoryList(b) = %+v, err=%v; want exactly [%q]", entries, err, key)
+	}
+
+	// Delete under b removes only b's row; a's rows are untouched.
+	if deleted, err := s.MemoryDelete(ctx, tenantB, scope, scopeID, key); err != nil || !deleted {
+		t.Fatalf("MemoryDelete(b): deleted=%v err=%v", deleted, err)
+	}
+	if _, err := s.MemoryGet(ctx, tenantB, scope, scopeID, key); !errors.As(err, new(*store.ErrNotFound)) {
+		t.Errorf("tenant b's key should be gone after its delete; got err=%v", err)
+	}
+	if got, err := s.MemoryGet(ctx, tenantA, scope, scopeID, key); err != nil || string(got.Value) != `"from-a"` {
+		t.Errorf("tenant a's key must survive b's delete; got %q err=%v", got.Value, err)
+	}
+	if entries, _, err := s.MemoryList(ctx, tenantA, scope, scopeID, "", 100); err != nil || len(entries) != 2 {
+		t.Errorf("tenant a should retain 2 keys after b's delete, got %d (err=%v)", len(entries), err)
+	}
+}
+
+// TestStore_MemoryListTenantsForScope: the RFC BL enumeration returns exactly
+// the distinct tenants that hold a row under (scope, scopeID), independent of
+// expiry, and an empty slice for a name with no rows — the primitive the
+// retention sweeper's per-tenant base-memory fan-out rides on.
+func TestStore_MemoryListTenantsForScope(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	scope := store.MemoryScopeAgent
+	const name = "shared-agent"
+
+	// Same (scope, name) under three partitions: "" (legacy), "a", "b".
+	for _, tenant := range []string{"", "a", "b"} {
+		if err := s.MemorySet(ctx, tenant, scope, name, "k1", json.RawMessage(`1`), 0); err != nil {
+			t.Fatalf("MemorySet(%q): %v", tenant, err)
+		}
+	}
+	// A different scope_id must not bleed in.
+	if err := s.MemorySet(ctx, "c", scope, "other-agent", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.MemoryListTenantsForScope(ctx, scope, name)
+	if err != nil {
+		t.Fatalf("MemoryListTenantsForScope: %v", err)
+	}
+	set := map[string]bool{}
+	for _, tn := range got {
+		set[tn] = true
+	}
+	if len(got) != 3 || !set[""] || !set["a"] || !set["b"] {
+		t.Errorf("tenants = %v, want exactly {\"\",a,b}", got)
+	}
+
+	// A name with no rows returns empty (not an error) — the sweeper treats
+	// this as "nothing to reclaim".
+	empty, err := s.MemoryListTenantsForScope(ctx, scope, "never-written")
+	if err != nil || len(empty) != 0 {
+		t.Errorf("empty scope = %v err=%v, want [] nil", empty, err)
+	}
 }
 
 // ---- SQLite-specific tests below this line ----

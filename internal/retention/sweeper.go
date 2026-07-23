@@ -101,9 +101,12 @@ type Config struct {
 	// (LiveVersionCount==0) + old agent: its SQL-Memory scope (SQL tables +
 	// document structure) and its dirents (Path names) — both tenant-qualified, so
 	// dropped per (tenant, name) — plus its base-memory k/v (chunk bodies +
-	// learned facts), which is keyed by the BARE agent name (the memory table has
-	// no tenant column), so it is only dropped when the name is retired in EVERY
-	// tenant (globally dead) to avoid deleting a live same-named agent's memory.
+	// learned facts), which is keyed by the BARE agent name under scope=agent
+	// (RFC BL partitioned it by tenant_id, so one name can span several tenant
+	// partitions). Base memory is dropped only when the name is retired in EVERY
+	// tenant (globally dead), then reclaimed across all of its tenant partitions —
+	// the globally-dead gate is preserved so a live same-named agent in another
+	// tenant is never affected.
 	MemMode string
 
 	// MemMaxAge is the age cutoff for reclamation: an agent whose latest def
@@ -516,10 +519,13 @@ func (s *Sweeper) sweepChatsOnce(parent context.Context) (int, error) {
 //	(tenant, "agent", name), so dropping tenant A's copy never touches tenant B's.
 //
 //	Pass 2 (per name, globally-dead only): drop the agent's base-memory k/v
-//	(document chunk bodies + learned facts). Base memory is keyed by the BARE
-//	agent name (the memory table has no tenant column), so it is SHARED by
-//	same-named agents across tenants — dropping it is safe ONLY when the name is
-//	retired in EVERY tenant. A name live in any tenant keeps its base memory.
+//	(document chunk bodies + learned facts). Base memory keys on the BARE agent
+//	name under scope=agent; RFC BL partitioned it by tenant_id, so one name can
+//	span several tenant partitions. The globally-dead gate is preserved: base
+//	memory is dropped ONLY when the name is retired in EVERY tenant, and
+//	reclaimBaseMemory then fans out across all of that name's tenant partitions
+//	(pre-BL this was one tenant-blind delete). A name live in any tenant keeps its
+//	base memory in every partition.
 //
 // Own 2-minute deadline; per-agent failures are logged + skipped (retried next
 // tick); a failed SQL-Memory scope drop aborts that agent's dirent drop so names
@@ -639,13 +645,18 @@ func (s *Sweeper) memEligible(ctx context.Context) (pass1 []memTarget, pass2 []s
 	return pass1, pass2, nil
 }
 
-// hasBaseMemory reports whether a name holds ANY base-memory k/v, via a limit-1
-// existence probe (NOT MemoryListScopeIDs, which is capped at the 200
+// hasBaseMemory reports whether a name holds ANY base-memory k/v under ANY
+// tenant partition (NOT MemoryListScopeIDs, which is capped at the 200
 // most-recently-updated scopes and so would miss a stale retired agent). Used by
 // the dry-run + report count so they match what the real sweep would drop.
+//
+// RFC BL tenant-partition adjustment: base memory gained a tenant_id, so a
+// globally-dead name can hold rows under several tenants; a non-empty partition
+// list means there is something to reclaim, so this now probes tenants rather
+// than the "" partition alone.
 func (s *Sweeper) hasBaseMemory(ctx context.Context, name string) bool {
-	entries, _, err := s.store.MemoryList(ctx, store.MemoryScopeAgent, name, "", 1)
-	return err == nil && len(entries) > 0
+	tenants, err := s.store.MemoryListTenantsForScope(ctx, store.MemoryScopeAgent, name)
+	return err == nil && len(tenants) > 0
 }
 
 // reclaimAgentScope drops one fully-retired agent's TENANT-QUALIFIED per-scope
@@ -701,25 +712,49 @@ func (s *Sweeper) reclaimAgentScope(ctx context.Context, tenant, name string, ha
 }
 
 // reclaimBaseMemory drops a globally-dead agent's base-memory k/v (every key
-// under scope=agent, scope_id=name). The caller MUST have verified the name is
-// retired in every tenant (base memory has no tenant column). export+prune dumps
-// the entries first. Under DryRun it reports would-reclaim without touching rows.
+// under scope=agent, scope_id=name) across EVERY tenant partition. The caller
+// MUST have verified the name is retired in every tenant.
+//
+// RFC BL tenant-partition adjustment: base memory gained a tenant_id, so a
+// globally-dead name can hold rows under several tenants (and the legacy "").
+// Pre-BL this was ONE tenant-blind delete of the bare name; post-partition a
+// single MemoryDeleteScope(ctx, "", ...) would touch only the "" partition and
+// strand every other tenant's rows. We now enumerate the partitions and reclaim
+// each so the memory is still fully reclaimed for the dead agent — just
+// tenant-correctly. export+prune dumps each partition before deleting it. Counts
+// as ONE reclamation unit per name (an activity gauge) regardless of how many
+// tenant partitions it spans. Under DryRun it reports would-reclaim without
+// touching rows.
 func (s *Sweeper) reclaimBaseMemory(ctx context.Context, name string) bool {
-	if s.dryRun {
-		return s.hasBaseMemory(ctx, name) // count only names that actually have memory
-	}
-	if s.memMode == "export+prune" {
-		if err := s.exportBaseMemory(ctx, name); err != nil {
-			s.logf("retention: export agent memory %q failed, skipping: %v", name, err)
-			return false
-		}
-	}
-	n, err := s.store.MemoryDeleteScope(ctx, store.MemoryScopeAgent, name)
+	tenants, err := s.store.MemoryListTenantsForScope(ctx, store.MemoryScopeAgent, name)
 	if err != nil {
-		s.logf("retention: delete agent memory %q failed: %v", name, err)
+		s.logf("retention: list memory tenants %q failed: %v", name, err)
 		return false
 	}
-	return n > 0
+	if len(tenants) == 0 {
+		return false // no base memory under any tenant → nothing to reclaim
+	}
+	if s.dryRun {
+		return true // >=1 partition holds memory → count one would-reclaim unit
+	}
+	did := false
+	for _, tenant := range tenants {
+		if s.memMode == "export+prune" {
+			if err := s.exportBaseMemory(ctx, tenant, name); err != nil {
+				s.logf("retention: export agent memory %q (tenant %q) failed, skipping: %v", name, tenant, err)
+				continue
+			}
+		}
+		n, err := s.store.MemoryDeleteScope(ctx, tenant, store.MemoryScopeAgent, name)
+		if err != nil {
+			s.logf("retention: delete agent memory %q (tenant %q) failed: %v", name, tenant, err)
+			continue
+		}
+		if n > 0 {
+			did = true
+		}
+	}
+	return did
 }
 
 // exportSQLMemScope dumps one agent SQL-Memory scope to
@@ -745,24 +780,27 @@ func (s *Sweeper) exportDirents(ctx context.Context, tenant, name string) error 
 	return s.writeMemExport("dirents", tenant, name, rows)
 }
 
-// exportBaseMemory dumps one globally-dead agent's base-memory k/v before it is
-// deleted. Bucketed under agent-memory/ with NO tenant segment (base memory is
-// cross-tenant-shared). If the entry set is truncated at the cap, it returns an
-// ERROR so the caller skips the delete — export-then-delete must never delete
-// more than it exported. Such an agent (>memExportKeyCap keys) is retried each
-// tick, staying put with a loud warning rather than losing the un-exported tail.
-func (s *Sweeper) exportBaseMemory(ctx context.Context, name string) error {
-	entries, truncated, err := s.store.MemoryList(ctx, store.MemoryScopeAgent, name, "", memExportKeyCap)
+// exportBaseMemory dumps one tenant partition of a globally-dead agent's
+// base-memory k/v before it is deleted. Bucketed under agent-memory/ with the
+// tenant as the export-file's leading segment (RFC BL: base memory is now
+// tenant-partitioned, so a globally-dead name may span several tenants — each is
+// exported to its own file). If the entry set is truncated at the cap, it
+// returns an ERROR so the caller skips the delete — export-then-delete must
+// never delete more than it exported. Such a partition (>memExportKeyCap keys)
+// is retried each tick, staying put with a loud warning rather than losing the
+// un-exported tail.
+func (s *Sweeper) exportBaseMemory(ctx context.Context, tenant, name string) error {
+	entries, truncated, err := s.store.MemoryList(ctx, tenant, store.MemoryScopeAgent, name, "", memExportKeyCap)
 	if err != nil {
 		return err
 	}
 	if truncated {
-		return fmt.Errorf("agent memory %q exceeds the %d-key export cap — refusing to delete more than exported", name, memExportKeyCap)
+		return fmt.Errorf("agent memory %q (tenant %q) exceeds the %d-key export cap — refusing to delete more than exported", name, tenant, memExportKeyCap)
 	}
 	if len(entries) == 0 {
 		return nil
 	}
-	return s.writeMemExport("agent-memory", "", name, entries)
+	return s.writeMemExport("agent-memory", tenant, name, entries)
 }
 
 // writeMemExport marshals one reclamation-export payload to

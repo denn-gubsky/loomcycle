@@ -276,6 +276,11 @@ type MemorySection struct {
 // `embedding` field. CreatedAt / UpdatedAt come from MemorySnapshotEntry's
 // embedded MemoryEntry. ExpiresAt is omitted when zero (no TTL).
 type MemoryEntry struct {
+	// TenantID is the row's isolation axis (RFC BL). omitempty so a
+	// single-tenant snapshot stays byte-identical to a pre-RFC-BL one, and a
+	// snapshot written before the column existed decodes to "" (the legacy
+	// tenant) on restore — the graceful cross-version path.
+	TenantID  string                   `json:"tenant_id,omitempty"`
 	Scope     string                   `json:"scope"`
 	ScopeID   string                   `json:"scope_id"`
 	Key       string                   `json:"key"`

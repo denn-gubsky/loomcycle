@@ -126,10 +126,10 @@ func TestCapture_MemoryEmbeddingIsNull_Phase1(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed two memory rows in different scopes.
-	if err := s.MemorySet(ctx, store.MemoryScope("agent"), "agentA", "k1", json.RawMessage(`"v1"`), 0); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScope("agent"), "agentA", "k1", json.RawMessage(`"v1"`), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MemorySet(ctx, store.MemoryScope("user"), "userB", "k2", json.RawMessage(`"v2"`), 0); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScope("user"), "userB", "k2", json.RawMessage(`"v2"`), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -293,7 +293,7 @@ func TestCapture_DeterministicOrderingAcrossCalls(t *testing.T) {
 
 	// Seed in a deliberately scrambled order so ordering matters.
 	for _, k := range []string{"z", "a", "m"} {
-		if err := s.MemorySet(ctx, store.MemoryScope("agent"), "agentX", k, json.RawMessage(`"v"`), 0); err != nil {
+		if err := s.MemorySet(ctx, "", store.MemoryScope("agent"), "agentX", k, json.RawMessage(`"v"`), 0); err != nil {
 			t.Fatal(err)
 		}
 	}

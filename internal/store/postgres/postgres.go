@@ -2076,7 +2076,7 @@ func (s *Store) SnapshotReadMCPServerDefActive(ctx context.Context) ([]store.MCP
 func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotEntry, error) {
 	now := time.Now().UTC()
 	rows, err := s.pool.Query(ctx,
-		`SELECT scope, scope_id, key, value::text, expires_at, created_at, updated_at
+		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, value::text, expires_at, created_at, updated_at
 		 FROM memory
 		 WHERE expires_at IS NULL OR expires_at > $1
 		 ORDER BY scope ASC, scope_id ASC, key ASC`, now)
@@ -2092,7 +2092,7 @@ func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotE
 			value     string
 			expiresAt *time.Time
 		)
-		if err := rows.Scan(&scopeStr, &e.ScopeID, &e.Key, &value, &expiresAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.TenantID, &scopeStr, &e.ScopeID, &e.Key, &value, &expiresAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan memory: %w", err)
 		}
 		e.Scope = store.MemoryScope(scopeStr)
@@ -2558,10 +2558,10 @@ func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapsho
 		expiresAt = &t
 	}
 	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
-		 ON CONFLICT (scope, scope_id, key) DO NOTHING`,
-		string(e.Scope), e.ScopeID, e.Key, string(e.Value),
+		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+		 ON CONFLICT (tenant_id, scope, scope_id, key) DO NOTHING`,
+		e.TenantID, string(e.Scope), e.ScopeID, e.Key, string(e.Value),
 		expiresAt, createdAt, updatedAt,
 	)
 	if err != nil {
@@ -3284,7 +3284,7 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // the input bytes to ::jsonb in the query so the database validates
 // the JSON shape (an invalid payload surfaces as a SQL error rather
 // than a silently-stored bad row).
-func (s *Store) MemorySet(ctx context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
+func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
 	now := time.Now().UTC()
 	var expiresAt any
 	if ttl > 0 {
@@ -3300,13 +3300,13 @@ func (s *Store) MemorySet(ctx context.Context, scope store.MemoryScope, scopeID,
 	// transient so the row actually lands.
 	if err := retryOnTransientConn(ctx, func() error {
 		_, err := s.pool.Exec(ctx,
-			`INSERT INTO memory (scope, scope_id, key, value, expires_at, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
-			 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+			`INSERT INTO memory (tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+			 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 			    value = EXCLUDED.value,
 			    expires_at = EXCLUDED.expires_at,
 			    updated_at = EXCLUDED.updated_at`,
-			string(scope), scopeID, key, string(value), expiresAt, now, now,
+			tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
 		)
 		return err
 	}); err != nil {
@@ -3318,7 +3318,7 @@ func (s *Store) MemorySet(ctx context.Context, scope store.MemoryScope, scopeID,
 // MemoryGet returns one entry. Expired rows are surfaced as
 // ErrNotFound (the WHERE clause filters them out so the caller never
 // sees a stale value, even if the sweeper is behind).
-func (s *Store) MemoryGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
+func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
 	var (
 		valueText []byte
 		expiresAt *time.Time
@@ -3328,9 +3328,9 @@ func (s *Store) MemoryGet(ctx context.Context, scope store.MemoryScope, scopeID,
 	err := s.pool.QueryRow(ctx,
 		`SELECT value::text, expires_at, created_at, updated_at
 		 FROM memory
-		 WHERE scope = $1 AND scope_id = $2 AND key = $3
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4
 		   AND (expires_at IS NULL OR expires_at > NOW())`,
-		string(scope), scopeID, key,
+		tenantID, string(scope), scopeID, key,
 	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.MemoryEntry{}, &store.ErrNotFound{Kind: "memory", ID: key}
@@ -3352,10 +3352,10 @@ func (s *Store) MemoryGet(ctx context.Context, scope store.MemoryScope, scopeID,
 
 // MemoryDelete removes a row. The boolean reports whether a row was
 // actually present. Both branches are non-error.
-func (s *Store) MemoryDelete(ctx context.Context, scope store.MemoryScope, scopeID, key string) (bool, error) {
+func (s *Store) MemoryDelete(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (bool, error) {
 	tag, err := s.pool.Exec(ctx,
-		`DELETE FROM memory WHERE scope = $1 AND scope_id = $2 AND key = $3`,
-		string(scope), scopeID, key,
+		`DELETE FROM memory WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4`,
+		tenantID, string(scope), scopeID, key,
 	)
 	if err != nil {
 		return false, fmt.Errorf("memory delete: %w", err)
@@ -3363,13 +3363,13 @@ func (s *Store) MemoryDelete(ctx context.Context, scope store.MemoryScope, scope
 	return tag.RowsAffected() > 0, nil
 }
 
-// MemoryDeleteScope removes every entry under (scope, scopeID) in one statement
-// (RFC BM retention). memory_embeddings rows cascade via their ON DELETE CASCADE
-// FK, mirroring single-key MemoryDelete.
-func (s *Store) MemoryDeleteScope(ctx context.Context, scope store.MemoryScope, scopeID string) (int, error) {
+// MemoryDeleteScope removes every entry under (tenantID, scope, scopeID) in one
+// statement (RFC BM retention). memory_embeddings rows cascade via their ON
+// DELETE CASCADE FK, mirroring single-key MemoryDelete.
+func (s *Store) MemoryDeleteScope(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) (int, error) {
 	tag, err := s.pool.Exec(ctx,
-		`DELETE FROM memory WHERE scope = $1 AND scope_id = $2`,
-		string(scope), scopeID,
+		`DELETE FROM memory WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
+		tenantID, string(scope), scopeID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("memory delete scope: %w", err)
@@ -3380,7 +3380,7 @@ func (s *Store) MemoryDeleteScope(ctx context.Context, scope store.MemoryScope, 
 // MemoryList enumerates entries for a (scope, scopeID), filtered by
 // prefix and capped at limit. The query fetches limit+1 rows so we
 // can report truncated == true without a separate COUNT(*).
-func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID, prefix string, limit int) ([]store.MemoryEntry, bool, error) {
+func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, prefix string, limit int) ([]store.MemoryEntry, bool, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -3388,11 +3388,11 @@ func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID
 	rows, err := s.pool.Query(ctx,
 		`SELECT key, value::text, expires_at, created_at, updated_at
 		 FROM memory
-		 WHERE scope = $1 AND scope_id = $2 AND key LIKE $3 ESCAPE '\'
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key LIKE $4 ESCAPE '\'
 		   AND (expires_at IS NULL OR expires_at > NOW())
 		 ORDER BY key ASC
-		 LIMIT $4`,
-		string(scope), scopeID, pattern, limit+1,
+		 LIMIT $5`,
+		tenantID, string(scope), scopeID, pattern, limit+1,
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("memory list: %w", err)
@@ -3450,7 +3450,7 @@ func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID
 // 2*delta via ON CONFLICT DO UPDATE). Different keys hash to
 // different lock IDs and don't contend. Verified by a 100-goroutine
 // regression test in storetest (all 100 increments must land).
-func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error) {
+func (s *Store) MemoryIncrement(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return 0, fmt.Errorf("memory incr begin: %w", err)
@@ -3459,7 +3459,7 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		string(scope)+":"+scopeID+":"+key,
+		tenantID+":"+string(scope)+":"+scopeID+":"+key,
 	); err != nil {
 		return 0, fmt.Errorf("memory incr lock: %w", err)
 	}
@@ -3470,8 +3470,8 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 	)
 	err = tx.QueryRow(ctx,
 		`SELECT value::text, expires_at FROM memory
-		 WHERE scope = $1 AND scope_id = $2 AND key = $3`,
-		string(scope), scopeID, key,
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4`,
+		tenantID, string(scope), scopeID, key,
 	).Scan(&valueText, &expiresAt)
 
 	now := time.Now().UTC()
@@ -3513,13 +3513,13 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 	}
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO memory (scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
-		 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+		`INSERT INTO memory (tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+		 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = EXCLUDED.value,
 		    expires_at = EXCLUDED.expires_at,
 		    updated_at = EXCLUDED.updated_at`,
-		string(scope), scopeID, key, nextText, newExpires, now, now,
+		tenantID, string(scope), scopeID, key, nextText, newExpires, now, now,
 	); err != nil {
 		return 0, fmt.Errorf("memory incr write: %w", err)
 	}
@@ -3539,6 +3539,7 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 // different keys run in parallel.
 func (s *Store) MemoryAtomicUpdate(
 	ctx context.Context,
+	tenantID string,
 	scope store.MemoryScope,
 	scopeID, key string,
 	ttl time.Duration,
@@ -3552,7 +3553,7 @@ func (s *Store) MemoryAtomicUpdate(
 
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		string(scope)+":"+scopeID+":"+key,
+		tenantID+":"+string(scope)+":"+scopeID+":"+key,
 	); err != nil {
 		return nil, fmt.Errorf("memory atomic update lock: %w", err)
 	}
@@ -3563,8 +3564,8 @@ func (s *Store) MemoryAtomicUpdate(
 	)
 	err = tx.QueryRow(ctx,
 		`SELECT value::text, expires_at FROM memory
-		 WHERE scope = $1 AND scope_id = $2 AND key = $3`,
-		string(scope), scopeID, key,
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4`,
+		tenantID, string(scope), scopeID, key,
 	).Scan(&valueText, &expiresAt)
 
 	now := time.Now().UTC()
@@ -3602,13 +3603,13 @@ func (s *Store) MemoryAtomicUpdate(
 	}
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO memory (scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
-		 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+		`INSERT INTO memory (tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+		 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = EXCLUDED.value,
 		    expires_at = EXCLUDED.expires_at,
 		    updated_at = EXCLUDED.updated_at`,
-		string(scope), scopeID, key, string(next), newExpires, now, now,
+		tenantID, string(scope), scopeID, key, string(next), newExpires, now, now,
 	); err != nil {
 		return nil, fmt.Errorf("memory atomic update write: %w", err)
 	}
@@ -3623,7 +3624,7 @@ func (s *Store) MemoryAtomicUpdate(
 // estimate — JSONB has no LENGTH() in the SQLite sense; the textual
 // representation is what an operator cares about anyway. Capped at
 // 200 rows ordered by updated_at DESC.
-func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope) ([]store.MemoryScopeIDSummary, error) {
+func (s *Store) MemoryListScopeIDs(ctx context.Context, tenantID string, scope store.MemoryScope) ([]store.MemoryScopeIDSummary, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT
 			scope_id,
@@ -3631,11 +3632,11 @@ func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope)
 			COALESCE(SUM(octet_length(key) + octet_length(value::text)), 0)   AS bytes,
 			MAX(updated_at)                                                   AS updated_at
 		FROM memory
-		WHERE scope = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		WHERE tenant_id = $1 AND scope = $2 AND (expires_at IS NULL OR expires_at > NOW())
 		GROUP BY scope_id
 		ORDER BY updated_at DESC
 		LIMIT 200`,
-		string(scope),
+		tenantID, string(scope),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("memory list scope ids: %w", err)
@@ -3648,6 +3649,29 @@ func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope)
 			return nil, fmt.Errorf("memory list scope ids scan: %w", err)
 		}
 		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
+// MemoryListTenantsForScope implements store.Store (RFC BL). DISTINCT over every
+// row for (scope, scopeID) regardless of expiry — reclamation deletes expired
+// rows too, so an all-expired partition must still be enumerated.
+func (s *Store) MemoryListTenantsForScope(ctx context.Context, scope store.MemoryScope, scopeID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT COALESCE(tenant_id, '') FROM memory WHERE scope = $1 AND scope_id = $2`,
+		string(scope), scopeID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory list tenants for scope: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("memory list tenants for scope scan: %w", err)
+		}
+		out = append(out, t)
 	}
 	return out, rows.Err()
 }

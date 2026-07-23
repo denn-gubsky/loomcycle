@@ -3807,7 +3807,7 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 			failed++
 			continue
 		}
-		if _, err := st.MemoryGet(ctx, scope, e.ScopeID, key); err == nil {
+		if _, err := st.MemoryGet(ctx, "", scope, e.ScopeID, key); err == nil {
 			// Row already present — yaml seeding is a one-time
 			// bootstrap, never an overwrite. This is the line that
 			// makes the loader safe to re-run on every boot.
@@ -3832,7 +3832,7 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 			failed++
 			continue
 		}
-		if err := st.MemorySet(ctx, scope, e.ScopeID, key, valBytes, 0); err != nil {
+		if err := st.MemorySet(ctx, "", scope, e.ScopeID, key, valBytes, 0); err != nil {
 			log.Printf("memory.entries[%d] (%s/%s/%s): set failed: %v",
 				i, scope, e.ScopeID, key, err)
 			failed++
@@ -3861,7 +3861,7 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 				i, scope, e.ScopeID, key, embedErr)
 			continue
 		}
-		if err := st.MemoryEmbedSet(ctx, scope, e.ScopeID, key, store.MemoryEmbedding{
+		if err := st.MemoryEmbedSet(ctx, "", scope, e.ScopeID, key, store.MemoryEmbedding{
 			Provider:  embedder.Provider(),
 			Model:     embedder.Model(),
 			Dimension: embedder.Dimension(),

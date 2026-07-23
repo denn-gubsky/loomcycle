@@ -230,18 +230,35 @@ func (s *Store) migrate(ctx context.Context) error {
 		// The similarity search folds on (tenant_id, user_id, agent) then scans
 		// the most-recent candidates; this covers that owner prefix.
 		`CREATE INDEX IF NOT EXISTS session_embeddings_by_owner ON session_embeddings(tenant_id, user_id, agent)`,
-		// v0.8 Memory tool. PRIMARY KEY (scope, scope_id, key) gives
-		// the natural lookup index; the partial expires_at index keeps
-		// the sweeper's DELETE cheap (no full-table scan).
+		// v0.8 Memory tool. RFC BL: tenant-scoped + provenance/access
+		// columns. On a FRESH DB the PRIMARY KEY (tenant_id, scope,
+		// scope_id, key) isolates same-named agents across tenants; the
+		// partial expires_at index keeps the sweeper's DELETE cheap (no
+		// full-table scan). On an UPGRADED DB the addColumns ALTER adds
+		// tenant_id + the RFC BL columns but SQLite cannot rewrite the PK
+		// in place, so the PK stays (scope, scope_id, key) — byte-equivalent
+		// for single-tenant (everything tenant_id=''), but multi-tenant
+		// memory isolation requires Postgres or a FRESH sqlite DB (mirrors
+		// the agent_def_active precedent above). The runtime upserts'
+		// ON CONFLICT(tenant_id, scope, scope_id, key) target the
+		// uniq_memory_tenant_scope_scope_id_key index in addIndexes below,
+		// which exists on both fresh and upgraded DBs.
 		`CREATE TABLE IF NOT EXISTS memory (
-			scope       TEXT NOT NULL,
-			scope_id    TEXT NOT NULL,
-			key         TEXT NOT NULL,
-			value       TEXT NOT NULL,
-			expires_at  INTEGER,
-			created_at  INTEGER NOT NULL,
-			updated_at  INTEGER NOT NULL,
-			PRIMARY KEY (scope, scope_id, key)
+			scope             TEXT NOT NULL,
+			scope_id          TEXT NOT NULL,
+			key               TEXT NOT NULL,
+			value             TEXT NOT NULL,
+			expires_at        INTEGER,
+			created_at        INTEGER NOT NULL,
+			updated_at        INTEGER NOT NULL,
+			tenant_id         TEXT NOT NULL DEFAULT '',
+			origin            TEXT,
+			class             TEXT,
+			source_session_id TEXT,
+			source_run_id     TEXT,
+			access_count      INTEGER NOT NULL DEFAULT 0,
+			last_accessed_at  INTEGER,
+			PRIMARY KEY (tenant_id, scope, scope_id, key)
 		)`,
 		`CREATE INDEX IF NOT EXISTS memory_by_expires_at ON memory(expires_at) WHERE expires_at IS NOT NULL`,
 		// v0.8.4 Channel tool — see internal/store/postgres/migrations/0004_channels.up.sql
@@ -1002,6 +1019,19 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE sessions ADD COLUMN archived_at INTEGER`,
 		`ALTER TABLE sessions ADD COLUMN summary TEXT`,
 		`ALTER TABLE sessions ADD COLUMN summary_updated_at INTEGER`,
+		// RFC BL — tenant-scope the Memory store + provenance/access columns.
+		// On an UPGRADED DB these ALTERs add the columns to the existing
+		// memory table; the PK stays (scope, scope_id, key) (SQLite can't
+		// rewrite it in place — see the CREATE TABLE note + the agent_def_active
+		// caveat: multi-tenant memory isolation requires Postgres or a fresh
+		// sqlite DB). DEFAULT '' backfills existing rows to the legacy tenant.
+		`ALTER TABLE memory ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE memory ADD COLUMN origin TEXT`,
+		`ALTER TABLE memory ADD COLUMN class TEXT`,
+		`ALTER TABLE memory ADD COLUMN source_session_id TEXT`,
+		`ALTER TABLE memory ADD COLUMN source_run_id TEXT`,
+		`ALTER TABLE memory ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory ADD COLUMN last_accessed_at INTEGER`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1161,6 +1191,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Webhook plane (RFC N completion) — same in-place-upgrade gap.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_webhook_def_active_tenant_name   ON webhook_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_webhook_defs_tenant_name_version ON webhook_defs(tenant_id, name, version)`,
+		// RFC BL — the ON CONFLICT(tenant_id, scope, scope_id, key) target for
+		// the Memory upserts (MemorySet / MemoryIncrement / MemoryAtomicUpdate).
+		// On a FRESH DB it's redundant with the composite PRIMARY KEY; on an
+		// UPGRADED DB the PK stays (scope, scope_id, key) (SQLite can't rewrite
+		// it in place), so this index supplies the ON CONFLICT target — without
+		// it the upserts fail "ON CONFLICT clause does not match ..." even
+		// single-tenant. Mirrors the def-plane indexes above.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_tenant_scope_scope_id_key ON memory(tenant_id, scope, scope_id, key)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -3092,7 +3130,7 @@ func (s *Store) SnapshotReadMCPServerDefActive(ctx context.Context) ([]store.MCP
 func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotEntry, error) {
 	now := time.Now().UnixNano()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT scope, scope_id, key, value, expires_at, created_at, updated_at
+		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, value, expires_at, created_at, updated_at
 		 FROM memory
 		 WHERE expires_at IS NULL OR expires_at > ?
 		 ORDER BY scope ASC, scope_id ASC, key ASC`, now)
@@ -3111,7 +3149,7 @@ func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotE
 			updatedNs int64
 		)
 		if err := rows.Scan(
-			&scopeStr, &e.ScopeID, &e.Key, &value,
+			&e.TenantID, &scopeStr, &e.ScopeID, &e.Key, &value,
 			&expiresNs, &createdNs, &updatedNs,
 		); err != nil {
 			return nil, fmt.Errorf("scan memory: %w", err)
@@ -3603,9 +3641,9 @@ func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapsho
 		expiresNs = e.ExpiresAt.UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		string(e.Scope), e.ScopeID, e.Key, string(e.Value), expiresNs, createdNs, updatedNs,
+		`INSERT OR IGNORE INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.TenantID, string(e.Scope), e.ScopeID, e.Key, string(e.Value), expiresNs, createdNs, updatedNs,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore memory: %w", err)
@@ -3714,20 +3752,20 @@ func (s *Store) SnapshotRestoreEvaluation(ctx context.Context, r store.Evaluatio
 // type beyond what JSON1 functions consume; the tool layer is the
 // source of truth for shape validation. (We also use the textual
 // representation for the JSON-number parse in MemoryIncrement.)
-func (s *Store) MemorySet(ctx context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
+func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
 	now := time.Now().UnixNano()
 	var expiresAt any
 	if ttl > 0 {
 		expiresAt = time.Now().Add(ttl).UnixNano()
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(scope, scope_id, key) DO UPDATE SET
+		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = excluded.value,
 		    expires_at = excluded.expires_at,
 		    updated_at = excluded.updated_at`,
-		string(scope), scopeID, key, string(value), expiresAt, now, now,
+		tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
 	)
 	return err
 }
@@ -3735,7 +3773,7 @@ func (s *Store) MemorySet(ctx context.Context, scope store.MemoryScope, scopeID,
 // MemoryGet returns the entry or *ErrNotFound. Expired rows are
 // surfaced as ErrNotFound regardless of whether the sweeper has
 // reaped them yet.
-func (s *Store) MemoryGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
+func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
 	var (
 		valueText string
 		expiresAt sql.NullInt64
@@ -3744,8 +3782,8 @@ func (s *Store) MemoryGet(ctx context.Context, scope store.MemoryScope, scopeID,
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT value, expires_at, created_at, updated_at
-		 FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
-		string(scope), scopeID, key,
+		 FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key = ?`,
+		tenantID, string(scope), scopeID, key,
 	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.MemoryEntry{}, &store.ErrNotFound{Kind: "memory", ID: key}
@@ -3770,10 +3808,10 @@ func (s *Store) MemoryGet(ctx context.Context, scope store.MemoryScope, scopeID,
 
 // MemoryDelete removes a row. Returns whether a row was actually
 // deleted; both outcomes are non-error.
-func (s *Store) MemoryDelete(ctx context.Context, scope store.MemoryScope, scopeID, key string) (bool, error) {
+func (s *Store) MemoryDelete(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
-		string(scope), scopeID, key,
+		`DELETE FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key = ?`,
+		tenantID, string(scope), scopeID, key,
 	)
 	if err != nil {
 		return false, err
@@ -3785,13 +3823,15 @@ func (s *Store) MemoryDelete(ctx context.Context, scope store.MemoryScope, scope
 	return n > 0, nil
 }
 
-// MemoryDeleteScope removes every entry under (scope, scopeID) in one statement
-// (RFC BM retention). memory_embeddings rows cascade via their ON DELETE CASCADE
-// FK (foreign_keys=ON in the driver DSN), mirroring single-key MemoryDelete.
-func (s *Store) MemoryDeleteScope(ctx context.Context, scope store.MemoryScope, scopeID string) (int, error) {
+// MemoryDeleteScope removes every entry under (tenantID, scope, scopeID) in one
+// statement (RFC BM retention). memory_embeddings rows cascade via their ON
+// DELETE CASCADE FK (foreign_keys=ON in the driver DSN), mirroring single-key
+// MemoryDelete. (SQLite has no memory_embeddings table, so the cascade is a
+// Postgres-only concern.)
+func (s *Store) MemoryDeleteScope(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) (int, error) {
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM memory WHERE scope = ? AND scope_id = ?`,
-		string(scope), scopeID,
+		`DELETE FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ?`,
+		tenantID, string(scope), scopeID,
 	)
 	if err != nil {
 		return 0, err
@@ -3807,7 +3847,7 @@ func (s *Store) MemoryDeleteScope(ctx context.Context, scope store.MemoryScope, 
 // prefix and capped at limit rows. Expired rows are filtered in the
 // WHERE clause so callers never see them. truncated == true when the
 // underlying query found at least limit+1 rows.
-func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID, prefix string, limit int) ([]store.MemoryEntry, bool, error) {
+func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, prefix string, limit int) ([]store.MemoryEntry, bool, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -3816,11 +3856,11 @@ func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT key, value, expires_at, created_at, updated_at
 		 FROM memory
-		 WHERE scope = ? AND scope_id = ? AND key LIKE ? ESCAPE '\'
+		 WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key LIKE ? ESCAPE '\'
 		   AND (expires_at IS NULL OR expires_at > ?)
 		 ORDER BY key ASC
 		 LIMIT ?`,
-		string(scope), scopeID, escapeLikePrefix(prefix)+"%", nowNs, limit+1,
+		tenantID, string(scope), scopeID, escapeLikePrefix(prefix)+"%", nowNs, limit+1,
 	)
 	if err != nil {
 		return nil, false, err
@@ -3874,7 +3914,7 @@ func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID
 // `BEGIN IMMEDIATE` / `COMMIT` raw, scoping the lock-on-BEGIN
 // behaviour to this one operation. Verified by a 100-goroutine
 // regression test in storetest (counter must hit exactly 100).
-func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error) {
+func (s *Store) MemoryIncrement(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error) {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return 0, err
@@ -3896,8 +3936,8 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 		expiresAt sql.NullInt64
 	)
 	err = conn.QueryRowContext(ctx,
-		`SELECT value, expires_at FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
-		string(scope), scopeID, key,
+		`SELECT value, expires_at FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key = ?`,
+		tenantID, string(scope), scopeID, key,
 	).Scan(&valueText, &expiresAt)
 	now := time.Now()
 	nowNs := now.UnixNano()
@@ -3941,13 +3981,13 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 	}
 
 	_, err = conn.ExecContext(ctx,
-		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(scope, scope_id, key) DO UPDATE SET
+		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = excluded.value,
 		    expires_at = excluded.expires_at,
 		    updated_at = excluded.updated_at`,
-		string(scope), scopeID, key, nextText, newExpires, nowNs, nowNs,
+		tenantID, string(scope), scopeID, key, nextText, newExpires, nowNs, nowNs,
 	)
 	if err != nil {
 		return 0, err
@@ -3972,6 +4012,7 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 // concurrency model.
 func (s *Store) MemoryAtomicUpdate(
 	ctx context.Context,
+	tenantID string,
 	scope store.MemoryScope,
 	scopeID, key string,
 	ttl time.Duration,
@@ -3998,8 +4039,8 @@ func (s *Store) MemoryAtomicUpdate(
 		expiresAt sql.NullInt64
 	)
 	err = conn.QueryRowContext(ctx,
-		`SELECT value, expires_at FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
-		string(scope), scopeID, key,
+		`SELECT value, expires_at FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key = ?`,
+		tenantID, string(scope), scopeID, key,
 	).Scan(&valueText, &expiresAt)
 	now := time.Now()
 	nowNs := now.UnixNano()
@@ -4035,13 +4076,13 @@ func (s *Store) MemoryAtomicUpdate(
 	}
 
 	_, err = conn.ExecContext(ctx,
-		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(scope, scope_id, key) DO UPDATE SET
+		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = excluded.value,
 		    expires_at = excluded.expires_at,
 		    updated_at = excluded.updated_at`,
-		string(scope), scopeID, key, string(next), newExpires, nowNs, nowNs,
+		tenantID, string(scope), scopeID, key, string(next), newExpires, nowNs, nowNs,
 	)
 	if err != nil {
 		return nil, err
@@ -4056,7 +4097,7 @@ func (s *Store) MemoryAtomicUpdate(
 // MemoryListScopeIDs returns distinct scope_ids under scope with
 // summary stats. Excludes expired rows so operators see live state
 // only. Capped at 200 rows ordered by updated_at DESC.
-func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope) ([]store.MemoryScopeIDSummary, error) {
+func (s *Store) MemoryListScopeIDs(ctx context.Context, tenantID string, scope store.MemoryScope) ([]store.MemoryScopeIDSummary, error) {
 	nowNs := time.Now().UnixNano()
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
@@ -4065,11 +4106,11 @@ func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope)
 			COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0)          AS bytes,
 			MAX(updated_at)                                        AS updated_at
 		FROM memory
-		WHERE scope = ? AND (expires_at IS NULL OR expires_at > ?)
+		WHERE tenant_id = ? AND scope = ? AND (expires_at IS NULL OR expires_at > ?)
 		GROUP BY scope_id
 		ORDER BY updated_at DESC
 		LIMIT 200`,
-		string(scope), nowNs,
+		tenantID, string(scope), nowNs,
 	)
 	if err != nil {
 		return nil, err
@@ -4086,6 +4127,29 @@ func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope)
 		}
 		summary.UpdatedAt = time.Unix(0, updatedNs).UTC()
 		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
+// MemoryListTenantsForScope implements store.Store (RFC BL). DISTINCT over every
+// row for (scope, scopeID) regardless of expiry — reclamation deletes expired
+// rows too, so an all-expired partition must still be enumerated.
+func (s *Store) MemoryListTenantsForScope(ctx context.Context, scope store.MemoryScope, scopeID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT COALESCE(tenant_id, '') FROM memory WHERE scope = ? AND scope_id = ?`,
+		string(scope), scopeID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
 	}
 	return out, rows.Err()
 }

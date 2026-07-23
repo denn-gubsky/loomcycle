@@ -35,6 +35,52 @@ func memoryFixture(t *testing.T) (*Memory, context.Context, func()) {
 	return tool, ctx, func() { _ = s.Close() }
 }
 
+// TestMemory_TenantIsolation drives the Memory tool under two RunIdentity
+// tenants writing the SAME user-scope key: each reads back only its own value,
+// and a cross-tenant get returns not-found (value:null). RFC BL turn-on — fails
+// on the pre-stamp code where every op keyed tenant "" (b's write clobbers a's,
+// and a-only is cross-tenant visible).
+func TestMemory_TenantIsolation(t *testing.T) {
+	tool, _, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	mkCtx := func(tenant string) context.Context {
+		ctx := tools.WithAgentName(context.Background(), "qa-agent")
+		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", TenantID: tenant})
+		ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}})
+		return ctx
+	}
+	ctxA := mkCtx("tenant-a")
+	ctxB := mkCtx("tenant-b")
+
+	// Both tenants write the SAME user-scope key with distinct values.
+	if res, _ := tool.Execute(ctxA, json.RawMessage(`{"op":"set","scope":"user","key":"voice","value":{"who":"a"}}`)); res.IsError {
+		t.Fatalf("set(a): %s", res.Text)
+	}
+	if res, _ := tool.Execute(ctxB, json.RawMessage(`{"op":"set","scope":"user","key":"voice","value":{"who":"b"}}`)); res.IsError {
+		t.Fatalf("set(b): %s", res.Text)
+	}
+
+	// Each reads back ONLY its own value (no clobber across tenants).
+	resA, _ := tool.Execute(ctxA, json.RawMessage(`{"op":"get","scope":"user","key":"voice"}`))
+	if !strings.Contains(resA.Text, `"who":"a"`) || strings.Contains(resA.Text, `"who":"b"`) {
+		t.Errorf("tenant a get = %s, want who:a only", resA.Text)
+	}
+	resB, _ := tool.Execute(ctxB, json.RawMessage(`{"op":"get","scope":"user","key":"voice"}`))
+	if !strings.Contains(resB.Text, `"who":"b"`) || strings.Contains(resB.Text, `"who":"a"`) {
+		t.Errorf("tenant b get = %s, want who:b only", resB.Text)
+	}
+
+	// A key written ONLY under tenant a is invisible to tenant b (opaque miss).
+	if res, _ := tool.Execute(ctxA, json.RawMessage(`{"op":"set","scope":"user","key":"a-only","value":1}`)); res.IsError {
+		t.Fatalf("set(a-only): %s", res.Text)
+	}
+	resMiss, _ := tool.Execute(ctxB, json.RawMessage(`{"op":"get","scope":"user","key":"a-only"}`))
+	if !strings.Contains(resMiss.Text, `"value":null`) {
+		t.Errorf("tenant b must NOT see tenant a's a-only key; got %s", resMiss.Text)
+	}
+}
+
 func TestMemoryTool_SetGetDeleteRoundTrip(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()

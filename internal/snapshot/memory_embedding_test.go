@@ -110,7 +110,7 @@ func vskKey(scope store.MemoryScope, scopeID, key string) string {
 
 func (v *vectorSnapshotStore) SupportsVectors() bool { return v.supports }
 
-func (v *vectorSnapshotStore) MemoryEmbedSet(ctx context.Context, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
+func (v *vectorSnapshotStore) MemoryEmbedSet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
 	if !v.supports {
 		return store.ErrVectorUnsupported
 	}
@@ -120,7 +120,7 @@ func (v *vectorSnapshotStore) MemoryEmbedSet(ctx context.Context, scope store.Me
 	return nil
 }
 
-func (v *vectorSnapshotStore) MemoryEmbedGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
+func (v *vectorSnapshotStore) MemoryEmbedGet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
 	if !v.supports {
 		return store.MemoryEmbedding{}, store.ErrVectorUnsupported
 	}
@@ -133,15 +133,15 @@ func (v *vectorSnapshotStore) MemoryEmbedGet(ctx context.Context, scope store.Me
 	return e, nil
 }
 
-func (v *vectorSnapshotStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorSnapshotStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	return nil, errors.New("MemoryEmbedSearch not used by snapshot tests")
 }
 
-func (v *vectorSnapshotStore) MemoryEmbedListByModel(ctx context.Context, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
+func (v *vectorSnapshotStore) MemoryEmbedListByModel(ctx context.Context, _ string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
 	return nil, errors.New("MemoryEmbedListByModel not used by snapshot tests")
 }
 
-func (v *vectorSnapshotStore) MemoryEmbedStats(ctx context.Context, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
+func (v *vectorSnapshotStore) MemoryEmbedStats(ctx context.Context, _ string, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
 	return store.MemoryEmbedStats{}, errors.New("MemoryEmbedStats not used by snapshot tests")
 }
 
@@ -150,7 +150,7 @@ func (v *vectorSnapshotStore) MemoryEmbedStats(ctx context.Context, scope store.
 func preloadOneEmbedded(t *testing.T, vs *vectorSnapshotStore, scope store.MemoryScope, scopeID, key string, vec []float32) {
 	t.Helper()
 	ctx := context.Background()
-	if err := vs.Store.MemorySet(ctx, scope, scopeID, key, json.RawMessage(`"v"`), 0); err != nil {
+	if err := vs.Store.MemorySet(ctx, "", scope, scopeID, key, json.RawMessage(`"v"`), 0); err != nil {
 		t.Fatal(err)
 	}
 	emb := store.MemoryEmbedding{
@@ -161,7 +161,7 @@ func preloadOneEmbedded(t *testing.T, vs *vectorSnapshotStore, scope store.Memor
 		EmbedText: key,
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
 	}
-	if err := vs.MemoryEmbedSet(ctx, scope, scopeID, key, emb); err != nil {
+	if err := vs.MemoryEmbedSet(ctx, "", scope, scopeID, key, emb); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -198,7 +198,7 @@ func TestCaptureMemory_EmbeddingNullWhenBackendUnsupported(t *testing.T) {
 	defer cleanup()
 	vs := newVectorSnapshotStore(base, false) // unsupported
 
-	if err := base.MemorySet(context.Background(),
+	if err := base.MemorySet(context.Background(), "",
 		store.MemoryScopeAgent, "qa-agent", "rec1", json.RawMessage(`"v"`), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestRestore_EmbeddingRoundTripsToSupportedBackend(t *testing.T) {
 	}
 
 	// Verify the embedding landed in the destination.
-	got, err := dst.MemoryEmbedGet(context.Background(),
+	got, err := dst.MemoryEmbedGet(context.Background(), "",
 		store.MemoryScopeAgent, "qa-agent", "rec1")
 	if err != nil {
 		t.Fatalf("MemoryEmbedGet on dst: %v", err)
@@ -299,7 +299,7 @@ func TestRestore_EmbeddingDroppedWithWarningWhenDstUnsupported(t *testing.T) {
 		t.Errorf("got %d 'embedding dropped' warnings, want 2: %v", embedWarnings, res.Warnings)
 	}
 	// The k/v rows must be retrievable on the destination.
-	got, err := dst.MemoryGet(context.Background(), store.MemoryScopeAgent, "qa-agent", "rec1")
+	got, err := dst.MemoryGet(context.Background(), "", store.MemoryScopeAgent, "qa-agent", "rec1")
 	if err != nil {
 		t.Fatalf("k/v row missing on dst: %v", err)
 	}

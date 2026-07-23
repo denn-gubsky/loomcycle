@@ -147,6 +147,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryIncrementOnExpiredKey", testMemoryIncrementOnExpiredKey},
 		{"MemoryScopeIsolation", testMemoryScopeIsolation},
 		{"MemoryListScopeIDs", testMemoryListScopeIDs},
+		{"MemoryListTenantsForScope", testMemoryListTenantsForScope},
 		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
 		// v0.12.x — MemoryAtomicUpdate primitive backing the new
 		// reducer ops (Memory.merge / append_dedupe / bounded_list).
@@ -2964,11 +2965,11 @@ func testSnapshotReadMemoryEmpty(t *testing.T, s store.Store) {
 func testSnapshotReadMemoryFiltersExpired(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	// Live row.
-	if err := s.MemorySet(ctx, store.MemoryScope("agent"), "agentA", "live", json.RawMessage(`"hello"`), 0); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScope("agent"), "agentA", "live", json.RawMessage(`"hello"`), 0); err != nil {
 		t.Fatal(err)
 	}
 	// Expired row: TTL of 1ns; wait briefly so wall-clock advances past.
-	if err := s.MemorySet(ctx, store.MemoryScope("agent"), "agentA", "expired", json.RawMessage(`"gone"`), time.Nanosecond); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScope("agent"), "agentA", "expired", json.RawMessage(`"gone"`), time.Nanosecond); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(10 * time.Millisecond)
@@ -3012,7 +3013,7 @@ func testSnapshotReadMemoryOrdered(t *testing.T, s store.Store) {
 		{store.MemoryScope("agent"), "agentA", "key_a"},
 	}
 	for _, sd := range seeds {
-		if err := s.MemorySet(ctx, sd.scope, sd.sid, sd.key, json.RawMessage(`"x"`), 0); err != nil {
+		if err := s.MemorySet(ctx, "", sd.scope, sd.sid, sd.key, json.RawMessage(`"x"`), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3170,10 +3171,10 @@ func testTranscriptOrderedAcrossRuns(t *testing.T, s store.Store) {
 func testMemorySetGetRoundTrip(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	value := json.RawMessage(`{"style":"concise","tone":"friendly"}`)
-	if err := s.MemorySet(ctx, store.MemoryScopeUser, "alice", "voice", value, 0); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScopeUser, "alice", "voice", value, 0); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.MemoryGet(ctx, store.MemoryScopeUser, "alice", "voice")
+	got, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, "alice", "voice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3200,7 +3201,7 @@ func testMemorySetGetRoundTrip(t *testing.T, s store.Store) {
 }
 
 func testMemoryGetNotFound(t *testing.T, s store.Store) {
-	_, err := s.MemoryGet(context.Background(), store.MemoryScopeAgent, "qa-agent", "missing")
+	_, err := s.MemoryGet(context.Background(), "", store.MemoryScopeAgent, "qa-agent", "missing")
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("got %v (%T), want *store.ErrNotFound", err, err)
@@ -3209,15 +3210,15 @@ func testMemoryGetNotFound(t *testing.T, s store.Store) {
 
 func testMemoryOverwriteUpdatesValue(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "summary", json.RawMessage(`"v1"`), 0); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "summary", json.RawMessage(`"v1"`), 0); err != nil {
 		t.Fatal(err)
 	}
-	first, _ := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "summary")
+	first, _ := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "summary")
 	time.Sleep(2 * time.Millisecond)
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "summary", json.RawMessage(`"v2"`), 0); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "summary", json.RawMessage(`"v2"`), 0); err != nil {
 		t.Fatal(err)
 	}
-	second, _ := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "summary")
+	second, _ := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "summary")
 	if string(second.Value) == string(first.Value) {
 		t.Error("overwrite did not change the stored value")
 	}
@@ -3228,16 +3229,16 @@ func testMemoryOverwriteUpdatesValue(t *testing.T, s store.Store) {
 
 func testMemoryDelete(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "u1", "k", json.RawMessage(`1`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "u1", "k", json.RawMessage(`1`), 0)
 
-	deleted, err := s.MemoryDelete(ctx, store.MemoryScopeUser, "u1", "k")
+	deleted, err := s.MemoryDelete(ctx, "", store.MemoryScopeUser, "u1", "k")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !deleted {
 		t.Error("expected deleted=true on a present key")
 	}
-	deleted, err = s.MemoryDelete(ctx, store.MemoryScopeUser, "u1", "k")
+	deleted, err = s.MemoryDelete(ctx, "", store.MemoryScopeUser, "u1", "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3252,32 +3253,32 @@ func testMemoryDelete(t *testing.T, s store.Store) {
 func testMemoryDeleteScope(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	// Target scope: three keys under (agent, "reaped").
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "reaped", "k1", json.RawMessage(`1`), 0)
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "reaped", "k2", json.RawMessage(`2`), 0)
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "reaped", "k3", json.RawMessage(`3`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "reaped", "k1", json.RawMessage(`1`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "reaped", "k2", json.RawMessage(`2`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "reaped", "k3", json.RawMessage(`3`), 0)
 	// A sibling agent scope_id and a same-id user scope must survive.
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "kept", "k1", json.RawMessage(`9`), 0)
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "reaped", "k1", json.RawMessage(`8`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "kept", "k1", json.RawMessage(`9`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "reaped", "k1", json.RawMessage(`8`), 0)
 
-	n, err := s.MemoryDeleteScope(ctx, store.MemoryScopeAgent, "reaped")
+	n, err := s.MemoryDeleteScope(ctx, "", store.MemoryScopeAgent, "reaped")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 3 {
 		t.Errorf("MemoryDeleteScope deleted %d, want 3", n)
 	}
-	if got, _, _ := s.MemoryList(ctx, store.MemoryScopeAgent, "reaped", "", 100); len(got) != 0 {
+	if got, _, _ := s.MemoryList(ctx, "", store.MemoryScopeAgent, "reaped", "", 100); len(got) != 0 {
 		t.Errorf("target scope still has %d keys after delete", len(got))
 	}
 	// Siblings untouched.
-	if got, _, _ := s.MemoryList(ctx, store.MemoryScopeAgent, "kept", "", 100); len(got) != 1 {
+	if got, _, _ := s.MemoryList(ctx, "", store.MemoryScopeAgent, "kept", "", 100); len(got) != 1 {
 		t.Errorf("sibling agent scope_id lost keys: have %d, want 1", len(got))
 	}
-	if got, _, _ := s.MemoryList(ctx, store.MemoryScopeUser, "reaped", "", 100); len(got) != 1 {
+	if got, _, _ := s.MemoryList(ctx, "", store.MemoryScopeUser, "reaped", "", 100); len(got) != 1 {
 		t.Errorf("same-id user scope lost keys: have %d, want 1", len(got))
 	}
 	// Idempotent: a second delete removes nothing.
-	n, err = s.MemoryDeleteScope(ctx, store.MemoryScopeAgent, "reaped")
+	n, err = s.MemoryDeleteScope(ctx, "", store.MemoryScopeAgent, "reaped")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3295,11 +3296,11 @@ func testMemoryListPrefix(t *testing.T, s store.Store) {
 		"prefs/voice":             `"d"`,
 		"prefs/timezone":          `"e"`,
 	} {
-		if err := s.MemorySet(ctx, store.MemoryScopeUser, "alice", k, json.RawMessage(v), 0); err != nil {
+		if err := s.MemorySet(ctx, "", store.MemoryScopeUser, "alice", k, json.RawMessage(v), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got, truncated, err := s.MemoryList(ctx, store.MemoryScopeUser, "alice", "events/", 50)
+	got, truncated, err := s.MemoryList(ctx, "", store.MemoryScopeUser, "alice", "events/", 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3315,7 +3316,7 @@ func testMemoryListPrefix(t *testing.T, s store.Store) {
 		}
 	}
 	// Empty prefix returns everything in the scope.
-	all, _, err := s.MemoryList(ctx, store.MemoryScopeUser, "alice", "", 50)
+	all, _, err := s.MemoryList(ctx, "", store.MemoryScopeUser, "alice", "", 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3327,9 +3328,9 @@ func testMemoryListPrefix(t *testing.T, s store.Store) {
 func testMemoryListTruncation(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "key/"+intToKey(i), json.RawMessage(`1`), 0)
+		_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "key/"+intToKey(i), json.RawMessage(`1`), 0)
 	}
-	got, truncated, err := s.MemoryList(ctx, store.MemoryScopeAgent, "qa", "key/", 3)
+	got, truncated, err := s.MemoryList(ctx, "", store.MemoryScopeAgent, "qa", "key/", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3347,10 +3348,10 @@ func testMemoryTTLExpiry(t *testing.T, s store.Store) {
 	// confirming Get can never race the expiry: a short-ttl key read on a slow CI
 	// runner could already be gone before the first Get (a MemorySet that itself
 	// takes >ttl under load), which used to flake this test.
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "longlived", json.RawMessage(`"hi"`), time.Hour); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "longlived", json.RawMessage(`"hi"`), time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "longlived")
+	got, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "longlived")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3361,19 +3362,19 @@ func testMemoryTTLExpiry(t *testing.T, s store.Store) {
 	// Part 2 — a short-ttl key is gone after a sleep well past its ttl. There is
 	// NO Get between the set and the sleep, so runner slowness only makes the key
 	// MORE certainly expired (more wall-clock elapses); this direction can't flake.
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "warning", json.RawMessage(`"hi"`), 50*time.Millisecond); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "warning", json.RawMessage(`"hi"`), 50*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(250 * time.Millisecond)
 
-	_, err = s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "warning")
+	_, err = s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "warning")
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("expired key should return ErrNotFound, got %v", err)
 	}
 
 	// MemoryList must filter expired entries even before the sweeper runs.
-	listed, _, err := s.MemoryList(ctx, store.MemoryScopeAgent, "qa", "warning", 10)
+	listed, _, err := s.MemoryList(ctx, "", store.MemoryScopeAgent, "qa", "warning", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3384,8 +3385,8 @@ func testMemoryTTLExpiry(t *testing.T, s store.Store) {
 
 func testMemorySweepReapsExpired(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "u", "transient", json.RawMessage(`1`), 30*time.Millisecond)
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "u", "permanent", json.RawMessage(`1`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "u", "transient", json.RawMessage(`1`), 30*time.Millisecond)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "u", "permanent", json.RawMessage(`1`), 0)
 
 	time.Sleep(60 * time.Millisecond)
 	deleted, err := s.MemorySweep(ctx)
@@ -3404,21 +3405,21 @@ func testMemorySweepReapsExpired(t *testing.T, s store.Store) {
 		t.Errorf("second sweep reaped %d, want 0", deleted2)
 	}
 	// Permanent row must survive.
-	if _, err := s.MemoryGet(ctx, store.MemoryScopeUser, "u", "permanent"); err != nil {
+	if _, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, "u", "permanent"); err != nil {
 		t.Errorf("permanent row was reaped: %v", err)
 	}
 }
 
 func testMemoryIncrementOnNewKey(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	got, err := s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "warnings", 1, 0)
+	got, err := s.MemoryIncrement(ctx, "", store.MemoryScopeAgent, "qa", "warnings", 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != 1 {
 		t.Errorf("incr on new key = %d, want 1", got)
 	}
-	got, err = s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "warnings", 5, 0)
+	got, err = s.MemoryIncrement(ctx, "", store.MemoryScopeAgent, "qa", "warnings", 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3429,8 +3430,8 @@ func testMemoryIncrementOnNewKey(t *testing.T, s store.Store) {
 
 func testMemoryIncrementOnExistingNumber(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "n", json.RawMessage(`42`), 0)
-	got, err := s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "n", -10, 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "n", json.RawMessage(`42`), 0)
+	got, err := s.MemoryIncrement(ctx, "", store.MemoryScopeAgent, "qa", "n", -10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3441,8 +3442,8 @@ func testMemoryIncrementOnExistingNumber(t *testing.T, s store.Store) {
 
 func testMemoryIncrementOnNonNumberFails(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "obj", json.RawMessage(`{"hello":"world"}`), 0)
-	_, err := s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "obj", 1, 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "obj", json.RawMessage(`{"hello":"world"}`), 0)
+	_, err := s.MemoryIncrement(ctx, "", store.MemoryScopeAgent, "qa", "obj", 1, 0)
 	if !errors.Is(err, store.ErrMemoryWrongType) {
 		t.Errorf("got %v, want ErrMemoryWrongType", err)
 	}
@@ -3450,9 +3451,9 @@ func testMemoryIncrementOnNonNumberFails(t *testing.T, s store.Store) {
 
 func testMemoryIncrementOnExpiredKey(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "k", json.RawMessage(`100`), 30*time.Millisecond)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "k", json.RawMessage(`100`), 30*time.Millisecond)
 	time.Sleep(60 * time.Millisecond)
-	got, err := s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "k", 1, 0)
+	got, err := s.MemoryIncrement(ctx, "", store.MemoryScopeAgent, "qa", "k", 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3463,19 +3464,19 @@ func testMemoryIncrementOnExpiredKey(t *testing.T, s store.Store) {
 
 func testMemoryScopeIsolation(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "alice", "secret", json.RawMessage(`"alice-secret"`), 0)
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "bob", "secret", json.RawMessage(`"bob-secret"`), 0)
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "secret", json.RawMessage(`"qa-secret"`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "alice", "secret", json.RawMessage(`"alice-secret"`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "bob", "secret", json.RawMessage(`"bob-secret"`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "secret", json.RawMessage(`"qa-secret"`), 0)
 
-	a, err := s.MemoryGet(ctx, store.MemoryScopeUser, "alice", "secret")
+	a, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, "alice", "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.MemoryGet(ctx, store.MemoryScopeUser, "bob", "secret")
+	b, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, "bob", "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	q, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "secret")
+	q, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3484,7 +3485,7 @@ func testMemoryScopeIsolation(t *testing.T, s store.Store) {
 	}
 
 	// Listing one (scope, scopeID) must not surface another's keys.
-	list, _, _ := s.MemoryList(ctx, store.MemoryScopeUser, "alice", "", 100)
+	list, _, _ := s.MemoryList(ctx, "", store.MemoryScopeUser, "alice", "", 100)
 	if len(list) != 1 {
 		t.Errorf("alice-scope list returned %d rows, want 1", len(list))
 	}
@@ -3493,12 +3494,12 @@ func testMemoryScopeIsolation(t *testing.T, s store.Store) {
 func testMemoryListScopeIDs(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	// alice: 2 keys; bob: 1 key; qa-agent: 1 key.
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "alice", "voice", json.RawMessage(`"a1"`), 0)
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "alice", "tone", json.RawMessage(`"a2"`), 0)
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "bob", "voice", json.RawMessage(`"b1"`), 0)
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa-agent", "warnings", json.RawMessage(`5`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "alice", "voice", json.RawMessage(`"a1"`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "alice", "tone", json.RawMessage(`"a2"`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "bob", "voice", json.RawMessage(`"b1"`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa-agent", "warnings", json.RawMessage(`5`), 0)
 
-	users, err := s.MemoryListScopeIDs(ctx, store.MemoryScopeUser)
+	users, err := s.MemoryListScopeIDs(ctx, "", store.MemoryScopeUser)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3519,7 +3520,7 @@ func testMemoryListScopeIDs(t *testing.T, s store.Store) {
 		t.Errorf("user-scope listing should not include agent-scope rows: %v", got)
 	}
 
-	agents, err := s.MemoryListScopeIDs(ctx, store.MemoryScopeAgent)
+	agents, err := s.MemoryListScopeIDs(ctx, "", store.MemoryScopeAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3528,13 +3529,46 @@ func testMemoryListScopeIDs(t *testing.T, s store.Store) {
 	}
 
 	// Expired rows must not surface in the summary.
-	_ = s.MemorySet(ctx, store.MemoryScopeUser, "transient", "k", json.RawMessage(`1`), 30*time.Millisecond)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "transient", "k", json.RawMessage(`1`), 30*time.Millisecond)
 	time.Sleep(60 * time.Millisecond)
-	users2, _ := s.MemoryListScopeIDs(ctx, store.MemoryScopeUser)
+	users2, _ := s.MemoryListScopeIDs(ctx, "", store.MemoryScopeUser)
 	for _, u := range users2 {
 		if u.ScopeID == "transient" {
 			t.Errorf("expired-only scope_id %q should not appear", u.ScopeID)
 		}
+	}
+}
+
+// testMemoryListTenantsForScope pins the RFC BL enumeration primitive (backing
+// the retention sweeper's per-tenant base-memory fan-out): DISTINCT tenants that
+// hold a row under (scope, scopeID), including the legacy "" partition, scoped
+// to the given scope_id, and an empty slice (not an error) for an absent name.
+func testMemoryListTenantsForScope(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-agent"
+	for _, tenant := range []string{"", "t-a", "t-b"} {
+		if err := s.MemorySet(ctx, tenant, store.MemoryScopeAgent, name, "k", json.RawMessage(`1`), 0); err != nil {
+			t.Fatalf("MemorySet(%q): %v", tenant, err)
+		}
+	}
+	// A different scope_id must not leak into the result.
+	_ = s.MemorySet(ctx, "t-c", store.MemoryScopeAgent, "other-agent", "k", json.RawMessage(`1`), 0)
+
+	got, err := s.MemoryListTenantsForScope(ctx, store.MemoryScopeAgent, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := map[string]bool{}
+	for _, tn := range got {
+		set[tn] = true
+	}
+	if len(got) != 3 || !set[""] || !set["t-a"] || !set["t-b"] {
+		t.Errorf("tenants = %v, want exactly {\"\",t-a,t-b}", got)
+	}
+
+	empty, err := s.MemoryListTenantsForScope(ctx, store.MemoryScopeAgent, "never-written")
+	if err != nil || len(empty) != 0 {
+		t.Errorf("absent scope = %v err=%v, want [] nil", empty, err)
 	}
 }
 
@@ -3561,12 +3595,12 @@ func testMemoryIncrementIsAtomicUnderConcurrency(t *testing.T, s store.Store) {
 	for i := 0; i < N; i++ {
 		go func() {
 			defer wg.Done()
-			_, _ = s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "counter", 1, 0)
+			_, _ = s.MemoryIncrement(ctx, "", store.MemoryScopeAgent, "qa", "counter", 1, 0)
 		}()
 	}
 	wg.Wait()
 
-	got, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "counter")
+	got, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "counter")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3589,7 +3623,7 @@ func mustParseInt(s string) int {
 
 func testMemoryAtomicUpdateOnNewKey(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	got, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k1", 0,
+	got, err := s.MemoryAtomicUpdate(ctx, "", store.MemoryScopeAgent, "qa", "k1", 0,
 		func(existing json.RawMessage) (json.RawMessage, error) {
 			if len(existing) != 0 {
 				t.Errorf("reducer existing should be empty on new key, got %q", existing)
@@ -3605,7 +3639,7 @@ func testMemoryAtomicUpdateOnNewKey(t *testing.T, s store.Store) {
 	if v := jsonField(got, "v"); v != float64(1) {
 		t.Errorf("returned value's v = %v, want 1 (raw=%q)", v, got)
 	}
-	entry, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "k1")
+	entry, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "k1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3629,11 +3663,11 @@ func jsonField(raw json.RawMessage, field string) any {
 func testMemoryAtomicUpdateOnExistingKey(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	// Seed an existing row via MemorySet, then read-modify-write.
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "k2",
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "k2",
 		json.RawMessage(`{"x":1}`), 0); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k2", 0,
+	got, err := s.MemoryAtomicUpdate(ctx, "", store.MemoryScopeAgent, "qa", "k2", 0,
 		func(existing json.RawMessage) (json.RawMessage, error) {
 			if string(existing) != `{"x": 1}` && string(existing) != `{"x":1}` {
 				// Postgres JSONB round-trip adds a space; SQLite preserves
@@ -3647,7 +3681,7 @@ func testMemoryAtomicUpdateOnExistingKey(t *testing.T, s store.Store) {
 	}
 	// Postgres normalises JSONB on write; check via MemoryGet which
 	// goes through the same path the production caller would.
-	entry, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "k2")
+	entry, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "k2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3665,12 +3699,12 @@ func testMemoryAtomicUpdateOnExistingKey(t *testing.T, s store.Store) {
 func testMemoryAtomicUpdateOnExpiredKey(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	// Seed with a short-TTL row that expires before the update runs.
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "k3",
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "k3",
 		json.RawMessage(`{"old":true}`), 10*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(60 * time.Millisecond)
-	_, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k3", 0,
+	_, err := s.MemoryAtomicUpdate(ctx, "", store.MemoryScopeAgent, "qa", "k3", 0,
 		func(existing json.RawMessage) (json.RawMessage, error) {
 			// Expired row → reducer sees empty (treated as missing).
 			if len(existing) != 0 {
@@ -3686,19 +3720,19 @@ func testMemoryAtomicUpdateOnExpiredKey(t *testing.T, s store.Store) {
 func testMemoryAtomicUpdateReducerErrorRollsBack(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	// Seed a row so we can verify it's unchanged after a failed update.
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "k4",
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "k4",
 		json.RawMessage(`{"untouched":true}`), 0); err != nil {
 		t.Fatal(err)
 	}
 	sentinel := errors.New("reducer-said-no")
-	_, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k4", 0,
+	_, err := s.MemoryAtomicUpdate(ctx, "", store.MemoryScopeAgent, "qa", "k4", 0,
 		func(existing json.RawMessage) (json.RawMessage, error) {
 			return nil, sentinel
 		})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want sentinel propagation", err)
 	}
-	entry, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "k4")
+	entry, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "k4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3711,7 +3745,7 @@ func testMemoryAtomicUpdateReducerErrorRollsBack(t *testing.T, s store.Store) {
 
 func testMemoryAtomicUpdateInvalidJSONRejected(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k5", 0,
+	_, err := s.MemoryAtomicUpdate(ctx, "", store.MemoryScopeAgent, "qa", "k5", 0,
 		func(existing json.RawMessage) (json.RawMessage, error) {
 			return json.RawMessage(`not json {{{`), nil
 		})
@@ -3736,7 +3770,7 @@ func testMemoryAtomicUpdateIsAtomicUnderConcurrency(t *testing.T, s store.Store)
 		i := i
 		go func() {
 			defer wg.Done()
-			_, _ = s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "list", 0,
+			_, _ = s.MemoryAtomicUpdate(ctx, "", store.MemoryScopeAgent, "qa", "list", 0,
 				func(existing json.RawMessage) (json.RawMessage, error) {
 					var arr []int
 					if len(existing) > 0 {
@@ -3749,7 +3783,7 @@ func testMemoryAtomicUpdateIsAtomicUnderConcurrency(t *testing.T, s store.Store)
 	}
 	wg.Wait()
 
-	entry, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "list")
+	entry, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "qa", "list")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3803,26 +3837,26 @@ func vectorRefusalCheck(t *testing.T, s store.Store) bool {
 		return true
 	}
 	ctx := context.Background()
-	err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "k", store.MemoryEmbedding{
+	err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", "k", store.MemoryEmbedding{
 		Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
 		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
 	})
 	if !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedSet on backend without vectors: got %v, want ErrVectorUnsupported", err)
 	}
-	_, err = s.MemoryEmbedGet(ctx, store.MemoryScopeAgent, "qa", "k")
+	_, err = s.MemoryEmbedGet(ctx, "", store.MemoryScopeAgent, "qa", "k")
 	if !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedGet on backend without vectors: got %v, want ErrVectorUnsupported", err)
 	}
-	_, err = s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0), 5)
+	_, err = s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0), 5)
 	if !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedSearch on backend without vectors: got %v, want ErrVectorUnsupported", err)
 	}
-	_, err = s.MemoryEmbedListByModel(ctx, store.MemoryScopeAgent, "qa", "openai", "text-embedding-3-large", 10)
+	_, err = s.MemoryEmbedListByModel(ctx, "", store.MemoryScopeAgent, "qa", "openai", "text-embedding-3-large", 10)
 	if !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedListByModel on backend without vectors: got %v, want ErrVectorUnsupported", err)
 	}
-	_, err = s.MemoryEmbedStats(ctx, store.MemoryScopeAgent)
+	_, err = s.MemoryEmbedStats(ctx, "", store.MemoryScopeAgent)
 	if !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedStats on backend without vectors: got %v, want ErrVectorUnsupported", err)
 	}
@@ -3835,7 +3869,7 @@ func testMemoryEmbedSetRoundTrip(t *testing.T, s store.Store) {
 	}
 	ctx := context.Background()
 	// Base memory row must exist (FK CASCADE in the embeddings schema).
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "rec1", json.RawMessage(`"hello"`), 0); err != nil {
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "rec1", json.RawMessage(`"hello"`), 0); err != nil {
 		t.Fatal(err)
 	}
 	want := store.MemoryEmbedding{
@@ -3846,10 +3880,10 @@ func testMemoryEmbedSetRoundTrip(t *testing.T, s store.Store) {
 		EmbedText: "hello in agent qa",
 		CreatedAt: time.Now().UTC().Truncate(time.Microsecond),
 	}
-	if err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "rec1", want); err != nil {
+	if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", "rec1", want); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.MemoryEmbedGet(ctx, store.MemoryScopeAgent, "qa", "rec1")
+	got, err := s.MemoryEmbedGet(ctx, "", store.MemoryScopeAgent, "qa", "rec1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3881,17 +3915,17 @@ func testMemoryEmbedSearchTopK(t *testing.T, s store.Store) {
 		{"row3", floats32(0, 1, 0, 0)},           // 90° off
 	}
 	for _, r := range rows {
-		if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", r.key, json.RawMessage(`"x"`), 0); err != nil {
+		if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", r.key, json.RawMessage(`"x"`), 0); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", r.key, store.MemoryEmbedding{
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", r.key, store.MemoryEmbedding{
 			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
 			Vector: r.vec, EmbedText: r.key, CreatedAt: time.Now(),
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0), 3)
+	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3914,13 +3948,13 @@ func testMemoryEmbedSearchScopeIsolation(t *testing.T, s store.Store) {
 	}
 	ctx := context.Background()
 	// Write the embedding under agent scope.
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "rec", json.RawMessage(`"x"`), 0)
-	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "rec", store.MemoryEmbedding{
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "rec", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", "rec", store.MemoryEmbedding{
 		Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
 		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
 	})
 	// Search the same key from user scope — must return empty.
-	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeUser, "qa", "", floats32(1, 0, 0, 0), 10)
+	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, "qa", "", floats32(1, 0, 0, 0), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3934,13 +3968,13 @@ func testMemoryEmbedSearchDimensionMismatch(t *testing.T, s store.Store) {
 		return
 	}
 	ctx := context.Background()
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "rec", json.RawMessage(`"x"`), 0)
-	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "rec", store.MemoryEmbedding{
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "rec", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", "rec", store.MemoryEmbedding{
 		Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
 		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
 	})
 	// Query with dimension 8 against stored dimension 4.
-	_, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0, 1, 0, 0, 0), 5)
+	_, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0, 1, 0, 0, 0), 5)
 	if !errors.Is(err, store.ErrDimensionMismatch) {
 		t.Errorf("dim mismatch: got %v, want ErrDimensionMismatch", err)
 	}
@@ -3951,7 +3985,7 @@ func testMemoryEmbedSearchEmptyScope(t *testing.T, s store.Store) {
 		return
 	}
 	ctx := context.Background()
-	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "empty", "", floats32(1, 0, 0, 0), 10)
+	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "empty", "", floats32(1, 0, 0, 0), 10)
 	if err != nil {
 		t.Errorf("empty scope search: %v", err)
 	}
@@ -3979,17 +4013,17 @@ func testMemoryEmbedSearchReturnsVectors(t *testing.T, s store.Store) {
 		"north": floats32(0, 1, 0, 0),
 	}
 	for key, vec := range want {
-		if err := s.MemorySet(ctx, store.MemoryScopeAgent, "vecret", key, json.RawMessage(`"x"`), 0); err != nil {
+		if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, "vecret", key, json.RawMessage(`"x"`), 0); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "vecret", key, store.MemoryEmbedding{
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "vecret", key, store.MemoryEmbedding{
 			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
 			Vector: vec, EmbedText: key, CreatedAt: time.Now(),
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "vecret", "", floats32(1, 0, 0, 0), 5)
+	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "vecret", "", floats32(1, 0, 0, 0), 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4012,16 +4046,16 @@ func testMemoryDeleteCascadesEmbedding(t *testing.T, s store.Store) {
 		return
 	}
 	ctx := context.Background()
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "doomed", json.RawMessage(`"x"`), 0)
-	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "doomed", store.MemoryEmbedding{
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "doomed", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", "doomed", store.MemoryEmbedding{
 		Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
 		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
 	})
 	// Delete the base row — embedding row must vanish via FK CASCADE.
-	if _, err := s.MemoryDelete(ctx, store.MemoryScopeAgent, "qa", "doomed"); err != nil {
+	if _, err := s.MemoryDelete(ctx, "", store.MemoryScopeAgent, "qa", "doomed"); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.MemoryEmbedGet(ctx, store.MemoryScopeAgent, "qa", "doomed")
+	_, err := s.MemoryEmbedGet(ctx, "", store.MemoryScopeAgent, "qa", "doomed")
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("after base-row delete: got %v (%T), want *store.ErrNotFound (CASCADE failed)", err, err)
@@ -4035,20 +4069,20 @@ func testMemoryEmbedListByModelFiltersCurrent(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	// Two rows under the OLD model.
 	for _, k := range []string{"old1", "old2"} {
-		_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", k, json.RawMessage(`"x"`), 0)
-		_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", k, store.MemoryEmbedding{
+		_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", k, json.RawMessage(`"x"`), 0)
+		_ = s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", k, store.MemoryEmbedding{
 			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
 			Vector: floats32(1, 0, 0, 0), EmbedText: k, CreatedAt: time.Now(),
 		})
 	}
 	// One row under the NEW model.
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "new1", json.RawMessage(`"x"`), 0)
-	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "new1", store.MemoryEmbedding{
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "new1", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", "new1", store.MemoryEmbedding{
 		Provider: "openai", Model: "text-embedding-3-large", Dimension: 8,
 		Vector: floats32(1, 0, 0, 0, 0, 0, 0, 0), EmbedText: "new1", CreatedAt: time.Now(),
 	})
 	// Ask "which rows are NOT on text-embedding-3-large?" — expect old1 + old2.
-	got, err := s.MemoryEmbedListByModel(ctx, store.MemoryScopeAgent, "qa", "openai", "text-embedding-3-large", 100)
+	got, err := s.MemoryEmbedListByModel(ctx, "", store.MemoryScopeAgent, "qa", "openai", "text-embedding-3-large", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4069,18 +4103,18 @@ func testMemoryEmbedStatsReportsPerModelCount(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	// Two rows on model A (dim 4), one row on model B (dim 8).
 	for _, k := range []string{"a1", "a2"} {
-		_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", k, json.RawMessage(`"x"`), 0)
-		_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", k, store.MemoryEmbedding{
+		_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", k, json.RawMessage(`"x"`), 0)
+		_ = s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", k, store.MemoryEmbedding{
 			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
 			Vector: floats32(1, 0, 0, 0), EmbedText: k, CreatedAt: time.Now(),
 		})
 	}
-	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "b1", json.RawMessage(`"x"`), 0)
-	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "b1", store.MemoryEmbedding{
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "qa", "b1", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, "qa", "b1", store.MemoryEmbedding{
 		Provider: "openai", Model: "text-embedding-3-large", Dimension: 8,
 		Vector: floats32(1, 0, 0, 0, 0, 0, 0, 0), EmbedText: "b1", CreatedAt: time.Now(),
 	})
-	stats, err := s.MemoryEmbedStats(ctx, store.MemoryScopeAgent)
+	stats, err := s.MemoryEmbedStats(ctx, "", store.MemoryScopeAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
