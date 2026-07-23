@@ -22,9 +22,11 @@ import (
 //
 // semantic_signal was raw cosine similarity before RFC BL hybrid retrieval.
 // Post-hybrid, the in-process backend fuses the vector + full-text legs by
-// Reciprocal Rank Fusion first (see FuseRRF) and writes the fused RRF value
-// into each candidate's Score, so semantic_weight then scales that fused
-// rank signal. Backends that don't fuse (Mem9) still pass raw cosine here.
+// Reciprocal Rank Fusion first (see FuseRRF) and carries the fused RRF value
+// in each candidate's SemanticScore, so semantic_weight then scales that
+// fused rank signal. The raw cosine stays in Score (the field the Memory tool
+// renders) and is never overwritten. Backends that don't fuse (Mem9, and the
+// in-process pure-vector fast path) set SemanticScore to the raw cosine.
 //
 // The DEFAULT (semantic=1, all others=0) keeps ordering equal to the
 // underlying retrieval order — operators who don't pass a `rank` block see
@@ -96,11 +98,12 @@ func recencyDecay(createdAt, now time.Time, halfLifeHours float64) float64 {
 	return math.Exp(-ageHours * math.Ln2 / halfLifeHours)
 }
 
-// Score computes the hybrid score for one search candidate. e.Score is the
-// semantic signal — raw cosine for a non-fused backend, or the fused RRF
-// value after FuseRRF has run. See RankConfig for the term weights.
+// Score computes the hybrid score for one search candidate. e.SemanticScore is
+// the semantic signal — raw cosine for a non-fused/pure-vector path, or the
+// fused RRF value after FuseRRF has run; e.Score (raw cosine, rendered by the
+// tool) is deliberately NOT read here. See RankConfig for the term weights.
 func Score(e store.MemorySearchEntry, cfg RankConfig, now time.Time) float64 {
-	s := cfg.SemanticWeight * e.Score
+	s := cfg.SemanticWeight * e.SemanticScore
 	if cfg.RecencyWeight != 0 {
 		s += cfg.RecencyWeight * recencyDecay(e.CreatedAt, now, cfg.RecencyHalfLifeHours)
 	}
@@ -165,17 +168,21 @@ const RRFDefaultK = 60
 // single ranked list via Reciprocal Rank Fusion (RFC BL hybrid retrieval).
 // Each input list MUST be pre-sorted best-first (the store legs are). The
 // returned slice is the UNION keyed by entry Key (unique within a scope),
-// sorted by descending fused score, with each entry's Score REPLACED by its
+// sorted by descending fused score, with each entry's SemanticScore set to its
 // RRF value:  Σ_over-lists-containing-it  1/(k + rank_in_list).
 //
-// Writing the fused value into Score is deliberate: downstream ranking
-// (RankCandidates / Score / ScoreAll) reads Score as the semantic signal, so
-// the recency and frequency terms layer on top of the fused rank exactly as
-// they did on raw cosine before hybrid retrieval — no second code path.
+// The fused value goes into SemanticScore, NOT Score: downstream ranking
+// (RankCandidates / Score / ScoreAll) reads SemanticScore as the semantic
+// signal, so the recency and frequency terms layer on top of the fused rank
+// with no second code path — while Score is left untouched (the raw vector-leg
+// cosine the Memory tool renders as the stable, documented `score` field). A
+// full-text-only hit that never appeared in the vector leg keeps whatever
+// Score its full-text row carried (its natural relevance value); we do NOT
+// fabricate a cosine for it.
 //
 // The vector list is added first, so for an entry present in BOTH legs the
-// vector copy is authoritative for the non-Score fields (its stored Vector,
-// needed for dedup; EmbeddedWith; AccessCount) while still accruing the
+// vector copy is authoritative for its fields (Score = its cosine; the stored
+// Vector, needed for dedup; EmbeddedWith; AccessCount) while still accruing the
 // full-text leg's rank contribution. When the full-text list is empty
 // (SQLite, or a query with no lexical match) the union is exactly the vector
 // list and RRF preserves its order, so pure-vector retrieval still works.
@@ -217,7 +224,9 @@ func FuseRRF(vector, fulltext []store.MemorySearchEntry, k int) []store.MemorySe
 	out := make([]store.MemorySearchEntry, len(accs))
 	for i := range accs {
 		out[i] = accs[i].entry
-		out[i].Score = accs[i].rrf
+		// Carry the fused rank as the semantic signal; leave Score (raw cosine)
+		// intact so the tool still renders the documented-stable `score` field.
+		out[i].SemanticScore = accs[i].rrf
 	}
 	return out
 }

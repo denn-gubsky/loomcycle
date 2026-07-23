@@ -5,11 +5,17 @@ description: Memory retrieval tuning — the hybrid ranker (semantic + recency w
 
 # Memory ranking, dedup & pluggable backends
 
-By default `Memory.search` returns the top-k rows by pure cosine similarity
-to the query embedding — the v0.9.0 Vector Memory behavior. loomcycle adds three
-things on top, all **opt-in and zero-regression**: a hybrid ranker, search-
-time dedup, and a pluggable backend layer (so an agent's memory can live in
-an external store like Mem9 instead of loomcycle's own sqlite-vec/pgvector).
+`Memory.search` retrieves by relevance to the query. On a backend with a
+full-text index (Postgres+pgvector) retrieval is **hybrid by default**: a
+vector (semantic) leg and a keyword (full-text) leg are fused by Reciprocal
+Rank Fusion (RRF), so an entry that lexically matches the query but sits
+outside the nearest-neighbour set still surfaces. A backend **without** a
+full-text index (SQLite) keeps pure cosine similarity — the original Vector
+Memory behavior, with no over-fetch or second round-trip for a plain semantic
+search. On top of retrieval, loomcycle layers three **opt-in** tunables:
+recency/frequency ranking weights, search-time dedup, and a pluggable backend
+layer (so an agent's memory can live in an external store like Mem9 instead of
+loomcycle's own sqlite-vec/pgvector).
 
 ## Why tune retrieval at all
 
@@ -20,9 +26,10 @@ Pure semantic similarity has two failure modes in long-lived agents:
 - **Repetition wastes context.** Three paraphrases of the same fact all match
   and all get returned, burning tokens on redundancy.
 
-The ranker addresses the first (weight recency), dedup the second. Neither
-fires unless you ask for it — an agent that sends no `rank`/`dedup` block sees
-exactly today's behavior.
+The recency/frequency ranking weights address the first, dedup the second.
+Neither fires unless you ask for it — an agent that sends no `rank`/`dedup`
+block gets the default weights (pure semantic) and no dedup. Hybrid fusion
+itself, however, runs by default wherever a full-text index is available.
 
 ## The hybrid ranker
 
@@ -32,38 +39,43 @@ exactly today's behavior.
 {
   "op": "search", "scope": "user", "query": "...", "top_k": 10,
   "rank": {
-    "semantic_weight":        1.0,   // default — pure cosine
+    "semantic_weight":        1.0,   // default — scales the semantic signal
     "recency_weight":         0.0,
     "recency_half_life_hours": 24,
     "source_weight":          0.0,   // reserved (0 today)
-    "frequency_weight":       0.0    // reserved (0 today)
+    "frequency_weight":       0.0    // wired — rewards frequently-recalled rows
   }
 }
 ```
 
-The score is:
+The computed rank is:
 
 ```
-score = semantic_weight·cos_sim
-      + recency_weight·exp(-age·ln2 / recency_half_life_hours)
-      + source_weight·source_score        (reserved)
-      + frequency_weight·log(1+access_count)  (reserved)
+rank_score = semantic_weight·semantic_signal
+           + recency_weight·exp(-age·ln2 / recency_half_life_hours)
+           + source_weight·source_score              (reserved — 0 today)
+           + frequency_weight·log(1+access_count)
 ```
 
-The default `{semantic_weight: 1}` (or omitting the block) reproduces pure
-cosine ordering exactly. A non-zero `recency_weight` blends in an exponential
-recency decay: an entry at one half-life scores 0.5 on that term, so a fresh
-entry can overtake an older, slightly-more-similar one. When a hybrid config
-is set, loomcycle over-fetches a candidate pool and re-ranks it, so recency
-can promote an entry the pure-cosine top-k would have missed.
+`semantic_signal` is the **fused RRF rank** where hybrid retrieval ran, or the
+raw cosine on a pure-vector (no-full-text) backend. A non-zero `recency_weight`
+blends in an exponential recency decay: an entry at one half-life scores 0.5 on
+that term, so a fresh entry can overtake an older, slightly-more-similar one. A
+non-zero `frequency_weight` rewards a frequently-recalled entry (sub-linear, so
+a runaway access count can't dominate the semantic signal). When any of these
+weights is set, loomcycle re-ranks the candidate pool, so recency or frequency
+can promote an entry the semantic top-k would have missed.
 
-Each result carries a `rank_score` (the hybrid score it was ordered by)
-alongside the unchanged `score` (raw cosine).
+Each result carries two distinct fields: **`score`** — always the raw cosine
+similarity, unchanged by fusion or ranking (a stable value you can compare
+across searches) — and **`rank_score`** — the computed rank above (fused
+semantic + recency + frequency) that the results were ordered by.
 
-**Reserved weights.** `source_weight` and `frequency_weight` are part of the
-locked wire shape but contribute 0 today (there's no per-entry source or
-access-count tracking yet). Setting them is accepted, not rejected — the
-response carries a `rank_note` so the weight isn't silently ignored.
+**Reserved weight.** `source_weight` is part of the locked wire shape but
+contributes 0 today (there's no per-entry source-score signal yet). Setting it
+is accepted, not rejected — the response carries a `rank_note` so the weight
+isn't silently ignored. (`frequency_weight` is no longer reserved: it is wired
+to each entry's access count.)
 
 ## Search-time dedup
 

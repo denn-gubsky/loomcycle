@@ -146,12 +146,14 @@ func (b *Backend) persistEmbedding(ctx context.Context, scope store.MemoryScope,
 	return b.store.MemoryEmbedSet(ctx, runTenant(ctx), scope, scopeID, key, emb)
 }
 
-// Search embeds the query, runs the vector + full-text retrieval legs, fuses
-// them via RRF, re-ranks (recency/frequency terms), dedups, trims to TopK, and
-// computes the index-aligned rank scores. RFC BL made this hybrid: the vector
-// pool is fused with the keyword (full-text) pool so a lexical-only match can
-// surface, while the default rank config still yields the underlying vector
-// order when the full-text leg is empty (SQLite, or no lexical match).
+// Search embeds the query, retrieves a candidate pool, re-ranks (recency/
+// frequency terms), dedups, trims to TopK, and computes the index-aligned rank
+// scores. RFC BL made retrieval hybrid BY DEFAULT wherever it can contribute:
+// when the store has a full-text index the vector pool is fused with the
+// keyword pool via RRF so a lexical-only match can surface. A pure-semantic
+// search with dedup off against a store WITHOUT full-text (e.g. sqlite-vec, or
+// Postgres without pgvector) takes the cheap pure-vector path instead — one
+// cosine call, no keyword round-trip, raw cosine ordering unchanged.
 func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.SearchQuery, rank memory.RankConfig, dedup memory.DedupConfig) (memory.SearchResult, error) {
 	if !b.store.SupportsVectors() {
 		return memory.SearchResult{}, store.ErrVectorUnsupported
@@ -161,16 +163,6 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	}
 
 	topK := q.TopK
-
-	// Over-fetch both legs. Hybrid fusion + dedup both need rows below the
-	// caller's top_k: RRF can promote a deeper vector row a lexical match
-	// co-ranks, and dedup collapsing a near-duplicate cluster must back-fill
-	// from below top_k. The pool is bounded by the store's defensive cap
-	// (<=51). The extra rows beyond top_k also serve as the truncation probe.
-	fetch := topK * 4
-	if fetch > 51 {
-		fetch = 51
-	}
 
 	// Embed the query text. Failures here are the embedder's problem —
 	// surface them directly so operators see exactly what went wrong.
@@ -185,38 +177,77 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 
 	tenant := runTenant(ctx)
 
-	// Leg 1: vector (cosine-ordered). Pass errors through unwrapped —
-	// ErrDimensionMismatch / ErrVectorUnsupported are user-actionable and the
-	// tool's errors.Is checks match the backend-constructed *MemoryError.
-	vres, err := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Prefix, queryVec, fetch)
-	if err != nil {
-		return memory.SearchResult{}, err
+	// Hybrid (over-fetch + full-text leg + RRF) is the RFC BL default whenever
+	// it can contribute: the store HAS a full-text index, OR the caller's rank/
+	// dedup needs the deeper pool anyway (a non-pure-semantic rank re-scores
+	// rows below top_k; dedup must back-fill a collapsed cluster). Only a
+	// pure-semantic search with dedup off against a store WITHOUT full-text
+	// gains nothing from the keyword round-trip — take the cheap pure-vector
+	// path there (this restores the pre-PR2 zero-cost path for those backends).
+	//
+	// Gated on SupportsFullText, NOT SupportsVectors: SupportsVectors is a
+	// prerequisite already checked above, so it cannot distinguish a
+	// vector-capable store that lacks a full-text index (e.g. a future
+	// sqlite-vec build) — SupportsFullText is the precise capability.
+	// TODO(RFC BL): per-call/opsconfig hybrid opt-out if operators want it.
+	hybrid := b.store.SupportsFullText() || !rank.IsPureSemantic() || dedup.Enabled
+
+	var pool []store.MemorySearchEntry
+	if hybrid {
+		// Over-fetch both legs. RRF can promote a deeper vector row a lexical
+		// match co-ranks, and dedup collapsing a near-duplicate cluster must
+		// back-fill from below top_k. The pool is bounded by the store's
+		// defensive cap (<=51); the rows beyond top_k also probe truncation.
+		fetch := topK * 4
+		if fetch > 51 {
+			fetch = 51
+		}
+		// Leg 1: vector (cosine-ordered). Errors pass through unwrapped —
+		// ErrDimensionMismatch / ErrVectorUnsupported are user-actionable and
+		// the tool's errors.Is checks match the backend-constructed *MemoryError.
+		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Prefix, queryVec, fetch)
+		if verr != nil {
+			return memory.SearchResult{}, verr
+		}
+		// Leg 2: full-text (keyword, ts_rank-ordered). (nil,nil) on a store
+		// without a full-text index, so the fusion collapses to pure-vector.
+		fres, ferr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, q.Prefix, q.QueryText, fetch)
+		if ferr != nil {
+			return memory.SearchResult{}, ferr
+		}
+		// Fuse by RRF: SemanticScore := the fused rank (the ranker's semantic
+		// input); Score stays each row's raw cosine. With an empty full-text
+		// leg the union is the vector list and its order is preserved.
+		pool = memory.FuseRRF(vres, fres, memory.RRFDefaultK)
+	} else {
+		// Cheap pure-vector path: a single cosine call with a +1 truncation
+		// probe, no keyword round-trip. The semantic signal IS the raw cosine,
+		// so mirror Score into SemanticScore (the ranker reads that) and leave
+		// Score untouched for the tool to render.
+		fetch := topK + 1
+		if fetch > 51 {
+			fetch = 51
+		}
+		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Prefix, queryVec, fetch)
+		if verr != nil {
+			return memory.SearchResult{}, verr
+		}
+		for i := range vres {
+			vres[i].SemanticScore = vres[i].Score
+		}
+		pool = vres
 	}
 
-	// Leg 2: full-text (keyword, ts_rank-ordered). Degrades to empty on
-	// backends without a full-text index (SQLite returns (nil,nil)), so the
-	// fusion below cleanly collapses to pure-vector there.
-	fres, err := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, q.Prefix, q.QueryText, fetch)
-	if err != nil {
-		return memory.SearchResult{}, err
-	}
+	// truncated: more distinct rows matched than the caller's top_k, computed
+	// before the trim.
+	truncated := len(pool) > topK
 
-	// Fuse the two legs by Reciprocal Rank Fusion. FuseRRF writes the fused
-	// value into each entry's Score, so the ranker/dedup/score pipeline below
-	// runs unchanged (it reads Score as the semantic signal). With an empty
-	// full-text leg the union is the vector list and its order is preserved.
-	fused := memory.FuseRRF(vres, fres, memory.RRFDefaultK)
-
-	// truncated: more distinct rows matched (across both legs) than the
-	// caller's top_k, computed before the trim.
-	truncated := len(fused) > topK
-
-	// Re-rank (recency/frequency layer on top of the fused rank), then dedup
-	// on the full pool BEFORE the trim (RFC I Decision 2) so collapsing a
+	// Re-rank (recency/frequency layer on top of the semantic signal), then
+	// dedup on the full pool BEFORE the trim (RFC I Decision 2) so collapsing a
 	// duplicate cluster can promote a distinct entry into the top_k. rank
 	// scores use the SAME `now` as the ranking so the rendered score matches.
 	now := time.Now()
-	ranked := memory.RankCandidates(fused, rank, now)
+	ranked := memory.RankCandidates(pool, rank, now)
 	deduped, dropped := memory.DedupResults(ranked, dedup)
 	if len(deduped) > topK {
 		deduped = deduped[:topK]

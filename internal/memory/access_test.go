@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 type bumpRecorderStore struct {
 	store.Store
 	mu    sync.Mutex
+	fail  bool                                 // when true, MemoryBumpAccessBatch errors (exercises the re-merge path)
 	count map[store.MemoryAccessBump]int64     // key fields only carry identity
 	last  map[store.MemoryAccessBump]time.Time // (delta/ts zeroed in the map key)
 }
@@ -35,6 +37,9 @@ func identity(b store.MemoryAccessBump) store.MemoryAccessBump {
 func (s *bumpRecorderStore) MemoryBumpAccessBatch(_ context.Context, bumps []store.MemoryAccessBump) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.fail {
+		return errors.New("injected bump-batch write failure")
+	}
 	for _, b := range bumps {
 		id := identity(b)
 		s.count[id] += b.CountDelta
@@ -110,5 +115,38 @@ func TestAccessFlusher_FlushDrainsPending(t *testing.T) {
 	}
 	if c, _ := fs.get("t", store.MemoryScopeUser, "u", "k"); c != 1 {
 		t.Fatalf("count = %d, want 1 (second flush must not double-apply)", c)
+	}
+}
+
+// Fix #3 (RFC BL PR2 review): a transient store write error must NOT lose the
+// drained window. drain() empties pending before the write, so on error the
+// bumps are re-merged and a later successful flush writes the FULL summed
+// total — not just whatever arrived after the failure.
+func TestAccessFlusher_FailedFlushReMergesForRetry(t *testing.T) {
+	fs := newBumpRecorderStore()
+	fs.fail = true
+	f := NewAccessFlusher(fs, time.Hour, 1<<30)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	// Two accesses accumulate a delta of 2 before the (failing) flush.
+	f.Record("t", store.MemoryScopeUser, "u", "k", now)
+	f.Record("t", store.MemoryScopeUser, "u", "k", now)
+
+	if err := f.Flush(context.Background()); err == nil {
+		t.Fatal("expected an error from the failing store")
+	}
+	// Nothing was persisted on the failed write.
+	if c, _ := fs.get("t", store.MemoryScopeUser, "u", "k"); c != 0 {
+		t.Fatalf("failed flush must persist nothing, got count=%d", c)
+	}
+
+	// Let the store recover; the retry must write the full re-merged delta (2),
+	// proving the drained bumps were preserved rather than discarded.
+	fs.fail = false
+	if err := f.Flush(context.Background()); err != nil {
+		t.Fatalf("retry flush: %v", err)
+	}
+	if c, _ := fs.get("t", store.MemoryScopeUser, "u", "k"); c != 2 {
+		t.Fatalf("count = %d, want 2 (re-merged bumps must survive the failed flush)", c)
 	}
 }

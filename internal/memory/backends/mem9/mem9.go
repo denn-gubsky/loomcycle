@@ -171,13 +171,15 @@ type wireStatsResponse struct {
 
 // toSearchEntry maps one assumed wire result onto loomcycle's domain
 // store.MemorySearchEntry. The Score is taken as cosine similarity so the
-// MR-1 ranker (which expects e.Score ∈ [0,1]) operates uniformly across
-// backends.
+// MR-1 ranker operates uniformly across backends. Mem9 doesn't fuse, so the
+// semantic signal the ranker scales (SemanticScore) is the same cosine —
+// set both from w.Score (RFC BL split Score/SemanticScore; without this the
+// ranker would read a zero SemanticScore and collapse every rank_score).
 //
 // ASSUMED Mem9 wire shape — verify against the real
 // github.com/mem9-ai/mem9 v1alpha2 API before production.
 func toSearchEntry(w wireSearchResult) store.MemorySearchEntry {
-	e := store.MemorySearchEntry{Score: w.Score}
+	e := store.MemorySearchEntry{Score: w.Score, SemanticScore: w.Score}
 	e.Key = w.Key
 	e.Value = w.Value
 	e.ExpiresAt = parseWireTime(w.ExpiresAt)

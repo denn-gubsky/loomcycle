@@ -4163,6 +4163,14 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	return nil, nil
 }
 
+// SupportsFullText reports false for SQLite regardless of build tag — it ships
+// no tsvector index (RFC BL adds full-text only on Postgres+pgvector), so the
+// in-process backend takes the cheap pure-vector path rather than paying for a
+// keyword round-trip that would always return (nil, nil).
+func (s *Store) SupportsFullText() bool {
+	return false
+}
+
 // MemoryBumpAccessBatch applies access-count deltas additively (RFC BL
 // hybrid retrieval, OQ #4). See the Store interface for the semantics.
 // SQLite's memory table carries access_count/last_accessed_at (PR1), so this

@@ -1527,6 +1527,16 @@ type Store interface {
 	// support deferred to v0.9.1).
 	SupportsVectors() bool
 
+	// SupportsFullText reports whether the backend can contribute a
+	// keyword (full-text) retrieval leg via MemoryFullTextSearch. Today
+	// only Postgres+pgvector can (migration 0060 adds the tsvector index
+	// behind the pgvector guard); SQLite returns false regardless of build
+	// tag (no tsvector index). It is a NARROWER capability than
+	// SupportsVectors: a store may support vectors but have no full-text
+	// index, in which case a pure-semantic search skips the wasted keyword
+	// round-trip. The in-process backend gates its hybrid over-fetch on this.
+	SupportsFullText() bool
+
 	// MemoryEmbedSet writes the embedding vector for the (scope,
 	// scopeID, key) tuple. Idempotent — re-writes overwrite the
 	// existing embedding row. Returns ErrVectorUnsupported when the
@@ -2519,6 +2529,14 @@ type MemorySearchEntry struct {
 		Model    string `json:"model"`
 	} `json:"embedded_with"`
 	Vector []float32 `json:"-"`
+	// SemanticScore is the semantic signal the hybrid ranker scales
+	// (SemanticWeight · SemanticScore) — SEPARATE from Score so ranking never
+	// clobbers the raw-cosine Score the tool renders (RFC BL). For pure-vector
+	// retrieval it equals the cosine; after RRF fusion it is the fused RRF
+	// value (see memory.FuseRRF), while Score stays the raw vector-leg cosine.
+	// Producers (the fusion step, the pure-vector fast path, the mem9 backend)
+	// set it explicitly; json:"-": it feeds ranking, not the agent-facing row.
+	SemanticScore float64 `json:"-"`
 	// AccessCount is the base row's access_count (RFC BL). Populated by the
 	// search legs so the hybrid ranker's frequency_weight term can reward
 	// frequently-recalled entries. Zero when the backend doesn't track it

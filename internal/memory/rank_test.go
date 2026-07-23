@@ -11,6 +11,11 @@ func entry(key string, score float64, ageHours float64, now time.Time) store.Mem
 	var e store.MemorySearchEntry
 	e.Key = key
 	e.Score = score
+	// The unit ranker reads SemanticScore, not Score (RFC BL split the raw-cosine
+	// display value from the ranker's semantic input). For these tests the
+	// semantic signal IS the cosine, so seed both; FuseRRF overrides
+	// SemanticScore with the fused rank in the hybrid tests.
+	e.SemanticScore = score
 	e.CreatedAt = now.Add(-time.Duration(ageHours) * time.Hour)
 	return e
 }

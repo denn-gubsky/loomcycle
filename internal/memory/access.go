@@ -132,12 +132,40 @@ func (f *AccessFlusher) drain() []store.MemoryAccessBump {
 
 // Flush drains the pending bumps and writes them additively. A no-op when
 // nothing is pending. Exposed for tests and the shutdown path.
+//
+// On a write error the drained bumps are RE-MERGED into pending so the next
+// flush retries them. drain() empties the map before the write, so without
+// this a transient store fault (not just a crash) would silently discard the
+// window — contradicting the "a crash drops at most the un-flushed window"
+// contract. Re-merging on the non-crash error path keeps that the only loss.
 func (f *AccessFlusher) Flush(ctx context.Context) error {
 	bumps := f.drain()
 	if len(bumps) == 0 {
 		return nil
 	}
-	return f.store.MemoryBumpAccessBatch(ctx, bumps)
+	if err := f.store.MemoryBumpAccessBatch(ctx, bumps); err != nil {
+		f.remerge(bumps)
+		return err
+	}
+	return nil
+}
+
+// remerge folds drained bumps back into pending after a failed write, summing
+// CountDelta and max-merging LastAccess. Records that arrived during the failed
+// write accumulated into the fresh map; we merge on top of them, so the retry
+// carries the full outstanding delta and no bump is lost to a transient fault.
+func (f *AccessFlusher) remerge(bumps []store.MemoryAccessBump) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, b := range bumps {
+		k := accessKey{tenant: b.TenantID, scope: string(b.Scope), scopeID: b.ScopeID, key: b.Key}
+		d := f.pending[k]
+		d.count += b.CountDelta
+		if b.LastAccess.After(d.lastAccess) {
+			d.lastAccess = b.LastAccess
+		}
+		f.pending[k] = d
+	}
 }
 
 // Start launches the background flush goroutine (ticker + size-trigger).

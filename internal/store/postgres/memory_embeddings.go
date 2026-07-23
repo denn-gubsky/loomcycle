@@ -38,6 +38,14 @@ func (s *Store) SupportsVectors() bool {
 	return s.pgvectorEnabled
 }
 
+// SupportsFullText reports whether the keyword (full-text) retrieval leg is
+// available (RFC BL). It tracks SupportsVectors exactly: migration 0060's
+// tsvector index lives on memory_embeddings, which exists only behind the
+// pgvector guard, so full-text is available precisely when pgvector is.
+func (s *Store) SupportsFullText() bool {
+	return s.pgvectorEnabled
+}
+
 // MemoryEmbedSet upserts the embedding for one (scope, scope_id, key).
 // The base memory row must exist — the FK enforces this; absent
 // base row surfaces as a Postgres `foreign_key_violation`.

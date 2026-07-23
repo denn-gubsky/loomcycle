@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -65,8 +66,51 @@ func TestFuseRRF_EmptyFullTextPreservesVectorOrder(t *testing.T) {
 			t.Fatalf("order[%d] = %s, want %s (vector order not preserved)", i, fused[i].Key, w)
 		}
 	}
-	// RRF scores strictly decrease with rank.
-	if !(fused[0].Score > fused[1].Score && fused[1].Score > fused[2].Score) {
-		t.Fatalf("fused scores not strictly descending: %v %v %v", fused[0].Score, fused[1].Score, fused[2].Score)
+	// The fused RRF signal (SemanticScore) strictly decreases with rank; Score
+	// stays the raw cosine (not the RRF value), so assert on SemanticScore.
+	if !(fused[0].SemanticScore > fused[1].SemanticScore && fused[1].SemanticScore > fused[2].SemanticScore) {
+		t.Fatalf("fused SemanticScore not strictly descending: %v %v %v",
+			fused[0].SemanticScore, fused[1].SemanticScore, fused[2].SemanticScore)
+	}
+}
+
+// Fix #1 (RFC BL PR2 review): RRF fusion must NOT clobber the raw-cosine Score
+// the Memory tool renders — the fused rank rides SemanticScore instead. Assert
+// each fused entry's Score stays ≈ its vector-leg cosine while the ORDER
+// reflects the RRF fusion (a keyword-only hit is promoted past its vector rank).
+func TestFuseRRF_PreservesRawCosineScore(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	// Vector leg (cosine order): C is the WORST vector match (last).
+	vector := []store.MemorySearchEntry{
+		entry("A", 0.90, 0, now),
+		entry("B", 0.80, 0, now),
+		entry("C", 0.10, 0, now),
+	}
+	// Full-text leg: C is the sole lexical hit (keyword rank 0) — its RRF sums
+	// across both legs and should lift it to the top.
+	fulltext := []store.MemorySearchEntry{
+		entry("C", 0.0, 0, now),
+	}
+
+	fused := FuseRRF(vector, fulltext, RRFDefaultK)
+
+	// Score stays the raw vector cosine for every entry present in the vector
+	// leg — fusion must not overwrite it with the ~1/60 RRF value.
+	wantCosine := map[string]float64{"A": 0.90, "B": 0.80, "C": 0.10}
+	for _, e := range fused {
+		if got := wantCosine[e.Key]; math.Abs(e.Score-got) > 1e-9 {
+			t.Errorf("entry %s: score = %v, want raw cosine %v (fusion clobbered Score)", e.Key, e.Score, got)
+		}
+		// The fused semantic signal lives in SemanticScore: a small positive RRF
+		// value (≈1/(k+rank)), clearly distinct from the cosine in Score.
+		if e.SemanticScore <= 0 || e.SemanticScore > 0.5 {
+			t.Errorf("entry %s: SemanticScore = %v, want a small positive RRF value", e.Key, e.SemanticScore)
+		}
+	}
+	// Order reflects RRF: C, the keyword-only hit, is promoted above its
+	// last-place vector rank because it co-ranks in both legs.
+	if fused[0].Key != "C" {
+		t.Fatalf("RRF did not promote the keyword-only hit: order = %s,%s,%s",
+			fused[0].Key, fused[1].Key, fused[2].Key)
 	}
 }

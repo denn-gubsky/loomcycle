@@ -2963,9 +2963,6 @@ func main() {
 	<-sig
 	log.Println("shutting down…")
 	bgCancel() // tear down sweeper + GC goroutines first
-	// RFC BL: stop the access-count flusher and flush the final window so a
-	// clean shutdown never loses accumulated access counts.
-	accessFlusher.Stop()
 	if heartbeatRunner != nil {
 		heartbeatRunner.Stop()
 	}
@@ -2984,6 +2981,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
+	// RFC BL: stop the access-count flusher and flush the final window AFTER the
+	// HTTP+gRPC servers have finished draining. In-flight Search requests
+	// Record() access bumps right up to the end of that drain window, so the
+	// flusher's final flush must run last to capture them — stopping it earlier
+	// would leave those late bumps with no goroutine left to flush them. The
+	// store closer is deferred (runs after main returns), so the store is still
+	// open for this final write.
+	accessFlusher.Stop()
 	// Flush OTEL spans before exit. The OTLP exporter batches; without this,
 	// in-flight spans never reach the collector. Give it its OWN 5s budget —
 	// sharing the HTTP shutdown's ctx meant a slow in-flight request drain

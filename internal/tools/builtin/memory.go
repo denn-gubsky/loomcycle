@@ -1163,8 +1163,8 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		entries = append(entries, map[string]any{
 			"key":        r.Key,
 			"value":      r.Value,
-			"score":      r.Score,           // cosine similarity (unchanged field)
-			"rank_score": res.RankScores[i], // hybrid score this result was ordered by
+			"score":      r.Score,           // raw cosine similarity — NEVER touched by hybrid fusion or ranking (stable across searches)
+			"rank_score": res.RankScores[i], // computed rank the result was ordered by: fused-semantic (RRF) + recency + frequency
 			"embedded_with": map[string]any{
 				"provider": r.EmbeddedWith.Provider,
 				"model":    r.EmbeddedWith.Model,
