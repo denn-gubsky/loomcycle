@@ -11,9 +11,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -162,6 +164,15 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		return memory.SearchResult{}, store.ErrEmbedderNotConfigured
 	}
 
+	// RFC BL PR6: one loomcycle.memory.search span per retrieval — the span
+	// duration is the retrieval latency (the loomcycle.memory.search.latency
+	// histogram derives from it downstream), and it carries the mode + dead-link
+	// counts set at the end. Opened AFTER the two pre-flight refusals so the
+	// latency series measures real retrieval, not an instantaneous config error.
+	// No-op-safe: a no-op tracer when OTEL is unconfigured.
+	ctx, span := lcotel.RecordMemorySearch(ctx, "inprocess")
+	defer span.End()
+
 	topK := q.TopK
 
 	// Embed the query text. Failures here are the embedder's problem —
@@ -252,6 +263,14 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	if len(deduped) > topK {
 		deduped = deduped[:topK]
 	}
+
+	// RFC BL §2.10 read-time dead-link guard: drop any surviving hit whose
+	// backing resource no longer resolves, BEFORE scoring/access-recording so a
+	// dead link is never scored, never access-bumped, never returned. Runs only
+	// over the trimmed top-k, so it is cheap and no-ops when everything resolves
+	// (the common case — the vector population FK-cascades in P1).
+	deduped, deadDropped := dropDeadLinks(deduped)
+
 	rankScores := memory.ScoreAll(deduped, rank, now)
 
 	// Record a +1 access for the returned entries (batched, off the hot path
@@ -264,6 +283,12 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		}
 	}
 
+	mode := "vector"
+	if hybrid {
+		mode = "hybrid"
+	}
+	lcotel.SetMemorySearchResult(span, mode, topK, deadDropped)
+
 	out := memory.SearchResult{
 		Entries:           deduped,
 		RankScores:        rankScores,
@@ -275,6 +300,35 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		out.RankNote = "source_weight is reserved and contributes 0 until source-score tracking ships"
 	}
 	return out, nil
+}
+
+// dropDeadLinks is the RFC BL §2.10 read-time dead-link floor for the memory
+// tier: it removes ranked hits whose backing resource no longer resolves and
+// reports how many were dropped. A hit whose backing k/v body is gone comes
+// back with an empty Value (the embedding outlived its base row — e.g. a
+// doc.chunk:<id> body that was removed); that is the dead link. In P1 the
+// vector population FK-cascades with its body, so this no-ops for a consistent
+// store — it is the cheap, correct safety net for the doc-memory / entity tiers
+// as they grow.
+//
+// The cleanup signal is bounded and never blocks the read path: dropped hits
+// are counted (surfaced as the loomcycle.memory.deadlink.dropped span event by
+// the caller) and logged, with NO unbounded map and NO store write on the read
+// path. The authoritative sweep of orphaned index rows is deferred to RFC BL P2.
+func dropDeadLinks(entries []store.MemorySearchEntry) ([]store.MemorySearchEntry, int) {
+	dropped := 0
+	kept := make([]store.MemorySearchEntry, 0, len(entries))
+	for _, e := range entries {
+		if len(e.Value) == 0 {
+			dropped++
+			// Debug-level: dead links are rare (a store-consistency window), so
+			// this stays quiet in steady state. No secrets — key only.
+			log.Printf("memory.search: dropped dead-link hit key=%q (backing value no longer resolves)", e.Key)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept, dropped
 }
 
 var _ memory.Backend = (*Backend)(nil)

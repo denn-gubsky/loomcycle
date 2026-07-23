@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/memory"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -247,6 +248,7 @@ func ReconcileIndex(ctx context.Context, set *Set, st IndexStore, emb providers.
 	}
 	if st == nil || emb == nil || !st.SupportsVectors() {
 		stats.Degraded = true
+		lcotel.RecordHelpReconcile(ctx, stats.Written, stats.Pruned, stats.Unchanged, stats.Failed, stats.Degraded)
 		return stats, nil
 	}
 
@@ -372,6 +374,10 @@ func ReconcileIndex(ctx context.Context, set *Set, st IndexStore, emb providers.
 		stats.Pruned++
 	}
 
+	// RFC BL PR6: emit the reconcile outcome once at the successful end so a
+	// downstream connector derives written/pruned/unchanged/failed counters +
+	// the degraded gauge. No-op-safe when OTEL is unconfigured.
+	lcotel.RecordHelpReconcile(ctx, stats.Written, stats.Pruned, stats.Unchanged, stats.Failed, stats.Degraded)
 	return stats, nil
 }
 
@@ -411,9 +417,8 @@ func QueryIndex(ctx context.Context, set *Set, st IndexStore, emb providers.Embe
 	}
 
 	if st != nil && emb != nil && st.SupportsVectors() {
-		hits, err := hybridQuery(ctx, st, emb, query, topK)
-		switch {
-		case err != nil:
+		hits, deadDropped, err := hybridQuery(ctx, set, st, emb, query, topK)
+		if err != nil {
 			// A hybrid failure must NOT hard-fail the caller — query's contract
 			// is "always returns useful results". Two real cases hit this exactly
 			// when the fallback should kick in: a transient embedder API error on
@@ -424,25 +429,33 @@ func QueryIndex(ctx context.Context, set *Set, st IndexStore, emb providers.Embe
 			// against the stale rows). Warn and fall through to the substring scan,
 			// exactly as the empty-index case below does.
 			log.Printf("help query: hybrid path failed, degrading to substring: %v", err)
-		case len(hits) > 0:
-			return QueryResults{Mode: "hybrid", Results: hits}, nil
+		} else {
+			// Record dead-link drops even when every hit was dead (so the signal
+			// is emitted before falling through to the substring scan). No-op-safe.
+			lcotel.RecordDeadlinkDroppedCtx(ctx, deadDropped)
+			if len(hits) > 0 {
+				return QueryResults{Mode: "hybrid", Results: hits}, nil
+			}
 		}
-		// Hybrid error OR empty index (reconcile not done / no match) → fall
-		// through to the substring scan so the caller still gets something.
+		// Hybrid error OR empty index (reconcile not done / no match / all hits
+		// were dead links) → fall through to the substring scan over the live
+		// in-memory Set, which can never surface a dead link.
 	}
 	return QueryResults{Mode: "substring", Results: substringQuery(set, query, topK)}, nil
 }
 
 // hybridQuery embeds the query and fuses the vector + full-text legs via RRF over
 // the reserved help namespace. Mirrors the in-process Memory backend's hybrid
-// retrieval so help search behaves like memory search.
-func hybridQuery(ctx context.Context, st IndexStore, emb providers.Embedder, query string, topK int) ([]QueryResult, error) {
+// retrieval so help search behaves like memory search. It also applies the RFC
+// BL §2.10 read-time dead-link guard (see the filter loop below) and returns the
+// number of hits it dropped so the caller can emit the dead-link signal.
+func hybridQuery(ctx context.Context, set *Set, st IndexStore, emb providers.Embedder, query string, topK int) ([]QueryResult, int, error) {
 	vecs, err := emb.Embed(ctx, []string{query})
 	if err != nil {
-		return nil, fmt.Errorf("help query: embed: %w", err)
+		return nil, 0, fmt.Errorf("help query: embed: %w", err)
 	}
 	if len(vecs) != 1 {
-		return nil, fmt.Errorf("help query: embed returned %d vectors, want 1", len(vecs))
+		return nil, 0, fmt.Errorf("help query: embed returned %d vectors, want 1", len(vecs))
 	}
 	fetch := topK * 4
 	if fetch < topK {
@@ -453,23 +466,37 @@ func hybridQuery(ctx context.Context, st IndexStore, emb providers.Embedder, que
 	}
 	vres, err := st.MemoryEmbedSearch(ctx, helpTenant, helpScope, HelpNamespaceScopeID, "", vecs[0], fetch)
 	if err != nil {
-		return nil, fmt.Errorf("help query: vector leg: %w", err)
+		return nil, 0, fmt.Errorf("help query: vector leg: %w", err)
 	}
 	// (nil, nil) when the store has no full-text index — the fusion then
 	// collapses to pure-vector.
 	fres, err := st.MemoryFullTextSearch(ctx, helpTenant, helpScope, HelpNamespaceScopeID, "", query, fetch)
 	if err != nil {
-		return nil, fmt.Errorf("help query: full-text leg: %w", err)
+		return nil, 0, fmt.Errorf("help query: full-text leg: %w", err)
 	}
 	fused := memory.FuseRRF(vres, fres, memory.RRFDefaultK)
 	if len(fused) > topK {
 		fused = fused[:topK]
 	}
 	out := make([]QueryResult, 0, len(fused))
+	dead := 0
 	for _, e := range fused {
 		var v indexValue
 		if json.Unmarshal(e.Value, &v) != nil {
 			continue // not one of our rows / unparseable — skip defensively
+		}
+		// RFC BL §2.10 read-time dead-link guard: an index row can outlive its
+		// topic in the window between a new-binary boot that dropped the topic
+		// from the go:embed corpus and the backgrounded reconcile pruning the
+		// stale row. Drop any hit whose topic is no longer in the live in-memory
+		// Set so a query never points an agent at a topic it can't fetch. The
+		// reconcile prune remains the authoritative cleanup; this is the read-
+		// time floor. Counting is the bounded, non-blocking cleanup signal — no
+		// store write on the read path.
+		if _, ok := set.Get(v.TopicSlug); !ok {
+			dead++
+			log.Printf("help query: dropped dead-link hit topic=%q heading=%q (topic no longer in corpus)", v.TopicSlug, v.Heading)
+			continue
 		}
 		out = append(out, QueryResult{
 			TopicSlug: v.TopicSlug,
@@ -480,7 +507,7 @@ func hybridQuery(ctx context.Context, st IndexStore, emb providers.Embedder, que
 			Score: e.SemanticScore,
 		})
 	}
-	return out, nil
+	return out, dead, nil
 }
 
 // substringQuery scans the in-memory Set for sections containing the query terms
