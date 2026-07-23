@@ -678,6 +678,22 @@ func (b *postgresBackend) dropRunScope(runID string) (removed bool, err error) {
 	return b.dropScopePG(ctx, schema, role)
 }
 
+// dropScope removes one DURABLE (agent/user) scope: schema names are RE-DERIVED
+// from the key via pgScopeNames, then dropScopePG retires the pool + DROP SCHEMA
+// CASCADE + DROP ROLE + removes both GC meta rows. RFC BM retention reclaim path.
+func (b *postgresBackend) dropScope(key ScopeKey) (removed bool, err error) {
+	if key.Scope == runScope {
+		return false, fmt.Errorf("sqlmem: dropScope is not for the run scope")
+	}
+	schema, role, err := pgScopeNames(key)
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return b.dropScopePG(ctx, schema, role)
+}
+
 // dropScopePG retires the scope's pool, drops its schema (CASCADE) + role, and
 // removes its GC meta row. Shared by run-scope drop and the durable-scope GC
 // sweeper. removed reflects the actual schema drop (3F000 => already gone).

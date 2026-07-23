@@ -2366,6 +2366,16 @@ type Env struct {
 	// is exported (per the mode) and cascade-deleted. 0 = no minimum age.
 	// Env: LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS.
 	RetentionChatsMaxAge time.Duration
+	// RetentionMemMode is the RFC BM Phase 3 retired-agent memory-reclamation
+	// mode: "off" (default / "") | "prune" | "export+prune". Reclaims a
+	// fully-retired agent's SQL-Memory scope + dirents (per tenant) and its
+	// base-memory k/v (only when the name is retired in every tenant). Independent
+	// of RetentionDefsMode/RetentionChatsMode. Env: LOOMCYCLE_RETENTION_MEM_MODE.
+	RetentionMemMode string
+	// RetentionMemMaxAge is the age cutoff for memory reclamation: an agent whose
+	// latest def version was updated before now-this is eligible. 0 = no minimum
+	// age. Env: LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS.
+	RetentionMemMaxAge time.Duration
 	// ReplicasSweepInterval is the dead-replica reaper's tick rate.
 	// Default 60s. Tunable mostly for tests / crash-recovery load
 	// experiments — leave at default in production.
@@ -3335,6 +3345,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		cfg.Env.RetentionChatsMaxAge = cfg.Env.UsageRunRetention
 		if cfg.Env.RetentionExportDir == "" {
 			cfg.Env.RetentionExportDir = cfg.Env.UsageExportDir
+		}
+	}
+	// RFC BM Phase 3 retired-agent memory reclamation (opt-in; default OFF).
+	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_MODE"); v != "" {
+		cfg.Env.RetentionMemMode = v
+	}
+	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.RetentionMemMaxAge = time.Duration(n) * time.Millisecond
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {

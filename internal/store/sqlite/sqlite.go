@@ -3785,6 +3785,24 @@ func (s *Store) MemoryDelete(ctx context.Context, scope store.MemoryScope, scope
 	return n > 0, nil
 }
 
+// MemoryDeleteScope removes every entry under (scope, scopeID) in one statement
+// (RFC BM retention). memory_embeddings rows cascade via their ON DELETE CASCADE
+// FK (foreign_keys=ON in the driver DSN), mirroring single-key MemoryDelete.
+func (s *Store) MemoryDeleteScope(ctx context.Context, scope store.MemoryScope, scopeID string) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM memory WHERE scope = ? AND scope_id = ?`,
+		string(scope), scopeID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // MemoryList enumerates entries for a (scope, scopeID), filtered by
 // prefix and capped at limit rows. Expired rows are filtered in the
 // WHERE clause so callers never see them. truncated == true when the

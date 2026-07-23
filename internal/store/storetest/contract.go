@@ -136,6 +136,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryGetNotFound", testMemoryGetNotFound},
 		{"MemoryOverwriteUpdatesValue", testMemoryOverwriteUpdatesValue},
 		{"MemoryDelete", testMemoryDelete},
+		{"MemoryDeleteScope", testMemoryDeleteScope},
 		{"MemoryListPrefix", testMemoryListPrefix},
 		{"MemoryListTruncation", testMemoryListTruncation},
 		{"MemoryTTLExpiry", testMemoryTTLExpiry},
@@ -3242,6 +3243,46 @@ func testMemoryDelete(t *testing.T, s store.Store) {
 	}
 	if deleted {
 		t.Error("expected deleted=false on a missing key")
+	}
+}
+
+// testMemoryDeleteScope is the RFC BM Phase 3 bulk-scope delete: it removes every
+// key under one (scope, scopeID) and returns the count, without touching a
+// sibling scope_id or a different scope.
+func testMemoryDeleteScope(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Target scope: three keys under (agent, "reaped").
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "reaped", "k1", json.RawMessage(`1`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "reaped", "k2", json.RawMessage(`2`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "reaped", "k3", json.RawMessage(`3`), 0)
+	// A sibling agent scope_id and a same-id user scope must survive.
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "kept", "k1", json.RawMessage(`9`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "reaped", "k1", json.RawMessage(`8`), 0)
+
+	n, err := s.MemoryDeleteScope(ctx, store.MemoryScopeAgent, "reaped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("MemoryDeleteScope deleted %d, want 3", n)
+	}
+	if got, _, _ := s.MemoryList(ctx, store.MemoryScopeAgent, "reaped", "", 100); len(got) != 0 {
+		t.Errorf("target scope still has %d keys after delete", len(got))
+	}
+	// Siblings untouched.
+	if got, _, _ := s.MemoryList(ctx, store.MemoryScopeAgent, "kept", "", 100); len(got) != 1 {
+		t.Errorf("sibling agent scope_id lost keys: have %d, want 1", len(got))
+	}
+	if got, _, _ := s.MemoryList(ctx, store.MemoryScopeUser, "reaped", "", 100); len(got) != 1 {
+		t.Errorf("same-id user scope lost keys: have %d, want 1", len(got))
+	}
+	// Idempotent: a second delete removes nothing.
+	n, err = s.MemoryDeleteScope(ctx, store.MemoryScopeAgent, "reaped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("second MemoryDeleteScope deleted %d, want 0", n)
 	}
 }
 

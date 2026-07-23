@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
@@ -387,5 +388,342 @@ func TestSweeper_ChatsExportPruneWithoutExportDirDisabled(t *testing.T) {
 	}
 	if _, err := st.GetSession(ctx, sid); err != nil {
 		t.Errorf("disabled sweep deleted the session: %v", err)
+	}
+}
+
+// ---- RFC BM Phase 3: retired-agent memory reclamation ----
+
+func newTestSqlMem(t *testing.T) *sqlmem.Manager {
+	t.Helper()
+	m, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
+
+// seedRetiredAgent creates n versions of (tenant, name) and retires all of them
+// (LiveVersionCount == 0). seedLiveAgent leaves the version live.
+func seedRetiredAgent(t *testing.T, st *sqlite.Store, tenant, name string, n int) {
+	t.Helper()
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		id := tenant + "-" + name + "-v" + string(rune('1'+i))
+		row := store.AgentDefRow{DefID: id, Name: name, TenantID: tenant, Definition: json.RawMessage(`{"model":"x"}`)}
+		if _, err := st.AgentDefCreate(ctx, row); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+		if err := st.AgentDefSetRetired(ctx, id, true); err != nil {
+			t.Fatalf("retire %s: %v", id, err)
+		}
+	}
+}
+
+func seedLiveAgent(t *testing.T, st *sqlite.Store, tenant, name string) {
+	t.Helper()
+	id := tenant + "-" + name + "-live"
+	row := store.AgentDefRow{DefID: id, Name: name, TenantID: tenant, Definition: json.RawMessage(`{"model":"x"}`)}
+	if _, err := st.AgentDefCreate(context.Background(), row); err != nil {
+		t.Fatalf("create live %s: %v", id, err)
+	}
+}
+
+// seedAgentSQLScope provisions the (tenant, agent, name) SQL-Memory scope with a
+// table so ListScopes reports it and DropScope has something to drop.
+func seedAgentSQLScope(t *testing.T, sm *sqlmem.Manager, tenant, name string) {
+	t.Helper()
+	key := sqlmem.ScopeKey{Tenant: tenant, Scope: "agent", ScopeID: name}
+	if _, err := sm.Exec(context.Background(), key, `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)`, nil, 0); err != nil {
+		t.Fatalf("seed sql scope %s/%s: %v", tenant, name, err)
+	}
+	if _, err := sm.Exec(context.Background(), key, `INSERT INTO t (v) VALUES ('x')`, nil, 0); err != nil {
+		t.Fatalf("seed sql row %s/%s: %v", tenant, name, err)
+	}
+}
+
+func seedAgentDirent(t *testing.T, st *sqlite.Store, tenant, name string) {
+	t.Helper()
+	_, err := st.DirentCreate(context.Background(), store.DirentRow{
+		TenantID: tenant, Scope: "agent", ScopeID: name,
+		ParentPath: "/", Name: "doc1", Kind: "document", ResourceRef: json.RawMessage(`{"document_id":"doc-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("seed dirent %s/%s: %v", tenant, name, err)
+	}
+}
+
+func direntCount(t *testing.T, st *sqlite.Store, tenant, name string) int {
+	t.Helper()
+	rows, err := st.DirentListUnder(context.Background(), tenant, "agent", name, "/")
+	if err != nil {
+		t.Fatalf("dirent list %s/%s: %v", tenant, name, err)
+	}
+	return len(rows)
+}
+
+func sqlScopeExists(t *testing.T, sm *sqlmem.Manager, tenant, name string) bool {
+	t.Helper()
+	scopes, err := sm.ListScopes(context.Background())
+	if err != nil {
+		t.Fatalf("list scopes: %v", err)
+	}
+	for _, k := range scopes {
+		if k.Tenant == tenant && k.Scope == "agent" && k.ScopeID == name {
+			return true
+		}
+	}
+	return false
+}
+
+func memKeyCount(t *testing.T, st *sqlite.Store, name string) int {
+	t.Helper()
+	entries, _, err := st.MemoryList(context.Background(), store.MemoryScopeAgent, name, "", 1000)
+	if err != nil {
+		t.Fatalf("memory list %q: %v", name, err)
+	}
+	return len(entries)
+}
+
+// TestSweeper_MemReclaimsRetiredAgent: a fully-retired + old agent's SQL-Memory
+// scope, dirents, and base-memory k/v are all reclaimed; a live agent's are not.
+func TestSweeper_MemReclaimsRetiredAgent(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	sm := newTestSqlMem(t)
+
+	// Dead agent (all versions retired) in tenant "acme".
+	seedRetiredAgent(t, st, "acme", "dead", 2)
+	seedAgentSQLScope(t, sm, "acme", "dead")
+	seedAgentDirent(t, st, "acme", "dead")
+	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	// Live agent — must be untouched.
+	seedLiveAgent(t, st, "acme", "alive")
+	seedAgentSQLScope(t, sm, "acme", "alive")
+	seedAgentDirent(t, st, "acme", "alive")
+	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "alive", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	sw := New(st, Config{MemMode: "prune", SQLMem: sm, Logger: quietLogger, Now: futureHour})
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	// One (tenant,name) scope reclamation + one globally-dead base-memory drop = 2.
+	if res.Mem != 2 {
+		t.Errorf("res.Mem = %d, want 2", res.Mem)
+	}
+	if sqlScopeExists(t, sm, "acme", "dead") {
+		t.Error("dead agent's SQL-Memory scope survived")
+	}
+	if n := direntCount(t, st, "acme", "dead"); n != 0 {
+		t.Errorf("dead agent dirents = %d, want 0", n)
+	}
+	if n := memKeyCount(t, st, "dead"); n != 0 {
+		t.Errorf("dead agent base memory keys = %d, want 0", n)
+	}
+	// Live agent fully intact.
+	if !sqlScopeExists(t, sm, "acme", "alive") {
+		t.Error("live agent's SQL-Memory scope was dropped")
+	}
+	if n := direntCount(t, st, "acme", "alive"); n != 1 {
+		t.Errorf("live agent dirents = %d, want 1", n)
+	}
+	if n := memKeyCount(t, st, "alive"); n != 1 {
+		t.Errorf("live agent base memory keys = %d, want 1", n)
+	}
+}
+
+// TestSweeper_MemBaseMemoryOnlyDroppedWhenGloballyDead is the cross-tenant safety
+// test: a name retired in tenant A but LIVE in tenant B keeps its base memory
+// (scope_id is the bare name, shared across tenants), while tenant A's
+// tenant-qualified SQL-Memory scope + dirents are still reclaimed and tenant B's
+// are untouched.
+func TestSweeper_MemBaseMemoryOnlyDroppedWhenGloballyDead(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	sm := newTestSqlMem(t)
+
+	// "shared" is retired in tenant A, LIVE in tenant B → NOT globally dead.
+	seedRetiredAgent(t, st, "A", "shared", 1)
+	seedLiveAgent(t, st, "B", "shared")
+	seedAgentSQLScope(t, sm, "A", "shared")
+	seedAgentSQLScope(t, sm, "B", "shared")
+	seedAgentDirent(t, st, "A", "shared")
+	seedAgentDirent(t, st, "B", "shared")
+	// Base memory is keyed by the bare name — a single partition both share.
+	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "shared", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	sw := New(st, Config{MemMode: "prune", SQLMem: sm, Logger: quietLogger, Now: futureHour})
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	// Only tenant A's scope reclaimed (1 unit); base memory NOT dropped.
+	if res.Mem != 1 {
+		t.Errorf("res.Mem = %d, want 1 (tenant A scope only)", res.Mem)
+	}
+	if n := memKeyCount(t, st, "shared"); n != 1 {
+		t.Errorf("shared base memory keys = %d, want 1 (a live tenant still uses it)", n)
+	}
+	if sqlScopeExists(t, sm, "A", "shared") {
+		t.Error("tenant A's retired SQL-Memory scope survived")
+	}
+	if !sqlScopeExists(t, sm, "B", "shared") {
+		t.Error("tenant B's LIVE SQL-Memory scope was wrongly dropped")
+	}
+	if n := direntCount(t, st, "A", "shared"); n != 0 {
+		t.Errorf("tenant A dirents = %d, want 0", n)
+	}
+	if n := direntCount(t, st, "B", "shared"); n != 1 {
+		t.Errorf("tenant B dirents = %d, want 1 (live, untouched)", n)
+	}
+}
+
+// TestSweeper_MemExportThenDelete: export+prune writes the scope dump, dirents,
+// and base-memory bundles before deleting.
+func TestSweeper_MemExportThenDelete(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	sm := newTestSqlMem(t)
+
+	seedRetiredAgent(t, st, "acme", "dead", 1)
+	seedAgentSQLScope(t, sm, "acme", "dead")
+	seedAgentDirent(t, st, "acme", "dead")
+	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	sw := New(st, Config{MemMode: "export+prune", ExportDir: dir, SQLMem: sm, Logger: quietLogger, Now: futureHour})
+	if _, err := sw.sweepOnce(ctx); err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+
+	// Each facet wrote at least one JSON file under agents/<day>/<kind>/.
+	for _, kind := range []string{"sqlmem", "dirents", "agent-memory"} {
+		var found int
+		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, _ error) error {
+			if d != nil && !d.IsDir() && filepath.Base(filepath.Dir(p)) == kind {
+				found++
+			}
+			return nil
+		})
+		if found == 0 {
+			t.Errorf("export kind %q wrote no file under %s", kind, dir)
+		}
+	}
+	// And the data is actually gone.
+	if sqlScopeExists(t, sm, "acme", "dead") {
+		t.Error("scope survived export+prune")
+	}
+	if memKeyCount(t, st, "dead") != 0 {
+		t.Error("base memory survived export+prune")
+	}
+}
+
+// errSQLMem is a fake SQLMemory whose ExportScope fails, to prove export-then-
+// delete never drops a scope it couldn't export.
+type errSQLMem struct {
+	scopes  []sqlmem.ScopeKey
+	dropped []sqlmem.ScopeKey
+}
+
+func (e *errSQLMem) ListScopes(context.Context) ([]sqlmem.ScopeKey, error) { return e.scopes, nil }
+func (e *errSQLMem) ExportScope(context.Context, sqlmem.ScopeKey) (*sqlmem.ScopeDump, error) {
+	return nil, errExportBoom
+}
+func (e *errSQLMem) DropScope(_ context.Context, k sqlmem.ScopeKey) (bool, error) {
+	e.dropped = append(e.dropped, k)
+	return true, nil
+}
+
+var errExportBoom = &boomErr{}
+
+type boomErr struct{}
+
+func (*boomErr) Error() string { return "boom" }
+
+// TestSweeper_MemExportFailureSkipsDrop: an export failure on the SQL-Memory
+// scope skips BOTH the scope drop and the dirent delete for that agent.
+func TestSweeper_MemExportFailureSkipsDrop(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	seedRetiredAgent(t, st, "acme", "dead", 1)
+	seedAgentDirent(t, st, "acme", "dead")
+
+	fake := &errSQLMem{scopes: []sqlmem.ScopeKey{{Tenant: "acme", Scope: "agent", ScopeID: "dead"}}}
+	sw := New(st, Config{MemMode: "export+prune", ExportDir: t.TempDir(), SQLMem: fake, Logger: quietLogger, Now: futureHour})
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.Mem != 0 {
+		t.Errorf("res.Mem = %d, want 0 (export failed → nothing reclaimed)", res.Mem)
+	}
+	if len(fake.dropped) != 0 {
+		t.Errorf("DropScope called %d time(s) despite export failure", len(fake.dropped))
+	}
+	if n := direntCount(t, st, "acme", "dead"); n != 1 {
+		t.Errorf("dirents = %d, want 1 (dirent delete must be skipped when the scope export failed)", n)
+	}
+}
+
+// TestSweeper_MemDryRunCounts: the report preview counts reclaimable agents
+// without deleting anything.
+func TestSweeper_MemDryRunCounts(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	sm := newTestSqlMem(t)
+
+	seedRetiredAgent(t, st, "acme", "dead", 1)
+	seedAgentSQLScope(t, sm, "acme", "dead")
+	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	seedLiveAgent(t, st, "acme", "alive")
+	seedAgentSQLScope(t, sm, "acme", "alive")
+
+	sw := New(st, Config{MemMode: "off", SQLMem: sm, Logger: quietLogger, Now: futureHour})
+	counts, err := sw.DryRunCounts(ctx)
+	if err != nil {
+		t.Fatalf("DryRunCounts: %v", err)
+	}
+	// dead: 1 tenant scope + 1 globally-dead base memory = 2; alive not counted.
+	if counts["mem"] != 2 {
+		t.Errorf("counts[mem] = %d, want 2", counts["mem"])
+	}
+	// Nothing deleted by the preview.
+	if !sqlScopeExists(t, sm, "acme", "dead") {
+		t.Error("DryRunCounts dropped the scope")
+	}
+	if memKeyCount(t, st, "dead") != 1 {
+		t.Error("DryRunCounts deleted base memory")
 	}
 }

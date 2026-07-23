@@ -88,6 +88,57 @@ func TestListScopes_Postgres(t *testing.T) {
 	}
 }
 
+// TestDropScope_Postgres: DropScope drops one durable scope's schema + role
+// (idempotently), leaves a sibling alone, and refuses the run scope (RFC BM).
+func TestDropScope_Postgres(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	ctx := context.Background()
+
+	target := ScopeKey{Tenant: "t1", Scope: "agent", ScopeID: "gone"}
+	sibling := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "stays"}
+	for _, k := range []ScopeKey{target, sibling} {
+		if _, err := m.Exec(ctx, k, "CREATE TABLE t (id int)", nil, 0); err != nil {
+			t.Fatalf("create %v: %v", k, err)
+		}
+	}
+
+	removed, err := m.DropScope(ctx, target)
+	if err != nil {
+		t.Fatalf("DropScope: %v", err)
+	}
+	if !removed {
+		t.Error("DropScope removed=false on an existing scope")
+	}
+	scopes, err := m.ListScopes(ctx)
+	if err != nil {
+		t.Fatalf("ListScopes: %v", err)
+	}
+	got := map[ScopeKey]bool{}
+	for _, s := range scopes {
+		if s == target {
+			t.Errorf("dropped scope still listed: %v", s)
+		}
+		got[s] = true
+	}
+	if !got[sibling] {
+		t.Errorf("sibling scope %v was wrongly dropped", sibling)
+	}
+
+	// Idempotent: the schema is already gone.
+	removed, err = m.DropScope(ctx, target)
+	if err != nil {
+		t.Fatalf("second DropScope: %v", err)
+	}
+	if removed {
+		t.Error("second DropScope removed=true, want false (already gone)")
+	}
+
+	// The run scope is rejected.
+	if _, err := m.DropScope(ctx, ScopeKey{Scope: "run", ScopeID: "r1"}); err == nil {
+		t.Error("DropScope accepted the run scope, want error")
+	}
+}
+
 // TestDump_PostgresRoundTrip: bigserial + text + jsonb + timestamptz + a unique
 // constraint + an index + a NULL round-trip through Export → drop → fresh
 // Restore. The serial counter (setval) continues past the restored ids.

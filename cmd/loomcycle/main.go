@@ -1681,6 +1681,9 @@ func main() {
 	// SEPARATE from the main store — an agent's arbitrary SQL can only ever
 	// reach its own scope file. Wired into the Memory tool (sql_query/sql_exec)
 	// and the server (run-scope drop at top-level run completion).
+	// Declared here (not inside the block) so the RFC BM retention sweeper below
+	// can reclaim a retired agent's SQL-Memory scope; nil when SQL Memory is off.
+	var sqlMemMgr *sqlmem.Manager
 	if cfg.Storage.SqlMemEnabled {
 		sqlMemRoot := cfg.Storage.SqlMemRoot
 		if sqlMemRoot == "" {
@@ -1705,7 +1708,6 @@ func main() {
 		// sqlite deploy gets file-per-scope. The aux DSN is required on
 		// postgres and ignored on sqlite.
 		var (
-			sqlMemMgr  *sqlmem.Manager
 			smErr      error
 			sqlMemTier string
 		)
@@ -2415,7 +2417,16 @@ func main() {
 			// from the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* config in cfg.Load).
 			ChatsMode:   cfg.Env.RetentionChatsMode,
 			ChatsMaxAge: cfg.Env.RetentionChatsMaxAge,
-			ExportDir:   cfg.Env.RetentionExportDir,
+			// RFC BM Phase 3 retired-agent memory reclamation (opt-in; default OFF).
+			MemMode:   cfg.Env.RetentionMemMode,
+			MemMaxAge: cfg.Env.RetentionMemMaxAge,
+			ExportDir: cfg.Env.RetentionExportDir,
+		}
+		// SQL-Memory scope reclamation needs the manager; nil (SQL Memory off) is
+		// fine — the mem sweep then reclaims base memory + dirents only. Typed-nil
+		// guard: only assign the interface field from a non-nil pointer.
+		if sqlMemMgr != nil {
+			rCfg.SQLMem = sqlMemMgr
 		}
 		// Same typed-nil guard as the usage block: only assign the interface field
 		// from a non-nil pointer, or the sweeper's nil-check would see a non-nil

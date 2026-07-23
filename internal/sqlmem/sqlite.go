@@ -503,6 +503,31 @@ func (b *sqliteBackend) dropRunScope(runID string) (removed bool, err error) {
 	return fencedRemoveDB(runRoot, path)
 }
 
+// dropScope removes one DURABLE (agent/user) scope .db file (and its -wal/-shm
+// sidecars) behind a path fence. The path is RE-DERIVED from (Root, tenant,
+// scope, sanitize(scope_id)) — never a stored path — and fenced under the
+// scope's OWN directory (mirrors sweepStale) so a symlinked .db can't widen the
+// delete to another tenant's subtree. An in-use handle (inUse>0) is REFUSED with
+// an error (not silently skipped) so the RFC BM caller retries next tick rather
+// than assuming the scope is gone and dropping its sibling memory/dirents.
+func (b *sqliteBackend) dropScope(key ScopeKey) (removed bool, err error) {
+	if key.Scope == runScope {
+		return false, fmt.Errorf("sqlmem: dropScope is not for the run scope")
+	}
+	path, err := key.keyPath(b.cfg.Root)
+	if err != nil {
+		return false, err
+	}
+	b.mu.Lock()
+	if h, ok := b.open[path]; ok && h.inUse > 0 {
+		b.mu.Unlock()
+		return false, fmt.Errorf("sqlmem: scope %s/%s in use", key.Scope, key.ScopeID)
+	}
+	b.evictPathLocked(path)
+	b.mu.Unlock()
+	return fencedRemoveDB(filepath.Dir(path), path)
+}
+
 // fencedRemoveDB removes a single scope .db file (and its -wal/-shm
 // sidecars) only after proving the resolved path is strictly inside
 // expectedRoot. It NEVER trusts a stored path — path is re-derived by the
