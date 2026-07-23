@@ -199,7 +199,12 @@ func TestProviderGate_SubAgentFanoutBatchesToCap(t *testing.T) {
 	}
 	// Workers (capped provider): each a single-iteration run; countingProvider
 	// records the peak concurrent Call so we can assert it equals the cap exactly.
-	workerProv := &countingProvider{delay: 40 * time.Millisecond}
+	// holdUntil=cap makes the admitted workers RENDEZVOUS before releasing, so the
+	// observed peak deterministically reaches the gate cap regardless of race-runner
+	// scheduling jitter (a delay-only window flaked on loaded CI). A real
+	// under/over-gate bug still fails: too few admitted → the barrier deadline fires
+	// (peak < cap); too many admitted → peak > cap.
+	workerProv := &countingProvider{delay: 40 * time.Millisecond, holdUntil: cap}
 
 	cfg := makeBaseConfig()
 	cfg.Agents = map[string]config.AgentDef{
@@ -381,7 +386,13 @@ func TestProviderGate_SubAgentZeroOverheadWhenUnconfigured(t *testing.T) {
 			},
 		},
 	}
-	workerProv := &countingProvider{delay: 30 * time.Millisecond}
+	// holdUntil=workers: with NO gate all workers should overlap, so make them
+	// RENDEZVOUS — peak deterministically reaches `workers` (>1) regardless of
+	// race-runner jitter (a delay-only window flaked on loaded CI, staggering the
+	// workers to a false peak=1). A real serialization bug leaves them unable to
+	// rendezvous → the barrier deadline fires per call → peak stays 1 → the
+	// `peak <= 1` assertion still catches it.
+	workerProv := &countingProvider{delay: 30 * time.Millisecond, holdUntil: workers}
 
 	cfg := makeBaseConfig()
 	cfg.Agents = map[string]config.AgentDef{
