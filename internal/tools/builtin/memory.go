@@ -965,35 +965,51 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 // injection reader): a block labeled <label> is stored at `core/<label>`.
 const coreBlockKeyPrefix = memrank.CoreBlockKeyPrefix
 
-// enforceCoreBlockWrite gates an agent's Memory `set` to a reserved
-// core/<label> key against the run's resolved core-block policy (RFC BL P1):
-//
-//   - a read_only block → refuse the write (operator-authored; the agent may
-//     read the value via injection but never overwrite it).
-//   - a block with limit_bytes > 0 → refuse a value over the per-block cap
-//     (mirrors the per-scope quota refusal).
-//
-// A write to a core/<label> key with NO matching declared block passes through
-// as a normal key. scope is the already-resolved store scope; the policy
-// block's Scope ("agent"/"user"/"tenant") must match it, so a user-scope block
-// can't gate an agent-scope write of the same label. The policy is
-// operator-resolved on ctx — never model-supplied.
-func enforceCoreBlockWrite(ctx context.Context, scope store.MemoryScope, key string, valueLen int) error {
+// coreBlockFor returns the declared core block that gates a mutation of the
+// reserved core/<label> key, or nil if key is not a core/* key or no block with
+// a matching label AND scope is declared. scope is the already-resolved store
+// scope; the block's Scope ("agent"/"user"/"tenant") must match it, so a
+// user-scope block can't gate an agent-scope mutation of the same label. The
+// policy is operator-resolved on ctx — never model-supplied.
+func coreBlockFor(ctx context.Context, scope store.MemoryScope, key string) *config.CoreBlock {
 	if !strings.HasPrefix(key, coreBlockKeyPrefix) {
 		return nil
 	}
 	label := strings.TrimPrefix(key, coreBlockKeyPrefix)
-	for _, b := range tools.CoreBlocksPolicy(ctx).Blocks {
-		if b.Label != label || b.Scope != string(scope) {
-			continue
+	blocks := tools.CoreBlocksPolicy(ctx).Blocks
+	for i := range blocks {
+		if blocks[i].Label == label && blocks[i].Scope == string(scope) {
+			return &blocks[i]
 		}
-		if b.ReadOnly {
-			return fmt.Errorf("Memory.set: core block %q (scope=%s) is read_only — operator-authored; agent writes are refused", label, scope)
-		}
-		if b.LimitBytes > 0 && valueLen > b.LimitBytes {
-			return fmt.Errorf("Memory.set: core block %q (scope=%s) value %d bytes exceeds limit_bytes %d", label, scope, valueLen, b.LimitBytes)
-		}
+	}
+	return nil
+}
+
+// enforceCoreBlockWrite gates an agent's Memory mutation of a reserved
+// core/<label> key against the run's resolved core-block policy (RFC BL P1).
+// It is shared by EVERY mutating op (set/delete/incr/merge/append_dedupe/
+// bounded_list) so a read_only block can't be erased or overwritten and a
+// limit_bytes block can't be grown past its cap by any op:
+//
+//   - a read_only block → refuse the mutation (operator-authored; the agent may
+//     read the value via injection but never overwrite or delete it).
+//   - else a block with limit_bytes > 0 → refuse when the RESULTING value
+//     exceeds the per-block cap (mirrors the per-scope quota refusal).
+//
+// op names the operation for the refusal message. valueLen is the size of the
+// resulting value in bytes; pass -1 for ops that cannot grow the value
+// (delete/incr) to skip the size check — only the read_only refusal applies.
+// A key with NO matching declared block passes through as a normal key.
+func enforceCoreBlockWrite(ctx context.Context, scope store.MemoryScope, key, op string, valueLen int) error {
+	b := coreBlockFor(ctx, scope, key)
+	if b == nil {
 		return nil
+	}
+	if b.ReadOnly {
+		return fmt.Errorf("Memory.%s: core block %q (scope=%s) is read_only — operator-authored; agent writes are refused", op, b.Label, scope)
+	}
+	if valueLen >= 0 && b.LimitBytes > 0 && valueLen > b.LimitBytes {
+		return fmt.Errorf("Memory.%s: core block %q (scope=%s) value %d bytes exceeds limit_bytes %d", op, b.Label, scope, valueLen, b.LimitBytes)
 	}
 	return nil
 }
@@ -1021,7 +1037,7 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// agent's core-block config — read_only refuses the write entirely,
 	// limit_bytes caps it (mirroring the quota refusal below). Undeclared
 	// core/* keys pass through as normal memory.
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, len(in.Value)); err != nil {
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "set", len(in.Value)); err != nil {
 		return errResult(err.Error()), nil
 	}
 	// Quota math charges only the k/v row's key + value bytes;
@@ -1350,6 +1366,12 @@ func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeI
 	if in.Key == "" {
 		return errResult("delete: missing required field: key"), nil
 	}
+	// RFC BL P1: a read_only core block refuses delete too — otherwise an agent
+	// could erase an operator-seeded read-only block. limit_bytes is moot for a
+	// delete, so pass -1 to skip the size check.
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "delete", -1); err != nil {
+		return errResult(err.Error()), nil
+	}
 	deleted, err := m.backend(ctx).Delete(ctx, scope, scopeID, in.Key)
 	if err != nil {
 		return errResult(fmt.Sprintf("delete: %s", err)), nil
@@ -1389,6 +1411,11 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
 		return errResult("incr: missing required field: key"), nil
+	}
+	// RFC BL P1: a read_only core block refuses incr too. limit_bytes is moot
+	// for a bounded-width number, so pass -1 to skip the size check.
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "incr", -1); err != nil {
+		return errResult(err.Error()), nil
 	}
 	delta := int64(1)
 	if in.Delta != nil {
@@ -1446,6 +1473,12 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
 		return errResult(fmt.Sprintf("merge: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
 	}
+	// RFC BL P1: refuse a read_only core block BEFORE taking the row lock — the
+	// mutation must not commit. The limit_bytes cap is checked post-reduction
+	// below (the merge grows the value), mirroring the quota re-check.
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", -1); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	ttl := time.Duration(in.TTL) * time.Second
 	// RFC BL: partition by the run's authoritative tenant (server-sourced).
@@ -1471,6 +1504,11 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 		})
 	if err != nil {
 		return errResult(fmt.Sprintf("merge: %s", err)), nil
+	}
+	// Core-block per-block cap on the post-merge size, at the same point as the
+	// quota re-check (RFC BL P1). Same commit caveat as the quota check below.
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", len(final)); err != nil {
+		return errResult(err.Error()), nil
 	}
 	// Quota check AFTER the merge — the post-merge size is what we
 	// charge against. checkQuota's existing-row subtraction means a
@@ -1501,6 +1539,11 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 	}
 	if !json.Valid(in.Value) {
 		return errResult("append_dedupe: value is not valid JSON"), nil
+	}
+	// RFC BL P1: refuse a read_only core block before mutating; the limit_bytes
+	// cap is checked post-reduction below.
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", -1); err != nil {
+		return errResult(err.Error()), nil
 	}
 
 	ttl := time.Duration(in.TTL) * time.Second
@@ -1541,6 +1584,10 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 	if err != nil {
 		return errResult(fmt.Sprintf("append_dedupe: %s", err)), nil
 	}
+	// Core-block per-block cap on the post-append size (RFC BL P1).
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", len(final)); err != nil {
+		return errResult(err.Error()), nil
+	}
 	// Quota check on the final size; same caveat as execMerge — the
 	// store has already committed by here.
 	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(final)); err != nil {
@@ -1573,6 +1620,11 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 	if in.Limit > 10000 {
 		return errResult("bounded_list: limit must be <= 10000"), nil
 	}
+	// RFC BL P1: refuse a read_only core block before mutating; the limit_bytes
+	// cap is checked post-reduction below.
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", -1); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	ttl := time.Duration(in.TTL) * time.Second
 	var droppedCount int
@@ -1601,6 +1653,10 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 		})
 	if err != nil {
 		return errResult(fmt.Sprintf("bounded_list: %s", err)), nil
+	}
+	// Core-block per-block cap on the post-trim size (RFC BL P1).
+	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", len(final)); err != nil {
+		return errResult(err.Error()), nil
 	}
 	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(final)); err != nil {
 		return errResult(err.Error()), nil
