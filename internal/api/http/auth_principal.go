@@ -574,6 +574,12 @@ func requiredScopeFor(method, path string) string {
 	// ScopeAdmin also satisfies. Read-only GET.
 	case path == "/v1/_usage":
 		return auth.ScopeTenant
+	// RFC BM: the data-retention view. Tenant-readable so a tenant operator's UI
+	// can see whether retention is enabled + how it's tuned; the HANDLER strips
+	// the cross-tenant purgeable counts + the export dir for a non-admin caller
+	// (admin gets the full view). ScopeAdmin also satisfies. Read-only GET.
+	case path == "/v1/_retention":
+		return auth.ScopeTenant
 	// RFC AW: the token-budget management surface (GET list + PUT upsert + DELETE).
 	// Tenant-readable/writable so a tenant operator manages its own tenant + user
 	// budgets; the handler enforces the operator-global + cross-tenant admin

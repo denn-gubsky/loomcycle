@@ -214,6 +214,10 @@ func Run(t *testing.T, factory Factory) {
 		{"AgentDefContentSHA256RoundTrip", testAgentDefContentSHA256RoundTrip},
 		{"BackfillAgentDefContentSHA256", testBackfillAgentDefContentSHA256},
 		{"BackfillAgentDefSystemPromptBaseFillsLegacyRows", testBackfillAgentDefSystemPromptBase},
+		// RFC BM data retention: list + delete purgeable retired def versions.
+		// Asserts the retired / non-active / keep-last-N exclusions are each
+		// load-bearing, and DeleteDefVersions removes exactly the listed rows.
+		{"RetentionPurgeDefVersions", testRetentionPurgeDefVersions},
 		// v0.8.22 SkillDef substrate — mirror of the AgentDef tests.
 		{"SkillDefCreateAndGet", testSkillDefCreateAndGet},
 		{"SkillDefVersionMonotonicUnderContention", testSkillDefVersionMonotonicUnderContention},
@@ -5443,6 +5447,138 @@ func testBackfillAgentDefSystemPromptBase(t *testing.T, s store.Store) {
 	}
 	if n2 != 0 {
 		t.Errorf("idempotent? second pass backfilled %d rows, want 0", n2)
+	}
+}
+
+// testRetentionPurgeDefVersions exercises the RFC BM retention store surface on
+// the agent def-type (all 9 families share one uniform schema, so agent is
+// representative). Setup: 5 versions under one (tenant, name); retire the 4
+// oldest, then promote a RETIRED version as active. Each exclusion is made
+// load-bearing:
+//   - the ACTIVE version (rt-3, retired + active) must be excluded even though
+//     it is retired + old — proving the NOT EXISTS active guard, not just the
+//     retired filter, is what protects it;
+//   - the keepLastN=1 newest qualifying version (rt-4) must survive;
+//   - the LIVE version (rt-5) must never appear.
+//
+// Then DeleteDefVersions must remove exactly the listed rows and nothing else.
+func testRetentionPurgeDefVersions(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "retain-agent"
+	ids := []string{"rt-1", "rt-2", "rt-3", "rt-4", "rt-5"}
+
+	// 5 monotonic versions v1..v5 under one (tenant="", name).
+	for _, id := range ids {
+		if _, err := s.AgentDefCreate(ctx, mkDef(id, name, "")); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	// Retire the 4 oldest (rt-1..rt-4); rt-5 stays live.
+	for _, id := range ids[:4] {
+		if err := s.AgentDefSetRetired(ctx, id, true); err != nil {
+			t.Fatalf("retire %s: %v", id, err)
+		}
+	}
+	// Promote a RETIRED version (rt-3) as active — AFTER retiring, so the
+	// retire-of-active clear-pointer path doesn't fire. This yields the
+	// "ActiveRetired" corrupt-legacy state the active guard must survive.
+	if err := s.AgentDefSetActive(ctx, "", name, "rt-3", ""); err != nil {
+		t.Fatalf("promote rt-3: %v", err)
+	}
+
+	future := time.Now().Add(time.Hour) // age cutoff in the future → all rows qualify by age
+	got, err := s.ListPurgeableRetiredDefVersions(ctx, "agent", future, 1, 100)
+	if err != nil {
+		t.Fatalf("list purgeable: %v", err)
+	}
+	gotIDs := map[string]bool{}
+	for _, r := range got {
+		gotIDs[r.DefID] = true
+		if r.DefType != "agent" {
+			t.Errorf("ref.DefType = %q, want agent", r.DefType)
+		}
+		if r.Name != name {
+			t.Errorf("ref.Name = %q, want %q", r.Name, name)
+		}
+		if len(r.Definition) == 0 {
+			t.Errorf("ref %s: empty Definition (export would lose the body)", r.DefID)
+		}
+	}
+	// Expected purgeable: rt-1, rt-2 only.
+	want := map[string]bool{"rt-1": true, "rt-2": true}
+	if !reflect.DeepEqual(gotIDs, want) {
+		t.Fatalf("purgeable ids = %v, want %v (rt-3 active, rt-4 kept-by-N, rt-5 live)", gotIDs, want)
+	}
+
+	// DeleteDefVersions removes exactly those two.
+	deleted, err := s.DeleteDefVersions(ctx, "agent", []string{"rt-1", "rt-2"})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("deleted = %d, want 2", deleted)
+	}
+	// rt-1, rt-2 gone; rt-3, rt-4, rt-5 survive.
+	for _, id := range []string{"rt-1", "rt-2"} {
+		if _, err := s.AgentDefGet(ctx, id); err == nil {
+			t.Errorf("%s still present after delete", id)
+		}
+	}
+	for _, id := range []string{"rt-3", "rt-4", "rt-5"} {
+		if _, err := s.AgentDefGet(ctx, id); err != nil {
+			t.Errorf("%s wrongly deleted: %v", id, err)
+		}
+	}
+	// A second list finds nothing new purgeable (rt-4 kept, rest gone/excluded).
+	again, err := s.ListPurgeableRetiredDefVersions(ctx, "agent", future, 1, 100)
+	if err != nil {
+		t.Fatalf("list after delete: %v", err)
+	}
+	if len(again) != 0 {
+		t.Errorf("after delete, still purgeable: %+v, want none", again)
+	}
+
+	// Empty id list is a no-op.
+	if n, err := s.DeleteDefVersions(ctx, "agent", nil); err != nil || n != 0 {
+		t.Errorf("delete empty = (%d, %v), want (0, nil)", n, err)
+	}
+	// Unknown def-type is rejected on BOTH methods (allowlist guard) — never a
+	// silent no-op that would let a caller string reach SQL.
+	if _, err := s.ListPurgeableRetiredDefVersions(ctx, "not_a_def_type", future, 1, 100); err == nil {
+		t.Error("list with unknown def-type: want error, got nil")
+	}
+	if _, err := s.DeleteDefVersions(ctx, "not_a_def_type", []string{"x"}); err == nil {
+		t.Error("delete with unknown def-type: want error, got nil")
+	}
+
+	// Parent-of-survivor exclusion (RFC BM leaf-only rule): a retired+old version
+	// that is still the parent_def_id of a SURVIVING version must NOT be purgeable
+	// — purging it would orphan the child's lineage and FK-violate on postgres
+	// (parent_def_id REFERENCES <defs>(def_id)). Use a fresh name to isolate.
+	const pname = "retain-lineage"
+	if _, err := s.AgentDefCreate(ctx, mkDef("pa-1", pname, "")); err != nil {
+		t.Fatalf("create pa-1: %v", err)
+	}
+	if _, err := s.AgentDefCreate(ctx, mkDef("pa-2", pname, "pa-1")); err != nil { // child of pa-1
+		t.Fatalf("create pa-2: %v", err)
+	}
+	// Retire the PARENT (pa-1) only; pa-2 (child) stays live + becomes active.
+	if err := s.AgentDefSetRetired(ctx, "pa-1", true); err != nil {
+		t.Fatalf("retire pa-1: %v", err)
+	}
+	if err := s.AgentDefSetActive(ctx, "", pname, "pa-2", ""); err != nil {
+		t.Fatalf("promote pa-2: %v", err)
+	}
+	// keepLastN=0 so keep-N doesn't mask the parent-exclusion: pa-1 is retired,
+	// old, non-active, beyond-N — purgeable ONLY the leaf rule protects it.
+	pg, err := s.ListPurgeableRetiredDefVersions(ctx, "agent", future, 0, 100)
+	if err != nil {
+		t.Fatalf("list (lineage): %v", err)
+	}
+	for _, r := range pg {
+		if r.DefID == "pa-1" {
+			t.Errorf("pa-1 (retired parent of surviving pa-2) must NOT be purgeable — would orphan lineage / FK-violate")
+		}
 	}
 }
 

@@ -2756,6 +2756,10 @@ func (s *Server) Mux() http.Handler {
 	// /ui/audit page. Bearer-authed admin surface.
 	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
 	mux.Handle("GET /v1/_usage", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageReport))))
+	// RFC BM — the data-retention view. Tenant-readable config; the cross-tenant
+	// purgeable counts + export dir are admin-only (stripped in the handler).
+	// Scope-gated to substrate:tenant in requiredScopeFor.
+	mux.Handle("GET /v1/_retention", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionReport))))
 	// RFC AW — per-scope token budgets (list / upsert / delete). Tenant-scoped
 	// (the handlers confine a substrate:tenant caller to its own tenant + reject
 	// the operator-global / cross-tenant writes with 403).

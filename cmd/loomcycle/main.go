@@ -76,6 +76,7 @@ import (
 	// to a production binary that never sets the flag.
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/stubembedder"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/retention"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
@@ -2389,6 +2390,32 @@ func main() {
 		go usageSweeper.Run(bgCtx)
 	} else {
 		log.Printf("usage: sweeper disabled (LOOMCYCLE_USAGE_SWEEPER=0 or no Store)")
+	}
+
+	// RFC BM data-retention sweeper — same placement rationale as the usage
+	// sweeper above (runs AFTER the cluster block so it can pick up the
+	// advisoryLock). OPT-IN (default OFF): destructive (it deletes retired def
+	// versions), unlike the lossless usage rollup. When the mode is
+	// export+prune each version is written to the export dir before deletion.
+	if cfg.Env.RetentionEnabled && storeIface != nil {
+		rCfg := retention.Config{
+			Interval:      cfg.Env.RetentionInterval,
+			DefsMode:      cfg.Env.RetentionDefsMode,
+			DefsMaxAge:    cfg.Env.RetentionDefsMaxAge,
+			DefsKeepLastN: cfg.Env.RetentionDefsKeepLastN,
+			ExportDir:     cfg.Env.RetentionExportDir,
+		}
+		// Same typed-nil guard as the usage block: only assign the interface field
+		// from a non-nil pointer, or the sweeper's nil-check would see a non-nil
+		// interface wrapping a nil pointer.
+		if advisoryLock != nil {
+			rCfg.AdvisoryLock = advisoryLock
+			rCfg.AdvisoryLockKey = coord.LockKeyRetentionSweeper
+		}
+		retentionSweeper := retention.New(storeIface, rCfg)
+		go retentionSweeper.Run(bgCtx)
+	} else {
+		log.Printf("retention: sweeper disabled (LOOMCYCLE_RETENTION_ENABLED != 1 or no Store)")
 	}
 
 	// RFC AW: seed the per-scope token-budget tracker from the RFC AV ledger

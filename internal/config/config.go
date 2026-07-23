@@ -2325,6 +2325,33 @@ type Env struct {
 	// UsageExportDir is where export+prune writes run JSON (per-day subdir,
 	// one file per run). Required for export+prune. Env: LOOMCYCLE_USAGE_EXPORT_DIR.
 	UsageExportDir string
+
+	// --- RFC BM data-retention sweeper (OPT-IN; default OFF). ---
+	// Purges retired-and-old substrate def versions (agent/skill/team/mcp_server/
+	// schedule/a2a/webhook/memory_backend). Unlike the lossless usage rollup this
+	// DELETES data, so it defaults off and its DefsMode defaults to "off".
+
+	// RetentionEnabled turns the sweeper goroutine on. Default false.
+	// Env: LOOMCYCLE_RETENTION_ENABLED=1.
+	RetentionEnabled bool
+	// RetentionInterval is the sweep tick rate. Default 1h.
+	// Env: LOOMCYCLE_RETENTION_INTERVAL_MS.
+	RetentionInterval time.Duration
+	// RetentionExportDir is where export+prune writes def JSON (per-day/per-def-type
+	// subdir, one file per version). Required for the export+prune mode.
+	// Env: LOOMCYCLE_RETENTION_EXPORT_DIR.
+	RetentionExportDir string
+	// RetentionDefsMode is "off" (default) | "prune" | "export+prune".
+	// Env: LOOMCYCLE_RETENTION_DEFS_MODE.
+	RetentionDefsMode string
+	// RetentionDefsMaxAge is the age cutoff: only versions created before
+	// now-RetentionDefsMaxAge are eligible. 0 = no minimum age.
+	// Env: LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS.
+	RetentionDefsMaxAge time.Duration
+	// RetentionDefsKeepLastN keeps the N most-recent purgeable versions per
+	// (tenant, name) as lineage history. Default 5. 0 = purge all.
+	// Env: LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N.
+	RetentionDefsKeepLastN int
 	// ReplicasSweepInterval is the dead-replica reaper's tick rate.
 	// Default 60s. Tunable mostly for tests / crash-recovery load
 	// experiments — leave at default in production.
@@ -3049,6 +3076,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		// cmd/loomcycle/main.go where the goroutines are started.
 		HeartbeatSweeperEnabled: true,
 		UsageSweeperEnabled:     true,
+		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
+		// mode defaults off and keep-last-N to 5. The env parse below overrides
+		// these only when the corresponding var is set.
+		RetentionDefsMode:      "off",
+		RetentionDefsKeepLastN: 5,
 	}
 
 	// RFC AH Phase 3 — the legacy filesystem jail is retired. The three env
@@ -3235,6 +3267,30 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	}
 	cfg.Env.UsageRunRetentionMode = os.Getenv("LOOMCYCLE_USAGE_RUN_RETENTION_MODE")
 	cfg.Env.UsageExportDir = os.Getenv("LOOMCYCLE_USAGE_EXPORT_DIR")
+	// RFC BM data-retention sweeper (opt-in; default OFF). The New() constructor
+	// applies the 1h interval fallback when RetentionInterval stays 0.
+	cfg.Env.RetentionEnabled = os.Getenv("LOOMCYCLE_RETENTION_ENABLED") == "1"
+	if v := os.Getenv("LOOMCYCLE_RETENTION_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.RetentionInterval = time.Duration(n) * time.Millisecond
+		}
+	}
+	cfg.Env.RetentionExportDir = os.Getenv("LOOMCYCLE_RETENTION_EXPORT_DIR")
+	if v := os.Getenv("LOOMCYCLE_RETENTION_DEFS_MODE"); v != "" {
+		cfg.Env.RetentionDefsMode = v
+	}
+	if v := os.Getenv("LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.RetentionDefsMaxAge = time.Duration(n) * time.Millisecond
+		}
+	}
+	// keep-last-N accepts 0 (purge all); only a non-empty, non-negative value
+	// overrides the default-5 set above.
+	if v := os.Getenv("LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Env.RetentionDefsKeepLastN = n
+		}
+	}
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.ReplicasSweepInterval = time.Duration(n) * time.Millisecond
