@@ -118,6 +118,11 @@ type ReconcileStats struct {
 	Pruned int
 	// Unchanged is the number of sections whose content hash already matched.
 	Unchanged int
+	// Failed is the number of sections whose embed-set failed after the base
+	// row was written; they keep the sentinel (empty) hash so the next reconcile
+	// re-attempts them rather than leaving them permanently indexed without a
+	// vector/full-text row.
+	Failed int
 	// Degraded is true when there is no embedder or no vector support, so the
 	// index was left untouched and help search degrades to the in-memory scan.
 	Degraded bool
@@ -301,17 +306,27 @@ func ReconcileIndex(ctx context.Context, set *Set, st IndexStore, emb providers.
 		}
 		now := time.Now().UTC()
 		for i, p := range changed {
-			val, mErr := json.Marshal(indexValue{
+			// Two-phase write so a section is NEVER hash-marked "done" without its
+			// embedding. The base row is the FK parent of the embedding, so it must
+			// exist first — but the two writes are not transactional, so if we
+			// stored the real content hash on the base row up front and the
+			// embed-set then failed, the hash would match on the next pass and the
+			// section would be marked Unchanged forever with no vector/full-text row
+			// (a silent precision loss; substring still finds it, so no outage).
+			// Instead: phase 1 writes the base row with an EMPTY sentinel hash
+			// (contentHash never returns "", so it always re-triggers a rewrite);
+			// phase 2 records the real hash only after the embed-set also succeeds.
+			base := indexValue{
 				TopicSlug: p.sec.TopicSlug,
 				Heading:   p.sec.Heading,
 				Snippet:   p.sec.Snippet,
-				Hash:      p.hash,
-			})
+				Hash:      "", // withheld until BOTH writes succeed
+			}
+			pendingVal, mErr := json.Marshal(base)
 			if mErr != nil {
 				return stats, fmt.Errorf("help index: marshal %q: %w", p.sec.Key, mErr)
 			}
-			// Base row first — MemoryEmbedSet's FK requires it.
-			if err := st.MemorySet(ctx, helpTenant, helpScope, HelpNamespaceScopeID, p.sec.Key, val, 0); err != nil {
+			if err := st.MemorySet(ctx, helpTenant, helpScope, HelpNamespaceScopeID, p.sec.Key, pendingVal, 0); err != nil {
 				return stats, fmt.Errorf("help index: set %q: %w", p.sec.Key, err)
 			}
 			if err := st.MemoryEmbedSet(ctx, helpTenant, helpScope, HelpNamespaceScopeID, p.sec.Key, store.MemoryEmbedding{
@@ -322,7 +337,23 @@ func ReconcileIndex(ctx context.Context, set *Set, st IndexStore, emb providers.
 				EmbedText: p.sec.Text,
 				CreatedAt: now,
 			}); err != nil {
-				return stats, fmt.Errorf("help index: embed-set %q: %w", p.sec.Key, err)
+				// Embed-set can fail transiently while the base write succeeds.
+				// The section keeps its "" sentinel hash, so it is re-attempted on
+				// the next reconcile; count it failed and keep indexing the rest
+				// rather than aborting the whole index.
+				log.Printf("help index: embed-set %q failed, will retry next reconcile: %v", p.sec.Key, err)
+				stats.Failed++
+				continue
+			}
+			// Phase 2: both writes landed — record the real content hash so the
+			// section is recognized as Unchanged (zero work) next reconcile.
+			base.Hash = p.hash
+			finalVal, mErr := json.Marshal(base)
+			if mErr != nil {
+				return stats, fmt.Errorf("help index: marshal %q: %w", p.sec.Key, mErr)
+			}
+			if err := st.MemorySet(ctx, helpTenant, helpScope, HelpNamespaceScopeID, p.sec.Key, finalVal, 0); err != nil {
+				return stats, fmt.Errorf("help index: finalize %q: %w", p.sec.Key, err)
 			}
 			stats.Written++
 		}
@@ -381,14 +412,23 @@ func QueryIndex(ctx context.Context, set *Set, st IndexStore, emb providers.Embe
 
 	if st != nil && emb != nil && st.SupportsVectors() {
 		hits, err := hybridQuery(ctx, st, emb, query, topK)
-		if err != nil {
-			return QueryResults{}, err
-		}
-		if len(hits) > 0 {
+		switch {
+		case err != nil:
+			// A hybrid failure must NOT hard-fail the caller — query's contract
+			// is "always returns useful results". Two real cases hit this exactly
+			// when the fallback should kick in: a transient embedder API error on
+			// the query-embed, and the dimension-mismatch window during an
+			// embedder swap (the provider+model-salted content hash forces a
+			// re-embed, but until the advisory-lock-gated boot reconcile catches
+			// up, MemoryEmbedSearch returns ErrDimensionMismatch for every query
+			// against the stale rows). Warn and fall through to the substring scan,
+			// exactly as the empty-index case below does.
+			log.Printf("help query: hybrid path failed, degrading to substring: %v", err)
+		case len(hits) > 0:
 			return QueryResults{Mode: "hybrid", Results: hits}, nil
 		}
-		// Empty index (reconcile not done / no match) → fall through to the
-		// substring scan so the caller still gets something.
+		// Hybrid error OR empty index (reconcile not done / no match) → fall
+		// through to the substring scan so the caller still gets something.
 	}
 	return QueryResults{Mode: "substring", Results: substringQuery(set, query, topK)}, nil
 }

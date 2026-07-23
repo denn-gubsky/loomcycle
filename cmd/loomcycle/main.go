@@ -2629,8 +2629,8 @@ func main() {
 				switch {
 				case stats.Degraded:
 					log.Printf("help index: no embedder/vector support — query uses in-memory substring scan")
-				case stats.Written > 0 || stats.Pruned > 0:
-					log.Printf("help index: reconciled (%d written, %d pruned, %d unchanged)", stats.Written, stats.Pruned, stats.Unchanged)
+				case stats.Written > 0 || stats.Pruned > 0 || stats.Failed > 0:
+					log.Printf("help index: reconciled (%d written, %d pruned, %d unchanged, %d failed)", stats.Written, stats.Pruned, stats.Unchanged, stats.Failed)
 				default:
 					log.Printf("help index: up to date (%d sections, 0 embed calls)", stats.Unchanged)
 				}

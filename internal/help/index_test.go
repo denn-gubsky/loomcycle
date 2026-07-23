@@ -3,6 +3,7 @@ package help
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"sync"
@@ -30,8 +31,12 @@ func newHelpTestSet(topics ...*Topic) *Set {
 
 // helpFakeEmbedder one-hot encodes tokens against a fixed vocab and counts calls
 // + total texts embedded, so a test can assert reconcile made zero embed calls.
+// The counters are mutex-guarded so the concurrent-boot test is race-clean under
+// `go test -race` (vocab is set once at construction and only read).
 type helpFakeEmbedder struct {
-	vocab      map[string]int
+	vocab map[string]int
+
+	mu         sync.Mutex
 	embedCalls int
 	embedTexts int
 }
@@ -45,8 +50,10 @@ func newHelpFakeEmbedder(tokens ...string) *helpFakeEmbedder {
 }
 
 func (f *helpFakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	f.mu.Lock()
 	f.embedCalls++
 	f.embedTexts += len(texts)
+	f.mu.Unlock()
 	out := make([][]float32, len(texts))
 	for i, txt := range texts {
 		vec := make([]float32, len(f.vocab))
@@ -77,6 +84,12 @@ type helpFakeStore struct {
 	setCount      int
 	embedSetCount int
 	deleteCount   int
+
+	// Error injection for the degrade/atomic-write tests. When set, the
+	// corresponding op returns the error instead of doing its work — modelling a
+	// transient embedder/store fault (dimension-mismatch window, embed-set flake).
+	embedSearchErr error
+	embedSetErr    error
 }
 
 type helpFakeRow struct {
@@ -121,6 +134,9 @@ func (s *helpFakeStore) MemorySet(_ context.Context, _ string, _ store.MemorySco
 func (s *helpFakeStore) MemoryEmbedSet(_ context.Context, _ string, _ store.MemoryScope, _, key string, e store.MemoryEmbedding) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.embedSetErr != nil {
+		return s.embedSetErr // base row already written by the caller's MemorySet
+	}
 	s.embedSetCount++
 	r := s.rows[key]
 	if r == nil {
@@ -145,6 +161,9 @@ func (s *helpFakeStore) MemoryDelete(_ context.Context, _ string, _ store.Memory
 func (s *helpFakeStore) MemoryEmbedSearch(_ context.Context, _ string, _ store.MemoryScope, _, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.embedSearchErr != nil {
+		return nil, s.embedSearchErr
+	}
 	type scored struct {
 		key string
 		r   *helpFakeRow
@@ -376,6 +395,106 @@ func TestHelpQuery_DegradesToSubstringWithoutIndex(t *testing.T) {
 	}
 	if res.Results[0].TopicSlug != "alpha" || res.Results[0].Heading != "Widgets" {
 		t.Fatalf("hit = %+v, want alpha#Widgets", res.Results[0])
+	}
+}
+
+// TestHelpQuery_DegradesToSubstringOnHybridError asserts that when the hybrid
+// path errors (e.g. a transient embedder failure, or the dimension-mismatch
+// window during an embedder swap before the boot reconcile catches up), query
+// does NOT hard-fail — it warns and degrades to the substring scan so the caller
+// still gets useful results (query's "always returns something" contract).
+func TestHelpQuery_DegradesToSubstringOnHybridError(t *testing.T) {
+	topicA := &Topic{Name: "alpha", Description: "d", Content: "## Widgets\nThe frobnicator assembles widgets neatly.\n"}
+	topicB := &Topic{Name: "beta", Description: "d", Content: "## Gadgets\nA sprocket drives gadgets.\n"}
+	set := newHelpTestSet(topicA, topicB)
+	st := newHelpFakeStore()
+	emb := newHelpFakeEmbedder("frobnicator", "assembles", "widgets", "neatly", "sprocket", "drives", "gadgets")
+	ctx := context.Background()
+
+	if _, err := ReconcileIndex(ctx, set, st, emb); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// Model the dimension-mismatch window: the vector leg errors for every query
+	// until the boot reconcile re-embeds the stale rows.
+	st.embedSearchErr = errors.New("memory: query embedding dimension 8 does not match stored rows' dimension 16")
+
+	res, err := QueryIndex(ctx, set, st, emb, "frobnicator widgets", 5)
+	if err != nil {
+		t.Fatalf("query hard-failed on a hybrid error; want graceful degrade: %v", err)
+	}
+	if res.Mode != "substring" {
+		t.Fatalf("mode = %q, want substring (degraded)", res.Mode)
+	}
+	if len(res.Results) == 0 || res.Results[0].TopicSlug != "alpha" || res.Results[0].Heading != "Widgets" {
+		t.Fatalf("degraded results = %+v, want alpha#Widgets", res.Results)
+	}
+}
+
+// TestHelpIndex_ReconcileEmbedFailureNotMarkedDone asserts the atomic-write
+// invariant: when the embed-set fails after the base row is written, the section
+// is NOT recorded as done (it keeps the empty sentinel hash), so the next
+// reconcile re-attempts it rather than leaving it permanently un-embedded.
+func TestHelpIndex_ReconcileEmbedFailureNotMarkedDone(t *testing.T) {
+	topic := &Topic{Name: "alpha", Description: "d", Content: "## Widgets\nThe frobnicator assembles widgets.\n"}
+	set := newHelpTestSet(topic)
+	st := newHelpFakeStore()
+	emb := newHelpFakeEmbedder("frobnicator", "assembles", "widgets")
+	ctx := context.Background()
+
+	total := len(AllSections(set)) // 1
+	if total != 1 {
+		t.Fatalf("expected 1 section, got %d", total)
+	}
+
+	// Reconcile #1: the embed-set fails. The section must be counted failed and
+	// left WITHOUT a matching hash (so it is retried), not abort the whole index.
+	st.embedSetErr = errors.New("simulated embed-set failure")
+	stats, err := ReconcileIndex(ctx, set, st, emb)
+	if err != nil {
+		t.Fatalf("reconcile #1 must not abort on a per-section embed failure: %v", err)
+	}
+	if stats.Written != 0 || stats.Failed != total {
+		t.Fatalf("reconcile #1 stats = %+v, want Written=0 Failed=%d", stats, total)
+	}
+	// The base row exists (FK parent) but carries the "" sentinel hash — so the
+	// next pass re-attempts it rather than treating it as Unchanged.
+	st.mu.Lock()
+	row, ok := st.rows["alpha#Widgets"]
+	var stored json.RawMessage
+	if ok {
+		stored = append(json.RawMessage(nil), row.value...)
+	}
+	st.mu.Unlock()
+	if !ok {
+		t.Fatalf("base row missing after the phase-1 write")
+	}
+	var v indexValue
+	if err := json.Unmarshal(stored, &v); err != nil {
+		t.Fatalf("unmarshal stored row: %v", err)
+	}
+	if v.Hash != "" {
+		t.Fatalf("stored hash = %q, want empty sentinel (a failed section must not be marked done)", v.Hash)
+	}
+
+	// Reconcile #2: embed-set now succeeds → the section is re-attempted (its
+	// stored "" hash won't match the desired hash), written, and NOT Unchanged.
+	st.embedSetErr = nil
+	stats, err = ReconcileIndex(ctx, set, st, emb)
+	if err != nil {
+		t.Fatalf("reconcile #2: %v", err)
+	}
+	if stats.Written != total || stats.Unchanged != 0 || stats.Failed != 0 {
+		t.Fatalf("reconcile #2 stats = %+v, want Written=%d Unchanged=0 Failed=0", stats, total)
+	}
+
+	// Reconcile #3: the real hash is now recorded → a clean no-op.
+	stats, err = ReconcileIndex(ctx, set, st, emb)
+	if err != nil {
+		t.Fatalf("reconcile #3: %v", err)
+	}
+	if stats.Unchanged != total || stats.Written != 0 {
+		t.Fatalf("reconcile #3 stats = %+v, want Unchanged=%d Written=0", stats, total)
 	}
 }
 
