@@ -65,6 +65,14 @@ type Config struct {
 	// archival is disabled (never delete a session we were asked to export).
 	ExportDir string
 
+	// DisableRunArchiver, when true, suppresses the opt-in aged-SESSION archiver
+	// (archiveSessionsOnce) even if RunRetention/RunRetentionMode/ExportDir would
+	// otherwise enable it. The usage-detail RollupAndPruneUsage still runs — only
+	// session archival is disabled. Set by cmd/loomcycle when the RFC BM retention
+	// sweeper owns aged-chat pruning, so a session is never cascade-deleted by
+	// both sweepers at once (RFC BM Phase 2 reconciliation).
+	DisableRunArchiver bool
+
 	// Logger is the structured logger used for sweep results. Defaults
 	// to log.Printf when nil. Errors are logged at every tick;
 	// successful sweeps with zero rows are logged only periodically
@@ -111,16 +119,17 @@ const (
 // deletes them, and (opt-in) archives aged sessions. Construct via New,
 // then call Run(ctx) on a goroutine that owns the lifecycle.
 type Sweeper struct {
-	store           store.Store
-	interval        time.Duration
-	detailRetention time.Duration
-	runRetention    time.Duration
-	runMode         string
-	exportDir       string
-	logf            func(format string, args ...any)
-	lock            AdvisoryLocker
-	lockKey         int64
-	now             func() time.Time
+	store              store.Store
+	interval           time.Duration
+	detailRetention    time.Duration
+	runRetention       time.Duration
+	runMode            string
+	exportDir          string
+	disableRunArchiver bool
+	logf               func(format string, args ...any)
+	lock               AdvisoryLocker
+	lockKey            int64
+	now                func() time.Time
 }
 
 // New constructs a Sweeper with the supplied tuning. A nil store means
@@ -144,23 +153,28 @@ func New(st store.Store, cfg Config) *Sweeper {
 		mode = "off"
 	}
 	return &Sweeper{
-		store:           st,
-		interval:        cfg.Interval,
-		detailRetention: cfg.DetailRetention,
-		runRetention:    cfg.RunRetention,
-		runMode:         mode,
-		exportDir:       cfg.ExportDir,
-		logf:            cfg.Logger,
-		lock:            cfg.AdvisoryLock,
-		lockKey:         cfg.AdvisoryLockKey,
-		now:             cfg.Now,
+		store:              st,
+		interval:           cfg.Interval,
+		detailRetention:    cfg.DetailRetention,
+		runRetention:       cfg.RunRetention,
+		runMode:            mode,
+		exportDir:          cfg.ExportDir,
+		disableRunArchiver: cfg.DisableRunArchiver,
+		logf:               cfg.Logger,
+		lock:               cfg.AdvisoryLock,
+		lockKey:            cfg.AdvisoryLockKey,
+		now:                cfg.Now,
 	}
 }
 
 // runArchivalEnabled reports whether the opt-in old-run archiver should run:
-// a positive RunRetention, a delete-bearing mode, and — for export+prune — a
-// configured ExportDir (never delete a run we were asked to export but can't).
+// not explicitly disabled (the RFC BM retention sweeper owns chats), a positive
+// RunRetention, a delete-bearing mode, and — for export+prune — a configured
+// ExportDir (never delete a run we were asked to export but can't).
 func (s *Sweeper) runArchivalEnabled() bool {
+	if s.disableRunArchiver {
+		return false
+	}
 	if s.runRetention <= 0 {
 		return false
 	}

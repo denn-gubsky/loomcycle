@@ -1674,6 +1674,11 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 // pause_state) and its most-recent completed_at is before olderThan — so an
 // aged run inside a still-active session is never pruned out from under a
 // continuation's whole-session transcript replay.
+//
+// A PINNED session (sessions.pinned = 1) is never returned — pinning is the
+// operator's explicit "keep this" and must exempt the chat from ALL automated
+// retention paths (RFC BM Phase 2 chats sweeper + the legacy RFC AV archiver,
+// both of which consume this list).
 func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 500
@@ -1686,6 +1691,7 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, l
 		                 THEN 1 ELSE 0 END) = 0
 		    AND MAX(completed_at) IS NOT NULL
 		    AND MAX(completed_at) < ?
+		    AND session_id NOT IN (SELECT id FROM sessions WHERE pinned = 1)
 		 ORDER BY MAX(completed_at) ASC
 		 LIMIT ?`,
 		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),

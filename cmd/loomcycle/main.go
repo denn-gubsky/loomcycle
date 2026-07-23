@@ -2370,14 +2370,22 @@ func main() {
 	// advisoryLock stays nil and the sweeper's lock-gating branch is
 	// bypassed. Pruning is a compaction to daily usage_archive buckets,
 	// not data loss — billing totals are preserved.
+	// RFC BM Phase 2 reconciliation: when the retention sweeper is enabled AND its
+	// effective (post-alias) chats mode is a delete-bearing one, the retention
+	// sweeper owns aged-chat pruning — suppress the usage sweeper's legacy
+	// aged-session archiver so a session is never cascade-deleted by both. The
+	// usage-detail rollup is unaffected.
+	retentionOwnsChats := cfg.Env.RetentionEnabled &&
+		cfg.Env.RetentionChatsMode != "" && cfg.Env.RetentionChatsMode != "off"
 	if cfg.Env.UsageSweeperEnabled && storeIface != nil {
 		uCfg := usage.Config{
 			Interval:        cfg.Env.UsageSweepInterval,
 			DetailRetention: cfg.Env.UsageDetailRetention,
 			// RFC AV Phase 2b2 old-run archiver (opt-in; default OFF).
-			RunRetention:     cfg.Env.UsageRunRetention,
-			RunRetentionMode: cfg.Env.UsageRunRetentionMode,
-			ExportDir:        cfg.Env.UsageExportDir,
+			RunRetention:       cfg.Env.UsageRunRetention,
+			RunRetentionMode:   cfg.Env.UsageRunRetentionMode,
+			ExportDir:          cfg.Env.UsageExportDir,
+			DisableRunArchiver: retentionOwnsChats,
 		}
 		// Same typed-nil guard as the heartbeat block: only assign the
 		// interface field from a non-nil pointer, or the sweeper's
@@ -2403,7 +2411,11 @@ func main() {
 			DefsMode:      cfg.Env.RetentionDefsMode,
 			DefsMaxAge:    cfg.Env.RetentionDefsMaxAge,
 			DefsKeepLastN: cfg.Env.RetentionDefsKeepLastN,
-			ExportDir:     cfg.Env.RetentionExportDir,
+			// RFC BM Phase 2 aged-chat archiver (opt-in; default OFF, or inherited
+			// from the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* config in cfg.Load).
+			ChatsMode:   cfg.Env.RetentionChatsMode,
+			ChatsMaxAge: cfg.Env.RetentionChatsMaxAge,
+			ExportDir:   cfg.Env.RetentionExportDir,
 		}
 		// Same typed-nil guard as the usage block: only assign the interface field
 		// from a non-nil pointer, or the sweeper's nil-check would see a non-nil

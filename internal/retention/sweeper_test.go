@@ -1,6 +1,7 @@
 package retention
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -230,5 +231,161 @@ func TestSweeper_DryRunCountsReportsPerType(t *testing.T) {
 		if counts[dt] != 0 {
 			t.Errorf("counts[%s] = %d, want 0", dt, counts[dt])
 		}
+	}
+	// No sessions seeded → the "chats" preview count is 0 (present regardless of
+	// ChatsMode, mirroring the def-type counts).
+	if counts["chats"] != 0 {
+		t.Errorf("counts[chats] = %d, want 0", counts["chats"])
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// seedCompletedChatSession creates a session with one completed run (with an
+// event) — the aged-chat unit the chats sub-sweep prunes. Returns the session id.
+func seedCompletedChatSession(t *testing.T, st *sqlite.Store, agentID string) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, "t", "default", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, run.ID, "text", []byte(`{"t":"hi"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	return sess.ID
+}
+
+// futureHour pins Now() an hour ahead so a just-completed session lands before
+// the cutoff (Now()-ChatsMaxAge with the zero max-age used by these tests).
+func futureHour() time.Time { return time.Now().Add(time.Hour) }
+
+// TestSweeper_ChatsPinnedSessionNotPruned: the chats sub-sweep never deletes a
+// PINNED session (the store excludes it), while an identical unpinned aged
+// session IS pruned. Drives the whole stack against a real sqlite store.
+func TestSweeper_ChatsPinnedSessionNotPruned(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	pinnedID := seedCompletedChatSession(t, st, "pinned-a")
+	unpinnedID := seedCompletedChatSession(t, st, "unpinned-a")
+	if err := st.SetSessionMeta(ctx, pinnedID, store.SessionMetaPatch{Pinned: boolPtr(true)}); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	sw := New(st, Config{ChatsMode: "prune", Logger: quietLogger, Now: futureHour})
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.Chats != 1 {
+		t.Errorf("res.Chats = %d, want 1 (only the unpinned session)", res.Chats)
+	}
+	if _, err := st.GetSession(ctx, pinnedID); err != nil {
+		t.Errorf("pinned session was pruned: %v", err)
+	}
+	if _, err := st.GetSession(ctx, unpinnedID); err == nil {
+		t.Errorf("unpinned aged session survived the prune")
+	}
+}
+
+// TestSweeper_ChatsDryRunDeletesNothing: DryRun counts the aged session but never
+// cascade-deletes it.
+func TestSweeper_ChatsDryRunDeletesNothing(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	sid := seedCompletedChatSession(t, st, "dry-a")
+	sw := New(st, Config{ChatsMode: "prune", DryRun: true, Logger: quietLogger, Now: futureHour})
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.Chats != 1 {
+		t.Errorf("res.Chats = %d, want 1 (counts what WOULD be pruned)", res.Chats)
+	}
+	if _, err := st.GetSession(ctx, sid); err != nil {
+		t.Errorf("dry-run deleted the session: %v", err)
+	}
+}
+
+// TestSweeper_ChatsExportPruneWritesBundleThenDeletes: each aged session is
+// written to <ExportDir>/chats/<day>/<sid>.json (with runs + events) before it is
+// cascade-deleted.
+func TestSweeper_ChatsExportPruneWritesBundleThenDeletes(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	dir := t.TempDir()
+	sid := seedCompletedChatSession(t, st, "exp-a")
+	sw := New(st, Config{ChatsMode: "export+prune", ExportDir: dir, Logger: quietLogger, Now: futureHour})
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.Chats != 1 {
+		t.Errorf("res.Chats = %d, want 1", res.Chats)
+	}
+	// Bundle written under <dir>/chats/<day>/<sid>.json.
+	matches, _ := filepath.Glob(filepath.Join(dir, "chats", "*", sid+".json"))
+	if len(matches) != 1 {
+		t.Fatalf("export glob = %v, want one chats/<day>/%s.json", matches, sid)
+	}
+	blob, err := os.ReadFile(matches[0])
+	if err != nil ||
+		!bytes.Contains(blob, []byte(sid)) ||
+		!bytes.Contains(blob, []byte(`"runs"`)) ||
+		!bytes.Contains(blob, []byte(`"events"`)) {
+		t.Errorf("bundle missing session_id / runs / events: err=%v", err)
+	}
+	// Deletion followed the export.
+	if _, err := st.GetSession(ctx, sid); err == nil {
+		t.Errorf("session survived export+prune")
+	}
+}
+
+// TestSweeper_ChatsExportPruneWithoutExportDirDisabled: export+prune with no
+// ExportDir is a no-op (never delete a session we can't export).
+func TestSweeper_ChatsExportPruneWithoutExportDirDisabled(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	sid := seedCompletedChatSession(t, st, "noexp-a")
+	sw := New(st, Config{ChatsMode: "export+prune", Logger: quietLogger, Now: futureHour}) // no ExportDir
+	if sw.chatsPruneEnabled() {
+		t.Error("chatsPruneEnabled() = true for export+prune with empty ExportDir, want false")
+	}
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.Chats != 0 {
+		t.Errorf("disabled chats sweep pruned %d, want 0", res.Chats)
+	}
+	if _, err := st.GetSession(ctx, sid); err != nil {
+		t.Errorf("disabled sweep deleted the session: %v", err)
 	}
 }
