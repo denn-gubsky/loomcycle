@@ -3343,12 +3343,14 @@ func testMemoryListTruncation(t *testing.T, s store.Store) {
 
 func testMemoryTTLExpiry(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	// 50 ms TTL — short enough for a test, long enough to survive the
-	// initial Get on a slow CI runner.
-	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "warning", json.RawMessage(`"hi"`), 50*time.Millisecond); err != nil {
+	// Part 1 — expires_at is recorded when ttl > 0. Use a LONG ttl so the
+	// confirming Get can never race the expiry: a short-ttl key read on a slow CI
+	// runner could already be gone before the first Get (a MemorySet that itself
+	// takes >ttl under load), which used to flake this test.
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "longlived", json.RawMessage(`"hi"`), time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "warning")
+	got, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "longlived")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3356,7 +3358,13 @@ func testMemoryTTLExpiry(t *testing.T, s store.Store) {
 		t.Error("expires_at should be set when ttl > 0")
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	// Part 2 — a short-ttl key is gone after a sleep well past its ttl. There is
+	// NO Get between the set and the sleep, so runner slowness only makes the key
+	// MORE certainly expired (more wall-clock elapses); this direction can't flake.
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "warning", json.RawMessage(`"hi"`), 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond)
 
 	_, err = s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "warning")
 	var nf *store.ErrNotFound
@@ -3364,8 +3372,7 @@ func testMemoryTTLExpiry(t *testing.T, s store.Store) {
 		t.Errorf("expired key should return ErrNotFound, got %v", err)
 	}
 
-	// MemoryList must filter expired entries even before the sweeper
-	// runs.
+	// MemoryList must filter expired entries even before the sweeper runs.
 	listed, _, err := s.MemoryList(ctx, store.MemoryScopeAgent, "qa", "warning", 10)
 	if err != nil {
 		t.Fatal(err)
