@@ -36,6 +36,10 @@ func runTenant(ctx context.Context) string { return tools.RunIdentity(ctx).Tenan
 type Backend struct {
 	store    store.Store
 	embedder providers.Embedder
+	// accessFlusher, when set, records a +1 access for each entry a search
+	// returns (RFC BL hybrid retrieval, OQ #4). nil in tests and when the
+	// server didn't wire it — searches then simply skip access tracking.
+	accessFlusher *memory.AccessFlusher
 }
 
 // New builds the in-process backend. Either argument may be nil at the
@@ -45,6 +49,11 @@ type Backend struct {
 func New(s store.Store, e providers.Embedder) *Backend {
 	return &Backend{store: s, embedder: e}
 }
+
+// SetAccessFlusher wires the batched access-count flusher (RFC BL). Optional;
+// when unset, Search does no access tracking. main wires exactly one flusher
+// shared across the tool's default backend.
+func (b *Backend) SetAccessFlusher(f *memory.AccessFlusher) { b.accessFlusher = f }
 
 // Get delegates to the store.
 func (b *Backend) Get(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
@@ -137,11 +146,12 @@ func (b *Backend) persistEmbedding(ctx context.Context, scope store.MemoryScope,
 	return b.store.MemoryEmbedSet(ctx, runTenant(ctx), scope, scopeID, key, emb)
 }
 
-// Search embeds the query, fetches the cosine pool (with the over-fetch a
-// hybrid rank needs + a truncation probe), re-ranks via the MR-1 ranker,
-// trims to TopK, and computes the index-aligned rank scores. This is
-// execSearch's data path moved verbatim; the tool keeps validation,
-// top_k clamping, and rendering.
+// Search embeds the query, runs the vector + full-text retrieval legs, fuses
+// them via RRF, re-ranks (recency/frequency terms), dedups, trims to TopK, and
+// computes the index-aligned rank scores. RFC BL made this hybrid: the vector
+// pool is fused with the keyword (full-text) pool so a lexical-only match can
+// surface, while the default rank config still yields the underlying vector
+// order when the full-text leg is empty (SQLite, or no lexical match).
 func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.SearchQuery, rank memory.RankConfig, dedup memory.DedupConfig) (memory.SearchResult, error) {
 	if !b.store.SupportsVectors() {
 		return memory.SearchResult{}, store.ErrVectorUnsupported
@@ -152,18 +162,12 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 
 	topK := q.TopK
 
-	// RFC I hybrid ranking. Pure-semantic config = today's behavior (zero
-	// regression). We over-fetch a candidate pool by cosine when EITHER a
-	// hybrid rank needs to re-score deeper rows (recency promoting an entry
-	// the pure-cosine top-K would miss) OR dedup is enabled (collapsing a
-	// near-duplicate cluster must back-fill from rows below top_k, else the
-	// agent silently gets fewer than top_k results). The pool is bounded by
-	// the store's defensive cap (<=51).
-	pool := topK
-	if !rank.IsPureSemantic() || dedup.Enabled {
-		pool = topK * 4
-	}
-	fetch := pool + 1 // +1 truncation probe
+	// Over-fetch both legs. Hybrid fusion + dedup both need rows below the
+	// caller's top_k: RRF can promote a deeper vector row a lexical match
+	// co-ranks, and dedup collapsing a near-duplicate cluster must back-fill
+	// from below top_k. The pool is bounded by the store's defensive cap
+	// (<=51). The extra rows beyond top_k also serve as the truncation probe.
+	fetch := topK * 4
 	if fetch > 51 {
 		fetch = 51
 	}
@@ -179,38 +183,55 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	}
 	queryVec := vecs[0]
 
-	// Fetch the candidate pool (cosine-ordered) with a +1 truncation probe:
-	// len(results) > topK distinguishes "more matched than we return" from
-	// "result set fits". Store caps at 51.
-	results, err := b.store.MemoryEmbedSearch(ctx, runTenant(ctx), scope, scopeID, q.Prefix, queryVec, fetch)
+	tenant := runTenant(ctx)
+
+	// Leg 1: vector (cosine-ordered). Pass errors through unwrapped —
+	// ErrDimensionMismatch / ErrVectorUnsupported are user-actionable and the
+	// tool's errors.Is checks match the backend-constructed *MemoryError.
+	vres, err := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Prefix, queryVec, fetch)
 	if err != nil {
-		// Pass the error through unwrapped. ErrDimensionMismatch /
-		// ErrVectorUnsupported are user-actionable: the tool's errors.Is
-		// checks match the backend-constructed *MemoryError values (via
-		// MemoryError.Is) and render the migration hint. Other errors are
-		// surfaced by the tool with a generic "search:" prefix.
 		return memory.SearchResult{}, err
 	}
 
-	// truncated reflects the cosine pool (more matched than the caller's
-	// top_k), computed before the re-rank trims the pool.
-	truncated := len(results) > topK
+	// Leg 2: full-text (keyword, ts_rank-ordered). Degrades to empty on
+	// backends without a full-text index (SQLite returns (nil,nil)), so the
+	// fusion below cleanly collapses to pure-vector there.
+	fres, err := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, q.Prefix, q.QueryText, fetch)
+	if err != nil {
+		return memory.SearchResult{}, err
+	}
 
-	// Hybrid re-rank, then dedup, then trim to top_k. Default config is a
-	// no-op reorder (cosine order preserved) and dedup-disabled, so
-	// pure-semantic output is byte-identical to before. Dedup runs on the
-	// full ranked pool BEFORE the trim (RFC I Decision 2) so collapsing a
-	// duplicate cluster can promote a distinct entry into the top_k that the
-	// duplicate would otherwise have crowded out. rank_scores are computed
-	// with the SAME `now` as the ranking so the rendered score matches the
-	// ordering.
+	// Fuse the two legs by Reciprocal Rank Fusion. FuseRRF writes the fused
+	// value into each entry's Score, so the ranker/dedup/score pipeline below
+	// runs unchanged (it reads Score as the semantic signal). With an empty
+	// full-text leg the union is the vector list and its order is preserved.
+	fused := memory.FuseRRF(vres, fres, memory.RRFDefaultK)
+
+	// truncated: more distinct rows matched (across both legs) than the
+	// caller's top_k, computed before the trim.
+	truncated := len(fused) > topK
+
+	// Re-rank (recency/frequency layer on top of the fused rank), then dedup
+	// on the full pool BEFORE the trim (RFC I Decision 2) so collapsing a
+	// duplicate cluster can promote a distinct entry into the top_k. rank
+	// scores use the SAME `now` as the ranking so the rendered score matches.
 	now := time.Now()
-	ranked := memory.RankCandidates(results, rank, now)
+	ranked := memory.RankCandidates(fused, rank, now)
 	deduped, dropped := memory.DedupResults(ranked, dedup)
 	if len(deduped) > topK {
 		deduped = deduped[:topK]
 	}
 	rankScores := memory.ScoreAll(deduped, rank, now)
+
+	// Record a +1 access for the returned entries (batched, off the hot path
+	// — the flusher writes them later). Only when wired; access tracking is
+	// main-store memory only.
+	if b.accessFlusher != nil {
+		at := now.UTC()
+		for i := range deduped {
+			b.accessFlusher.Record(tenant, scope, scopeID, deduped[i].Key, at)
+		}
+	}
 
 	out := memory.SearchResult{
 		Entries:           deduped,
@@ -219,8 +240,8 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		Truncated:         truncated,
 		DedupDropped:      dropped,
 	}
-	if rank.SourceFrequencyReserved() {
-		out.RankNote = "source_weight and frequency_weight are reserved and contribute 0 until source/access_count tracking ships"
+	if rank.SourceReserved() {
+		out.RankNote = "source_weight is reserved and contributes 0 until source-score tracking ships"
 	}
 	return out, nil
 }

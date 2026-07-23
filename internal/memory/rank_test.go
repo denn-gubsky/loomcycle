@@ -89,6 +89,49 @@ func TestRankConfig_PureSemanticAndReservedFlags(t *testing.T) {
 	}
 }
 
+// RFC BL wired frequency_weight to access_count: with a non-zero
+// frequency_weight, a more-frequently-accessed entry outranks an
+// equally-similar one that's been accessed less.
+func TestRank_FrequencyWeightAffectsOrder(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	hot := entry("hot", 0.5, 0, now)   // same similarity …
+	cold := entry("cold", 0.5, 0, now) // … but different access history
+	hot.AccessCount = 100
+	cold.AccessCount = 0
+
+	cfg := RankConfig{SemanticWeight: 1.0, FrequencyWeight: 0.1}
+
+	// Feed cold-first to prove the reorder is driven by frequency, not input
+	// order.
+	out := RankCandidates([]store.MemorySearchEntry{cold, hot}, cfg, now)
+	if out[0].Key != "hot" {
+		t.Fatalf("frequency weight did not promote the hot entry: got order %s,%s", out[0].Key, out[1].Key)
+	}
+	// And directly: the frequency term lifts the score above the equal
+	// semantic baseline.
+	if Score(hot, cfg, now) <= Score(cold, cfg, now) {
+		t.Fatalf("hot score %v must exceed cold score %v", Score(hot, cfg, now), Score(cold, cfg, now))
+	}
+	// A zero frequency_weight is inert (no reorder, no score change).
+	zero := RankConfig{SemanticWeight: 1.0}
+	if Score(hot, zero, now) != Score(cold, zero, now) {
+		t.Fatalf("frequency_weight=0 must not change scores: %v vs %v", Score(hot, zero, now), Score(cold, zero, now))
+	}
+}
+
+// SourceReserved flags only source_weight now that frequency_weight is wired.
+func TestRankConfig_SourceReservedFlag(t *testing.T) {
+	if !(RankConfig{SemanticWeight: 1, SourceWeight: 0.3}).SourceReserved() {
+		t.Error("source weight set should flag SourceReserved")
+	}
+	if (RankConfig{SemanticWeight: 1, FrequencyWeight: 0.2}).SourceReserved() {
+		t.Error("frequency weight is wired — must NOT flag SourceReserved")
+	}
+	if DefaultRankConfig().SourceReserved() {
+		t.Error("default config should not flag SourceReserved")
+	}
+}
+
 // Stable sort: equal hybrid scores keep input (cosine) order.
 func TestRankCandidates_StableOnTies(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)

@@ -4154,6 +4154,52 @@ func (s *Store) MemoryListTenantsForScope(ctx context.Context, scope store.Memor
 	return out, rows.Err()
 }
 
+// MemoryFullTextSearch is the RFC BL keyword-retrieval leg. SQLite ships no
+// tsvector index (the vectors themselves are Postgres-only), so per the
+// documented degrade posture this returns (nil, nil) rather than erroring —
+// the in-process backend then falls back to pure-vector fusion. We do NOT add
+// full-text infra to SQLite.
+func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, queryText string, topK int) ([]store.MemorySearchEntry, error) {
+	return nil, nil
+}
+
+// MemoryBumpAccessBatch applies access-count deltas additively (RFC BL
+// hybrid retrieval, OQ #4). See the Store interface for the semantics.
+// SQLite's memory table carries access_count/last_accessed_at (PR1), so this
+// is a real update even though SQLite has no vector search: it's wired
+// unconditionally and simply never receives bumps when search is unavailable.
+// One transaction per flush; each per-row UPDATE reads-then-adds, so
+// sequential flushes sum. SQLite serialises writers, so a bump for a row that
+// was concurrently deleted is a clean 0-row no-op.
+func (s *Store) MemoryBumpAccessBatch(ctx context.Context, bumps []store.MemoryAccessBump) error {
+	if len(bumps) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("MemoryBumpAccessBatch begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, b := range bumps {
+		ts := b.LastAccess.UnixNano()
+		// MAX(COALESCE(last_accessed_at, ts), ts): a NULL last_accessed_at
+		// collapses to ts, otherwise take the later of the two.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE memory
+			    SET access_count = access_count + ?,
+			        last_accessed_at = MAX(COALESCE(last_accessed_at, ?), ?)
+			  WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key = ?`,
+			b.CountDelta, ts, ts, b.TenantID, string(b.Scope), b.ScopeID, b.Key,
+		); err != nil {
+			return fmt.Errorf("MemoryBumpAccessBatch update: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("MemoryBumpAccessBatch commit: %w", err)
+	}
+	return nil
+}
+
 // MemorySweep deletes every Memory row whose expires_at has passed.
 func (s *Store) MemorySweep(ctx context.Context) (int, error) {
 	res, err := s.db.ExecContext(ctx,

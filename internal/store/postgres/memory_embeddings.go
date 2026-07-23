@@ -174,7 +174,8 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	}
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
 	               1.0 - (me.embedding <=> $4::vector) AS score,
-	               me.provider, me.model, me.embedding::text AS embedding_text
+	               me.provider, me.model, me.embedding::text AS embedding_text,
+	               m.access_count
 	         FROM memory_embeddings me
 	         JOIN memory m
 	            ON me.tenant_id = m.tenant_id
@@ -204,8 +205,9 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 			score              float64
 			provider, modelStr string
 			embeddingText      string
+			accessCount        int64
 		)
-		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText); err != nil {
+		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText, &accessCount); err != nil {
 			return nil, fmt.Errorf("MemoryEmbedSearch scan: %w", err)
 		}
 		entry := store.MemorySearchEntry{
@@ -215,7 +217,8 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 				CreatedAt: createdAt,
 				UpdatedAt: updatedAt,
 			},
-			Score: score,
+			Score:       score,
+			AccessCount: accessCount,
 		}
 		if expiresAt != nil {
 			entry.ExpiresAt = *expiresAt
@@ -236,6 +239,135 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		return nil, fmt.Errorf("MemoryEmbedSearch iter: %w", err)
 	}
 	return out, nil
+}
+
+// MemoryFullTextSearch runs the keyword (lexical) retrieval leg over the
+// generated tsvector on memory_embeddings.embed_text (migration 0060),
+// ranked by ts_rank. Same result shape + tenant/prefix/expiry scoping as
+// MemoryEmbedSearch. The in-process backend fuses this ordering with the
+// vector ordering via RRF (rank-based), so ts_rank's magnitude — which is
+// not comparable to cosine — only serves to ORDER this leg.
+//
+// Without pgvector the memory_embeddings table (hence the tsvector column)
+// doesn't exist, so we degrade to (nil, nil) rather than erroring; the
+// caller then runs pure-vector, which is itself unavailable without
+// pgvector, so this path is effectively Postgres+pgvector only.
+func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, queryText string, topK int) ([]store.MemorySearchEntry, error) {
+	if !s.pgvectorEnabled {
+		return nil, nil
+	}
+	if topK <= 0 {
+		topK = 10
+	}
+	// Match MemoryEmbedSearch's defensive cap so the +1 truncation probe at
+	// the tool boundary still returns the extra row.
+	if topK > 51 {
+		topK = 51
+	}
+
+	prefixCondition := ""
+	args := []any{tenantID, string(scope), scopeID, queryText, topK}
+	if keyPrefix != "" {
+		prefixCondition = " AND me.key LIKE $6"
+		args = append(args, keyPrefix+"%")
+	}
+	// plainto_tsquery normalises arbitrary user text into a safe tsquery
+	// (never errors on input, no injection surface), returning the empty
+	// query — which matches nothing — when the text yields no lexemes.
+	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
+	               ts_rank(me.embed_text_tsv, plainto_tsquery('english', $4)) AS score,
+	               me.provider, me.model, me.embedding::text AS embedding_text,
+	               m.access_count
+	         FROM memory_embeddings me
+	         JOIN memory m
+	            ON me.tenant_id = m.tenant_id
+	           AND me.scope    = m.scope
+	           AND me.scope_id = m.scope_id
+	           AND me.key      = m.key
+	         WHERE me.tenant_id = $1
+	           AND me.scope = $2
+	           AND me.scope_id = $3
+	           AND (m.expires_at IS NULL OR m.expires_at > now())
+	           AND me.embed_text_tsv @@ plainto_tsquery('english', $4)` + prefixCondition + `
+	         ORDER BY score DESC
+	         LIMIT $5`
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("MemoryFullTextSearch query: %w", err)
+	}
+	defer rows.Close()
+
+	out := []store.MemorySearchEntry{}
+	for rows.Next() {
+		var (
+			key                string
+			valueBytes         []byte
+			expiresAt          *time.Time
+			createdAt          time.Time
+			updatedAt          time.Time
+			score              float64
+			provider, modelStr string
+			embeddingText      string
+			accessCount        int64
+		)
+		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText, &accessCount); err != nil {
+			return nil, fmt.Errorf("MemoryFullTextSearch scan: %w", err)
+		}
+		entry := store.MemorySearchEntry{
+			MemoryEntry: store.MemoryEntry{
+				Key:       key,
+				Value:     valueBytes,
+				CreatedAt: createdAt,
+				UpdatedAt: updatedAt,
+			},
+			Score:       score,
+			AccessCount: accessCount,
+		}
+		if expiresAt != nil {
+			entry.ExpiresAt = *expiresAt
+		}
+		entry.EmbeddedWith.Provider = provider
+		entry.EmbeddedWith.Model = modelStr
+		// Carry the stored vector so an FTS-only survivor still participates
+		// in the shared dedup pass (mirrors MemoryEmbedSearch). A decode
+		// failure is non-fatal — the entry is simply never deduped.
+		if vec, derr := decodePgvector(embeddingText); derr == nil {
+			entry.Vector = vec
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("MemoryFullTextSearch iter: %w", err)
+	}
+	return out, nil
+}
+
+// MemoryBumpAccessBatch applies access-count deltas additively. See the
+// Store interface for the semantics. Uses a single pipelined batch so a
+// flush of N rows is one round-trip; each per-row UPDATE is atomic, so two
+// replicas' concurrent bumps to the same row sum (row lock serialises them).
+func (s *Store) MemoryBumpAccessBatch(ctx context.Context, bumps []store.MemoryAccessBump) error {
+	if len(bumps) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, b := range bumps {
+		batch.Queue(
+			`UPDATE memory
+			    SET access_count = access_count + $5,
+			        last_accessed_at = GREATEST(last_accessed_at, $6)
+			  WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4`,
+			b.TenantID, string(b.Scope), b.ScopeID, b.Key, b.CountDelta, b.LastAccess,
+		)
+	}
+	br := s.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for range bumps {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("MemoryBumpAccessBatch: %w", err)
+		}
+	}
+	return nil
 }
 
 // MemoryEmbedListByModel returns base-memory rows whose embedding

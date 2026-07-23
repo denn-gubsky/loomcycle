@@ -93,6 +93,7 @@ import (
 	loomgrpc "github.com/denn-gubsky/loomcycle/internal/api/grpc"
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
+	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
@@ -1390,7 +1391,16 @@ func main() {
 	// as before). MR-3b routes PER-AGENT named backends per-call from
 	// memory.go backend(ctx) via memoryTool.Cfg; MR-4's Mem9 plugs into that
 	// switch. This default assignment stays.
-	memoryTool.Backend = inprocess.New(storeIface, embedder)
+	inProcBackend := inprocess.New(storeIface, embedder)
+	// RFC BL hybrid retrieval (OQ #4): a per-replica batched access-count
+	// flusher. Search records a +1 access for returned entries; the flusher
+	// writes the accumulated deltas additively on a ticker + size trigger, so
+	// the hot search path never blocks on the write. Stopped (with a final
+	// flush) in the graceful-shutdown block below.
+	accessFlusher := memory.NewAccessFlusher(storeIface, 0, 0) // 0,0 → package defaults
+	accessFlusher.Start()
+	inProcBackend.SetAccessFlusher(accessFlusher)
+	memoryTool.Backend = inProcBackend
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so
 	// the Channel tool's subscribe-race diagnostic log can correlate
@@ -2953,6 +2963,9 @@ func main() {
 	<-sig
 	log.Println("shutting down…")
 	bgCancel() // tear down sweeper + GC goroutines first
+	// RFC BL: stop the access-count flusher and flush the final window so a
+	// clean shutdown never loses accumulated access counts.
+	accessFlusher.Stop()
 	if heartbeatRunner != nil {
 		heartbeatRunner.Stop()
 	}
