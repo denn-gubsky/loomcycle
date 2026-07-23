@@ -1010,6 +1010,22 @@ type AgentDef struct {
 	// Behaviour-bearing, so content-identifying.
 	MemoryProtocol bool `yaml:"memory_protocol"`
 
+	// MemoryIndexMaxBytes is the soft size cap the memory protocol surfaces to
+	// the agent for its /memory/index document — the agent is asked to keep the
+	// index under it and move detail into /memory/topics/<slug>. 0 = the
+	// DefaultMemoryIndexMaxBytes default (applied at use-time so 0 stays
+	// byte-stable in the content hash). Only meaningful with memory_protocol.
+	// Behaviour-bearing (feeds the injected protocol text), so content-identifying.
+	MemoryIndexMaxBytes int `yaml:"memory_index_max_bytes"`
+
+	// MemoryRoots controls provisioning of the operator-authored user-root
+	// document that composes into {{memory:user_info}}. "" / "lazy" (default) =
+	// create it on the first run that references user_info; "force" = pre-provision
+	// on every run (so the operator can fill it before first use); "suppress" =
+	// never auto-provision. Behaviour-bearing (changes whether the doc renders),
+	// so content-identifying.
+	MemoryRoots string `yaml:"memory_roots"`
+
 	// Channels is the v0.8.4 Channel tool ACL for this agent —
 	// per-side (publish / subscribe) allowlists naming channels the
 	// agent may post to or read from. Entries may use a trailing
@@ -1451,6 +1467,12 @@ func (c *Compaction) Validate() error {
 // Applied at use-time (not baked into config) so 0 stays byte-stable in the
 // content hash.
 const DefaultMemoryInjectMaxTokens = 1024
+
+// DefaultMemoryIndexMaxBytes is the fallback soft cap on the /memory/index
+// document surfaced to the agent via the memory protocol when an agent leaves
+// memory_index_max_bytes unset (0). Applied at use-time so 0 stays byte-stable
+// in the content hash. It is agent-maintained guidance, not a hard enforcement.
+const DefaultMemoryIndexMaxBytes = 24576
 
 // CoreBlock is one RFC BL P1 core-memory-block attachment. Its value is a
 // reserved KV Memory entry `core/<label>` in the block's scope, rendered into
@@ -4503,6 +4525,8 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		InheritCoreBlocks:     d.InheritCoreBlocks,
 		MemoryInjectMaxTokens: d.MemoryInjectMaxTokens,
 		MemoryProtocol:        d.MemoryProtocol,
+		MemoryIndexMaxBytes:   d.MemoryIndexMaxBytes,
+		MemoryRoots:           d.MemoryRoots,
 		Channels: AgentChannelACL{
 			Publish:   d.Channels.Publish,
 			Subscribe: d.Channels.Subscribe,
@@ -4642,6 +4666,12 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MemoryProtocol {
 		out.MemoryProtocol = true
+	}
+	if override.MemoryIndexMaxBytes != 0 {
+		out.MemoryIndexMaxBytes = override.MemoryIndexMaxBytes
+	}
+	if override.MemoryRoots != "" {
+		out.MemoryRoots = override.MemoryRoots
 	}
 	if override.Channels.Publish != nil {
 		out.Channels.Publish = override.Channels.Publish
@@ -5484,6 +5514,14 @@ func validate(c *Config) error {
 		}
 		if agent.MemoryInjectMaxTokens < 0 {
 			return fmt.Errorf("agent %q: memory_inject_max_tokens must be >= 0", name)
+		}
+		if agent.MemoryIndexMaxBytes < 0 {
+			return fmt.Errorf("agent %q: memory_index_max_bytes must be >= 0", name)
+		}
+		switch agent.MemoryRoots {
+		case "", "lazy", "force", "suppress":
+		default:
+			return fmt.Errorf("agent %q: memory_roots must be one of lazy|force|suppress (got %q)", name, agent.MemoryRoots)
 		}
 		// RFC BL P1: a {{memory:<variant>}} placeholder in the system prompt must
 		// reference a recognised variant — a typo is caught here, at boot, rather

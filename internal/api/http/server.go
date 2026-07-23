@@ -84,6 +84,14 @@ type Server struct {
 	// (mirroring the ephemeral-volume purge).
 	sqlMem *sqlmem.Manager
 
+	// userRootProvisioned memoizes the (tenant, scope, scope_id) triples whose
+	// memory-tier user-root Document has already been provisioned (or confirmed
+	// to exist) this process, so {{memory:user_info}} does one lookup on first
+	// reference and none thereafter (RFC BL P1 lazy provisioning). Keyed by a
+	// NUL-joined string; value is unused. sync.Map: read-mostly, keyed by a
+	// bounded principal set.
+	userRootProvisioned sync.Map
+
 	// redactor masks secret-shaped substrings in tool I/O before it is
 	// persisted to events.payload (F32). Built in New() from the secret-
 	// classified env when cfg.Env.RedactSecrets; nil (a no-op) when disabled
