@@ -15,6 +15,14 @@
 // DefsMode=export+prune each version is written to ExportDir as JSON BEFORE it
 // is deleted (export-then-delete: a failed export never deletes the row), so the
 // retired history survives outside the database.
+//
+// RFC BM Phase 2 adds a second, independent family: aged CHAT sessions (a
+// session whose runs are all terminal + old, plus its runs + events), gated by
+// ChatsMode with the same off / prune / export+prune semantics and the same
+// export-then-delete guarantee. Pinned sessions are always exempt. This subsumes
+// the RFC AV Phase 2b2 aged-session archiver in internal/usage — cmd/loomcycle
+// disables that one whenever this chats sub-sweep is active so a session is never
+// deleted by two sweepers at once.
 package retention
 
 import (
@@ -52,9 +60,25 @@ type Config struct {
 	// so an explicit 0 stays meaningful.
 	DefsKeepLastN int
 
-	// ExportDir is the directory export+prune writes def JSON into (one file per
-	// version, under a per-day/per-def-type subdir). Required for export+prune;
-	// if empty, the purge is DISABLED (never delete a version we were asked to
+	// ChatsMode is the RFC BM Phase 2 aged-chat archiver mode: "off"
+	// (default / ""), "prune" (cascade-delete aged sessions + their runs +
+	// events), or "export+prune" (write each session bundle to ExportDir as JSON,
+	// then delete). Unknown → off. Independent of DefsMode — a deployment can
+	// purge defs, chats, both, or neither. This subsumes the RFC AV Phase 2b2
+	// usage-sweeper aged-session archiver (main.go disables that one when this is
+	// on so the two never double-run). A PINNED session is always exempt (the
+	// store's PrunableAgedSessions excludes it).
+	ChatsMode string
+
+	// ChatsMaxAge is the age cutoff for the chats archiver: only sessions whose
+	// most-recent completed_at is before Now()-ChatsMaxAge are eligible. Zero = no
+	// minimum age (every all-terminal, non-pinned session qualifies).
+	ChatsMaxAge time.Duration
+
+	// ExportDir is the directory export+prune writes JSON into: def versions under
+	// <ExportDir>/<day>/<def-type>/, chat sessions under <ExportDir>/chats/<day>/.
+	// Required for export+prune (defs OR chats); if empty, the corresponding
+	// export+prune purge is DISABLED (never delete something we were asked to
 	// export but can't).
 	ExportDir string
 
@@ -91,14 +115,19 @@ type AdvisoryLocker interface {
 const (
 	defaultInterval = 1 * time.Hour
 	purgeBatch      = 500   // versions purged per def-type per tick
-	reportListCap   = 10000 // DryRunCounts saturates the per-type count at this cap
+	chatsPruneBatch = 500   // aged chat sessions purged per tick
+	reportListCap   = 10000 // DryRunCounts saturates each count at this cap
 )
 
 // Result is one sweep's per-def-type + total purge count (deleted, or — under
-// DryRun — would-be-deleted).
+// DryRun — would-be-deleted), plus the aged-chat-session count.
 type Result struct {
 	PerType map[string]int
 	Total   int
+	// Chats is the number of aged chat sessions deleted (or, under DryRun,
+	// would-be-deleted) this sweep. Counted separately from the def totals above:
+	// a session is not a def version.
+	Chats int
 }
 
 // Sweeper periodically exports + purges retired-and-old substrate def versions.
@@ -109,6 +138,8 @@ type Sweeper struct {
 	defsMode      string
 	defsMaxAge    time.Duration
 	defsKeepLastN int
+	chatsMode     string
+	chatsMaxAge   time.Duration
 	exportDir     string
 	dryRun        bool
 	logf          func(format string, args ...any)
@@ -133,6 +164,10 @@ func New(st store.Store, cfg Config) *Sweeper {
 	if mode == "" {
 		mode = "off"
 	}
+	chatsMode := cfg.ChatsMode
+	if chatsMode == "" {
+		chatsMode = "off"
+	}
 	keep := cfg.DefsKeepLastN
 	if keep < 0 {
 		// Guard a negative value only. 0 is a valid explicit choice (purge all
@@ -145,6 +180,8 @@ func New(st store.Store, cfg Config) *Sweeper {
 		defsMode:      mode,
 		defsMaxAge:    cfg.DefsMaxAge,
 		defsKeepLastN: keep,
+		chatsMode:     chatsMode,
+		chatsMaxAge:   cfg.ChatsMaxAge,
 		exportDir:     cfg.ExportDir,
 		dryRun:        cfg.DryRun,
 		logf:          cfg.Logger,
@@ -167,6 +204,19 @@ func (s *Sweeper) defsPurgeEnabled() bool {
 	return false
 }
 
+// chatsPruneEnabled mirrors defsPurgeEnabled for the aged-chat archiver:
+// "prune" always, "export+prune" only with a configured ExportDir (never delete
+// a session we were asked to export but can't). "off"/unknown → false.
+func (s *Sweeper) chatsPruneEnabled() bool {
+	switch s.chatsMode {
+	case "prune":
+		return true
+	case "export+prune":
+		return s.exportDir != ""
+	}
+	return false
+}
+
 // Run drives the sweep loop until ctx is done. The first tick fires after
 // Interval (not immediately) so a fresh process doesn't purge the moment it
 // boots. Blocks — caller starts it on a goroutine.
@@ -174,10 +224,13 @@ func (s *Sweeper) Run(ctx context.Context) {
 	if s.store == nil {
 		return
 	}
-	s.logf("retention: sweeper starting (interval=%s, defs_mode=%s, defs_max_age=%s, keep_last_n=%d, dry_run=%v)",
-		s.interval, s.defsMode, s.defsMaxAge, s.defsKeepLastN, s.dryRun)
+	s.logf("retention: sweeper starting (interval=%s, defs_mode=%s, defs_max_age=%s, keep_last_n=%d, chats_mode=%s, chats_max_age=%s, dry_run=%v)",
+		s.interval, s.defsMode, s.defsMaxAge, s.defsKeepLastN, s.chatsMode, s.chatsMaxAge, s.dryRun)
 	if s.defsMode == "export+prune" && s.exportDir == "" {
 		s.logf("retention: defs purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
+	}
+	if s.chatsMode == "export+prune" && s.exportDir == "" {
+		s.logf("retention: chats purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
 	}
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
@@ -221,16 +274,21 @@ func (s *Sweeper) Run(ctx context.Context) {
 			}
 			if err != nil {
 				s.logf("retention: sweep failed: %v", err)
-			} else if res.Total > 0 {
+			} else if res.Total > 0 || res.Chats > 0 {
 				verb := "purged"
 				if s.dryRun {
 					verb = "would purge"
 				}
-				s.logf("retention: %s %d retired def version(s) across %d type(s) (mode=%s)", verb, res.Total, len(res.PerType), s.defsMode)
+				if res.Total > 0 {
+					s.logf("retention: %s %d retired def version(s) across %d type(s) (mode=%s)", verb, res.Total, len(res.PerType), s.defsMode)
+				}
+				if res.Chats > 0 {
+					s.logf("retention: %s %d aged chat session(s) (mode=%s)", verb, res.Chats, s.chatsMode)
+				}
 				noOpStreak = 0
 			} else {
 				if noOpStreak == 0 || noOpStreak%noOpHeartbeatEvery == 0 {
-					s.logf("retention: sweep tick — 0 purgeable def versions (streak=%d)", noOpStreak)
+					s.logf("retention: sweep tick — 0 purgeable def versions / chat sessions (streak=%d)", noOpStreak)
 				}
 				noOpStreak++
 			}
@@ -238,16 +296,32 @@ func (s *Sweeper) Run(ctx context.Context) {
 	}
 }
 
-// sweepOnce runs one pass over every def-type. Exposed as a method so tests can
-// drive it deterministically without a real Ticker. A no-op when the purge is
-// disabled (mode=off, or export+prune with no ExportDir). The batch shares one
-// 2-minute deadline; per-type failures are logged and skipped so one bad type
-// never blocks the others.
+// sweepOnce runs one pass: the def-version purge (when defsPurgeEnabled) followed
+// by the aged-chat-session purge (when chatsPruneEnabled). Exposed as a method so
+// tests can drive it deterministically without a real Ticker. A no-op when both
+// are disabled. The two sub-sweeps are independent — each carries its own derived
+// deadline and its own failures are logged and skipped so neither can block the
+// other. Returns nil error even on a per-sub-sweep fault (both are logged); the
+// error slot is reserved for a future fatal condition.
 func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 	res := Result{PerType: map[string]int{}}
-	if !s.defsPurgeEnabled() {
-		return res, nil
+	if s.defsPurgeEnabled() {
+		s.sweepDefsOnce(parent, &res)
 	}
+	if s.chatsPruneEnabled() {
+		n, err := s.sweepChatsOnce(parent)
+		if err != nil {
+			s.logf("retention: chats sweep failed: %v", err)
+		}
+		res.Chats += n
+	}
+	return res, nil
+}
+
+// sweepDefsOnce purges one batch of retired-and-old def versions per def-type,
+// accumulating into res. The batch shares one 2-minute deadline; per-type
+// failures are logged and skipped so one bad type never blocks the others.
+func (s *Sweeper) sweepDefsOnce(parent context.Context, res *Result) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	cutoff := s.now().Add(-s.defsMaxAge)
@@ -291,7 +365,54 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 		res.PerType[defType] += n
 		res.Total += n
 	}
-	return res, nil
+}
+
+// sweepChatsOnce archives one batch of aged chat sessions (RFC BM Phase 2): list
+// sessions whose runs are ALL terminal + old (pinned sessions are excluded by the
+// store), export each (export+prune mode) then cascade-delete it (session + runs
+// + events). Prunes by SESSION, not by run — the continuation path replays the
+// whole-session transcript, so pruning one aged run inside a still-continued
+// session would corrupt it. This subsumes usage.archiveSessionsOnce (main.go
+// disables that archiver when this sub-sweep is on so the two never double-run).
+// Own 2-minute deadline (export writes files); per-session failures are logged +
+// skipped, and the batch breaks cleanly once the shared deadline expires.
+func (s *Sweeper) sweepChatsOnce(parent context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	defer cancel()
+	cutoff := s.now().Add(-s.chatsMaxAge)
+	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, chatsPruneBatch)
+	if err != nil {
+		return 0, err
+	}
+	pruned := 0
+	for _, sid := range sessions {
+		// The whole batch shares one deadline; once it expires every remaining
+		// export/DeleteSessionCascade would fail with the same ctx error — stop
+		// cleanly and return what we finished. The next tick resumes from where
+		// this one stopped (PrunableAgedSessions is re-queried).
+		if ctx.Err() != nil {
+			break
+		}
+		if s.chatsMode == "export+prune" {
+			if err := s.exportSession(ctx, sid); err != nil {
+				// Never delete a session we failed to export — retry next tick.
+				s.logf("retention: export chat session %s failed, skipping delete: %v", sid, err)
+				continue
+			}
+		}
+		if s.dryRun {
+			// Preview only: count what WOULD be deleted (export, if any, has run —
+			// mirroring the defs dry-run), touch no rows.
+			pruned++
+			continue
+		}
+		if err := s.store.DeleteSessionCascade(ctx, sid); err != nil {
+			s.logf("retention: delete chat session %s failed: %v", sid, err)
+			continue
+		}
+		pruned++
+	}
+	return pruned, nil
 }
 
 // exportDef writes one retired def version to ExportDir as JSON, under a
@@ -315,11 +436,62 @@ func (s *Sweeper) exportDef(ref store.RetiredDefRef) error {
 	return os.WriteFile(filepath.Join(dir, ref.DefID+".json"), blob, 0o600)
 }
 
-// DryRunCounts returns the per-def-type count of currently-purgeable versions
-// WITHOUT deleting anything — backing the read-only GET /v1/_retention report.
-// It reports the counts the CONFIGURED age + keep-last-N would purge regardless
-// of DefsMode (so an operator can preview impact before enabling a destructive
-// mode). Each count saturates at reportListCap.
+// exportSession writes one aged chat session (its runs + all events) to
+// <ExportDir>/chats/<day>/<sid>.json, bucketed by the session's latest completed
+// date so any single directory stays bounded. Lifted from usage.exportSession —
+// the RFC BM chats sweeper subsumes the RFC AV aged-session archiver; the
+// "chats/" segment keeps these bundles separate from the def-version exports
+// under the same ExportDir. The export dir is operator config, never model input.
+func (s *Sweeper) exportSession(ctx context.Context, sessionID string) error {
+	runs, err := s.store.RunsForSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	events, err := s.store.GetTranscript(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	// Bucket by the session's latest completed_at (fall back to latest start,
+	// then to now if a session somehow has no timestamps).
+	var day time.Time
+	for _, r := range runs {
+		if !r.CompletedAt.IsZero() && r.CompletedAt.After(day) {
+			day = r.CompletedAt
+		}
+	}
+	if day.IsZero() {
+		for _, r := range runs {
+			if r.StartedAt.After(day) {
+				day = r.StartedAt
+			}
+		}
+	}
+	if day.IsZero() {
+		day = s.now()
+	}
+	dir := filepath.Join(s.exportDir, "chats", day.UTC().Format("2006-01-02"))
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	payload := struct {
+		SessionID string        `json:"session_id"`
+		Runs      []store.Run   `json:"runs"`
+		Events    []store.Event `json:"events"`
+	}{SessionID: sessionID, Runs: runs, Events: events}
+	blob, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	// 0o600: run transcripts may hold sensitive tool I/O; operator-only.
+	return os.WriteFile(filepath.Join(dir, sessionID+".json"), blob, 0o600)
+}
+
+// DryRunCounts returns the count of currently-purgeable items per def-type PLUS
+// an aged-chat-session count under the "chats" key, WITHOUT deleting anything —
+// backing the read-only GET /v1/_retention report. It reports what the CONFIGURED
+// age + keep-last-N (defs) / age (chats) would purge regardless of mode (so an
+// operator can preview impact before enabling a destructive mode). Each count
+// saturates at reportListCap.
 func (s *Sweeper) DryRunCounts(ctx context.Context) (map[string]int, error) {
 	out := map[string]int{}
 	if s.store == nil {
@@ -333,5 +505,14 @@ func (s *Sweeper) DryRunCounts(ctx context.Context) (map[string]int, error) {
 		}
 		out[defType] = len(refs)
 	}
+	// Aged-chat sessions preview — mode-independent, like the def counts. Keyed
+	// "chats" (never a def-type name, so no collision). Pinned sessions are
+	// excluded by the store.
+	chatsCutoff := s.now().Add(-s.chatsMaxAge)
+	sessions, err := s.store.PrunableAgedSessions(ctx, chatsCutoff, reportListCap)
+	if err != nil {
+		return nil, err
+	}
+	out["chats"] = len(sessions)
 	return out, nil
 }

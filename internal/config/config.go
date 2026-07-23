@@ -2352,6 +2352,20 @@ type Env struct {
 	// (tenant, name) as lineage history. Default 5. 0 = purge all.
 	// Env: LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N.
 	RetentionDefsKeepLastN int
+	// RetentionChatsMode is the RFC BM Phase 2 aged-chat archiver mode:
+	// "off" (default / "") | "prune" | "export+prune" — deletes aged sessions +
+	// their runs + events (pinned sessions always exempt). Independent of
+	// RetentionDefsMode. Env: LOOMCYCLE_RETENTION_CHATS_MODE.
+	// Back-compat: when unset AND the legacy LOOMCYCLE_USAGE_RUN_RETENTION_*
+	// archiver is configured, it is inherited (see Load) so an existing operator's
+	// config keeps pruning aged chats — now via the retention sweeper, which then
+	// makes the usage archiver exclusive so the two never double-run.
+	RetentionChatsMode string
+	// RetentionChatsMaxAge is the age cutoff for the chats archiver: a session
+	// whose runs are ALL terminal and whose latest completed_at is older than this
+	// is exported (per the mode) and cascade-deleted. 0 = no minimum age.
+	// Env: LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS.
+	RetentionChatsMaxAge time.Duration
 	// ReplicasSweepInterval is the dead-replica reaper's tick rate.
 	// Default 60s. Tunable mostly for tests / crash-recovery load
 	// experiments — leave at default in production.
@@ -3289,6 +3303,38 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Env.RetentionDefsKeepLastN = n
+		}
+	}
+	// RFC BM Phase 2 aged-chat archiver (opt-in; default OFF).
+	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_MODE"); v != "" {
+		cfg.Env.RetentionChatsMode = v
+	}
+	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.RetentionChatsMaxAge = time.Duration(n) * time.Millisecond
+		}
+	}
+	// Back-compat: the RFC AV Phase 2b2 aged-session archiver
+	// (LOOMCYCLE_USAGE_RUN_RETENTION_*) is subsumed by the RFC BM chats sweeper.
+	// When the operator hasn't set an explicit chats mode but HAS configured the
+	// legacy archiver, inherit its knobs so their config keeps pruning aged chats
+	// — now via the retention sweeper (which main.go then makes exclusive so the
+	// two never double-run). A positive RunRetention is the intent-to-prune
+	// signal; an empty legacy mode maps to "prune" (the archiver's only enabled
+	// non-export mode) so the inherited config actually takes effect.
+	// Back-compat alias: an operator's legacy usage aged-session archiver config
+	// (LOOMCYCLE_USAGE_RUN_RETENTION_*) drives the new retention chats family when
+	// its own knobs are unset. Inherit ONLY when the legacy archiver was GENUINELY
+	// enabled — RunRetention>0 AND a delete-bearing mode (prune|export+prune) —
+	// exactly matching the legacy runArchivalEnabled() gate. A legacy config with
+	// no/off mode was dormant (never deleted), so it must stay dormant here: never
+	// activate deletion the legacy config didn't do.
+	if cfg.Env.RetentionChatsMode == "" && cfg.Env.UsageRunRetention > 0 &&
+		(cfg.Env.UsageRunRetentionMode == "prune" || cfg.Env.UsageRunRetentionMode == "export+prune") {
+		cfg.Env.RetentionChatsMode = cfg.Env.UsageRunRetentionMode
+		cfg.Env.RetentionChatsMaxAge = cfg.Env.UsageRunRetention
+		if cfg.Env.RetentionExportDir == "" {
+			cfg.Env.RetentionExportDir = cfg.Env.UsageExportDir
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {

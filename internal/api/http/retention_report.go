@@ -26,9 +26,15 @@ type retentionReportResponse struct {
 	DefsMode      string `json:"defs_mode"`
 	DefsMaxAgeMS  int64  `json:"defs_max_age_ms"`
 	DefsKeepLastN int    `json:"defs_keep_last_n"`
+	// ChatsMode / ChatsMaxAgeMS are the RFC BM Phase 2 aged-chat archiver knobs
+	// (config only — tenant-readable). ChatsMode reflects the effective value
+	// after the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* alias in config.Load.
+	ChatsMode     string `json:"chats_mode"`
+	ChatsMaxAgeMS int64  `json:"chats_max_age_ms"`
 	ExportDir     string `json:"export_dir,omitempty"`
 	// Purgeable is the per-def-type count of versions the CURRENT age + keep-last-N
-	// settings would purge right now (regardless of mode — a preview). Admin-only.
+	// settings would purge right now, plus an aged-chat-session count under the
+	// "chats" key (both regardless of mode — a preview). Admin-only.
 	Purgeable map[string]int `json:"purgeable,omitempty"`
 }
 
@@ -52,6 +58,10 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = "off"
 	}
+	chatsMode := s.cfg.Env.RetentionChatsMode
+	if chatsMode == "" {
+		chatsMode = "off"
+	}
 	resp := retentionReportResponse{
 		Admin:         admin,
 		Enabled:       s.cfg.Env.RetentionEnabled,
@@ -59,6 +69,8 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 		DefsMode:      mode,
 		DefsMaxAgeMS:  s.cfg.Env.RetentionDefsMaxAge.Milliseconds(),
 		DefsKeepLastN: s.cfg.Env.RetentionDefsKeepLastN,
+		ChatsMode:     chatsMode,
+		ChatsMaxAgeMS: s.cfg.Env.RetentionChatsMaxAge.Milliseconds(),
 	}
 
 	if s.store == nil {
@@ -77,6 +89,8 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 			DefsMode:      mode,
 			DefsMaxAge:    s.cfg.Env.RetentionDefsMaxAge,
 			DefsKeepLastN: s.cfg.Env.RetentionDefsKeepLastN,
+			ChatsMode:     chatsMode,
+			ChatsMaxAge:   s.cfg.Env.RetentionChatsMaxAge,
 			ExportDir:     s.cfg.Env.RetentionExportDir,
 		})
 		counts, err := sw.DryRunCounts(r.Context())

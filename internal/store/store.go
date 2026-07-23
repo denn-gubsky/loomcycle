@@ -998,7 +998,10 @@ type Store interface {
 	// capped at limit. The archiver (RFC AV Phase 2b2) prunes by SESSION, not by
 	// run — the continuation path replays GetTranscript(session_id) (all runs),
 	// so pruning one aged run inside a still-continued session would corrupt the
-	// transcript. A session with any non-terminal run is never returned.
+	// transcript. A session with any non-terminal run is never returned. A PINNED
+	// session (sessions.pinned) is likewise never returned — pinning exempts a
+	// chat from ALL automated retention (the RFC BM chats sweeper + this legacy
+	// RFC AV archiver both consume this list).
 	PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
 
 	// RunsForSession returns every run in the session (any status), oldest first.

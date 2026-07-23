@@ -376,6 +376,9 @@ func Run(t *testing.T, factory Factory) {
 		// incl. nullable tiers.
 		{"TokenLimits", testTokenLimits},
 		{"SessionArchiver", testSessionArchiver},
+		// RFC BM Phase 2: a PINNED session is exempt from PrunableAgedSessions
+		// (all automated retention). Fails on the pre-fix query (no exclusion).
+		{"PrunableAgedSessionsExcludesPinned", testPrunableAgedSessionsExcludesPinned},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
 		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
@@ -1164,6 +1167,55 @@ func testSessionArchiver(t *testing.T, s store.Store) {
 	// Session B untouched.
 	if _, err := s.GetRun(ctx, runB2.ID); err != nil {
 		t.Errorf("session B run was affected: %v", err)
+	}
+}
+
+// testPrunableAgedSessionsExcludesPinned is the RFC BM Phase 2 pinned-exemption
+// regression: a PINNED session, even when all its runs are terminal + old, must
+// NEVER be returned by PrunableAgedSessions — pinning is the operator's explicit
+// "keep this" and exempts the chat from ALL automated retention (the chats
+// sweeper AND the legacy usage archiver both consume this list). An identical
+// UNpinned session in the same state IS returned. Fails on the pre-fix query
+// (no pinned exclusion) — the pinned session would appear in the prunable set.
+func testPrunableAgedSessionsExcludesPinned(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// Two sessions, each with one completed run — identical except one is pinned.
+	mkAged := func(agentID string) string {
+		sess, err := s.CreateSession(ctx, "t", "default", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agentID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+			t.Fatal(err)
+		}
+		return sess.ID
+	}
+	pinnedID := mkAged("pinned-a")
+	unpinnedID := mkAged("unpinned-a")
+	if err := s.SetSessionMeta(ctx, pinnedID, store.SessionMetaPatch{Pinned: boolPtr(true)}); err != nil {
+		t.Fatalf("SetSessionMeta pin: %v", err)
+	}
+
+	// A future cutoff → both sessions are all-terminal and old enough to qualify;
+	// only the pinned exemption should keep the pinned one out.
+	got, err := s.PrunableAgedSessions(ctx, time.Now().Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("PrunableAgedSessions: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, id := range got {
+		ids[id] = true
+	}
+	if ids[pinnedID] {
+		t.Errorf("pinned session %s returned as prunable; pinning must exempt it from all retention: %v", pinnedID, got)
+	}
+	if !ids[unpinnedID] {
+		t.Errorf("unpinned aged session %s missing from prunable set: %v", unpinnedID, got)
 	}
 }
 
