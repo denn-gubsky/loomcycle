@@ -53,6 +53,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/webui"
 
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 )
 
 // ProviderResolver returns a Provider by ID. The cmd/loomcycle main constructs one
@@ -84,13 +85,15 @@ type Server struct {
 	// (mirroring the ephemeral-volume purge).
 	sqlMem *sqlmem.Manager
 
-	// userRootProvisioned memoizes the (tenant, scope, scope_id) triples whose
-	// memory-tier user-root Document has already been provisioned (or confirmed
-	// to exist) this process, so {{memory:user_info}} does one lookup on first
-	// reference and none thereafter (RFC BL P1 lazy provisioning). Keyed by a
-	// NUL-joined string; value is unused. sync.Map: read-mostly, keyed by a
-	// bounded principal set.
-	userRootProvisioned sync.Map
+	// userRootProvisionSF collapses a concurrent burst of first-references to the
+	// memory-tier user-root Document (per tenant+user) onto a single flight, so
+	// the exists-check + import_md create in ensureUserRootDoc runs exactly once
+	// rather than each goroutine minting a duplicate, orphaned doc (RFC BL P1).
+	// singleflight evicts each key when its flight returns, so — unlike the former
+	// persistent per-principal memo — the dedup table cannot grow without bound
+	// over the process lifetime. Cross-replica dedup is handled separately by the
+	// sessionLockPG advisory lock in provisionUserRootDoc.
+	userRootProvisionSF singleflight.Group
 
 	// redactor masks secret-shaped substrings in tool I/O before it is
 	// persisted to events.payload (F32). Built in New() from the secret-

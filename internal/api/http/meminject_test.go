@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -299,6 +300,37 @@ func TestUserRoot_LazyProvisionOnFirstReference(t *testing.T) {
 	}
 	if !strings.Contains(got.SystemPrompt, `<memory source="user_info">`) {
 		t.Errorf("user_info must be framed as reference DATA:\n%s", got.SystemPrompt)
+	}
+}
+
+// TestUserRoot_ConcurrentProvisionCreatesOne pins the RFC BL P1 duplicate-doc
+// fix: N goroutines racing the FIRST reference for one (tenant,user) must
+// provision exactly ONE user-root Document, not one per goroutine. createDocument
+// mints a fresh doc id each call (the dirent upsert hides it), so without the
+// singleflight serialization every goroutine's exists-check misses and each
+// import_md leaves a duplicate, orphaned doc. Run under -race.
+func TestUserRoot_ConcurrentProvisionCreatesOne(t *testing.T) {
+	st, mgr := memStoreFixture(t)
+	s := &Server{store: st}
+	s.SetSqlMem(mgr)
+	mi := memInject{Tenant: "t1", UserID: "alice", AgentName: "helper"}
+
+	const n = 24
+	start := make(chan struct{}) // release all goroutines together to widen the race window
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			s.ensureUserRootDoc(context.Background(), mi)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := userDocCount(t, mgr, "t1", "alice"); got != 1 {
+		t.Fatalf("concurrent first-references must provision exactly one user-root doc, got %d", got)
 	}
 }
 

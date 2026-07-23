@@ -201,7 +201,7 @@ func (s *Server) renderUserInfo(ctx context.Context, mi memInject, maxBytes int,
 		return ""
 	}
 	if !suppress {
-		s.ensureUserRootDoc(ctx, mi) // lazy-on-first-reference; cached per principal
+		s.ensureUserRootDoc(ctx, mi) // lazy-on-first-reference; serialized per principal
 	}
 	docMD := s.readUserRootMarkdown(ctx, mi)                                   // "" when unavailable
 	humanVal, _ := s.readCoreBlock(ctx, mi.Tenant, "user", mi.UserID, "human") // "" on miss
@@ -297,28 +297,69 @@ func (s *Server) docToolCtx(ctx context.Context, mi memInject) context.Context {
 }
 
 // ensureUserRootDoc provisions the operator-authored user-root Document from the
-// embedded template the first time it is referenced for a (tenant, user), via
-// the SAME Document create path the Document tool uses (import_md). Idempotent:
-// an exists-check precedes create, and success is memoized per principal so it is
-// one lookup on first reference and none thereafter. Best-effort — SQL Memory /
-// store absent, or any failure, degrades to "no doc rendered" (the run continues
-// on the `human` block alone) and is NOT cached, so a transient fault retries.
+// embedded template the first time it is referenced for a (tenant, user), via the
+// SAME Document create path the Document tool uses (import_md). It closes two
+// duplicate-creation races on the unsynchronized exists-check→create sequence,
+// because createDocument always mints a FRESH doc id (the dirent upsert hides it),
+// so two first-references that both miss the exists-check each import_md and leave
+// a duplicate, orphaned, never-GC'd user-root Document:
+//
+//   - Same process — concurrent first-references for one (tenant,user) collapse
+//     onto a single flight (userRootProvisionSF), so the exists-check + create run
+//     exactly once and the rest share the result. The flight's key is evicted when
+//     it returns, so nothing accumulates per principal (the former persistent memo
+//     grew one entry per distinct principal forever). A repeat, NON-concurrent
+//     reference is cheap and idempotent via the real exists-check below — one
+//     indexed read, dwarfed by the per-run LLM call that gates this path.
+//   - Cross replica — see provisionUserRootDoc: a PG advisory lock admits exactly
+//     one replica to the exists-check + create; a replica that loses it skips this
+//     pass (idempotent — the next reference finds the doc).
+//
+// Best-effort — SQL Memory / store absent, or any failure, degrades to "no doc
+// rendered" (the run continues on the `human` block alone); nothing is cached, so
+// a transient fault retries on the next reference.
 func (s *Server) ensureUserRootDoc(ctx context.Context, mi memInject) {
 	if s.store == nil || s.sqlMem == nil || mi.UserID == "" {
 		return
 	}
+	// The NUL-joined cacheKey is a fine Go map key for the flight; it is NOT
+	// reused for the PG advisory lock (Postgres text params reject NUL 0x00).
 	cacheKey := userRootCacheKey(mi.Tenant, mi.UserID)
-	if _, done := s.userRootProvisioned.Load(cacheKey); done {
-		return
+	_, _, _ = s.userRootProvisionSF.Do(cacheKey, func() (any, error) {
+		s.provisionUserRootDoc(ctx, mi)
+		return nil, nil
+	})
+}
+
+// provisionUserRootDoc runs the exists-check + import_md create under the
+// cross-replica advisory lock when clustered. Split out of ensureUserRootDoc so
+// the singleflight closure stays a thin wrapper. Never returns an error —
+// provisioning is best-effort (see ensureUserRootDoc).
+func (s *Server) provisionUserRootDoc(ctx context.Context, mi memInject) {
+	// Cross-replica dedup: in cluster mode hold the PG advisory lock so only one
+	// replica runs the exists-check + create for this principal. A lost lock means
+	// a peer is provisioning — skip (idempotent; the next reference finds the doc).
+	// Nil (single-replica) → the in-process flight is the only guard.
+	if s.sessionLockPG != nil {
+		// NUL-free lock id: pg text params (hashtextextended) reject 0x00, so we do
+		// NOT reuse the NUL-joined userRootCacheKey here. A '/' join can only alias
+		// across principals whose (tenant,user) concatenate identically — harmless,
+		// since a lost lock only skips this pass and the next reference retries
+		// against the principal's own, isolated scope.
+		release, ok := s.sessionLockPG.TryLock(ctx, "memory:userroot:"+mi.Tenant+"/"+mi.UserID)
+		if !ok {
+			return
+		}
+		defer release()
 	}
+
 	dctx := s.docToolCtx(ctx, mi)
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 
-	// Exists-check: a get_document that succeeds means it was provisioned in an
-	// earlier process/run — memoize and skip create.
+	// Exists-check: a get_document that succeeds means it was provisioned by an
+	// earlier run (this process or another replica) — nothing to do.
 	probe, _ := json.Marshal(map[string]any{"op": "get_document", "scope": "user", "path": meminject.UserRootPath})
 	if res, _ := doc.Execute(dctx, probe); !res.IsError {
-		s.userRootProvisioned.Store(cacheKey, struct{}{})
 		return
 	}
 
@@ -326,10 +367,7 @@ func (s *Server) ensureUserRootDoc(ctx context.Context, mi memInject) {
 		"op": "import_md", "scope": "user", "path": meminject.UserRootPath,
 		"markdown": meminject.UserRootTemplate(),
 	})
-	if res, _ := doc.Execute(dctx, create); res.IsError {
-		return // leave uncached so a transient failure retries next run
-	}
-	s.userRootProvisioned.Store(cacheKey, struct{}{})
+	_, _ = doc.Execute(dctx, create) // best-effort; a failure retries next reference
 }
 
 // readUserRootMarkdown exports the user-root Document to clean Markdown for
