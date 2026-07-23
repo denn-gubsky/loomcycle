@@ -894,6 +894,8 @@ type mergedDef struct {
 	InheritCoreBlocks     bool               `json:"inherit_core_blocks,omitempty"`
 	MemoryInjectMaxTokens int                `json:"memory_inject_max_tokens,omitempty"`
 	MemoryProtocol        bool               `json:"memory_protocol,omitempty"`
+	MemoryIndexMaxBytes   int                `json:"memory_index_max_bytes,omitempty"`
+	MemoryRoots           string             `json:"memory_roots,omitempty"`
 	Description           string             `json:"description,omitempty"`
 	// RetryAttempts mirrors config.AgentDef.RetryAttempts — same-
 	// provider retry budget override. *int so the substrate-write
@@ -1015,6 +1017,12 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.MemoryProtocol {
 		d.MemoryProtocol = true
 	}
+	if ov.MemoryIndexMaxBytes != 0 {
+		d.MemoryIndexMaxBytes = ov.MemoryIndexMaxBytes
+	}
+	if ov.MemoryRoots != "" {
+		d.MemoryRoots = ov.MemoryRoots
+	}
 	if ov.Description != "" {
 		d.Description = ov.Description
 	}
@@ -1105,6 +1113,8 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		InheritCoreBlocks:     s.InheritCoreBlocks,
 		MemoryInjectMaxTokens: s.MemoryInjectMaxTokens,
 		MemoryProtocol:        s.MemoryProtocol,
+		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
+		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
 		// F14: a static agent bootstrapped into the substrate keeps its
 		// interactive/multi-agent config (and so its content hash matches a
@@ -1199,6 +1209,8 @@ func signFromMergedDef(name string, def mergedDef) string {
 		InheritCoreBlocks:     def.InheritCoreBlocks,
 		MemoryInjectMaxTokens: def.MemoryInjectMaxTokens,
 		MemoryProtocol:        def.MemoryProtocol,
+		MemoryIndexMaxBytes:   def.MemoryIndexMaxBytes,
+		MemoryRoots:           def.MemoryRoots,
 		// RFC BA: skills: is the agent's pattern-allowlist ACL (authority, not
 		// content) — excluded from content_sha256 like the *_def_scopes gates.
 		SystemPrompt:     def.SystemPrompt,

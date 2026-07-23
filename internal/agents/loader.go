@@ -98,6 +98,8 @@ type Agent struct {
 	InheritCoreBlocks     bool
 	MemoryInjectMaxTokens int
 	MemoryProtocol        bool
+	MemoryIndexMaxBytes   int
+	MemoryRoots           string
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
 	// Subscribe = no access on that side.
 	Channels AgentChannelACL
@@ -327,6 +329,8 @@ type frontmatter struct {
 	InheritCoreBlocks     bool                       `yaml:"inherit_core_blocks"`      // RFC BL P1
 	MemoryInjectMaxTokens int                        `yaml:"memory_inject_max_tokens"` // RFC BL P1
 	MemoryProtocol        bool                       `yaml:"memory_protocol"`          // RFC BL P1
+	MemoryIndexMaxBytes   int                        `yaml:"memory_index_max_bytes"`   // RFC BL P1
+	MemoryRoots           string                     `yaml:"memory_roots"`             // RFC BL P1
 	Channels              AgentChannelACL            `yaml:"channels"`
 	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
 	VolumeDefScopes       []string                   `yaml:"volume_def_scopes"`
@@ -400,6 +404,8 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.InheritCoreBlocks = fm.InheritCoreBlocks
 	a.MemoryInjectMaxTokens = fm.MemoryInjectMaxTokens
 	a.MemoryProtocol = fm.MemoryProtocol
+	a.MemoryIndexMaxBytes = fm.MemoryIndexMaxBytes
+	a.MemoryRoots = fm.MemoryRoots
 	a.Channels = fm.Channels
 	a.AgentDefScopes = fm.AgentDefScopes
 	a.VolumeDefScopes = fm.VolumeDefScopes
