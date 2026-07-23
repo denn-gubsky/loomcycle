@@ -17,6 +17,64 @@ func TestTier_SQLite(t *testing.T) {
 	}
 }
 
+// TestDropScope_SQLite: DropScope removes one durable scope (idempotently),
+// leaves siblings alone, and refuses the run scope + an empty key (RFC BM).
+func TestDropScope_SQLite(t *testing.T) {
+	m := newTestManager(t, Config{})
+	ctx := context.Background()
+
+	target := ScopeKey{Tenant: "t1", Scope: "agent", ScopeID: "gone"}
+	sibling := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "stays"}
+	for _, k := range []ScopeKey{target, sibling} {
+		if _, err := m.Exec(ctx, k, "CREATE TABLE t (id INTEGER)", nil, 0); err != nil {
+			t.Fatalf("create %v: %v", k, err)
+		}
+	}
+
+	removed, err := m.DropScope(ctx, target)
+	if err != nil {
+		t.Fatalf("DropScope: %v", err)
+	}
+	if !removed {
+		t.Error("DropScope removed=false on an existing scope")
+	}
+	// Gone from the listing; the sibling remains.
+	scopes, err := m.ListScopes(ctx)
+	if err != nil {
+		t.Fatalf("ListScopes: %v", err)
+	}
+	for _, s := range scopes {
+		if s == target {
+			t.Errorf("dropped scope still listed: %v", s)
+		}
+	}
+	got := map[ScopeKey]bool{}
+	for _, s := range scopes {
+		got[s] = true
+	}
+	if !got[sibling] {
+		t.Errorf("sibling scope %v was wrongly dropped", sibling)
+	}
+
+	// Idempotent: a second drop reports removed=false, no error.
+	removed, err = m.DropScope(ctx, target)
+	if err != nil {
+		t.Fatalf("second DropScope: %v", err)
+	}
+	if removed {
+		t.Error("second DropScope removed=true, want false (already gone)")
+	}
+
+	// The run scope must be rejected (use DropRunScope).
+	if _, err := m.DropScope(ctx, ScopeKey{Scope: "run", ScopeID: "r1"}); err == nil {
+		t.Error("DropScope accepted the run scope, want error")
+	}
+	// An empty scope_id must be rejected.
+	if _, err := m.DropScope(ctx, ScopeKey{Tenant: "t1", Scope: "agent", ScopeID: ""}); err == nil {
+		t.Error("DropScope accepted an empty scope_id, want error")
+	}
+}
+
 // TestListScopes_SQLiteDurableOnly: agent + user scopes are enumerated; the
 // ephemeral run scope is never listed.
 func TestListScopes_SQLiteDurableOnly(t *testing.T) {

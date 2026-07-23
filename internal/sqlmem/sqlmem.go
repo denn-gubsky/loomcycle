@@ -27,6 +27,7 @@ package sqlmem
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -91,6 +92,13 @@ type backend interface {
 	query(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error)
 	exec(ctx context.Context, key ScopeKey, statement string, args []any, quotaOverride int) (*ExecResult, error)
 	dropRunScope(runID string) (removed bool, err error)
+	// dropScope drops one DURABLE (agent/user) scope: retire its pool, drop its
+	// schema+role (postgres) / .db file (sqlite), remove its GC meta. Mirrors the
+	// per-scope drop the GC sweeper does, exposed for RFC BM retention (reclaim a
+	// fully-retired agent's SQL-Memory scope). removed reflects an actual drop
+	// (false when the scope was already gone). MUST NOT be called for the run
+	// scope — use dropRunScope.
+	dropScope(key ScopeKey) (removed bool, err error)
 	// beginTx pins the scope connection (so it is not evicted while the txn is
 	// open) and opens a transaction on it. release drops the pin; the caller
 	// MUST call it after Commit/Rollback. The *sql.Tx is backend-agnostic, so
@@ -245,6 +253,22 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 // scope existed.
 func (m *Manager) DropRunScope(runID string) (removed bool, err error) {
 	return m.backend.dropRunScope(runID)
+}
+
+// DropScope removes one DURABLE (agent/user) scope (sqlite: the .db file behind
+// a path fence; postgres: the scope schema + role + GC meta). removed reports
+// whether the scope existed. Rejects the run scope (use DropRunScope) and an
+// empty ScopeID. Used by the RFC BM retention sweeper to reclaim a fully-retired
+// agent's SQL-Memory scope (its SQL tables + document-structure rows). Idempotent
+// — a never-provisioned scope returns removed=false, nil.
+func (m *Manager) DropScope(ctx context.Context, key ScopeKey) (removed bool, err error) {
+	if key.Scope == runScope {
+		return false, fmt.Errorf("sqlmem: DropScope is for durable scopes; use DropRunScope for the run scope")
+	}
+	if key.Scope == "" || strings.TrimSpace(key.ScopeID) == "" {
+		return false, fmt.Errorf("sqlmem: DropScope requires a non-empty scope and scope_id")
+	}
+	return m.backend.dropScope(key)
 }
 
 // VectorsEnabled reports whether this Manager's tier can serve vector columns

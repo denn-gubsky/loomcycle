@@ -31,11 +31,30 @@ type retentionReportResponse struct {
 	// after the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* alias in config.Load.
 	ChatsMode     string `json:"chats_mode"`
 	ChatsMaxAgeMS int64  `json:"chats_max_age_ms"`
-	ExportDir     string `json:"export_dir,omitempty"`
+	// MemMode / MemMaxAgeMS are the RFC BM Phase 3 retired-agent memory-reclamation
+	// knobs (config only — tenant-readable).
+	MemMode     string `json:"mem_mode"`
+	MemMaxAgeMS int64  `json:"mem_max_age_ms"`
+	ExportDir   string `json:"export_dir,omitempty"`
 	// Purgeable is the per-def-type count of versions the CURRENT age + keep-last-N
-	// settings would purge right now, plus an aged-chat-session count under the
-	// "chats" key (both regardless of mode — a preview). Admin-only.
+	// settings would purge right now, plus an aged-chat-session count under "chats"
+	// and a retired-agent memory-reclamation count under "mem" (all regardless of
+	// mode — a preview). Admin-only.
 	Purgeable map[string]int `json:"purgeable,omitempty"`
+	// SQLMemGC surfaces the SEPARATE always-on SQL-Memory garbage collector (RFC AA
+	// Phase 3d/3f — idle-TTL + size-budget eviction of durable scopes), so an
+	// operator sees the full retention picture in one place. Admin-only (an
+	// operator-global infra subsystem, like export_dir).
+	SQLMemGC *sqlMemGCInfo `json:"sqlmem_gc,omitempty"`
+}
+
+// sqlMemGCInfo is the admin-only view of the SQL-Memory GC config. Enabled is
+// true when either eviction trigger is armed (idle-TTL OR size-budget).
+type sqlMemGCInfo struct {
+	Enabled       bool  `json:"enabled"`
+	ScopeTTLMS    int   `json:"scope_ttl_ms"`
+	IntervalMS    int   `json:"interval_ms"`
+	TotalMaxBytes int64 `json:"total_max_bytes"`
 }
 
 // handleRetentionReport serves GET /v1/_retention — the read-only view of the
@@ -62,6 +81,10 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	if chatsMode == "" {
 		chatsMode = "off"
 	}
+	memMode := s.cfg.Env.RetentionMemMode
+	if memMode == "" {
+		memMode = "off"
+	}
 	resp := retentionReportResponse{
 		Admin:         admin,
 		Enabled:       s.cfg.Env.RetentionEnabled,
@@ -71,6 +94,8 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 		DefsKeepLastN: s.cfg.Env.RetentionDefsKeepLastN,
 		ChatsMode:     chatsMode,
 		ChatsMaxAgeMS: s.cfg.Env.RetentionChatsMaxAge.Milliseconds(),
+		MemMode:       memMode,
+		MemMaxAgeMS:   s.cfg.Env.RetentionMemMaxAge.Milliseconds(),
 	}
 
 	if s.store == nil {
@@ -85,20 +110,40 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	// purgeable counts.
 	if admin {
 		resp.ExportDir = s.cfg.Env.RetentionExportDir
-		sw := retention.New(s.store, retention.Config{
+		rCfg := retention.Config{
 			DefsMode:      mode,
 			DefsMaxAge:    s.cfg.Env.RetentionDefsMaxAge,
 			DefsKeepLastN: s.cfg.Env.RetentionDefsKeepLastN,
 			ChatsMode:     chatsMode,
 			ChatsMaxAge:   s.cfg.Env.RetentionChatsMaxAge,
+			MemMode:       memMode,
+			MemMaxAge:     s.cfg.Env.RetentionMemMaxAge,
 			ExportDir:     s.cfg.Env.RetentionExportDir,
-		})
+		}
+		// Feed the SQL-Memory manager so the "mem" preview can see which agents
+		// have an SQL-Memory scope. Typed-nil guard (nil pointer → nil interface).
+		if s.sqlMem != nil {
+			rCfg.SQLMem = s.sqlMem
+		}
+		sw := retention.New(s.store, rCfg)
 		counts, err := sw.DryRunCounts(r.Context())
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
 		resp.Purgeable = counts
+
+		// Surface the separate SQL-Memory GC (RFC AA) as infra context.
+		gcInterval := s.cfg.Storage.SqlMemGCIntervalMS
+		if gcInterval == 0 && (s.cfg.Storage.SqlMemScopeTTLMS > 0 || s.cfg.Storage.SqlMemTotalMaxBytes > 0) {
+			gcInterval = int(time.Hour.Milliseconds()) // the sqlmem default
+		}
+		resp.SQLMemGC = &sqlMemGCInfo{
+			Enabled:       s.cfg.Storage.SqlMemScopeTTLMS > 0 || s.cfg.Storage.SqlMemTotalMaxBytes > 0,
+			ScopeTTLMS:    s.cfg.Storage.SqlMemScopeTTLMS,
+			IntervalMS:    gcInterval,
+			TotalMaxBytes: s.cfg.Storage.SqlMemTotalMaxBytes,
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

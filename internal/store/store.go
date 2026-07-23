@@ -1419,6 +1419,16 @@ type Store interface {
 	// already expired). Both are non-error paths.
 	MemoryDelete(ctx context.Context, scope MemoryScope, scopeID, key string) (bool, error)
 
+	// MemoryDeleteScope removes EVERY entry under (scope, scopeID) in one
+	// statement and returns the row count deleted (memory_embeddings rows
+	// cascade via their FK). Used by the RFC BM retention sweeper to reclaim a
+	// fully-retired agent's accumulated base-memory k/v. NOTE: the memory table
+	// has no tenant_id column — an agent scope_id is the bare agent name, shared
+	// by same-named agents across tenants — so the caller MUST only invoke this
+	// for a name that is retired in EVERY tenant (globally dead); the store does
+	// not (cannot) enforce tenant isolation here.
+	MemoryDeleteScope(ctx context.Context, scope MemoryScope, scopeID string) (int, error)
+
 	// MemoryList returns entries for the (scope, scopeID) tuple whose
 	// key starts with prefix. An empty prefix returns every key in the
 	// scope. Capped at limit rows; if more rows would match, callers
