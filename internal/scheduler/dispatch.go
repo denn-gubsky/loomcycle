@@ -163,7 +163,7 @@ func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID 
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	return s.store.MemorySet(ctx, scope, scopeID, h.Key, value, 0)
+	return s.store.MemorySet(ctx, "", scope, scopeID, h.Key, value, 0)
 }
 
 func (s *Scheduler) dispatchMCPCall(ctx context.Context, h scheduleHook) error {

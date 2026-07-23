@@ -1282,11 +1282,11 @@ type Store interface {
 	// SnapshotReadMCPServerDefActive — v0.9.x mirror.
 	SnapshotReadMCPServerDefActive(ctx context.Context) ([]MCPServerDefActiveEntry, error)
 
-	// SnapshotReadMemory returns every memory row across all scopes,
-	// tagged with scope + scope_id. Ordered by (scope ASC, scope_id
-	// ASC, key ASC). Filters out expired rows (consistent with
-	// MemoryGet's behaviour) so the snapshot doesn't carry
-	// already-stale entries.
+	// SnapshotReadMemory returns every memory row across all scopes and
+	// tenants, tagged with tenant_id + scope + scope_id. Ordered by
+	// (scope ASC, scope_id ASC, key ASC). Filters out expired rows
+	// (consistent with MemoryGet's behaviour) so the snapshot doesn't
+	// carry already-stale entries.
 	SnapshotReadMemory(ctx context.Context) ([]MemorySnapshotEntry, error)
 
 	// SnapshotReadChannelMessages returns every channel_messages row.
@@ -1379,8 +1379,9 @@ type Store interface {
 	SnapshotRestoreMCPServerDefActive(ctx context.Context, entry MCPServerDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreMemory inserts one memory row preserving
-	// CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent on
-	// (scope, scope_id, key).
+	// TenantID + CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent
+	// on (tenant_id, scope, scope_id, key). An entry with no TenantID
+	// (an older snapshot) restores under the legacy tenant "".
 	SnapshotRestoreMemory(ctx context.Context, entry MemorySnapshotEntry) (bool, error)
 
 	// SnapshotRestoreChannelMessage inserts one channel_messages row
@@ -1398,43 +1399,51 @@ type Store interface {
 	// on eval_id.
 	SnapshotRestoreEvaluation(ctx context.Context, r EvaluationRow) (bool, error)
 
+	// tenantID is the leading isolation axis on every Memory* method
+	// below (RFC BL). It is server-supplied (from RunIdentity / the def
+	// row / the authenticated principal) — NEVER model- or wire-derived
+	// — and is filtered `WHERE tenant_id = $N` with the row's PK widened
+	// to lead with it, mirroring the definition-plane idiom (migration
+	// 0037). "" is the shared/legacy tenant; a freshly-migrated
+	// single-tenant DB is entirely "" and reads byte-identical to the
+	// pre-RFC-BL behaviour. `global` scope always uses "".
+	//
 	// MemorySet writes a Memory entry. ttl > 0 sets an expiry; ttl <= 0
 	// stores with no expiry (the row's expires_at column is NULL). The
-	// row is upserted on the (scope, scopeID, key) primary key —
+	// row is upserted on the (tenantID, scope, scopeID, key) primary key —
 	// re-writes overwrite the value and bump updated_at. Implementations
 	// are responsible for surfacing wire-level constraints (max value
 	// bytes, scope quota) as ErrMemoryQuotaExceeded — the tool layer
 	// trusts the store's verdict.
-	MemorySet(ctx context.Context, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
+	MemorySet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
 
 	// MemoryGet reads one entry. Returns *ErrNotFound for both "key
 	// missing" and "key expired" — callers don't need to distinguish.
 	// Implementations MUST treat an entry whose expires_at is in the
 	// past as missing (returns ErrNotFound) regardless of whether the
 	// sweeper has reaped it yet — the sweeper is best-effort.
-	MemoryGet(ctx context.Context, scope MemoryScope, scopeID, key string) (MemoryEntry, error)
+	MemoryGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) (MemoryEntry, error)
 
 	// MemoryDelete removes an entry. Returns true when a row was
 	// actually deleted, false when the key didn't exist (or had
 	// already expired). Both are non-error paths.
-	MemoryDelete(ctx context.Context, scope MemoryScope, scopeID, key string) (bool, error)
+	MemoryDelete(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) (bool, error)
 
-	// MemoryDeleteScope removes EVERY entry under (scope, scopeID) in one
-	// statement and returns the row count deleted (memory_embeddings rows
+	// MemoryDeleteScope removes EVERY entry under (tenantID, scope, scopeID) in
+	// one statement and returns the row count deleted (memory_embeddings rows
 	// cascade via their FK). Used by the RFC BM retention sweeper to reclaim a
-	// fully-retired agent's accumulated base-memory k/v. NOTE: the memory table
-	// has no tenant_id column — an agent scope_id is the bare agent name, shared
-	// by same-named agents across tenants — so the caller MUST only invoke this
-	// for a name that is retired in EVERY tenant (globally dead); the store does
-	// not (cannot) enforce tenant isolation here.
-	MemoryDeleteScope(ctx context.Context, scope MemoryScope, scopeID string) (int, error)
+	// fully-retired agent's accumulated base-memory k/v. It now scopes by
+	// tenantID, so a caller reclaiming an agent name that is dead across
+	// multiple tenants must fan out one call per tenant (or use "" for the
+	// legacy/shared tenant) — a single call touches only the given tenant's rows.
+	MemoryDeleteScope(ctx context.Context, tenantID string, scope MemoryScope, scopeID string) (int, error)
 
 	// MemoryList returns entries for the (scope, scopeID) tuple whose
 	// key starts with prefix. An empty prefix returns every key in the
 	// scope. Capped at limit rows; if more rows would match, callers
 	// see truncated == true. Expired rows are filtered out — callers
 	// never see them.
-	MemoryList(ctx context.Context, scope MemoryScope, scopeID, prefix string, limit int) (entries []MemoryEntry, truncated bool, err error)
+	MemoryList(ctx context.Context, tenantID string, scope MemoryScope, scopeID, prefix string, limit int) (entries []MemoryEntry, truncated bool, err error)
 
 	// MemoryIncrement is an atomic add over the JSON-number value at
 	// (scope, scopeID, key). If the key doesn't exist, it's created
@@ -1442,7 +1451,7 @@ type Store interface {
 	// JSON number, returns ErrMemoryWrongType. Optional ttl sets (or
 	// resets, on a re-incr) the expiry; ttl <= 0 keeps the existing
 	// expiry untouched (or no expiry on a fresh row).
-	MemoryIncrement(ctx context.Context, scope MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error)
+	MemoryIncrement(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error)
 
 	// MemoryAtomicUpdate runs `reducer` as an atomic read-modify-write
 	// against (scope, scopeID, key). The reducer receives the current
@@ -1462,6 +1471,7 @@ type Store interface {
 	// — the tool layer wraps it for the agent-visible message.
 	MemoryAtomicUpdate(
 		ctx context.Context,
+		tenantID string,
 		scope MemoryScope,
 		scopeID, key string,
 		ttl time.Duration,
@@ -1479,7 +1489,7 @@ type Store interface {
 	// most recent updated_at). Drives the v0.8.0 Web UI's Memory
 	// page picker. Expired rows are excluded — operators see live
 	// state only. Capped at 200 rows ordered by updated_at DESC.
-	MemoryListScopeIDs(ctx context.Context, scope MemoryScope) ([]MemoryScopeIDSummary, error)
+	MemoryListScopeIDs(ctx context.Context, tenantID string, scope MemoryScope) ([]MemoryScopeIDSummary, error)
 
 	// SupportsVectors reports whether this backend instance can serve
 	// the MemoryEmbed* family. Backends without a vector index loaded
@@ -1501,13 +1511,13 @@ type Store interface {
 	//
 	// Embedding bytes do NOT count toward the per-(scope, scopeID)
 	// quota — quota math is k/v-only per the v0.9.0 RFC §8 decision.
-	MemoryEmbedSet(ctx context.Context, scope MemoryScope, scopeID, key string, e MemoryEmbedding) error
+	MemoryEmbedSet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, e MemoryEmbedding) error
 
 	// MemoryEmbedGet returns the stored embedding for one key, or
 	// *ErrNotFound if no embedding exists. Used by the snapshot
 	// Capture path (v0.9.0 PR 5) and the admin reembed endpoint.
 	// ErrVectorUnsupported on backends without a vector index.
-	MemoryEmbedGet(ctx context.Context, scope MemoryScope, scopeID, key string) (MemoryEmbedding, error)
+	MemoryEmbedGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) (MemoryEmbedding, error)
 
 	// MemoryEmbedSearch runs a Top-K cosine-similarity search over
 	// rows in (scope, scopeID). keyPrefix is optional — empty string
@@ -1525,7 +1535,7 @@ type Store interface {
 	//
 	// Backends MUST honour the base table's expires_at filter — a
 	// matching vector for an expired row MUST NOT appear in results.
-	MemoryEmbedSearch(ctx context.Context, scope MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]MemorySearchEntry, error)
+	MemoryEmbedSearch(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]MemorySearchEntry, error)
 
 	// MemoryEmbedListByModel returns entries whose stored embedding
 	// was produced by a DIFFERENT (provider, model) than the supplied
@@ -1534,13 +1544,13 @@ type Store interface {
 	// my current embedder config." limit <= 0 is treated as 1000.
 	//
 	// Returns ErrVectorUnsupported on backends without vector ops.
-	MemoryEmbedListByModel(ctx context.Context, scope MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]MemoryEntry, error)
+	MemoryEmbedListByModel(ctx context.Context, tenantID string, scope MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]MemoryEntry, error)
 
 	// MemoryEmbedStats returns per-(provider, model) row counts and
 	// total embedding bytes for the given scope. Drives the v0.9.0
 	// PR 4 admin endpoint `/v1/_memory/embed_stats`. ErrVectorUnsupported
 	// on backends without vector ops.
-	MemoryEmbedStats(ctx context.Context, scope MemoryScope) (MemoryEmbedStats, error)
+	MemoryEmbedStats(ctx context.Context, tenantID string, scope MemoryScope) (MemoryEmbedStats, error)
 
 	// ChannelPublish appends one message to a channel. The message's
 	// ID is assigned by the store (ULID — sortable by publish time);
@@ -3760,8 +3770,12 @@ type AgentDefActiveEntry struct {
 // scope_id columns. Returned by SnapshotReadMemory so the snapshot
 // envelope can serialise rows without an additional lookup per row.
 type MemorySnapshotEntry struct {
-	Scope   MemoryScope `json:"scope"`
-	ScopeID string      `json:"scope_id"`
+	// TenantID is the row's isolation axis (RFC BL). "" is the
+	// shared/legacy tenant; older snapshots that predate the column
+	// carry no tenant and restore as "".
+	TenantID string      `json:"tenant_id,omitempty"`
+	Scope    MemoryScope `json:"scope"`
+	ScopeID  string      `json:"scope_id"`
 	MemoryEntry
 }
 

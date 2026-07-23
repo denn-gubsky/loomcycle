@@ -644,7 +644,7 @@ func (s *Sweeper) memEligible(ctx context.Context) (pass1 []memTarget, pass2 []s
 // most-recently-updated scopes and so would miss a stale retired agent). Used by
 // the dry-run + report count so they match what the real sweep would drop.
 func (s *Sweeper) hasBaseMemory(ctx context.Context, name string) bool {
-	entries, _, err := s.store.MemoryList(ctx, store.MemoryScopeAgent, name, "", 1)
+	entries, _, err := s.store.MemoryList(ctx, "", store.MemoryScopeAgent, name, "", 1)
 	return err == nil && len(entries) > 0
 }
 
@@ -714,7 +714,7 @@ func (s *Sweeper) reclaimBaseMemory(ctx context.Context, name string) bool {
 			return false
 		}
 	}
-	n, err := s.store.MemoryDeleteScope(ctx, store.MemoryScopeAgent, name)
+	n, err := s.store.MemoryDeleteScope(ctx, "", store.MemoryScopeAgent, name)
 	if err != nil {
 		s.logf("retention: delete agent memory %q failed: %v", name, err)
 		return false
@@ -752,7 +752,7 @@ func (s *Sweeper) exportDirents(ctx context.Context, tenant, name string) error 
 // more than it exported. Such an agent (>memExportKeyCap keys) is retried each
 // tick, staying put with a loud warning rather than losing the un-exported tail.
 func (s *Sweeper) exportBaseMemory(ctx context.Context, name string) error {
-	entries, truncated, err := s.store.MemoryList(ctx, store.MemoryScopeAgent, name, "", memExportKeyCap)
+	entries, truncated, err := s.store.MemoryList(ctx, "", store.MemoryScopeAgent, name, "", memExportKeyCap)
 	if err != nil {
 		return err
 	}

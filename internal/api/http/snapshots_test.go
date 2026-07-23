@@ -307,7 +307,7 @@ func TestRestoreSnapshot_FromStoredID(t *testing.T) {
 
 	// Seed some state, capture.
 	ctx := httptest.NewRequest("POST", "/", nil).Context()
-	_ = st.MemorySet(ctx, store.MemoryScope("agent"), "a", "k", []byte(`"v"`), 0)
+	_ = st.MemorySet(ctx, "", store.MemoryScope("agent"), "a", "k", []byte(`"v"`), 0)
 
 	createRec := httptest.NewRecorder()
 	srv.handleCreateSnapshot(createRec, httptest.NewRequest("POST", "/v1/_snapshots", http.NoBody))

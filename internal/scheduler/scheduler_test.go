@@ -351,7 +351,7 @@ func TestScheduler_OnCompleteMemorySet(t *testing.T) {
 	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
 
 	fireT(t, sched)
-	got, err := st.MemoryGet(context.Background(), store.MemoryScopeUser, "alice", "last_search")
+	got, err := st.MemoryGet(context.Background(), "", store.MemoryScopeUser, "alice", "last_search")
 	if err != nil {
 		t.Fatalf("memory get: %v", err)
 	}

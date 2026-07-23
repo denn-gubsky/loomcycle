@@ -55,7 +55,7 @@ func captureEmbedding(ctx context.Context, s store.Store, scope store.MemoryScop
 	if !s.SupportsVectors() {
 		return nil, nil
 	}
-	emb, err := s.MemoryEmbedGet(ctx, scope, scopeID, key)
+	emb, err := s.MemoryEmbedGet(ctx, "", scope, scopeID, key)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {

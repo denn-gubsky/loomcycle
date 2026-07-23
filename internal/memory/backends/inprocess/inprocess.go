@@ -39,22 +39,22 @@ func New(s store.Store, e providers.Embedder) *Backend {
 
 // Get delegates to the store.
 func (b *Backend) Get(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
-	return b.store.MemoryGet(ctx, scope, scopeID, key)
+	return b.store.MemoryGet(ctx, "", scope, scopeID, key)
 }
 
 // Delete delegates to the store.
 func (b *Backend) Delete(ctx context.Context, scope store.MemoryScope, scopeID, key string) (bool, error) {
-	return b.store.MemoryDelete(ctx, scope, scopeID, key)
+	return b.store.MemoryDelete(ctx, "", scope, scopeID, key)
 }
 
 // List delegates to the store.
 func (b *Backend) List(ctx context.Context, scope store.MemoryScope, scopeID, prefix string, limit int) ([]store.MemoryEntry, bool, error) {
-	return b.store.MemoryList(ctx, scope, scopeID, prefix, limit)
+	return b.store.MemoryList(ctx, "", scope, scopeID, prefix, limit)
 }
 
 // Stats delegates to the store.
 func (b *Backend) Stats(ctx context.Context, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
-	return b.store.MemoryEmbedStats(ctx, scope)
+	return b.store.MemoryEmbedStats(ctx, "", scope)
 }
 
 // Set writes the k/v row, then (when opts.Embed) embeds and stores the
@@ -80,7 +80,7 @@ func (b *Backend) Set(ctx context.Context, scope store.MemoryScope, scopeID, key
 		}
 	}
 
-	if err := b.store.MemorySet(ctx, scope, scopeID, key, value, opts.TTL); err != nil {
+	if err := b.store.MemorySet(ctx, "", scope, scopeID, key, value, opts.TTL); err != nil {
 		return memory.SetResult{}, err
 	}
 
@@ -125,7 +125,7 @@ func (b *Backend) persistEmbedding(ctx context.Context, scope store.MemoryScope,
 		EmbedText: text,
 		CreatedAt: time.Now().UTC(),
 	}
-	return b.store.MemoryEmbedSet(ctx, scope, scopeID, key, emb)
+	return b.store.MemoryEmbedSet(ctx, "", scope, scopeID, key, emb)
 }
 
 // Search embeds the query, fetches the cosine pool (with the over-fetch a
@@ -173,7 +173,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	// Fetch the candidate pool (cosine-ordered) with a +1 truncation probe:
 	// len(results) > topK distinguishes "more matched than we return" from
 	// "result set fits". Store caps at 51.
-	results, err := b.store.MemoryEmbedSearch(ctx, scope, scopeID, q.Prefix, queryVec, fetch)
+	results, err := b.store.MemoryEmbedSearch(ctx, "", scope, scopeID, q.Prefix, queryVec, fetch)
 	if err != nil {
 		// Pass the error through unwrapped. ErrDimensionMismatch /
 		// ErrVectorUnsupported are user-actionable: the tool's errors.Is

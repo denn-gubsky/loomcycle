@@ -130,5 +130,5 @@ func (rec *Receiver) dispatchOnCompleteMemorySet(ctx context.Context, name strin
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 	// ttl = 0 means no expiry, mirroring the scheduler's memory.set hook.
-	return rec.store.MemorySet(ctx, scope, scopeID, h.Key, value, time.Duration(0))
+	return rec.store.MemorySet(ctx, "", scope, scopeID, h.Key, value, time.Duration(0))
 }

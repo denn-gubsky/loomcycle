@@ -1357,7 +1357,7 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 		return errResult(err.Error()), nil
 	}
 	ttl := time.Duration(in.TTL) * time.Second
-	next, err := m.Store.MemoryIncrement(ctx, scope, scopeID, in.Key, delta, ttl)
+	next, err := m.Store.MemoryIncrement(ctx, "", scope, scopeID, in.Key, delta, ttl)
 	if err != nil {
 		if errors.Is(err, store.ErrMemoryWrongType) {
 			return errResult("incr: existing value is not a JSON number — use set with a number, or delete first"), nil
@@ -1400,7 +1400,7 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 	}
 
 	ttl := time.Duration(in.TTL) * time.Second
-	final, err := m.Store.MemoryAtomicUpdate(ctx, scope, scopeID, in.Key, ttl,
+	final, err := m.Store.MemoryAtomicUpdate(ctx, "", scope, scopeID, in.Key, ttl,
 		func(existing json.RawMessage) (json.RawMessage, error) {
 			base := map[string]any{}
 			if len(existing) > 0 {
@@ -1456,7 +1456,7 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 
 	ttl := time.Duration(in.TTL) * time.Second
 	appended := false
-	final, err := m.Store.MemoryAtomicUpdate(ctx, scope, scopeID, in.Key, ttl,
+	final, err := m.Store.MemoryAtomicUpdate(ctx, "", scope, scopeID, in.Key, ttl,
 		func(existing json.RawMessage) (json.RawMessage, error) {
 			var arr []json.RawMessage
 			if len(existing) > 0 {
@@ -1526,7 +1526,7 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 
 	ttl := time.Duration(in.TTL) * time.Second
 	var droppedCount int
-	final, err := m.Store.MemoryAtomicUpdate(ctx, scope, scopeID, in.Key, ttl,
+	final, err := m.Store.MemoryAtomicUpdate(ctx, "", scope, scopeID, in.Key, ttl,
 		func(existing json.RawMessage) (json.RawMessage, error) {
 			var arr []json.RawMessage
 			if len(existing) > 0 {

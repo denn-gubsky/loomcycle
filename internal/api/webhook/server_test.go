@@ -509,7 +509,7 @@ func (f *fakeWebhookStore) ChannelPublish(_ context.Context, msg store.ChannelMe
 	return "msg-1", 0, nil
 }
 
-func (f *fakeWebhookStore) MemorySet(_ context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, _ time.Duration) error {
+func (f *fakeWebhookStore) MemorySet(_ context.Context, _ string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, _ time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.memorySets = append(f.memorySets, memorySetCall{scope: scope, scopeID: scopeID, key: key, value: value})
@@ -686,6 +686,6 @@ func (s *raceStore) ChannelPublish(_ context.Context, _ store.ChannelMessage, _ 
 	return "", 0, nil
 }
 
-func (s *raceStore) MemorySet(_ context.Context, _ store.MemoryScope, _, _ string, _ json.RawMessage, _ time.Duration) error {
+func (s *raceStore) MemorySet(_ context.Context, _ string, _ store.MemoryScope, _, _ string, _ json.RawMessage, _ time.Duration) error {
 	return nil
 }

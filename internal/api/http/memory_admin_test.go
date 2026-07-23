@@ -43,7 +43,7 @@ func newVectorAdminStore(s store.Store, supports bool) *vectorAdminStore {
 
 func (v *vectorAdminStore) SupportsVectors() bool { return v.supports }
 
-func (v *vectorAdminStore) MemoryEmbedSet(ctx context.Context, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
+func (v *vectorAdminStore) MemoryEmbedSet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
 	if !v.supports {
 		return store.ErrVectorUnsupported
 	}
@@ -53,7 +53,7 @@ func (v *vectorAdminStore) MemoryEmbedSet(ctx context.Context, scope store.Memor
 	return nil
 }
 
-func (v *vectorAdminStore) MemoryEmbedGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
+func (v *vectorAdminStore) MemoryEmbedGet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	e, ok := v.embeds[string(scope)+"|"+scopeID+"|"+key]
@@ -63,7 +63,7 @@ func (v *vectorAdminStore) MemoryEmbedGet(ctx context.Context, scope store.Memor
 	return e, nil
 }
 
-func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
+func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, _ string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
 	if !v.supports {
 		return nil, store.ErrVectorUnsupported
 	}
@@ -79,7 +79,7 @@ func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, scope sto
 			continue
 		}
 		key := strings.TrimPrefix(k, prefix)
-		entry, err := v.Store.MemoryGet(ctx, scope, scopeID, key)
+		entry, err := v.Store.MemoryGet(ctx, "", scope, scopeID, key)
 		if err != nil {
 			continue
 		}
@@ -91,11 +91,11 @@ func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, scope sto
 	return out, nil
 }
 
-func (v *vectorAdminStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorAdminStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	return nil, errors.New("MemoryEmbedSearch not implemented in admin fake")
 }
 
-func (v *vectorAdminStore) MemoryEmbedStats(ctx context.Context, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
+func (v *vectorAdminStore) MemoryEmbedStats(ctx context.Context, _ string, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
 	if !v.supports {
 		return store.MemoryEmbedStats{}, store.ErrVectorUnsupported
 	}
@@ -194,7 +194,7 @@ func preloadReembedFixture(t *testing.T, srv *Server, vs *vectorAdminStore) {
 	ctx := context.Background()
 	// k/v rows.
 	for _, k := range []string{"old1", "old2", "current"} {
-		if err := srv.store.MemorySet(ctx, store.MemoryScopeUser, "alice", k, []byte(`"x"`), 0); err != nil {
+		if err := srv.store.MemorySet(ctx, "", store.MemoryScopeUser, "alice", k, []byte(`"x"`), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -340,7 +340,7 @@ func TestReembed_DryRunDefaultEvenWithoutFlag(t *testing.T) {
 	// Confirm no writes happened by re-checking the embedder
 	// versions on the two old rows.
 	for _, k := range []string{"old1", "old2"} {
-		emb, err := vs.MemoryEmbedGet(context.Background(), store.MemoryScopeUser, "alice", k)
+		emb, err := vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, "alice", k)
 		if err != nil {
 			t.Fatalf("%s: %v", k, err)
 		}
@@ -375,7 +375,7 @@ func TestReembed_RealRunReembedsRowsAndUpdatesModel(t *testing.T) {
 	}
 	// Both old rows must now report the new model.
 	for _, k := range []string{"old1", "old2"} {
-		emb, err := vs.MemoryEmbedGet(context.Background(), store.MemoryScopeUser, "alice", k)
+		emb, err := vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, "alice", k)
 		if err != nil {
 			t.Fatalf("%s: %v", k, err)
 		}
@@ -385,7 +385,7 @@ func TestReembed_RealRunReembedsRowsAndUpdatesModel(t *testing.T) {
 	}
 	// The already-current row must NOT have been re-embedded —
 	// MemoryEmbedListByModel excludes it.
-	emb, _ := vs.MemoryEmbedGet(context.Background(), store.MemoryScopeUser, "alice", "current")
+	emb, _ := vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, "alice", "current")
 	if emb.Model != "text-embedding-3-large" {
 		t.Errorf("current row unexpectedly changed: %+v", emb)
 	}

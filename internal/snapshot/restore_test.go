@@ -66,7 +66,7 @@ func TestRoundTrip_WithMemoryAndAgentDefs(t *testing.T) {
 
 	// Seed src.
 	for i, key := range []string{"a", "b", "c"} {
-		if err := src.MemorySet(ctx, store.MemoryScope("agent"), "agentX", key, []byte(`"v`+string(rune('0'+i))+`"`), 0); err != nil {
+		if err := src.MemorySet(ctx, "", store.MemoryScope("agent"), "agentX", key, []byte(`"v`+string(rune('0'+i))+`"`), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -360,7 +360,7 @@ func TestRestore_Idempotent_SecondCallNoDuplicates(t *testing.T) {
 	defer dstClose()
 
 	ctx := context.Background()
-	if err := src.MemorySet(ctx, store.MemoryScope("agent"), "a", "k", []byte(`"v"`), 0); err != nil {
+	if err := src.MemorySet(ctx, "", store.MemoryScope("agent"), "a", "k", []byte(`"v"`), 0); err != nil {
 		t.Fatal(err)
 	}
 
