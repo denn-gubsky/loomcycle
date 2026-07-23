@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -725,5 +726,91 @@ func TestSweeper_MemDryRunCounts(t *testing.T) {
 	}
 	if memKeyCount(t, st, "dead") != 1 {
 		t.Error("DryRunCounts deleted base memory")
+	}
+}
+
+// TestSweeper_MemBaseMemoryReclaimedBeyondScopeIDsCap is a regression for the
+// review's finding #1: pass 2 must NOT gate on MemoryListScopeIDs (capped at the
+// 200 most-recently-updated scopes). A retired agent's base memory is stale, so
+// it sorts out of that window in a busy deployment; if pass 2 gated on the cap it
+// would never reclaim it. Here the retired agent's memory is seeded FIRST (oldest
+// updated_at) and then 200 fresher scopes are added, pushing the retired agent to
+// rank 201 — outside the cap. The reclaim must still happen.
+func TestSweeper_MemBaseMemoryReclaimedBeyondScopeIDsCap(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// The retired agent, with the OLDEST base-memory row.
+	seedRetiredAgent(t, st, "acme", "dead", 1)
+	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	// 200 fresher agent-memory scopes (no defs — they exist only to fill the
+	// MemoryListScopeIDs top-200 window and evict "dead" from it).
+	for i := 0; i < 200; i++ {
+		id := "live-" + strconv.Itoa(i)
+		if err := st.MemorySet(ctx, store.MemoryScopeAgent, id, "k", json.RawMessage(`1`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Sanity: "dead" is NOT in the (capped) MemoryListScopeIDs window.
+	ids, err := st.MemoryListScopeIDs(ctx, store.MemoryScopeAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range ids {
+		if s.ScopeID == "dead" {
+			t.Fatalf("test precondition broken: 'dead' is inside the %d-row cap; can't prove the bug", len(ids))
+		}
+	}
+
+	sw := New(st, Config{MemMode: "prune", Logger: quietLogger, Now: futureHour})
+	if _, err := sw.sweepOnce(ctx); err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if n := memKeyCount(t, st, "dead"); n != 0 {
+		t.Errorf("retired agent base memory NOT reclaimed (keys=%d) — pass 2 skipped it because it fell outside the MemoryListScopeIDs cap", n)
+	}
+}
+
+// TestSweeper_MemRunsBeforeDefsPurge is a regression for the review's finding #2:
+// with keep_last_n=0 the defs purge and the mem reclaim run in the same tick, and
+// the mem sweep keys off AgentDefListNames — so it MUST run before the defs purge,
+// or the purge removes the agent's last def version first and the mem sweep can no
+// longer find it, orphaning its base memory forever.
+func TestSweeper_MemRunsBeforeDefsPurge(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	seedRetiredAgent(t, st, "acme", "dead", 1) // 1 retired, non-active, old version
+	if err := st.MemorySet(ctx, store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Defs purge (keep_last_n=0 → purges the sole retired version) AND mem reclaim
+	// both enabled in the same sweep.
+	sw := New(st, Config{
+		DefsMode: "prune", DefsKeepLastN: 0,
+		MemMode: "prune",
+		Logger:  quietLogger, Now: futureHour,
+	})
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	// The def version is purged AND the base memory is reclaimed (mem ran first).
+	if res.Total != 1 {
+		t.Errorf("res.Total = %d, want 1 (the retired def version purged)", res.Total)
+	}
+	if n := memKeyCount(t, st, "dead"); n != 0 {
+		t.Errorf("base memory NOT reclaimed (keys=%d) — the defs purge removed the agent before the mem sweep saw it", n)
 	}
 }

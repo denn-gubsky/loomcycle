@@ -28,6 +28,7 @@ package retention
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -375,15 +376,25 @@ func (s *Sweeper) Run(ctx context.Context) {
 	}
 }
 
-// sweepOnce runs one pass: the def-version purge (when defsPurgeEnabled) followed
-// by the aged-chat-session purge (when chatsPruneEnabled). Exposed as a method so
-// tests can drive it deterministically without a real Ticker. A no-op when both
-// are disabled. The two sub-sweeps are independent — each carries its own derived
-// deadline and its own failures are logged and skipped so neither can block the
-// other. Returns nil error even on a per-sub-sweep fault (both are logged); the
-// error slot is reserved for a future fatal condition.
+// sweepOnce runs one pass. The MEM reclaim runs FIRST, before the def-version
+// purge: the mem sweep identifies a fully-retired agent via AgentDefListNames, so
+// it must run while the agent's def rows still exist — otherwise a same-tick defs
+// purge with keep_last_n=0 could remove the agent's last version and orphan its
+// SQL-Memory scope + base memory + dirents (nothing left to key the reclaim off).
+// Chats is independent of both. Exposed as a method so tests can drive it without
+// a real Ticker. A no-op when all three are disabled. Each sub-sweep carries its
+// own derived deadline and logs+skips its own failures so none blocks the others.
+// Returns nil error even on a per-sub-sweep fault (all are logged); the error
+// slot is reserved for a future fatal condition.
 func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 	res := Result{PerType: map[string]int{}}
+	if s.memReclaimEnabled() {
+		n, err := s.sweepMemOnce(parent)
+		if err != nil {
+			s.logf("retention: mem sweep failed: %v", err)
+		}
+		res.Mem += n
+	}
 	if s.defsPurgeEnabled() {
 		s.sweepDefsOnce(parent, &res)
 	}
@@ -393,13 +404,6 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 			s.logf("retention: chats sweep failed: %v", err)
 		}
 		res.Chats += n
-	}
-	if s.memReclaimEnabled() {
-		n, err := s.sweepMemOnce(parent)
-		if err != nil {
-			s.logf("retention: mem sweep failed: %v", err)
-		}
-		res.Mem += n
 	}
 	return res, nil
 }
@@ -587,16 +591,6 @@ func (s *Sweeper) memEligible(ctx context.Context) (pass1 []memTarget, pass2 []s
 		}
 	}
 
-	// Names that actually hold base-memory k/v (so pass 2 skips names with none).
-	baseMemNames := map[string]bool{}
-	if ids, merr := s.store.MemoryListScopeIDs(ctx, store.MemoryScopeAgent); merr != nil {
-		s.logf("retention: mem sweep — list agent memory scopes failed: %v", merr)
-	} else {
-		for _, x := range ids {
-			baseMemNames[x.ScopeID] = true
-		}
-	}
-
 	// Per-name aggregate for the globally-dead base-memory gate: a name is
 	// globally dead iff EVERY (tenant, name) row is fully retired; newest is the
 	// most-recent LastUpdated across all its tenant rows.
@@ -630,12 +624,28 @@ func (s *Sweeper) memEligible(ctx context.Context) (pass1 []memTarget, pass2 []s
 			hasSQL: sqlScopes[[2]string{sm.TenantID, sm.Name}],
 		})
 	}
+	// Pass 2 = every globally-dead + old name. We deliberately do NOT pre-filter
+	// on "has base memory": the only listing available (MemoryListScopeIDs) is
+	// capped at the 200 most-RECENTLY-updated scopes, and a retired agent's memory
+	// is stale by definition — it would sort out of that window and be skipped
+	// forever. reclaimBaseMemory instead calls MemoryDeleteScope directly (a
+	// no-op returning 0 for a name with no memory), and the report probes each
+	// name for existence, so neither depends on the 200-cap.
 	for name, agg := range byName {
-		if agg.allDead && agg.newest.Before(cutoff) && baseMemNames[name] {
+		if agg.allDead && agg.newest.Before(cutoff) {
 			pass2 = append(pass2, name)
 		}
 	}
 	return pass1, pass2, nil
+}
+
+// hasBaseMemory reports whether a name holds ANY base-memory k/v, via a limit-1
+// existence probe (NOT MemoryListScopeIDs, which is capped at the 200
+// most-recently-updated scopes and so would miss a stale retired agent). Used by
+// the dry-run + report count so they match what the real sweep would drop.
+func (s *Sweeper) hasBaseMemory(ctx context.Context, name string) bool {
+	entries, _, err := s.store.MemoryList(ctx, store.MemoryScopeAgent, name, "", 1)
+	return err == nil && len(entries) > 0
 }
 
 // reclaimAgentScope drops one fully-retired agent's TENANT-QUALIFIED per-scope
@@ -696,7 +706,7 @@ func (s *Sweeper) reclaimAgentScope(ctx context.Context, tenant, name string, ha
 // the entries first. Under DryRun it reports would-reclaim without touching rows.
 func (s *Sweeper) reclaimBaseMemory(ctx context.Context, name string) bool {
 	if s.dryRun {
-		return true // caller already confirmed baseMemNames[name]
+		return s.hasBaseMemory(ctx, name) // count only names that actually have memory
 	}
 	if s.memMode == "export+prune" {
 		if err := s.exportBaseMemory(ctx, name); err != nil {
@@ -737,15 +747,17 @@ func (s *Sweeper) exportDirents(ctx context.Context, tenant, name string) error 
 
 // exportBaseMemory dumps one globally-dead agent's base-memory k/v before it is
 // deleted. Bucketed under agent-memory/ with NO tenant segment (base memory is
-// cross-tenant-shared). Warns (but still exports what it read) if the entry set
-// is truncated at the cap.
+// cross-tenant-shared). If the entry set is truncated at the cap, it returns an
+// ERROR so the caller skips the delete — export-then-delete must never delete
+// more than it exported. Such an agent (>memExportKeyCap keys) is retried each
+// tick, staying put with a loud warning rather than losing the un-exported tail.
 func (s *Sweeper) exportBaseMemory(ctx context.Context, name string) error {
 	entries, truncated, err := s.store.MemoryList(ctx, store.MemoryScopeAgent, name, "", memExportKeyCap)
 	if err != nil {
 		return err
 	}
 	if truncated {
-		s.logf("retention: agent memory %q export truncated at %d keys — exported bundle is incomplete", name, memExportKeyCap)
+		return fmt.Errorf("agent memory %q exceeds the %d-key export cap — refusing to delete more than exported", name, memExportKeyCap)
 	}
 	if len(entries) == 0 {
 		return nil
@@ -906,7 +918,17 @@ func (s *Sweeper) countReclaimableMem(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	count := len(pass2) // pass 2 is gated on baseMemNames — each has memory to drop
+	count := 0
+	// Pass 2: count only names that actually hold base memory (probe, not the
+	// 200-capped MemoryListScopeIDs).
+	for _, name := range pass2 {
+		if count >= reportListCap {
+			break
+		}
+		if s.hasBaseMemory(ctx, name) {
+			count++
+		}
+	}
 	for _, t := range pass1 {
 		if count >= reportListCap {
 			break

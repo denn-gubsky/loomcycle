@@ -2377,8 +2377,13 @@ func main() {
 	// sweeper owns aged-chat pruning — suppress the usage sweeper's legacy
 	// aged-session archiver so a session is never cascade-deleted by both. The
 	// usage-detail rollup is unaffected.
-	retentionOwnsChats := cfg.Env.RetentionEnabled &&
-		cfg.Env.RetentionChatsMode != "" && cfg.Env.RetentionChatsMode != "off"
+	// Only suppress the legacy usage archiver when the retention chats sweep will
+	// ACTUALLY run — mirror retention's chatsPruneEnabled gate (export+prune needs
+	// an ExportDir). Otherwise a misconfigured export+prune-without-dir would
+	// disable BOTH paths, silently leaving aged chats unpruned.
+	retentionChatsActive := cfg.Env.RetentionChatsMode == "prune" ||
+		(cfg.Env.RetentionChatsMode == "export+prune" && cfg.Env.RetentionExportDir != "")
+	retentionOwnsChats := cfg.Env.RetentionEnabled && retentionChatsActive
 	if cfg.Env.UsageSweeperEnabled && storeIface != nil {
 		uCfg := usage.Config{
 			Interval:        cfg.Env.UsageSweepInterval,
