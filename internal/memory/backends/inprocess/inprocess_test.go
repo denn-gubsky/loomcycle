@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -575,5 +576,41 @@ func TestMetrics_RetrievalLatencyEmitted(t *testing.T) {
 	}
 	if !sawEvent {
 		t.Errorf("no %q span event; events=%+v", lcotel.EventDeadlinkDropped, search.Events)
+	}
+}
+
+// TestMetrics_FailedSearchMarksSpanErrored pins the RFC BL PR6 span-status
+// floor: when a retrieval fails while the loomcycle.memory.search span is open,
+// the span is marked Error (mirroring Dispatcher.Execute) — otherwise a failed
+// retrieval reads as a success in traces and skews the derived error series. The
+// embed leg is the induced failure here (fakeEmbedder.failNext); the same
+// SetSpanError guards cover the vector/full-text legs.
+// FAIL-BEFORE: without lcotel.SetSpanError on the error path the span ends with
+// the default Unset status, so Status.Code != codes.Error and this fails.
+func TestMetrics_FailedSearchMarksSpanErrored(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	b, _, emb, cleanup := vectorFixture(t)
+	defer cleanup()
+
+	emb.failNext = true // force the query-embed leg to error
+	_, err := b.Search(context.Background(), store.MemoryScopeAgent, "a1",
+		memory.SearchQuery{QueryText: "alice go", TopK: 5}, memory.DefaultRankConfig(), memory.DedupConfig{})
+	if err == nil {
+		t.Fatal("Search: want error from injected embed failure, got nil")
+	}
+
+	spans := exp.GetSpans()
+	var search *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == lcotel.SpanMemorySearch {
+			search = &spans[i]
+			break
+		}
+	}
+	if search == nil {
+		t.Fatalf("no %q span recorded; got %d spans", lcotel.SpanMemorySearch, len(spans))
+	}
+	if search.Status.Code != codes.Error {
+		t.Errorf("span Status.Code = %v, want Error (failed retrieval must not read as success)", search.Status.Code)
 	}
 }

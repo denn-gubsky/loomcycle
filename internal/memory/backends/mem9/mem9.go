@@ -497,8 +497,8 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	ctx, span := lcotel.Tracer().Start(ctx, "loomcycle.memory.search")
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("memory.backend", "mem9"),
-		attribute.Int("memory.top_k", q.TopK),
+		attribute.String(lcotel.AttrMemoryBackend, "mem9"),
+		attribute.Int(lcotel.AttrMemoryTopK, q.TopK),
 	)
 	if b.name != "" {
 		span.SetAttributes(attribute.String("memory.backend_name", b.name))

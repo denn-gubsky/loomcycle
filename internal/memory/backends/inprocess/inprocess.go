@@ -179,10 +179,14 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	// surface them directly so operators see exactly what went wrong.
 	vecs, err := b.embedder.Embed(ctx, []string{q.QueryText})
 	if err != nil {
-		return memory.SearchResult{}, fmt.Errorf("embed query: %w", err)
+		err = fmt.Errorf("embed query: %w", err)
+		lcotel.SetSpanError(span, err)
+		return memory.SearchResult{}, err
 	}
 	if len(vecs) != 1 {
-		return memory.SearchResult{}, fmt.Errorf("embed query: got %d vectors, want 1", len(vecs))
+		err = fmt.Errorf("embed query: got %d vectors, want 1", len(vecs))
+		lcotel.SetSpanError(span, err)
+		return memory.SearchResult{}, err
 	}
 	queryVec := vecs[0]
 
@@ -218,12 +222,14 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// the tool's errors.Is checks match the backend-constructed *MemoryError.
 		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Prefix, queryVec, fetch)
 		if verr != nil {
+			lcotel.SetSpanError(span, verr)
 			return memory.SearchResult{}, verr
 		}
 		// Leg 2: full-text (keyword, ts_rank-ordered). (nil,nil) on a store
 		// without a full-text index, so the fusion collapses to pure-vector.
 		fres, ferr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, q.Prefix, q.QueryText, fetch)
 		if ferr != nil {
+			lcotel.SetSpanError(span, ferr)
 			return memory.SearchResult{}, ferr
 		}
 		// Fuse by RRF: SemanticScore := the fused rank (the ranker's semantic
@@ -241,6 +247,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		}
 		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Prefix, queryVec, fetch)
 		if verr != nil {
+			lcotel.SetSpanError(span, verr)
 			return memory.SearchResult{}, verr
 		}
 		for i := range vres {
