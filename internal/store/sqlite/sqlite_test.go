@@ -96,6 +96,47 @@ func TestStore_MemoryTenantIsolation(t *testing.T) {
 	}
 }
 
+// TestStore_MemoryListTenantsForScope: the RFC BL enumeration returns exactly
+// the distinct tenants that hold a row under (scope, scopeID), independent of
+// expiry, and an empty slice for a name with no rows — the primitive the
+// retention sweeper's per-tenant base-memory fan-out rides on.
+func TestStore_MemoryListTenantsForScope(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	scope := store.MemoryScopeAgent
+	const name = "shared-agent"
+
+	// Same (scope, name) under three partitions: "" (legacy), "a", "b".
+	for _, tenant := range []string{"", "a", "b"} {
+		if err := s.MemorySet(ctx, tenant, scope, name, "k1", json.RawMessage(`1`), 0); err != nil {
+			t.Fatalf("MemorySet(%q): %v", tenant, err)
+		}
+	}
+	// A different scope_id must not bleed in.
+	if err := s.MemorySet(ctx, "c", scope, "other-agent", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.MemoryListTenantsForScope(ctx, scope, name)
+	if err != nil {
+		t.Fatalf("MemoryListTenantsForScope: %v", err)
+	}
+	set := map[string]bool{}
+	for _, tn := range got {
+		set[tn] = true
+	}
+	if len(got) != 3 || !set[""] || !set["a"] || !set["b"] {
+		t.Errorf("tenants = %v, want exactly {\"\",a,b}", got)
+	}
+
+	// A name with no rows returns empty (not an error) — the sweeper treats
+	// this as "nothing to reclaim".
+	empty, err := s.MemoryListTenantsForScope(ctx, scope, "never-written")
+	if err != nil || len(empty) != 0 {
+		t.Errorf("empty scope = %v err=%v, want [] nil", empty, err)
+	}
+}
+
 // ---- SQLite-specific tests below this line ----
 //
 // Tests that verify SQLite-only behaviour (the ALTER-COLUMN idempotency

@@ -375,8 +375,12 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				expires = *e.ExpiresAt
 			}
 			entry := store.MemorySnapshotEntry{
-				Scope:   store.MemoryScope(e.Scope),
-				ScopeID: e.ScopeID,
+				// RFC BL: restore into the row's tenant partition. An older
+				// snapshot with no tenant_id decodes e.TenantID as "" (the
+				// legacy tenant), preserving cross-version restore.
+				TenantID: e.TenantID,
+				Scope:    store.MemoryScope(e.Scope),
+				ScopeID:  e.ScopeID,
 				MemoryEntry: store.MemoryEntry{
 					Key:       e.Key,
 					Value:     e.Value,
@@ -427,7 +431,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 					EmbedText: e.Embedding.EmbedText,
 					CreatedAt: e.Embedding.CreatedAt,
 				}
-				if err := s.MemoryEmbedSet(ctx, "", entry.Scope, entry.ScopeID, e.Key, emb); err != nil {
+				if err := s.MemoryEmbedSet(ctx, entry.TenantID, entry.Scope, entry.ScopeID, e.Key, emb); err != nil {
 					result.Warnings = append(result.Warnings,
 						fmt.Sprintf("memory %s/%s/%s embedding write: %v", e.Scope, e.ScopeID, e.Key, err))
 				}

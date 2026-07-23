@@ -411,11 +411,14 @@ func captureMemory(ctx context.Context, s store.Store, out *MemorySection) error
 	}
 	out.Entries = make([]MemoryEntry, 0, len(rows))
 	for _, r := range rows {
-		emb, err := captureEmbedding(ctx, s, r.Scope, r.ScopeID, r.Key)
+		// RFC BL: capture the row's tenant + read its embedding under the same
+		// tenant partition, so a multi-tenant DB round-trips per tenant.
+		emb, err := captureEmbedding(ctx, s, r.TenantID, r.Scope, r.ScopeID, r.Key)
 		if err != nil {
 			return fmt.Errorf("snapshot memory embedding: %w", err)
 		}
 		entry := MemoryEntry{
+			TenantID:  r.TenantID,
 			Scope:     string(r.Scope),
 			ScopeID:   r.ScopeID,
 			Key:       r.Key,

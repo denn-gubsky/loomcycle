@@ -3653,6 +3653,29 @@ func (s *Store) MemoryListScopeIDs(ctx context.Context, tenantID string, scope s
 	return out, rows.Err()
 }
 
+// MemoryListTenantsForScope implements store.Store (RFC BL). DISTINCT over every
+// row for (scope, scopeID) regardless of expiry — reclamation deletes expired
+// rows too, so an all-expired partition must still be enumerated.
+func (s *Store) MemoryListTenantsForScope(ctx context.Context, scope store.MemoryScope, scopeID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT COALESCE(tenant_id, '') FROM memory WHERE scope = $1 AND scope_id = $2`,
+		string(scope), scopeID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory list tenants for scope: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("memory list tenants for scope scan: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // MemorySweep deletes every Memory row whose expires_at has passed.
 // Single atomic DELETE so concurrent sweepers race correctly.
 func (s *Store) MemorySweep(ctx context.Context) (int, error) {

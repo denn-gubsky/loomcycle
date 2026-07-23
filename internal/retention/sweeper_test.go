@@ -814,3 +814,61 @@ func TestSweeper_MemRunsBeforeDefsPurge(t *testing.T) {
 		t.Errorf("base memory NOT reclaimed (keys=%d) — the defs purge removed the agent before the mem sweep saw it", n)
 	}
 }
+
+// memKeyCountTenant counts base-memory keys under (tenant, scope=agent, name) —
+// the per-tenant variant of memKeyCount (which reads only the "" partition).
+func memKeyCountTenant(t *testing.T, st *sqlite.Store, tenant, name string) int {
+	t.Helper()
+	entries, _, err := st.MemoryList(context.Background(), tenant, store.MemoryScopeAgent, name, "", 1000)
+	if err != nil {
+		t.Fatalf("memory list %s/%q: %v", tenant, name, err)
+	}
+	return len(entries)
+}
+
+// TestRetentionSweep_PerTenantFanout is the RFC BL fan-out regression: a
+// globally-dead agent whose base memory spans TWO tenant partitions is reclaimed
+// in BOTH, while a live agent's memory survives. Fails on the pre-fan-out code,
+// whose single MemoryDeleteScope(ctx, "", ...) touched only the "" partition and
+// stranded tenants A and B.
+func TestRetentionSweep_PerTenantFanout(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// "dead" is globally dead: retired in BOTH tenant A and tenant B, live nowhere.
+	seedRetiredAgent(t, st, "A", "dead", 1)
+	seedRetiredAgent(t, st, "B", "dead", 1)
+	// Its base memory exists in each tenant's own partition (post-RFC-BL).
+	if err := st.MemorySet(ctx, "A", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MemorySet(ctx, "B", store.MemoryScopeAgent, "dead", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	// A live agent in tenant A with its own memory — must survive untouched.
+	seedLiveAgent(t, st, "A", "alive")
+	if err := st.MemorySet(ctx, "A", store.MemoryScopeAgent, "alive", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	sw := New(st, Config{MemMode: "prune", Logger: quietLogger, Now: futureHour})
+	if _, err := sw.sweepOnce(ctx); err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+
+	// BOTH tenant partitions of the dead agent's base memory are reclaimed.
+	if n := memKeyCountTenant(t, st, "A", "dead"); n != 0 {
+		t.Errorf("tenant A dead-agent memory = %d, want 0 (fan-out must reclaim it)", n)
+	}
+	if n := memKeyCountTenant(t, st, "B", "dead"); n != 0 {
+		t.Errorf("tenant B dead-agent memory = %d, want 0 (fan-out must reclaim it)", n)
+	}
+	// The live agent's memory is intact.
+	if n := memKeyCountTenant(t, st, "A", "alive"); n != 1 {
+		t.Errorf("live agent memory = %d, want 1 (must not be reclaimed)", n)
+	}
+}

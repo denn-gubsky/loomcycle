@@ -147,6 +147,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryIncrementOnExpiredKey", testMemoryIncrementOnExpiredKey},
 		{"MemoryScopeIsolation", testMemoryScopeIsolation},
 		{"MemoryListScopeIDs", testMemoryListScopeIDs},
+		{"MemoryListTenantsForScope", testMemoryListTenantsForScope},
 		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
 		// v0.12.x — MemoryAtomicUpdate primitive backing the new
 		// reducer ops (Memory.merge / append_dedupe / bounded_list).
@@ -3535,6 +3536,39 @@ func testMemoryListScopeIDs(t *testing.T, s store.Store) {
 		if u.ScopeID == "transient" {
 			t.Errorf("expired-only scope_id %q should not appear", u.ScopeID)
 		}
+	}
+}
+
+// testMemoryListTenantsForScope pins the RFC BL enumeration primitive (backing
+// the retention sweeper's per-tenant base-memory fan-out): DISTINCT tenants that
+// hold a row under (scope, scopeID), including the legacy "" partition, scoped
+// to the given scope_id, and an empty slice (not an error) for an absent name.
+func testMemoryListTenantsForScope(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-agent"
+	for _, tenant := range []string{"", "t-a", "t-b"} {
+		if err := s.MemorySet(ctx, tenant, store.MemoryScopeAgent, name, "k", json.RawMessage(`1`), 0); err != nil {
+			t.Fatalf("MemorySet(%q): %v", tenant, err)
+		}
+	}
+	// A different scope_id must not leak into the result.
+	_ = s.MemorySet(ctx, "t-c", store.MemoryScopeAgent, "other-agent", "k", json.RawMessage(`1`), 0)
+
+	got, err := s.MemoryListTenantsForScope(ctx, store.MemoryScopeAgent, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := map[string]bool{}
+	for _, tn := range got {
+		set[tn] = true
+	}
+	if len(got) != 3 || !set[""] || !set["t-a"] || !set["t-b"] {
+		t.Errorf("tenants = %v, want exactly {\"\",t-a,t-b}", got)
+	}
+
+	empty, err := s.MemoryListTenantsForScope(ctx, store.MemoryScopeAgent, "never-written")
+	if err != nil || len(empty) != 0 {
+		t.Errorf("absent scope = %v err=%v, want [] nil", empty, err)
 	}
 }
 

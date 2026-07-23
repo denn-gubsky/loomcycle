@@ -81,7 +81,8 @@ func (s *Server) handleMemoryEmbedStats(w http.ResponseWriter, r *http.Request) 
 			"scope must be one of: agent, user")
 		return
 	}
-	stats, err := s.store.MemoryEmbedStats(r.Context(), "", store.MemoryScope(scope))
+	// RFC BL: tenant from the authenticated principal (server-sourced).
+	stats, err := s.store.MemoryEmbedStats(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope))
 	if err != nil {
 		// Vector-unsupported can also surface here from refusal-stub
 		// backends — treat as 503 for consistency with the upfront
@@ -170,7 +171,10 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	rows, err := s.store.MemoryEmbedListByModel(r.Context(), "",
+	// RFC BL: tenant from the authenticated principal, reused for the read +
+	// the write-back below so the reembed stays within one tenant partition.
+	tenantID := tenantFromCtx(r.Context())
+	rows, err := s.store.MemoryEmbedListByModel(r.Context(), tenantID,
 		store.MemoryScope(scope), scopeID,
 		currentEmbedder.Provider, currentEmbedder.Model, limit)
 	if err != nil {
@@ -235,7 +239,7 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 			EmbedText: string(row.Value),
 			CreatedAt: time.Now().UTC(),
 		}
-		if err := s.store.MemoryEmbedSet(r.Context(), "",
+		if err := s.store.MemoryEmbedSet(r.Context(), tenantID,
 			store.MemoryScope(scope), scopeID, row.Key, emb); err != nil {
 			failed++
 			failedKeys = append(failedKeys, row.Key)

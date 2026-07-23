@@ -1491,6 +1491,16 @@ type Store interface {
 	// state only. Capped at 200 rows ordered by updated_at DESC.
 	MemoryListScopeIDs(ctx context.Context, tenantID string, scope MemoryScope) ([]MemoryScopeIDSummary, error)
 
+	// MemoryListTenantsForScope returns the DISTINCT tenant_ids that hold at
+	// least one row under (scope, scopeID), across every tenant partition. RFC
+	// BL partitioned base memory by tenant, so the retention sweeper — reclaiming
+	// a globally-dead agent's cross-tenant base memory — enumerates the partitions
+	// to delete per tenant instead of issuing one tenant-blind DELETE (which now
+	// touches only "" and would strand every other tenant's rows). "" (the
+	// shared/legacy tenant) is a valid element; order is unspecified; a scope with
+	// no rows returns an empty slice, not an error.
+	MemoryListTenantsForScope(ctx context.Context, scope MemoryScope, scopeID string) ([]string, error)
+
 	// SupportsVectors reports whether this backend instance can serve
 	// the MemoryEmbed* family. Backends without a vector index loaded
 	// return false; the Memory tool's `search` op + `embed: true`

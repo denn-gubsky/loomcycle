@@ -116,6 +116,57 @@ func TestRoundTrip_WithMemoryAndAgentDefs(t *testing.T) {
 	}
 }
 
+// TestSnapshot_TenantRoundTrip pins RFC BL: capture→restore preserves each
+// base-memory row's tenant partition — two tenants sharing the SAME
+// scope/scope_id/key keep distinct values — and a legacy "" row (whose entry
+// carries no tenant_id, since it's omitempty) restores into the "" tenant.
+// Fails on the pre-turn-on code, whose memory-section DTO dropped tenant_id, so
+// the two rows collapsed onto "" and one clobbered the other (INSERT OR IGNORE).
+func TestSnapshot_TenantRoundTrip(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	// Same (scope, scope_id, key) under two tenants with distinct values, plus a
+	// legacy row under the "" tenant (its captured entry omits tenant_id).
+	if err := src.MemorySet(ctx, "A", store.MemoryScopeUser, "u1", "voice", []byte(`"from-a"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.MemorySet(ctx, "B", store.MemoryScopeUser, "u1", "voice", []byte(`"from-b"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.MemorySet(ctx, "", store.MemoryScopeUser, "u1", "legacy", []byte(`"old"`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Capture stamps the real tenant into the envelope (the "" row omits it).
+	if !strings.Contains(string(raw), `"tenant_id":"A"`) || !strings.Contains(string(raw), `"tenant_id":"B"`) {
+		t.Errorf("captured snapshot missing per-tenant memory entries: %s", raw)
+	}
+
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each tenant's row round-trips into its own partition with its own value.
+	if got, err := dst.MemoryGet(ctx, "A", store.MemoryScopeUser, "u1", "voice"); err != nil || string(got.Value) != `"from-a"` {
+		t.Errorf("tenant A restored = %q err=%v, want \"from-a\"", got.Value, err)
+	}
+	if got, err := dst.MemoryGet(ctx, "B", store.MemoryScopeUser, "u1", "voice"); err != nil || string(got.Value) != `"from-b"` {
+		t.Errorf("tenant B restored = %q err=%v, want \"from-b\"", got.Value, err)
+	}
+	// The legacy tenant-less entry restores under "" (graceful cross-version).
+	if got, err := dst.MemoryGet(ctx, "", store.MemoryScopeUser, "u1", "legacy"); err != nil || string(got.Value) != `"old"` {
+		t.Errorf("legacy \"\" row = %q err=%v, want \"old\"", got.Value, err)
+	}
+}
+
 // TestRoundTrip_PreservesDefTenantID pins the RFC AP review #2 fix: a snapshot
 // capture→restore must PRESERVE each def's owning tenant. Before the fix the
 // snapshot DTO types dropped tenant_id, so every def (Agent/Skill/Team/MCPServer)

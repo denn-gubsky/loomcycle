@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -45,6 +46,57 @@ func docExec(t *testing.T, d *Document, ctx context.Context, body string) (map[s
 		_ = json.Unmarshal([]byte(res.Text), &out)
 	}
 	return out, res
+}
+
+// TestDocumentBody_TenantIsolated: a chunk body written under tenant A lands in
+// tenant A's base-memory partition (readable by A's get_chunk) and NOT the
+// legacy "" partition where the pre-RFC-BL code wrote every body. Fails on the
+// pre-stamp code (body under "" → the tenant-A probe misses, the "" probe hits).
+func TestDocumentBody_TenantIsolated(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	d := &Document{Store: s, SqlMem: mgr, Bus: channels.NewBus()}
+
+	ctxA := tools.WithRunIdentity(
+		tools.WithAgentName(context.Background(), "doc-agent"),
+		tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "A"})
+
+	// Tenant A creates a document + a chunk carrying a body.
+	out, res := docExec(t, d, ctxA, `{"op":"create_document","scope":"agent","title":"D"}`)
+	if res.IsError {
+		t.Fatalf("create_document(A): %s", res.Text)
+	}
+	docID := out["document_id"].(string)
+	root := out["root_chunk_id"].(string)
+	out, res = docExec(t, d, ctxA, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","parent_id":"`+root+`","title":"c","body":"SECRET-A"}`)
+	if res.IsError {
+		t.Fatalf("create_chunk(A): %s", res.Text)
+	}
+	cid := out["id"].(string)
+
+	// get_chunk under A returns the body (write + read align within the tenant).
+	out, res = docExec(t, d, ctxA, `{"op":"get_chunk","scope":"agent","id":"`+cid+`"}`)
+	if res.IsError || out["body"] != "SECRET-A" {
+		t.Fatalf("get_chunk(A) body = %v, want SECRET-A (res=%s)", out["body"], res.Text)
+	}
+
+	// The body row lives in tenant A's base-memory partition ...
+	bodyKey := chunkBodyKey(cid)
+	if _, err := s.MemoryGet(context.Background(), "A", store.MemoryScopeAgent, "doc-agent", bodyKey); err != nil {
+		t.Errorf("chunk body not under tenant A partition: %v", err)
+	}
+	// ... and NOT under the legacy "" partition (where the pre-BL code wrote it).
+	if _, err := s.MemoryGet(context.Background(), "", store.MemoryScopeAgent, "doc-agent", bodyKey); !errors.As(err, new(*store.ErrNotFound)) {
+		t.Errorf("chunk body leaked into the \"\" partition; got err=%v", err)
+	}
 }
 
 func TestDocument_EndToEnd(t *testing.T) {
