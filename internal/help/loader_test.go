@@ -45,6 +45,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"interruption",
 		"llm-gateway",
 		"loomcycle",
+		"memory-consolidation",
 		"memory-layer",
 		"memory-ranking",
 		"memory-reducers",
