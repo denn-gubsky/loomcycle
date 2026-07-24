@@ -9,9 +9,12 @@ package inprocess
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -338,4 +341,168 @@ func dropDeadLinks(entries []store.MemorySearchEntry) ([]store.MemorySearchEntry
 	return kept, dropped
 }
 
-var _ memory.Backend = (*Backend)(nil)
+// --- RFC BL P2: native MemoryLayer capability ---
+//
+// The in-process backend is a full KV + vector store, so it can serve the
+// add/recall memory-layer paradigm natively — no remote service required.
+// Before this the default backend refused add/recall with
+// capability_unsupported; now the tool routes them here.
+
+// Capabilities advertises the flat KV shape AND the memory-layer add/recall
+// shape. Only MemoryLayer differs from the pre-RFC-K default that
+// memory.CapabilitiesOf assumed for a plain Backend (KV + VectorSearch +
+// Stats) — the in-process backend has always satisfied the other three, so
+// this is the minimal-ripple flip that makes the Memory tool route add/recall
+// here instead of refusing.
+func (b *Backend) Capabilities() memory.Capabilities {
+	return memory.Capabilities{KV: true, VectorSearch: true, Stats: true, MemoryLayer: true}
+}
+
+// pendingPayload is the opaque body an infer=true Add enqueues onto
+// memory_pending. It carries enough to reconstruct the conversation turns when
+// the consolidator (a later RFC BL P2 PR) drains and folds them, without a
+// back-reference to the originating run.
+type pendingPayload struct {
+	Messages []memory.LayerMessage `json:"messages"`
+	Metadata map[string]string     `json:"metadata,omitempty"`
+}
+
+// Add ingests conversation messages under (scope, scopeID). The tenant is the
+// run's authoritative tenant (ctx-carried RunIdentity, server-supplied — never
+// model input), sourced via runTenant exactly like every other op; scope and
+// scopeID are already server-resolved by the tool's resolveScope.
+//
+// infer=true (the default, the memory-layer paradigm) enqueues the raw messages
+// onto the durable memory_pending queue for asynchronous consolidation: it
+// returns AddPending with the queue-row id as the correlation handle, needs NO
+// embedder/vector support (works on a bare sqlite backend), and does NOT
+// guarantee read-after-write — recall may not see the extracted facts yet.
+//
+// infer=false stores the joined message contents verbatim as one k/v row
+// (AddDone, the row key as the handle) and best-effort embeds it so recall can
+// surface it immediately. A nil/unsupported embedder is NOT an error here — the
+// row still lands, just without a vector (so it is not vector-recallable until
+// the stack is configured and it is re-embedded).
+func (b *Backend) Add(ctx context.Context, scope store.MemoryScope, scopeID string, msgs []memory.LayerMessage, opts memory.AddOptions) (memory.AddResult, error) {
+	if len(msgs) == 0 {
+		return memory.AddResult{}, fmt.Errorf("add: no messages to ingest")
+	}
+	tenant := runTenant(ctx)
+
+	if opts.Infer {
+		payload, err := json.Marshal(pendingPayload{Messages: msgs, Metadata: opts.Metadata})
+		if err != nil {
+			return memory.AddResult{}, fmt.Errorf("add: marshal pending payload: %w", err)
+		}
+		// MemoryPendingEnqueue mints an id when none is supplied but does not
+		// return it, so mint it here to hand back as the correlation EventID.
+		id := "pend_" + newRandHex()
+		row := store.MemoryPendingRow{
+			ID:       id,
+			TenantID: tenant,
+			Scope:    scope,
+			ScopeID:  scopeID,
+			Payload:  payload,
+			// No session-id ctx helper today (RunIdentityValue carries no
+			// session id), so SourceSessionID stays empty; SourceRunID is enough
+			// to correlate the enqueue back to the run that produced it.
+			SourceRunID: tools.RunID(ctx),
+			CreatedAt:   time.Now().UTC(),
+		}
+		if err := b.store.MemoryPendingEnqueue(ctx, row); err != nil {
+			return memory.AddResult{}, fmt.Errorf("add: enqueue pending: %w", err)
+		}
+		return memory.AddResult{Status: memory.AddPending, EventID: id}, nil
+	}
+
+	// infer=false — verbatim storage. Join the turns into one k/v row, embed
+	// best-effort so recall can find it.
+	contents := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		contents = append(contents, m.Content)
+	}
+	text := strings.Join(contents, "\n")
+	value, err := json.Marshal(text) // store as a JSON string
+	if err != nil {
+		return memory.AddResult{}, fmt.Errorf("add: marshal verbatim value: %w", err)
+	}
+	key := "mem_" + newRandHex()
+	if err := b.store.MemorySet(ctx, tenant, scope, scopeID, key, value, 0); err != nil {
+		return memory.AddResult{}, fmt.Errorf("add: store verbatim: %w", err)
+	}
+	if b.embedder != nil && b.store.SupportsVectors() {
+		if err := b.persistEmbedding(ctx, scope, scopeID, key, value, text); err != nil {
+			// The k/v row stands; only the vector failed. Log and continue —
+			// downgrading a transient embed error to a hard Add failure would
+			// lose the memory the caller just handed us.
+			log.Printf("memory.add: verbatim row %q stored but embed failed (recall won't surface it yet): %v", key, err)
+		}
+	}
+	return memory.AddResult{Status: memory.AddDone, EventID: key}, nil
+}
+
+// Recall runs the backend's hybrid retrieval for the query and maps each hit
+// onto the memory-layer fact shape: the k/v key is the fact id (opaque to the
+// caller), the JSON-decoded value is the memory text, and the raw cosine is the
+// score. A Threshold > 0 drops hits below the relevance floor.
+//
+// Recall requires the vector stack: on a store without vector support or with
+// no embedder configured it PROPAGATES Search's ErrVectorUnsupported /
+// ErrEmbedderNotConfigured rather than swallowing them into an empty result.
+// Recall on such a deployment refuses honestly (the documented RFC BL P2
+// behavior change — the default backend used to refuse add/recall outright).
+func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.RecallQuery) (memory.RecallResult, error) {
+	topK := q.TopK
+	if topK <= 0 {
+		topK = 10
+	}
+	res, err := b.Search(ctx, scope, scopeID,
+		memory.SearchQuery{QueryText: q.Query, TopK: topK},
+		memory.DefaultRankConfig(), memory.DedupConfig{})
+	if err != nil {
+		return memory.RecallResult{}, err
+	}
+	facts := make([]memory.RecallFact, 0, len(res.Entries))
+	for _, e := range res.Entries {
+		if q.Threshold > 0 && e.Score < q.Threshold {
+			continue
+		}
+		facts = append(facts, memory.RecallFact{
+			ID:     e.Key,
+			Memory: recallText(e.Value),
+			Score:  e.Score,
+		})
+	}
+	if len(facts) > topK {
+		facts = facts[:topK]
+	}
+	return memory.RecallResult{Facts: facts}, nil
+}
+
+// recallText renders a stored value as human text: a JSON string round-trips to
+// its unquoted content (the infer=false verbatim path stores exactly that), and
+// any other JSON is returned as its raw bytes.
+func recallText(value json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(value, &s); err == nil {
+		return s
+	}
+	return string(value)
+}
+
+// newRandHex returns 16 crypto-random bytes hex-encoded. Mirrors the store's
+// own id idiom; on the practically-impossible crypto/rand failure it falls back
+// to a timestamp so Add never panics (no new panic sites — CLAUDE.md).
+func newRandHex() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("t%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+var (
+	_ memory.Backend     = (*Backend)(nil)
+	_ memory.MemoryLayer = (*Backend)(nil)
+	_ memory.Capable     = (*Backend)(nil)
+)

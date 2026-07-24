@@ -62,27 +62,53 @@ func (f *fakeLayerBackend) Stats(context.Context, store.MemoryScope) (store.Memo
 	panic("fakeLayerBackend.Stats must not be called in a layer test")
 }
 
-// The default in-process backend is NOT a memory layer, so add/recall must
-// refuse with capability_unsupported — the fail-closed posture RFC K
-// mandates (never a panic, never a silent no-op).
-func TestMemoryTool_AddRecall_RefuseOnNonLayerBackend(t *testing.T) {
-	tool, ctx, cleanup := memoryFixture(t) // default in-process backend
+// The default in-process backend is now a NATIVE memory layer (RFC BL P2), so
+// add/recall route to it instead of refusing capability_unsupported:
+//   - add (infer defaults to true) succeeds, reports "pending", and lands a row
+//     on the durable consolidation queue.
+//   - recall on this fixture (a bare sqlite store: no vectors, no embedder)
+//     refuses HONESTLY with the vector/embedder error, NOT capability_unsupported
+//     — recall needs the vector stack, and a misconfigured deployment must hear
+//     that rather than a silent empty result.
+func TestMemoryTool_AddRecall_DefaultBackendIsNativeLayer(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t) // default in-process backend, no embedder
 	defer cleanup()
 
-	for _, in := range []string{
-		`{"op":"add","scope":"user","messages":[{"role":"user","content":"hi"}]}`,
-		`{"op":"recall","scope":"user","query":"anything"}`,
-	} {
-		res, err := tool.Execute(ctx, json.RawMessage(in))
-		if err != nil {
-			t.Fatalf("%s: unexpected go error: %v", in, err)
-		}
-		if !res.IsError {
-			t.Fatalf("%s: expected is_error refusal on a non-layer backend; got %s", in, res.Text)
-		}
-		if res.Text != store.ErrCapabilityUnsupported.Msg {
-			t.Errorf("%s: refusal should be the typed capability_unsupported message %q; got %s", in, store.ErrCapabilityUnsupported.Msg, res.Text)
-		}
+	// add succeeds and enqueues.
+	addRes, err := tool.Execute(ctx, json.RawMessage(
+		`{"op":"add","scope":"user","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("add: unexpected go error: %v", err)
+	}
+	if addRes.IsError {
+		t.Fatalf("add on the default native-layer backend should succeed; got is_error %s", addRes.Text)
+	}
+	if !strings.Contains(addRes.Text, `"status":"pending"`) {
+		t.Errorf("add should report pending (async consolidation); got %s", addRes.Text)
+	}
+	// scope=user resolves to scope_id = the run's user_id ("alice"), tenant "".
+	rows, err := tool.Store.MemoryPendingDrain(ctx, "", store.MemoryScopeUser, "alice", 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingDrain: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("add enqueued %d consolidation rows, want 1", len(rows))
+	}
+
+	// recall refuses with the vector/embedder error, NOT capability_unsupported.
+	recRes, err := tool.Execute(ctx, json.RawMessage(
+		`{"op":"recall","scope":"user","query":"anything"}`))
+	if err != nil {
+		t.Fatalf("recall: unexpected go error: %v", err)
+	}
+	if !recRes.IsError {
+		t.Fatalf("recall on a no-vector backend should refuse; got %s", recRes.Text)
+	}
+	if recRes.Text == store.ErrCapabilityUnsupported.Msg {
+		t.Errorf("recall must no longer refuse capability_unsupported now that inprocess is a layer; got %s", recRes.Text)
+	}
+	if !strings.Contains(recRes.Text, store.ErrVectorUnsupported.Msg) {
+		t.Errorf("recall refusal should be the honest vector-unsupported error; got %s", recRes.Text)
 	}
 }
 

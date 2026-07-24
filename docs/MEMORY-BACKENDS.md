@@ -184,29 +184,32 @@ tool error.
 
 ## Memory layer: add / recall
 
-A `mem9` backend is more than a remote key/value store — it is an
-**LLM-extract memory layer**. Beyond the six key/value ops it serves the
-`add` / `recall` paradigm: you hand it conversation messages and it
-distils durable facts, then answers natural-language recall queries over
-them. There are no caller keys; identity is server-assigned. This is a
-distinct capability the in-process backend does **not** have.
+Beyond the six key/value ops the Memory tool serves the `add` / `recall`
+paradigm: you hand it conversation messages and let the system distil
+durable facts, then answer natural-language recall queries over them.
+There are no caller keys; identity is server-assigned. **The default
+in-process backend now serves this natively** — `add` enqueues the
+messages onto a durable queue for background consolidation; `recall` is a
+semantic search over stored memories. An external memory-layer backend
+may instead extract facts server-side with its own LLM.
 
 ```jsonc
-// ingest a conversation — infer defaults to true (LLM fact extraction)
+// ingest a conversation — infer defaults to true (queued for consolidation)
 {"op": "add", "scope": "user",
  "messages": [{"role": "user", "content": "I prefer dark mode"}]}
-// → {"status": "pending"}   (often async — no read-after-write guarantee)
+// → {"status": "pending"}   (async — no read-after-write guarantee)
 
-// recall distilled facts by meaning
+// recall stored memories by meaning
 {"op": "recall", "scope": "user", "query": "ui preferences", "top_k": 5}
-// → {"facts": [{"id": "uuid-1", "memory": "user prefers dark mode", "score": 0.91}]}
+// → {"facts": [{"id": "mem_ab12…", "memory": "user prefers dark mode", "score": 0.91}]}
 ```
 
-Against a non-memory-layer backend (the default in-process store)
-`add` / `recall` return `capability_unsupported` rather than faking it.
-`add` / `recall` honor the agent's `memory_scopes` and the backend's
-tenancy prefix exactly like the key/value ops. See the `memory-layer`
-`Context.help` topic for the full op reference.
+`recall` needs the vector stack (an embedder + a vector-capable store);
+without it, it refuses with `vector_unsupported` / `embedder_not_configured`.
+`capability_unsupported` is reached only for a backend that does not
+implement the memory-layer contract at all. `add` / `recall` honor the
+agent's `memory_scopes` and the run's tenant exactly like the key/value
+ops. See the `memory-layer` `Context.help` topic for the full op reference.
 
 ## Observability
 

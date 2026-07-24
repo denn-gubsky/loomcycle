@@ -3861,13 +3861,21 @@ func (s *Store) MemoryDelete(ctx context.Context, tenantID string, scope store.M
 	return n > 0, nil
 }
 
-// MemoryDeleteScope removes every entry under (tenantID, scope, scopeID) in one
-// statement (RFC BM retention). memory_embeddings rows cascade via their ON
-// DELETE CASCADE FK (foreign_keys=ON in the driver DSN), mirroring single-key
-// MemoryDelete. (SQLite has no memory_embeddings table, so the cascade is a
-// Postgres-only concern.)
+// MemoryDeleteScope removes every entry under (tenantID, scope, scopeID) (RFC
+// BM retention) and returns the memory-table row count. It also clears the
+// scope's consolidation state — memory_pending (the queue) and memory_cursors
+// (the watermark/lease) — which are NOT FK-linked to memory (no cascade), so a
+// memory-only delete would orphan them. All three deletes run in one
+// transaction so a reclaim is atomic. memory_embeddings rows cascade via their
+// ON DELETE CASCADE FK (Postgres-only; SQLite has no such table).
 func (s *Store) MemoryDeleteScope(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) (int, error) {
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ?`,
 		tenantID, string(scope), scopeID,
 	)
@@ -3876,6 +3884,21 @@ func (s *Store) MemoryDeleteScope(ctx context.Context, tenantID string, scope st
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM memory_pending WHERE tenant_id = ? AND scope = ? AND scope_id = ?`,
+		tenantID, string(scope), scopeID,
+	); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM memory_cursors WHERE tenant_id = ? AND scope = ? AND scope_id = ?`,
+		tenantID, string(scope), scopeID,
+	); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return int(n), nil
