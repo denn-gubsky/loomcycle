@@ -229,6 +229,19 @@ type SessionSummary struct {
 	Status       RunStatus `json:"status,omitempty"`
 }
 
+// ConsolidatableSession is one row of ConsolidatableSessions: a session whose
+// runs have all reached a terminal state, plus the composite-watermark key the
+// consolidator advances its cursor to. MaxCompletedAt is the max completed_at
+// over the session's runs (the session's "settled at" instant); UserID /
+// AgentName are the session's owner, carried so a fan-out dispatcher can group
+// sessions into per-target batches without a second query.
+type ConsolidatableSession struct {
+	SessionID      string    `json:"session_id"`
+	MaxCompletedAt time.Time `json:"max_completed_at"`
+	UserID         string    `json:"user_id,omitempty"`
+	AgentName      string    `json:"agent_name,omitempty"`
+}
+
 // SessionMetaPatch is a partial update to a session's RFC BE metadata. A nil
 // pointer leaves that field unchanged; a non-nil pointer writes it (an empty
 // string / empty slice is a legitimate "clear it" value). Archived==true stamps
@@ -1003,6 +1016,29 @@ type Store interface {
 	// chat from ALL automated retention (the RFC BM chats sweeper + this legacy
 	// RFC AV archiver both consume this list).
 	PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
+
+	// ConsolidatableSessions returns the sessions a background memory
+	// consolidator has not folded in yet (RFC BL P2): every run in the session
+	// is TERMINAL (completed/failed/cancelled, none running/paused/pausing —
+	// the same predicate PrunableAgedSessions uses, so a live chat is never
+	// consolidated mid-conversation) AND the session's max(completed_at) sorts
+	// strictly AFTER the composite watermark (afterCompletedAt, afterSessionID):
+	//
+	//	max_completed_at > afterCompletedAt
+	//	  OR (max_completed_at = afterCompletedAt AND session_id > afterSessionID)
+	//
+	// Rows come back ascending by (max_completed_at, session_id) — the exact
+	// order the cursor advances in — so a caller can consolidate the batch and
+	// advance the watermark to the LAST row it processed without ever skipping a
+	// session. A zero afterCompletedAt means "from the beginning". limit <= 0
+	// takes a sane default.
+	//
+	// tenantID always filters (a consolidation run is tenant-confined); userID
+	// and agentName filter only when non-empty — they select the consolidation
+	// TARGET (the user's chats, or one agent's). Unlike PrunableAgedSessions
+	// this does NOT exclude pinned sessions: pinning exempts a chat from
+	// automated DELETION, and consolidation only reads the transcript.
+	ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]ConsolidatableSession, error)
 
 	// RunsForSession returns every run in the session (any status), oldest first.
 	// The archiver uses it to export a session's runs before cascade-deleting it.

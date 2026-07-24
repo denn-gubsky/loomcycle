@@ -1786,6 +1786,76 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, l
 	return out, rows.Err()
 }
 
+// ConsolidatableSessions lists all-terminal sessions past the composite
+// consolidation watermark (RFC BL P2). completed_at is unix-nano here, so the
+// watermark comparison happens in integer space.
+//
+// The terminal predicate is PrunableAgedSessions' — a session with any
+// running/paused/pausing run is excluded, so a live chat is never consolidated
+// mid-conversation. Unlike that query there is NO pinned exclusion (pinning
+// exempts a chat from deletion, not from being read) and no age cutoff (the
+// watermark IS the cutoff).
+func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]store.ConsolidatableSession, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	conds := []string{"s.tenant_id = ?"}
+	args := []any{tenantID}
+	if userID != "" {
+		conds = append(conds, "s.user_id = ?")
+		args = append(args, userID)
+	}
+	if agentName != "" {
+		conds = append(conds, "s.agent = ?")
+		args = append(args, agentName)
+	}
+	args = append(args, string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled))
+
+	// A zero watermark means "from the beginning" — drop the composite
+	// predicate entirely rather than relying on a zero time's (negative)
+	// UnixNano sorting below every real row.
+	having := ""
+	if !afterCompletedAt.IsZero() {
+		having = ` AND (MAX(r.completed_at) > ?
+		               OR (MAX(r.completed_at) = ? AND r.session_id > ?))`
+		args = append(args, afterCompletedAt.UnixNano(), afterCompletedAt.UnixNano(), afterSessionID)
+	}
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT r.session_id, MAX(r.completed_at), s.user_id, s.agent
+		 FROM runs r JOIN sessions s ON s.id = r.session_id
+		 WHERE `+strings.Join(conds, " AND ")+`
+		 GROUP BY r.session_id, s.user_id, s.agent
+		 HAVING SUM(CASE WHEN r.status NOT IN (?, ?, ?)
+		                   OR r.pause_state IN ('paused', 'pausing')
+		                 THEN 1 ELSE 0 END) = 0
+		    AND MAX(r.completed_at) IS NOT NULL`+having+`
+		 ORDER BY MAX(r.completed_at) ASC, r.session_id ASC
+		 LIMIT ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.ConsolidatableSession
+	for rows.Next() {
+		var (
+			row       store.ConsolidatableSession
+			completed int64
+			userIDCol sql.NullString
+		)
+		if err := rows.Scan(&row.SessionID, &completed, &userIDCol, &row.AgentName); err != nil {
+			return nil, err
+		}
+		row.MaxCompletedAt = time.Unix(0, completed).UTC()
+		row.UserID = userIDCol.String
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // RunsForSession returns every run in the session (any status), oldest first.
 func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.Run, error) {
 	rows, err := s.db.QueryContext(ctx,

@@ -390,6 +390,9 @@ func Run(t *testing.T, factory Factory) {
 		// RFC BM Phase 2: a PINNED session is exempt from PrunableAgedSessions
 		// (all automated retention). Fails on the pre-fix query (no exclusion).
 		{"PrunableAgedSessionsExcludesPinned", testPrunableAgedSessionsExcludesPinned},
+		// RFC BL P2: the consolidator's watermark query — all-terminal only,
+		// strictly-after the composite (completed_at, session_id), ascending.
+		{"ConsolidatableSessionsWatermarkOrder", testConsolidatableSessionsWatermarkOrder},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
 		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
@@ -1228,6 +1231,153 @@ func testPrunableAgedSessionsExcludesPinned(t *testing.T, s store.Store) {
 	if !ids[unpinnedID] {
 		t.Errorf("unpinned aged session %s missing from prunable set: %v", unpinnedID, got)
 	}
+}
+
+// testConsolidatableSessionsWatermarkOrder is the RFC BL P2 consolidation-
+// watermark contract. Four properties, each of which a naive query gets wrong:
+//
+//  1. A session with ANY non-terminal run is EXCLUDED — consolidating a live
+//     chat would fold in half a conversation and then never revisit it (the
+//     watermark would have moved past it).
+//  2. Rows come back ascending by (max_completed_at, session_id) — the exact
+//     order the cursor advances in, so "advance to the last row I processed"
+//     can never skip a session.
+//  3. The watermark is STRICTLY after: a session sitting exactly ON the
+//     watermark is excluded (it was the previous batch's last row), so a
+//     re-run consolidates nothing twice.
+//  4. The tie-break arm fires on equal completed_at: same timestamp, greater
+//     session_id ⇒ included; same timestamp, smaller session_id ⇒ excluded.
+//     Without the OR-branch, sessions that settled in the same instant are
+//     silently dropped forever.
+func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// mkTerminal creates a session whose single run reaches a terminal state.
+	mkTerminal := func(agent, userID string, status store.RunStatus) string {
+		sess, err := s.CreateSession(ctx, "tc", agent, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agent + "-" + sess.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.FinishRun(ctx, run.ID, status, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+			t.Fatal(err)
+		}
+		return sess.ID
+	}
+
+	// A then B, in that order, so A's completed_at precedes B's.
+	sessA := mkTerminal("consol-agent", "u1", store.RunCompleted)
+	sessB := mkTerminal("consol-agent", "u1", store.RunFailed) // failed is terminal too
+
+	// C mixes a finished run with a still-running one → never consolidatable.
+	sessC, err := s.CreateSession(ctx, "tc", "consol-agent", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneRun, err := s.CreateRun(ctx, sessC.ID, store.RunIdentity{AgentID: "consol-c-done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, sessC.ID, store.RunIdentity{AgentID: "consol-c-live"}); err != nil {
+		t.Fatal(err) // stays running
+	}
+	if err := s.FinishRun(ctx, doneRun.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A different user's session must not appear under u1's target.
+	otherUser := mkTerminal("consol-agent", "u2", store.RunCompleted)
+
+	ids := func(rows []store.ConsolidatableSession) []string {
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.SessionID)
+		}
+		return out
+	}
+
+	// (1)+(2): from the beginning → A then B, ascending; C excluded (live run).
+	all, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", time.Time{}, "", 100)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (zero watermark): %v", err)
+	}
+	if got := ids(all); len(got) != 2 || got[0] != sessA || got[1] != sessB {
+		t.Fatalf("zero-watermark set = %v, want [A=%s B=%s] in that order (C=%s has a running run and must be excluded)",
+			got, sessA, sessB, sessC.ID)
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i].MaxCompletedAt.Before(all[i-1].MaxCompletedAt) {
+			t.Errorf("rows not ascending by max_completed_at: %v then %v", all[i-1].MaxCompletedAt, all[i].MaxCompletedAt)
+		}
+	}
+	if all[0].UserID != "u1" || all[0].AgentName != "consol-agent" {
+		t.Errorf("row owner = (user %q, agent %q), want (u1, consol-agent)", all[0].UserID, all[0].AgentName)
+	}
+	// The other user's session is filtered out by the target selector.
+	for _, id := range ids(all) {
+		if id == otherUser {
+			t.Errorf("u1's target returned u2's session %s — the userID filter leaked", otherUser)
+		}
+	}
+
+	watermarkA := all[0].MaxCompletedAt
+
+	// (3) strictly-after: the watermark sitting exactly on A excludes A, keeps B.
+	after, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", watermarkA, sessA, 100)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (watermark at A): %v", err)
+	}
+	if got := ids(after); len(got) != 1 || got[0] != sessB {
+		t.Errorf("watermark at (A.completed_at, A.id) = %v, want just [B=%s] — a session ON the watermark must not be re-consolidated", got, sessB)
+	}
+
+	// (4a) tie-break INCLUDES: same completed_at, session_id greater than "".
+	tieIn, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", watermarkA, "", 100)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (tie-break include): %v", err)
+	}
+	if !hasSessionID(ids(tieIn), sessA) {
+		t.Errorf("equal completed_at with a GREATER session_id must be included; got %v, want %s present", ids(tieIn), sessA)
+	}
+
+	// (4b) tie-break EXCLUDES: same completed_at, session_id below the cursor's.
+	tieOut, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", watermarkA, "\xef\xbf\xbf", 100)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (tie-break exclude): %v", err)
+	}
+	if hasSessionID(ids(tieOut), sessA) {
+		t.Errorf("equal completed_at with a SMALLER session_id must be excluded; got %v, want %s absent", ids(tieOut), sessA)
+	}
+
+	// limit caps the batch (and keeps the ascending order, so the cap always
+	// trims the NEWEST rows — the next tick picks them up).
+	one, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", time.Time{}, "", 1)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (limit 1): %v", err)
+	}
+	if got := ids(one); len(got) != 1 || got[0] != sessA {
+		t.Errorf("limit=1 = %v, want [A=%s] (the oldest)", got, sessA)
+	}
+
+	// Tenant confinement: another tenant sees none of these.
+	if rows, err := s.ConsolidatableSessions(ctx, "other-tenant", "u1", "", time.Time{}, "", 100); err != nil {
+		t.Fatalf("ConsolidatableSessions (other tenant): %v", err)
+	} else if len(rows) != 0 {
+		t.Errorf("other tenant returned %d rows, want 0 — the tenant filter leaked", len(rows))
+	}
+}
+
+// hasSessionID reports whether the id list contains needle.
+func hasSessionID(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // testHookTenantRoundTrip exercises the cluster hook-registry SQL — the RFC AF
