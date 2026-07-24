@@ -81,6 +81,39 @@ func TestMemory_TenantIsolation(t *testing.T) {
 	}
 }
 
+// TestMemory_RejectsGlobalScope pins the isolation invariant the help index
+// (RFC BL P1) depends on: the Memory tool never exposes the reserved `global`
+// scope, so no wire path can reach the reserved `__help__` namespace where the
+// help index lives. resolveScope refuses it both at the ACL gate (default
+// policy) AND at the switch (even a misconfigured policy that lists "global").
+func TestMemory_RejectsGlobalScope(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	// Default policy is {agent, user}; global is refused at the ACL gate.
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"global","key":"__help__"}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("scope=global was accepted; the reserved __help__ namespace must be unreachable")
+	}
+
+	// Defense in depth: even if a policy erroneously lists "global", resolveScope's
+	// switch has no global case, so it still refuses — the reserved namespace
+	// stays unreachable across any future policy refactor.
+	ctx2 := tools.WithAgentName(context.Background(), "qa-agent")
+	ctx2 = tools.WithRunIdentity(ctx2, tools.RunIdentityValue{UserID: "alice"})
+	ctx2 = tools.WithMemoryPolicy(ctx2, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "global"}})
+	res2, err := tool.Execute(ctx2, json.RawMessage(`{"op":"get","scope":"global","key":"__help__"}`))
+	if err != nil {
+		t.Fatalf("execute (policy-allows-global): %v", err)
+	}
+	if !res2.IsError {
+		t.Fatalf("scope=global accepted via resolveScope switch; reserved namespace reachable")
+	}
+}
+
 func TestMemoryTool_SetGetDeleteRoundTrip(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()

@@ -133,6 +133,13 @@ var (
 	// one replica per tick exports + purges retired-and-old substrate def
 	// versions (agent/skill/team/mcp_server/schedule/a2a/webhook/memory_backend).
 	LockKeyRetentionSweeper int64
+	// LockKeyHelpIndexReconcile gates the one-shot boot-time reconcile of the
+	// help-topic search index (RFC BL P1) so exactly ONE replica re-embeds the
+	// changed/new help sections into the reserved global namespace — not a
+	// periodic sweep. The go:embed help corpus is immutable in-process, so this
+	// runs once per boot; the content-hash gate makes an unchanged corpus a
+	// zero-embed no-op even on the replica that wins the lock.
+	LockKeyHelpIndexReconcile int64
 )
 
 func init() {
@@ -147,6 +154,7 @@ func init() {
 	LockKeyEphemeralVolumeSweeper = fnvKey("ephemeral_volume_sweeper")
 	LockKeyUsageSweeper = fnvKey("usage_sweeper")
 	LockKeyRetentionSweeper = fnvKey("retention_sweeper")
+	LockKeyHelpIndexReconcile = fnvKey("help_index_reconcile")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.
