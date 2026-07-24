@@ -232,7 +232,8 @@ const memoryInputSchema = `{
     "lease_ttl_ms":  {"type": "integer", "description": "cursor_lease: how long to hold the consolidation lease, in milliseconds (0 = default; clamped to a maximum). The lease auto-expires so a crashed consolidator never wedges a target."},
     "completed_at":  {"type": "string", "description": "cursor_advance: the watermark timestamp (RFC3339). With session_id it forms the composite watermark; the watermark only ever moves forward."},
     "session_id":    {"type": "string", "description": "cursor_advance: the watermark session id — the composite tie-break paired with completed_at."},
-    "ids":           {"type": "array", "description": "pending_ack: the pending-row ids to mark drained (as returned by pending_drain).", "items": {"type": "string"}}
+    "ids":           {"type": "array", "description": "pending_ack: the pending-row ids to mark drained (as returned by pending_drain).", "items": {"type": "string"}},
+    "provenance":    {"type": "object", "description": "set-only: where this fact came from, recorded alongside the row. class is a short label for the kind of fact (e.g. preference, fact, decision, correction); source_session_id / source_run_id name the chat and run it was distilled from (relay them from pending_drain or the transcript you read). Descriptive only — it never changes what the write can reach. The writer identity is stamped server-side.", "properties": {"class": {"type": "string"}, "source_session_id": {"type": "string"}, "source_run_id": {"type": "string"}}}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -301,6 +302,56 @@ type memoryInput struct {
 	SessionID string `json:"session_id,omitempty"`
 	// IDs are the pending_ack row ids (returned earlier by pending_drain).
 	IDs []string `json:"ids,omitempty"`
+	// Provenance is the RFC BL "where did this fact come from" block on `set`.
+	// Only class / source_session_id / source_run_id are model-supplied; the
+	// origin is stamped server-side (see provenanceForSet).
+	Provenance *memoryProvenanceInput `json:"provenance,omitempty"`
+}
+
+// memoryProvenanceInput is the model-supplied half of store.MemoryProvenance.
+// `origin` is deliberately ABSENT: it names the writer, so accepting it from
+// the model would let any agent label its own writes as consolidator output and
+// poison the "facts a machine distilled" filter. The server stamps it instead.
+type memoryProvenanceInput struct {
+	Class           string `json:"class,omitempty"`
+	SourceSessionID string `json:"source_session_id,omitempty"`
+	SourceRunID     string `json:"source_run_id,omitempty"`
+}
+
+const (
+	// memoryOriginConsolidator is the server-stamped origin for a write made by
+	// a run holding the consolidation grant — a background consolidation pass.
+	memoryOriginConsolidator = "consolidator"
+	// maxProvenanceFieldBytes bounds each model-supplied provenance field. They
+	// are descriptive columns, never an authz input, so the only real risk is an
+	// unbounded string bloating the row — clamp rather than refuse the write.
+	maxProvenanceFieldBytes = 128
+)
+
+// provenanceForSet builds the row's provenance from the model's block plus the
+// SERVER's view of who is writing. A run holding the consolidation grant is a
+// consolidation pass, so its writes are stamped origin=consolidator; an
+// ordinary agent's `set` gets no origin and (absent a provenance block) writes
+// exactly the columns it wrote before this existed.
+func provenanceForSet(ctx context.Context, in memoryInput) store.MemoryProvenance {
+	var prov store.MemoryProvenance
+	if in.Provenance != nil {
+		prov.Class = clampField(in.Provenance.Class)
+		prov.SourceSessionID = clampField(in.Provenance.SourceSessionID)
+		prov.SourceRunID = clampField(in.Provenance.SourceRunID)
+	}
+	if tools.MemoryPolicy(ctx).Consolidation {
+		prov.Origin = memoryOriginConsolidator
+	}
+	return prov
+}
+
+// clampField trims a model-supplied provenance field to the column budget.
+func clampField(v string) string {
+	if len(v) > maxProvenanceFieldBytes {
+		return v[:maxProvenanceFieldBytes]
+	}
+	return v
 }
 
 // Name implements tools.Tool.
@@ -903,9 +954,10 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// genuine k/v write failure — render it with the "set:" prefix.
 	ttl := time.Duration(in.TTL) * time.Second
 	res, err := m.backend(ctx).Set(ctx, scope, scopeID, in.Key, in.Value, memrank.SetOptions{
-		TTL:       ttl,
-		Embed:     in.Embed,
-		EmbedText: in.EmbedText,
+		TTL:        ttl,
+		Embed:      in.Embed,
+		EmbedText:  in.EmbedText,
+		Provenance: provenanceForSet(ctx, in),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrEmbedderNotConfigured) || errors.Is(err, store.ErrVectorUnsupported) {

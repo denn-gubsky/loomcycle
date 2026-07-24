@@ -1453,6 +1453,25 @@ type Store interface {
 	// trusts the store's verdict.
 	MemorySet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
 
+	// MemorySetProvenance is MemorySet plus the RFC BL provenance columns —
+	// WHERE this fact came from and what kind of fact it is. Identical upsert
+	// semantics (including reviving a superseded row); the provenance fields
+	// are overwritten wholesale on every write, so a re-derived fact carries
+	// the CURRENT source rather than the first one. A zero MemoryProvenance
+	// writes NULLs and is then equivalent to MemorySet.
+	//
+	// Split from MemorySet rather than widening it so every existing caller
+	// (and every hot read path) stays byte-identical: only a consolidation
+	// write pays for the extra columns.
+	MemorySetProvenance(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov MemoryProvenance) error
+
+	// MemoryProvenanceGet reads back one row's provenance. Returns
+	// *ErrNotFound when the key does not exist (or is superseded/expired —
+	// the same visibility rule MemoryGet applies). Lets an operator (and the
+	// consolidator itself) see which run distilled a fact without widening
+	// MemoryGet's SELECT for every reader.
+	MemoryProvenanceGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) (MemoryProvenance, error)
+
 	// MemoryGet reads one entry. Returns *ErrNotFound for both "key
 	// missing" and "key expired" — callers don't need to distinguish.
 	// Implementations MUST treat an entry whose expires_at is in the
@@ -2663,6 +2682,31 @@ type MemoryAccessBump struct {
 	Key        string
 	CountDelta int64
 	LastAccess time.Time
+}
+
+// MemoryProvenance is the RFC BL "where did this fact come from" record carried
+// on a base-memory row. Every field is descriptive metadata — none of it is
+// consulted for authorization, path construction, or routing, so a
+// model-relayed SourceSessionID / SourceRunID cannot widen anything; the
+// tenant/scope/scope_id that actually confine the row stay server-resolved.
+//
+//   - Origin is WHO wrote it ("consolidator" for a background consolidation
+//     pass). Server-stamped at the tool boundary, never model-supplied, so it
+//     stays a trustworthy filter for "facts a machine distilled".
+//   - Class is a short label for the KIND of fact (e.g. preference, decision).
+//   - SourceSessionID / SourceRunID name the chat/run the fact was distilled
+//     from — the audit trail back to the transcript.
+type MemoryProvenance struct {
+	Origin          string `json:"origin,omitempty"`
+	Class           string `json:"class,omitempty"`
+	SourceSessionID string `json:"source_session_id,omitempty"`
+	SourceRunID     string `json:"source_run_id,omitempty"`
+}
+
+// IsZero reports whether no provenance field is set — the signal to take the
+// plain MemorySet path.
+func (p MemoryProvenance) IsZero() bool {
+	return p.Origin == "" && p.Class == "" && p.SourceSessionID == "" && p.SourceRunID == ""
 }
 
 // MemoryPendingRow is one durable consolidation-queue record (RFC BL P2). An

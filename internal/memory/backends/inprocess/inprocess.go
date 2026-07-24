@@ -103,7 +103,13 @@ func (b *Backend) Set(ctx context.Context, scope store.MemoryScope, scopeID, key
 		}
 	}
 
-	if err := b.store.MemorySet(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL); err != nil {
+	// RFC BL: a write carrying provenance takes the wider upsert; everything
+	// else keeps the original 8-column write untouched.
+	if opts.Provenance.IsZero() {
+		if err := b.store.MemorySet(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL); err != nil {
+			return memory.SetResult{}, err
+		}
+	} else if err := b.store.MemorySetProvenance(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL, opts.Provenance); err != nil {
 		return memory.SetResult{}, err
 	}
 

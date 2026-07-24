@@ -3877,6 +3877,73 @@ func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.Memo
 	return err
 }
 
+// MemorySetProvenance is MemorySet plus the RFC BL provenance columns. The
+// provenance is written wholesale on every upsert (a re-derived fact carries
+// its CURRENT source), and superseded_at is cleared exactly as MemorySet does
+// so a consolidation write REVIVES a soft-archived row.
+func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance) error {
+	now := time.Now().UnixNano()
+	var expiresAt any
+	if ttl > 0 {
+		expiresAt = time.Now().Add(ttl).UnixNano()
+	}
+	// nullify keeps an unset provenance field NULL rather than '' so a
+	// "written with no class" row is distinguishable from a legacy row.
+	nullify := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at,
+		                    origin, class, source_session_id, source_run_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
+		    value = excluded.value,
+		    expires_at = excluded.expires_at,
+		    updated_at = excluded.updated_at,
+		    origin = excluded.origin,
+		    class = excluded.class,
+		    source_session_id = excluded.source_session_id,
+		    source_run_id = excluded.source_run_id,
+		    superseded_at = NULL`,
+		tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
+		nullify(prov.Origin), nullify(prov.Class), nullify(prov.SourceSessionID), nullify(prov.SourceRunID),
+	)
+	return err
+}
+
+// MemoryProvenanceGet reads one row's provenance, applying MemoryGet's
+// visibility rules (superseded and expired rows read as ErrNotFound).
+func (s *Store) MemoryProvenanceGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryProvenance, error) {
+	var (
+		origin, class, srcSess, srcRun sql.NullString
+		expiresAt                      sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT origin, class, source_session_id, source_run_id, expires_at
+		 FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key = ?
+		   AND superseded_at IS NULL`,
+		tenantID, string(scope), scopeID, key,
+	).Scan(&origin, &class, &srcSess, &srcRun, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.MemoryProvenance{}, &store.ErrNotFound{Kind: "memory", ID: key}
+	}
+	if err != nil {
+		return store.MemoryProvenance{}, err
+	}
+	if expiresAt.Valid && time.Now().UnixNano() > expiresAt.Int64 {
+		return store.MemoryProvenance{}, &store.ErrNotFound{Kind: "memory", ID: key}
+	}
+	return store.MemoryProvenance{
+		Origin:          origin.String,
+		Class:           class.String,
+		SourceSessionID: srcSess.String,
+		SourceRunID:     srcRun.String,
+	}, nil
+}
+
 // MemoryGet returns the entry or *ErrNotFound. Expired rows are
 // surfaced as ErrNotFound regardless of whether the sweeper has
 // reaped them yet.
