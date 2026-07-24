@@ -9,10 +9,11 @@
 # only the fan-out (one run per target that has new work) and the watermark
 # bookkeeping the skill drives through the Memory cursor ops.
 #
-# ⚠️ THIS BUNDLE SPENDS TOKENS. Selecting it plus LOOMCYCLE_SCHEDULER_ENABLED=1
-# starts real LLM runs on the cadence below — one per user with unconsolidated
-# chats. Stage it with `enabled: false` on the schedule until the cadence and
-# tier suit your deployment.
+# ⚠️ THIS BUNDLE SPENDS TOKENS. A pass is a real LLM run, and the schedule fans
+# out one run per user with unconsolidated chats. So the schedule below ships
+# `enabled: false` — selecting the bundle costs nothing until you review the
+# cadence and tier and flip that flag. Boot logs an advisory naming the schedule
+# while it stays staged off, so it is not a silent no-op either.
 #
 # This bundle carries NO provider matrix and NO pinned model: the agent declares
 # `tier: low`, so a `low` tier must come from another layer (select `base`
@@ -322,7 +323,10 @@ skills:
 scheduled_runs:
   memory-consolidation:
     agent: memory/consolidator
-    enabled: true
+    # Staged OFF deliberately (see the header): enabling this starts hourly spend
+    # across every user with unconsolidated chats. Flip to true once the cadence
+    # and tier suit your deployment.
+    enabled: false
     schedule: "17 * * * *"        # hourly, off the hour to dodge cron pile-ups
     timezone: UTC
     prompt:

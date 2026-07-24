@@ -5825,6 +5825,13 @@ func validate(c *Config) error {
 // invokes an agent holding the consolidation grant whose own memory_scopes
 // cover that scope.
 //
+// A consolidator schedule that exists but is DISABLED gets its own, softer line.
+// The two situations need different advice and the distinction is the common one:
+// a consolidation bundle ships staged-off (it spends real tokens on a cadence), so
+// "you have no consolidator, add one" would be wrong and confusing for the
+// operator who has already selected it. Naming the schedule turns a paragraph of
+// setup into one flag flip.
+//
 // Aggregated per SCOPE rather than per agent: a deployment with ten
 // memory-capable agents needs one line, not ten. Pure + deterministically
 // ordered so it is unit-testable.
@@ -5838,12 +5845,11 @@ func orphanAddWarnings(agents map[string]AgentDef, schedules map[string]Schedule
 		return false
 	}
 
-	// Scopes covered by a scheduled consolidator.
+	// Scopes covered by a scheduled consolidator, plus — for the scopes NOT
+	// covered — the disabled schedules that would cover them if enabled.
 	covered := map[string]bool{}
-	for _, sr := range schedules {
-		if !sr.Enabled {
-			continue // a disabled schedule drains nothing
-		}
+	stagedOff := map[string][]string{}
+	for name, sr := range schedules {
 		agent, ok := agents[sr.Agent]
 		if !ok {
 			continue // substrate-only agent: resolved at runtime, invisible here
@@ -5852,7 +5858,13 @@ func orphanAddWarnings(agents map[string]AgentDef, schedules map[string]Schedule
 			continue
 		}
 		for _, scope := range agent.MemoryScopes {
-			covered[scope] = true
+			if sr.Enabled {
+				covered[scope] = true
+			} else {
+				// A disabled schedule drains nothing, so it is NOT coverage — it
+				// only changes the advice.
+				stagedOff[scope] = append(stagedOff[scope], name)
+			}
 		}
 	}
 
@@ -5882,6 +5894,14 @@ func orphanAddWarnings(agents map[string]AgentDef, schedules map[string]Schedule
 	for _, scope := range uncovered {
 		names := append([]string(nil), enqueuers[scope]...)
 		sort.Strings(names)
+		if staged := stagedOff[scope]; len(staged) > 0 {
+			staged = append([]string(nil), staged...)
+			sort.Strings(staged)
+			out = append(out, fmt.Sprintf(
+				"memory scope %q: %d agent(s) can enqueue with Memory op=add (%s) and a consolidator schedule exists but is disabled — enable %s to drain scope %q. Until then queued items never become durable memory, so a later op=recall finds nothing.",
+				scope, len(names), strings.Join(names, ", "), strings.Join(staged, ", "), scope))
+			continue
+		}
 		out = append(out, fmt.Sprintf(
 			"memory scope %q: %d agent(s) can enqueue with Memory op=add (%s) but no enabled scheduled run drains it — queued items never become durable memory, so a later op=recall finds nothing. Add a scheduled run for an agent with memory_consolidation: true covering scope %q (the bundled `memory` preset ships one).",
 			scope, len(names), strings.Join(names, ", "), scope))

@@ -78,14 +78,22 @@ func TestConsolidatorBundle_Validates(t *testing.T) {
 		t.Errorf("agent skills allowlist = %v, want it to match memory/*", agent.Skills)
 	}
 
-	// The example schedule: present, enabled, pointing at the declared agent,
-	// and carrying the fan-out marker that makes it dispatch per target.
+	// The example schedule: present, pointing at the declared agent, and carrying
+	// the fan-out marker that makes it dispatch per target.
 	sr, ok := cfg.ScheduledRuns["memory-consolidation"]
 	if !ok {
 		t.Fatalf("the memory bundle should declare the memory-consolidation schedule; got %v", scheduleNames(cfg))
 	}
 	if sr.Agent != "memory/consolidator" {
 		t.Errorf("schedule agent = %q, want memory/consolidator", sr.Agent)
+	}
+	// STAGED OFF. A pass is a real LLM run and the schedule fans out one per user
+	// with unconsolidated chats, so shipping it enabled means selecting the bundle
+	// (plus LOOMCYCLE_SCHEDULER_ENABLED=1) starts hourly spend across up to 32
+	// targets immediately — with no operator decision in between. The bundle's own
+	// header says to stage it off; this is what keeps the artifact honest.
+	if sr.Enabled {
+		t.Error("the memory-consolidation schedule must ship enabled: false — selecting the bundle must not start unattended LLM spend")
 	}
 	if sr.Schedule == "" {
 		t.Error("schedule must carry a cron expression (a standalone entry, not a template)")
@@ -283,12 +291,18 @@ func TestConsolidatorBundle_ComposesWithTheDefaultStack(t *testing.T) {
 	}
 }
 
-// TestConsolidatorBundle_SilencesTheOrphanAddWarning closes the loop between the
-// advisory and its fix. The default stack ships five agents that can enqueue
-// with Memory op=add and nothing that drains the queue, so it earns exactly one
-// aggregated warning; selecting the memory bundle must make it go away. A
-// warning that survives its own remedy trains operators to ignore warnings.
-func TestConsolidatorBundle_SilencesTheOrphanAddWarning(t *testing.T) {
+// TestConsolidatorBundle_SoftensTheOrphanAddWarning closes the loop between the
+// advisory and the bundle that answers it.
+//
+// The default stack ships agents that can enqueue with Memory op=add and nothing
+// that drains the queue, so it earns the full "nothing drains this scope" line.
+// Selecting the memory bundle must CHANGE that advice rather than silence it: the
+// bundle's schedule ships staged off (a pass is real spend), so the operator does
+// have a consolidator — they have one flag left to flip. Telling them to "add a
+// scheduled run" at that point is wrong and reads as the advisory not noticing
+// what they just installed; telling them nothing hides a queue that is still
+// growing. Naming the schedule is the useful third answer.
+func TestConsolidatorBundle_SoftensTheOrphanAddWarning(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 	orphanWarnings := func(cfg *config.Config) []string {
 		var out []string
@@ -305,16 +319,42 @@ func TestConsolidatorBundle_SilencesTheOrphanAddWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default stack: %v", err)
 	}
-	if got := orphanWarnings(without); len(got) != 1 {
-		t.Errorf("default stack orphan-add warnings = %d, want 1 aggregated line: %v", len(got), got)
+	got := orphanWarnings(without)
+	if len(got) != 1 {
+		t.Fatalf("default stack orphan-add warnings = %d, want 1 aggregated line: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "no enabled scheduled run drains it") {
+		t.Errorf("without the bundle the advisory should be the full one; got %q", got[0])
 	}
 
 	with, err := config.LoadLayers(layersFor(t, append(defaultStack, "memory")...)...)
 	if err != nil {
 		t.Fatalf("default stack + memory: %v", err)
 	}
-	if got := orphanWarnings(with); len(got) != 0 {
-		t.Errorf("the memory bundle must silence the orphan-add warning, still got: %v", got)
+	got = orphanWarnings(with)
+	if len(got) != 1 {
+		t.Fatalf("with the memory bundle staged off, orphan-add warnings = %d, want 1 softer line: %v", len(got), got)
+	}
+	if strings.Contains(got[0], "no enabled scheduled run drains it") {
+		t.Errorf("the advisory still says nothing drains the scope, but the bundle's consolidator IS installed (just disabled); got %q", got[0])
+	}
+	for _, want := range []string{"is disabled", "memory-consolidation"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("the softer advisory must name the disabled schedule; %q is missing %q", got[0], want)
+		}
+	}
+
+	// Flipping the schedule on is what actually silences it — the advisory has to
+	// have an end state, or operators learn to ignore it.
+	enabled, err := config.LoadLayers(append(layersFor(t, append(defaultStack, "memory")...), config.Layer{
+		Name: "enable-consolidator",
+		Data: []byte("scheduled_runs:\n  memory-consolidation:\n    enabled: true\n"),
+	})...)
+	if err != nil {
+		t.Fatalf("default stack + memory + enable overlay: %v", err)
+	}
+	if got := orphanWarnings(enabled); len(got) != 0 {
+		t.Errorf("with the consolidator ENABLED the advisory must go away entirely, still got: %v", got)
 	}
 }
 

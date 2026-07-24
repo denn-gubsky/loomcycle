@@ -53,11 +53,14 @@ func TestOrphanAddWarning_SilentWhenAConsolidatorCoversTheScope(t *testing.T) {
 	}
 }
 
-// TestOrphanAddWarning_ADisabledScheduleDrainsNothing: a schedule with
-// enabled:false is skipped by the sweeper entirely, so it must not count as
-// coverage. This is the trap an operator hits when staging the bundle — the
-// config LOOKS wired.
-func TestOrphanAddWarning_ADisabledScheduleDrainsNothing(t *testing.T) {
+// TestOrphanAddWarning_ADisabledScheduleGetsTheSofterAdvisory: a schedule with
+// enabled:false is skipped by the sweeper entirely, so it is NOT coverage — the
+// queue still grows and the operator still needs to hear about it. But the advice
+// is different, and this is the common case (a consolidation bundle ships staged
+// off because a pass is real spend): telling that operator to "add a scheduled
+// run" is wrong and reads as the advisory not noticing what they installed. Name
+// the schedule instead, so the fix is one flag flip.
+func TestOrphanAddWarning_ADisabledScheduleGetsTheSofterAdvisory(t *testing.T) {
 	agents := map[string]AgentDef{
 		"chat":                memAgent([]string{"user"}, false),
 		"memory/consolidator": memAgent([]string{"user"}, true),
@@ -68,6 +71,14 @@ func TestOrphanAddWarning_ADisabledScheduleDrainsNothing(t *testing.T) {
 	got := orphanAddWarnings(agents, schedules)
 	if len(got) != 1 {
 		t.Fatalf("warnings = %v, want 1 — a disabled schedule drains nothing", got)
+	}
+	for _, want := range []string{`memory scope "user"`, "is disabled", "memory-consolidation"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("advisory %q is missing %q — it has to name the schedule to enable", got[0], want)
+		}
+	}
+	if strings.Contains(got[0], "no enabled scheduled run drains it") {
+		t.Errorf("advisory %q still tells the operator to add a consolidator they already have", got[0])
 	}
 }
 
