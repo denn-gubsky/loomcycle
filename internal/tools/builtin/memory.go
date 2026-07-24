@@ -391,7 +391,7 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — mem9 backends only); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes)."},
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — mem9 backends only); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
     "scope":      {"type": "string", "enum": ["agent","user","run"], "description": "Which keyspace/database. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
@@ -411,7 +411,11 @@ const memoryInputSchema = `{
     "threshold":  {"type": "number", "description": "recall-only: 0..1 relevance floor for returned facts (0 = backend default)."},
     "statement":  {"type": "string", "description": "sql_query / sql_exec: ONE SQL statement. sql_query is read-only (SELECT / WITH … SELECT); sql_exec is DDL/DML (CREATE/INSERT/UPDATE/DELETE/etc.). ATTACH, PRAGMA, load_extension, transactions, and multiple statements are refused."},
     "args":       {"type": "array", "description": "sql_query / sql_exec: positional bind parameters for ? placeholders. An element of the form {\"$embed\": \"text\"} is replaced server-side by the embedding of that text as a pgvector value (reference it with a ::vector cast, e.g. ... ORDER BY embedding <=> ?::vector); requires the postgres tier with pgvector + a configured embedder.", "items": {}},
-    "timeout_ms": {"type": "integer", "description": "sql_query / sql_exec: reserved — the server-configured statement timeout is authoritative in this version."}
+    "timeout_ms": {"type": "integer", "description": "sql_query / sql_exec: reserved — the server-configured statement timeout is authoritative in this version."},
+    "lease_ttl_ms":  {"type": "integer", "description": "cursor_lease: how long to hold the consolidation lease, in milliseconds (0 = default; clamped to a maximum). The lease auto-expires so a crashed consolidator never wedges a target."},
+    "completed_at":  {"type": "string", "description": "cursor_advance: the watermark timestamp (RFC3339). With session_id it forms the composite watermark; the watermark only ever moves forward."},
+    "session_id":    {"type": "string", "description": "cursor_advance: the watermark session id — the composite tie-break paired with completed_at."},
+    "ids":           {"type": "array", "description": "pending_ack: the pending-row ids to mark drained (as returned by pending_drain).", "items": {"type": "string"}}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -467,6 +471,19 @@ type memoryInput struct {
 	// authoritative (a per-call override that could only ever tighten, never
 	// widen, is a Phase-2 refinement). Accepted so the wire shape is stable.
 	TimeoutMs int `json:"timeout_ms,omitempty"`
+
+	// --- RFC BL P2 consolidation control ops ---
+	// LeaseTTLMs is the cursor_lease hold duration in milliseconds. 0 = the
+	// default; clamped to a maximum. The lease auto-expires so a crashed
+	// consolidator never wedges a target.
+	LeaseTTLMs int64 `json:"lease_ttl_ms,omitempty"`
+	// CompletedAt is the cursor_advance watermark timestamp (RFC3339). Paired
+	// with SessionID as the composite watermark.
+	CompletedAt string `json:"completed_at,omitempty"`
+	// SessionID is the cursor_advance watermark session id (composite tie-break).
+	SessionID string `json:"session_id,omitempty"`
+	// IDs are the pending_ack row ids (returned earlier by pending_drain).
+	IDs []string `json:"ids,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -535,10 +552,24 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		return m.execAdd(ctx, scope, scopeID, in)
 	case "recall":
 		return m.execRecall(ctx, scope, scopeID, in)
+	case "cursor_get":
+		return m.execCursorGet(ctx, scope, scopeID, in)
+	case "cursor_lease":
+		return m.execCursorLease(ctx, scope, scopeID, in)
+	case "cursor_advance":
+		return m.execCursorAdvance(ctx, scope, scopeID, in)
+	case "cursor_release":
+		return m.execCursorRelease(ctx, scope, scopeID, in)
+	case "supersede":
+		return m.execSupersede(ctx, scope, scopeID, in)
+	case "pending_drain":
+		return m.execPendingDrain(ctx, scope, scopeID, in)
+	case "pending_ack":
+		return m.execPendingAck(ctx, scope, scopeID, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, cursor_get, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
 	}
 }
 
@@ -1360,6 +1391,180 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		facts = append(facts, fact)
 	}
 	return okJSON(map[string]any{"facts": facts})
+}
+
+// --- RFC BL P2 consolidation control ops ---
+//
+// Every op below is gated by BOTH resolveScope (the memory_scopes ACL, already
+// applied before dispatch) AND the memory_consolidation grant (consolidationGate).
+// The (scope, scopeID) are server-resolved; the tenant comes from RunIdentity —
+// the model never supplies a target scope_id or tenant.
+
+const (
+	// defaultConsolidationLeaseTTL is the cursor_lease hold when lease_ttl_ms is
+	// unset; maxConsolidationLeaseTTL caps it so a runaway value can't wedge a
+	// target far into the future (the lease auto-expires regardless).
+	defaultConsolidationLeaseTTL = 60 * time.Second
+	maxConsolidationLeaseTTL     = time.Hour
+)
+
+// consolidationGate returns a refusal Result (and true) when the run lacks the
+// memory_consolidation grant. Default-deny: the grant is a SEPARATE gate from
+// memory_scopes, so a scope-authorized agent still cannot run these ops without it.
+func consolidationGate(ctx context.Context, op string) (tools.Result, bool) {
+	if tools.MemoryPolicy(ctx).Consolidation {
+		return tools.Result{}, false
+	}
+	return errResult(fmt.Sprintf("memory: %s requires the memory_consolidation grant (add memory_consolidation: true to the agent config)", op)), true
+}
+
+// consolidationOwner is the stable lease-owner identity for this run — the run
+// id when present (survives across a run's turns), else the agent name. Never
+// model-supplied.
+func consolidationOwner(ctx context.Context) string {
+	if id := tools.RunID(ctx); id != "" {
+		return id
+	}
+	return tools.AgentName(ctx)
+}
+
+// cursorJSON renders a cursor row for the agent (non-secret watermark + lease
+// fields). Zero timestamps render as null via expiresAtRFC3339.
+func cursorJSON(row store.MemoryCursorRow) map[string]any {
+	return map[string]any{
+		"watermark_completed_at": expiresAtRFC3339(row.WatermarkCompletedAt),
+		"watermark_session_id":   row.WatermarkSessionID,
+		"leased_by":              row.LeasedBy,
+		"lease_expires_at":       expiresAtRFC3339(row.LeaseExpiresAt),
+	}
+}
+
+func (m *Memory) execCursorGet(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "cursor_get"); denied {
+		return res, nil
+	}
+	row, err := m.Store.MemoryCursorGet(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID)
+	if err != nil {
+		return errResult(fmt.Sprintf("cursor_get: %s", err)), nil
+	}
+	return okJSON(cursorJSON(row))
+}
+
+func (m *Memory) execCursorLease(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "cursor_lease"); denied {
+		return res, nil
+	}
+	owner := consolidationOwner(ctx)
+	if owner == "" {
+		return errResult("cursor_lease: no stable run/agent identity to own the lease"), nil
+	}
+	ttl := defaultConsolidationLeaseTTL
+	if in.LeaseTTLMs > 0 {
+		ttl = time.Duration(in.LeaseTTLMs) * time.Millisecond
+	}
+	if ttl > maxConsolidationLeaseTTL {
+		ttl = maxConsolidationLeaseTTL
+	}
+	row, acquired, err := m.Store.MemoryCursorLease(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, owner, time.Now().UTC(), ttl)
+	if err != nil {
+		return errResult(fmt.Sprintf("cursor_lease: %s", err)), nil
+	}
+	out := cursorJSON(row)
+	out["acquired"] = acquired
+	out["owner"] = owner
+	return okJSON(out)
+}
+
+func (m *Memory) execCursorAdvance(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "cursor_advance"); denied {
+		return res, nil
+	}
+	owner := consolidationOwner(ctx)
+	if owner == "" {
+		return errResult("cursor_advance: no stable run/agent identity to own the lease"), nil
+	}
+	if in.CompletedAt == "" {
+		return errResult("cursor_advance: missing required field: completed_at"), nil
+	}
+	completedAt, perr := time.Parse(time.RFC3339Nano, in.CompletedAt)
+	if perr != nil {
+		return errResult(fmt.Sprintf("cursor_advance: completed_at must be an RFC3339 timestamp: %s", perr)), nil
+	}
+	if err := m.Store.MemoryCursorAdvance(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, owner, completedAt, in.SessionID); err != nil {
+		return errResult(fmt.Sprintf("cursor_advance: %s", err)), nil
+	}
+	return okJSON(map[string]any{"ok": true})
+}
+
+func (m *Memory) execCursorRelease(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "cursor_release"); denied {
+		return res, nil
+	}
+	owner := consolidationOwner(ctx)
+	if owner == "" {
+		return errResult("cursor_release: no stable run/agent identity to own the lease"), nil
+	}
+	if err := m.Store.MemoryCursorRelease(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, owner); err != nil {
+		return errResult(fmt.Sprintf("cursor_release: %s", err)), nil
+	}
+	return okJSON(map[string]any{"ok": true})
+}
+
+func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "supersede"); denied {
+		return res, nil
+	}
+	if in.Key == "" {
+		return errResult("supersede: missing required field: key"), nil
+	}
+	if err := m.Store.MemorySupersede(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, in.Key); err != nil {
+		return errResult(fmt.Sprintf("supersede: %s", err)), nil
+	}
+	return okJSON(map[string]any{"ok": true})
+}
+
+func (m *Memory) execPendingDrain(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "pending_drain"); denied {
+		return res, nil
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	rows, err := m.Store.MemoryPendingDrain(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, limit)
+	if err != nil {
+		return errResult(fmt.Sprintf("pending_drain: %s", err)), nil
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, map[string]any{
+			"id":                r.ID,
+			"payload":           json.RawMessage(r.Payload),
+			"source_session_id": r.SourceSessionID,
+			"source_run_id":     r.SourceRunID,
+			"created_at":        r.CreatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return okJSON(map[string]any{"pending": items})
+}
+
+func (m *Memory) execPendingAck(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "pending_ack"); denied {
+		return res, nil
+	}
+	// ids are opaque, unguessable (128-bit) tokens the caller obtained from its
+	// OWN tenant/scope-scoped pending_drain — a capability-token: possession
+	// authorizes the ack. The store method acks by id (at-least-once semantics).
+	if len(in.IDs) == 0 {
+		return errResult("pending_ack: missing required field: ids"), nil
+	}
+	if err := m.Store.MemoryPendingAck(ctx, in.IDs); err != nil {
+		return errResult(fmt.Sprintf("pending_ack: %s", err)), nil
+	}
+	return okJSON(map[string]any{"ok": true, "acked": len(in.IDs)})
 }
 
 func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
