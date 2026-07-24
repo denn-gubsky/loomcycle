@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/explorer",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Embeddable React Path VFS + chunked-graph Document browser for the loomcycle agentic runtime (RFC AL / AK) — a themeable, standalone package: a dirent tree with folder/document CRUD and a chunk-tree Document viewer/editor.",
   "license": "Apache-2.0",

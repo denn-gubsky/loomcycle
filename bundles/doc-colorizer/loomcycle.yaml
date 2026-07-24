@@ -57,6 +57,11 @@ agents:
         "doc.rfc.review": "#6a7bd6",
         "doc.rfc.confirmed": "#3a9ad6",
         "doc.rfc.done": "#2f8fbf",
+        "doc.plan": "#3a9ad6",
+        "doc.plan.draft": "#c99a3a",
+        "doc.plan.review": "#6a7bd6",
+        "doc.plan.confirmed": "#3a9ad6",
+        "doc.plan.done": "#3aa06a",
         "doc.research": "#8a6ad6",
         "doc.research.done": "#8a6ad6",
         "doc.document": "#3aa06a",
@@ -66,7 +71,10 @@ agents:
         "chunk.draft": "#c99a3a",
         "chunk.review": "#6a7bd6",
         "chunk.confirmed": "#3a9ad6",
-        "chunk.done": "#3aa06a"
+        "chunk.done": "#3aa06a",
+        "chunk.backlog": "#8a8f98",
+        "chunk.implementation": "#d1863a",
+        "chunk.merged": "#3aa06a"
       };
 
       function run(input) {
