@@ -148,6 +148,13 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryScopeIsolation", testMemoryScopeIsolation},
 		{"MemoryListScopeIDs", testMemoryListScopeIDs},
 		{"MemoryListTenantsForScope", testMemoryListTenantsForScope},
+		// RFC BL P2: the background-consolidation substrate.
+		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
+		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
+		{"MemoryPendingEnqueueDrainAck", testMemoryPendingEnqueueDrainAck},
+		{"MemoryCursorGetDefault", testMemoryCursorGetDefault},
+		{"MemoryCursorLeaseCAS", testMemoryCursorLeaseCAS},
+		{"MemoryCursorAdvanceMonotonicAndOwner", testMemoryCursorAdvanceMonotonicAndOwner},
 		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
 		// v0.12.x — MemoryAtomicUpdate primitive backing the new
 		// reducer ops (Memory.merge / append_dedupe / bounded_list).
@@ -3284,6 +3291,293 @@ func testMemoryDeleteScope(t *testing.T, s store.Store) {
 	}
 	if n != 0 {
 		t.Errorf("second MemoryDeleteScope deleted %d, want 0", n)
+	}
+}
+
+// testMemorySupersedeHidesFromReads is the RFC BL P2 soft-archive: a superseded
+// row disappears from get + list but is RETAINED (still counted by the operator
+// scope-size summary, which does not filter superseded rows).
+func testMemorySupersedeHidesFromReads(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "consol", "raw-1", json.RawMessage(`"one"`), 0)
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, "consol", "raw-2", json.RawMessage(`"two"`), 0)
+
+	if err := s.MemorySupersede(ctx, "", store.MemoryScopeAgent, "consol", "raw-1"); err != nil {
+		t.Fatalf("MemorySupersede: %v", err)
+	}
+
+	// get: the superseded key is now invisible (surfaced as not-found).
+	if _, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "consol", "raw-1"); err == nil {
+		t.Error("MemoryGet returned a superseded row; want not-found")
+	} else {
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			t.Errorf("MemoryGet(superseded) err = %v (%T), want *store.ErrNotFound", err, err)
+		}
+	}
+	// The non-superseded sibling is still readable.
+	if _, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, "consol", "raw-2"); err != nil {
+		t.Errorf("MemoryGet(live sibling): %v", err)
+	}
+
+	// list: only the live key.
+	got, _, err := s.MemoryList(ctx, "", store.MemoryScopeAgent, "consol", "", 100)
+	if err != nil {
+		t.Fatalf("MemoryList: %v", err)
+	}
+	if len(got) != 1 || got[0].Key != "raw-2" {
+		t.Errorf("MemoryList after supersede = %+v, want only raw-2", got)
+	}
+
+	// Retention: the row is kept — the operator scope-size summary (which does
+	// NOT filter superseded rows) still counts both keys.
+	sums, err := s.MemoryListScopeIDs(ctx, "", store.MemoryScopeAgent)
+	if err != nil {
+		t.Fatalf("MemoryListScopeIDs: %v", err)
+	}
+	var count int
+	for _, sum := range sums {
+		if sum.ScopeID == "consol" {
+			count = sum.KeyCount
+		}
+	}
+	if count != 2 {
+		t.Errorf("scope key_count = %d after superseding 1 of 2; want 2 (row retained)", count)
+	}
+}
+
+// testMemorySupersedeIsIdempotent: re-superseding an already-superseded row and
+// superseding a missing key are both clean no-ops.
+func testMemorySupersedeIsIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, "", store.MemoryScopeUser, "u-consol", "k", json.RawMessage(`1`), 0)
+	if err := s.MemorySupersede(ctx, "", store.MemoryScopeUser, "u-consol", "k"); err != nil {
+		t.Fatalf("first supersede: %v", err)
+	}
+	if err := s.MemorySupersede(ctx, "", store.MemoryScopeUser, "u-consol", "k"); err != nil {
+		t.Fatalf("second supersede (idempotent) should not error: %v", err)
+	}
+	if err := s.MemorySupersede(ctx, "", store.MemoryScopeUser, "u-consol", "missing"); err != nil {
+		t.Fatalf("supersede of a missing key should be a no-op: %v", err)
+	}
+}
+
+// testMemoryPendingEnqueueDrainAck exercises the durable consolidation queue:
+// enqueue oldest-first, drain (capped, does NOT mark drained), ack (idempotent),
+// and re-drain (acked rows excluded).
+func testMemoryPendingEnqueueDrainAck(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Second)
+	mk := func(id string, ageSecs int, body string) store.MemoryPendingRow {
+		return store.MemoryPendingRow{
+			ID:        id,
+			Scope:     store.MemoryScopeAgent,
+			ScopeID:   "pending-agent",
+			Payload:   json.RawMessage(body),
+			CreatedAt: base.Add(time.Duration(ageSecs) * time.Second),
+		}
+	}
+	// Enqueue out of order; drain must return oldest-first by created_at.
+	if err := s.MemoryPendingEnqueue(ctx, mk("mp_c", 2, `{"n":3}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MemoryPendingEnqueue(ctx, mk("mp_a", 0, `{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MemoryPendingEnqueue(ctx, mk("mp_b", 1, `{"n":2}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drain capped at 2 → the two oldest, in order.
+	batch, err := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, "pending-agent", 2)
+	if err != nil {
+		t.Fatalf("MemoryPendingDrain: %v", err)
+	}
+	if len(batch) != 2 {
+		t.Fatalf("drain(limit=2) returned %d rows, want 2", len(batch))
+	}
+	if batch[0].ID != "mp_a" || batch[1].ID != "mp_b" {
+		t.Errorf("drain order = [%s, %s], want [mp_a, mp_b] (oldest-first)", batch[0].ID, batch[1].ID)
+	}
+	if string(batch[0].Payload) == "" || !strings.Contains(string(batch[0].Payload), `"n"`) {
+		t.Errorf("payload not round-tripped: %q", batch[0].Payload)
+	}
+
+	// Drain does NOT mark rows drained (at-least-once): re-draining returns them.
+	again, err := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, "pending-agent", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 {
+		t.Fatalf("re-drain before ack returned %d, want 2 (drain must not mark drained)", len(again))
+	}
+
+	// Ack the two oldest; the third remains.
+	if err := s.MemoryPendingAck(ctx, []string{"mp_a", "mp_b"}); err != nil {
+		t.Fatalf("MemoryPendingAck: %v", err)
+	}
+	rest, err := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, "pending-agent", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 1 || rest[0].ID != "mp_c" {
+		t.Errorf("drain after ack = %+v, want only mp_c", rest)
+	}
+
+	// Ack idempotency: re-acking already-drained ids is a clean no-op and does
+	// not resurrect or re-drain anything.
+	if err := s.MemoryPendingAck(ctx, []string{"mp_a", "mp_b"}); err != nil {
+		t.Fatalf("re-ack should be a no-op: %v", err)
+	}
+	if err := s.MemoryPendingAck(ctx, nil); err != nil {
+		t.Fatalf("empty ack should be a no-op: %v", err)
+	}
+	rest2, _ := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, "pending-agent", 10)
+	if len(rest2) != 1 || rest2[0].ID != "mp_c" {
+		t.Errorf("drain after re-ack = %+v, want still only mp_c", rest2)
+	}
+}
+
+// testMemoryCursorGetDefault: an unseen target returns a zero-watermark,
+// unleased row — not an error.
+func testMemoryCursorGetDefault(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.MemoryCursorGet(ctx, "", store.MemoryScopeAgent, "never-consolidated")
+	if err != nil {
+		t.Fatalf("MemoryCursorGet(default): %v", err)
+	}
+	if !row.WatermarkCompletedAt.IsZero() || row.WatermarkSessionID != "" {
+		t.Errorf("default watermark not zero: %+v", row)
+	}
+	if row.LeasedBy != "" || !row.LeaseExpiresAt.IsZero() {
+		t.Errorf("default lease not empty: %+v", row)
+	}
+	if row.ScopeID != "never-consolidated" || row.Scope != store.MemoryScopeAgent {
+		t.Errorf("default row target fields not populated: %+v", row)
+	}
+}
+
+// testMemoryCursorLeaseCAS: the lease is a real compare-and-set — a second
+// owner fails while the lease is held, and succeeds once it has expired.
+func testMemoryCursorLeaseCAS(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const scopeID = "lease-agent"
+	now := time.Now().UTC()
+
+	// A acquires an unleased target.
+	row, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || row.LeasedBy != "owner-A" {
+		t.Fatalf("A first lease: acquired=%v leasedBy=%q, want true/owner-A", ok, row.LeasedBy)
+	}
+
+	// B cannot acquire while A holds a live lease.
+	row, ok, err = s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "owner-B", now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("B acquired a lease A still holds")
+	}
+	if row.LeasedBy != "owner-A" {
+		t.Errorf("held lease owner = %q, want owner-A", row.LeasedBy)
+	}
+
+	// A re-acquires re-entrantly.
+	if _, ok, err = s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", now, time.Hour); err != nil || !ok {
+		t.Fatalf("A re-entrant lease: acquired=%v err=%v, want true/nil", ok, err)
+	}
+
+	// A force-expires its own lease (negative ttl → lease_expires_at in the past).
+	if _, ok, err = s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", now, -time.Hour); err != nil || !ok {
+		t.Fatalf("A expire-own lease: acquired=%v err=%v", ok, err)
+	}
+
+	// B now acquires the expired lease.
+	row, ok, err = s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "owner-B", time.Now().UTC(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || row.LeasedBy != "owner-B" {
+		t.Errorf("B acquire-after-expiry: acquired=%v leasedBy=%q, want true/owner-B", ok, row.LeasedBy)
+	}
+
+	// Release by A (not the holder) is a no-op; release by B clears it.
+	if err := s.MemoryCursorRelease(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A"); err != nil {
+		t.Fatalf("release by non-holder should be a no-op: %v", err)
+	}
+	if r, _ := s.MemoryCursorGet(ctx, "", store.MemoryScopeAgent, scopeID); r.LeasedBy != "owner-B" {
+		t.Errorf("non-holder release cleared the lease: %+v", r)
+	}
+	if err := s.MemoryCursorRelease(ctx, "", store.MemoryScopeAgent, scopeID, "owner-B"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := s.MemoryCursorGet(ctx, "", store.MemoryScopeAgent, scopeID); r.LeasedBy != "" {
+		t.Errorf("lease not cleared after holder release: %+v", r)
+	}
+}
+
+// testMemoryCursorAdvanceMonotonicAndOwner: advance requires the lease and
+// never moves the composite watermark backward.
+func testMemoryCursorAdvanceMonotonicAndOwner(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const scopeID = "advance-agent"
+	t1 := time.Now().UTC().Truncate(time.Second)
+	t2 := t1.Add(time.Minute)
+
+	// No lease yet → advance refused.
+	if err := s.MemoryCursorAdvance(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", t2, "s2"); err == nil ||
+		!strings.Contains(err.Error(), "not lease owner") {
+		t.Errorf("advance without a lease err = %v, want 'not lease owner'", err)
+	}
+
+	// A leases the target.
+	if _, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", time.Now().UTC(), time.Hour); err != nil || !ok {
+		t.Fatalf("A lease: acquired=%v err=%v", ok, err)
+	}
+
+	// B (not the lease owner) cannot advance.
+	if err := s.MemoryCursorAdvance(ctx, "", store.MemoryScopeAgent, scopeID, "owner-B", t2, "s2"); err == nil ||
+		!strings.Contains(err.Error(), "not lease owner") {
+		t.Errorf("advance by non-owner err = %v, want 'not lease owner'", err)
+	}
+
+	// A advances to (t2, s2).
+	if err := s.MemoryCursorAdvance(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", t2, "s2"); err != nil {
+		t.Fatalf("A advance to t2: %v", err)
+	}
+	row, _ := s.MemoryCursorGet(ctx, "", store.MemoryScopeAgent, scopeID)
+	if !row.WatermarkCompletedAt.Equal(t2) || row.WatermarkSessionID != "s2" {
+		t.Fatalf("watermark = (%v, %q), want (t2, s2)", row.WatermarkCompletedAt, row.WatermarkSessionID)
+	}
+
+	// A backward advance (t1 < t2) is a monotonic no-op, not an error.
+	if err := s.MemoryCursorAdvance(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", t1, "s1"); err != nil {
+		t.Fatalf("backward advance should be a no-op, got err: %v", err)
+	}
+	row, _ = s.MemoryCursorGet(ctx, "", store.MemoryScopeAgent, scopeID)
+	if !row.WatermarkCompletedAt.Equal(t2) || row.WatermarkSessionID != "s2" {
+		t.Errorf("watermark moved backward: (%v, %q), want (t2, s2)", row.WatermarkCompletedAt, row.WatermarkSessionID)
+	}
+
+	// Same timestamp, higher session id → advances on the composite tie-break.
+	if err := s.MemoryCursorAdvance(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", t2, "s3"); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = s.MemoryCursorGet(ctx, "", store.MemoryScopeAgent, scopeID)
+	if row.WatermarkSessionID != "s3" {
+		t.Errorf("composite advance session = %q, want s3", row.WatermarkSessionID)
+	}
+
+	// Same timestamp, lower session id → no-op.
+	if err := s.MemoryCursorAdvance(ctx, "", store.MemoryScopeAgent, scopeID, "owner-A", t2, "s0"); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = s.MemoryCursorGet(ctx, "", store.MemoryScopeAgent, scopeID)
+	if row.WatermarkSessionID != "s3" {
+		t.Errorf("watermark session moved backward to %q, want s3", row.WatermarkSessionID)
 	}
 }
 

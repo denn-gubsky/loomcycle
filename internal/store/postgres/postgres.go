@@ -3329,7 +3329,8 @@ func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.Memo
 		`SELECT value::text, expires_at, created_at, updated_at
 		 FROM memory
 		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4
-		   AND (expires_at IS NULL OR expires_at > NOW())`,
+		   AND (expires_at IS NULL OR expires_at > NOW())
+		   AND superseded_at IS NULL`,
 		tenantID, string(scope), scopeID, key,
 	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -3390,6 +3391,7 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 		 FROM memory
 		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key LIKE $4 ESCAPE '\'
 		   AND (expires_at IS NULL OR expires_at > NOW())
+		   AND superseded_at IS NULL
 		 ORDER BY key ASC
 		 LIMIT $5`,
 		tenantID, string(scope), scopeID, pattern, limit+1,
@@ -3686,6 +3688,223 @@ func (s *Store) MemorySweep(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("memory sweep: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// ---- RFC BL P2: background memory consolidation substrate ----
+
+// MemorySupersede soft-archives one base-memory row. The WHERE clause's
+// `superseded_at IS NULL` makes it idempotent — a re-supersede does not
+// re-stamp the timestamp — and a missing key is a clean 0-row no-op.
+func (s *Store) MemorySupersede(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE memory SET superseded_at = $5
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4
+		   AND superseded_at IS NULL`,
+		tenantID, string(scope), scopeID, key, time.Now().UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("memory supersede: %w", err)
+	}
+	return nil
+}
+
+// MemoryPendingEnqueue appends one durable consolidation-queue row. ID is
+// generated when empty; CreatedAt defaults to now(); an empty payload stores
+// JSON null so the NOT NULL JSONB constraint holds.
+func (s *Store) MemoryPendingEnqueue(ctx context.Context, row store.MemoryPendingRow) error {
+	if row.ID == "" {
+		row.ID = newID("mp_")
+	}
+	createdAt := row.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	payload := row.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage("null")
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO memory_pending
+		   (id, tenant_id, scope, scope_id, payload, source_session_id, source_run_id, created_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+		row.ID, row.TenantID, string(row.Scope), row.ScopeID, string(payload),
+		nullableString(row.SourceSessionID), nullableString(row.SourceRunID), createdAt,
+	)
+	if err != nil {
+		return fmt.Errorf("memory pending enqueue: %w", err)
+	}
+	return nil
+}
+
+// MemoryPendingDrain returns up to limit un-drained rows oldest-first. It does
+// NOT mark them drained (ack is separate — at-least-once).
+func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, limit int) ([]store.MemoryPendingRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, tenant_id, scope, scope_id, payload::text, source_session_id, source_run_id, created_at, drained_at
+		 FROM memory_pending
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND drained_at IS NULL
+		 ORDER BY created_at ASC, id ASC
+		 LIMIT $4`,
+		tenantID, string(scope), scopeID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory pending drain: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MemoryPendingRow
+	for rows.Next() {
+		var (
+			r           store.MemoryPendingRow
+			scopeStr    string
+			payloadText []byte
+			srcSession  *string
+			srcRun      *string
+			drainedAt   *time.Time
+		)
+		if err := rows.Scan(&r.ID, &r.TenantID, &scopeStr, &r.ScopeID, &payloadText, &srcSession, &srcRun, &r.CreatedAt, &drainedAt); err != nil {
+			return nil, fmt.Errorf("memory pending drain scan: %w", err)
+		}
+		r.Scope = store.MemoryScope(scopeStr)
+		r.Payload = json.RawMessage(payloadText)
+		if srcSession != nil {
+			r.SourceSessionID = *srcSession
+		}
+		if srcRun != nil {
+			r.SourceRunID = *srcRun
+		}
+		if drainedAt != nil {
+			r.DrainedAt = *drainedAt
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory pending drain iter: %w", err)
+	}
+	return out, nil
+}
+
+// MemoryPendingAck marks the given ids drained. `AND drained_at IS NULL` keeps
+// it idempotent — an already-acked row is not re-stamped; an unknown id is
+// silently skipped. An empty slice is a no-op.
+func (s *Store) MemoryPendingAck(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE memory_pending SET drained_at = $1 WHERE id = ANY($2) AND drained_at IS NULL`,
+		time.Now().UTC(), ids,
+	)
+	if err != nil {
+		return fmt.Errorf("memory pending ack: %w", err)
+	}
+	return nil
+}
+
+// MemoryCursorGet is a get-or-default: a target with no row returns a
+// zero-watermark, unleased row rather than ErrNotFound.
+func (s *Store) MemoryCursorGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) (store.MemoryCursorRow, error) {
+	out := store.MemoryCursorRow{TenantID: tenantID, Scope: scope, ScopeID: scopeID}
+	var (
+		completedAt *time.Time
+		expiresAt   *time.Time
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT watermark_completed_at, watermark_session_id, leased_by, lease_expires_at, updated_at
+		 FROM memory_cursors WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
+		tenantID, string(scope), scopeID,
+	).Scan(&completedAt, &out.WatermarkSessionID, &out.LeasedBy, &expiresAt, &out.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return store.MemoryCursorRow{}, fmt.Errorf("memory cursor get: %w", err)
+	}
+	if completedAt != nil {
+		out.WatermarkCompletedAt = *completedAt
+	}
+	if expiresAt != nil {
+		out.LeaseExpiresAt = *expiresAt
+	}
+	return out, nil
+}
+
+// MemoryCursorLease atomically acquires the lease via a single conditional
+// upsert: a fresh INSERT always wins; an existing row is updated only when the
+// DO UPDATE WHERE holds (unleased, expired, or already owner). RowsAffected == 1
+// ⇒ acquired. Two replicas racing the same target can never both acquire.
+func (s *Store) MemoryCursorLease(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, owner string, now time.Time, ttl time.Duration) (store.MemoryCursorRow, bool, error) {
+	expires := now.Add(ttl)
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO memory_cursors (tenant_id, scope, scope_id, leased_by, lease_expires_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (tenant_id, scope, scope_id) DO UPDATE SET
+		    leased_by = EXCLUDED.leased_by,
+		    lease_expires_at = EXCLUDED.lease_expires_at,
+		    updated_at = EXCLUDED.updated_at
+		 WHERE memory_cursors.leased_by = ''
+		    OR memory_cursors.lease_expires_at IS NULL
+		    OR memory_cursors.lease_expires_at <= $6
+		    OR memory_cursors.leased_by = $4`,
+		tenantID, string(scope), scopeID, owner, expires, now,
+	)
+	if err != nil {
+		return store.MemoryCursorRow{}, false, fmt.Errorf("memory cursor lease: %w", err)
+	}
+	acquired := tag.RowsAffected() > 0
+	row, gerr := s.MemoryCursorGet(ctx, tenantID, scope, scopeID)
+	if gerr != nil {
+		return store.MemoryCursorRow{}, acquired, gerr
+	}
+	return row, acquired, nil
+}
+
+// MemoryCursorAdvance advances the composite watermark monotonically IFF owner
+// holds a non-expired lease. The ownership predicate is the UPDATE's WHERE
+// (RowsAffected == 0 ⇒ "not lease owner"); the monotonic guard lives in the SET
+// CASE so a backward/equal advance while the lease is held is a clean no-op.
+func (s *Store) MemoryCursorAdvance(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, owner string, completedAt time.Time, sessionID string) error {
+	now := time.Now().UTC()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memory_cursors SET
+		    watermark_completed_at = CASE
+		      WHEN watermark_completed_at IS NULL
+		        OR $5 > watermark_completed_at
+		        OR ($5 = watermark_completed_at AND $6 > watermark_session_id)
+		      THEN $5 ELSE watermark_completed_at END,
+		    watermark_session_id = CASE
+		      WHEN watermark_completed_at IS NULL
+		        OR $5 > watermark_completed_at
+		        OR ($5 = watermark_completed_at AND $6 > watermark_session_id)
+		      THEN $6 ELSE watermark_session_id END,
+		    updated_at = $7
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3
+		   AND leased_by = $4 AND lease_expires_at > $7`,
+		tenantID, string(scope), scopeID, owner, completedAt, sessionID, now,
+	)
+	if err != nil {
+		return fmt.Errorf("memory cursor advance: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("memory cursor advance: not lease owner (owner=%q)", owner)
+	}
+	return nil
+}
+
+// MemoryCursorRelease clears the lease IFF held by owner. Idempotent no-op
+// otherwise; the watermark is untouched.
+func (s *Store) MemoryCursorRelease(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, owner string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE memory_cursors SET leased_by = '', lease_expires_at = NULL, updated_at = $4
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND leased_by = $5`,
+		tenantID, string(scope), scopeID, time.Now().UTC(), owner,
+	)
+	if err != nil {
+		return fmt.Errorf("memory cursor release: %w", err)
+	}
+	return nil
 }
 
 // ---- v0.8.4 Channel tool ----
