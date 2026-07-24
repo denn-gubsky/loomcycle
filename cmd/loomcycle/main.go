@@ -858,13 +858,6 @@ func main() {
 		log.Printf("embedder: %s/%s (dim=%d)", embedder.Provider(), embedder.Model(), embedder.Dimension())
 	}
 
-	// RFC I MR-4: the env-allowlist gate for the mem9 backend's X-API-Key.
-	// Same allowlist the scheduler + webhooks use (cfg.Env.SchedulerEnvAllowlist).
-	memoryEnvAllowlist := make(map[string]bool, len(cfg.Env.SchedulerEnvAllowlist))
-	for _, name := range cfg.Env.SchedulerEnvAllowlist {
-		memoryEnvAllowlist[name] = true
-	}
-
 	memoryTool := &builtin.Memory{
 		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
 		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
@@ -872,14 +865,6 @@ func main() {
 		// RFC I MR-3b: resolves a per-agent memory_backend NAME to its
 		// MemoryBackendDef (static yaml or dynamic substrate Def).
 		Cfg: cfg,
-		// RFC I MR-4: gates which env vars the mem9 backend may read for
-		// its X-API-Key. Reuses the scheduler/webhook env allowlist — no
-		// new credential surface (Decision 10).
-		EnvAllowlist: memoryEnvAllowlist,
-		// SSRF: the mem9 client blocks private/loopback/metadata IPs at dial
-		// time; this reuses the HTTP tool's private-host vouch list so an
-		// operator with an internal mem9 host exempts it the same way.
-		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 	}
 	allTools = append(allTools, memoryTool)
 
@@ -1389,8 +1374,8 @@ func main() {
 	// so both deps are concrete — the embedder was built above (nil when
 	// unconfigured, which the backend handles by refusing vector ops exactly
 	// as before). MR-3b routes PER-AGENT named backends per-call from
-	// memory.go backend(ctx) via memoryTool.Cfg; MR-4's Mem9 plugs into that
-	// switch. This default assignment stays.
+	// memory.go backend(ctx) via memoryTool.Cfg; this default assignment stays
+	// and is what every unresolved / unknown-kind backend name degrades to.
 	inProcBackend := inprocess.New(storeIface, embedder)
 	// RFC BL hybrid retrieval (OQ #4): a per-replica batched access-count
 	// flusher. Search records a +1 access for returned entries; the flusher
