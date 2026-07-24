@@ -1967,8 +1967,8 @@ type WebhookSyncResponse struct {
 }
 
 // MemoryBackend is one entry in the RFC I MR-3a `memory_backends:` yaml
-// block. It declares a named memory backend: the kind (inprocess or
-// kind), connection config, tenancy strategy, and fallback behaviour.
+// block. It declares a named memory backend: the kind (only "inprocess"
+// ships), connection config, tenancy strategy, and fallback behaviour.
 //
 // Like Webhook (and unlike the A2A yaml-only structs), MemoryBackend
 // carries BOTH json and yaml tags: the SAME field set backs the

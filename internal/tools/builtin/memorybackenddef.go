@@ -509,8 +509,18 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 	// degrade in the runtime.
 	switch def.Kind {
 	case "", "inprocess":
-		// inprocess needs no connection config or tenancy. Extra fields
-		// are tolerated (not hard-failed) but ignored at use time.
+		// inprocess needs no connection config or tenancy. Extra fields are
+		// tolerated (not hard-failed) but ignored at use time — EXCEPT
+		// base_url, which stays validated for the same reason the tenancy
+		// guard below does: no shipped kind dials it, but it is the field a
+		// future external kind WOULD dial, so the persisted shape must never
+		// hold a non-HTTP(S) value (file://, junk) for that kind to act on.
+		// Only checked when set — an absent base_url is the normal case.
+		if def.Config.BaseURL != "" {
+			if err := requireHTTPURL("config.base_url", def.Config.BaseURL); err != nil {
+				return err
+			}
+		}
 	default:
 		return fmt.Errorf("unknown kind %q (must be one of: inprocess)", def.Kind)
 	}

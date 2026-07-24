@@ -148,6 +148,25 @@ func TestMemoryBackendDefTool_CreateRefusesTenancyPatternWithoutTenantID(t *test
 	}
 }
 
+// The base_url guard survives the external backend's removal for the same
+// reason the tenancy guard does: no shipped kind dials base_url, but the
+// persisted shape must never hold a non-HTTP(S) value a future external kind
+// would act on. Retargeted to kind=inprocess (the only shipping kind) — the
+// check runs regardless of kind, so a model-authored fork can't smuggle a
+// file:// URL into storage.
+func TestMemoryBackendDefTool_CreateRefusesNonHTTPBaseURL(t *testing.T) {
+	tool, ctx, cleanup := memoryBackendDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"badurl","overlay":{"kind":"inprocess","config":{"base_url":"file:///etc/passwd"}}}`))
+	if !res.IsError {
+		t.Fatalf("non-http base_url should refuse")
+	}
+	if !strings.Contains(res.Text, "base_url") {
+		t.Errorf("refusal should name base_url; got %s", res.Text)
+	}
+}
+
 func TestMemoryBackendDefTool_CreateRefusesUnknownFallback(t *testing.T) {
 	tool, ctx, cleanup := memoryBackendDefFixture(t)
 	defer cleanup()
