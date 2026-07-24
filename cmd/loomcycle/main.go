@@ -2714,7 +2714,7 @@ func main() {
 		// typed-nil never reaches the non-nil interface check.
 		sched.SetProviderResolver(srv)
 		if advisoryLock != nil {
-			sched.SetFanoutCoordination(advisoryLock, coord.LockKeyMemoryConsolidator)
+			sched.SetFanoutCoordination(advisoryLock, coord.MemoryConsolidatorLockKey)
 		}
 		sched.Start(bgCtx)
 		log.Printf("scheduler: enabled (tick=%ds, fire_timeout=%ds, env_allowlist=%d names)",

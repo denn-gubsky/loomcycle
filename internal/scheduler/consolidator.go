@@ -74,9 +74,15 @@ type AdvisoryLocker interface {
 // unguarded, which is correct for one replica. A no-op-safe setter rather than a
 // New parameter so existing New(...) call sites stay unchanged, mirroring
 // SetChannelScope. Must be called before Start.
-func (s *Scheduler) SetFanoutCoordination(lock AdvisoryLocker, lockKey int64) {
+//
+// lockKeyFn derives the key from the SCHEDULE DEF id — per-def, not one
+// process-wide constant. Consolidation schedules fan out and an operator will have
+// several (typically one per tenant); on a shared key two defs due in the same
+// tick collide and the loser is skip-but-advanced, silently forfeiting its whole
+// cadence. A nil lockKeyFn disables the gate along with a nil lock.
+func (s *Scheduler) SetFanoutCoordination(lock AdvisoryLocker, lockKeyFn func(defID string) int64) {
 	s.fanoutLock = lock
-	s.fanoutLockKey = lockKey
+	s.fanoutLockKeyFn = lockKeyFn
 }
 
 // SetProviderResolver wires the provider resolution the fan-out uses to decide
@@ -157,8 +163,8 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 	dispatch := func(ctx context.Context) {
 		s.dispatchConsolidationTargets(ctx, row, def, scope, now)
 	}
-	if s.fanoutLock != nil {
-		acquired, lockErr := s.fanoutLock.TryRun(batchCtx, s.fanoutLockKey, func(ctx context.Context) error {
+	if s.fanoutLock != nil && s.fanoutLockKeyFn != nil {
+		acquired, lockErr := s.fanoutLock.TryRun(batchCtx, s.fanoutLockKeyFn(row.DefID), func(ctx context.Context) error {
 			dispatch(ctx)
 			return nil
 		})

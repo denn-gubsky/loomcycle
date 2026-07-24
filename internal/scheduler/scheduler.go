@@ -92,11 +92,12 @@ type Scheduler struct {
 
 	// Consolidation fan-out dependencies (RFC BL P2), both optional and both
 	// wired by a setter before Start. fanoutLock is the cluster singleton gate
-	// (nil = single-replica, run unguarded); providerResolver decides
-	// parallel-vs-serial dispatch (nil = resolve failed = serial). See
-	// consolidator.go.
+	// (nil = single-replica, run unguarded) and fanoutLockKeyFn derives its key
+	// per SCHEDULE DEF so two consolidation schedules never collide;
+	// providerResolver decides parallel-vs-serial dispatch (nil = resolve failed
+	// = serial). See consolidator.go.
 	fanoutLock       AdvisoryLocker
-	fanoutLockKey    int64
+	fanoutLockKeyFn  func(defID string) int64
 	providerResolver ProviderResolver
 
 	wg     sync.WaitGroup

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -387,7 +388,7 @@ func TestFanout_SingleReplicaPerTick(t *testing.T) {
 		sched, fr, st, _ := fanoutFixture(t, fanoutDef(nil), nil)
 		sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
 		lock := &stubLock{acquire: false}
-		sched.SetFanoutCoordination(lock, 12345)
+		sched.SetFanoutCoordination(lock, coord.MemoryConsolidatorLockKey)
 		seedSettledSession(t, st, "", "alice")
 
 		fireT(t, sched)
@@ -412,7 +413,7 @@ func TestFanout_SingleReplicaPerTick(t *testing.T) {
 		sched, fr, st, _ := fanoutFixture(t, fanoutDef(nil), nil)
 		sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
 		lock := &stubLock{acquire: true}
-		sched.SetFanoutCoordination(lock, 12345)
+		sched.SetFanoutCoordination(lock, coord.MemoryConsolidatorLockKey)
 		seedSettledSession(t, st, "", "alice")
 
 		fireT(t, sched)
@@ -428,7 +429,7 @@ func TestFanout_SingleReplicaPerTick(t *testing.T) {
 	t.Run("lock infra fault skips the tick without failing the schedule", func(t *testing.T) {
 		sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), nil)
 		sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
-		sched.SetFanoutCoordination(&stubLock{err: errors.New("pool exhausted")}, 12345)
+		sched.SetFanoutCoordination(&stubLock{err: errors.New("pool exhausted")}, coord.MemoryConsolidatorLockKey)
 		seedSettledSession(t, st, "", "alice")
 
 		fireT(t, sched)
@@ -440,6 +441,97 @@ func TestFanout_SingleReplicaPerTick(t *testing.T) {
 			t.Errorf("a lock fault must be logged; logs:\n%s", logs.all())
 		}
 	})
+}
+
+// keyTrackingLock is a stubLock that remembers which keys were taken and never
+// hands the SAME key out twice — the behaviour a real advisory lock has while a
+// holder is inside it. That is what makes per-key independence observable.
+type keyTrackingLock struct {
+	mu   sync.Mutex
+	held map[int64]bool
+	keys []int64
+}
+
+func (l *keyTrackingLock) TryRun(ctx context.Context, lockKey int64, fn func(ctx context.Context) error) (bool, error) {
+	l.mu.Lock()
+	if l.held == nil {
+		l.held = map[int64]bool{}
+	}
+	if l.held[lockKey] {
+		l.mu.Unlock()
+		return false, nil
+	}
+	l.held[lockKey] = true
+	l.keys = append(l.keys, lockKey)
+	l.mu.Unlock()
+	return true, fn(ctx)
+}
+
+func (l *keyTrackingLock) taken() []int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]int64(nil), l.keys...)
+}
+
+// TestFanout_LockKeyIsPerSchedule is the per-tenant starvation regression.
+//
+// The gate used to take ONE process-wide key for every consolidation schedule. A
+// fan-out schedule is exactly the kind an operator has several of — typically one
+// per tenant — so two of them due in the same tick collided, and the loser was
+// skip-but-advanced: it silently forfeited its entire cadence to whichever def the
+// sweeper reached first, forever, with only a "another replica owns this tick" in
+// the log to show for it.
+//
+// Fails-before with a shared key: the second def is refused the lock and
+// dispatches nothing.
+func TestFanout_LockKeyIsPerSchedule(t *testing.T) {
+	def := fanoutDef(nil)
+	sched, fr, st, logs := fanoutFixture(t, def, nil)
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+	lock := &keyTrackingLock{}
+	sched.SetFanoutCoordination(lock, coord.MemoryConsolidatorLockKey)
+	seedSettledSession(t, st, "", "alice")
+
+	ctx := context.Background()
+	now := time.Now()
+	// Two DISTINCT schedule defs, both fan-outs, both due in this tick.
+	sched.fireConsolidationFanout(ctx, store.ScheduleDueRow{DefID: "sd-tenant-a", Name: "consol-a"}, def, now)
+	sched.fireConsolidationFanout(ctx, store.ScheduleDueRow{DefID: "sd-tenant-b", Name: "consol-b"}, def, now)
+
+	keys := lock.taken()
+	if len(keys) != 2 {
+		t.Fatalf("distinct schedule defs acquired %d lock(s), want 2 — one def is starving the other; logs:\n%s", len(keys), logs.all())
+	}
+	if keys[0] == keys[1] {
+		t.Errorf("both defs hashed to the same lock key %d — the key must be derived per def", keys[0])
+	}
+	if got := len(fr.Calls()); got != 2 {
+		t.Errorf("RunOnce calls = %d, want 2 (both schedules dispatched alice's pass); logs:\n%s", got, logs.all())
+	}
+
+	// The SAME def twice still admits exactly one holder — the cluster singleton
+	// property the gate exists for is intact.
+	sched.fireConsolidationFanout(ctx, store.ScheduleDueRow{DefID: "sd-tenant-a", Name: "consol-a"}, def, now)
+	if got := len(lock.taken()); got != 2 {
+		t.Errorf("re-firing the same def acquired the lock again (%d total) — two replicas would both dispatch", got)
+	}
+}
+
+// TestMemoryConsolidatorLockKey_StableAndDistinct pins the derivation itself: the
+// key must be stable for a def id (so a re-fire collides with a concurrent holder
+// on another replica) and different across def ids (so schedules do not starve
+// each other).
+func TestMemoryConsolidatorLockKey_StableAndDistinct(t *testing.T) {
+	a := coord.MemoryConsolidatorLockKey("sd-a")
+	if a != coord.MemoryConsolidatorLockKey("sd-a") {
+		t.Error("the key for one def id is not stable — a second replica would not collide with the holder")
+	}
+	if a == coord.MemoryConsolidatorLockKey("sd-b") {
+		t.Error("two def ids hash to the same key — one schedule would starve the other")
+	}
+	if a == 0 {
+		t.Error("key is 0 — an all-zero key would collide with an unkeyed caller")
+	}
 }
 
 // seedConsolidatorRun creates a settled session AUTHORED BY the consolidator
