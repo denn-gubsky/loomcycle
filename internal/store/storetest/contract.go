@@ -156,6 +156,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryCursorGetDefault", testMemoryCursorGetDefault},
 		{"MemoryCursorLeaseCAS", testMemoryCursorLeaseCAS},
 		{"MemoryCursorAdvanceMonotonicAndOwner", testMemoryCursorAdvanceMonotonicAndOwner},
+		{"MemoryDeleteScopeCleansConsolidationRows", testMemoryDeleteScopeCleansConsolidationRows},
 		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
 		// v0.12.x — MemoryAtomicUpdate primitive backing the new
 		// reducer ops (Memory.merge / append_dedupe / bounded_list).
@@ -3292,6 +3293,72 @@ func testMemoryDeleteScope(t *testing.T, s store.Store) {
 	}
 	if n != 0 {
 		t.Errorf("second MemoryDeleteScope deleted %d, want 0", n)
+	}
+}
+
+// testMemoryDeleteScopeCleansConsolidationRows: reclaiming a scope must also
+// remove its consolidation state. memory_pending + memory_cursors are NOT
+// FK-linked to memory (no cascade), so a scope delete that touched only the
+// memory table would orphan them. FAIL-BEFORE: without the two extra deletes
+// the enqueued pending row is still drainable and the leased cursor row
+// survives after MemoryDeleteScope.
+func testMemoryDeleteScopeCleansConsolidationRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const scopeID = "reap-consol"
+
+	// The target scope: a base k/v row, a queued consolidation row, a leased cursor.
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, scopeID, "k1", json.RawMessage(`1`), 0)
+	if err := s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{
+		Scope:     store.MemoryScopeAgent,
+		ScopeID:   scopeID,
+		Payload:   json.RawMessage(`{"n":1}`),
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("enqueue target pending: %v", err)
+	}
+	if _, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "owner", time.Now().UTC(), time.Hour); err != nil || !ok {
+		t.Fatalf("seed cursor lease: ok=%v err=%v", ok, err)
+	}
+
+	// A sibling scope's consolidation row must survive the reclaim.
+	if err := s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{
+		Scope:     store.MemoryScopeAgent,
+		ScopeID:   "sibling",
+		Payload:   json.RawMessage(`{"n":9}`),
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("enqueue sibling pending: %v", err)
+	}
+
+	if _, err := s.MemoryDeleteScope(ctx, "", store.MemoryScopeAgent, scopeID); err != nil {
+		t.Fatalf("MemoryDeleteScope: %v", err)
+	}
+
+	// The target's consolidation queue is empty.
+	pend, err := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, scopeID, 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingDrain(target): %v", err)
+	}
+	if len(pend) != 0 {
+		t.Errorf("MemoryDeleteScope left %d pending rows; want 0 (consolidation queue must be reclaimed)", len(pend))
+	}
+
+	// The target's cursor is back to its zero-watermark, unleased default (row gone).
+	cur, err := s.MemoryCursorGet(ctx, "", store.MemoryScopeAgent, scopeID)
+	if err != nil {
+		t.Fatalf("MemoryCursorGet(target): %v", err)
+	}
+	if cur.LeasedBy != "" || !cur.LeaseExpiresAt.IsZero() || !cur.WatermarkCompletedAt.IsZero() {
+		t.Errorf("MemoryDeleteScope left a cursor row: %+v; want zero-default (cursor must be reclaimed)", cur)
+	}
+
+	// The sibling scope's pending row is untouched.
+	sib, err := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, "sibling", 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingDrain(sibling): %v", err)
+	}
+	if len(sib) != 1 {
+		t.Errorf("sibling scope lost its pending rows: have %d, want 1", len(sib))
 	}
 }
 

@@ -3370,18 +3370,45 @@ func (s *Store) MemoryDelete(ctx context.Context, tenantID string, scope store.M
 	return tag.RowsAffected() > 0, nil
 }
 
-// MemoryDeleteScope removes every entry under (tenantID, scope, scopeID) in one
-// statement (RFC BM retention). memory_embeddings rows cascade via their ON
-// DELETE CASCADE FK, mirroring single-key MemoryDelete.
+// MemoryDeleteScope removes every entry under (tenantID, scope, scopeID) (RFC
+// BM retention) and returns the memory-table row count. It also clears the
+// scope's consolidation state — memory_pending (the queue) and memory_cursors
+// (the watermark/lease) — which are NOT FK-linked to memory (no cascade), so a
+// memory-only delete would orphan them. All three deletes run in one
+// transaction so a reclaim is atomic. memory_embeddings rows cascade via their
+// ON DELETE CASCADE FK, mirroring single-key MemoryDelete.
 func (s *Store) MemoryDeleteScope(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) (int, error) {
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("memory delete scope begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM memory WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
 		tenantID, string(scope), scopeID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("memory delete scope: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	n := int(tag.RowsAffected())
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM memory_pending WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
+		tenantID, string(scope), scopeID,
+	); err != nil {
+		return 0, fmt.Errorf("memory delete scope pending: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM memory_cursors WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
+		tenantID, string(scope), scopeID,
+	); err != nil {
+		return 0, fmt.Errorf("memory delete scope cursors: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("memory delete scope commit: %w", err)
+	}
+	return n, nil
 }
 
 // MemoryList enumerates entries for a (scope, scopeID), filtered by

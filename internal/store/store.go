@@ -1429,13 +1429,16 @@ type Store interface {
 	// already expired). Both are non-error paths.
 	MemoryDelete(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) (bool, error)
 
-	// MemoryDeleteScope removes EVERY entry under (tenantID, scope, scopeID) in
-	// one statement and returns the row count deleted (memory_embeddings rows
-	// cascade via their FK). Used by the RFC BM retention sweeper to reclaim a
-	// fully-retired agent's accumulated base-memory k/v. It now scopes by
-	// tenantID, so a caller reclaiming an agent name that is dead across
-	// multiple tenants must fan out one call per tenant (or use "" for the
-	// legacy/shared tenant) — a single call touches only the given tenant's rows.
+	// MemoryDeleteScope removes EVERY entry under (tenantID, scope, scopeID) and
+	// returns the memory-table row count deleted (memory_embeddings rows cascade
+	// via their FK). It ALSO clears the scope's consolidation state in the same
+	// transaction — memory_pending (the enqueue queue) and memory_cursors (the
+	// watermark + lease), neither FK-linked to memory, so a memory-only delete
+	// would orphan them. Used by the RFC BM retention sweeper to reclaim a
+	// fully-retired agent's accumulated base-memory k/v. It scopes by tenantID,
+	// so a caller reclaiming an agent name that is dead across multiple tenants
+	// must fan out one call per tenant (or use "" for the legacy/shared tenant) —
+	// a single call touches only the given tenant's rows.
 	MemoryDeleteScope(ctx context.Context, tenantID string, scope MemoryScope, scopeID string) (int, error)
 
 	// MemoryList returns entries for the (scope, scopeID) tuple whose
