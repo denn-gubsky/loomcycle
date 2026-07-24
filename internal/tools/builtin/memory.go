@@ -208,14 +208,14 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — add enqueues for background consolidation, recall needs the vector stack); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_scan","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — add enqueues for background consolidation, recall needs the vector stack); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_scan,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
     "scope":      {"type": "string", "enum": ["agent","user","run"], "description": "Which keyspace/database. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
     "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to write ops; 0 means no expiry (or keep existing on update)."},
     "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
-    "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1)."},
+    "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1). cursor_scan: max chats returned in one page (default 10, max 50)."},
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
@@ -422,6 +422,8 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		return m.execRecall(ctx, scope, scopeID, in)
 	case "cursor_get":
 		return m.execCursorGet(ctx, scope, scopeID, in)
+	case "cursor_scan":
+		return m.execCursorScan(ctx, scope, scopeID, in)
 	case "cursor_lease":
 		return m.execCursorLease(ctx, scope, scopeID, in)
 	case "cursor_advance":
@@ -437,7 +439,7 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, cursor_get, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, cursor_get, cursor_scan, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
 	}
 }
 
@@ -1275,6 +1277,15 @@ const (
 	// target far into the future (the lease auto-expires regardless).
 	defaultConsolidationLeaseTTL = 60 * time.Second
 	maxConsolidationLeaseTTL     = time.Hour
+
+	// defaultCursorScanLimit / maxCursorScanLimit bound one cursor_scan page.
+	// The default is deliberately SMALL: a pass must finish its whole page within
+	// max_iterations, because a pass that runs out of iterations never advances
+	// the watermark and the next pass re-reads the identical batch forever. A
+	// truncated page is cheap (the next pass resumes at the watermark), an
+	// unfinishable page is a permanent stall.
+	defaultCursorScanLimit = 10
+	maxCursorScanLimit     = 50
 )
 
 // consolidationGate returns a refusal Result (and true) when the run lacks the
@@ -1317,6 +1328,68 @@ func (m *Memory) execCursorGet(ctx context.Context, scope store.MemoryScope, sco
 		return errResult(fmt.Sprintf("cursor_get: %s", err)), nil
 	}
 	return okJSON(cursorJSON(row))
+}
+
+// execCursorScan lists the settled chats this target has not consolidated yet,
+// OLDEST FIRST, strictly after the target's stored watermark.
+//
+// This op exists because the only other way to discover work — paging the chat
+// list — is unsafe here. That list is ordered newest-first and filtered on
+// last_activity, a DIFFERENT timestamp from the watermark's max(completed_at),
+// while the watermark itself is forward-only. A pass that read the newest N
+// chats and then advanced to the newest one it saw would strand every older
+// chat PERMANENTLY, silently, with the first pass on an existing deployment
+// discarding the whole historical backlog.
+//
+// Everything that makes the read safe is enforced HERE rather than by prompt
+// text, so a steered or confused model cannot widen it:
+//
+//   - the watermark comes from the store (MemoryCursorGet), never the wire;
+//   - the target is the server-resolved (tenant, scope, scope_id);
+//   - the query is strictly-after and ascending, so consolidating a page and
+//     advancing to its LAST row can never skip a session;
+//   - only all-terminal sessions qualify, so a live chat is never half-read;
+//   - the pass's OWN agent name is excluded, so a pass structurally cannot see
+//     (or re-consolidate) its own past reports.
+func (m *Memory) execCursorScan(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "cursor_scan"); denied {
+		return res, nil
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = defaultCursorScanLimit
+	}
+	if limit > maxCursorScanLimit {
+		limit = maxCursorScanLimit
+	}
+	tenantID := tools.RunIdentity(ctx).TenantID
+	cursor, err := m.Store.MemoryCursorGet(ctx, tenantID, scope, scopeID)
+	if err != nil {
+		return errResult(fmt.Sprintf("cursor_scan: %s", err)), nil
+	}
+	// scopeID is the target's USER id under scope=user — the only scope a
+	// consolidation fan-out dispatches, and the one whose chats these are. Under
+	// scope=agent it filters an agent name against user_id and correctly matches
+	// nothing: an agent-scope target owns bookkeeping, not chat transcripts.
+	//
+	// Over-fetch by one to detect truncation without a second query.
+	rows, err := m.Store.ConsolidatableSessions(ctx, tenantID, scopeID, "", tools.AgentName(ctx),
+		cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, limit+1)
+	if err != nil {
+		return errResult(fmt.Sprintf("cursor_scan: %s", err)), nil
+	}
+	truncated := len(rows) > limit
+	if truncated {
+		rows = rows[:limit]
+	}
+	sessions := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		sessions = append(sessions, map[string]any{
+			"session_id":   r.SessionID,
+			"completed_at": r.MaxCompletedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return okJSON(map[string]any{"sessions": sessions, "truncated": truncated})
 }
 
 func (m *Memory) execCursorLease(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {

@@ -64,6 +64,199 @@ func TestMemory_CursorOpsRequireConsolidationGrant(t *testing.T) {
 	}
 }
 
+// seedSettledChat creates a session authored by `agent` for `userID` with one
+// COMPLETED run, so the store reports it as consolidatable. Returns the session
+// id and the instant it settled — the exact pair cursor_scan must hand back.
+func seedSettledChat(t *testing.T, tool *Memory, tenantID, agent, userID string) (string, time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := tool.Store.CreateSession(ctx, tenantID, agent, userID)
+	if err != nil {
+		t.Fatalf("CreateSession(%s/%s): %v", agent, userID, err)
+	}
+	run, err := tool.Store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "r-" + sess.ID, UserID: userID})
+	if err != nil {
+		t.Fatalf("CreateRun(%s): %v", sess.ID, err)
+	}
+	if err := tool.Store.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatalf("FinishRun(%s): %v", run.ID, err)
+	}
+	settledAt, _, err := tool.Store.SessionSettledAt(ctx, tenantID, sess.ID)
+	if err != nil {
+		t.Fatalf("SessionSettledAt(%s): %v", sess.ID, err)
+	}
+	return sess.ID, settledAt
+}
+
+// setWatermark moves a target's cursor via the store (lease → advance →
+// release), so a test can put the watermark somewhere without going through the
+// tool's own advance guard.
+func setWatermark(t *testing.T, tool *Memory, scopeID string, at time.Time, sessionID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, _, err := tool.Store.MemoryCursorLease(ctx, "", store.MemoryScopeUser, scopeID, "test-owner", time.Now().UTC(), time.Minute); err != nil {
+		t.Fatalf("lease %s: %v", scopeID, err)
+	}
+	if err := tool.Store.MemoryCursorAdvance(ctx, "", store.MemoryScopeUser, scopeID, "test-owner", at, sessionID); err != nil {
+		t.Fatalf("advance %s: %v", scopeID, err)
+	}
+	if err := tool.Store.MemoryCursorRelease(ctx, "", store.MemoryScopeUser, scopeID, "test-owner"); err != nil {
+		t.Fatalf("release %s: %v", scopeID, err)
+	}
+}
+
+// scanResult is the cursor_scan response shape.
+type scanResult struct {
+	Sessions []struct {
+		SessionID   string `json:"session_id"`
+		CompletedAt string `json:"completed_at"`
+	} `json:"sessions"`
+	Truncated bool `json:"truncated"`
+}
+
+// runScan executes cursor_scan and decodes the result.
+func runScan(t *testing.T, tool *Memory, ctx context.Context, payload string) scanResult {
+	t.Helper()
+	res, _ := tool.Execute(ctx, json.RawMessage(payload))
+	if res.IsError {
+		t.Fatalf("cursor_scan(%s): %s", payload, res.Text)
+	}
+	var out scanResult
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("decode cursor_scan result: %v (%s)", err, res.Text)
+	}
+	return out
+}
+
+// scanIDs projects the session ids, in returned order.
+func scanIDs(r scanResult) []string {
+	out := make([]string, 0, len(r.Sessions))
+	for _, s := range r.Sessions {
+		out = append(out, s.SessionID)
+	}
+	return out
+}
+
+// TestMemory_CursorScanRequiresConsolidationGrant: cursor_scan reads the
+// target's chat history, so it belongs behind the same default-deny grant as
+// every other consolidation op — an agent with memory_scopes alone must not be
+// able to enumerate a user's settled sessions.
+//
+// Fails-before if execCursorScan skips consolidationGate.
+func TestMemory_CursorScanRequiresConsolidationGrant(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t) // scopes, NO consolidation grant
+	defer cleanup()
+	seedSettledChat(t, tool, "", "chat", "alice")
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"cursor_scan","scope":"user"}`))
+	if !res.IsError || !strings.Contains(res.Text, "memory_consolidation grant") {
+		t.Errorf("cursor_scan without the grant = (IsError=%v) %q, want a memory_consolidation refusal", res.IsError, res.Text)
+	}
+}
+
+// TestMemory_CursorScanReturnsAscendingPastWatermark is the data-loss
+// regression. The pass used to discover work by paging the chat LIST, which is
+// ordered newest-first and filtered on last_activity — a different timestamp
+// from the watermark's max(completed_at) — while the watermark itself is
+// forward-only. So a target with more settled chats than one page consolidated
+// the NEWEST page, advanced past them, and stranded every older chat forever:
+// no error, no log, and on an existing deployment the first pass discarded the
+// whole historical backlog.
+//
+// cursor_scan is the fix, and these are the properties that make it safe:
+// ascending order, strictly after the STORED watermark, self-authored sessions
+// absent, and an explicit truncation flag instead of a silent trim.
+//
+// Fails-before against any newest-first / last_activity-keyed discovery read.
+func TestMemory_CursorScanReturnsAscendingPastWatermark(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+
+	// Three real chats, oldest first, plus one authored by the pass ITSELF
+	// (the fixture agent name) — the steady state after a few passes.
+	c1, at1 := seedSettledChat(t, tool, "", "chat", "alice")
+	c2, _ := seedSettledChat(t, tool, "", "chat", "alice")
+	c3, _ := seedSettledChat(t, tool, "", "chat", "alice")
+	self, _ := seedSettledChat(t, tool, "", "qa-agent", "alice")
+	// Another user's chat must never appear under alice's target.
+	other, _ := seedSettledChat(t, tool, "", "chat", "bob")
+
+	got := runScan(t, tool, gctx, `{"op":"cursor_scan","scope":"user"}`)
+	if ids := scanIDs(got); len(ids) != 3 || ids[0] != c1 || ids[1] != c2 || ids[2] != c3 {
+		t.Fatalf("scan from a zero watermark = %v, want [%s %s %s] OLDEST FIRST", ids, c1, c2, c3)
+	}
+	for _, id := range scanIDs(got) {
+		if id == self {
+			t.Errorf("the pass's OWN session %s came back — a pass must not be able to see its own past reports", self)
+		}
+		if id == other {
+			t.Errorf("another user's session %s came back — the target filter leaked", other)
+		}
+	}
+	if got.Truncated {
+		t.Error("truncated=true with three rows under the default page size")
+	}
+	// The completed_at travels with its own session id and round-trips exactly,
+	// so the pass can relay the pair verbatim into cursor_advance.
+	if parsed, err := time.Parse(time.RFC3339Nano, got.Sessions[0].CompletedAt); err != nil {
+		t.Errorf("completed_at %q is not RFC3339: %v", got.Sessions[0].CompletedAt, err)
+	} else if !parsed.Equal(at1) {
+		t.Errorf("completed_at = %v, want the session's settled instant %v", parsed, at1)
+	}
+
+	// Strictly after the STORED watermark: sitting on c1 drops c1, keeps c2, c3.
+	setWatermark(t, tool, "alice", at1, c1)
+	after := runScan(t, tool, gctx, `{"op":"cursor_scan","scope":"user"}`)
+	if ids := scanIDs(after); len(ids) != 2 || ids[0] != c2 || ids[1] != c3 {
+		t.Errorf("scan past the c1 watermark = %v, want [%s %s]", ids, c2, c3)
+	}
+
+	// A trimmed page says so, and trims the NEWEST rows (ascending order), so
+	// the next pass resumes exactly where this one stopped.
+	page := runScan(t, tool, gctx, `{"op":"cursor_scan","scope":"user","limit":1}`)
+	if ids := scanIDs(page); len(ids) != 1 || ids[0] != c2 {
+		t.Errorf("limit=1 = %v, want [%s] (the oldest unconsolidated chat)", ids, c2)
+	}
+	if !page.Truncated {
+		t.Error("truncated=false on a trimmed page — a silent trim reads as 'that was everything'")
+	}
+}
+
+// TestMemory_CursorScanIgnoresModelSuppliedWatermark: the scan window is the
+// SERVER's stored watermark and the SERVER's resolved target. A transcript that
+// steers the model into passing its own watermark or a different scope_id must
+// change nothing — otherwise the one guard that bounds the read is model-supplied.
+//
+// Fails-before if execCursorScan reads completed_at / session_id / a scope id
+// off the input instead of MemoryCursorGet + resolveScope.
+func TestMemory_CursorScanIgnoresModelSuppliedWatermark(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+
+	c1, at1 := seedSettledChat(t, tool, "", "chat", "alice")
+	c2, _ := seedSettledChat(t, tool, "", "chat", "alice")
+	bob, _ := seedSettledChat(t, tool, "", "chat", "bob")
+	setWatermark(t, tool, "alice", at1, c1)
+
+	// A payload that tries to reset the window to the beginning of time AND
+	// retarget another user. Both extra fields must be inert.
+	steered := `{"op":"cursor_scan","scope":"user","completed_at":"1970-01-01T00:00:00Z","session_id":"","scope_id":"bob"}`
+	got := runScan(t, tool, gctx, steered)
+	if ids := scanIDs(got); len(ids) != 1 || ids[0] != c2 {
+		t.Errorf("steered scan = %v, want just [%s] — the stored watermark and resolved target must win", ids, c2)
+	}
+	for _, id := range scanIDs(got) {
+		if id == c1 {
+			t.Errorf("a model-supplied watermark rewound the scan to %s", c1)
+		}
+		if id == bob {
+			t.Errorf("a model-supplied scope_id retargeted the scan at %s", bob)
+		}
+	}
+}
+
 // TestMemory_SupersedeHidesFromReads: a superseded key vanishes from get + list
 // (the store read-filter) while its sibling remains.
 func TestMemory_SupersedeHidesFromReads(t *testing.T) {

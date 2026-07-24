@@ -144,26 +144,45 @@ func TestConsolidatorBundle_SkillBodyEncodesThePipeline(t *testing.T) {
 	prompt := cfg.Agents["memory/consolidator"].SystemPrompt
 
 	for _, want := range []string{
-		"cursor_lease",    // step 1 — one pass per target
-		"acquired",        // ...and the not-acquired stop
-		"cursor_get",      // step 2 — the watermark
-		"History op=list", // step 3a — the chats
-		"pending_drain",   // step 3b — the queue
-		"cursor_release",  // step 4 / 9 — always give the lease back
-		"recall",          // step 5 — the neighbour set for dedup
-		"0.95",            // step 5 — the merge band
-		"0.85",            // step 5 — the flag-as-related band
-		"supersede",       // step 6 — soft-archive, never hard delete
-		"provenance",      // step 6 — the audit trail
-		"embed=true",      // step 6 — or the fact is invisible to the next pass
-		"pending_ack",     // step 8
-		"cursor_advance",  // step 9
-		"/memory/index",   // step 7
-		"deterministic",   // step 6 — the idempotency mechanism
+		"cursor_lease",      // step 1 — one pass per target
+		"acquired",          // ...and the not-acquired stop
+		"cursor_get",        // step 2 — the watermark
+		"cursor_scan",       // step 3a — the ONLY safe chat-discovery read
+		"History op=get",    // step 3a — then read each scanned chat's turns
+		"pending_drain",     // step 3b — the queue
+		"cursor_release",    // step 4 / 9 — always give the lease back
+		"recall",            // step 5 — the neighbour set for dedup
+		"0.95",              // step 5 — the merge band
+		"0.85",              // step 5 — the flag-as-related band
+		"supersede",         // step 6 — soft-archive, never hard delete
+		"provenance",        // step 6 — the audit trail
+		"embed=true",        // step 6 — or the fact is invisible to the next pass
+		"pending_ack",       // step 8
+		"cursor_advance",    // step 9
+		"/memory/index",     // step 7
+		"deterministic",     // step 6 — the idempotency mechanism
+		`"truncated": true`, // step 3a — a trimmed page is normal, not an error
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("skill body is missing %q — the pipeline step it encodes would be dropped", want)
 		}
+	}
+
+	// Chat DISCOVERY must go through cursor_scan, never through paging the chat
+	// list. `History op=list` is ordered newest-first and filtered on
+	// last_activity — a different timestamp from the forward-only watermark — so a
+	// pass that discovered work that way consolidated the newest page, advanced
+	// past it, and stranded every older chat permanently and silently. The scan is
+	// ascending and watermark-keyed, which is what makes "advance to the last row
+	// I consolidated" safe.
+	if strings.Contains(body, "History op=list") {
+		t.Error("skill body still pages `History op=list` for discovery — that read is newest-first and strands older chats behind the forward-only watermark; discovery must be cursor_scan")
+	}
+	// The advance pair has to be relayed verbatim from a scan row. Re-deriving it
+	// from a chat's last activity (or from the clock) is how the watermark ends up
+	// somewhere no session ever settled.
+	if !strings.Contains(body, "verbatim") {
+		t.Error("skill body must tell the pass to copy the (completed_at, session_id) pair verbatim from the scan row it consolidated")
 	}
 
 	// Advance-last is the invariant that makes a failed pass safe to retry.
@@ -174,13 +193,10 @@ func TestConsolidatorBundle_SkillBodyEncodesThePipeline(t *testing.T) {
 	if !strings.Contains(body, "NEVER use `Memory op=delete`") {
 		t.Error("skill body must forbid the hard delete op explicitly")
 	}
-	// The pass's own runs appear in its chat list like any other. Consolidating
-	// them feeds its own reports back into memory, compounding every pass. The
-	// dispatcher excludes them from the has-new-work probe; the body must tell
-	// the model to ignore them too, or a dispatched pass still eats its own tail.
-	if !strings.Contains(body, "Skip your OWN past runs") {
-		t.Error("skill body must tell the pass to skip its own previous runs")
-	}
+	// The pass's own past runs are excluded by the cursor_scan QUERY (it filters
+	// out the calling agent's own sessions), so the body no longer carries a
+	// "skip your own runs" rule — a mechanism beats an instruction. What the body
+	// must still say is that the scan is the only discovery read, asserted above.
 
 	// Prompt-injection posture: transcripts are data. This has to be in the
 	// SYSTEM PROMPT (always present), not only in the on-demand skill body.

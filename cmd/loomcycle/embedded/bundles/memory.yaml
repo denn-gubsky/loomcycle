@@ -34,7 +34,11 @@ agents:
   memory/consolidator:
     tier: low                     # cheap by design; retune via tier policy, never a pinned model
     effort: low
-    max_iterations: 40            # lease → read → extract → apply → index → advance
+    # lease → scan → read → extract → apply → index → advance. This cap and the
+    # skill's `cursor_scan limit=10` move TOGETHER: a pass that runs out of
+    # iterations never advances the watermark, so the next pass re-reads the
+    # identical page forever. Widen the page only if you widen this too.
+    max_iterations: 40
     tools: [Memory, History, Document, Path, Context]
     memory_scopes: [agent, user]  # user = the fan-out target; agent = its own bookkeeping
     memory_consolidation: true    # the cursor / supersede / pending-queue control ops
@@ -112,23 +116,26 @@ skills:
 
       Two sources, both required:
 
-      a. **Finished chats since the watermark.**
-         `History op=list scope=user limit=25` — and when you have a watermark,
-         pass `from=<watermark_completed_at>` to bound the window.
-         Then, for each chat, `History op=get session_id=<id> format=markdown`
-         to read the turns.
+      a. **Finished chats you have not folded in yet.**
+         `Memory op=cursor_scan scope=user limit=10`
 
-         Skip a chat that is still `running` — an unfinished conversation must
-         not be consolidated, because the watermark would move past the half you
-         read and you would never see the rest. Also skip any chat whose last
-         activity is at or before the watermark: you already folded it in.
+         This is the ONLY way to discover chats. It returns the chats that
+         settled after the watermark, OLDEST FIRST, each as a
+         `session_id` + `completed_at` pair. The query already excludes chats
+         that are still running, chats at or before the watermark, and your own
+         past passes — so every row it hands you is real, un-folded work. Do not
+         look for chats any other way; a list ordered newest-first would make you
+         advance the watermark past chats you never read, and they would be lost.
 
-         **Skip your OWN past runs.** Your passes appear in this list like any
-         other chat (same user, agent `memory/consolidator`). They contain your
-         reports, not the user's facts. Consolidating them would feed your own
-         output back into memory, compounding every pass. Ignore them entirely —
-         never read them, never distil from them, never advance the watermark to
-         one of them.
+         Then, for each row, `History op=get session_id=<session_id>
+         format=markdown` to read the turns.
+
+         Keep each row's `session_id` and `completed_at` together — you need the
+         pair verbatim in step 9.
+
+         If the result says `"truncated": true` there is more work than one pass
+         should carry. That is NORMAL and safe: consolidate this page, advance to
+         its last row, and the next pass continues from exactly there.
 
       b. **Queued memory items.**
          `Memory op=pending_drain scope=user limit=50`
@@ -270,12 +277,23 @@ skills:
 
       ONLY after every write in step 6 has succeeded:
 
-      `Memory op=cursor_advance scope=user completed_at=<the LATEST last-activity
-      timestamp among the chats you consolidated> session_id=<that chat's id>`
+      `Memory op=cursor_advance scope=user completed_at=<completed_at>
+      session_id=<session_id>`
 
-      Use the newest chat you actually consolidated — not the newest chat you
-      saw, and not the current time. The pair moves together: the timestamp with
-      its own session's id.
+      Take BOTH values from the LAST `cursor_scan` row you ACTUALLY consolidated,
+      copied verbatim. They travel together as one pair — the timestamp with its
+      own session's id. Never re-derive the timestamp from a chat's last activity,
+      never use the current time, and never send a timestamp you did not read out
+      of a scan row. The server checks the pair against the real chat and refuses
+      anything else.
+
+      Because `cursor_scan` returns rows oldest-first, advancing to the last row
+      you consolidated is always safe: everything before it is folded in, and
+      nothing after it has been touched. So a truncated page is fine — the next
+      pass resumes exactly where you stopped.
+
+      If you consolidated only queued items and no chats, do NOT advance — there
+      is no scan row to advance to. Release and report.
 
       Then `Memory op=cursor_release scope=user`.
 
