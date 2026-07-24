@@ -246,6 +246,126 @@ func RecordCompactionCtx(ctx context.Context, trigger string, before, after int)
 	RecordCompaction(trace.SpanFromContext(ctx), trigger, before, after)
 }
 
+// --- RFC BL P1 retrieval telemetry ---
+//
+// Per-op memory-retrieval shape (latency, dead-link drops, boot reconcile)
+// flows through OTEL, NOT the in-process /metrics endpoint: that endpoint is
+// substrate-only by architectural lock (RFC observability-profiles Decision 1
+// — process + concurrency state only), and per-op shape is aggregated
+// downstream from spans by the OTEL Collector's spanmetrics connector. These
+// recorders mirror the mem9 backend's existing loomcycle.memory.search span so
+// the two memory backends produce one consistent series. All are no-op-safe:
+// with OTEL unconfigured Tracer() is a no-op and every call here costs nothing.
+
+// SpanMemorySearch is one memory retrieval. The span DURATION is the retrieval
+// latency, so a downstream spanmetrics connector derives the
+// loomcycle.memory.search.latency histogram (p50/p95) from it, labeled by the
+// backend + mode attributes below.
+const SpanMemorySearch = "loomcycle.memory.search"
+
+// SpanHelpReconcile is the one-shot boot reconcile of the help-topic search
+// index (RFC BL PR5). Its attributes carry the ReconcileStats counts.
+const SpanHelpReconcile = "loomcycle.help.reconcile"
+
+const (
+	// AttrMemoryBackend labels a memory.search span by backend ("inprocess" |
+	// "mem9") so operators can split latency/error series per backend.
+	AttrMemoryBackend = "loomcycle.memory.backend"
+	// AttrMemoryMode is the hybrid-vs-degrade dimension: "hybrid" (vector +
+	// full-text fused by RRF) or "vector" (the cheap pure-vector path).
+	AttrMemoryMode = "loomcycle.memory.mode"
+	// AttrMemoryTopK is the retrieval's requested top_k.
+	AttrMemoryTopK = "loomcycle.memory.top_k"
+	// AttrDeadlinkDropped is the number of hits the read-time dead-link guard
+	// dropped on this retrieval (RFC BL §2.10). The downstream
+	// loomcycle.memory.deadlink.dropped counter derives from the same-named
+	// span event.
+	AttrDeadlinkDropped = "loomcycle.memory.deadlink_dropped"
+
+	// AttrHelpWritten / Pruned / Unchanged / Failed / Degraded mirror the
+	// help.ReconcileStats fields (RFC BL PR5) so the counters + degraded gauge
+	// derive from the reconcile span.
+	AttrHelpWritten   = "loomcycle.help.written"
+	AttrHelpPruned    = "loomcycle.help.pruned"
+	AttrHelpUnchanged = "loomcycle.help.unchanged"
+	AttrHelpFailed    = "loomcycle.help.failed"
+	AttrHelpDegraded  = "loomcycle.help.degraded"
+)
+
+// EventDeadlinkDropped is the span event emitted when the read-time dead-link
+// guard drops at least one hit. A downstream connector counts it into the
+// loomcycle.memory.deadlink.dropped metric.
+const EventDeadlinkDropped = "loomcycle.memory.deadlink.dropped"
+
+// RecordMemorySearch opens loomcycle.memory.search for one retrieval; the span
+// duration IS the retrieval latency. `backend` labels the series. Caller defers
+// span.End() and calls SetMemorySearchResult once mode/top_k/dead-link counts
+// are known.
+func RecordMemorySearch(ctx context.Context, backend string) (context.Context, trace.Span) {
+	var kvs []attribute.KeyValue
+	if backend != "" {
+		kvs = append(kvs, attribute.String(AttrMemoryBackend, backend))
+	}
+	return Tracer().Start(ctx, SpanMemorySearch, trace.WithAttributes(kvs...))
+}
+
+// SetMemorySearchResult stamps the retrieval's mode + top_k on the span, and —
+// when the dead-link guard dropped hits — records the count as both an attribute
+// and a span event (the loomcycle.memory.deadlink.dropped counter source).
+// No-op on a nil / non-recording span.
+func SetMemorySearchResult(span trace.Span, mode string, topK, deadlinkDropped int) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	kvs := []attribute.KeyValue{attribute.Int(AttrMemoryTopK, topK)}
+	if mode != "" {
+		kvs = append(kvs, attribute.String(AttrMemoryMode, mode))
+	}
+	if deadlinkDropped > 0 {
+		kvs = append(kvs, attribute.Int(AttrDeadlinkDropped, deadlinkDropped))
+	}
+	span.SetAttributes(kvs...)
+	if deadlinkDropped > 0 {
+		span.AddEvent(EventDeadlinkDropped,
+			trace.WithAttributes(attribute.Int(AttrDeadlinkDropped, deadlinkDropped)))
+	}
+}
+
+// RecordDeadlinkDropped records a dead-link drop count on `span` (attribute +
+// event) when n > 0 — for call sites that ride an enclosing span rather than
+// opening their own memory.search span (the help query path rides the
+// loomcycle.tool.call span). No-op when n <= 0 or the span isn't recording.
+func RecordDeadlinkDropped(span trace.Span, n int) {
+	if span == nil || n <= 0 || !span.IsRecording() {
+		return
+	}
+	span.SetAttributes(attribute.Int(AttrDeadlinkDropped, n))
+	span.AddEvent(EventDeadlinkDropped, trace.WithAttributes(attribute.Int(AttrDeadlinkDropped, n)))
+}
+
+// RecordDeadlinkDroppedCtx is RecordDeadlinkDropped against the current span on
+// ctx — for callers (the help query path) that hold a ctx but not the span.
+func RecordDeadlinkDroppedCtx(ctx context.Context, n int) {
+	RecordDeadlinkDropped(trace.SpanFromContext(ctx), n)
+}
+
+// RecordHelpReconcile emits a one-shot loomcycle.help.reconcile span carrying
+// the boot-reconcile outcome (RFC BL PR5 ReconcileStats). Opened + ended here
+// because reconcile runs once at boot, off any request span. The counts land
+// as attributes so a downstream connector derives written/pruned/unchanged/
+// failed counters + a degraded gauge.
+func RecordHelpReconcile(ctx context.Context, written, pruned, unchanged, failed int, degraded bool) {
+	_, span := Tracer().Start(ctx, SpanHelpReconcile)
+	span.SetAttributes(
+		attribute.Int(AttrHelpWritten, written),
+		attribute.Int(AttrHelpPruned, pruned),
+		attribute.Int(AttrHelpUnchanged, unchanged),
+		attribute.Int(AttrHelpFailed, failed),
+		attribute.Bool(AttrHelpDegraded, degraded),
+	)
+	span.End()
+}
+
 // SetSpanError marks a span as failed with the given error. The message
 // is truncated to a sane length so a noisy provider error doesn't blow
 // up Jaeger storage.

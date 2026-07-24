@@ -64,6 +64,13 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		"Runs waiting in the queue for a slot (semaphore queued count).",
 		replicaLabels, float64(queued))
 
+	// TODO(RFC BL): per-scope memory footprint gauge (row count / bytes per
+	// scope). Deferred from PR6 — there is no cheap all-scopes footprint source:
+	// store.MemoryEmbedStats is per-(tenant,scope) and would require enumerating
+	// every scope_id at scrape time, i.e. the hot per-scrape scan this
+	// substrate-only, live-read endpoint must avoid (see the file-header lock).
+	// Wire it once a cached per-scope sampler exists (RFC BL P2).
+
 	// Per-user series — only emitted when per-user cap is engaged,
 	// otherwise the cardinality of `user_id` could explode on anonymous
 	// workloads. We can't directly observe the cap value from Stats(),
