@@ -568,6 +568,13 @@ type MemoryPolicyValue struct {
 	AllowedScopes []string
 	QuotaBytes    int
 	Backend       string
+	// Consolidation is the RFC BL P2 `memory_consolidation` grant — it gates the
+	// Memory tool's consolidation control ops (cursor lease/advance, pending
+	// drain/ack, supersede) SEPARATELY from AllowedScopes. Default-deny: false
+	// (the zero value) refuses those ops even when the scope is allowed. Sourced
+	// operator-side from the agent def — never model-supplied, same trust posture
+	// as AllowedScopes.
+	Consolidation bool
 }
 
 // WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.

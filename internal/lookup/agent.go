@@ -230,6 +230,7 @@ type SubstrateAgentDef struct {
 	InheritCoreBlocks     bool               `json:"inherit_core_blocks,omitempty"`
 	MemoryInjectMaxTokens int                `json:"memory_inject_max_tokens,omitempty"`
 	MemoryProtocol        bool               `json:"memory_protocol,omitempty"`
+	MemoryConsolidation   bool               `json:"memory_consolidation,omitempty"` // RFC BL P2 grant
 	MemoryIndexMaxBytes   int                `json:"memory_index_max_bytes,omitempty"`
 	MemoryRoots           string             `json:"memory_roots,omitempty"`
 	// RetryAttempts mirrors config.AgentDef.RetryAttempts — per-agent
@@ -292,6 +293,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		InheritCoreBlocks:     s.InheritCoreBlocks,
 		MemoryInjectMaxTokens: s.MemoryInjectMaxTokens,
 		MemoryProtocol:        s.MemoryProtocol,
+		MemoryConsolidation:   s.MemoryConsolidation,
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,

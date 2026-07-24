@@ -134,6 +134,12 @@ type AgentContent struct {
 	MaxIterations         int                   `json:"max_iterations,omitempty"`
 	MaxTokens             int                   `json:"max_tokens,omitempty"`
 	MemoryBackend         string                `json:"memory_backend,omitempty"`
+	// MemoryConsolidation is the RFC BL P2 capability grant, content-identifying
+	// like MemoryProtocol. Its tag sorts between memory_backend and
+	// memory_index_max_bytes, so it is declared here to keep the alphabetical
+	// invariant (declaration order = JSON emit order = the hash input); omitempty
+	// keeps an agent that never sets it byte-stable against pre-feature rows.
+	MemoryConsolidation bool `json:"memory_consolidation,omitempty"`
 	// MemoryIndexMaxBytes / MemoryInjectMaxTokens / MemoryProtocol / MemoryRoots
 	// (RFC BL P1) are content-identifying. Tags are kept in alphabetical order:
 	// memory_index_max_bytes < memory_inject_max_tokens < memory_protocol, and
@@ -314,6 +320,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		InheritCoreBlocks:     a.InheritCoreBlocks,
 		MemoryInjectMaxTokens: a.MemoryInjectMaxTokens,
 		MemoryProtocol:        a.MemoryProtocol,
+		MemoryConsolidation:   a.MemoryConsolidation,
 		MemoryIndexMaxBytes:   a.MemoryIndexMaxBytes,
 		MemoryRoots:           a.MemoryRoots,
 	}

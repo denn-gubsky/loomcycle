@@ -308,8 +308,11 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	ctx = tools.WithAgentTools(ctx, []string{"*"})
 	// Memory: full scope access. QuotaBytes=0 falls back to the
 	// global default (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES).
+	// RFC BL P2: the operator substrate-admin plane also gets the consolidation
+	// grant (own-scope, tenant-confined), consistent with the open scope here.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user", "global"},
+		Consolidation: true,
 	})
 	// Channel: "*" wildcard matches every channel name.
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{

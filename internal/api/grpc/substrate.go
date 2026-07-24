@@ -54,8 +54,11 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	// refusing "caller's effective tools not on ctx". Per-run contexts
 	// keep the agent's actual list, so the in-loop escalation guard is unchanged.
 	ctx = tools.WithAgentTools(ctx, []string{"*"})
+	// RFC BL P2: the operator substrate plane also gets the consolidation grant
+	// (own-scope, tenant-confined), consistent with the open memory scope here.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user", "global"},
+		Consolidation: true,
 	})
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
 		Publish:   []string{"*"},

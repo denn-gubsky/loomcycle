@@ -304,6 +304,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"inherit_core_blocks":      true,
 		"memory_inject_max_tokens": true,
 		"memory_protocol":          true,
+		"memory_consolidation":     true, // RFC BL P2 — consolidation control-ops grant (content-identifying)
 		"memory_index_max_bytes":   true, // RFC BL P1 — /memory/index soft cap surfaced to the agent
 		"memory_roots":             true, // RFC BL P1 — user-root provisioning control (lazy|force|suppress)
 		"retry_attempts":           true,

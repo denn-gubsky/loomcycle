@@ -1517,6 +1517,72 @@ type Store interface {
 	// columns PR1 added to the memory table (both sqlite + postgres do).
 	MemoryBumpAccessBatch(ctx context.Context, bumps []MemoryAccessBump) error
 
+	// --- RFC BL P2: background memory consolidation substrate ---
+	//
+	// MemorySupersede soft-archives one base-memory row: it sets
+	// superseded_at = now() for (tenantID, scope, scopeID, key). A superseded
+	// row is RETAINED (audit/rollback) but INVISIBLE to every recall path
+	// (MemoryGet / MemoryList / MemoryEmbedSearch / MemoryFullTextSearch all
+	// filter superseded_at IS NULL). Idempotent: re-superseding an already-
+	// superseded row is a no-op (superseded_at is not re-stamped). A missing
+	// key is a clean no-op (no error) — the consolidator may race a delete.
+	MemorySupersede(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) error
+
+	// MemoryPendingEnqueue appends one durable consolidation-queue row. The
+	// consolidator drains these oldest-first (MemoryPendingDrain) and acks them
+	// after a successful consolidation (MemoryPendingAck). Row.ID is generated
+	// when empty; CreatedAt is set to now() when zero. DrainedAt is ignored on
+	// input (a fresh row is always un-drained).
+	MemoryPendingEnqueue(ctx context.Context, row MemoryPendingRow) error
+
+	// MemoryPendingDrain returns up to limit UN-DRAINED rows for the target
+	// (tenantID, scope, scopeID), oldest-first (created_at ASC, id ASC as a
+	// stable tie-break). It does NOT mark them drained — the ack is a separate
+	// step (MemoryPendingAck) so a crash between drain and consolidation
+	// re-delivers the batch (at-least-once). limit <= 0 is treated as a small
+	// default. An empty queue returns (nil, nil).
+	MemoryPendingDrain(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, limit int) ([]MemoryPendingRow, error)
+
+	// MemoryPendingAck marks the given pending rows drained (drained_at =
+	// now()), so a subsequent MemoryPendingDrain never re-returns them. The ack
+	// is confined to (tenantID, scope, scopeID) — symmetric with the scoped
+	// Drain that produced the ids — so an id from another tenant/scope can never
+	// be acked even if it leaked. Idempotent: acking an already-drained id does
+	// not move drained_at; an unknown or out-of-scope id is silently skipped. An
+	// empty slice is a no-op.
+	MemoryPendingAck(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, ids []string) error
+
+	// MemoryCursorGet returns the consolidation cursor for a target. It is a
+	// GET-OR-DEFAULT: a target with no row yet returns a zero-watermark,
+	// unleased MemoryCursorRow (TenantID/Scope/ScopeID populated, everything
+	// else zero) — never ErrNotFound.
+	MemoryCursorGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID string) (MemoryCursorRow, error)
+
+	// MemoryCursorLease atomically acquires (or re-acquires) the consolidation
+	// lease for a target. It succeeds — as a SINGLE conditional upsert, so two
+	// replicas can't both acquire — iff the target is currently unleased, its
+	// lease has expired (lease_expires_at <= now), or it is already held by
+	// owner (re-entrant refresh). On success it sets leased_by = owner,
+	// lease_expires_at = now + ttl and returns (row, true, nil). On failure
+	// (a live lease held by someone else) it returns the current row with
+	// acquired = false and no error.
+	MemoryCursorLease(ctx context.Context, tenantID string, scope MemoryScope, scopeID, owner string, now time.Time, ttl time.Duration) (MemoryCursorRow, bool, error)
+
+	// MemoryCursorAdvance advances the target's composite watermark to
+	// (completedAt, sessionID) IFF owner currently holds a non-expired lease;
+	// otherwise it returns an error whose message contains "not lease owner".
+	// The watermark is monotonic non-decreasing on the composite key
+	// (completed_at, then session_id) — a backward or equal advance while the
+	// lease is held is a clean no-op (not an error), so the watermark never
+	// moves back.
+	MemoryCursorAdvance(ctx context.Context, tenantID string, scope MemoryScope, scopeID, owner string, completedAt time.Time, sessionID string) error
+
+	// MemoryCursorRelease clears the lease (leased_by = '', lease_expires_at =
+	// NULL) IFF it is currently held by owner. Idempotent: releasing a lease
+	// not held by owner (already released, expired, or held by another) is a
+	// clean no-op. The watermark is untouched.
+	MemoryCursorRelease(ctx context.Context, tenantID string, scope MemoryScope, scopeID, owner string) error
+
 	// SupportsVectors reports whether this backend instance can serve
 	// the MemoryEmbed* family. Backends without a vector index loaded
 	// return false; the Memory tool's `search` op + `embed: true`
@@ -2558,6 +2624,41 @@ type MemoryAccessBump struct {
 	Key        string
 	CountDelta int64
 	LastAccess time.Time
+}
+
+// MemoryPendingRow is one durable consolidation-queue record (RFC BL P2). An
+// Add enqueues the raw messages + metadata to consolidate; the consolidator
+// drains oldest-first and acks after folding them into consolidated memory.
+// DrainedAt is the zero time until MemoryPendingAck stamps it (soft-drain — the
+// row is retained for TTL sweeping, never re-drained). Payload is opaque to the
+// store (JSONB on Postgres, TEXT-encoded JSON on sqlite).
+type MemoryPendingRow struct {
+	ID              string
+	TenantID        string
+	Scope           MemoryScope
+	ScopeID         string
+	Payload         json.RawMessage
+	SourceSessionID string
+	SourceRunID     string
+	CreatedAt       time.Time
+	DrainedAt       time.Time // zero = not yet drained
+}
+
+// MemoryCursorRow is the per-target consolidation watermark + lease (RFC BL
+// P2). The composite watermark (WatermarkCompletedAt, WatermarkSessionID)
+// records how far consolidation has progressed and advances monotonically; the
+// lease (LeasedBy, LeaseExpiresAt) lets one replica own a target's
+// consolidation at a time. A zero WatermarkCompletedAt means "never advanced";
+// an empty LeasedBy (or a zero LeaseExpiresAt) means "unleased".
+type MemoryCursorRow struct {
+	TenantID             string
+	Scope                MemoryScope
+	ScopeID              string
+	WatermarkCompletedAt time.Time // zero = never advanced
+	WatermarkSessionID   string
+	LeasedBy             string
+	LeaseExpiresAt       time.Time // zero = unleased
+	UpdatedAt            time.Time
 }
 
 // MemoryEmbedStats summarises the embedded rows under one scope.

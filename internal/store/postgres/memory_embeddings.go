@@ -193,7 +193,8 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	         WHERE me.tenant_id = $1
 	           AND me.scope = $2
 	           AND me.scope_id = $3
-	           AND (m.expires_at IS NULL OR m.expires_at > now())` + prefixCondition + `
+	           AND (m.expires_at IS NULL OR m.expires_at > now())
+	           AND m.superseded_at IS NULL` + prefixCondition + `
 	         ORDER BY me.embedding <=> $4::vector
 	         LIMIT $5`
 	rows, err := s.pool.Query(ctx, sql, args...)
@@ -296,6 +297,7 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	           AND me.scope = $2
 	           AND me.scope_id = $3
 	           AND (m.expires_at IS NULL OR m.expires_at > now())
+	           AND m.superseded_at IS NULL
 	           AND me.embed_text_tsv @@ plainto_tsquery('english', $4)` + prefixCondition + `
 	         ORDER BY score DESC
 	         LIMIT $5`

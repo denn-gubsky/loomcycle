@@ -25,6 +25,7 @@ func TestAgentDefTool_CreateWithCapabilityFields_RoundTrips(t *testing.T) {
 		"system_prompt":"coordinate the loop",
 		"tools":["Memory","Channel","Evaluation","Interruption"],
 		"memory_scopes":["user"],
+		"memory_consolidation":true,
 		"evaluation_scopes":["submit_self","read_any"],
 		"max_iterations":42,
 		"channels":{"publish":["findings"],"subscribe":["tasks"]},
@@ -49,5 +50,9 @@ func TestAgentDefTool_CreateWithCapabilityFields_RoundTrips(t *testing.T) {
 	}
 	if i := def.Interruption; !i.Enabled || i.MaxPending != 3 || len(i.Kinds) != 1 || i.Kinds[0] != "question" {
 		t.Errorf("Interruption = %+v, want {enabled:true kinds:[question] max_pending:3}", def.Interruption)
+	}
+	// RFC BL P2: the consolidation grant must survive overlay → persist → resolve.
+	if !def.MemoryConsolidation {
+		t.Error("MemoryConsolidation grant did not round-trip through create+promote+resolve")
 	}
 }
