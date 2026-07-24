@@ -731,6 +731,107 @@ func TestFanout_PerTargetFailureDoesNotStopTheBatch(t *testing.T) {
 	}
 }
 
+// TestFanout_UnresolvedAgentDoesNotBurnMaxFires is the F38 regression, in the
+// fan-out. recordFanoutResult set CountAsFire unconditionally, so a schedule whose
+// agent cannot be resolved in its tenant burned one fire per tick and retired
+// itself after max_fires — presenting a pure config error as N normal runs, with
+// the def retired so the operator's next look shows a finished schedule rather
+// than a broken one. fireOne has refused to count this since F38; the fan-out did
+// not inherit that.
+//
+// Fails-before with CountAsFire: true — fire_count reaches 1 and the log says
+// nothing about resolution.
+func TestFanout_UnresolvedAgentDoesNotBurnMaxFires(t *testing.T) {
+	sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), nil)
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+	seedSettledSession(t, st, "", "alice")
+	seedSettledSession(t, st, "", "bob")
+	fr.runErr = fmt.Errorf("dispatch: %w", runner.ErrUnknownAgent)
+
+	fireT(t, sched)
+
+	state, err := sched.store.ScheduleRunStateGet(context.Background(), "sd-test")
+	if err != nil {
+		t.Fatalf("ScheduleRunStateGet: %v", err)
+	}
+	if state.FireCount != 0 {
+		t.Errorf("fire_count = %d, want 0 — an all-targets-unresolved tick is one config error, not a fire (it would retire the schedule)", state.FireCount)
+	}
+	if state.LastStatus != "failed" {
+		t.Errorf("last_status = %q, want failed — the operator still has to see it", state.LastStatus)
+	}
+	if !strings.Contains(state.LastError, "could not resolve agent") {
+		t.Errorf("last_error = %q, want it to name agent resolution rather than a generic failure", state.LastError)
+	}
+	if !logs.contains("not counting toward max_fires") {
+		t.Errorf("the F38 exception must be logged loudly; logs:\n%s", logs.all())
+	}
+}
+
+// TestFanout_BackpressureIsSkippedNotFailed: the backpressure family is transient
+// LOAD, not failure. fireOne labels each of these "skipped" so a saturated
+// provider does not read as a broken schedule; the fan-out labelled every
+// per-target error "failed" and summed them into a failure count an operator would
+// alert on. It also must not fire on_complete hooks — the batch largely did not
+// run.
+//
+// Fails-before: status is "failed" for all three sentinels.
+func TestFanout_BackpressureIsSkippedNotFailed(t *testing.T) {
+	for _, sentinel := range []error{
+		runner.ErrBackpressure,
+		runner.ErrPerUserQuotaExhausted,
+		runner.ErrProviderConcurrencyExhausted,
+	} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			sched, fr, st, _ := fanoutFixture(t, fanoutDef(nil), nil)
+			sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+			seedSettledSession(t, st, "", "alice")
+			fr.runErr = fmt.Errorf("admit: %w", sentinel)
+
+			fireT(t, sched)
+
+			state, err := sched.store.ScheduleRunStateGet(context.Background(), "sd-test")
+			if err != nil {
+				t.Fatalf("ScheduleRunStateGet: %v", err)
+			}
+			if state.LastStatus != "skipped" {
+				t.Errorf("last_status = %q for %v, want skipped — transient load is not a broken schedule", state.LastStatus, sentinel)
+			}
+			if !strings.Contains(state.LastError, "deferred under load") {
+				t.Errorf("last_error = %q, want it to read as deferral rather than failure", state.LastError)
+			}
+			// A throttled batch still counts as a fire (a run was attempted), the
+			// same way fireOne counts a "skipped" fire.
+			if state.FireCount != 1 {
+				t.Errorf("fire_count = %d, want 1 — the tick did attempt work", state.FireCount)
+			}
+		})
+	}
+}
+
+// TestFanout_MixedOutcomesSeparateFailureFromLoad: with one genuine failure and
+// one throttled target, the summary must not present both as failures — an
+// operator sizing an incident needs the split.
+func TestFanout_MixedOutcomesSeparateFailureFromLoad(t *testing.T) {
+	tally := fanoutTally{dispatched: 4, failures: 1, backpressure: 2, unknownAgent: 1}
+	status, errStr, countAsFire := tally.outcome("memory/consolidator")
+	if status != "failed" {
+		t.Errorf("status = %q, want failed (a genuine failure is present)", status)
+	}
+	if !countAsFire {
+		t.Error("countAsFire = false, but some targets ran — only an ALL-unresolved tick is exempt")
+	}
+	if !strings.Contains(errStr, "2 of 4 consolidation target(s) failed") {
+		t.Errorf("errStr = %q, want the broken count (failures + unresolved) out of dispatched", errStr)
+	}
+	if !strings.Contains(errStr, "1 could not resolve agent") {
+		t.Errorf("errStr = %q, want the agent-resolution class called out", errStr)
+	}
+	if !strings.Contains(errStr, "2 deferred under load") {
+		t.Errorf("errStr = %q, want throttled targets counted SEPARATELY from failures", errStr)
+	}
+}
+
 // TestIsConsolidationFanout_MarkerForms: the marker round-trips through YAML and
 // then through the substrate's JSON, and a hand-edited def may spell it as a
 // string. A def WITHOUT the marker must keep the ordinary single-run path.

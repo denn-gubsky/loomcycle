@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -168,17 +169,22 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 			dispatch(ctx)
 			return nil
 		})
+		// `acquired` is checked FIRST. When it is true the work body already ran
+		// and already wrote this schedule's result, so reacting to a (future)
+		// non-nil closure error here would overwrite a finished outcome with a
+		// skip. Today the closure cannot fail; the ordering is what keeps that
+		// from becoming a bug the next time someone gives it a return value.
+		if acquired {
+			return
+		}
 		if lockErr != nil {
 			s.logf("scheduler: consolidation fan-out %q advisory lock infra error: %v — skipping this tick", row.Name, lockErr)
 			s.advanceOnly(ctx, row.DefID, def, "skipped", now)
 			return
 		}
-		if !acquired {
-			// Another replica owns this tick. Skip-but-advance so the row does
-			// not re-present every tick on this replica.
-			s.advanceOnly(ctx, row.DefID, def, "skipped", now)
-			return
-		}
+		// Another replica owns this tick. Skip-but-advance so the row does not
+		// re-present every tick on this replica.
+		s.advanceOnly(ctx, row.DefID, def, "skipped", now)
 		return
 	}
 	dispatch(batchCtx)
@@ -215,11 +221,10 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 	}
 
 	var (
-		mu         sync.Mutex
-		lastRunID  string
-		failures   int
-		dispatched int
-		skipped    int
+		mu        sync.Mutex
+		lastRunID string
+		tally     fanoutTally
+		skipped   int
 	)
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -247,12 +252,12 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 			runID, runErr := s.runConsolidationTarget(ctx, def, target)
 			mu.Lock()
 			defer mu.Unlock()
-			dispatched++
+			tally.dispatched++
 			if runID != "" {
 				lastRunID = runID
 			}
 			if runErr != nil {
-				failures++
+				tally.classify(runErr)
 				// Per-target failures are logged and counted, never fatal to
 				// the batch: one user's wedged consolidation must not stop
 				// everyone else's.
@@ -268,16 +273,84 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 			row.Name, s.cfg.FireTimeout, skipped)
 	}
 
-	status := "completed"
-	errStr := ""
-	if failures > 0 {
-		status = "failed"
-		errStr = fmt.Sprintf("%d of %d consolidation target(s) failed", failures, dispatched)
+	status, errStr, countAsFire := tally.outcome(def.Agent)
+	if tally.unknownAgent > 0 && !countAsFire {
+		// F38, mirrored: agent resolution failed for EVERY target, so no run ever
+		// started. That is one config error repeating, not N fires — counting it
+		// would burn max_fires and retire the schedule, hiding the misconfig
+		// behind a retired def. Log it as loudly as fireOne does.
+		s.logf("scheduler: consolidation fan-out %q could not resolve agent %q in tenant %q for any of %d target(s) — not counting toward max_fires; check the agent exists in this tenant (F38)",
+			row.Name, def.Agent, def.TenantID, tally.dispatched)
 	}
-	s.recordFanoutResult(ctx, row, def, now, status, errStr, lastRunID)
+	s.recordFanoutResult(ctx, row, def, now, status, errStr, lastRunID, countAsFire)
 	if status == "completed" {
 		s.dispatchHooks(ctx, row.Name, def, lastRunID, "")
 	}
+}
+
+// fanoutTally classifies per-target outcomes the way fireOne classifies a single
+// fire. Without this the fan-out labelled every error "failed" and counted every
+// tick as a fire, so it lost two behaviours fireOne has deliberately:
+//
+//   - runner.ErrUnknownAgent is a CONFIG error — no run started, and it will fail
+//     identically on every fire. fireOne does not count it toward max_fires (F38)
+//     because doing so retires the schedule after N ticks and presents a misconfig
+//     as N normal runs.
+//   - the backpressure family (ErrBackpressure, ErrPerUserQuotaExhausted,
+//     ErrProviderConcurrencyExhausted) is transient LOAD, not failure. fireOne
+//     labels it "skipped"; a saturated provider must not read as a broken
+//     schedule, and must not be summed into a failure count an operator alerts on.
+type fanoutTally struct {
+	dispatched   int
+	failures     int // genuine per-target failures
+	backpressure int // transient load — deferred, not broken
+	unknownAgent int // config error — no run started
+}
+
+// classify buckets one per-target error through the same errors.Is ladder fireOne
+// uses, so the two paths cannot drift.
+func (t *fanoutTally) classify(err error) {
+	switch {
+	case errors.Is(err, runner.ErrUnknownAgent):
+		t.unknownAgent++
+	case errors.Is(err, runner.ErrBackpressure),
+		errors.Is(err, runner.ErrPerUserQuotaExhausted),
+		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
+		t.backpressure++
+	default:
+		t.failures++
+	}
+}
+
+// outcome renders the schedule's status, error summary, and whether this tick
+// counts toward max_fires.
+//
+// countAsFire is false only when EVERY dispatched target failed agent resolution
+// — the whole tick was one config error. A tick where some targets ran is a real
+// fire regardless of what the others did.
+func (t fanoutTally) outcome(agent string) (status, errStr string, countAsFire bool) {
+	countAsFire = !(t.unknownAgent > 0 && t.unknownAgent == t.dispatched)
+	broken := t.failures + t.unknownAgent
+	switch {
+	case broken > 0:
+		status = "failed"
+		errStr = fmt.Sprintf("%d of %d consolidation target(s) failed", broken, t.dispatched)
+		if t.unknownAgent > 0 {
+			errStr += fmt.Sprintf(" (%d could not resolve agent %q)", t.unknownAgent, agent)
+		}
+		if t.backpressure > 0 {
+			errStr += fmt.Sprintf("; %d deferred under load", t.backpressure)
+		}
+	case t.backpressure > 0:
+		// Nothing broke — the batch was throttled. Deliberately not "failed", so
+		// this does not page anyone, and not "completed", so on_complete hooks do
+		// not fire for a batch that largely did not run.
+		status = "skipped"
+		errStr = fmt.Sprintf("%d of %d consolidation target(s) deferred under load", t.backpressure, t.dispatched)
+	default:
+		status = "completed"
+	}
+	return status, errStr, countAsFire
 }
 
 // consolidationTargets enumerates the targets with unconsolidated work, plus a
@@ -447,7 +520,11 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 // recordFanoutResult writes the schedule's outcome + next_run_at, mirroring
 // fireOne's bookkeeping (including the survival ctx for a mid-shutdown write
 // and the max_fires retirement check).
-func (s *Scheduler) recordFanoutResult(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, status, errStr, runID string) {
+//
+// countAsFire comes from the caller's outcome classification rather than being
+// hardcoded true: an all-targets-unresolved tick must not consume the max_fires
+// budget (F38).
+func (s *Scheduler) recordFanoutResult(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, status, errStr, runID string, countAsFire bool) {
 	next, nextErr := s.computeNext(def, now)
 	if nextErr != nil {
 		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, nextErr)
@@ -466,7 +543,7 @@ func (s *Scheduler) recordFanoutResult(ctx context.Context, row store.ScheduleDu
 		LastError:   errStr,
 		LastRunAt:   now,
 		NextRunAt:   next,
-		CountAsFire: true,
+		CountAsFire: countAsFire,
 	}); err != nil {
 		s.logf("scheduler: record fan-out result for %q: %v", row.Name, err)
 	}
