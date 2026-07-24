@@ -258,9 +258,40 @@ func (s *Store) migrate(ctx context.Context) error {
 			source_run_id     TEXT,
 			access_count      INTEGER NOT NULL DEFAULT 0,
 			last_accessed_at  INTEGER,
+			superseded_at     INTEGER,
 			PRIMARY KEY (tenant_id, scope, scope_id, key)
 		)`,
 		`CREATE INDEX IF NOT EXISTS memory_by_expires_at ON memory(expires_at) WHERE expires_at IS NOT NULL`,
+		// RFC BL P2 — the durable consolidation substrate. Mirrors Postgres
+		// migration 0061. memory_pending is the enqueue queue an Add writes to
+		// and the consolidator drains (drained_at = soft-drain marker for
+		// idempotent drain + TTL sweeping); memory_cursors is the per-target
+		// watermark + lease (composite watermark = (watermark_completed_at,
+		// watermark_session_id)). Timestamps are unix-nano like the rest of the
+		// sqlite schema; payload is TEXT-encoded JSON (no native JSONB).
+		`CREATE TABLE IF NOT EXISTS memory_pending (
+			id                TEXT    PRIMARY KEY,
+			tenant_id         TEXT    NOT NULL DEFAULT '',
+			scope             TEXT    NOT NULL,
+			scope_id          TEXT    NOT NULL,
+			payload           TEXT    NOT NULL,
+			source_session_id TEXT,
+			source_run_id     TEXT,
+			created_at        INTEGER NOT NULL,
+			drained_at        INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS memory_pending_by_target ON memory_pending(tenant_id, scope, scope_id, drained_at)`,
+		`CREATE TABLE IF NOT EXISTS memory_cursors (
+			tenant_id              TEXT    NOT NULL DEFAULT '',
+			scope                  TEXT    NOT NULL,
+			scope_id               TEXT    NOT NULL,
+			watermark_completed_at INTEGER,
+			watermark_session_id   TEXT    NOT NULL DEFAULT '',
+			leased_by              TEXT    NOT NULL DEFAULT '',
+			lease_expires_at       INTEGER,
+			updated_at             INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, scope, scope_id)
+		)`,
 		// v0.8.4 Channel tool — see internal/store/postgres/migrations/0004_channels.up.sql
 		// for the full rationale. SQLite mirrors the shape: TEXT id (ULID-like prefix
 		// "msg_<unixnano>_<rand>" — sortable by publish time), per-(channel, scope,
@@ -1032,6 +1063,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE memory ADD COLUMN source_run_id TEXT`,
 		`ALTER TABLE memory ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE memory ADD COLUMN last_accessed_at INTEGER`,
+		// RFC BL P2 — the soft-archive marker. NULL on every legacy row (live);
+		// the consolidator stamps it to hide a consolidated raw row from recall
+		// while retaining it. memory_pending / memory_cursors are pure CREATE
+		// TABLE (no ALTER needed) so they land via the schema block above.
+		`ALTER TABLE memory ADD COLUMN superseded_at INTEGER`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
