@@ -234,6 +234,13 @@ func TestConsolidationEval_FullPassIsCleanAndComplete(t *testing.T) {
 	for _, fact := range f.writtenFacts() {
 		wantKeys[fact.Key] = fact
 	}
+	// Invariants 9a-9c FIRST, before the count check below can short-circuit on
+	// t.Fatalf. A leak must report AS a leak: "the secret reached memory" is a
+	// diagnosis, "5 keys, want 2" is a symptom, and the symptom is what a
+	// reviewer would otherwise have to decode.
+	for _, v := range eval.CheckForbidden(live, f.corpus) {
+		t.Error(v)
+	}
 	if len(live) != len(wantKeys) {
 		t.Fatalf("live keys after the pass = %v, want exactly %d distilled fact(s)", keyList(live), len(wantKeys))
 	}
@@ -271,11 +278,6 @@ func TestConsolidationEval_FullPassIsCleanAndComplete(t *testing.T) {
 		if !seededRuns[prov.SourceRunID] {
 			t.Errorf("%s: source_run_id = %q is not one of the seeded runs", e.Key, prov.SourceRunID)
 		}
-	}
-
-	// Invariants 9a-9c: nothing forbidden reached memory.
-	for _, v := range eval.CheckForbidden(live, f.corpus) {
-		t.Error(v)
 	}
 
 	// The queue the pass drained is acked, so a later pass cannot re-fold it.
@@ -341,16 +343,38 @@ func TestConsolidationEval_WatermarkAdvancesAndLeaseExcludesASecondPass(t *testi
 	}
 	liveAfterA := len(liveEntries(t, env))
 
+	// A NEWER chat, settling after pass A's watermark, so pass B has a genuine
+	// FORWARD target. This is load-bearing: an advance to an older chat is
+	// already blocked by the store's monotonicity check, so a backwards attempt
+	// would leave the watermark assertion below defended by the wrong layer and
+	// the lease guard could be deleted without the test noticing.
+	newerSess, err := env.store.CreateSession(ctx, "", "chat", evalUserID)
+	if err != nil {
+		t.Fatalf("seed the forward target session: %v", err)
+	}
+	newerRun, err := env.store.CreateRun(ctx, newerSess.ID, store.RunIdentity{AgentID: "chat-" + newerSess.ID, UserID: evalUserID})
+	if err != nil {
+		t.Fatalf("seed the forward target run: %v", err)
+	}
+	if err := env.store.FinishRun(ctx, newerRun.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatalf("settle the forward target: %v", err)
+	}
+	newerSettled, _, err := env.store.SessionSettledAt(ctx, "", newerSess.ID)
+	if err != nil {
+		t.Fatalf("forward target settled at: %v", err)
+	}
+	if !newerSettled.After(afterA.WatermarkCompletedAt) {
+		t.Fatalf("the forward target settled at %v, not after the watermark %v — pass B's advance would be blocked by monotonicity rather than by the lease",
+			newerSettled, afterA.WatermarkCompletedAt)
+	}
+
 	// Pass B, while A's lease is live: it must fail to acquire, and must be
-	// refused the advance. Its script deliberately ATTEMPTS the advance to a
-	// different (older) chat, which is exactly the damage the lease exists to
-	// prevent — a second pass rewinding or mis-setting a forward-only watermark.
-	older := f.chats[eval.ChatPrefs]
+	// refused the advance it would otherwise be entitled to make.
 	env.prov.calls.Store(0)
 	env.prov.scripts = [][]providers.Event{
 		toolCall("tu_lease_b", "Memory", `{"op":"cursor_lease","scope":"user","lease_ttl_ms":600000}`),
 		toolCall("tu_advance_b", "Memory", fmt.Sprintf(`{"op":"cursor_advance","scope":"user","completed_at":%q,"session_id":%q}`,
-			older.SettledAt.UTC().Format(time.RFC3339Nano), older.SessionID)),
+			newerSettled.UTC().Format(time.RFC3339Nano), newerSess.ID)),
 		finalText("lease not acquired; standing down"),
 	}
 	streamB := env.runConsolidation(evalUserID)
