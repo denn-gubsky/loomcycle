@@ -10,7 +10,11 @@ import (
 	"testing"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // ---- test fixtures ----
@@ -578,5 +582,116 @@ func TestHelpIndex_SingletonUnderConcurrentBoot(t *testing.T) {
 		if !ok {
 			t.Fatalf("desired section %q missing from store", s.Key)
 		}
+	}
+}
+
+// ---- RFC BL PR6: read-time dead-link guard + reconcile OTEL metric ----
+
+func withInMemoryExporter(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	cleanup := lcotel.SetTracerProviderForTest(tp)
+	t.Cleanup(func() {
+		cleanup()
+		_ = tp.Shutdown(context.Background())
+	})
+	return exp
+}
+
+// TestHelpQuery_DeadLinkDroppedFromResults pins the RFC BL §2.10 read-time
+// dead-link floor for the help case: an index row can outlive its topic in the
+// window between a new-binary boot that dropped the topic from the corpus and
+// the backgrounded reconcile pruning the stale row. A hybrid hit whose topic is
+// no longer in the live in-memory Set is dropped from results; a live hit is
+// kept. FAIL-BEFORE: without the guard the query returns the dropped topic's
+// section, so the "alpha absent" assertion fails.
+func TestHelpQuery_DeadLinkDroppedFromResults(t *testing.T) {
+	// Both topics share the "sprocket" token so one query matches both.
+	alpha := &Topic{Name: "alpha", Description: "d", Content: "## Widgets\nThe sprocket assembles widgets.\n"}
+	beta := &Topic{Name: "beta", Description: "d", Content: "## Gadgets\nThe sprocket drives gadgets.\n"}
+	full := newHelpTestSet(alpha, beta)
+	st := newHelpFakeStore()
+	emb := newHelpFakeEmbedder("sprocket", "assembles", "widgets", "drives", "gadgets")
+	ctx := context.Background()
+
+	// Index BOTH topics — the store now holds alpha's section rows.
+	if _, err := ReconcileIndex(ctx, full, st, emb); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// A NEW binary boots with a corpus that dropped `alpha` (the reconcile that
+	// would prune alpha's stale rows hasn't run yet). Query against the same
+	// store with the reduced live Set.
+	live := newHelpTestSet(beta)
+	res, err := QueryIndex(ctx, live, st, emb, "sprocket", 5)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if res.Mode != "hybrid" {
+		t.Fatalf("mode = %q, want hybrid", res.Mode)
+	}
+	if len(res.Results) == 0 {
+		t.Fatalf("no results; the live beta hit should survive")
+	}
+	for _, r := range res.Results {
+		if r.TopicSlug == "alpha" {
+			t.Fatalf("dead-link hit for dropped topic %q not filtered: %+v", "alpha", res.Results)
+		}
+	}
+	var sawBeta bool
+	for _, r := range res.Results {
+		if r.TopicSlug == "beta" {
+			sawBeta = true
+		}
+	}
+	if !sawBeta {
+		t.Fatalf("live hit for beta not kept: %+v", res.Results)
+	}
+}
+
+// TestMetrics_HelpReconcileEmitted pins the RFC BL PR6 reconcile telemetry: a
+// boot reconcile emits one loomcycle.help.reconcile span carrying the
+// written/pruned/unchanged/failed counts + the degraded flag. FAIL-BEFORE:
+// without RecordHelpReconcile no such span is emitted (spans==0).
+func TestMetrics_HelpReconcileEmitted(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	topic := &Topic{Name: "alpha", Description: "d", Content: "## Widgets\nThe sprocket assembles widgets.\n\n## Sprockets\nA sprocket spins.\n"}
+	set := newHelpTestSet(topic)
+	st := newHelpFakeStore()
+	emb := newHelpFakeEmbedder("sprocket", "assembles", "widgets", "spins")
+	ctx := context.Background()
+
+	want := len(AllSections(set)) // 2
+	stats, err := ReconcileIndex(ctx, set, st, emb)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if stats.Written != want {
+		t.Fatalf("precondition: Written=%d, want %d", stats.Written, want)
+	}
+
+	var rec *tracetest.SpanStub
+	for i := range exp.GetSpans() {
+		s := exp.GetSpans()[i]
+		if s.Name == lcotel.SpanHelpReconcile {
+			rec = &s
+			break
+		}
+	}
+	if rec == nil {
+		t.Fatalf("no %q span recorded; got %d spans", lcotel.SpanHelpReconcile, len(exp.GetSpans()))
+	}
+	ints := map[string]int64{}
+	bools := map[string]bool{}
+	for _, kv := range rec.Attributes {
+		ints[string(kv.Key)] = kv.Value.AsInt64()
+		bools[string(kv.Key)] = kv.Value.AsBool()
+	}
+	if ints[lcotel.AttrHelpWritten] != int64(want) {
+		t.Errorf("%s = %d, want %d", lcotel.AttrHelpWritten, ints[lcotel.AttrHelpWritten], want)
+	}
+	if bools[lcotel.AttrHelpDegraded] {
+		t.Errorf("%s = true, want false", lcotel.AttrHelpDegraded)
 	}
 }

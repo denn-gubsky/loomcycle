@@ -11,8 +11,13 @@ import (
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // These tests cover the in-process backend in isolation (the Memory tool
@@ -103,6 +108,11 @@ type vectorStore struct {
 	store.Store
 	mu     sync.Mutex
 	embeds map[string]store.MemoryEmbedding
+	// extra, when non-nil, is appended to every MemoryEmbedSearch result verbatim
+	// — a hook for the dead-link tests to inject an ORPHAN hit (an embedding row
+	// whose backing k/v body is gone, surfaced as an empty Value) that the real
+	// JOIN-based store would normally never return. Default nil → no effect.
+	extra []store.MemorySearchEntry
 }
 
 func newVectorStore(s store.Store) *vectorStore {
@@ -164,6 +174,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 		se.Vector = r.emb.Vector
 		out = append(out, se)
 	}
+	out = append(out, v.extra...)
 	return out, nil
 }
 
@@ -447,5 +458,159 @@ func TestInProcess_SetNoEmbedWorksWithoutVectorStack(t *testing.T) {
 	b := inprocess.New(s, nil) // bare sqlite: SupportsVectors() == false
 	if _, err := b.Set(context.Background(), store.MemoryScopeUser, "u1", "k", json.RawMessage(`{"v":1}`), memory.SetOptions{}); err != nil {
 		t.Fatalf("non-embed set should succeed on bare store: %v", err)
+	}
+}
+
+// ---- RFC BL PR6: read-time dead-link guard + retrieval OTEL metrics ----
+
+// withInMemoryExporter installs an in-memory span exporter as the global tracer
+// for the duration of t and returns it, so a test can assert what spans landed.
+// Mirrors the canonical harness in internal/otel's recorder_test.go.
+func withInMemoryExporter(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	cleanup := lcotel.SetTracerProviderForTest(tp)
+	t.Cleanup(func() {
+		cleanup()
+		_ = tp.Shutdown(context.Background())
+	})
+	return exp
+}
+
+// TestSearch_DeadLinkDroppedFromResults pins the RFC BL §2.10 read-time
+// dead-link floor for the memory tier: a hit whose backing k/v body no longer
+// resolves (surfaced as an empty Value — the embedding outlived its base row,
+// e.g. a removed doc.chunk:<id>) is dropped from the results, while a live hit
+// is kept. FAIL-BEFORE: without dropDeadLinks the orphan is returned as a
+// zero-body entry, so `len==2` / the orphan key is present.
+func TestSearch_DeadLinkDroppedFromResults(t *testing.T) {
+	b, vs, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeAgent, "a1"
+
+	// One live, embedded, resolvable row.
+	if r, err := b.Set(ctx, scope, id, "live", json.RawMessage(`{"n":1}`), memory.SetOptions{Embed: true, EmbedText: "alice go"}); err != nil || !r.Embedded {
+		t.Fatalf("set live: r=%+v err=%v", r, err)
+	}
+
+	// Inject an ORPHAN hit: an embedding row whose backing body is gone (empty
+	// Value). A high score puts it inside the top_k so the guard must drop it.
+	vs.extra = []store.MemorySearchEntry{{
+		MemoryEntry: store.MemoryEntry{Key: "doc.chunk:gone" /* Value zero-length */},
+		Score:       0.99,
+	}}
+
+	res, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice go", TopK: 10}, memory.DefaultRankConfig(), memory.DedupConfig{})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if got := countKeyPrefix(res.Entries, "doc.chunk:"); got != 0 {
+		t.Fatalf("dead-link orphan not dropped: %d doc.chunk hit(s) in results %+v", got, res.Entries)
+	}
+	if countKeyPrefix(res.Entries, "live") != 1 {
+		t.Fatalf("live hit was not kept: results %+v", res.Entries)
+	}
+}
+
+// TestMetrics_RetrievalLatencyEmitted pins the RFC BL PR6 retrieval telemetry:
+// a memory search records the loomcycle.memory.search span (its duration is the
+// latency histogram source), labeled by backend + mode, and the dead-link guard
+// increments the deadlink-dropped attribute/event when it drops a hit.
+// FAIL-BEFORE: without RecordMemorySearch/SetMemorySearchResult no such span is
+// emitted (spans==0) and the deadlink attribute is absent.
+func TestMetrics_RetrievalLatencyEmitted(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	b, vs, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeAgent, "a1"
+
+	if r, err := b.Set(ctx, scope, id, "live", json.RawMessage(`{"n":1}`), memory.SetOptions{Embed: true, EmbedText: "alice go"}); err != nil || !r.Embedded {
+		t.Fatalf("set live: r=%+v err=%v", r, err)
+	}
+	vs.extra = []store.MemorySearchEntry{{
+		MemoryEntry: store.MemoryEntry{Key: "doc.chunk:gone"},
+		Score:       0.99,
+	}}
+
+	if _, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice go", TopK: 5}, memory.DefaultRankConfig(), memory.DedupConfig{}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	var search *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == lcotel.SpanMemorySearch {
+			search = &spans[i]
+			break
+		}
+	}
+	if search == nil {
+		t.Fatalf("no %q span recorded; got %d spans", lcotel.SpanMemorySearch, len(spans))
+	}
+
+	attrs := map[string]string{}
+	ints := map[string]int64{}
+	for _, kv := range search.Attributes {
+		attrs[string(kv.Key)] = kv.Value.AsString()
+		ints[string(kv.Key)] = kv.Value.AsInt64()
+	}
+	if attrs[lcotel.AttrMemoryBackend] != "inprocess" {
+		t.Errorf("%s = %q, want inprocess", lcotel.AttrMemoryBackend, attrs[lcotel.AttrMemoryBackend])
+	}
+	if m := attrs[lcotel.AttrMemoryMode]; m != "hybrid" && m != "vector" {
+		t.Errorf("%s = %q, want hybrid|vector", lcotel.AttrMemoryMode, m)
+	}
+	if ints[lcotel.AttrDeadlinkDropped] != 1 {
+		t.Errorf("%s = %d, want 1 (one orphan dropped)", lcotel.AttrDeadlinkDropped, ints[lcotel.AttrDeadlinkDropped])
+	}
+
+	// The deadlink drop is also a span event — the downstream counter source.
+	var sawEvent bool
+	for _, ev := range search.Events {
+		if ev.Name == lcotel.EventDeadlinkDropped {
+			sawEvent = true
+		}
+	}
+	if !sawEvent {
+		t.Errorf("no %q span event; events=%+v", lcotel.EventDeadlinkDropped, search.Events)
+	}
+}
+
+// TestMetrics_FailedSearchMarksSpanErrored pins the RFC BL PR6 span-status
+// floor: when a retrieval fails while the loomcycle.memory.search span is open,
+// the span is marked Error (mirroring Dispatcher.Execute) — otherwise a failed
+// retrieval reads as a success in traces and skews the derived error series. The
+// embed leg is the induced failure here (fakeEmbedder.failNext); the same
+// SetSpanError guards cover the vector/full-text legs.
+// FAIL-BEFORE: without lcotel.SetSpanError on the error path the span ends with
+// the default Unset status, so Status.Code != codes.Error and this fails.
+func TestMetrics_FailedSearchMarksSpanErrored(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	b, _, emb, cleanup := vectorFixture(t)
+	defer cleanup()
+
+	emb.failNext = true // force the query-embed leg to error
+	_, err := b.Search(context.Background(), store.MemoryScopeAgent, "a1",
+		memory.SearchQuery{QueryText: "alice go", TopK: 5}, memory.DefaultRankConfig(), memory.DedupConfig{})
+	if err == nil {
+		t.Fatal("Search: want error from injected embed failure, got nil")
+	}
+
+	spans := exp.GetSpans()
+	var search *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == lcotel.SpanMemorySearch {
+			search = &spans[i]
+			break
+		}
+	}
+	if search == nil {
+		t.Fatalf("no %q span recorded; got %d spans", lcotel.SpanMemorySearch, len(spans))
+	}
+	if search.Status.Code != codes.Error {
+		t.Errorf("span Status.Code = %v, want Error (failed retrieval must not read as success)", search.Status.Code)
 	}
 }
