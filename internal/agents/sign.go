@@ -110,19 +110,34 @@ type AgentContent struct {
 	// content_sha256. Pointer + omitempty + normalize-collapse so a no-compaction
 	// agent omits the key and hashes byte-identical to pre-feature rows. Tag
 	// "compaction" sorts between code_body and description.
-	Compaction  *Compaction `json:"compaction,omitempty"`
+	Compaction *Compaction `json:"compaction,omitempty"`
+	// CoreBlocks is the RFC BL P1 core-memory-block attachment list. Content-
+	// identifying: a fork that changes an attached block's scope/limit/read-only
+	// (or adds/removes a block) mints a distinct content_sha256. omitempty +
+	// normalize-collapse keep pre-feature rows byte-identical. Tag "core_blocks"
+	// sorts between compaction and description.
+	CoreBlocks  []CoreBlock `json:"core_blocks,omitempty"`
 	Description string      `json:"description,omitempty"`
 	Effort      string      `json:"effort,omitempty"`
 	// EvaluationScopes / Interruption are the remaining interactive/
 	// multi-agent ACL fields (F14). evaluation_scopes is a slice (nil →
 	// omitted); interruption is a pointer for the same empty-struct reason
 	// as Channels above. Tags sort between effort and max_concurrent_children.
-	EvaluationScopes      []string                   `json:"evaluation_scopes,omitempty"`
-	Interruption          *AgentInterruptionACL      `json:"interruption,omitempty"`
-	MaxConcurrentChildren int                        `json:"max_concurrent_children,omitempty"`
-	MaxIterations         int                        `json:"max_iterations,omitempty"`
-	MaxTokens             int                        `json:"max_tokens,omitempty"`
-	MemoryBackend         string                     `json:"memory_backend,omitempty"`
+	EvaluationScopes []string `json:"evaluation_scopes,omitempty"`
+	// InheritCoreBlocks (RFC BL P1) is content-identifying — a fork that flips
+	// it must mint a distinct hash. bool + omitempty keeps pre-feature rows
+	// byte-identical. Tag "inherit_core_blocks" sorts between evaluation_scopes
+	// and interruption.
+	InheritCoreBlocks     bool                  `json:"inherit_core_blocks,omitempty"`
+	Interruption          *AgentInterruptionACL `json:"interruption,omitempty"`
+	MaxConcurrentChildren int                   `json:"max_concurrent_children,omitempty"`
+	MaxIterations         int                   `json:"max_iterations,omitempty"`
+	MaxTokens             int                   `json:"max_tokens,omitempty"`
+	MemoryBackend         string                `json:"memory_backend,omitempty"`
+	// MemoryInjectMaxTokens / MemoryProtocol (RFC BL P1) are content-identifying.
+	// Tags sort between memory_backend and memory_quota_bytes.
+	MemoryInjectMaxTokens int                        `json:"memory_inject_max_tokens,omitempty"`
+	MemoryProtocol        bool                       `json:"memory_protocol,omitempty"`
 	MemoryQuotaBytes      int                        `json:"memory_quota_bytes,omitempty"`
 	MemoryScopes          []string                   `json:"memory_scopes,omitempty"`
 	Model                 string                     `json:"model,omitempty"`
@@ -207,6 +222,9 @@ func normalize(c *AgentContent) {
 	if len(c.EvaluationScopes) == 0 {
 		c.EvaluationScopes = nil
 	}
+	if len(c.CoreBlocks) == 0 {
+		c.CoreBlocks = nil
+	}
 	// F14: collapse an all-empty channels/interruption pointer to nil so it
 	// omits. CRITICAL for backward-compat + path convergence: a no-channels
 	// agent (signFromMergedDef passes nil OR an empty struct) and the
@@ -287,6 +305,11 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		MemoryQuotaBytes:      a.MemoryQuotaBytes,
 		MemoryBackend:         a.MemoryBackend,
 		EvaluationScopes:      a.EvaluationScopes,
+		// RFC BL P1: core-block config is content-identifying (see AgentContent).
+		CoreBlocks:            a.CoreBlocks,
+		InheritCoreBlocks:     a.InheritCoreBlocks,
+		MemoryInjectMaxTokens: a.MemoryInjectMaxTokens,
+		MemoryProtocol:        a.MemoryProtocol,
 	}
 	if len(a.Channels.Publish) > 0 || len(a.Channels.Subscribe) > 0 {
 		c.Channels = &AgentChannelACL{Publish: a.Channels.Publish, Subscribe: a.Channels.Subscribe}
