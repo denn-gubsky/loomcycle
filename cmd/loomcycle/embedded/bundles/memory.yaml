@@ -123,6 +123,13 @@ skills:
          read and you would never see the rest. Also skip any chat whose last
          activity is at or before the watermark: you already folded it in.
 
+         **Skip your OWN past runs.** Your passes appear in this list like any
+         other chat (same user, agent `memory/consolidator`). They contain your
+         reports, not the user's facts. Consolidating them would feed your own
+         output back into memory, compounding every pass. Ignore them entirely —
+         never read them, never distil from them, never advance the watermark to
+         one of them.
+
       b. **Queued memory items.**
          `Memory op=pending_drain scope=user limit=50`
          These are turns an agent explicitly handed to memory. Each row carries

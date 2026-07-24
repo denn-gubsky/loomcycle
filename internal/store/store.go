@@ -1038,7 +1038,15 @@ type Store interface {
 	// TARGET (the user's chats, or one agent's). Unlike PrunableAgedSessions
 	// this does NOT exclude pinned sessions: pinning exempts a chat from
 	// automated DELETION, and consolidation only reads the transcript.
-	ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]ConsolidatableSession, error)
+	//
+	// excludeAgentName, when non-empty, omits sessions authored by that agent.
+	// The consolidator passes ITS OWN name: each pass creates a session under
+	// the target's user id, which would otherwise report as fresh work forever
+	// — a pass every tick, consolidating its own reports. Those self-authored
+	// sessions also accumulate PAST the watermark (a pass never consolidates
+	// itself, so it never advances over them), which is why this is a query
+	// filter and not something a caller can safely post-filter.
+	ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName, excludeAgentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]ConsolidatableSession, error)
 
 	// RunsForSession returns every run in the session (any status), oldest first.
 	// The archiver uses it to export a session's runs before cascade-deleting it.

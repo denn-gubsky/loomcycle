@@ -1300,7 +1300,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 
 	// (1)+(2): from the beginning → A then B, ascending; C excluded (live run).
-	all, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", time.Time{}, "", 100)
+	all, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", time.Time{}, "", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (zero watermark): %v", err)
 	}
@@ -1326,7 +1326,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	watermarkA := all[0].MaxCompletedAt
 
 	// (3) strictly-after: the watermark sitting exactly on A excludes A, keeps B.
-	after, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", watermarkA, sessA, 100)
+	after, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", watermarkA, sessA, 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (watermark at A): %v", err)
 	}
@@ -1335,7 +1335,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 
 	// (4a) tie-break INCLUDES: same completed_at, session_id greater than "".
-	tieIn, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", watermarkA, "", 100)
+	tieIn, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", watermarkA, "", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (tie-break include): %v", err)
 	}
@@ -1344,7 +1344,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 
 	// (4b) tie-break EXCLUDES: same completed_at, session_id below the cursor's.
-	tieOut, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", watermarkA, "\xef\xbf\xbf", 100)
+	tieOut, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", watermarkA, "\xef\xbf\xbf", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (tie-break exclude): %v", err)
 	}
@@ -1354,7 +1354,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 
 	// limit caps the batch (and keeps the ascending order, so the cap always
 	// trims the NEWEST rows — the next tick picks them up).
-	one, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", time.Time{}, "", 1)
+	one, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", time.Time{}, "", 1)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (limit 1): %v", err)
 	}
@@ -1363,10 +1363,35 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 
 	// Tenant confinement: another tenant sees none of these.
-	if rows, err := s.ConsolidatableSessions(ctx, "other-tenant", "u1", "", time.Time{}, "", 100); err != nil {
+	if rows, err := s.ConsolidatableSessions(ctx, "other-tenant", "u1", "", "", time.Time{}, "", 100); err != nil {
 		t.Fatalf("ConsolidatableSessions (other tenant): %v", err)
 	} else if len(rows) != 0 {
 		t.Errorf("other tenant returned %d rows, want 0 — the tenant filter leaked", len(rows))
+	}
+
+	// excludeAgentName omits an agent's own sessions. The consolidator passes its
+	// own name here: each of its passes creates a settled session under the
+	// target's user id, and a pass never consolidates itself, so those sessions
+	// sit past the watermark forever. Without the exclusion a caught-up target
+	// reports new work on every tick — a perpetual pass consuming its own output.
+	selfSess := mkTerminal("consol-self", "u1", store.RunCompleted)
+	included, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", time.Time{}, "", 100)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (no exclusion): %v", err)
+	}
+	if !hasSessionID(ids(included), selfSess) {
+		t.Fatalf("the self-authored session %s should be present without an exclusion; got %v", selfSess, ids(included))
+	}
+	excluded, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "consol-self", time.Time{}, "", 100)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (excluded): %v", err)
+	}
+	if hasSessionID(ids(excluded), selfSess) {
+		t.Errorf("excludeAgentName=%q still returned that agent's own session %s: %v", "consol-self", selfSess, ids(excluded))
+	}
+	// The exclusion must not swallow anything else.
+	if !hasSessionID(ids(excluded), sessA) || !hasSessionID(ids(excluded), sessB) {
+		t.Errorf("excludeAgentName dropped other agents' sessions: %v, want A=%s and B=%s present", ids(excluded), sessA, sessB)
 	}
 }
 

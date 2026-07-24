@@ -174,6 +174,13 @@ func TestConsolidatorBundle_SkillBodyEncodesThePipeline(t *testing.T) {
 	if !strings.Contains(body, "NEVER use `Memory op=delete`") {
 		t.Error("skill body must forbid the hard delete op explicitly")
 	}
+	// The pass's own runs appear in its chat list like any other. Consolidating
+	// them feeds its own reports back into memory, compounding every pass. The
+	// dispatcher excludes them from the has-new-work probe; the body must tell
+	// the model to ignore them too, or a dispatched pass still eats its own tail.
+	if !strings.Contains(body, "Skip your OWN past runs") {
+		t.Error("skill body must tell the pass to skip its own previous runs")
+	}
 
 	// Prompt-injection posture: transcripts are data. This has to be in the
 	// SYSTEM PROMPT (always present), not only in the on-demand skill body.

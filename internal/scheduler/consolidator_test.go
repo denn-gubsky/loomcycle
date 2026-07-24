@@ -202,7 +202,7 @@ func TestFanout_SkipsTargetsWithNoNewWork(t *testing.T) {
 
 	ctx := context.Background()
 	// Advance alice's watermark past everything she has: she is fully caught up.
-	rows, err := st.ConsolidatableSessions(ctx, "", "alice", "", time.Time{}, "", 10)
+	rows, err := st.ConsolidatableSessions(ctx, "", "alice", "", "", time.Time{}, "", 10)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions: %v", err)
 	}
@@ -440,6 +440,93 @@ func TestFanout_SingleReplicaPerTick(t *testing.T) {
 			t.Errorf("a lock fault must be logged; logs:\n%s", logs.all())
 		}
 	})
+}
+
+// seedConsolidatorRun creates a settled session AUTHORED BY the consolidator
+// itself for userID — exactly what a completed pass leaves behind.
+func seedConsolidatorRun(t *testing.T, st store.Store, tenantID, userID, agentName string) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, tenantID, agentName, userID)
+	if err != nil {
+		t.Fatalf("CreateSession(self %s): %v", userID, err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "self-" + sess.ID, UserID: userID})
+	if err != nil {
+		t.Fatalf("CreateRun(self %s): %v", userID, err)
+	}
+	if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatalf("FinishRun(self %s): %v", userID, err)
+	}
+	return sess.ID
+}
+
+// TestFanout_IgnoresItsOwnPastRuns is the self-consolidation-loop regression.
+//
+// Every pass creates a SESSION under the target's own user id (that is how
+// scope=user resolves), and a pass never consolidates itself — so its session
+// sits past the watermark forever. Without excluding self-authored sessions,
+// a fully caught-up target reports new work on every single tick: the schedule
+// becomes a perpetual pass whose only input is its own previous reports,
+// compounding cost and polluting memory with the consolidator's own output.
+//
+// This is the exact loop the end-to-end pipeline test surfaced. Fails-before if
+// the has-new-work probe (or the candidate scan) counts self-authored sessions.
+func TestFanout_IgnoresItsOwnPastRuns(t *testing.T) {
+	def := fanoutDef(nil)
+	sched, fr, st, logs := fanoutFixture(t, def, nil)
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+
+	// alice has a real chat, consolidated up to date, plus several settled
+	// consolidator runs of her own — the steady state after a few passes.
+	seedSettledSession(t, st, "", "alice")
+	ctx := context.Background()
+	rows, err := st.ConsolidatableSessions(ctx, "", "alice", "", def.Agent, time.Time{}, "", 10)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("alice should have exactly 1 real settled chat, got %d", len(rows))
+	}
+	last := rows[0]
+	if _, _, err := st.MemoryCursorLease(ctx, "", store.MemoryScopeUser, "alice", "o", time.Now(), time.Minute); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	if err := st.MemoryCursorAdvance(ctx, "", store.MemoryScopeUser, "alice", "o", last.MaxCompletedAt, last.SessionID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if err := st.MemoryCursorRelease(ctx, "", store.MemoryScopeUser, "alice", "o"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		seedConsolidatorRun(t, st, "", "alice", def.Agent)
+	}
+
+	fireT(t, sched)
+
+	if got := len(fr.Calls()); got != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 — a caught-up target's OWN past passes must not count as new work (this is the perpetual-pass loop); logs:\n%s", got, logs.all())
+	}
+}
+
+// TestFanout_SelfRunsDoNotMakeATargetACandidate: the same exclusion has to hold
+// at candidate ENUMERATION too. A user whose only sessions are consolidator runs
+// is not a consolidation target at all — otherwise the fan-out pays a store probe
+// per tick for a user who never chatted.
+func TestFanout_SelfRunsDoNotMakeATargetACandidate(t *testing.T) {
+	def := fanoutDef(nil)
+	sched, fr, st, _ := fanoutFixture(t, def, nil)
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+
+	seedConsolidatorRun(t, st, "", "ghost", def.Agent) // never chatted, only consolidated
+
+	fireT(t, sched)
+
+	for _, c := range fr.Calls() {
+		if c.UserID == "ghost" {
+			t.Error("dispatched a pass for a user whose only sessions are the consolidator's own runs")
+		}
+	}
 }
 
 // TestFanout_RefusesUnsupportedScope: scope=agent resolves server-side to the

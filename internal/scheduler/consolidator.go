@@ -306,6 +306,12 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 		if sess.UserID == "" {
 			continue // no user id ⇒ no user-scope memory target
 		}
+		if sess.Agent == def.Agent {
+			// The consolidator's own past runs. They are settled sessions under
+			// the target's user id, so counting them as a candidate signal would
+			// keep a fully-consolidated target permanently "active".
+			continue
+		}
 		if seen[sess.UserID] {
 			continue
 		}
@@ -317,7 +323,7 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 	var targets []consolidationTarget
 	dropped := 0
 	for _, userID := range candidates {
-		hasWork, err := s.targetHasNewWork(ctx, def.TenantID, scope, userID)
+		hasWork, err := s.targetHasNewWork(ctx, def.TenantID, scope, userID, def.Agent)
 		if err != nil {
 			// A per-candidate read fault must not abort the whole fan-out;
 			// log it and let the next tick retry that candidate.
@@ -342,12 +348,18 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 // either a settled session past its watermark, or an un-drained queue item.
 // Both are cheap point reads with limit 1 — the fan-out must not pay for the
 // batch it is only deciding whether to dispatch.
-func (s *Scheduler) targetHasNewWork(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) (bool, error) {
+//
+// selfAgent is the consolidator's OWN name, excluded from the session probe.
+// Each pass creates a session under the target's user id, and a pass never
+// consolidates itself, so those sessions sit past the watermark forever: without
+// the exclusion every target reports new work on every tick and the schedule
+// becomes a perpetual pass that only ever consolidates its own reports.
+func (s *Scheduler) targetHasNewWork(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, selfAgent string) (bool, error) {
 	cursor, err := s.store.MemoryCursorGet(ctx, tenantID, scope, scopeID)
 	if err != nil {
 		return false, fmt.Errorf("cursor get: %w", err)
 	}
-	sessions, err := s.store.ConsolidatableSessions(ctx, tenantID, scopeID, "", cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, 1)
+	sessions, err := s.store.ConsolidatableSessions(ctx, tenantID, scopeID, "", selfAgent, cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, 1)
 	if err != nil {
 		return false, fmt.Errorf("consolidatable sessions: %w", err)
 	}

@@ -1795,7 +1795,7 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, l
 // mid-conversation. Unlike that query there is NO pinned exclusion (pinning
 // exempts a chat from deletion, not from being read) and no age cutoff (the
 // watermark IS the cutoff).
-func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]store.ConsolidatableSession, error) {
+func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName, excludeAgentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]store.ConsolidatableSession, error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -1808,6 +1808,10 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 	if agentName != "" {
 		conds = append(conds, "s.agent = ?")
 		args = append(args, agentName)
+	}
+	if excludeAgentName != "" {
+		conds = append(conds, "s.agent <> ?")
+		args = append(args, excludeAgentName)
 	}
 	args = append(args, string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled))
 
