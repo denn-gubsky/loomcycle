@@ -2705,6 +2705,17 @@ func main() {
 		// (F37 / RFC T) so a hook on a scope:global channel lands at global,
 		// not under the run's user scope. Must be set before Start.
 		sched.SetChannelScope(srv.ResolveChannelScope)
+		// RFC BL P2 consolidation fan-out: the provider resolver decides
+		// parallel-vs-serial dispatch (a local model runtime is serialized), and
+		// the advisory lock makes exactly one replica per tick enumerate the
+		// targets — otherwise every replica would dispatch a full fan-out and
+		// burn N× the tokens. advisoryLock is nil in single-replica mode, which
+		// leaves the fan-out correctly unguarded; guard the assignment so a
+		// typed-nil never reaches the non-nil interface check.
+		sched.SetProviderResolver(srv)
+		if advisoryLock != nil {
+			sched.SetFanoutCoordination(advisoryLock, coord.LockKeyMemoryConsolidator)
+		}
 		sched.Start(bgCtx)
 		log.Printf("scheduler: enabled (tick=%ds, fire_timeout=%ds, env_allowlist=%d names)",
 			cfg.Env.SchedulerTickSeconds, cfg.Env.SchedulerFireTimeoutSeconds,

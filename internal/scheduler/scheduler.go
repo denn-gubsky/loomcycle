@@ -39,6 +39,20 @@ type Config struct {
 	// burst-fire moments (e.g. cron crossings where 100s of forks
 	// become due in the same second).
 	MaxConcurrentFires int
+
+	// MaxConsolidationTargets bounds how many memory-consolidation targets ONE
+	// fan-out tick dispatches (RFC BL P2). 0 → default 32. The per-target
+	// watermark makes the fan-out resumable, so the cap defers work to the next
+	// tick rather than dropping it — but a truncated tick is always logged,
+	// because a silent truncation reads as "every target was covered".
+	MaxConsolidationTargets int
+
+	// MaxConsolidationConcurrency bounds PARALLEL consolidation children when
+	// the resolved model is not local. 0 → default 4. A local model runtime is
+	// always dispatched serially regardless of this value (one shared box).
+	// Each child is a full LLM run, so this is deliberately small; the
+	// per-provider concurrency cap is the real throttle downstream.
+	MaxConsolidationConcurrency int
 }
 
 // defaults applies the documented defaults to a zero-value Config.
@@ -51,6 +65,12 @@ func (c Config) defaults() Config {
 	}
 	if c.MaxConcurrentFires == 0 {
 		c.MaxConcurrentFires = runtime.NumCPU() * 4
+	}
+	if c.MaxConsolidationTargets <= 0 {
+		c.MaxConsolidationTargets = defaultMaxFanoutTargets
+	}
+	if c.MaxConsolidationConcurrency <= 0 {
+		c.MaxConsolidationConcurrency = defaultMaxFanoutConcurrency
 	}
 	return c
 }
@@ -69,6 +89,15 @@ type Scheduler struct {
 	mcp     MCPCaller
 	chScope ChannelScopeResolver
 	logf    func(format string, args ...any)
+
+	// Consolidation fan-out dependencies (RFC BL P2), both optional and both
+	// wired by a setter before Start. fanoutLock is the cluster singleton gate
+	// (nil = single-replica, run unguarded); providerResolver decides
+	// parallel-vs-serial dispatch (nil = resolve failed = serial). See
+	// consolidator.go.
+	fanoutLock       AdvisoryLocker
+	fanoutLockKey    int64
+	providerResolver ProviderResolver
 
 	wg     sync.WaitGroup
 	stopCh chan struct{}
@@ -284,6 +313,15 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		// next_run_at to keep listDue's bounded set from re-presenting
 		// this row every tick.
 		s.advanceOnly(ctx, row.DefID, def, "skipped_disabled", now)
+		return
+	}
+
+	// RFC BL P2: a consolidation schedule dispatches one run per memory TARGET
+	// with new work rather than one blanket run — the pass operates on exactly
+	// one target, so "consolidate everything" is N runs. See consolidator.go;
+	// it does its own result bookkeeping.
+	if isConsolidationFanout(def) {
+		s.fireConsolidationFanout(ctx, row, def, now)
 		return
 	}
 

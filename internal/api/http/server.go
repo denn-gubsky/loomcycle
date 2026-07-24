@@ -1215,6 +1215,20 @@ func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, 
 	return s.resolveAgentDef(ctx, def, tenantID, userID, agentName, userTier, restricted)
 }
 
+// ResolveAgentProvider reports the provider id a run of this agent would
+// resolve to right now — the same resolution RunOnce performs, so the answer
+// cannot drift from what actually runs. Satisfies scheduler.ProviderResolver.
+//
+// The consolidation fan-out (RFC BL P2) needs exactly one bit of this: whether
+// the target is a LOCAL runtime, which must not be dispatched in parallel. It is
+// a read-only projection of resolveAgent — the RFC AX operator-key restriction
+// is passed false because this is not admitting a run, only asking where one
+// would land; the real admission still applies its own gate.
+func (s *Server) ResolveAgentProvider(ctx context.Context, tenantID, userID, agentName, userTier string) (string, error) {
+	providerID, _, _, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, false)
+	return providerID, err
+}
+
 // lookupAgent delegates to internal/lookup.Agent — the canonical
 // agent-name resolver consolidating the static / dynamic_agents /
 // substrate lookup chain + the normalizer chain. See the lookup

@@ -140,6 +140,13 @@ var (
 	// runs once per boot; the content-hash gate makes an unchanged corpus a
 	// zero-embed no-op even on the replica that wins the lock.
 	LockKeyHelpIndexReconcile int64
+	// LockKeyMemoryConsolidator gates the RFC BL P2 consolidation FAN-OUT, so
+	// only one replica per tick enumerates the targets with new work and
+	// dispatches their runs. Distinct from the per-target lease the pass itself
+	// takes (Memory cursor_lease): the lease stops two passes fighting over one
+	// target, this stops N replicas each dispatching a full fan-out in the same
+	// tick — which would burn N× the tokens before the leases sorted it out.
+	LockKeyMemoryConsolidator int64
 )
 
 func init() {
@@ -155,6 +162,7 @@ func init() {
 	LockKeyUsageSweeper = fnvKey("usage_sweeper")
 	LockKeyRetentionSweeper = fnvKey("retention_sweeper")
 	LockKeyHelpIndexReconcile = fnvKey("help_index_reconcile")
+	LockKeyMemoryConsolidator = fnvKey("memory_consolidator")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.
