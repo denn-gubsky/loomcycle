@@ -1544,10 +1544,13 @@ type Store interface {
 	MemoryPendingDrain(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, limit int) ([]MemoryPendingRow, error)
 
 	// MemoryPendingAck marks the given pending rows drained (drained_at =
-	// now()), so a subsequent MemoryPendingDrain never re-returns them.
-	// Idempotent: acking an already-drained id does not move drained_at; an
-	// unknown id is silently skipped. An empty slice is a no-op.
-	MemoryPendingAck(ctx context.Context, ids []string) error
+	// now()), so a subsequent MemoryPendingDrain never re-returns them. The ack
+	// is confined to (tenantID, scope, scopeID) — symmetric with the scoped
+	// Drain that produced the ids — so an id from another tenant/scope can never
+	// be acked even if it leaked. Idempotent: acking an already-drained id does
+	// not move drained_at; an unknown or out-of-scope id is silently skipped. An
+	// empty slice is a no-op.
+	MemoryPendingAck(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, ids []string) error
 
 	// MemoryCursorGet returns the consolidation cursor for a target. It is a
 	// GET-OR-DEFAULT: a target with no row yet returns a zero-watermark,

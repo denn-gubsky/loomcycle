@@ -3800,7 +3800,8 @@ func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.Memo
 		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = excluded.value,
 		    expires_at = excluded.expires_at,
-		    updated_at = excluded.updated_at`,
+		    updated_at = excluded.updated_at,
+		    superseded_at = NULL`,
 		tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
 	)
 	return err
@@ -4024,7 +4025,8 @@ func (s *Store) MemoryIncrement(ctx context.Context, tenantID string, scope stor
 		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = excluded.value,
 		    expires_at = excluded.expires_at,
-		    updated_at = excluded.updated_at`,
+		    updated_at = excluded.updated_at,
+		    superseded_at = NULL`,
 		tenantID, string(scope), scopeID, key, nextText, newExpires, nowNs, nowNs,
 	)
 	if err != nil {
@@ -4119,7 +4121,8 @@ func (s *Store) MemoryAtomicUpdate(
 		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = excluded.value,
 		    expires_at = excluded.expires_at,
-		    updated_at = excluded.updated_at`,
+		    updated_at = excluded.updated_at,
+		    superseded_at = NULL`,
 		tenantID, string(scope), scopeID, key, string(next), newExpires, nowNs, nowNs,
 	)
 	if err != nil {
@@ -4355,20 +4358,21 @@ func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope s
 
 // MemoryPendingAck marks the given ids drained. `drained_at IS NULL` keeps it
 // idempotent; an unknown id is skipped; an empty slice is a no-op.
-func (s *Store) MemoryPendingAck(ctx context.Context, ids []string) error {
+func (s *Store) MemoryPendingAck(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	placeholders := make([]string, len(ids))
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, time.Now().UnixNano())
+	args := make([]any, 0, len(ids)+4)
+	args = append(args, time.Now().UnixNano(), tenantID, string(scope), scopeID)
 	for i, id := range ids {
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE memory_pending SET drained_at = ?
-		 WHERE drained_at IS NULL AND id IN (`+strings.Join(placeholders, ",")+`)`,
+		 WHERE tenant_id = ? AND scope = ? AND scope_id = ?
+		   AND drained_at IS NULL AND id IN (`+strings.Join(placeholders, ",")+`)`,
 		args...,
 	)
 	return err

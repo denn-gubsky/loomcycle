@@ -3290,6 +3290,11 @@ func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.Memo
 	if ttl > 0 {
 		expiresAt = now.Add(ttl)
 	}
+	// superseded_at = NULL on the DO UPDATE: a fresh write REVIVES a soft-archived
+	// row. supersede() only stamps the marker (every read filters superseded_at IS
+	// NULL); without the reset an upsert onto a superseded key would land the value
+	// but leave it hidden — a silent black-hole. A new explicit write is live data.
+	// Mirrored in MemoryIncrement / MemoryAtomicUpdate (and the sqlite twin).
 	// Wrapped in retryOnTransientConn because this is the call that
 	// produced the silent regressions on the v0.12.8 baseline x1000
 	// (2026-05-27): when the researcher's Memory.set fired during
@@ -3305,7 +3310,8 @@ func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.Memo
 			 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 			    value = EXCLUDED.value,
 			    expires_at = EXCLUDED.expires_at,
-			    updated_at = EXCLUDED.updated_at`,
+			    updated_at = EXCLUDED.updated_at,
+			    superseded_at = NULL`,
 			tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
 		)
 		return err
@@ -3520,7 +3526,8 @@ func (s *Store) MemoryIncrement(ctx context.Context, tenantID string, scope stor
 		 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = EXCLUDED.value,
 		    expires_at = EXCLUDED.expires_at,
-		    updated_at = EXCLUDED.updated_at`,
+		    updated_at = EXCLUDED.updated_at,
+		    superseded_at = NULL`,
 		tenantID, string(scope), scopeID, key, nextText, newExpires, now, now,
 	); err != nil {
 		return 0, fmt.Errorf("memory incr write: %w", err)
@@ -3610,7 +3617,8 @@ func (s *Store) MemoryAtomicUpdate(
 		 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = EXCLUDED.value,
 		    expires_at = EXCLUDED.expires_at,
-		    updated_at = EXCLUDED.updated_at`,
+		    updated_at = EXCLUDED.updated_at,
+		    superseded_at = NULL`,
 		tenantID, string(scope), scopeID, key, string(next), newExpires, now, now,
 	); err != nil {
 		return nil, fmt.Errorf("memory atomic update write: %w", err)
@@ -3789,13 +3797,15 @@ func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope s
 // MemoryPendingAck marks the given ids drained. `AND drained_at IS NULL` keeps
 // it idempotent — an already-acked row is not re-stamped; an unknown id is
 // silently skipped. An empty slice is a no-op.
-func (s *Store) MemoryPendingAck(ctx context.Context, ids []string) error {
+func (s *Store) MemoryPendingAck(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	_, err := s.pool.Exec(ctx,
-		`UPDATE memory_pending SET drained_at = $1 WHERE id = ANY($2) AND drained_at IS NULL`,
-		time.Now().UTC(), ids,
+		`UPDATE memory_pending SET drained_at = $1
+		 WHERE tenant_id = $2 AND scope = $3 AND scope_id = $4
+		   AND id = ANY($5) AND drained_at IS NULL`,
+		time.Now().UTC(), tenantID, string(scope), scopeID, ids,
 	)
 	if err != nil {
 		return fmt.Errorf("memory pending ack: %w", err)

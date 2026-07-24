@@ -151,6 +151,7 @@ func Run(t *testing.T, factory Factory) {
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
+		{"MemorySupersedeRevivedByWrite", testMemorySupersedeRevivedByWrite},
 		{"MemoryPendingEnqueueDrainAck", testMemoryPendingEnqueueDrainAck},
 		{"MemoryCursorGetDefault", testMemoryCursorGetDefault},
 		{"MemoryCursorLeaseCAS", testMemoryCursorLeaseCAS},
@@ -3362,6 +3363,49 @@ func testMemorySupersedeIsIdempotent(t *testing.T, s store.Store) {
 	}
 }
 
+// testMemorySupersedeRevivedByWrite: a fresh write to a superseded key REVIVES
+// it (clears superseded_at). set, incr, and the atomic-update ops must never
+// black-hole a live write behind a stale supersede marker — a new explicit
+// write is live data. Fail-before: without superseded_at=NULL on the upsert the
+// value lands but stays hidden, so the post-write MemoryGet returns not-found.
+func testMemorySupersedeRevivedByWrite(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const scopeID = "revive"
+
+	// set → supersede → set: the row comes back with the NEW value.
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, scopeID, "k", json.RawMessage(`"old"`), 0)
+	if err := s.MemorySupersede(ctx, "", store.MemoryScopeAgent, scopeID, "k"); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, scopeID, "k", json.RawMessage(`"new"`), 0); err != nil {
+		t.Fatalf("re-set: %v", err)
+	}
+	got, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, scopeID, "k")
+	if err != nil {
+		t.Fatalf("MemoryGet after re-set must find the revived row: %v", err)
+	}
+	if string(got.Value) != `"new"` {
+		t.Errorf("revived value = %s, want \"new\"", got.Value)
+	}
+
+	// incr also revives: supersede a counter, then incr — the row must be visible
+	// again and continue from the archived value.
+	_ = s.MemorySet(ctx, "", store.MemoryScopeAgent, scopeID, "c", json.RawMessage(`5`), 0)
+	if err := s.MemorySupersede(ctx, "", store.MemoryScopeAgent, scopeID, "c"); err != nil {
+		t.Fatalf("supersede counter: %v", err)
+	}
+	n, err := s.MemoryIncrement(ctx, "", store.MemoryScopeAgent, scopeID, "c", 1, 0)
+	if err != nil {
+		t.Fatalf("incr after supersede: %v", err)
+	}
+	if n != 6 {
+		t.Errorf("incr revived counter = %d, want 6 (continue from archived 5)", n)
+	}
+	if _, err := s.MemoryGet(ctx, "", store.MemoryScopeAgent, scopeID, "c"); err != nil {
+		t.Errorf("incr did not revive the row (still hidden): %v", err)
+	}
+}
+
 // testMemoryPendingEnqueueDrainAck exercises the durable consolidation queue:
 // enqueue oldest-first, drain (capped, does NOT mark drained), ack (idempotent),
 // and re-drain (acked rows excluded).
@@ -3412,8 +3456,22 @@ func testMemoryPendingEnqueueDrainAck(t *testing.T, s store.Store) {
 		t.Fatalf("re-drain before ack returned %d, want 2 (drain must not mark drained)", len(again))
 	}
 
-	// Ack the two oldest; the third remains.
-	if err := s.MemoryPendingAck(ctx, []string{"mp_a", "mp_b"}); err != nil {
+	// An ack under a DIFFERENT scope/scope_id must NOT touch these rows — the ack
+	// is confined to (tenant, scope, scope_id) symmetric with drain, so a leaked
+	// id can't be acked cross-scope. mp_a must survive this wrong-scope ack.
+	if err := s.MemoryPendingAck(ctx, "", store.MemoryScopeUser, "someone-else", []string{"mp_a", "mp_b"}); err != nil {
+		t.Fatalf("wrong-scope ack should be a no-op, not an error: %v", err)
+	}
+	stillThere, err := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, "pending-agent", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stillThere) != 3 {
+		t.Fatalf("wrong-scope ack drained rows it shouldn't: drain returned %d, want 3", len(stillThere))
+	}
+
+	// Ack the two oldest (correct scope); the third remains.
+	if err := s.MemoryPendingAck(ctx, "", store.MemoryScopeAgent, "pending-agent", []string{"mp_a", "mp_b"}); err != nil {
 		t.Fatalf("MemoryPendingAck: %v", err)
 	}
 	rest, err := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, "pending-agent", 10)
@@ -3426,10 +3484,10 @@ func testMemoryPendingEnqueueDrainAck(t *testing.T, s store.Store) {
 
 	// Ack idempotency: re-acking already-drained ids is a clean no-op and does
 	// not resurrect or re-drain anything.
-	if err := s.MemoryPendingAck(ctx, []string{"mp_a", "mp_b"}); err != nil {
+	if err := s.MemoryPendingAck(ctx, "", store.MemoryScopeAgent, "pending-agent", []string{"mp_a", "mp_b"}); err != nil {
 		t.Fatalf("re-ack should be a no-op: %v", err)
 	}
-	if err := s.MemoryPendingAck(ctx, nil); err != nil {
+	if err := s.MemoryPendingAck(ctx, "", store.MemoryScopeAgent, "pending-agent", nil); err != nil {
 		t.Fatalf("empty ack should be a no-op: %v", err)
 	}
 	rest2, _ := s.MemoryPendingDrain(ctx, "", store.MemoryScopeAgent, "pending-agent", 10)

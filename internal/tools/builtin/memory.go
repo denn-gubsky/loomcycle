@@ -1460,10 +1460,15 @@ func (m *Memory) execCursorLease(ctx context.Context, scope store.MemoryScope, s
 	}
 	ttl := defaultConsolidationLeaseTTL
 	if in.LeaseTTLMs > 0 {
-		ttl = time.Duration(in.LeaseTTLMs) * time.Millisecond
-	}
-	if ttl > maxConsolidationLeaseTTL {
-		ttl = maxConsolidationLeaseTTL
+		// Clamp in millisecond space BEFORE converting: a huge lease_ttl_ms
+		// (≳9.2e12) would overflow int64 in the *time.Millisecond multiply and
+		// wrap negative, silently skipping a post-multiply max check. Negatives
+		// never reach here (the > 0 guard falls through to the default).
+		ms := in.LeaseTTLMs
+		if maxMs := int64(maxConsolidationLeaseTTL / time.Millisecond); ms > maxMs {
+			ms = maxMs
+		}
+		ttl = time.Duration(ms) * time.Millisecond
 	}
 	row, acquired, err := m.Store.MemoryCursorLease(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, owner, time.Now().UTC(), ttl)
 	if err != nil {
@@ -1555,13 +1560,14 @@ func (m *Memory) execPendingAck(ctx context.Context, scope store.MemoryScope, sc
 	if res, denied := consolidationGate(ctx, "pending_ack"); denied {
 		return res, nil
 	}
-	// ids are opaque, unguessable (128-bit) tokens the caller obtained from its
-	// OWN tenant/scope-scoped pending_drain — a capability-token: possession
-	// authorizes the ack. The store method acks by id (at-least-once semantics).
+	// The ack is confined server-side to this run's resolved (tenant, scope,
+	// scopeID) — symmetric with the scoped pending_drain that surfaced the ids —
+	// so a leaked or guessed id from another tenant/scope is a no-op, never a
+	// cross-tenant ack. ids come from the caller's own drain; ack is at-least-once.
 	if len(in.IDs) == 0 {
 		return errResult("pending_ack: missing required field: ids"), nil
 	}
-	if err := m.Store.MemoryPendingAck(ctx, in.IDs); err != nil {
+	if err := m.Store.MemoryPendingAck(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, in.IDs); err != nil {
 		return errResult(fmt.Sprintf("pending_ack: %s", err)), nil
 	}
 	return okJSON(map[string]any{"ok": true, "acked": len(in.IDs)})
