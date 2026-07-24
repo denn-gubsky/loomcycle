@@ -7821,7 +7821,7 @@ func mkMemoryBackendDef(id, name string, parent string) store.MemoryBackendDefRo
 		DefID:       id,
 		Name:        name,
 		ParentDefID: parent,
-		Definition:  json.RawMessage(`{"kind":"mem9","config":{"base_url":"https://mem9.example.com","api_version":"v1","api_key_env":"LOOMCYCLE_MEM9_KEY"},"tenancy_strategy":{"kind":"shared_key_with_prefix","prefix_pattern":"tenant/{tenant_id}/"},"fallback_on_error":"inprocess"}`),
+		Definition:  json.RawMessage(`{"kind":"inprocess","config":{"base_url":"https://backend.example.com","api_version":"v1","api_key_env":"LOOMCYCLE_BACKEND_KEY"},"tenancy_strategy":{"kind":"shared_key_with_prefix","prefix_pattern":"tenant/{tenant_id}/"},"fallback_on_error":"inprocess"}`),
 		Description: "test row",
 	}
 }

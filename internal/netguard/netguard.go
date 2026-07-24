@@ -3,10 +3,10 @@
 // 169.254.169.254), filtering at DIAL time so DNS-rebinding and redirect targets
 // are re-checked on every new connection — not at a one-shot validate. It is a
 // leaf (only net / net/http) so every outbound-HTTP caller (the HTTP/WebFetch
-// tools, the mem9 MemoryBackend client, the MCP-HTTP client) shares ONE
+// tools, the MCP-HTTP client) shares ONE
 // implementation and a new caller can't copy the weak first-layer URL check
 // without this load-bearing guard — the drift class the v1.9.x security review
-// found in the mem9 backend.
+// found in a since-removed external memory-backend client.
 package netguard
 
 import (
@@ -109,7 +109,7 @@ func GuardedDialContext(allowPrivate bool, privateHostAllowlist []string) func(c
 // NewGuardedClient returns an *http.Client that BLOCKS private-IP dials (subject
 // to privateHostAllowlist) and bounds redirects — each hop re-dials through the
 // guard, so a 302 to an internal/metadata IP is refused too. For callers that
-// always want the block (mem9, the MCP-HTTP client when the operator opts in).
+// always want the block (the MCP-HTTP client when the operator opts in).
 func NewGuardedClient(timeout time.Duration, privateHostAllowlist []string) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,

@@ -14,8 +14,10 @@ import (
 )
 
 // memoryBackendDefFixture builds a MemoryBackendDef tool over in-memory
-// SQLite + a stub Config with one yaml template (a mem9 backend). RFC I
-// MR-3a / mirrors webhookDefFixture.
+// SQLite + a stub Config with one yaml template. The template carries a
+// populated `config` block so the fork/bootstrap tests can assert the whole
+// definition round-trips, not just `kind`. RFC I MR-3a / mirrors
+// webhookDefFixture.
 func memoryBackendDefFixture(t *testing.T) (*MemoryBackendDef, context.Context, func()) {
 	t.Helper()
 	s, err := sqlite.Open(":memory:")
@@ -25,10 +27,10 @@ func memoryBackendDefFixture(t *testing.T) (*MemoryBackendDef, context.Context, 
 	cfg := &config.Config{
 		MemoryBackends: map[string]config.MemoryBackend{
 			"primary": {
-				Kind: "mem9",
+				Kind: "inprocess",
 				Config: config.MemoryBackendConfig{
-					BaseURL:   "https://mem9.example.com",
-					APIKeyEnv: "LOOMCYCLE_MEM9_KEY",
+					BaseURL:   "https://backend.example.com",
+					APIKeyEnv: "LOOMCYCLE_BACKEND_KEY",
 				},
 			},
 		},
@@ -81,13 +83,27 @@ func TestMemoryBackendDefTool_CreateInprocess(t *testing.T) {
 	}
 }
 
-func TestMemoryBackendDefTool_CreateMem9(t *testing.T) {
+// TestMemoryBackendDefTool_CreateRefusesMem9Kind pins the AUTHORING half of
+// the external-backend removal: `mem9` is no longer a known kind, so creating
+// a def that names it is refused by the closed-enum validator. Its companion
+// is TestMemoryBackend_Mem9KindDegradesGracefully, which pins that a def
+// already PERSISTED by an older build still resolves (degrading to the
+// in-process backend) instead of failing the run. Reject at the door, degrade
+// in the runtime.
+func TestMemoryBackendDefTool_CreateRefusesMem9Kind(t *testing.T) {
 	tool, ctx, cleanup := memoryBackendDefFixture(t)
 	defer cleanup()
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"remote","overlay":{"kind":"mem9","config":{"base_url":"https://m.example.com","api_key_env":"LOOMCYCLE_M_KEY"}}}`))
-	if res.IsError {
-		t.Fatalf("create mem9: %s", res.Text)
+	if !res.IsError {
+		t.Fatalf("create kind=mem9 should be refused; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "unknown kind") {
+		t.Errorf("refusal should name the removed kind as unknown; got %s", res.Text)
+	}
+	// The enum must no longer advertise mem9 as a choice.
+	if strings.Contains(res.Text, "one of: inprocess, mem9") {
+		t.Errorf("enum still lists mem9 as valid; got %s", res.Text)
 	}
 }
 
@@ -103,45 +119,6 @@ func TestMemoryBackendDefTool_CreateStampsCanonicalName(t *testing.T) {
 	def := decodeResult(t, res.Text)["definition"].(map[string]any)
 	if def["name"] != "canon" {
 		t.Errorf("stamped name = %v, want canon (registry key, not overlay)", def["name"])
-	}
-}
-
-func TestMemoryBackendDefTool_CreateRefusesMem9WithoutBaseURL(t *testing.T) {
-	tool, ctx, cleanup := memoryBackendDefFixture(t)
-	defer cleanup()
-
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"nobase","overlay":{"kind":"mem9","config":{"api_key_env":"LOOMCYCLE_M_KEY"}}}`))
-	if !res.IsError {
-		t.Fatalf("mem9 without base_url should refuse")
-	}
-	if !strings.Contains(res.Text, "config.base_url") {
-		t.Errorf("refusal should mention config.base_url; got %s", res.Text)
-	}
-}
-
-func TestMemoryBackendDefTool_CreateRefusesMem9WithoutAPIKeyEnv(t *testing.T) {
-	tool, ctx, cleanup := memoryBackendDefFixture(t)
-	defer cleanup()
-
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"nokey","overlay":{"kind":"mem9","config":{"base_url":"https://m.example.com"}}}`))
-	if !res.IsError {
-		t.Fatalf("mem9 without api_key_env should refuse")
-	}
-	if !strings.Contains(res.Text, "config.api_key_env") {
-		t.Errorf("refusal should mention config.api_key_env; got %s", res.Text)
-	}
-}
-
-func TestMemoryBackendDefTool_CreateRefusesBadAPIKeyEnvName(t *testing.T) {
-	tool, ctx, cleanup := memoryBackendDefFixture(t)
-	defer cleanup()
-
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"badenv","overlay":{"kind":"mem9","config":{"base_url":"https://m.example.com","api_key_env":"lower-case"}}}`))
-	if !res.IsError {
-		t.Fatalf("malformed api_key_env should refuse")
-	}
-	if !strings.Contains(res.Text, "valid env-var name") {
-		t.Errorf("refusal should mention env-var name; got %s", res.Text)
 	}
 }
 
@@ -162,7 +139,7 @@ func TestMemoryBackendDefTool_CreateRefusesTenancyPatternWithoutTenantID(t *test
 	tool, ctx, cleanup := memoryBackendDefFixture(t)
 	defer cleanup()
 
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"badtenant","overlay":{"kind":"mem9","config":{"base_url":"https://m.example.com","api_key_env":"LOOMCYCLE_M_KEY"},"tenancy_strategy":{"kind":"key_per_tenant","env_pattern":"LOOMCYCLE_KEY_STATIC"}}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"badtenant","overlay":{"kind":"inprocess","tenancy_strategy":{"kind":"key_per_tenant","env_pattern":"LOOMCYCLE_KEY_STATIC"}}}`))
 	if !res.IsError {
 		t.Fatalf("key_per_tenant env_pattern without {tenant_id} should refuse")
 	}
@@ -171,13 +148,32 @@ func TestMemoryBackendDefTool_CreateRefusesTenancyPatternWithoutTenantID(t *test
 	}
 }
 
+// The base_url guard survives the external backend's removal for the same
+// reason the tenancy guard does: no shipped kind dials base_url, but the
+// persisted shape must never hold a non-HTTP(S) value a future external kind
+// would act on. Retargeted to kind=inprocess (the only shipping kind) — the
+// check runs regardless of kind, so a model-authored fork can't smuggle a
+// file:// URL into storage.
+func TestMemoryBackendDefTool_CreateRefusesNonHTTPBaseURL(t *testing.T) {
+	tool, ctx, cleanup := memoryBackendDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"badurl","overlay":{"kind":"inprocess","config":{"base_url":"file:///etc/passwd"}}}`))
+	if !res.IsError {
+		t.Fatalf("non-http base_url should refuse")
+	}
+	if !strings.Contains(res.Text, "base_url") {
+		t.Errorf("refusal should name base_url; got %s", res.Text)
+	}
+}
+
 func TestMemoryBackendDefTool_CreateRefusesUnknownFallback(t *testing.T) {
 	tool, ctx, cleanup := memoryBackendDefFixture(t)
 	defer cleanup()
 
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"badfallback","overlay":{"kind":"inprocess","fallback_on_error":"mem9"}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"badfallback","overlay":{"kind":"inprocess","fallback_on_error":"remote"}}`))
 	if !res.IsError {
-		t.Fatalf("fallback_on_error=mem9 should refuse")
+		t.Fatalf("fallback_on_error=remote should refuse")
 	}
 	if !strings.Contains(res.Text, "fallback_on_error") {
 		t.Errorf("refusal should mention fallback_on_error; got %s", res.Text)
@@ -203,7 +199,7 @@ func TestMemoryBackendDefTool_ForkBootstrapsTemplate(t *testing.T) {
 	def := out["definition"].(map[string]any)
 	// base_url survived from the template; only the api_version changed.
 	cfgBlock := def["config"].(map[string]any)
-	if cfgBlock["base_url"] != "https://mem9.example.com" {
+	if cfgBlock["base_url"] != "https://backend.example.com" {
 		t.Errorf("fork lost template base_url; got %v", cfgBlock["base_url"])
 	}
 	if cfgBlock["api_version"] != "v2" {

@@ -3,17 +3,19 @@
 // retries on the fallback backend (the in-process default in practice).
 //
 // This is the runtime half of RFC I Decision 9's `fallback_on_error:
-// inprocess` — the MemoryBackendDef declares the intent, the tool layer
-// constructs this wrapper (primary = the mem9 backend, fallback = the
-// operator-default in-process backend), and an agent whose Mem9
-// deployment is unreachable keeps reading/writing memory locally instead
-// of failing the run.
+// inprocess` — the MemoryBackendDef declares the intent and the tool layer
+// constructs this wrapper (primary = a remote backend, fallback = the
+// operator-default in-process backend) so an agent whose remote deployment
+// is unreachable keeps reading/writing memory locally instead of failing
+// the run.
 //
-// Why a wrapper and not a flag inside the mem9 backend: the fallback is
-// backend-agnostic (any future remote backend reuses it) and keeps the
-// mem9 backend's error surface honest — mem9 returns its real error, the
-// wrapper decides whether to degrade. The two concerns stay separable
-// and independently testable.
+// NOTE: this package currently has NO production constructor. The only kind
+// that ever wrapped itself in it was the external mem9 backend, removed once
+// the in-process backend became a native memory layer. It is kept because it
+// is deliberately backend-AGNOSTIC — the degradation policy lives here rather
+// than inside a backend, so a remote backend reports its real error and the
+// wrapper alone decides whether to degrade. Whether to keep carrying it is an
+// open call for whoever adds the next external backend.
 package fallback
 
 import (
@@ -37,9 +39,9 @@ import (
 type Backend struct {
 	primary  memory.Backend
 	fallback memory.Backend
-	// logf logs the degradation. NEVER receives a credential — the
-	// primary backend constructs its errors without the API key (the
-	// mem9 backend's contract), so %v on the error is secret-free.
+	// logf logs the degradation. NEVER receives a credential — a primary
+	// backend must construct its errors without its API key (the contract
+	// every backend owes this wrapper), so %v on the error is secret-free.
 	logf func(format string, args ...any)
 }
 
@@ -65,7 +67,7 @@ func (b *Backend) Get(ctx context.Context, scope store.MemoryScope, scopeID, key
 	if err != nil {
 		// A genuine "not found" from the primary is NOT a backend
 		// failure — it's a valid answer. Falling back on it would mask
-		// a deletion (the row is gone from Mem9 but lingers locally).
+		// a deletion (the row is gone remotely but lingers locally).
 		// Only degrade on non-NotFound errors.
 		if isNotFound(err) {
 			return entry, err

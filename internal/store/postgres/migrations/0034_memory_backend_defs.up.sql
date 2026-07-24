@@ -6,7 +6,7 @@
 -- scheduler-specific run_state table).
 --
 -- memory_backend_defs declares a named memory backend: the kind
--- (inprocess or mem9), connection config (base_url, api_version,
+-- (only "inprocess" ships), connection config (base_url, api_version,
 -- api_key_env), tenancy strategy (key_per_tenant or
 -- shared_key_with_prefix), and fallback behaviour.
 --

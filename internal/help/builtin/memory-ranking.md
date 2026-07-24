@@ -1,6 +1,6 @@
 ---
 name: memory-ranking
-description: Memory retrieval tuning — the hybrid ranker (semantic + recency weights) and search-time dedup on Memory.search, pluggable memory backends (MemoryBackendDef + Mem9), per-agent memory_backend routing, and the loomcycle memory-eval scoring harness.
+description: Memory retrieval tuning — the hybrid ranker (semantic + recency weights) and search-time dedup on Memory.search, pluggable memory backends (MemoryBackendDef), per-agent memory_backend routing, and the loomcycle memory-eval scoring harness.
 ---
 
 # Memory ranking, dedup & pluggable backends
@@ -14,8 +14,8 @@ full-text index (SQLite) keeps pure cosine similarity — the original Vector
 Memory behavior, with no over-fetch or second round-trip for a plain semantic
 search. On top of retrieval, loomcycle layers three **opt-in** tunables:
 recency/frequency ranking weights, search-time dedup, and a pluggable backend
-layer (so an agent's memory can live in an external store like Mem9 instead of
-loomcycle's own sqlite-vec/pgvector).
+layer (so which store serves an agent's memory is an operator choice rather
+than something baked into the tool).
 
 ## Why tune retrieval at all
 
@@ -99,51 +99,35 @@ survives:
 
 The response reports how many entries were collapsed. Dedup is a no-op when
 disabled (the default) and degrades gracefully to a no-op for backends that
-can't supply per-entry vectors (e.g. the Mem9 REST backend re-ranks/dedups on
+can't supply per-entry vectors (a remote backend would re-rank/dedup on
 whatever candidates it returns).
 
 ## Pluggable backends
 
-By default every agent's memory lives in loomcycle's in-process store
-(sqlite-vec or pgvector). `MemoryBackendDef` (the sixth substrate primitive)
-lets an operator register an external backend and point specific agents at
-it:
+Every agent's memory lives in loomcycle's in-process store (sqlite-vec or
+pgvector). `MemoryBackendDef` (the sixth substrate primitive) is the seam that
+lets an operator register a NAMED backend and point specific agents at it:
 
 ```yaml
 memory_backends:
-  default:      { kind: inprocess }
-  mem9-team:
-    kind: mem9
-    config:
-      base_url:    "https://mem9.internal.example"
-      api_version: "v1alpha2"
-      api_key_env: "LOOMCYCLE_MEM9_TEAM_API_KEY"   # env-allowlist-gated
-    tenancy_strategy: { kind: "shared_key_with_prefix", prefix_pattern: "tenant-{tenant_id}::" }
-    fallback_on_error: "inprocess"
+  default:    { kind: inprocess }
+  team-store: { kind: inprocess }
 
 agents:
   shared-research:
-    memory_backend: mem9-team     # this agent's Memory.* ops route to Mem9
+    memory_backend: team-store   # this agent's Memory.* ops route by name
   # agents with no memory_backend use the operator-default backend
 ```
 
-`AgentDef.memory_backend` names the backend; absence means the operator
-default. The backend name is resolved from operator config, never from model
-input — same trust posture as `memory_scopes`. The ranker + dedup work
-uniformly across backends (in-process backends rank/dedup in-Go; external
-backends re-rank client-side on the candidates they return).
+`inprocess` is the only backend kind that ships — naming a backend declares
+the routing rather than changing where the bytes land. `AgentDef.memory_backend`
+names the backend; absence means the operator default. The backend name is
+resolved from operator config, never from model input — same trust posture as
+`memory_scopes`. The ranker + dedup work uniformly across backends.
 
-**Credentials** for an external backend mirror the scheduler exactly: the API
-key is an env-var NAME (`api_key_env`) gated by the shared env-allowlist
-(`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`), resolvable per-run from
-`${run.credentials.*}` or the env. Never plaintext in the Def, never
-logged. **Fallback:** `fallback_on_error: inprocess` keeps an agent working
-against local memory if the external backend is unreachable, rather than
-failing the run.
-
-> ⚠ The Mem9 wire mapping is implemented against the documented v1alpha2 REST
-> shape + a CI stub; **verify it against your Mem9 version before production**
-> — see `docs/MEMORY-BACKENDS.md`.
+An unknown or unresolvable backend name never fails a run: it logs and
+degrades to the operator-default backend. That also covers a def written by an
+older loomcycle whose `kind` no longer exists.
 
 ## Full CRUD + admin
 

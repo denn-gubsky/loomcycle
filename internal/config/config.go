@@ -178,7 +178,7 @@ type Config struct {
 	Webhooks map[string]Webhook `yaml:"webhooks"`
 
 	// MemoryBackends is the RFC I MR-3a registry of named memory
-	// backend declarations — which backend (inprocess or mem9), its
+	// backend declarations — which backend kind, its
 	// connection config, tenancy strategy, and fallback. Yaml entries
 	// are the operator-blessed root; the MemoryBackendDef tool produces
 	// the derived fork layer. Empty / nil = no statically-declared
@@ -1967,8 +1967,8 @@ type WebhookSyncResponse struct {
 }
 
 // MemoryBackend is one entry in the RFC I MR-3a `memory_backends:` yaml
-// block. It declares a named memory backend: the kind (inprocess or
-// mem9), connection config, tenancy strategy, and fallback behaviour.
+// block. It declares a named memory backend: the kind (only "inprocess"
+// ships), connection config, tenancy strategy, and fallback behaviour.
 //
 // Like Webhook (and unlike the A2A yaml-only structs), MemoryBackend
 // carries BOTH json and yaml tags: the SAME field set backs the
@@ -1991,7 +1991,7 @@ type MemoryBackend struct {
 }
 
 // MemoryBackendConfig holds the connection config for a remote memory
-// backend (kind=mem9). api_key_env is an env-var NAME — the value is
+// backend. api_key_env is an env-var NAME — the value is
 // resolved (allowlist-gated) at use time in MR-4, never at config load.
 type MemoryBackendConfig struct {
 	BaseURL    string `json:"base_url,omitempty" yaml:"base_url"`

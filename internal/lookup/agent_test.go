@@ -64,7 +64,7 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 		Skills:                []string{"voice-applier"},
 		MemoryScopes:          []string{"agent", "user"},
 		MemoryQuotaBytes:      65536,
-		MemoryBackend:         "team-mem9",
+		MemoryBackend:         "team-memory",
 	}
 	// Simulate boot-time normalization on the yaml side: resolveSkills
 	// would set SystemPromptBase = SystemPrompt for an agent with

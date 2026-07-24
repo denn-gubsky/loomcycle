@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,9 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
-	"github.com/denn-gubsky/loomcycle/internal/memory/backends/fallback"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
-	"github.com/denn-gubsky/loomcycle/internal/memory/backends/mem9"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -79,8 +76,8 @@ type Memory struct {
 
 	// Backend is the RFC I (MR-2) pluggability seam. The data ops
 	// (get/set/delete/list/search) route through it instead of calling
-	// Store directly, so MR-3's MemoryBackendDef + MR-4's Mem9 backend
-	// can plug in here. When nil, Execute lazily defaults it to the
+	// Store directly, so MR-3's MemoryBackendDef can select a named
+	// backend here. When nil, Execute lazily defaults it to the
 	// in-process backend wrapping Store + Embedder — so a tool
 	// constructed with only Store + Embedder set (as the tests and any
 	// pre-MR-2 caller do) behaves identically. main.go sets this
@@ -97,24 +94,6 @@ type Memory struct {
 	// per-agent routing path can't resolve named backends and every agent
 	// falls back to the operator-default backend — the pre-MR-3b behavior.
 	Cfg *config.Config
-
-	// EnvAllowlist gates which env vars the mem9 backend may read for its
-	// X-API-Key (RFC I MR-4 / Decision 10). Set in main.go from
-	// cfg.Env.SchedulerEnvAllowlist — the same allowlist the scheduler +
-	// webhooks use, so there's no new credential surface. An empty / nil
-	// allowlist means NO env var is readable: a mem9 backend whose key
-	// comes from env then refuses to construct and the agent falls back to
-	// in-process (a non-allowlisted key must never produce a silent
-	// unauthenticated call).
-	EnvAllowlist map[string]bool
-
-	// PrivateHostAllowlist exempts specific hosts from the mem9 client's
-	// dial-time private-IP SSRF block (set in main.go from
-	// cfg.Env.HTTPPrivateHostAllowlist — the same operator vouch list the HTTP
-	// tool uses). Empty = every private/loopback/metadata IP is refused for
-	// mem9 dials, so a model-authored base_url can't reach an internal host.
-	// An operator running an internal mem9 backend adds its host here.
-	PrivateHostAllowlist []string
 
 	// SqlMem is the RFC AA SQL Memory manager backing sql_query / sql_exec.
 	// Nil = the SQL ops refuse with "SQL Memory is not enabled on this
@@ -160,11 +139,10 @@ type Memory struct {
 //
 // kind dispatch on a resolved Def:
 //   - "" / "inprocess" → fresh in-process backend (cheap, stateless).
-//   - "mem9" → NOT yet wired (lands in MR-4). Logs and falls back to
-//     in-process. The Def's fallback_on_error field is honored in MR-4
-//     once mem9 can actually fail at runtime; until then fallback is the
-//     unconditional default.
 //   - anything else → unknown kind; logs and falls back to in-process.
+//     This is the DEGRADE PATH for a def persisted by an older build: the
+//     external `mem9` kind was removed, so a stored kind:mem9 row now lands
+//     here and serves from in-process rather than failing the agent's run.
 func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	name := tools.MemoryPolicy(ctx).Backend
 	if name == "" {
@@ -181,8 +159,6 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	switch def.Kind {
 	case "", "inprocess":
 		return inprocess.New(m.Store, m.Embedder)
-	case "mem9":
-		return m.buildMem9(ctx, name, def)
 	default:
 		log.Printf("memory: memory_backend %q has unknown kind %q — using in-process fallback", name, def.Kind)
 		return m.defaultBackend()
@@ -192,177 +168,18 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 // memoryLayer resolves the MemoryLayer capability for the agent's configured
 // backend (RFC K). It returns (layer, true) when the resolved backend
 // implements the add/recall memory-layer paradigm, or (nil, false) when it
-// does not — e.g. the default in-process KV+vector backend, which is not a
-// memory layer. The caller (execAdd/execRecall) turns false into the typed
-// capability_unsupported refusal.
+// does not. The caller (execAdd/execRecall) turns false into the typed
+// capability_unsupported refusal — a fail-closed refusal, never a silent
+// no-op that would drop the caller's messages.
 //
 // It reuses backend(ctx) so backend selection (the per-agent memory_backend
-// Def, the fallback wrapper, the unknown-name degradation) stays in one
-// place — the memory-layer view is just a capability probe over the same
-// resolved backend. A fallback-wrapped backend is treated as a layer only if
-// the wrapper itself surfaces the capability; today the in-process fallback
-// is not a layer, so a mem9 layer wrapped for fallback degrades to "no layer"
-// rather than silently routing add/recall to in-process KV (which can't
-// honor them) — fail-closed.
+// Def, the unknown-kind degradation) stays in one place — the memory-layer
+// view is just a capability probe over the same resolved backend. A wrapped
+// backend is treated as a layer only if the WRAPPER surfaces the capability,
+// so a wrapper that cannot honor a semantic add/recall degrades to "no
+// layer" rather than silently routing them at a KV store.
 func (m *Memory) memoryLayer(ctx context.Context) (memrank.MemoryLayer, bool) {
 	return memrank.AsMemoryLayer(m.backend(ctx))
-}
-
-// buildMem9 constructs the RFC I MR-4 Mem9 REST backend for a resolved
-// kind=mem9 Def, wraps it in the fallback backend when the Def opts into
-// fallback_on_error=inprocess, and degrades to the operator-default
-// backend on any CONSTRUCTION error (e.g. an unresolvable / non-allowlisted
-// key, or a missing tenant). A construction failure must never fail the
-// agent — it logs and falls back, the same posture as an unresolved name.
-//
-// Credentials are resolved PER OP by the injected CredentialResolver, not
-// here; this only validates that the Def is structurally constructible.
-// mem9RequestTimeout is the per-op HTTP timeout for the guarded mem9 client.
-// Matches mem9.New's own default (used when Config.HTTPClient is nil), so
-// swapping in the SSRF-guarded client keeps the timeout behaviour unchanged.
-const mem9RequestTimeout = 10 * time.Second
-
-func (m *Memory) buildMem9(ctx context.Context, name string, def config.MemoryBackend) memrank.Backend {
-	tenancy, prefix, err := resolveTenancy(ctx, def.TenancyStrategy)
-	if err != nil {
-		log.Printf("memory: memory_backend %q (mem9) tenancy unresolved: %v — using in-process fallback", name, err)
-		return m.defaultBackend()
-	}
-
-	resolver := m.mem9CredentialResolver(def, def.TenancyStrategy, prefix)
-
-	// SSRF guard: dial through the shared private-IP-blocking client so a
-	// model-authored base_url cannot reach an internal/loopback/metadata host
-	// and exfiltrate the operator-allowlisted X-API-Key. Blocks at DIAL time
-	// (rebinding/redirect-safe); the operator's HTTP private-host allowlist
-	// (m.PrivateHostAllowlist) exempts a legitimately-private mem9 host.
-	b := mem9.New(mem9.Config{
-		BaseURL:            def.Config.BaseURL,
-		APIVersion:         def.Config.APIVersion,
-		Tenancy:            tenancy,
-		CredentialResolver: resolver,
-		BackendName:        name,
-		HTTPClient:         newSSRFGuardedClient(mem9RequestTimeout, m.PrivateHostAllowlist),
-	})
-
-	// fallback_on_error=inprocess wraps the remote backend so a Mem9
-	// outage degrades to local memory instead of failing the run.
-	//
-	// SCOPE OF FALLBACK (RFC K caveat): fallback applies ONLY to the six KV
-	// ops. The fallback.Backend wrapper does NOT implement MemoryLayer (it
-	// would have to fake add/recall against KV — the lobotomization RFC K
-	// rejects), so a mem9 backend wrapped here will FAIL the
-	// AsMemoryLayer assertion in memoryLayer(): add/recall then return
-	// capability_unsupported even though the underlying mem9 IS a layer.
-	// That is fail-closed-correct — the in-process KV fallback cannot honor
-	// a semantic add/recall, so degrading to it would be wrong. The
-	// trade-off: fallback_on_error and memory-layer add/recall are mutually
-	// exclusive for the same backend.
-	if def.FallbackOnError == "inprocess" {
-		return fallback.New(b, m.defaultBackend(), log.Printf)
-	}
-	return b
-}
-
-// resolveTenancy maps a MemoryBackendDef tenancy_strategy onto the mem9
-// package's resolved Tenancy + the tenant_id used for env-pattern
-// resolution. {tenant_id} is substituted from the run's tenant.
-//
-// TENANT SOURCE: the authoritative tools.RunIdentity(ctx).TenantID
-// (RFC L). On authenticated routes this is set from the resolved
-// auth.Principal's tenant — which OVERRIDES the wire tenant_id, so it is
-// a real isolation boundary, not a forgeable label. Distinct subjects
-// under one tenant SHARE this memory partition (they collaborate within
-// the tenant); isolation is per-tenant, NOT per-user (that was the
-// pre-RFC-L shape, which keyed on UserID). For legacy single-token
-// deployments the principal tenant is "default"; in dev open-mode the
-// tenant may be empty, in which case key_per_tenant resolves the "" key
-// and shared_key_with_prefix refuses (the backstop below).
-func resolveTenancy(ctx context.Context, ts config.MemoryBackendTenancy) (mem9.Tenancy, string, error) {
-	tenantID := tools.RunIdentity(ctx).TenantID
-
-	switch ts.Kind {
-	case "", "key_per_tenant":
-		// No key-prefixing — tenant isolation comes from the per-tenant
-		// API key the resolver returns. No prefix in the keyspace.
-		return mem9.Tenancy{}, tenantID, nil
-	case "shared_key_with_prefix":
-		// One shared key; tenant isolation comes ENTIRELY from prefixing
-		// every key with the per-tenant prefix, so the {tenant_id} token is
-		// mandatory. An empty or token-less prefix_pattern resolves to
-		// KeyPrefix="" (a no-op in scopedKey/scopedPrefix), collapsing every
-		// tenant into one flat keyspace — a cross-tenant read+write leak.
-		// This is the RUNTIME BACKSTOP: the Def validator and the static-
-		// config check reject it earlier, but resolveTenancy refuses
-		// unconditionally so NO configuration path (substrate fork OR
-		// hand-written yaml, which skips Def validation) can ever reach the
-		// leaky no-prefix state. (Contrast key_per_tenant, which legitimately
-		// carries no prefix because isolation rests on a distinct per-tenant
-		// API key.)
-		prefix := ts.PrefixPattern
-		if !strings.Contains(prefix, "{tenant_id}") {
-			return mem9.Tenancy{}, "", fmt.Errorf("shared_key_with_prefix requires prefix_pattern to contain {tenant_id} (got %q); an empty or token-less prefix would collapse all tenants into one keyspace", prefix)
-		}
-		if tenantID == "" {
-			return mem9.Tenancy{}, "", fmt.Errorf("shared_key_with_prefix needs {tenant_id} but the run carries no tenant (user_id)")
-		}
-		prefix = strings.ReplaceAll(prefix, "{tenant_id}", tenantID)
-		return mem9.Tenancy{KeyPrefix: prefix}, tenantID, nil
-	default:
-		return mem9.Tenancy{}, "", fmt.Errorf("unknown tenancy_strategy.kind %q", ts.Kind)
-	}
-}
-
-// mem9CredentialResolver builds the per-op X-API-Key resolver for a mem9
-// Def (RFC I MR-4 / Decision 10). Resolution order, evaluated per op:
-//
-//  1. RFC-F per-run credential: tools.RunIdentity(ctx).UserCredentials[<key>]
-//     where <key> is the Def's config.api_key_env name (the documented
-//     convention — the operator's env-var name doubles as the credential
-//     key, so a caller passing {"<API_KEY_ENV>": "..."} on the run
-//     overrides the env value without a second naming scheme).
-//  2. Env fallback: os.Getenv(envName), where envName is the api_key_env
-//     (key_per_tenant) or the tenancy env_pattern with {tenant_id}
-//     substituted. The env var MUST be on the EnvAllowlist; a
-//     non-allowlisted or unset key returns an error so the op fails loud
-//     (or the fallback wrapper engages). NEVER a silent unauthenticated
-//     call.
-//
-// The resolver closes over the tool layer's tools.RunIdentity so the
-// mem9 package needs no dependency on internal/tools. The returned error
-// NEVER contains the key value.
-func (m *Memory) mem9CredentialResolver(def config.MemoryBackend, ts config.MemoryBackendTenancy, _ string) mem9.CredentialResolver {
-	return func(ctx context.Context) (string, error) {
-		// Determine the env-var name to read. key_per_tenant may use the
-		// tenancy env_pattern (per-tenant key); otherwise the static
-		// api_key_env. Re-resolve the tenant per call so a long-lived
-		// resolver always reflects the current run's identity.
-		tenantID := tools.RunIdentity(ctx).TenantID
-		envName := def.Config.APIKeyEnv
-		if ts.Kind == "key_per_tenant" && ts.EnvPattern != "" {
-			envName = strings.ReplaceAll(ts.EnvPattern, "{tenant_id}", tenantID)
-		}
-
-		// 1. RFC-F per-run credential keyed by the api_key_env name.
-		if cred, ok := tools.RunIdentity(ctx).UserCredentials[def.Config.APIKeyEnv]; ok && cred != "" {
-			return cred, nil
-		}
-
-		// 2. Env fallback, allowlist-gated.
-		if envName == "" {
-			return "", fmt.Errorf("mem9: no api_key_env configured and no per-run credential supplied")
-		}
-		if !m.EnvAllowlist[envName] {
-			// Reference the env-var NAME only — never the value. The name
-			// is not a secret; the value would be.
-			return "", fmt.Errorf("mem9: env var %q not in allowlist (add it to LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST)", envName)
-		}
-		v := os.Getenv(envName)
-		if v == "" {
-			return "", fmt.Errorf("mem9: env var %q is unset or empty", envName)
-		}
-		return v, nil
-	}
 }
 
 // defaultBackend returns the operator-default backend: the explicitly-set
@@ -1200,7 +1017,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		return errResult("search: missing required field: query"), nil
 	}
 	// NOTE: the vector-support / embedder pre-flight is NOT done here on the
-	// tool's in-process Store/Embedder — a named memory_backend (e.g. mem9)
+	// tool's in-process Store/Embedder — a named memory_backend
 	// can serve search remotely with no local vector support or embedder.
 	// The resolved backend returns the typed refusal (ErrVectorUnsupported /
 	// ErrEmbedderNotConfigured), which the error handler below renders with
@@ -1278,7 +1095,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		out["dedup_dropped"] = res.DedupDropped
 		// Observability: the RFC's memory.dedup.dropped_count (Decision 12)
 		// is an OTEL span attribute. loomcycle's only OTEL substrate today
-		// lives in the mem9 backend (which sets that attribute on its span);
+		// lives in the backend (which sets that attribute on its span);
 		// the in-process path has no span here yet (broader OTEL is planned
 		// for v0.9.x — see CLAUDE.md). Until that lands, mirror the repo's
 		// current observability idiom (log.Printf) so operators can still
@@ -1957,7 +1774,7 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 	// rows before writing more, or operators should bump the quota.
 	const listCap = 1000
 	// List through the RESOLVED backend, not the in-process store: an agent
-	// routed to a remote backend (mem9) stores its rows there, so summing the
+	// routed to a remote backend stores its rows there, so summing the
 	// local store would measure ~0 used bytes and let the per-scope
 	// memory_quota_bytes cap silently never apply. backend(ctx) is the
 	// in-process default (which wraps m.Store) when no remote backend is

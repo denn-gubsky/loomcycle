@@ -193,11 +193,6 @@ externals: "External" {
     style: {fill: "#ede9fe"; stroke: "#7c3aed"}
   }
 
-  mem9: "Memory backend — Mem9 REST (v0.15.0)\npluggable per-agent; +memory layer\nadd/recall (v0.16.0)" {
-    shape: cylinder
-    style: {fill: "#fed7aa"; stroke: "#ea580c"; font-size: 12}
-  }
-
   a2a_peers: "Remote A2A peers (v0.13.0)\nin: call our skills · out: a2a__ tools" {
     shape: cloud
     style: {fill: "#ede9fe"; stroke: "#7c3aed"}
@@ -218,9 +213,6 @@ loomcycle.dispatcher.builtins -> externals.embedders: "Memory.search · vector" 
 }
 loomcycle.dispatcher.mcp_layer -> externals.mcp_servers: "JSON-RPC" {
   style.stroke: "#7c3aed"
-}
-loomcycle.dispatcher.builtins -> externals.mem9: "Memory ops (routed backend)" {
-  style.stroke: "#ea580c"
 }
 loomcycle.dispatcher.a2a_layer -> externals.a2a_peers: "A2A client" {
   style.stroke: "#7c3aed"

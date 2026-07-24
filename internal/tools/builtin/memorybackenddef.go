@@ -496,43 +496,40 @@ func (s *MemoryBackendDef) bootstrapStatic(ctx context.Context, name string, sta
 }
 
 // validateMemoryBackendDef enforces the runtime-supplied overlay shape.
-// STRUCTURAL validation only — the env-allowlist RESOLVABILITY check for
-// config.api_key_env / tenancy env patterns is deferred to MR-4 use time
-// (this validator only checks the env-var-NAME charset, not whether the
-// var is actually set + allowed).
+// STRUCTURAL validation only.
 //
 // RFC I MR-3a / mirrors WebhookDef's structure-only posture. Runs on
 // create AND fork.
 func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
-	// kind ∈ {"", "inprocess", "mem9"} ("" treated as inprocess).
+	// kind ∈ {"", "inprocess"} ("" treated as inprocess). The external
+	// `mem9` kind was removed once the in-process backend became a native
+	// memory layer, so authoring it is now refused here — while a def
+	// PERSISTED by an older build still resolves and degrades to in-process
+	// at use time (see Memory.backend's default arm). Reject at the door,
+	// degrade in the runtime.
 	switch def.Kind {
 	case "", "inprocess":
-		// inprocess needs no connection config or tenancy. Extra fields
-		// are tolerated (not hard-failed) but ignored at use time in MR-4.
-	case "mem9":
-		if def.Config.BaseURL == "" {
-			return fmt.Errorf("kind=mem9 requires config.base_url (non-empty)")
-		}
-		// base_url can be model-authored via a fork overlay (gated by
-		// memory_backend_def scopes), and the Mem9 client sends the
-		// allowlisted X-API-Key to whatever host it names — so reject a
-		// non-http(s)/hostless URL upfront (defense-in-depth against a
-		// blind-SSRF redirect of the egress). Reuses the A2A peer-URL guard.
-		if err := requireHTTPURL("config.base_url", def.Config.BaseURL); err != nil {
-			return err
-		}
-		if def.Config.APIKeyEnv == "" {
-			return fmt.Errorf("kind=mem9 requires config.api_key_env (non-empty)")
-		}
-		if !envVarNameRe.MatchString(def.Config.APIKeyEnv) {
-			return fmt.Errorf("config.api_key_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", def.Config.APIKeyEnv)
+		// inprocess needs no connection config or tenancy. Extra fields are
+		// tolerated (not hard-failed) but ignored at use time — EXCEPT
+		// base_url, which stays validated for the same reason the tenancy
+		// guard below does: no shipped kind dials it, but it is the field a
+		// future external kind WOULD dial, so the persisted shape must never
+		// hold a non-HTTP(S) value (file://, junk) for that kind to act on.
+		// Only checked when set — an absent base_url is the normal case.
+		if def.Config.BaseURL != "" {
+			if err := requireHTTPURL("config.base_url", def.Config.BaseURL); err != nil {
+				return err
+			}
 		}
 	default:
-		return fmt.Errorf("unknown kind %q (must be one of: inprocess, mem9)", def.Kind)
+		return fmt.Errorf("unknown kind %q (must be one of: inprocess)", def.Kind)
 	}
 
 	// tenancy_strategy.kind ∈ {"", "key_per_tenant", "shared_key_with_prefix"}.
-	// Empty tenancy is allowed — defaults applied at MR-4 use time.
+	// Empty tenancy is allowed. No shipped kind consumes tenancy today (the
+	// in-process backend derives its tenant from the run identity), so this is
+	// an AUTHORING-TIME guard kept so the persisted shape can never hold the
+	// leaky no-prefix state a future external kind would act on.
 	switch def.TenancyStrategy.Kind {
 	case "":
 		// no-op
@@ -544,8 +541,7 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 		// The {tenant_id} token is MANDATORY here (no `!= ""` escape): for
 		// shared_key_with_prefix the prefix IS the only tenant-isolation
 		// mechanism, so an empty or token-less pattern would resolve to an
-		// empty key prefix and collapse all tenants into one keyspace. Reject
-		// it at authoring time; resolveTenancy is the runtime backstop.
+		// empty key prefix and collapse all tenants into one keyspace.
 		if !strings.Contains(def.TenancyStrategy.PrefixPattern, "{tenant_id}") {
 			return fmt.Errorf("tenancy_strategy.prefix_pattern %q must contain {tenant_id} for shared_key_with_prefix (an empty or token-less prefix collapses all tenants into one keyspace)", def.TenancyStrategy.PrefixPattern)
 		}
