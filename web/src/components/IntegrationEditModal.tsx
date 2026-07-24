@@ -95,10 +95,7 @@ interface A2AAgentFormState {
 }
 
 interface MemoryBackendFormState {
-  kind: "inprocess" | "mem9";
-  baseUrl: string;
-  apiVersion: string;
-  apiKeyEnv: string;
+  kind: "inprocess";
   tenancyKind: "" | "key_per_tenant" | "shared_key_with_prefix";
   envPattern: string;
   prefixPattern: string;
@@ -1281,6 +1278,8 @@ function MemoryBackendFields(props: {
   const patch = (p: Partial<MemoryBackendFormState>) => set({ ...s, ...p });
   return (
     <>
+      {/* `inprocess` is the only kind the server accepts — the external
+          backend kind was removed — so this group has a single option. */}
       <div className="library-form-row">
         <label>kind</label>
         <div className="library-radio-group">
@@ -1288,60 +1287,14 @@ function MemoryBackendFields(props: {
             <input
               type="radio"
               name="int-mb-kind"
-              checked={s.kind === "inprocess"}
-              onChange={() => patch({ kind: "inprocess" })}
+              checked
+              readOnly
               disabled={submitting}
             />{" "}
             inprocess
           </label>
-          <label>
-            <input
-              type="radio"
-              name="int-mb-kind"
-              checked={s.kind === "mem9"}
-              onChange={() => patch({ kind: "mem9" })}
-              disabled={submitting}
-            />{" "}
-            mem9
-          </label>
         </div>
       </div>
-
-      {s.kind === "mem9" && (
-        <>
-          <div className="library-form-row">
-            <label htmlFor="int-mb-baseurl">config.base_url</label>
-            <input
-              id="int-mb-baseurl"
-              type="text"
-              value={s.baseUrl}
-              onChange={(e) => patch({ baseUrl: e.target.value })}
-              disabled={submitting}
-              placeholder="https://mem9.example.com"
-            />
-          </div>
-          <div className="library-form-row library-form-row-quad">
-            <label htmlFor="int-mb-apiver">config.api_version</label>
-            <input
-              id="int-mb-apiver"
-              type="text"
-              value={s.apiVersion}
-              onChange={(e) => patch({ apiVersion: e.target.value })}
-              disabled={submitting}
-              placeholder="v1"
-            />
-            <label htmlFor="int-mb-apikey">config.api_key_env</label>
-            <input
-              id="int-mb-apikey"
-              type="text"
-              value={s.apiKeyEnv}
-              onChange={(e) => patch({ apiKeyEnv: e.target.value })}
-              disabled={submitting}
-              placeholder="LOOMCYCLE_MEM9_API_KEY"
-            />
-          </div>
-        </>
-      )}
 
       <div className="library-form-row">
         <label htmlFor="int-mb-tenancy">tenancy_strategy.kind</label>
@@ -1375,7 +1328,7 @@ function MemoryBackendFields(props: {
             value={s.envPattern}
             onChange={(e) => patch({ envPattern: e.target.value })}
             disabled={submitting}
-            placeholder="LOOMCYCLE_MEM9_KEY_{tenant_id}"
+            placeholder="LOOMCYCLE_MEMORY_KEY_{tenant_id}"
           />
         </div>
       )}
@@ -1433,16 +1386,14 @@ function MemoryBackendFields(props: {
 }
 
 function initMemoryBackend(def: unknown): MemoryBackendFormState {
-  const config = pickObject(def, "config");
   const tenancy = pickObject(def, "tenancy_strategy");
-  const kindRaw = pickString(def, "kind");
   const tenancyRaw = pickString(tenancy, "kind");
   const fallbackRaw = pickString(def, "fallback_on_error");
   return {
-    kind: kindRaw === "mem9" ? "mem9" : "inprocess",
-    baseUrl: pickString(config, "base_url"),
-    apiVersion: pickString(config, "api_version"),
-    apiKeyEnv: pickString(config, "api_key_env"),
+    // A def persisted by an older build may still say kind:mem9. That kind
+    // was removed, so editing normalises it to the only accepted value —
+    // saving the form is how an operator retires the stale kind.
+    kind: "inprocess",
     tenancyKind:
       tenancyRaw === "key_per_tenant"
         ? "key_per_tenant"
@@ -1457,14 +1408,6 @@ function initMemoryBackend(def: unknown): MemoryBackendFormState {
 }
 
 function validateMemoryBackend(s: MemoryBackendFormState): string | null {
-  if (s.kind === "mem9") {
-    if (!s.baseUrl.trim()) return "kind=mem9 requires config.base_url.";
-    if (!isHTTPURL(s.baseUrl.trim()))
-      return "config.base_url must be a valid http(s) URL.";
-    if (!s.apiKeyEnv.trim()) return "kind=mem9 requires config.api_key_env.";
-    if (!ENV_VAR_RE.test(s.apiKeyEnv.trim()))
-      return `config.api_key_env "${s.apiKeyEnv.trim()}" is not a valid env-var name.`;
-  }
   if (
     s.tenancyKind === "key_per_tenant" &&
     s.envPattern.trim() &&
@@ -1486,13 +1429,6 @@ function buildMemoryBackendOverlay(
   const ov: Record<string, unknown> = {};
   if (description.trim()) ov.description = description.trim();
   ov.kind = s.kind;
-  if (s.kind === "mem9") {
-    const config: Record<string, unknown> = {};
-    if (s.baseUrl.trim()) config.base_url = s.baseUrl.trim();
-    if (s.apiVersion.trim()) config.api_version = s.apiVersion.trim();
-    if (s.apiKeyEnv.trim()) config.api_key_env = s.apiKeyEnv.trim();
-    ov.config = config;
-  }
   if (s.tenancyKind) {
     const ten: Record<string, unknown> = { kind: s.tenancyKind };
     if (s.tenancyKind === "key_per_tenant" && s.envPattern.trim())
@@ -1584,7 +1520,7 @@ const INTEGRATION_NAME_PLACEHOLDER: Record<IntegrationKind, string> = {
   webhook: "github-push",
   "a2a-server-card": "my-card",
   "a2a-agent": "peer-researcher",
-  "memory-backend": "mem9-prod",
+  "memory-backend": "team-memory",
 };
 
 const KIND_TO_SUBSTRATE: Record<IntegrationKind, SubstrateKind> = {

@@ -10,7 +10,7 @@
 #      the trust-boundary validations hardened in the memory review:
 #        - shared_key_with_prefix with an EMPTY prefix_pattern is REFUSED
 #          (the cross-tenant-leak fix) — and a {tenant_id} one is accepted
-#        - a mem9 base_url that is not http(s) is REFUSED (the SSRF fix)
+#        - the removed external `mem9` kind is REFUSED at create (closed enum)
 #
 # The vector/dedup half lives in test/runtime/memory-vector/ (needs PG +
 # the stub embedder). Run: ./test/runtime/memory-core/run.sh
@@ -70,19 +70,21 @@ adm -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"local","over
   || fail "inprocess MemoryBackendDef create failed"
 adm "$BASE/v1/_memorybackenddef/names" | grep -q "local" || fail "backend name not listed"
 # HIGH fix: shared_key_with_prefix with empty prefix_pattern must be refused.
-C=$(code -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"leaky","overlay":{"kind":"mem9","config":{"base_url":"https://m.example.com","api_key_env":"LOOMCYCLE_M_KEY"},"tenancy_strategy":{"kind":"shared_key_with_prefix"}}}')
+C=$(code -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"leaky","overlay":{"kind":"inprocess","tenancy_strategy":{"kind":"shared_key_with_prefix"}}}')
 grep -q "tenant_id" "$TEST_DIR/last.body" || fail "empty-prefix shared_key_with_prefix was NOT refused (code=$C body=$(cat "$TEST_DIR/last.body"))"
 # A valid {tenant_id} prefix is accepted.
-adm -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"shared","overlay":{"kind":"mem9","config":{"base_url":"https://m.example.com","api_key_env":"LOOMCYCLE_M_KEY"},"tenancy_strategy":{"kind":"shared_key_with_prefix","prefix_pattern":"t-{tenant_id}::"}}}' | grep -q '"def_id"' \
+adm -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"shared","overlay":{"kind":"inprocess","tenancy_strategy":{"kind":"shared_key_with_prefix","prefix_pattern":"t-{tenant_id}::"}}}' | grep -q '"def_id"' \
   || fail "valid {tenant_id} prefix was wrongly refused"
 
-echo "[6/6] MemoryBackendDef: mem9 non-http base_url REFUSED (SSRF fix)"
-# The non-http(s) scheme is the rejection trigger; the path is irrelevant,
-# kept generic so a secret scanner's generic-password detector doesn't
-# false-positive on a system-file-path literal.
-code -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"badurl","overlay":{"kind":"mem9","config":{"base_url":"file:///tmp/x","api_key_env":"LOOMCYCLE_M_KEY"}}}' > /dev/null
-grep -qiE "http|url|base_url" "$TEST_DIR/last.body" || fail "file:// base_url was NOT refused: $(cat "$TEST_DIR/last.body")"
+echo "[6/6] MemoryBackendDef: removed external kind REFUSED (closed enum)"
+# The external `mem9` backend kind was removed once the in-process backend
+# became a native memory layer. Authoring it must be refused; a def PERSISTED
+# by an older build still resolves and degrades to in-process (covered by the
+# Go test TestMemoryBackend_Mem9KindDegradesGracefully, which needs to seed a
+# row directly and so cannot be driven over the wire).
+code -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"badkind","overlay":{"kind":"mem9"}}' > /dev/null
+grep -qi "unknown kind" "$TEST_DIR/last.body" || fail "kind=mem9 was NOT refused: $(cat "$TEST_DIR/last.body")"
 # Make sure it really was an error result, not an accepted def.
-grep -q '"def_id"' "$TEST_DIR/last.body" && fail "file:// base_url was accepted (got a def_id)"
+grep -q '"def_id"' "$TEST_DIR/last.body" && fail "kind=mem9 was accepted (got a def_id)"
 
-echo "PASS ✓ — memory K/V CRUD + MemoryBackendDef CRUD with tenancy + SSRF rejections"
+echo "PASS ✓ — memory K/V CRUD + MemoryBackendDef CRUD with tenancy + removed-kind rejection"
