@@ -107,6 +107,11 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	// the operator plane also gets the consolidation grant — a session with open
 	// memory scope can drive the cursor/pending/supersede ops on its OWN
 	// (tenant-confined) scopes, consistent with the wildcard posture here.
+	//
+	// It does NOT get the origin=consolidator provenance stamp: that requires an
+	// actual run, and this plane has no run id. An operator writing a fact by hand
+	// is not a machine distilling one from a transcript, and the column has to stay
+	// a trustworthy filter for the latter. See builtin.provenanceForSet.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user", "global"},
 		Consolidation: true,

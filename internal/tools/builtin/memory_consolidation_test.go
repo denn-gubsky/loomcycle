@@ -14,8 +14,13 @@ import (
 
 // grantedConsolidationCtx layers the memory_consolidation grant onto the
 // standard fixture ctx (which already carries AgentName + RunIdentity + the
-// agent/user memory scopes).
+// agent/user memory scopes), plus a run id.
+//
+// The run id matters: a real consolidation pass IS a run, and the
+// origin=consolidator provenance stamp requires one — the operator planes hand out
+// the same grant with no run id and must not be stamped. See provenanceForSet.
 func grantedConsolidationCtx(ctx context.Context) context.Context {
+	ctx = tools.WithRunID(ctx, "run_consolidation_pass")
 	return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user"},
 		Consolidation: true,

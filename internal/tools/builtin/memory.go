@@ -333,6 +333,14 @@ const (
 // consolidation pass, so its writes are stamped origin=consolidator; an
 // ordinary agent's `set` gets no origin and (absent a provenance block) writes
 // exactly the columns it wrote before this existed.
+//
+// The stamp requires an actual RUN, not just the grant. The operator planes (MCP
+// operatorCtx, HTTP substrate-admin, gRPC substrate) hand out
+// Consolidation: true alongside their wildcard memory scopes, and those contexts
+// carry no run id — so a plain `Memory op=set` from any authenticated MCP session
+// would otherwise land origin=consolidator with nothing having distilled it,
+// hollowing out the one thing the column is for: a trustworthy filter for facts a
+// machine distilled from a transcript.
 func provenanceForSet(ctx context.Context, in memoryInput) store.MemoryProvenance {
 	var prov store.MemoryProvenance
 	if in.Provenance != nil {
@@ -340,7 +348,7 @@ func provenanceForSet(ctx context.Context, in memoryInput) store.MemoryProvenanc
 		prov.SourceSessionID = clampField(in.Provenance.SourceSessionID)
 		prov.SourceRunID = clampField(in.Provenance.SourceRunID)
 	}
-	if tools.MemoryPolicy(ctx).Consolidation {
+	if tools.RunID(ctx) != "" && tools.MemoryPolicy(ctx).Consolidation {
 		prov.Origin = memoryOriginConsolidator
 	}
 	return prov

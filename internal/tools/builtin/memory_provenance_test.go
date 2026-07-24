@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // provenanceOf reads back the stored provenance for an agent-scope key written
@@ -76,6 +77,51 @@ func TestMemorySet_OriginIsNotModelSupplied(t *testing.T) {
 	}
 	if got.Class != "fact" || got.SourceSessionID != "sess-1" {
 		t.Errorf("descriptive provenance = %+v, want class=fact source_session_id=sess-1", got)
+	}
+}
+
+// TestMemorySet_ConsolidatorOriginRequiresARun: the stamp means "a background pass
+// distilled this from a transcript". The OPERATOR planes (MCP operatorCtx, HTTP
+// substrate-admin, gRPC substrate) all hand out Consolidation: true alongside
+// their wildcard memory scopes, and none of them is a run — so keying the stamp on
+// the grant alone meant a plain `Memory op=set` from any authenticated MCP session
+// landed origin=consolidator with nothing having distilled it. That hollows out the
+// only thing the column is for: a trustworthy filter for machine-distilled facts.
+//
+// Both directions, because either half alone is the bug: grant + run ⇒ stamped;
+// grant + NO run (the operator-plane shape) ⇒ not stamped, while the descriptive
+// fields still record normally.
+//
+// Fails-before if provenanceForSet checks only MemoryPolicy(ctx).Consolidation.
+func TestMemorySet_ConsolidatorOriginRequiresARun(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	// An operator-plane context: the grant and open scopes, but no run id.
+	operatorCtx := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
+		AllowedScopes: []string{"agent", "user"},
+		Consolidation: true,
+	})
+	in := `{"op":"set","scope":"agent","key":"fact/from-operator","value":"x","provenance":{"class":"fact"}}`
+	if res, _ := tool.Execute(operatorCtx, json.RawMessage(in)); res.IsError {
+		t.Fatalf("operator-plane set: %s", res.Text)
+	}
+	got := provenanceOf(t, tool, "fact/from-operator")
+	if got.Origin != "" {
+		t.Errorf("origin = %q for a grant-holding context with no run, want empty — nothing distilled this", got.Origin)
+	}
+	if got.Class != "fact" {
+		t.Errorf("descriptive provenance = %+v, want class=fact recorded as usual", got)
+	}
+
+	// The same grant inside a real run IS a consolidation pass.
+	runCtx := grantedConsolidationCtx(ctx)
+	inRun := `{"op":"set","scope":"agent","key":"fact/from-pass","value":"x","provenance":{"class":"fact"}}`
+	if res, _ := tool.Execute(runCtx, json.RawMessage(inRun)); res.IsError {
+		t.Fatalf("in-run set: %s", res.Text)
+	}
+	if got := provenanceOf(t, tool, "fact/from-pass"); got.Origin != "consolidator" {
+		t.Errorf("origin = %q for a granted RUN, want consolidator — the stamp must still work where it belongs", got.Origin)
 	}
 }
 
