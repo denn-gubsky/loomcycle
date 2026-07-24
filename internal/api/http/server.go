@@ -53,6 +53,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/webui"
 
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 )
 
 // ProviderResolver returns a Provider by ID. The cmd/loomcycle main constructs one
@@ -83,6 +84,16 @@ type Server struct {
 	// to drop a run-scope SQL database when the top-level run completes
 	// (mirroring the ephemeral-volume purge).
 	sqlMem *sqlmem.Manager
+
+	// userRootProvisionSF collapses a concurrent burst of first-references to the
+	// memory-tier user-root Document (per tenant+user) onto a single flight, so
+	// the exists-check + import_md create in ensureUserRootDoc runs exactly once
+	// rather than each goroutine minting a duplicate, orphaned doc (RFC BL P1).
+	// singleflight evicts each key when its flight returns, so — unlike the former
+	// persistent per-principal memo — the dedup table cannot grow without bound
+	// over the process lifetime. Cross-replica dedup is handled separately by the
+	// sessionLockPG advisory lock in provisionUserRootDoc.
+	userRootProvisionSF singleflight.Group
 
 	// redactor masks secret-shaped substrings in tool I/O before it is
 	// persisted to events.payload (F32). Built in New() from the secret-
@@ -2264,6 +2275,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// stamped until below, so for non-HTTP-principal spawn surfaces the
 	// ctx tenant is wrong here. Mirrors the lookupAgent fix above.
 	agentDef, promptProv := s.resolveSkillBodiesForRun(ctx, effectiveTenantID, agentDef)
+	// RFC BL P1: expand {{memory:...}} + core memory blocks into the system
+	// prompt and resolve the effective core-block set (for the Memory tool's
+	// write enforcement + inherit_core_blocks sub-agents). ctx has no parent
+	// policy here (top-level run) → no inheritance.
+	agentDef, coreBlocks := s.applyMemoryInjection(ctx, agentDef, memInject{
+		Tenant: effectiveTenantID, UserID: effectiveUserID, AgentName: effectiveAgentName,
+		InitialInput: firstUserText(in.Segments),
+	})
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -2431,6 +2450,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// RFC BL P1: the run's resolved core blocks — read by the Memory tool to
+	// enforce read_only/limit_bytes, and inherited by an inherit_core_blocks
+	// sub-agent off this ctx key.
+	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
 	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
 		AllowedScopes: agentDef.SqlScopes,
@@ -3690,6 +3713,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// open-mode run resolves its tenant-scoped skills instead of "". Mirrors
 	// the agent existence-check + resolveAgent on this path.
 	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), req.TenantID, agentDef)
+	// RFC BL P1: memory injection + effective core-block set (see RunOnce).
+	agentDef, coreBlocks := s.applyMemoryInjection(r.Context(), agentDef, memInject{
+		Tenant: req.TenantID, UserID: req.UserID, AgentName: req.Agent,
+		InitialInput: firstUserText(req.Segments),
+	})
 	// Optional system prompt from agent def.
 	if agentDef.SystemPrompt != "" {
 		req.Segments = append([]loop.PromptSegment{{
@@ -3930,6 +3958,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
+	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
 	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
 		AllowedScopes: agentDef.SqlScopes,
@@ -4330,6 +4360,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
 	// gate above already proved the caller is entitled to this session.
 	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), sess.TenantID, agentDef)
+	// RFC BL P1: memory injection + effective core-block set (see RunOnce).
+	agentDef, coreBlocks := s.applyMemoryInjection(r.Context(), agentDef, memInject{
+		Tenant: sess.TenantID, UserID: sess.UserID, AgentName: sess.Agent,
+		InitialInput: firstUserText(body.Segments),
+	})
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -4500,6 +4535,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
+	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
 	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
 		AllowedScopes: agentDef.SqlScopes,
@@ -5584,6 +5621,13 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 	// ctx, so tenantFromCtx(ctx) returns the parent's (== the run's)
 	// authoritative tenant — resolve the sub-agent's skills there.
 	def, promptProv := s.resolveSkillBodiesForRun(ctx, tenantFromCtx(ctx), def)
+	// RFC BL P1: memory injection for the sub-agent. ctx still carries the
+	// PARENT run's core-block policy, so an inherit_core_blocks sub-agent picks
+	// up the parent's user/tenant blocks here (agent-scope never crosses).
+	def, coreBlocks := s.applyMemoryInjection(ctx, def, memInject{
+		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
+		InitialInput: prompt,
+	})
 	// Build segments: agent's system_prompt (with cache_control) + the
 	// caller-supplied prompt as the first user message. Mirrors the
 	// shape of /v1/runs.
@@ -5689,6 +5733,10 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		QuotaBytes:    def.MemoryQuotaBytes,
 		Backend:       def.MemoryBackend,
 	})
+	// RFC BL P1: the sub-agent's effective core blocks (its own + any inherited
+	// user/tenant blocks). Replaces the parent's policy on subCtx so the Memory
+	// tool enforces THIS agent's blocks and a grandchild inherits from here.
+	subCtx = tools.WithCoreBlocksPolicy(subCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the sub-agent's SQL Memory ACL is its OWN def's sql_scopes
 	// (like memory/channels, not inherited down the tree). Empty →
 	// default-deny. The run-scope DB keys off RootRunID (inherited unchanged

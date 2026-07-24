@@ -71,6 +71,12 @@ type Context struct {
 	// the `help` op refuses with "not configured" (e.g. a test
 	// fixture that didn't wire it).
 	Help *help.Set
+
+	// Embedder powers the `help` op's `query` search mode (RFC BL P1) — the
+	// SAME embedder the Memory tool uses. When nil (or the store has no vector
+	// support), help query degrades to a substring scan over the in-memory
+	// Help set, so query still works. Late-bound in main.go alongside Store.
+	Embedder providers.Embedder
 }
 
 const contextDescription = `Read-only runtime introspection. ` +
@@ -83,7 +89,8 @@ const contextDescription = `Read-only runtime introspection. ` +
 	`Useful for self-evolving agents that build their own task plans and want to inspect ` +
 	`their environment before deciding what to do. ` +
 	`Tip: start with op=help (no topic) to see the topic index, then op=help with topic=<name> ` +
-	`for narrative guidance on cross-cutting patterns like scopes, sub-agents, experimentation.`
+	`for narrative guidance on cross-cutting patterns like scopes, sub-agents, experimentation. ` +
+	`Or op=help with query=<text> to search topic sections directly, then fetch the winning topic.`
 
 const contextInputSchema = `{
   "type": "object",
@@ -94,7 +101,8 @@ const contextInputSchema = `{
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
     "depth":           {"type": "integer", "description": "lineage only: max depth to walk in each direction (default 10, cap 100)."},
     "include_lineage": {"type": "boolean", "description": "evaluations only: include ancestors' evaluations in the aggregate (default false)."},
-    "topic":           {"type": "string", "description": "help only: the topic name to fetch detailed content for. Omitted = return the topic index (name + description for each available topic)."}
+    "topic":           {"type": "string", "description": "help only: the topic name to fetch detailed content for. Omitted = return the topic index (name + description for each available topic)."},
+    "query":           {"type": "string", "description": "help only: hybrid search across help topic SECTIONS; returns the top matches as {topic_slug, heading, snippet, score}. Then fetch a match's full content with topic=<topic_slug>. When set, topic is ignored."}
   },
   "required": ["op"],
   "additionalProperties": false
@@ -108,6 +116,7 @@ type contextInput struct {
 	Depth          int    `json:"depth,omitempty"`
 	IncludeLineage bool   `json:"include_lineage,omitempty"`
 	Topic          string `json:"topic,omitempty"`
+	Query          string `json:"query,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -791,9 +800,25 @@ func filterWildcards(xs []string) []string {
 
 // ---- help ----
 
-func (c *Context) execHelp(_ context.Context, in contextInput) (tools.Result, error) {
+func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, error) {
 	if c.Help == nil {
 		return errResult("help: not configured (no Help registry; operator misconfiguration)"), nil
+	}
+	// Query mode (RFC BL P1): hybrid section search over the help index. Takes
+	// precedence over topic — an agent that knows what it's looking for but not
+	// which topic searches first, then fetches the winning topic by slug.
+	if q := strings.TrimSpace(in.Query); q != "" {
+		res, err := help.QueryIndex(ctx, c.Help, c.Store, c.Embedder, q, 0)
+		if err != nil {
+			return errResult(fmt.Sprintf("help query: %s", err)), nil
+		}
+		return okJSON(map[string]any{
+			"query":   q,
+			"mode":    res.Mode, // "hybrid" (indexed) | "substring" (degraded)
+			"results": res.Results,
+			"count":   len(res.Results),
+			"hint":    "Call help with topic=<topic_slug> to read a matching topic's full content.",
+		})
 	}
 	if in.Topic == "" {
 		// Index mode: return all topics' name + description +

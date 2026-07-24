@@ -90,6 +90,16 @@ type Agent struct {
 	MemoryScopes          []string
 	MemoryQuotaBytes      int
 	MemoryBackend         string
+	// CoreBlocks / InheritCoreBlocks / MemoryInjectMaxTokens / MemoryProtocol
+	// mirror config.AgentDef (RFC BL P1). Carried here so an MD-declared agent
+	// round-trips these to config at boot AND the `hash agent` CLI computes the
+	// SAME content_sha256 as the substrate (which hashes them).
+	CoreBlocks            []CoreBlock
+	InheritCoreBlocks     bool
+	MemoryInjectMaxTokens int
+	MemoryProtocol        bool
+	MemoryIndexMaxBytes   int
+	MemoryRoots           string
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
 	// Subscribe = no access on that side.
 	Channels AgentChannelACL
@@ -167,6 +177,17 @@ type Compaction struct {
 	KeepFirst        *bool   `json:"keep_first,omitempty"`
 	AutoCompactAtPct *int    `json:"autocompact_at_pct,omitempty"`
 	Model            *string `json:"model,omitempty"`
+}
+
+// CoreBlock mirrors config.CoreBlock locally so the agents package stays
+// config-free. json: tags mirror the persisted snake_case and are LOAD-BEARING
+// for content_sha256 (RFC BL P1 — a fork that changes a core block's
+// scope/limit mints a distinct hash). yaml tags parse the MD frontmatter.
+type CoreBlock struct {
+	Label      string `json:"label" yaml:"label"`
+	Scope      string `json:"scope,omitempty" yaml:"scope"`
+	LimitBytes int    `json:"limit_bytes,omitempty" yaml:"limit_bytes"`
+	ReadOnly   bool   `json:"read_only,omitempty" yaml:"read_only"`
 }
 
 // TierCandidate mirrors config.TierCandidate's shape locally so this
@@ -304,6 +325,12 @@ type frontmatter struct {
 	MemoryScopes          []string                   `yaml:"memory_scopes"`
 	MemoryQuotaBytes      int                        `yaml:"memory_quota_bytes"`
 	MemoryBackend         string                     `yaml:"memory_backend"`
+	CoreBlocks            []CoreBlock                `yaml:"core_blocks"`              // RFC BL P1
+	InheritCoreBlocks     bool                       `yaml:"inherit_core_blocks"`      // RFC BL P1
+	MemoryInjectMaxTokens int                        `yaml:"memory_inject_max_tokens"` // RFC BL P1
+	MemoryProtocol        bool                       `yaml:"memory_protocol"`          // RFC BL P1
+	MemoryIndexMaxBytes   int                        `yaml:"memory_index_max_bytes"`   // RFC BL P1
+	MemoryRoots           string                     `yaml:"memory_roots"`             // RFC BL P1
 	Channels              AgentChannelACL            `yaml:"channels"`
 	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
 	VolumeDefScopes       []string                   `yaml:"volume_def_scopes"`
@@ -373,6 +400,12 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.MemoryScopes = fm.MemoryScopes
 	a.MemoryQuotaBytes = fm.MemoryQuotaBytes
 	a.MemoryBackend = fm.MemoryBackend
+	a.CoreBlocks = fm.CoreBlocks
+	a.InheritCoreBlocks = fm.InheritCoreBlocks
+	a.MemoryInjectMaxTokens = fm.MemoryInjectMaxTokens
+	a.MemoryProtocol = fm.MemoryProtocol
+	a.MemoryIndexMaxBytes = fm.MemoryIndexMaxBytes
+	a.MemoryRoots = fm.MemoryRoots
 	a.Channels = fm.Channels
 	a.AgentDefScopes = fm.AgentDefScopes
 	a.VolumeDefScopes = fm.VolumeDefScopes

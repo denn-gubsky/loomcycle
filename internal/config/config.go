@@ -17,6 +17,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
@@ -985,6 +986,46 @@ type AgentDef struct {
 	// model-supplied — same trust posture as MemoryScopes.
 	MemoryBackend string `yaml:"memory_backend"`
 
+	// CoreBlocks is the RFC BL P1 core-memory-block attachment list. Each
+	// block's value lives at the reserved Memory key `core/<label>` in the
+	// block's scope; the block is rendered into the system prompt via
+	// {{memory:core_blocks}} (or implicitly appended). read_only blocks are
+	// operator-authored — the agent's Memory writes to them are refused;
+	// limit_bytes caps an agent write to a block (mirroring the quota refusal).
+	// Empty = no core blocks. Behaviour-bearing, so content-identifying.
+	CoreBlocks []CoreBlock `yaml:"core_blocks,omitempty"`
+
+	// InheritCoreBlocks lets a SUB-agent additionally receive the parent run's
+	// user/tenant-scope core blocks (agent-scope blocks never cross the spawn
+	// boundary). Default false — a sub-agent sees only its OWN declared blocks.
+	InheritCoreBlocks bool `yaml:"inherit_core_blocks"`
+
+	// MemoryInjectMaxTokens caps the TOTAL {{memory:...}}-injected content
+	// (chars/4 estimate) for this agent. 0 = the DefaultMemoryInjectMaxTokens
+	// default (applied at use-time so 0 stays byte-stable in the content hash).
+	MemoryInjectMaxTokens int `yaml:"memory_inject_max_tokens"`
+
+	// MemoryProtocol, when set, opts the agent into the memory-usage protocol
+	// note (P1 seam — the note body lands with the entity/consolidation tiers).
+	// Behaviour-bearing, so content-identifying.
+	MemoryProtocol bool `yaml:"memory_protocol"`
+
+	// MemoryIndexMaxBytes is the soft size cap the memory protocol surfaces to
+	// the agent for its /memory/index document — the agent is asked to keep the
+	// index under it and move detail into /memory/topics/<slug>. 0 = the
+	// DefaultMemoryIndexMaxBytes default (applied at use-time so 0 stays
+	// byte-stable in the content hash). Only meaningful with memory_protocol.
+	// Behaviour-bearing (feeds the injected protocol text), so content-identifying.
+	MemoryIndexMaxBytes int `yaml:"memory_index_max_bytes"`
+
+	// MemoryRoots controls provisioning of the operator-authored user-root
+	// document that composes into {{memory:user_info}}. "" / "lazy" (default) =
+	// create it on the first run that references user_info; "force" = pre-provision
+	// on every run (so the operator can fill it before first use); "suppress" =
+	// never auto-provision. Behaviour-bearing (changes whether the doc renders),
+	// so content-identifying.
+	MemoryRoots string `yaml:"memory_roots"`
+
 	// Channels is the v0.8.4 Channel tool ACL for this agent —
 	// per-side (publish / subscribe) allowlists naming channels the
 	// agent may post to or read from. Entries may use a trailing
@@ -1420,6 +1461,41 @@ func (c *Compaction) Validate() error {
 	}
 	return nil
 }
+
+// DefaultMemoryInjectMaxTokens is the fallback cap on {{memory:...}}-injected
+// system-prompt content when an agent leaves memory_inject_max_tokens unset (0).
+// Applied at use-time (not baked into config) so 0 stays byte-stable in the
+// content hash.
+const DefaultMemoryInjectMaxTokens = 1024
+
+// DefaultMemoryIndexMaxBytes is the fallback soft cap on the /memory/index
+// document surfaced to the agent via the memory protocol when an agent leaves
+// memory_index_max_bytes unset (0). Applied at use-time so 0 stays byte-stable
+// in the content hash. It is agent-maintained guidance, not a hard enforcement.
+const DefaultMemoryIndexMaxBytes = 24576
+
+// CoreBlock is one RFC BL P1 core-memory-block attachment. Its value is a
+// reserved KV Memory entry `core/<label>` in the block's scope, rendered into
+// the system prompt as reference data via the {{memory:core_blocks}} expander.
+type CoreBlock struct {
+	// Label names the block; the backing Memory key is `core/<label>`. Must be
+	// a non-empty single path segment (no `/`, no whitespace).
+	Label string `json:"label" yaml:"label"`
+	// Scope is where the block's value lives: agent | user | tenant. agent-scope
+	// blocks are private to the agent and never cross a spawn boundary.
+	Scope string `json:"scope,omitempty" yaml:"scope"`
+	// LimitBytes caps an AGENT write to this block (bytes of the JSON value); 0
+	// = no per-block cap (the scope-wide memory_quota_bytes still applies). An
+	// over-cap agent write is refused, mirroring the quota refusal.
+	LimitBytes int `json:"limit_bytes,omitempty" yaml:"limit_bytes"`
+	// ReadOnly marks the block operator-authored: the agent's Memory writes to
+	// it are refused entirely (the operator seeds it out-of-band).
+	ReadOnly bool `json:"read_only,omitempty" yaml:"read_only"`
+}
+
+// validCoreBlockScopes is the closed set of core-block scopes. tenant is
+// accepted (forward-compat) though it resolves to empty in P1.
+var validCoreBlockScopes = map[string]bool{"agent": true, "user": true, "tenant": true}
 
 // ContextPluginSpec is one entry in the runtime-wide context-transform plugin
 // chain (RFC Z / F43). `Name` selects a built-in transformer from the
@@ -4445,6 +4521,12 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		MemoryScopes:          d.MemoryScopes,
 		MemoryQuotaBytes:      d.MemoryQuotaBytes,
 		MemoryBackend:         d.MemoryBackend,
+		// RFC BL P1 core memory blocks (mirrors MemoryScopes' MD round-trip).
+		InheritCoreBlocks:     d.InheritCoreBlocks,
+		MemoryInjectMaxTokens: d.MemoryInjectMaxTokens,
+		MemoryProtocol:        d.MemoryProtocol,
+		MemoryIndexMaxBytes:   d.MemoryIndexMaxBytes,
+		MemoryRoots:           d.MemoryRoots,
 		Channels: AgentChannelACL{
 			Publish:   d.Channels.Publish,
 			Subscribe: d.Channels.Subscribe,
@@ -4469,6 +4551,16 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 				out = append(out, TierCandidate{Provider: c.Provider, Model: c.Model})
 			}
 			def.Models[tier] = out
+		}
+	}
+	// RFC BL P1: convert the local agents.CoreBlock shape (the agents package
+	// can't import config) to config.CoreBlock, mirroring the Models conversion.
+	if len(d.CoreBlocks) > 0 {
+		def.CoreBlocks = make([]CoreBlock, 0, len(d.CoreBlocks))
+		for _, b := range d.CoreBlocks {
+			def.CoreBlocks = append(def.CoreBlocks, CoreBlock{
+				Label: b.Label, Scope: b.Scope, LimitBytes: b.LimitBytes, ReadOnly: b.ReadOnly,
+			})
 		}
 	}
 	return def
@@ -4559,6 +4651,27 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MemoryBackend != "" {
 		out.MemoryBackend = override.MemoryBackend
+	}
+	// RFC BL P1 core memory blocks. A non-nil slice is an explicit override
+	// (mirrors MemoryScopes); the bools build up like Interruption/Unbounded
+	// (a yaml override can enable, not disable — author a fresh def to blank).
+	if override.CoreBlocks != nil {
+		out.CoreBlocks = override.CoreBlocks
+	}
+	if override.InheritCoreBlocks {
+		out.InheritCoreBlocks = true
+	}
+	if override.MemoryInjectMaxTokens != 0 {
+		out.MemoryInjectMaxTokens = override.MemoryInjectMaxTokens
+	}
+	if override.MemoryProtocol {
+		out.MemoryProtocol = true
+	}
+	if override.MemoryIndexMaxBytes != 0 {
+		out.MemoryIndexMaxBytes = override.MemoryIndexMaxBytes
+	}
+	if override.MemoryRoots != "" {
+		out.MemoryRoots = override.MemoryRoots
 	}
 	if override.Channels.Publish != nil {
 		out.Channels.Publish = override.Channels.Publish
@@ -4957,6 +5070,14 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	var w []string
 	if has("Memory") && len(a.MemoryScopes) == 0 {
 		w = append(w, fmt.Sprintf("agent %q: tools includes Memory but memory_scopes is empty — every Memory op will default-deny; add memory_scopes: [agent] and/or [user]", name))
+	}
+	// RFC BL P1: core blocks / the memory protocol need Memory in tools AND a
+	// matching memory_scopes, or the blocks can neither be read for injection
+	// nor written by the agent — a silent no-op like the F21 traps above.
+	if len(a.CoreBlocks) > 0 || a.MemoryProtocol {
+		if !has("Memory") || len(a.MemoryScopes) == 0 {
+			w = append(w, fmt.Sprintf("agent %q: core_blocks/memory_protocol is set but Memory is not in tools (or memory_scopes is empty) — core blocks won't be readable/writable and {{memory:...}} will render empty; add Memory to tools and memory_scopes: [agent] and/or [user]", name))
+		}
 	}
 	if has("Evaluation") && len(a.EvaluationScopes) == 0 {
 		w = append(w, fmt.Sprintf("agent %q: tools includes Evaluation but evaluation_scopes is empty — every Evaluation op will default-deny; add evaluation_scopes", name))
@@ -5365,6 +5486,49 @@ func validate(c *Config) error {
 			if !validMemoryScopes[sc] {
 				return fmt.Errorf("agent %q: memory_scopes[%d]: unknown scope %q (want one of: agent, user)", name, i, sc)
 			}
+		}
+		// RFC BL P1: validate core_blocks. Each block backs a Memory key
+		// `core/<label>`, so the label must be a clean single segment and the
+		// scope must be known. Duplicate (scope,label) pairs are rejected — two
+		// blocks fighting over one key is always a config bug.
+		seenBlock := make(map[string]bool, len(agent.CoreBlocks))
+		for i, b := range agent.CoreBlocks {
+			label := strings.TrimSpace(b.Label)
+			if label == "" {
+				return fmt.Errorf("agent %q: core_blocks[%d]: label is required", name, i)
+			}
+			if strings.ContainsAny(label, "/ \t\n") {
+				return fmt.Errorf("agent %q: core_blocks[%d]: label %q must be a single segment (no slashes or whitespace)", name, i, b.Label)
+			}
+			if b.Scope == "" || !validCoreBlockScopes[b.Scope] {
+				return fmt.Errorf("agent %q: core_blocks[%d]: scope %q invalid (want one of: agent, user, tenant)", name, i, b.Scope)
+			}
+			if b.LimitBytes < 0 {
+				return fmt.Errorf("agent %q: core_blocks[%d]: limit_bytes must be >= 0", name, i)
+			}
+			key := b.Scope + "/" + label
+			if seenBlock[key] {
+				return fmt.Errorf("agent %q: core_blocks: duplicate (scope=%s, label=%s)", name, b.Scope, label)
+			}
+			seenBlock[key] = true
+		}
+		if agent.MemoryInjectMaxTokens < 0 {
+			return fmt.Errorf("agent %q: memory_inject_max_tokens must be >= 0", name)
+		}
+		if agent.MemoryIndexMaxBytes < 0 {
+			return fmt.Errorf("agent %q: memory_index_max_bytes must be >= 0", name)
+		}
+		switch agent.MemoryRoots {
+		case "", "lazy", "force", "suppress":
+		default:
+			return fmt.Errorf("agent %q: memory_roots must be one of lazy|force|suppress (got %q)", name, agent.MemoryRoots)
+		}
+		// RFC BL P1: a {{memory:<variant>}} placeholder in the system prompt must
+		// reference a recognised variant — a typo is caught here, at boot, rather
+		// than silently rendering nothing at run time.
+		if unknown := meminject.UnknownVariants(agent.SystemPrompt); len(unknown) > 0 {
+			return fmt.Errorf("agent %q: unknown {{memory:%s}} placeholder in system prompt (recognised: %s)",
+				name, unknown[0], strings.Join(meminject.AllVariants(), ", "))
 		}
 		// RFC AA SQL Memory: validate sql_scopes are known scope strings.
 		// Empty = no SQL access (default-deny, enforced at runtime, not here).

@@ -11,7 +11,11 @@ import (
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/mem9"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // IMPORTANT — what these tests prove and what they do NOT:
@@ -347,4 +351,65 @@ func keysOf(m map[string]json.RawMessage) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestMem9_SearchSpanUsesSharedAttrKeys pins that the mem9 backend's
+// loomcycle.memory.search span labels backend/top_k with the SAME shared
+// lcotel constants the in-process backend uses (TestMetrics_RetrievalLatencyEmitted
+// asserts the identical keys), so a spanmetrics grouping by
+// lcotel.AttrMemoryBackend covers BOTH backends as one series. Before this fix
+// mem9 used the unprefixed literals "memory.backend"/"memory.top_k" and silently
+// dropped out of a loomcycle.memory.backend grouping.
+func TestMem9_SearchSpanUsesSharedAttrKeys(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	restore := lcotel.SetTracerProviderForTest(tp)
+	t.Cleanup(func() {
+		restore()
+		_ = tp.Shutdown(context.Background())
+	})
+
+	s := newStub(t)
+	b := newBackend(s, mem9.Tenancy{})
+	s.searchHits = []stubResult{{key: "user/bob/c0", value: `{"n":0}`, score: 0.9}}
+	if _, err := b.Search(context.Background(), store.MemoryScopeUser, "bob",
+		memory.SearchQuery{QueryText: "q", TopK: 7}, memory.DefaultRankConfig(), memory.DedupConfig{}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	var search *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == lcotel.SpanMemorySearch {
+			search = &spans[i]
+			break
+		}
+	}
+	if search == nil {
+		t.Fatalf("no %q span recorded; got %d spans", lcotel.SpanMemorySearch, len(spans))
+	}
+
+	var backend string
+	var topK int64
+	var sawBackendKey, sawTopKKey bool
+	for _, kv := range search.Attributes {
+		switch string(kv.Key) {
+		case lcotel.AttrMemoryBackend:
+			backend, sawBackendKey = kv.Value.AsString(), true
+		case lcotel.AttrMemoryTopK:
+			topK, sawTopKKey = kv.Value.AsInt64(), true
+		}
+	}
+	if !sawBackendKey {
+		t.Errorf("span missing shared backend key %q; attrs=%+v", lcotel.AttrMemoryBackend, search.Attributes)
+	}
+	if backend != "mem9" {
+		t.Errorf("%s = %q, want mem9", lcotel.AttrMemoryBackend, backend)
+	}
+	if !sawTopKKey {
+		t.Errorf("span missing shared top_k key %q; attrs=%+v", lcotel.AttrMemoryTopK, search.Attributes)
+	}
+	if topK != 7 {
+		t.Errorf("%s = %d, want 7", lcotel.AttrMemoryTopK, topK)
+	}
 }

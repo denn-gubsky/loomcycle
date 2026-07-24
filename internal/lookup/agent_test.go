@@ -299,11 +299,18 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"memory_scopes":           true,
 		"memory_quota_bytes":      true,
 		"memory_backend":          true,
-		"retry_attempts":          true,
-		"run_timeout_seconds":     true, // RFC J per-agent code-js budget (operational, not hashed)
-		"channels":                true, // F14 — Channel tool ACL on MCP/HTTP-authored agents
-		"evaluation_scopes":       true, // F14 — Evaluation tool scope gate
-		"interruption":            true, // F14 — Interruption tool gate (enabled/kinds/max_pending)
+		// RFC BL P1 — core memory blocks (content-identifying; mirror mergedDef).
+		"core_blocks":              true,
+		"inherit_core_blocks":      true,
+		"memory_inject_max_tokens": true,
+		"memory_protocol":          true,
+		"memory_index_max_bytes":   true, // RFC BL P1 — /memory/index soft cap surfaced to the agent
+		"memory_roots":             true, // RFC BL P1 — user-root provisioning control (lazy|force|suppress)
+		"retry_attempts":           true,
+		"run_timeout_seconds":      true, // RFC J per-agent code-js budget (operational, not hashed)
+		"channels":                 true, // F14 — Channel tool ACL on MCP/HTTP-authored agents
+		"evaluation_scopes":        true, // F14 — Evaluation tool scope gate
+		"interruption":             true, // F14 — Interruption tool gate (enabled/kinds/max_pending)
 		// F40 — the *_def_scopes capability gates (substrate-def slice of the
 		// F14 closure) so a runtime-authored meta-agent can fork/schedule others.
 		"agent_def_scopes":           true,

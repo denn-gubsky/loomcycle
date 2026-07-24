@@ -618,6 +618,33 @@ func SqlMemPolicy(ctx context.Context) SqlMemPolicyValue {
 	return v
 }
 
+// ctxKeyCoreBlocksPolicy is the context key for the per-run RFC BL P1 core
+// memory blocks. Set by the HTTP server from the agent's resolved core-block
+// set (own + inherited); read by (1) the Memory tool to enforce read_only /
+// limit_bytes on writes to a `core/<label>` key, and (2) a sub-agent's
+// injection, which reads the PARENT's blocks off this key when it opts into
+// inherit_core_blocks.
+type ctxKeyCoreBlocksPolicy struct{}
+
+// CoreBlocksPolicyValue carries the resolved core memory blocks that apply to
+// the current run. Blocks is operator-resolved from agent config (own +
+// inherited) — never model-supplied, same trust posture as MemoryPolicyValue.
+type CoreBlocksPolicyValue struct {
+	Blocks []config.CoreBlock
+}
+
+// WithCoreBlocksPolicy attaches the run's resolved core-block set to ctx.
+func WithCoreBlocksPolicy(ctx context.Context, p CoreBlocksPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyCoreBlocksPolicy{}, p)
+}
+
+// CoreBlocksPolicy returns the run's core-block set from ctx. Zero value (nil
+// Blocks) means the run has no core blocks configured.
+func CoreBlocksPolicy(ctx context.Context) CoreBlocksPolicyValue {
+	v, _ := ctx.Value(ctxKeyCoreBlocksPolicy{}).(CoreBlocksPolicyValue)
+	return v
+}
+
 // ctxKeyChannelPolicy is the context key for the per-agent Channel
 // tool ACL (v0.8.4). Set by the HTTP server from the agent's yaml
 // definition; read by the Channel tool to gate publish/subscribe and

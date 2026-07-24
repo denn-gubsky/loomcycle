@@ -1561,6 +1561,10 @@ func main() {
 	skillTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface
+	// RFC BL P1: the SAME embedder the Memory tool uses powers the help op's
+	// `query` search mode; nil (no embedder configured) makes query degrade to
+	// a substring scan over the in-memory help set.
+	contextTool.Embedder = embedder
 	interruptionTool.Store = storeIface
 	mcpServerDefTool.Store = storeIface
 
@@ -2602,6 +2606,42 @@ func main() {
 				}
 			} else {
 				_ = resume(bgCtx)
+			}
+		}()
+	}
+
+	// RFC BL P1: reconcile the boot-time help-topic search index. The go:embed
+	// help corpus is immutable in-process (no hot-reload), so this is one-shot at
+	// boot. Content-hash gated — an unchanged corpus re-embeds nothing; only
+	// changed/new sections are re-embedded and removed sections pruned. No-op
+	// without an embedder or vector support (help search then degrades to an
+	// in-memory substring scan). Backgrounded so a first-boot full embed never
+	// blocks the rest of boot; advisory-gated in a cluster so exactly ONE replica
+	// re-embeds. Non-fatal: on any error help search just degrades.
+	if storeIface != nil && helpSet != nil {
+		go func() {
+			reconcile := func(ctx context.Context) error {
+				stats, err := help.ReconcileIndex(ctx, helpSet, storeIface, embedder)
+				if err != nil {
+					log.Printf("help index: reconcile failed (search degrades): %v", err)
+					return nil // non-fatal — degrade, don't fail boot
+				}
+				switch {
+				case stats.Degraded:
+					log.Printf("help index: no embedder/vector support — query uses in-memory substring scan")
+				case stats.Written > 0 || stats.Pruned > 0 || stats.Failed > 0:
+					log.Printf("help index: reconciled (%d written, %d pruned, %d unchanged, %d failed)", stats.Written, stats.Pruned, stats.Unchanged, stats.Failed)
+				default:
+					log.Printf("help index: up to date (%d sections, 0 embed calls)", stats.Unchanged)
+				}
+				return nil
+			}
+			if advisoryLock != nil {
+				if _, err := advisoryLock.TryRun(bgCtx, coord.LockKeyHelpIndexReconcile, reconcile); err != nil {
+					log.Printf("help index: advisory-gated reconcile failed: %v", err)
+				}
+			} else {
+				_ = reconcile(bgCtx)
 			}
 		}()
 	}

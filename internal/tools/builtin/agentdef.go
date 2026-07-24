@@ -886,7 +886,17 @@ type mergedDef struct {
 	// memory backend this agent routes through. "" = operator default.
 	// RFC I MR-3b.
 	MemoryBackend string `json:"memory_backend,omitempty"`
-	Description   string `json:"description,omitempty"`
+	// CoreBlocks / InheritCoreBlocks / MemoryInjectMaxTokens / MemoryProtocol
+	// mirror config.AgentDef (RFC BL P1 core memory blocks). Content-identifying
+	// (hashed via signFromMergedDef → agents.AgentContent). Kept in sync with
+	// lookup.SubstrateAgentDef — the drift test pins parity.
+	CoreBlocks            []config.CoreBlock `json:"core_blocks,omitempty"`
+	InheritCoreBlocks     bool               `json:"inherit_core_blocks,omitempty"`
+	MemoryInjectMaxTokens int                `json:"memory_inject_max_tokens,omitempty"`
+	MemoryProtocol        bool               `json:"memory_protocol,omitempty"`
+	MemoryIndexMaxBytes   int                `json:"memory_index_max_bytes,omitempty"`
+	MemoryRoots           string             `json:"memory_roots,omitempty"`
+	Description           string             `json:"description,omitempty"`
 	// RetryAttempts mirrors config.AgentDef.RetryAttempts — same-
 	// provider retry budget override. *int so the substrate-write
 	// path can persist an explicit 0 ("force no retries") as
@@ -992,6 +1002,27 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.MemoryBackend != "" {
 		d.MemoryBackend = ov.MemoryBackend
 	}
+	// RFC BL P1: core-blocks overlay. A non-nil slice replaces (like Tools);
+	// the bools build up (a fork can enable, not blank — same idiom as
+	// UnboundedIterations); the int overlays when non-zero.
+	if ov.CoreBlocks != nil {
+		d.CoreBlocks = ov.CoreBlocks
+	}
+	if ov.InheritCoreBlocks {
+		d.InheritCoreBlocks = true
+	}
+	if ov.MemoryInjectMaxTokens != 0 {
+		d.MemoryInjectMaxTokens = ov.MemoryInjectMaxTokens
+	}
+	if ov.MemoryProtocol {
+		d.MemoryProtocol = true
+	}
+	if ov.MemoryIndexMaxBytes != 0 {
+		d.MemoryIndexMaxBytes = ov.MemoryIndexMaxBytes
+	}
+	if ov.MemoryRoots != "" {
+		d.MemoryRoots = ov.MemoryRoots
+	}
 	if ov.Description != "" {
 		d.Description = ov.Description
 	}
@@ -1076,6 +1107,14 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
 		MemoryBackend:         s.MemoryBackend,
+		// RFC BL P1: a static agent bootstrapped into the substrate keeps its
+		// core-block config so a fork of it inherits + hashes identically.
+		CoreBlocks:            s.CoreBlocks,
+		InheritCoreBlocks:     s.InheritCoreBlocks,
+		MemoryInjectMaxTokens: s.MemoryInjectMaxTokens,
+		MemoryProtocol:        s.MemoryProtocol,
+		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
+		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
 		// F14: a static agent bootstrapped into the substrate keeps its
 		// interactive/multi-agent config (and so its content hash matches a
@@ -1141,6 +1180,17 @@ func signFromMergedDef(name string, def mergedDef) string {
 			models[k] = out
 		}
 	}
+	// RFC BL P1: convert config.CoreBlock → agents.CoreBlock (config-free agents
+	// pkg). nil/empty stays nil so a no-core-blocks agent hashes as pre-feature.
+	var coreBlocks []agents.CoreBlock
+	if len(def.CoreBlocks) > 0 {
+		coreBlocks = make([]agents.CoreBlock, 0, len(def.CoreBlocks))
+		for _, b := range def.CoreBlocks {
+			coreBlocks = append(coreBlocks, agents.CoreBlock{
+				Label: b.Label, Scope: b.Scope, LimitBytes: b.LimitBytes, ReadOnly: b.ReadOnly,
+			})
+		}
+	}
 	c := agents.AgentContent{
 		Name:                  name,
 		Description:           def.Description,
@@ -1154,6 +1204,13 @@ func signFromMergedDef(name string, def mergedDef) string {
 		UnboundedIterations:   def.UnboundedIterations,
 		MaxConcurrentChildren: def.MaxConcurrentChildren,
 		Tools:                 def.Tools,
+		// RFC BL P1 core memory blocks — content-identifying.
+		CoreBlocks:            coreBlocks,
+		InheritCoreBlocks:     def.InheritCoreBlocks,
+		MemoryInjectMaxTokens: def.MemoryInjectMaxTokens,
+		MemoryProtocol:        def.MemoryProtocol,
+		MemoryIndexMaxBytes:   def.MemoryIndexMaxBytes,
+		MemoryRoots:           def.MemoryRoots,
 		// RFC BA: skills: is the agent's pattern-allowlist ACL (authority, not
 		// content) — excluded from content_sha256 like the *_def_scopes gates.
 		SystemPrompt:     def.SystemPrompt,

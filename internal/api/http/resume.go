@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -116,6 +117,13 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// agent def — exactly as the continuation path does; the prompt is NOT
 	// replayed from the transcript (it may have changed across instances).
 	agentDef, _ = s.resolveSkillBodiesForRun(ctx, run.TenantID, agentDef)
+	// RFC BL P1: re-derive the memory injection + core-block set from the agent
+	// def, exactly as the fresh/continue paths do (the injected prompt is not
+	// replayed from the transcript). No initial input on a resume.
+	var coreBlocks []config.CoreBlock
+	agentDef, coreBlocks = s.applyMemoryInjection(ctx, agentDef, memInject{
+		Tenant: run.TenantID, UserID: run.UserID, AgentName: run.Agent,
+	})
 
 	// Rebuild the conversation from THIS run's transcript events.
 	events, terr := s.store.GetTranscript(ctx, run.SessionID)
@@ -265,6 +273,9 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// RFC BL P1: re-stamp the run's core blocks (Memory-tool enforcement +
+	// sub-agent inherit) — lost across pause/snapshot/resume otherwise.
+	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA SQL Memory: re-derive the sql_scopes ACL from the agent def too —
 	// without this a resumed/restored run reads a zero SqlMemPolicy and every
 	// sql_query/sql_exec default-denies, a silent loss of SQL Memory access
