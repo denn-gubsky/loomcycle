@@ -297,6 +297,187 @@ const (
 // loomcycle.memory.deadlink.dropped metric.
 const EventDeadlinkDropped = "loomcycle.memory.deadlink.dropped"
 
+// --- RFC BL P2 consolidation telemetry ---
+
+// SpanMemoryConsolidate is ONE consolidation pass over ONE memory target. The
+// span DURATION is the pass's wall-clock cost, and the child run's own
+// loomcycle.run / loomcycle.provider.call spans nest underneath it — so tokens,
+// model, and per-attempt latency come from where they are already authoritative
+// instead of being re-derived here (re-resolving the provider at the dispatcher
+// is exactly the probe-vs-fire drift the fan-out's serial-dispatch probe already
+// documents as a known gap).
+const SpanMemoryConsolidate = "loomcycle.memory.consolidate"
+
+// Consolidation attribute keys.
+//
+// NAMESPACE NOTE: these carry the span's own `consolidate` segment
+// (loomcycle.memory.consolidate.*) rather than sitting flat under
+// loomcycle.memory.* like the search span's keys. That deviates from the
+// help-reconcile precedent (span loomcycle.help.reconcile, attrs
+// loomcycle.help.written) DELIBERATELY: help.reconcile owns the whole
+// loomcycle.help.* namespace, while loomcycle.memory.* is already shared with
+// the retrieval span, so a flat `loomcycle.memory.added` would read as a count
+// of plain KV writes. Do not "normalize" these to the flat form — operators
+// filter on them, and the qualification is what keeps write-path and
+// consolidation-path counters from colliding.
+const (
+	// AttrMemoryScope is the consolidated target's memory scope ("user").
+	AttrMemoryScope = "loomcycle.memory.scope"
+
+	// AttrConsolidateAdded is the number of memory keys that did not exist
+	// before the pass and do afterwards.
+	AttrConsolidateAdded = "loomcycle.memory.consolidate.added"
+	// AttrConsolidateUpdated is the number of pre-existing keys the pass
+	// rewrote in place.
+	//
+	// THIS IS ALSO WHERE A DROPPED-AS-DUPLICATE OUTCOME LANDS. The runtime
+	// cannot observe "the pass decided a fact was a duplicate and merged it"
+	// as a distinct event — the pass reports that in prose, and parsing a
+	// model's prose into a metric would make the counter a measure of the
+	// model's phrasing. Under the pipeline's deterministic subject-derived
+	// keys a merged duplicate IS an in-place rewrite, so it is counted here
+	// and named honestly rather than given a counter the runtime cannot fill.
+	AttrConsolidateUpdated = "loomcycle.memory.consolidate.updated"
+	// AttrConsolidateSuperseded is the number of keys the pass removed from
+	// the live set (the soft-archive path). A hard delete is indistinguishable
+	// from a supersede here and counts the same, because both mean "the pass
+	// retired a fact" — which is what an operator is asking.
+	AttrConsolidateSuperseded = "loomcycle.memory.consolidate.superseded"
+	// AttrConsolidateNoop is true when the pass changed nothing: no add, no
+	// update, no supersede. A target whose passes are all no-ops but whose lag
+	// keeps growing is the signature of a pass that runs and accomplishes
+	// nothing — invisible without this bit, because the run itself succeeds.
+	AttrConsolidateNoop = "loomcycle.memory.consolidate.noop"
+	// AttrConsolidateSessionsRead is how many settled chats sat past the
+	// target's watermark when the pass started — the size of the backlog it
+	// was handed, not necessarily what it folded in.
+	AttrConsolidateSessionsRead = "loomcycle.memory.consolidate.sessions_read"
+	// AttrConsolidatePendingDrained is how many queue rows the pass acked.
+	AttrConsolidatePendingDrained = "loomcycle.memory.consolidate.pending_drained"
+	// AttrConsolidateCountsTruncated is set when the target holds more keys
+	// than the observation window, so the add/update/supersede counts would be
+	// wrong. They are OMITTED in that case rather than under-reported: a
+	// truncated count that looks plausible is worse than a missing one.
+	AttrConsolidateCountsTruncated = "loomcycle.memory.consolidate.counts_truncated"
+
+	// AttrConsolidateWatermarkLagMs is how far behind now() the target's
+	// watermark sits AFTER the pass — the single most useful operator signal
+	// for "is consolidation keeping up". A lag that grows without bound means
+	// that target is stuck: the pass is firing but the watermark is not moving,
+	// which is precisely the livelock the ascending scan and the iteration cap
+	// are designed to prevent. 0 on a target that has never advanced (there is
+	// no meaningful lag against a watermark that was never set).
+	AttrConsolidateWatermarkLagMs = "loomcycle.memory.consolidate.watermark_lag_ms"
+)
+
+// EventConsolidateWatermarkLag carries the post-pass watermark lag as a span
+// event so a downstream connector can derive a GAUGE from it. The lag is a
+// per-target level, not a count, and the in-process /metrics endpoint is
+// substrate-only by architectural lock — so the gauge is materialised
+// downstream from this event, exactly as the deadlink counter is.
+const EventConsolidateWatermarkLag = "loomcycle.memory.consolidate.watermark_lag"
+
+// MemoryConsolidateAttrs identifies the target a pass is about to consolidate.
+// Empty fields are skipped so a trace never shows blank values.
+//
+// NO transcript content, NO memory fact text, NO recall query, and no
+// credential ever appears here — a consolidation trace is about the SHAPE of a
+// pass (how much moved, how far behind it is), and the whole point of the
+// pipeline is that the facts themselves are private to the target's scope.
+type MemoryConsolidateAttrs struct {
+	Scope     string // memory scope — "user" for every fan-out target today
+	ScopeID   string // the target's scope id (its user id)
+	AgentName string // the consolidator agent the pass runs
+	Tier      string // the user tier the pass resolves its model through
+}
+
+// RecordMemoryConsolidate opens loomcycle.memory.consolidate for one pass.
+// The returned ctx MUST be the one handed to the run, so the run's own spans
+// nest under this one. Caller defers span.End() and calls
+// SetMemoryConsolidateResult once the outcome is observed.
+func RecordMemoryConsolidate(ctx context.Context, a MemoryConsolidateAttrs) (context.Context, trace.Span) {
+	kvs := make([]attribute.KeyValue, 0, 4)
+	if a.Scope != "" {
+		kvs = append(kvs, attribute.String(AttrMemoryScope, a.Scope))
+	}
+	if a.ScopeID != "" {
+		kvs = append(kvs, attribute.String(AttrUserID, a.ScopeID))
+	}
+	if a.AgentName != "" {
+		kvs = append(kvs, attribute.String(AttrAgentName, a.AgentName))
+	}
+	if a.Tier != "" {
+		kvs = append(kvs, attribute.String(AttrTier, a.Tier))
+	}
+	return Tracer().Start(ctx, SpanMemoryConsolidate, trace.WithAttributes(kvs...))
+}
+
+// ConsolidateOutcome is what the RUNTIME can observe about a finished pass, as
+// opposed to what the pass says about itself. Every field here is derived from
+// store state the runtime read before and after (row sets, cursor position,
+// queue depth) or from the loop's own usage events — never from the model's
+// report, which is prose and would make the metrics a measure of phrasing.
+type ConsolidateOutcome struct {
+	Added          int
+	Updated        int
+	Superseded     int
+	SessionsRead   int
+	PendingDrained int
+	// CountsTruncated suppresses Added/Updated/Superseded (see
+	// AttrConsolidateCountsTruncated).
+	CountsTruncated bool
+	// WatermarkLag is now() minus the post-pass watermark. Zero when the target
+	// has never advanced.
+	WatermarkLag time.Duration
+	// Provider / Model are the identities that ACTUALLY served the pass, taken
+	// from the loop's usage events (post-fallback), so they cannot drift from
+	// what ran.
+	Provider string
+	Model    string
+	// Err marks the span as failed. A pass that errored must not read as a
+	// success in traces, or the derived error series silently under-reports.
+	Err error
+}
+
+// SetMemoryConsolidateResult stamps a finished pass's observed outcome on the
+// span, records the watermark-lag event, and marks the span errored when the
+// pass failed. No-op on a nil / non-recording span.
+func SetMemoryConsolidateResult(span trace.Span, out ConsolidateOutcome) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	kvs := []attribute.KeyValue{
+		attribute.Int(AttrConsolidateSessionsRead, out.SessionsRead),
+		attribute.Int(AttrConsolidatePendingDrained, out.PendingDrained),
+		attribute.Int64(AttrConsolidateWatermarkLagMs, out.WatermarkLag.Milliseconds()),
+	}
+	if out.CountsTruncated {
+		kvs = append(kvs, attribute.Bool(AttrConsolidateCountsTruncated, true))
+	} else {
+		kvs = append(kvs,
+			attribute.Int(AttrConsolidateAdded, out.Added),
+			attribute.Int(AttrConsolidateUpdated, out.Updated),
+			attribute.Int(AttrConsolidateSuperseded, out.Superseded),
+			// noop is only meaningful when the counts are trustworthy.
+			attribute.Bool(AttrConsolidateNoop, out.Added == 0 && out.Updated == 0 && out.Superseded == 0),
+		)
+	}
+	if out.Provider != "" {
+		kvs = append(kvs, attribute.String(AttrProvider, out.Provider))
+	}
+	if out.Model != "" {
+		kvs = append(kvs, attribute.String(AttrModel, out.Model))
+	}
+	span.SetAttributes(kvs...)
+
+	span.AddEvent(EventConsolidateWatermarkLag, trace.WithAttributes(
+		attribute.Int64(AttrConsolidateWatermarkLagMs, out.WatermarkLag.Milliseconds())))
+
+	if out.Err != nil {
+		SetSpanError(span, out.Err)
+	}
+}
+
 // RecordMemorySearch opens loomcycle.memory.search for one retrieval; the span
 // duration IS the retrieval latency. `backend` labels the series. Caller defers
 // span.End() and calls SetMemorySearchResult once mode/top_k/dead-link counts

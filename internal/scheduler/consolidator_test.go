@@ -108,6 +108,26 @@ func seedSettledSession(t *testing.T, st store.Store, tenantID, userID string) s
 	return sess.ID
 }
 
+// seedSettledSessionAs is seedSettledSession with an explicit AGENT name, for
+// fixtures that need a session authored by a specific agent — notably the
+// consolidator's own past passes, which must never count as backlog.
+func seedSettledSessionAs(t *testing.T, st store.Store, tenantID, userID, agentName string) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, tenantID, agentName, userID)
+	if err != nil {
+		t.Fatalf("CreateSession(%s as %s): %v", userID, agentName, err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a-" + sess.ID, UserID: userID})
+	if err != nil {
+		t.Fatalf("CreateRun(%s): %v", userID, err)
+	}
+	if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatalf("FinishRun(%s): %v", userID, err)
+	}
+	return sess.ID
+}
+
 // fanoutFixture builds a scheduler whose due schedule is a fan-out, with a
 // capturing logger so cap/serial decisions can be asserted.
 func fanoutFixture(t *testing.T, def scheduleDef, cfgMut func(*Config)) (*Scheduler, *fakeRunner, store.Store, *logCapture) {
