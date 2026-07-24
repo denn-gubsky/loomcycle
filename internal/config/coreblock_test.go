@@ -105,6 +105,7 @@ agents:
     inherit_core_blocks: true
     memory_inject_max_tokens: 512
     memory_protocol: true
+    memory_consolidation: true
     core_blocks:
       - { label: human, scope: user, read_only: true }
       - { label: notes, scope: agent, limit_bytes: 2048 }
@@ -120,10 +121,29 @@ agents:
 	if !def.InheritCoreBlocks || def.MemoryInjectMaxTokens != 512 || !def.MemoryProtocol {
 		t.Errorf("scalar core-block fields didn't round-trip: %+v", def)
 	}
+	if !def.MemoryConsolidation {
+		t.Errorf("memory_consolidation didn't round-trip from yaml: %+v", def)
+	}
 	if def.CoreBlocks[0].Label != "human" || !def.CoreBlocks[0].ReadOnly {
 		t.Errorf("block[0] round-trip: %+v", def.CoreBlocks[0])
 	}
 	if def.CoreBlocks[1].LimitBytes != 2048 {
 		t.Errorf("block[1] limit_bytes: %+v", def.CoreBlocks[1])
+	}
+}
+
+// TestMergeAgentDef_MemoryConsolidationOrsIn pins the RFC BL P2 grant's overlay
+// semantics: an override enables it, and it OR-s in (never disables a base grant
+// that the override leaves unset) — mirroring memory_protocol / interruption.
+func TestMergeAgentDef_MemoryConsolidationOrsIn(t *testing.T) {
+	// Override enables the grant on a base that lacked it.
+	got := mergeAgentDef(AgentDef{}, AgentDef{MemoryConsolidation: true})
+	if !got.MemoryConsolidation {
+		t.Error("override memory_consolidation=true did not OR into the merged def")
+	}
+	// An override that leaves it unset never disables a base grant.
+	got = mergeAgentDef(AgentDef{MemoryConsolidation: true}, AgentDef{})
+	if !got.MemoryConsolidation {
+		t.Error("base memory_consolidation was dropped by an override that didn't set it")
 	}
 }

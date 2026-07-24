@@ -103,9 +103,13 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	// /v1/_agentdef admin path uses (substrateAdminCtx).
 	ctx = tools.WithAgentTools(ctx, []string{"*"})
 
-	// Memory: full scope access (QuotaBytes=0 → global default cap).
+	// Memory: full scope access (QuotaBytes=0 → global default cap). RFC BL P2:
+	// the operator plane also gets the consolidation grant — a session with open
+	// memory scope can drive the cursor/pending/supersede ops on its OWN
+	// (tenant-confined) scopes, consistent with the wildcard posture here.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user", "global"},
+		Consolidation: true,
 	})
 	// Channel: open ACL ("*" matches every channel name).
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{

@@ -36,6 +36,22 @@ func TestSign_UnboundedIterations_IsContentIdentifying(t *testing.T) {
 	}
 }
 
+// TestSign_MemoryConsolidation_IsContentIdentifying pins the RFC BL P2 grant as
+// content-identifying (a fork that toggles it mints a distinct def_id) while
+// staying byte-stable against pre-feature rows when unset (omitempty).
+func TestSign_MemoryConsolidation_IsContentIdentifying(t *testing.T) {
+	base := AgentContent{Name: "consolidator", SystemPrompt: "fold raw memory"}
+	withGrant := base
+	withGrant.MemoryConsolidation = true
+
+	if Sign(base) == Sign(withGrant) {
+		t.Error("MemoryConsolidation not content-identifying: enabling it did not change the hash")
+	}
+	if got, want := Sign(base), Sign(AgentContent{Name: "consolidator", SystemPrompt: "fold raw memory", MemoryConsolidation: false}); got != want {
+		t.Errorf("unset MemoryConsolidation changed the hash (omitempty broken): %s vs %s", got, want)
+	}
+}
+
 func TestSign_DeterministicAcrossCalls(t *testing.T) {
 	c := AgentContent{
 		Name:         "researcher",

@@ -1010,6 +1010,13 @@ type AgentDef struct {
 	// Behaviour-bearing, so content-identifying.
 	MemoryProtocol bool `yaml:"memory_protocol"`
 
+	// MemoryConsolidation grants the agent the memory consolidation control ops
+	// (the cursor/lease/watermark, pending-queue drain/ack, and supersede ops on
+	// the Memory tool). Default-deny like every capability gate: without it those
+	// ops refuse regardless of memory_scopes. Behaviour-bearing → content-
+	// identifying (a fork that toggles it mints a distinct content_sha256).
+	MemoryConsolidation bool `yaml:"memory_consolidation"`
+
 	// MemoryIndexMaxBytes is the soft size cap the memory protocol surfaces to
 	// the agent for its /memory/index document — the agent is asked to keep the
 	// index under it and move detail into /memory/topics/<slug>. 0 = the
@@ -4525,6 +4532,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		InheritCoreBlocks:     d.InheritCoreBlocks,
 		MemoryInjectMaxTokens: d.MemoryInjectMaxTokens,
 		MemoryProtocol:        d.MemoryProtocol,
+		MemoryConsolidation:   d.MemoryConsolidation,
 		MemoryIndexMaxBytes:   d.MemoryIndexMaxBytes,
 		MemoryRoots:           d.MemoryRoots,
 		Channels: AgentChannelACL{
@@ -4666,6 +4674,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MemoryProtocol {
 		out.MemoryProtocol = true
+	}
+	if override.MemoryConsolidation {
+		out.MemoryConsolidation = true
 	}
 	if override.MemoryIndexMaxBytes != 0 {
 		out.MemoryIndexMaxBytes = override.MemoryIndexMaxBytes
@@ -5077,6 +5088,14 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	if len(a.CoreBlocks) > 0 || a.MemoryProtocol {
 		if !has("Memory") || len(a.MemoryScopes) == 0 {
 			w = append(w, fmt.Sprintf("agent %q: core_blocks/memory_protocol is set but Memory is not in tools (or memory_scopes is empty) — core blocks won't be readable/writable and {{memory:...}} will render empty; add Memory to tools and memory_scopes: [agent] and/or [user]", name))
+		}
+	}
+	// RFC BL P2: the consolidation control ops need Memory in tools AND a
+	// matching memory_scopes, or the grant is inert (every consolidation op
+	// default-denies) — a silent no-op like the core_blocks trap above.
+	if a.MemoryConsolidation {
+		if !has("Memory") || len(a.MemoryScopes) == 0 {
+			w = append(w, fmt.Sprintf("agent %q: memory_consolidation is set but Memory is not in tools (or memory_scopes is empty) — the consolidation control ops will default-deny; add Memory to tools and memory_scopes: [agent] and/or [user]", name))
 		}
 	}
 	if has("Evaluation") && len(a.EvaluationScopes) == 0 {

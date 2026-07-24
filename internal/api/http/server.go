@@ -2449,6 +2449,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
+		Consolidation: agentDef.MemoryConsolidation,
 	})
 	// RFC BL P1: the run's resolved core blocks — read by the Memory tool to
 	// enforce read_only/limit_bytes, and inherited by an inherit_core_blocks
@@ -3957,6 +3958,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
+		Consolidation: agentDef.MemoryConsolidation,
 	})
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
@@ -4534,6 +4536,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
+		Consolidation: agentDef.MemoryConsolidation,
 	})
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
@@ -5732,6 +5735,7 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		AllowedScopes: def.MemoryScopes,
 		QuotaBytes:    def.MemoryQuotaBytes,
 		Backend:       def.MemoryBackend,
+		Consolidation: def.MemoryConsolidation,
 	})
 	// RFC BL P1: the sub-agent's effective core blocks (its own + any inherited
 	// user/tenant blocks). Replaces the parent's policy on subCtx so the Memory
