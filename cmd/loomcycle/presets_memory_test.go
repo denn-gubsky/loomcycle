@@ -252,6 +252,41 @@ func TestConsolidatorBundle_ComposesWithTheDefaultStack(t *testing.T) {
 	}
 }
 
+// TestConsolidatorBundle_SilencesTheOrphanAddWarning closes the loop between the
+// advisory and its fix. The default stack ships five agents that can enqueue
+// with Memory op=add and nothing that drains the queue, so it earns exactly one
+// aggregated warning; selecting the memory bundle must make it go away. A
+// warning that survives its own remedy trains operators to ignore warnings.
+func TestConsolidatorBundle_SilencesTheOrphanAddWarning(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	orphanWarnings := func(cfg *config.Config) []string {
+		var out []string
+		for _, w := range cfg.Warnings {
+			if strings.Contains(w, "can enqueue with Memory op=add") {
+				out = append(out, w)
+			}
+		}
+		return out
+	}
+
+	defaultStack := []string{"base", "document-agent", "chat", "agent-teams", "team-examples"}
+	without, err := config.LoadLayers(layersFor(t, defaultStack...)...)
+	if err != nil {
+		t.Fatalf("default stack: %v", err)
+	}
+	if got := orphanWarnings(without); len(got) != 1 {
+		t.Errorf("default stack orphan-add warnings = %d, want 1 aggregated line: %v", len(got), got)
+	}
+
+	with, err := config.LoadLayers(layersFor(t, append(defaultStack, "memory")...)...)
+	if err != nil {
+		t.Fatalf("default stack + memory: %v", err)
+	}
+	if got := orphanWarnings(with); len(got) != 0 {
+		t.Errorf("the memory bundle must silence the orphan-add warning, still got: %v", got)
+	}
+}
+
 // containsString reports whether needle is in haystack.
 func containsString(haystack []string, needle string) bool {
 	for _, h := range haystack {
