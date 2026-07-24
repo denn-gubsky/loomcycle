@@ -249,7 +249,7 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 // we passed (rare but possible if the address gets transformed).
 // dialContext is the HTTP/WebFetch tool's SSRF-blocking dialer. It delegates to
 // the shared guardedDialContext (see ssrf.go) so the identical dial-time
-// private-IP guard backs the mem9 backend client too — one implementation, no
+// private-IP guard backs the MCP-HTTP client too — one implementation, no
 // weak-copy drift. AllowPrivateIPs is the tests-only global lift;
 // PrivateHostAllowlist is the operator's per-host opt-in.
 func (h *HTTP) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {

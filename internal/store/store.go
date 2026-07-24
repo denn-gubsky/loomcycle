@@ -2209,7 +2209,7 @@ type Store interface {
 	// MemoryBackendDef is the v1.x RFC I MR-3a substrate — a faithful
 	// mirror of WebhookDef (same content-addressed identity + lineage +
 	// promotion shape, no sweeper run_state table). A MemoryBackendDef
-	// declares a named memory backend (kind inprocess|mem9, connection
+	// declares a named memory backend (kind, connection
 	// config, tenancy strategy, fallback); the Definition payload schema
 	// is owned by the tool layer. Nothing consumes the Def yet — the
 	// per-agent routing + factory land in MR-3b.
@@ -2586,7 +2586,7 @@ type MemoryEmbedding struct {
 // json:"-" — never serialized to the agent, exactly like
 // MemoryEmbedding.Vector; it exists only so the dedup pass can compute
 // pairwise cosine distances without a second round-trip. It is EMPTY when
-// the backend can't supply it (e.g. the Mem9 REST backend, which embeds +
+// the backend can't supply it (e.g. a remote REST backend, which embeds +
 // scores server-side and returns no vectors); dedup then degrades to a
 // no-op for that entry (an empty-Vector entry is never treated as a
 // duplicate, so it is kept).
@@ -2603,13 +2603,13 @@ type MemorySearchEntry struct {
 	// clobbers the raw-cosine Score the tool renders (RFC BL). For pure-vector
 	// retrieval it equals the cosine; after RRF fusion it is the fused RRF
 	// value (see memory.FuseRRF), while Score stays the raw vector-leg cosine.
-	// Producers (the fusion step, the pure-vector fast path, the mem9 backend)
+	// Producers (the fusion step, the pure-vector fast path, a remote backend)
 	// set it explicitly; json:"-": it feeds ranking, not the agent-facing row.
 	SemanticScore float64 `json:"-"`
 	// AccessCount is the base row's access_count (RFC BL). Populated by the
 	// search legs so the hybrid ranker's frequency_weight term can reward
 	// frequently-recalled entries. Zero when the backend doesn't track it
-	// (e.g. the Mem9 REST backend), which makes the frequency term a no-op
+	// (e.g. a remote REST backend), which makes the frequency term a no-op
 	// for that entry. json:"-": it feeds ranking, not the agent-facing row.
 	AccessCount int64 `json:"-"`
 }

@@ -64,7 +64,7 @@ func (f *fakeBackend) Stats(_ context.Context, scope store.MemoryScope) (store.M
 // graceful-degradation behavior: primary errors → fallback serves the op
 // → success → a degradation log line is emitted (without any secret).
 func TestFallback_PrimaryErrorServesFromFallbackAndLogs(t *testing.T) {
-	primary := &fakeBackend{name: "primary", failErr: errors.New("mem9: request to GET: connection refused")}
+	primary := &fakeBackend{name: "primary", failErr: errors.New("remote: request to GET: connection refused")}
 	fb := &fakeBackend{name: "fallback"}
 
 	var captured bytes.Buffer
@@ -110,7 +110,7 @@ func TestFallback_PrimarySuccessDoesNotTouchFallback(t *testing.T) {
 
 // TestFallback_GetNotFoundDoesNotDegrade pins that a real "absent key"
 // from the primary is NOT treated as a backend failure — falling back on
-// it would mask a deletion (gone from Mem9, lingering locally).
+// it would mask a deletion (gone remotely, lingering locally).
 func TestFallback_GetNotFoundDoesNotDegrade(t *testing.T) {
 	primary := &fakeBackend{name: "primary", failErr: &store.ErrNotFound{Kind: "memory", ID: "k"}}
 	fb := &fakeBackend{name: "fallback", getValue: json.RawMessage(`"stale"`)}

@@ -416,7 +416,7 @@ describe("memoryBackendDef", () => {
     const result = (await client.memoryBackendDef({
       op: "create",
       name: "primary",
-      overlay: { kind: "mem9", config: { base_url: "https://m.example.com", api_key_env: "LOOMCYCLE_M_KEY" } },
+      overlay: { kind: "inprocess" },
     })) as Record<string, unknown>;
 
     expect(result.def_id).toBe("mbd_abc");

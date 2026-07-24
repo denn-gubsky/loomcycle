@@ -22,7 +22,7 @@ import (
 // so a hostile, compromised, or simply buggy peer could stream a multi-GB
 // body and OOM the process within the request timeout (the timeout bounds
 // wall-clock, not bytes). Every other outbound HTTP read in loomcycle is
-// already bounded this way (providers/*, builtin/httptool, mem9, …); the
+// already bounded this way (providers/*, builtin/httptool, …); the
 // A2A peer path was the lone exception.
 const maxPeerResponseBytes = 4 << 20 // 4 MiB
 

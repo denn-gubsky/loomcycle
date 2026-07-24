@@ -66,7 +66,7 @@ const (
 // input is returned unchanged with dropped=0 — the zero-regression path.
 //
 // An entry with an empty Vector cannot be compared (the backend couldn't
-// supply it — e.g. the Mem9 REST backend). Such an entry is NEVER treated
+// supply it — e.g. a remote REST backend). Such an entry is NEVER treated
 // as a duplicate: it is always kept, and it is never used as a comparison
 // anchor for later entries. Dedup thus degrades to a no-op when vectors
 // are unavailable, exactly as documented on store.MemorySearchEntry.Vector.

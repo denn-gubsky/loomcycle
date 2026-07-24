@@ -35,11 +35,11 @@ func (s *stubMemoryBackendStore) MemoryBackendDefGetActive(_ context.Context, _,
 func TestMemoryBackend_EquivalenceYamlVsSubstrate(t *testing.T) {
 	yamlBackend := config.MemoryBackend{
 		Name: "primary",
-		Kind: "mem9",
+		Kind: "inprocess",
 		Config: config.MemoryBackendConfig{
-			BaseURL:    "https://mem9.example.com",
+			BaseURL:    "https://backend.example.com",
 			APIVersion: "v1",
-			APIKeyEnv:  "LOOMCYCLE_MEM9_KEY",
+			APIKeyEnv:  "LOOMCYCLE_BACKEND_KEY",
 		},
 		TenancyStrategy: config.MemoryBackendTenancy{
 			Kind:          "shared_key_with_prefix",
@@ -53,9 +53,9 @@ func TestMemoryBackend_EquivalenceYamlVsSubstrate(t *testing.T) {
 		Name: yamlBackend.Name,
 		Kind: yamlBackend.Kind,
 		Config: lookup.SubstrateMemoryBackendConfig{
-			BaseURL:    "https://mem9.example.com",
+			BaseURL:    "https://backend.example.com",
 			APIVersion: "v1",
-			APIKeyEnv:  "LOOMCYCLE_MEM9_KEY",
+			APIKeyEnv:  "LOOMCYCLE_BACKEND_KEY",
 		},
 		TenancyStrategy: lookup.SubstrateMemoryBackendTenancy{
 			Kind:          "shared_key_with_prefix",
@@ -91,7 +91,7 @@ func TestMemoryBackend_StaticBeforeSubstrate(t *testing.T) {
 	}
 	ss := &stubMemoryBackendStore{
 		defs: map[string]store.MemoryBackendDefRow{
-			"backend": {DefID: "mb_v1", Name: "backend", Definition: json.RawMessage(`{"kind":"mem9"}`)},
+			"backend": {DefID: "mb_v1", Name: "backend", Definition: json.RawMessage(`{"kind":"substrate-only"}`)},
 		},
 	}
 	got, ok := lookup.MemoryBackend(context.Background(), ss, cfg, "", "backend")

@@ -1,7 +1,7 @@
 // Package inprocess is the default memory.Backend: it serves the Memory
 // tool's data operations from a store.Store (sqlite-vec / Postgres) plus
 // loomcycle's in-process Embedder. It is the unconditional fallback when
-// no other backend (MR-3 MemoryBackendDef / MR-4 Mem9) is configured, and
+// no other backend (an MR-3 MemoryBackendDef) is configured, and
 // it is behaviorally identical to the pre-MR-2 direct-store path — the
 // embed-on-search and embed-on-write logic moved here verbatim from the
 // Memory tool's execSearch / execSet.
@@ -28,7 +28,7 @@ import (
 // tenant, sourced from the ctx-carried RunIdentity (server-supplied, never model
 // input). The memory.Backend interface deliberately takes no tenantID param —
 // the base k/v ops key on (scope, scopeID) — so the impl pulls it from ctx here,
-// mirroring how the mem9 backend derives its tenant from the run identity. An
+// deriving the tenant from the authoritative run identity, never tool input. An
 // empty tenant ("" — open mode / legacy) is the shared/legacy partition.
 func runTenant(ctx context.Context) string { return tools.RunIdentity(ctx).TenantID }
 

@@ -11,7 +11,7 @@ import (
 // Backend is the RFC I (MR-2) pluggability seam between the Memory tool
 // and the storage substrate. The Memory tool routes its data operations
 // through a Backend instead of calling store.Store directly, so MR-3's
-// MemoryBackendDef and MR-4's Mem9 server-side backend can plug in
+// MemoryBackendDef and any future server-side backend can plug in
 // behind the same six methods.
 //
 // The default implementation is the in-process backend
@@ -32,7 +32,7 @@ import (
 //     primitives, not part of the six-op data surface MR-3/MR-4 plug into.
 //
 // Search and Set own the embedding work: an in-process backend embeds
-// query/value text via loomcycle's Embedder; a Mem9 backend embeds
+// query/value text via loomcycle's Embedder; a remote backend embeds
 // server-side. The tool no longer touches the Embedder for these paths
 // (it keeps the field only for the upfront misconfiguration pre-flight).
 type Backend interface {
@@ -99,7 +99,7 @@ type SetResult struct {
 
 // SearchQuery is the input to Backend.Search. The backend embeds
 // QueryText internally (in-process via the Embedder; server-side for
-// Mem9), so the tool passes text, never a vector.
+// a remote service), so the tool passes text, never a vector.
 type SearchQuery struct {
 	QueryText string
 	Prefix    string

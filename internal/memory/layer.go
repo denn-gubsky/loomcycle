@@ -7,7 +7,7 @@ import (
 )
 
 // MemoryLayer is the OPTIONAL capability for LLM-extract memory products
-// (mem0, Mem9 smart-mode, Zep-style) — RFC K. It is a DIFFERENT paradigm
+// (mem0, Zep-style) — RFC K. It is a DIFFERENT paradigm
 // from Backend: conversation messages go in, the backend (optionally) runs
 // an LLM to extract/reconcile durable facts, and recall is a
 // natural-language semantic search returning those facts.

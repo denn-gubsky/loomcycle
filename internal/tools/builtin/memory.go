@@ -1017,7 +1017,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		return errResult("search: missing required field: query"), nil
 	}
 	// NOTE: the vector-support / embedder pre-flight is NOT done here on the
-	// tool's in-process Store/Embedder — a named memory_backend (e.g. mem9)
+	// tool's in-process Store/Embedder — a named memory_backend
 	// can serve search remotely with no local vector support or embedder.
 	// The resolved backend returns the typed refusal (ErrVectorUnsupported /
 	// ErrEmbedderNotConfigured), which the error handler below renders with
@@ -1095,7 +1095,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		out["dedup_dropped"] = res.DedupDropped
 		// Observability: the RFC's memory.dedup.dropped_count (Decision 12)
 		// is an OTEL span attribute. loomcycle's only OTEL substrate today
-		// lives in the mem9 backend (which sets that attribute on its span);
+		// lives in the backend (which sets that attribute on its span);
 		// the in-process path has no span here yet (broader OTEL is planned
 		// for v0.9.x — see CLAUDE.md). Until that lands, mirror the repo's
 		// current observability idiom (log.Printf) so operators can still
@@ -1774,7 +1774,7 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 	// rows before writing more, or operators should bump the quota.
 	const listCap = 1000
 	// List through the RESOLVED backend, not the in-process store: an agent
-	// routed to a remote backend (mem9) stores its rows there, so summing the
+	// routed to a remote backend stores its rows there, so summing the
 	// local store would measure ~0 used bytes and let the per-scope
 	// memory_quota_bytes cap silently never apply. backend(ctx) is the
 	// in-process default (which wraps m.Store) when no remote backend is

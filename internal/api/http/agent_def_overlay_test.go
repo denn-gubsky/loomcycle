@@ -45,12 +45,12 @@ func TestApplyAgentDefOverlay_MemoryBackendAndQuota(t *testing.T) {
 		MemoryBackend: "default",
 	}
 	def := json.RawMessage(`{
-		"memory_backend": "mem9-team",
+		"memory_backend": "team-memory",
 		"memory_quota_bytes": 4096
 	}`)
 	got := applyAgentDefOverlay(base, def)
-	if got.MemoryBackend != "mem9-team" {
-		t.Errorf("memory_backend = %q, want mem9-team (overlay dropped the field)", got.MemoryBackend)
+	if got.MemoryBackend != "team-memory" {
+		t.Errorf("memory_backend = %q, want team-memory (overlay dropped the field)", got.MemoryBackend)
 	}
 	if got.MemoryQuotaBytes != 4096 {
 		t.Errorf("memory_quota_bytes = %d, want 4096", got.MemoryQuotaBytes)

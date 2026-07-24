@@ -25,7 +25,8 @@ import (
 // Reciprocal Rank Fusion first (see FuseRRF) and carries the fused RRF value
 // in each candidate's SemanticScore, so semantic_weight then scales that
 // fused rank signal. The raw cosine stays in Score (the field the Memory tool
-// renders) and is never overwritten. Backends that don't fuse (Mem9, and the
+// renders) and is never overwritten. Backends that don't fuse (a remote
+// backend, and the
 // in-process pure-vector fast path) set SemanticScore to the raw cosine.
 //
 // The DEFAULT (semantic=1, all others=0) keeps ordering equal to the
@@ -69,7 +70,7 @@ func (c RankConfig) IsPureSemantic() bool {
 
 // SourceFrequencyReserved reports whether the caller set a non-zero source
 // OR frequency weight. Retained for backends where BOTH remain no-ops — the
-// Mem9 REST backend returns entries with no access_count, so its
+// A remote REST backend returns entries with no access_count, so its
 // frequency_weight contributes 0 just like source_weight. The in-process
 // backend, which now populates access_count, uses SourceReserved instead.
 func (c RankConfig) SourceFrequencyReserved() bool {

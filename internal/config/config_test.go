@@ -557,7 +557,7 @@ agents:
 // entry with shared_key_with_prefix and a prefix_pattern lacking {tenant_id}
 // (here: omitted entirely) must fail to load. Without this a static backend
 // bypasses the MemoryBackendDef tool validator and would resolve to an empty
-// key prefix, collapsing every tenant into one Mem9 keyspace.
+// key prefix, collapsing every tenant into one shared keyspace.
 func TestMemoryBackend_RejectsSharedPrefixWithoutTenantToken(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
@@ -565,7 +565,7 @@ func TestMemoryBackend_RejectsSharedPrefixWithoutTenantToken(t *testing.T) {
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 memory_backends:
   shared:
-    kind: mem9
+    kind: inprocess
     config: { base_url: "https://m.example.com", api_key_env: LOOMCYCLE_M_KEY }
     tenancy_strategy: { kind: shared_key_with_prefix }
 `), 0o600)

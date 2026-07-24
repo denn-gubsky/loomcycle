@@ -253,7 +253,7 @@ func RecordCompactionCtx(ctx context.Context, trigger string, before, after int)
 // substrate-only by architectural lock (RFC observability-profiles Decision 1
 // — process + concurrency state only), and per-op shape is aggregated
 // downstream from spans by the OTEL Collector's spanmetrics connector. These
-// recorders mirror the mem9 backend's existing loomcycle.memory.search span so
+// recorders mirror the loomcycle.memory.search span so
 // the two memory backends produce one consistent series. All are no-op-safe:
 // with OTEL unconfigured Tracer() is a no-op and every call here costs nothing.
 
@@ -269,7 +269,7 @@ const SpanHelpReconcile = "loomcycle.help.reconcile"
 
 const (
 	// AttrMemoryBackend labels a memory.search span by backend ("inprocess" |
-	// "mem9") so operators can split latency/error series per backend.
+	// backend kind) so operators can split latency/error series per backend.
 	AttrMemoryBackend = "loomcycle.memory.backend"
 	// AttrMemoryMode is the hybrid-vs-degrade dimension: "hybrid" (vector +
 	// full-text fused by RRF) or "vector" (the cheap pure-vector path).
