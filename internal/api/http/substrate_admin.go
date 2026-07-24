@@ -310,6 +310,8 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	// global default (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES).
 	// RFC BL P2: the operator substrate-admin plane also gets the consolidation
 	// grant (own-scope, tenant-confined), consistent with the open scope here.
+	// It does NOT get the origin=consolidator provenance stamp — that requires an
+	// actual run and this plane has no run id (see builtin.provenanceForSet).
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user", "global"},
 		Consolidation: true,

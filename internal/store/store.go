@@ -229,6 +229,19 @@ type SessionSummary struct {
 	Status       RunStatus `json:"status,omitempty"`
 }
 
+// ConsolidatableSession is one row of ConsolidatableSessions: a session whose
+// runs have all reached a terminal state, plus the composite-watermark key the
+// consolidator advances its cursor to. MaxCompletedAt is the max completed_at
+// over the session's runs (the session's "settled at" instant); UserID /
+// AgentName are the session's owner, carried so a fan-out dispatcher can group
+// sessions into per-target batches without a second query.
+type ConsolidatableSession struct {
+	SessionID      string    `json:"session_id"`
+	MaxCompletedAt time.Time `json:"max_completed_at"`
+	UserID         string    `json:"user_id,omitempty"`
+	AgentName      string    `json:"agent_name,omitempty"`
+}
+
 // SessionMetaPatch is a partial update to a session's RFC BE metadata. A nil
 // pointer leaves that field unchanged; a non-nil pointer writes it (an empty
 // string / empty slice is a legitimate "clear it" value). Archived==true stamps
@@ -1004,6 +1017,66 @@ type Store interface {
 	// RFC AV archiver both consume this list).
 	PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
 
+	// ConsolidatableSessions returns the sessions a background memory
+	// consolidator has not folded in yet (RFC BL P2): every run in the session
+	// is TERMINAL (completed/failed/cancelled, none running/paused/pausing —
+	// the same predicate PrunableAgedSessions uses, so a live chat is never
+	// consolidated mid-conversation) AND the session's max(completed_at) sorts
+	// strictly AFTER the composite watermark (afterCompletedAt, afterSessionID):
+	//
+	//	max_completed_at > afterCompletedAt
+	//	  OR (max_completed_at = afterCompletedAt AND session_id > afterSessionID)
+	//
+	// Rows come back ascending by (max_completed_at, session_id) — the exact
+	// order the cursor advances in — so a caller can consolidate the batch and
+	// advance the watermark to the LAST row it processed without ever skipping a
+	// session. A zero afterCompletedAt means "from the beginning". limit <= 0
+	// takes a sane default.
+	//
+	// tenantID always filters (a consolidation run is tenant-confined); userID
+	// and agentName filter only when non-empty — they select the consolidation
+	// TARGET (the user's chats, or one agent's). Unlike PrunableAgedSessions
+	// this does NOT exclude pinned sessions: pinning exempts a chat from
+	// automated DELETION, and consolidation only reads the transcript.
+	//
+	// excludeAgentName, when non-empty, omits sessions authored by that agent.
+	// The consolidator passes ITS OWN name: each pass creates a session under
+	// the target's user id, which would otherwise report as fresh work forever
+	// — a pass every tick, consolidating its own reports. Those self-authored
+	// sessions also accumulate PAST the watermark (a pass never consolidates
+	// itself, so it never advances over them), which is why this is a query
+	// filter and not something a caller can safely post-filter.
+	//
+	// Two known limits, both deferred:
+	//   - limit has a floor (<=0 takes a default) but no CEILING, so a caller can
+	//     ask for an unbounded page. Every in-tree caller clamps its own request
+	//     (Memory op=cursor_scan caps at 50, the has-new-work probe asks for 1),
+	//     so this is a robustness gap rather than a live one.
+	//   - self-exclusion is by NAME, so it holds for exactly one consolidator per
+	//     tenant. Two differently-named consolidators covering one tenant would
+	//     each see the other's sessions as fresh work and consolidate each other's
+	//     reports. Excluding by "holds the consolidation grant" needs the agent's
+	//     resolved config at query time, which the store does not have.
+	ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName, excludeAgentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]ConsolidatableSession, error)
+
+	// SessionSettledAt reports WHEN a session settled — max(completed_at) across
+	// its runs — plus the session's owning user id, for a session inside
+	// tenantID. It is the authenticity check behind a consolidation-watermark
+	// advance (RFC BL P2).
+	//
+	// Returns *ErrNotFound when no session with that id exists IN THIS TENANT, so
+	// a caller verifying an untrusted session id gets an opaque refusal instead of
+	// confirming the id exists under someone else. A session that exists but whose
+	// runs have not finished returns the ZERO time and a nil error — "known, not
+	// settled yet" is a different answer from "no such session".
+	//
+	// Why it exists: the consolidation cursor is monotonic and has NO reset op, so
+	// a single bogus far-future watermark would permanently and silently stop a
+	// target's consolidation. Verifying the (session_id, completed_at) pair
+	// against this makes the watermark unforgeable — it can only ever be moved to
+	// a real, already-settled session inside the target's own tenant.
+	SessionSettledAt(ctx context.Context, tenantID, sessionID string) (settledAt time.Time, userID string, err error)
+
 	// RunsForSession returns every run in the session (any status), oldest first.
 	// The archiver uses it to export a session's runs before cascade-deleting it.
 	RunsForSession(ctx context.Context, sessionID string) ([]Run, error)
@@ -1416,6 +1489,25 @@ type Store interface {
 	// bytes, scope quota) as ErrMemoryQuotaExceeded — the tool layer
 	// trusts the store's verdict.
 	MemorySet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
+
+	// MemorySetProvenance is MemorySet plus the RFC BL provenance columns —
+	// WHERE this fact came from and what kind of fact it is. Identical upsert
+	// semantics (including reviving a superseded row); the provenance fields
+	// are overwritten wholesale on every write, so a re-derived fact carries
+	// the CURRENT source rather than the first one. A zero MemoryProvenance
+	// writes NULLs and is then equivalent to MemorySet.
+	//
+	// Split from MemorySet rather than widening it so every existing caller
+	// (and every hot read path) stays byte-identical: only a consolidation
+	// write pays for the extra columns.
+	MemorySetProvenance(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov MemoryProvenance) error
+
+	// MemoryProvenanceGet reads back one row's provenance. Returns
+	// *ErrNotFound when the key does not exist (or is superseded/expired —
+	// the same visibility rule MemoryGet applies). Lets an operator (and the
+	// consolidator itself) see which run distilled a fact without widening
+	// MemoryGet's SELECT for every reader.
+	MemoryProvenanceGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) (MemoryProvenance, error)
 
 	// MemoryGet reads one entry. Returns *ErrNotFound for both "key
 	// missing" and "key expired" — callers don't need to distinguish.
@@ -2627,6 +2719,31 @@ type MemoryAccessBump struct {
 	Key        string
 	CountDelta int64
 	LastAccess time.Time
+}
+
+// MemoryProvenance is the RFC BL "where did this fact come from" record carried
+// on a base-memory row. Every field is descriptive metadata — none of it is
+// consulted for authorization, path construction, or routing, so a
+// model-relayed SourceSessionID / SourceRunID cannot widen anything; the
+// tenant/scope/scope_id that actually confine the row stay server-resolved.
+//
+//   - Origin is WHO wrote it ("consolidator" for a background consolidation
+//     pass). Server-stamped at the tool boundary, never model-supplied, so it
+//     stays a trustworthy filter for "facts a machine distilled".
+//   - Class is a short label for the KIND of fact (e.g. preference, decision).
+//   - SourceSessionID / SourceRunID name the chat/run the fact was distilled
+//     from — the audit trail back to the transcript.
+type MemoryProvenance struct {
+	Origin          string `json:"origin,omitempty"`
+	Class           string `json:"class,omitempty"`
+	SourceSessionID string `json:"source_session_id,omitempty"`
+	SourceRunID     string `json:"source_run_id,omitempty"`
+}
+
+// IsZero reports whether no provenance field is set — the signal to take the
+// plain MemorySet path.
+func (p MemoryProvenance) IsZero() bool {
+	return p.Origin == "" && p.Class == "" && p.SourceSessionID == "" && p.SourceRunID == ""
 }
 
 // MemoryPendingRow is one durable consolidation-queue record (RFC BL P2). An

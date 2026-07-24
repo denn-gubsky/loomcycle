@@ -2932,6 +2932,21 @@ type Env struct {
 	// aborts. Env: LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS.
 	SchedulerFireTimeoutSeconds int
 
+	// MaxConsolidationTargets bounds how many memory-consolidation targets ONE
+	// fan-out tick dispatches (RFC BL P2). 0 → the scheduler default (32). The
+	// per-target watermark makes the fan-out resumable, so the cap defers work to
+	// the next tick rather than dropping it, and a truncated tick is always
+	// logged. Env: LOOMCYCLE_MAX_CONSOLIDATION_TARGETS.
+	MaxConsolidationTargets int
+
+	// MaxConsolidationConcurrency bounds PARALLEL consolidation children when the
+	// resolved model is not local. 0 → the scheduler default (4). A local model
+	// runtime is always dispatched serially regardless of this value. Each child
+	// is a full LLM run, so this is deliberately small — and it is the operator's
+	// escape hatch when the local-provider heuristic does not recognise their
+	// runtime by name. Env: LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY.
+	MaxConsolidationConcurrency int
+
 	// SchedulerEnvAllowlist is the comma-separated env-var name
 	// allowlist for `user_credentials_from_env` resolution. Empty
 	// (default) disables env-credential lookup entirely — a
@@ -3780,6 +3795,19 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.SchedulerFireTimeoutSeconds = n
+		}
+	}
+	// RFC BL P2 consolidation fan-out caps. Left at 0 the scheduler applies its
+	// own documented defaults (32 targets, 4 concurrent), so an unset env is not
+	// "unbounded".
+	if v := os.Getenv("LOOMCYCLE_MAX_CONSOLIDATION_TARGETS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.MaxConsolidationTargets = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.MaxConsolidationConcurrency = n
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST"); v != "" {
@@ -5802,7 +5830,111 @@ func validate(c *Config) error {
 			return fmt.Errorf("memory.embedder.batch_size must be >= 0")
 		}
 	}
+	// Non-fatal: memory scopes that can enqueue but have no consolidator to
+	// drain them. Runs last so it sees the fully-validated agents + schedules.
+	c.Warnings = append(c.Warnings, orphanAddWarnings(c.Agents, c.ScheduledRuns)...)
 	return nil
+}
+
+// orphanAddWarnings returns the non-fatal advisory for a memory scope that can
+// reach `add` but has no scheduled consolidator to drain it.
+//
+// `add` ENQUEUES: it returns "pending" and hands the turns to a background
+// consolidation pass. With no such pass configured the queue grows and nothing
+// ever becomes durable memory — the agent looks like it is remembering and a
+// later `recall` finds nothing. That is a silent, slow failure exactly like the
+// F21 ungated-tool traps, so it is a WARNING, never a refusal: `add` still has
+// to work (an operator may enable the consolidator later, and the queued rows
+// are then drained retroactively).
+//
+// "Can reach add" is approximated by Memory in tools + a non-empty
+// memory_scopes — whether an agent actually calls `add` is a runtime question
+// config cannot answer. "Has a consolidator" means some ENABLED scheduled run
+// invokes an agent holding the consolidation grant whose own memory_scopes
+// cover that scope.
+//
+// A consolidator schedule that exists but is DISABLED gets its own, softer line.
+// The two situations need different advice and the distinction is the common one:
+// a consolidation bundle ships staged-off (it spends real tokens on a cadence), so
+// "you have no consolidator, add one" would be wrong and confusing for the
+// operator who has already selected it. Naming the schedule turns a paragraph of
+// setup into one flag flip.
+//
+// Aggregated per SCOPE rather than per agent: a deployment with ten
+// memory-capable agents needs one line, not ten. Pure + deterministically
+// ordered so it is unit-testable.
+func orphanAddWarnings(agents map[string]AgentDef, schedules map[string]ScheduledRun) []string {
+	hasMemoryTool := func(a AgentDef) bool {
+		for _, t := range a.Tools {
+			if t == "Memory" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Scopes covered by a scheduled consolidator, plus — for the scopes NOT
+	// covered — the disabled schedules that would cover them if enabled.
+	covered := map[string]bool{}
+	stagedOff := map[string][]string{}
+	for name, sr := range schedules {
+		agent, ok := agents[sr.Agent]
+		if !ok {
+			continue // substrate-only agent: resolved at runtime, invisible here
+		}
+		if !agent.MemoryConsolidation || !hasMemoryTool(agent) {
+			continue
+		}
+		for _, scope := range agent.MemoryScopes {
+			if sr.Enabled {
+				covered[scope] = true
+			} else {
+				// A disabled schedule drains nothing, so it is NOT coverage — it
+				// only changes the advice.
+				stagedOff[scope] = append(stagedOff[scope], name)
+			}
+		}
+	}
+
+	// Scopes that can enqueue, with the agents that can reach them.
+	enqueuers := map[string][]string{}
+	for name, agent := range agents {
+		if !hasMemoryTool(agent) || len(agent.MemoryScopes) == 0 {
+			continue
+		}
+		if agent.MemoryConsolidation {
+			continue // the consolidator's own scopes are its business
+		}
+		for _, scope := range agent.MemoryScopes {
+			enqueuers[scope] = append(enqueuers[scope], name)
+		}
+	}
+
+	uncovered := make([]string, 0, len(enqueuers))
+	for scope := range enqueuers {
+		if !covered[scope] {
+			uncovered = append(uncovered, scope)
+		}
+	}
+	sort.Strings(uncovered)
+
+	var out []string
+	for _, scope := range uncovered {
+		names := append([]string(nil), enqueuers[scope]...)
+		sort.Strings(names)
+		if staged := stagedOff[scope]; len(staged) > 0 {
+			staged = append([]string(nil), staged...)
+			sort.Strings(staged)
+			out = append(out, fmt.Sprintf(
+				"memory scope %q: %d agent(s) can enqueue with Memory op=add (%s) and a consolidator schedule exists but is disabled — enable %s to drain scope %q. Until then queued items never become durable memory, so a later op=recall finds nothing.",
+				scope, len(names), strings.Join(names, ", "), strings.Join(staged, ", "), scope))
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"memory scope %q: %d agent(s) can enqueue with Memory op=add (%s) but no enabled scheduled run drains it — queued items never become durable memory, so a later op=recall finds nothing. Add a scheduled run for an agent with memory_consolidation: true covering scope %q (the bundled `memory` preset ships one).",
+			scope, len(names), strings.Join(names, ", "), scope))
+	}
+	return out
 }
 
 // replicaIDPattern duplicates internal/coord.replicaIDPattern. We

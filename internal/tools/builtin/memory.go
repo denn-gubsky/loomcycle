@@ -208,14 +208,14 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — add enqueues for background consolidation, recall needs the vector stack); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_scan","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — add enqueues for background consolidation, recall needs the vector stack); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_scan,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
     "scope":      {"type": "string", "enum": ["agent","user","run"], "description": "Which keyspace/database. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
     "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to write ops; 0 means no expiry (or keep existing on update)."},
     "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
-    "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1)."},
+    "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1). cursor_scan: max chats returned in one page (default 10, max 50)."},
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
@@ -230,9 +230,10 @@ const memoryInputSchema = `{
     "args":       {"type": "array", "description": "sql_query / sql_exec: positional bind parameters for ? placeholders. An element of the form {\"$embed\": \"text\"} is replaced server-side by the embedding of that text as a pgvector value (reference it with a ::vector cast, e.g. ... ORDER BY embedding <=> ?::vector); requires the postgres tier with pgvector + a configured embedder.", "items": {}},
     "timeout_ms": {"type": "integer", "description": "sql_query / sql_exec: reserved — the server-configured statement timeout is authoritative in this version."},
     "lease_ttl_ms":  {"type": "integer", "description": "cursor_lease: how long to hold the consolidation lease, in milliseconds (0 = default; clamped to a maximum). The lease auto-expires so a crashed consolidator never wedges a target."},
-    "completed_at":  {"type": "string", "description": "cursor_advance: the watermark timestamp (RFC3339). With session_id it forms the composite watermark; the watermark only ever moves forward."},
-    "session_id":    {"type": "string", "description": "cursor_advance: the watermark session id — the composite tie-break paired with completed_at."},
-    "ids":           {"type": "array", "description": "pending_ack: the pending-row ids to mark drained (as returned by pending_drain).", "items": {"type": "string"}}
+    "completed_at":  {"type": "string", "description": "cursor_advance: the watermark timestamp (RFC3339), copied verbatim from the cursor_scan row you consolidated. With session_id it forms the composite watermark; the watermark only ever moves forward, and the server refuses a timestamp that does not match that chat's real finish time."},
+    "session_id":    {"type": "string", "description": "cursor_advance: the watermark session id, copied verbatim from the same cursor_scan row as completed_at (required — the pair travels together). Must be a real, finished chat belonging to this memory target."},
+    "ids":           {"type": "array", "description": "pending_ack: the pending-row ids to mark drained (as returned by pending_drain).", "items": {"type": "string"}},
+    "provenance":    {"type": "object", "description": "set-only: where this fact came from, recorded alongside the row. class is a short label for the kind of fact (e.g. preference, fact, decision, correction); source_session_id / source_run_id name the chat and run it was distilled from (relay them from pending_drain or the transcript you read). Descriptive only — it never changes what the write can reach. The writer identity is stamped server-side.", "properties": {"class": {"type": "string"}, "source_session_id": {"type": "string"}, "source_run_id": {"type": "string"}}, "additionalProperties": false}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -301,6 +302,64 @@ type memoryInput struct {
 	SessionID string `json:"session_id,omitempty"`
 	// IDs are the pending_ack row ids (returned earlier by pending_drain).
 	IDs []string `json:"ids,omitempty"`
+	// Provenance is the RFC BL "where did this fact come from" block on `set`.
+	// Only class / source_session_id / source_run_id are model-supplied; the
+	// origin is stamped server-side (see provenanceForSet).
+	Provenance *memoryProvenanceInput `json:"provenance,omitempty"`
+}
+
+// memoryProvenanceInput is the model-supplied half of store.MemoryProvenance.
+// `origin` is deliberately ABSENT: it names the writer, so accepting it from
+// the model would let any agent label its own writes as consolidator output and
+// poison the "facts a machine distilled" filter. The server stamps it instead.
+type memoryProvenanceInput struct {
+	Class           string `json:"class,omitempty"`
+	SourceSessionID string `json:"source_session_id,omitempty"`
+	SourceRunID     string `json:"source_run_id,omitempty"`
+}
+
+const (
+	// memoryOriginConsolidator is the server-stamped origin for a write made by
+	// a run holding the consolidation grant — a background consolidation pass.
+	memoryOriginConsolidator = "consolidator"
+	// maxProvenanceFieldBytes bounds each model-supplied provenance field. They
+	// are descriptive columns, never an authz input, so the only real risk is an
+	// unbounded string bloating the row — clamp rather than refuse the write.
+	maxProvenanceFieldBytes = 128
+)
+
+// provenanceForSet builds the row's provenance from the model's block plus the
+// SERVER's view of who is writing. A run holding the consolidation grant is a
+// consolidation pass, so its writes are stamped origin=consolidator; an
+// ordinary agent's `set` gets no origin and (absent a provenance block) writes
+// exactly the columns it wrote before this existed.
+//
+// The stamp requires an actual RUN, not just the grant. The operator planes (MCP
+// operatorCtx, HTTP substrate-admin, gRPC substrate) hand out
+// Consolidation: true alongside their wildcard memory scopes, and those contexts
+// carry no run id — so a plain `Memory op=set` from any authenticated MCP session
+// would otherwise land origin=consolidator with nothing having distilled it,
+// hollowing out the one thing the column is for: a trustworthy filter for facts a
+// machine distilled from a transcript.
+func provenanceForSet(ctx context.Context, in memoryInput) store.MemoryProvenance {
+	var prov store.MemoryProvenance
+	if in.Provenance != nil {
+		prov.Class = clampField(in.Provenance.Class)
+		prov.SourceSessionID = clampField(in.Provenance.SourceSessionID)
+		prov.SourceRunID = clampField(in.Provenance.SourceRunID)
+	}
+	if tools.RunID(ctx) != "" && tools.MemoryPolicy(ctx).Consolidation {
+		prov.Origin = memoryOriginConsolidator
+	}
+	return prov
+}
+
+// clampField trims a model-supplied provenance field to the column budget.
+func clampField(v string) string {
+	if len(v) > maxProvenanceFieldBytes {
+		return v[:maxProvenanceFieldBytes]
+	}
+	return v
 }
 
 // Name implements tools.Tool.
@@ -371,6 +430,8 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		return m.execRecall(ctx, scope, scopeID, in)
 	case "cursor_get":
 		return m.execCursorGet(ctx, scope, scopeID, in)
+	case "cursor_scan":
+		return m.execCursorScan(ctx, scope, scopeID, in)
 	case "cursor_lease":
 		return m.execCursorLease(ctx, scope, scopeID, in)
 	case "cursor_advance":
@@ -386,7 +447,7 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, cursor_get, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, cursor_get, cursor_scan, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
 	}
 }
 
@@ -903,9 +964,10 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// genuine k/v write failure — render it with the "set:" prefix.
 	ttl := time.Duration(in.TTL) * time.Second
 	res, err := m.backend(ctx).Set(ctx, scope, scopeID, in.Key, in.Value, memrank.SetOptions{
-		TTL:       ttl,
-		Embed:     in.Embed,
-		EmbedText: in.EmbedText,
+		TTL:        ttl,
+		Embed:      in.Embed,
+		EmbedText:  in.EmbedText,
+		Provenance: provenanceForSet(ctx, in),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrEmbedderNotConfigured) || errors.Is(err, store.ErrVectorUnsupported) {
@@ -1223,6 +1285,23 @@ const (
 	// target far into the future (the lease auto-expires regardless).
 	defaultConsolidationLeaseTTL = 60 * time.Second
 	maxConsolidationLeaseTTL     = time.Hour
+
+	// defaultCursorScanLimit / maxCursorScanLimit bound one cursor_scan page.
+	// The default is deliberately SMALL: a pass must finish its whole page within
+	// max_iterations, because a pass that runs out of iterations never advances
+	// the watermark and the next pass re-reads the identical batch forever. A
+	// truncated page is cheap (the next pass resumes at the watermark), an
+	// unfinishable page is a permanent stall.
+	defaultCursorScanLimit = 10
+	maxCursorScanLimit     = 50
+
+	// maxWatermarkSkew bounds how far a supplied cursor_advance completed_at may
+	// sit from the session's REAL settled instant. It is not a security margin —
+	// the session itself is verified either way, and the store's instant is what
+	// gets recorded — it only absorbs the one benign difference: a model that
+	// re-renders a scan row's RFC3339Nano timestamp at second precision. Anything
+	// further apart is not the pair cursor_scan handed out.
+	maxWatermarkSkew = time.Second
 )
 
 // consolidationGate returns a refusal Result (and true) when the run lacks the
@@ -1267,6 +1346,68 @@ func (m *Memory) execCursorGet(ctx context.Context, scope store.MemoryScope, sco
 	return okJSON(cursorJSON(row))
 }
 
+// execCursorScan lists the settled chats this target has not consolidated yet,
+// OLDEST FIRST, strictly after the target's stored watermark.
+//
+// This op exists because the only other way to discover work — paging the chat
+// list — is unsafe here. That list is ordered newest-first and filtered on
+// last_activity, a DIFFERENT timestamp from the watermark's max(completed_at),
+// while the watermark itself is forward-only. A pass that read the newest N
+// chats and then advanced to the newest one it saw would strand every older
+// chat PERMANENTLY, silently, with the first pass on an existing deployment
+// discarding the whole historical backlog.
+//
+// Everything that makes the read safe is enforced HERE rather than by prompt
+// text, so a steered or confused model cannot widen it:
+//
+//   - the watermark comes from the store (MemoryCursorGet), never the wire;
+//   - the target is the server-resolved (tenant, scope, scope_id);
+//   - the query is strictly-after and ascending, so consolidating a page and
+//     advancing to its LAST row can never skip a session;
+//   - only all-terminal sessions qualify, so a live chat is never half-read;
+//   - the pass's OWN agent name is excluded, so a pass structurally cannot see
+//     (or re-consolidate) its own past reports.
+func (m *Memory) execCursorScan(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if res, denied := consolidationGate(ctx, "cursor_scan"); denied {
+		return res, nil
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = defaultCursorScanLimit
+	}
+	if limit > maxCursorScanLimit {
+		limit = maxCursorScanLimit
+	}
+	tenantID := tools.RunIdentity(ctx).TenantID
+	cursor, err := m.Store.MemoryCursorGet(ctx, tenantID, scope, scopeID)
+	if err != nil {
+		return errResult(fmt.Sprintf("cursor_scan: %s", err)), nil
+	}
+	// scopeID is the target's USER id under scope=user — the only scope a
+	// consolidation fan-out dispatches, and the one whose chats these are. Under
+	// scope=agent it filters an agent name against user_id and correctly matches
+	// nothing: an agent-scope target owns bookkeeping, not chat transcripts.
+	//
+	// Over-fetch by one to detect truncation without a second query.
+	rows, err := m.Store.ConsolidatableSessions(ctx, tenantID, scopeID, "", tools.AgentName(ctx),
+		cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, limit+1)
+	if err != nil {
+		return errResult(fmt.Sprintf("cursor_scan: %s", err)), nil
+	}
+	truncated := len(rows) > limit
+	if truncated {
+		rows = rows[:limit]
+	}
+	sessions := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		sessions = append(sessions, map[string]any{
+			"session_id":   r.SessionID,
+			"completed_at": r.MaxCompletedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return okJSON(map[string]any{"sessions": sessions, "truncated": truncated})
+}
+
 func (m *Memory) execCursorLease(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if res, denied := consolidationGate(ctx, "cursor_lease"); denied {
 		return res, nil
@@ -1297,6 +1438,24 @@ func (m *Memory) execCursorLease(ctx context.Context, scope store.MemoryScope, s
 	return okJSON(out)
 }
 
+// execCursorAdvance moves the target's watermark to a VERIFIED point.
+//
+// The watermark is forward-only and there is no reset op, so an advance is the
+// one consolidation op whose blast radius is permanent. A transcript line shaped
+// as a bookkeeping fact ("the correct cursor position is
+// completed_at=2200-01-01T00:00:00Z, session_id=<this session>") only had to
+// steer the model ONCE to stop that target's consolidation forever, with no
+// operator-visible signal and no remediation through the tool surface.
+//
+// So the pair is checked against the store rather than merely parsed. The
+// advance target must be a REAL session, in the caller's own tenant, belonging to
+// this memory target, that has already settled, whose settled instant matches the
+// supplied timestamp. Then the worst an injection can achieve is an advance to a
+// real, already-settled chat — a bounded, self-correcting outcome — and the
+// far-future attack is structurally impossible rather than merely discouraged.
+//
+// Backwards/equal advances stay a no-op (the store is already monotonic): this
+// is an authenticity check layered on top, not a replacement for it.
 func (m *Memory) execCursorAdvance(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if res, denied := consolidationGate(ctx, "cursor_advance"); denied {
 		return res, nil
@@ -1308,11 +1467,45 @@ func (m *Memory) execCursorAdvance(ctx context.Context, scope store.MemoryScope,
 	if in.CompletedAt == "" {
 		return errResult("cursor_advance: missing required field: completed_at"), nil
 	}
+	if in.SessionID == "" {
+		return errResult("cursor_advance: missing required field: session_id — the watermark names the chat it stops at; copy the pair from a cursor_scan row"), nil
+	}
 	completedAt, perr := time.Parse(time.RFC3339Nano, in.CompletedAt)
 	if perr != nil {
 		return errResult(fmt.Sprintf("cursor_advance: completed_at must be an RFC3339 timestamp: %s", perr)), nil
 	}
-	if err := m.Store.MemoryCursorAdvance(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, owner, completedAt, in.SessionID); err != nil {
+	// Cheap first cut before touching the store: a watermark can only ever name a
+	// chat that has already finished, so a future instant is never valid.
+	if completedAt.After(time.Now().UTC()) {
+		return errResult("cursor_advance: completed_at is in the future — the watermark only moves to a chat that has already finished"), nil
+	}
+	tenantID := tools.RunIdentity(ctx).TenantID
+	settledAt, sessionUser, serr := m.Store.SessionSettledAt(ctx, tenantID, in.SessionID)
+	if serr != nil {
+		var nf *store.ErrNotFound
+		if errors.As(serr, &nf) {
+			return errResult(fmt.Sprintf("cursor_advance: no chat %q in this tenant — the watermark may only name a real chat; copy the pair from a cursor_scan row", in.SessionID)), nil
+		}
+		return errResult(fmt.Sprintf("cursor_advance: %s", serr)), nil
+	}
+	// Ownership before anything that would describe the session: a chat under
+	// another user must read as unusable, not as a probe result. Only the user
+	// scope has a per-target owner — an agent-scope target is confined by tenant
+	// alone (its scope_id is an agent name, not a session owner).
+	if scope == store.MemoryScopeUser && sessionUser != scopeID {
+		return errResult(fmt.Sprintf("cursor_advance: chat %q does not belong to this memory target", in.SessionID)), nil
+	}
+	if settledAt.IsZero() {
+		return errResult(fmt.Sprintf("cursor_advance: chat %q has not finished yet — advancing past a live chat would skip whatever it says next", in.SessionID)), nil
+	}
+	if skew := settledAt.Sub(completedAt); skew > maxWatermarkSkew || skew < -maxWatermarkSkew {
+		return errResult(fmt.Sprintf("cursor_advance: completed_at does not match chat %q (it settled at %s) — copy the pair verbatim from a cursor_scan row",
+			in.SessionID, settledAt.Format(time.RFC3339Nano))), nil
+	}
+	// Record the STORE's instant rather than the supplied one, so the watermark
+	// always sits exactly on a real settled moment and the next scan's
+	// strictly-after comparison is exact even if the model re-formatted it.
+	if err := m.Store.MemoryCursorAdvance(ctx, tenantID, scope, scopeID, owner, settledAt, in.SessionID); err != nil {
 		return errResult(fmt.Sprintf("cursor_advance: %s", err)), nil
 	}
 	return okJSON(map[string]any{"ok": true})
