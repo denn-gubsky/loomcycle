@@ -1393,6 +1393,26 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	if !hasSessionID(ids(excluded), sessA) || !hasSessionID(ids(excluded), sessB) {
 		t.Errorf("excludeAgentName dropped other agents' sessions: %v, want A=%s and B=%s present", ids(excluded), sessA, sessB)
 	}
+	// The exclusion COMBINED with a non-zero watermark. This is the arm the
+	// Postgres implementation gets wrong most easily: excludeAgentName consumes a
+	// placeholder ordinal, and the watermark's HAVING predicate plus the LIMIT are
+	// numbered AFTER it — so a mis-counted $N silently compares the timestamp
+	// against an agent name (or the limit against a session id) and the query
+	// either errors or returns the wrong window. Every other assertion above uses
+	// one feature or the other, never both, so nothing else covers this.
+	combined, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "consol-self", watermarkA, sessA, 100)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (exclusion + watermark): %v", err)
+	}
+	if hasSessionID(ids(combined), selfSess) {
+		t.Errorf("exclusion + watermark returned the excluded agent's session %s: %v", selfSess, ids(combined))
+	}
+	if hasSessionID(ids(combined), sessA) {
+		t.Errorf("exclusion + watermark returned the session ON the watermark (%s): %v — the composite predicate is misnumbered", sessA, ids(combined))
+	}
+	if !hasSessionID(ids(combined), sessB) {
+		t.Errorf("exclusion + watermark dropped B=%s, the one session that qualifies: %v", sessB, ids(combined))
+	}
 }
 
 // hasSessionID reports whether the id list contains needle.
