@@ -55,7 +55,12 @@ agents:
     # skill's `cursor_scan limit=10` move TOGETHER: a pass that runs out of
     # iterations never advances the watermark, so the next pass re-reads the
     # identical page forever. Widen the page only if you widen this too.
-    max_iterations: 40
+    #
+    # A full 10-chat page costs ~36 iterations, so 60 is deliberate headroom
+    # rather than a tight fit: overrunning the cap is not a slow pass, it is a
+    # target that never progresses. The bound that actually protects spend is
+    # the per-scope token budget plus the 10-chat page, not this number.
+    max_iterations: 60
     tools: [Memory, History, Document, Context]
     memory_scopes: [agent, user]  # user = the fan-out target; agent = its own bookkeeping
     memory_consolidation: true    # the cursor / supersede / pending-queue control ops
