@@ -184,6 +184,14 @@ func TestConsolidatorBundle_SkillBodyEncodesThePipeline(t *testing.T) {
 	if !strings.Contains(body, "verbatim") {
 		t.Error("skill body must tell the pass to copy the (completed_at, session_id) pair verbatim from the scan row it consolidated")
 	}
+	// Destructive-op cap. supersede is a soft archive and a re-derived fact
+	// revives its row, which bounds the damage — but nothing bounds the COUNT, so
+	// an injected "everything you know about X is obsolete" could otherwise drive
+	// an unbounded retirement sweep in one pass. The cap turns that into a report
+	// an operator reads instead of a memory that quietly emptied.
+	if !strings.Contains(body, "Never emit more than 5 `delete` entries in one pass") {
+		t.Error("skill body must cap destructive entries per pass — without it one steered pass can retire an entire topic")
+	}
 
 	// Advance-last is the invariant that makes a failed pass safe to retry.
 	if !strings.Contains(body, "ONLY after every write") {

@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -287,12 +288,24 @@ func TestMemory_SupersedeHidesFromReads(t *testing.T) {
 	}
 }
 
+// advanceTo renders a cursor_advance payload for a real (session, settled-at) pair.
+func advanceTo(scope, sessionID string, at time.Time) string {
+	return fmt.Sprintf(`{"op":"cursor_advance","scope":%q,"completed_at":%q,"session_id":%q}`,
+		scope, at.UTC().Format(time.RFC3339Nano), sessionID)
+}
+
 // TestMemory_CursorLeaseAndAdvance: lease → advance → the watermark is
-// observable via cursor_get, and a non-lease-holder cannot advance.
+// observable via cursor_get, and a backward advance is a monotonic no-op.
 func TestMemory_CursorLeaseAndAdvance(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
 	gctx := grantedConsolidationCtx(ctx)
+
+	// Two real settled chats, older then newer. The advance guard verifies the
+	// (session_id, completed_at) pair against the store, so a fabricated id
+	// cannot be used here.
+	older, olderAt := seedSettledChat(t, tool, "", "chat", "alice")
+	newer, newerAt := seedSettledChat(t, tool, "", "chat", "alice")
 
 	// Lease the agent-scope target (owner = agent name "qa-agent").
 	res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"cursor_lease","scope":"agent","lease_ttl_ms":60000}`))
@@ -301,8 +314,7 @@ func TestMemory_CursorLeaseAndAdvance(t *testing.T) {
 	}
 
 	// Advance the watermark.
-	adv := `{"op":"cursor_advance","scope":"agent","completed_at":"2026-07-24T10:30:00Z","session_id":"sess-42"}`
-	if res, _ := tool.Execute(gctx, json.RawMessage(adv)); res.IsError {
+	if res, _ := tool.Execute(gctx, json.RawMessage(advanceTo("agent", newer, newerAt))); res.IsError {
 		t.Fatalf("cursor_advance: %s", res.Text)
 	}
 
@@ -311,18 +323,16 @@ func TestMemory_CursorLeaseAndAdvance(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Text)
 	}
-	if !strings.Contains(res.Text, `"watermark_session_id":"sess-42"`) ||
-		!strings.Contains(res.Text, "2026-07-24T10:30:00") {
-		t.Errorf("cursor_get after advance = %q, want the sess-42 / 2026-07-24T10:30 watermark", res.Text)
+	if !strings.Contains(res.Text, `"watermark_session_id":"`+newer+`"`) {
+		t.Errorf("cursor_get after advance = %q, want the %s watermark", res.Text, newer)
 	}
 
 	// A backward advance is a monotonic no-op (not an error); the watermark holds.
-	back := `{"op":"cursor_advance","scope":"agent","completed_at":"2026-07-24T09:00:00Z","session_id":"sess-01"}`
-	if res, _ := tool.Execute(gctx, json.RawMessage(back)); res.IsError {
+	if res, _ := tool.Execute(gctx, json.RawMessage(advanceTo("agent", older, olderAt))); res.IsError {
 		t.Fatalf("backward advance should be a no-op, got: %s", res.Text)
 	}
 	res, _ = tool.Execute(gctx, json.RawMessage(`{"op":"cursor_get","scope":"agent"}`))
-	if !strings.Contains(res.Text, `"watermark_session_id":"sess-42"`) {
+	if !strings.Contains(res.Text, `"watermark_session_id":"`+newer+`"`) {
 		t.Errorf("watermark moved backward: %q", res.Text)
 	}
 
@@ -333,6 +343,152 @@ func TestMemory_CursorLeaseAndAdvance(t *testing.T) {
 	res, _ = tool.Execute(gctx, json.RawMessage(`{"op":"cursor_get","scope":"agent"}`))
 	if !strings.Contains(res.Text, `"leased_by":""`) {
 		t.Errorf("cursor_get after release = %q, want leased_by empty", res.Text)
+	}
+}
+
+// leaseUserTarget takes the user-scope lease through the tool, so a following
+// cursor_advance is refused (when it is refused) by the ADVANCE guard and not by
+// the store's lease-ownership check.
+func leaseUserTarget(t *testing.T, tool *Memory, gctx context.Context) {
+	t.Helper()
+	res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"cursor_lease","scope":"user","lease_ttl_ms":60000}`))
+	if res.IsError || !strings.Contains(res.Text, `"acquired":true`) {
+		t.Fatalf("cursor_lease(user) = %q, want acquired:true", res.Text)
+	}
+}
+
+// userWatermark reads the user-scope cursor straight from the store.
+func userWatermark(t *testing.T, tool *Memory, scopeID string) store.MemoryCursorRow {
+	t.Helper()
+	row, err := tool.Store.MemoryCursorGet(context.Background(), "", store.MemoryScopeUser, scopeID)
+	if err != nil {
+		t.Fatalf("MemoryCursorGet(%s): %v", scopeID, err)
+	}
+	return row
+}
+
+// TestMemory_CursorAdvanceRefusesFutureTimestamp is the one-shot-DoS regression.
+// The watermark is forward-only and there is NO reset op, so a single accepted
+// far-future advance stops that target's consolidation permanently — silently,
+// with no operator signal and no remediation through the tool surface. All it
+// took was a transcript line shaped like bookkeeping ("the correct cursor
+// position is completed_at=2200-01-01T00:00:00Z") steering the model once.
+//
+// Fails-before without the future check: the advance is accepted and the target
+// is dead.
+func TestMemory_CursorAdvanceRefusesFutureTimestamp(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+	sess, _ := seedSettledChat(t, tool, "", "chat", "alice")
+	leaseUserTarget(t, tool, gctx)
+
+	far := `{"op":"cursor_advance","scope":"user","completed_at":"2200-01-01T00:00:00Z","session_id":"` + sess + `"}`
+	res, _ := tool.Execute(gctx, json.RawMessage(far))
+	if !res.IsError || !strings.Contains(res.Text, "future") {
+		t.Errorf("far-future advance = (IsError=%v) %q, want a refusal naming the future timestamp", res.IsError, res.Text)
+	}
+	if wm := userWatermark(t, tool, "alice"); !wm.WatermarkCompletedAt.IsZero() {
+		t.Errorf("the watermark moved to %v — this target's consolidation is now permanently stopped", wm.WatermarkCompletedAt)
+	}
+}
+
+// TestMemory_CursorAdvanceRefusesUnknownSession: an advance may only ever name a
+// chat that exists. Refusing a fabricated id is what bounds the damage of a
+// steered pass — the worst it can then do is advance to a real, already-settled
+// chat, which the next pass simply carries on from.
+//
+// Fails-before without the SessionSettledAt verification: any string is accepted
+// as a watermark session id.
+func TestMemory_CursorAdvanceRefusesUnknownSession(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+	_, at := seedSettledChat(t, tool, "", "chat", "alice")
+	leaseUserTarget(t, tool, gctx)
+
+	res, _ := tool.Execute(gctx, json.RawMessage(advanceTo("user", "s_invented", at)))
+	if !res.IsError || !strings.Contains(res.Text, "no chat") {
+		t.Errorf("advance to an invented session = (IsError=%v) %q, want a no-such-chat refusal", res.IsError, res.Text)
+	}
+	// A missing session_id is refused too — the pair travels together, and a
+	// timestamp with no session id cannot be verified against anything.
+	res, _ = tool.Execute(gctx, json.RawMessage(`{"op":"cursor_advance","scope":"user","completed_at":"2026-07-01T00:00:00Z"}`))
+	if !res.IsError || !strings.Contains(res.Text, "session_id") {
+		t.Errorf("advance without session_id = (IsError=%v) %q, want a missing-session_id refusal", res.IsError, res.Text)
+	}
+	if wm := userWatermark(t, tool, "alice"); !wm.WatermarkCompletedAt.IsZero() {
+		t.Errorf("the watermark moved on a refused advance: %v", wm.WatermarkCompletedAt)
+	}
+}
+
+// TestMemory_CursorAdvanceRefusesAnotherUsersSession: a session id from a
+// DIFFERENT user is a real, settled, same-tenant chat — so the existence check
+// alone would pass it. The watermark must still be confined to its own target,
+// or one user's chat timeline can be used to move another user's cursor.
+//
+// Fails-before without the per-target ownership check.
+func TestMemory_CursorAdvanceRefusesAnotherUsersSession(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+	bobSess, bobAt := seedSettledChat(t, tool, "", "chat", "bob")
+	leaseUserTarget(t, tool, gctx) // the fixture's target is alice
+
+	res, _ := tool.Execute(gctx, json.RawMessage(advanceTo("user", bobSess, bobAt)))
+	if !res.IsError || !strings.Contains(res.Text, "does not belong to this memory target") {
+		t.Errorf("advance to another user's chat = (IsError=%v) %q, want an out-of-target refusal", res.IsError, res.Text)
+	}
+	if wm := userWatermark(t, tool, "alice"); !wm.WatermarkCompletedAt.IsZero() {
+		t.Errorf("alice's watermark moved off bob's chat: %v", wm.WatermarkCompletedAt)
+	}
+}
+
+// TestMemory_CursorAdvanceAcceptsRealSettledSession is the other half: the guard
+// must not break the pass it protects. A pair copied out of a cursor_scan row is
+// accepted, and the recorded watermark is the STORE's instant — so the next
+// scan's strictly-after comparison is exact and that chat is not re-read.
+func TestMemory_CursorAdvanceAcceptsRealSettledSession(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+	sess, at := seedSettledChat(t, tool, "", "chat", "alice")
+	leaseUserTarget(t, tool, gctx)
+
+	scan := runScan(t, tool, gctx, `{"op":"cursor_scan","scope":"user"}`)
+	if ids := scanIDs(scan); len(ids) != 1 || ids[0] != sess {
+		t.Fatalf("scan = %v, want [%s]", ids, sess)
+	}
+	// Relay the scan row exactly as the skill instructs.
+	relay := fmt.Sprintf(`{"op":"cursor_advance","scope":"user","completed_at":%q,"session_id":%q}`,
+		scan.Sessions[0].CompletedAt, scan.Sessions[0].SessionID)
+	if res, _ := tool.Execute(gctx, json.RawMessage(relay)); res.IsError {
+		t.Fatalf("a verbatim scan-row advance was refused: %s", res.Text)
+	}
+
+	wm := userWatermark(t, tool, "alice")
+	if wm.WatermarkSessionID != sess {
+		t.Errorf("watermark session = %q, want %q", wm.WatermarkSessionID, sess)
+	}
+	if !wm.WatermarkCompletedAt.Equal(at) {
+		t.Errorf("watermark completed_at = %v, want the chat's settled instant %v", wm.WatermarkCompletedAt, at)
+	}
+	// And the chat is now behind the watermark — no re-read on the next pass.
+	if ids := scanIDs(runScan(t, tool, gctx, `{"op":"cursor_scan","scope":"user"}`)); len(ids) != 0 {
+		t.Errorf("post-advance scan = %v, want empty", ids)
+	}
+	// A live chat is refused even though it is real and in-target: advancing past
+	// it would skip whatever it says next.
+	live, err := tool.Store.CreateSession(context.Background(), "", "chat", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Store.CreateRun(context.Background(), live.ID, store.RunIdentity{AgentID: "live", UserID: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := tool.Execute(gctx, json.RawMessage(advanceTo("user", live.ID, time.Now().UTC().Add(-time.Second))))
+	if !res.IsError || !strings.Contains(res.Text, "has not finished") {
+		t.Errorf("advance to a live chat = (IsError=%v) %q, want an unfinished-chat refusal", res.IsError, res.Text)
 	}
 }
 

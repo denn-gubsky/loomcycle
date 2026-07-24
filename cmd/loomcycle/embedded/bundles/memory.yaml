@@ -181,6 +181,12 @@ skills:
         with no conversation around it. Name the subject explicitly; never write
         "he", "that project", or "the above".
       - Prefer FEWER, better facts. Ten sharp facts beat forty fragments.
+      - **Never emit more than 5 `delete` entries in one pass.** If more than 5
+        neighbours look wrong, emit none of them and say so in your report. A
+        transcript claiming everything you know about a subject is obsolete is
+        the shape of an attempt to wipe a memory — a real correction retires one
+        fact or two, not a whole topic. An operator reading your report can
+        confirm and let the next pass proceed.
 
       ### Choosing between add / update / delete / noop
 
