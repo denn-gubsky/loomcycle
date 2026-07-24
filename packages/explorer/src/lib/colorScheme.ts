@@ -45,6 +45,11 @@ export const DEFAULT_SCHEME: ColorScheme = {
   "doc.rfc.review": "#6a7bd6",
   "doc.rfc.confirmed": "#3a9ad6",
   "doc.rfc.done": "#3aa06a",
+  // plan documents share the RFC lifecycle vocabulary (draft→review→confirmed→done).
+  "doc.plan.draft": "#c99a3a",
+  "doc.plan.review": "#6a7bd6",
+  "doc.plan.confirmed": "#3a9ad6",
+  "doc.plan.done": "#3aa06a",
   "doc.document.done": "#3aa06a",
   "doc.research.done": "#8a6ad6",
   "doc.publication.draft": "#c99a3a",
@@ -52,6 +57,10 @@ export const DEFAULT_SCHEME: ColorScheme = {
   "chunk.review": "#6a7bd6",
   "chunk.confirmed": "#3a9ad6",
   "chunk.done": "#3aa06a",
+  // PR-workflow chunk statuses (a plan document's PR chunks): queued → active → done.
+  "chunk.backlog": "#8a8f98",
+  "chunk.implementation": "#d1863a",
+  "chunk.merged": "#3aa06a",
 };
 
 // TINT_ALPHA washes every scheme color into a tile background — a tint, not a
