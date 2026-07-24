@@ -33,9 +33,23 @@ import (
 // declares memory_scopes: [agent, user] for its own use; only `user` fans out.
 
 const (
-	// fanoutMetadataKey is the operator-authored marker (schedule def metadata,
-	// never inbound) that turns a schedule into a fan-out. Config, not a
-	// hardcoded agent name, so an operator can point their own agent at it.
+	// fanoutMetadataKey is the schedule-def metadata marker that turns a schedule
+	// into a fan-out. Config, not a hardcoded agent name, so an operator can point
+	// their own agent at it.
+	//
+	// NOT operator-only, despite the shape. ScheduleDef create/fork accepts
+	// Metadata wholesale, so any principal with schedule_def_scopes — including a
+	// runtime meta-agent — can set this key, turning one def into up to
+	// MaxConsolidationTargets runs per tick, each executing under a DISCOVERED
+	// user's identity. There is no discriminator for "materialised from static
+	// yaml" (a bootstrapped static schedule and a runtime-authored one produce
+	// identical substrate rows, and a fork of a static name is indistinguishable
+	// from either), so honouring the marker only for yaml-sourced defs is not
+	// something this layer can implement today. What it does instead is refuse to
+	// be silent: every fan-out fire logs that it is fanning out and how wide,
+	// so a def nobody meant to author is visible in the log rather than only in
+	// the bill. Closing the gap properly needs a provenance column on
+	// schedule_defs — deferred, tracked as the follow-up to this note.
 	fanoutMetadataKey = "memory_consolidation_fanout"
 	// fanoutScopeKey optionally names the target scope. Only "user" is
 	// supported (see the scope note above); an empty value defaults to it.
@@ -103,8 +117,8 @@ type consolidationTarget struct {
 }
 
 // isConsolidationFanout reports whether this schedule dispatches per-target.
-// The marker lives in the def's operator-authored metadata, so it is trusted
-// config — never inbound, never model-supplied.
+// The marker lives in the def's metadata — see fanoutMetadataKey for why that is
+// NOT the same as operator-authored.
 func isConsolidationFanout(def scheduleDef) bool {
 	v, ok := def.Metadata[fanoutMetadataKey]
 	if !ok {
@@ -152,6 +166,15 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 		s.recordFireFailure(ctx, row.DefID, "", "failed", fmt.Errorf("consolidation fan-out: %w", err), now)
 		return
 	}
+
+	// One line per fan-out fire, deliberately. The marker is reachable by anything
+	// holding schedule_def_scopes (see fanoutMetadataKey), and it multiplies one
+	// def into many runs under discovered user identities — the single most
+	// expensive metadata key in the system. An operator must be able to find out
+	// from the log that a def is fanning out, and how wide, without waiting for
+	// the bill. At an hourly cadence this is one line per hour per def.
+	s.logf("scheduler: schedule %q (def %s) carries the consolidation fan-out marker — dispatching up to %d run(s) per tick, each under a discovered user's identity; retire the def if you did not author this",
+		row.Name, row.DefID, s.cfg.MaxConsolidationTargets)
 
 	batchCtx, cancel := context.WithTimeout(ctx, s.cfg.FireTimeout)
 	defer cancel()

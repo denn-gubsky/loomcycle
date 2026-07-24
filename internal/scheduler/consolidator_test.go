@@ -832,6 +832,32 @@ func TestFanout_MixedOutcomesSeparateFailureFromLoad(t *testing.T) {
 	}
 }
 
+// TestFanout_MarkerIsAnnouncedOnEveryFire: the fan-out marker was documented as
+// "operator-authored … never model-supplied", which is false — ScheduleDef
+// create/fork takes Metadata wholesale, so anything with schedule_def_scopes can
+// set it and turn one def into up to MaxConsolidationTargets runs per tick, each
+// under a DISCOVERED user's identity. There is no "came from static yaml"
+// discriminator to gate on, so the mitigation is that it can never be quiet: every
+// fan-out fire announces itself, names the def, and states the width.
+//
+// Fails-before: the fan-out dispatches with nothing in the log to distinguish it
+// from an ordinary schedule.
+func TestFanout_MarkerIsAnnouncedOnEveryFire(t *testing.T) {
+	sched, _, st, logs := fanoutFixture(t, fanoutDef(nil), func(c *Config) {
+		c.MaxConsolidationTargets = 7
+	})
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+	seedSettledSession(t, st, "", "alice")
+
+	fireT(t, sched)
+
+	for _, want := range []string{"consolidation fan-out marker", "sd-test", "up to 7 run(s)", "discovered user"} {
+		if !logs.contains(want) {
+			t.Errorf("the fan-out announcement is missing %q; logs:\n%s", want, logs.all())
+		}
+	}
+}
+
 // TestIsConsolidationFanout_MarkerForms: the marker round-trips through YAML and
 // then through the substrate's JSON, and a hand-edited def may spell it as a
 // string. A def WITHOUT the marker must keep the ordinary single-run path.
