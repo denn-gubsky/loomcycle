@@ -614,3 +614,153 @@ func TestMetrics_FailedSearchMarksSpanErrored(t *testing.T) {
 		t.Errorf("span Status.Code = %v, want Error (failed retrieval must not read as success)", search.Status.Code)
 	}
 }
+
+// ---- RFC BL P2: native MemoryLayer (add / recall / Capabilities) ----
+
+// TestInprocess_Capabilities_MemoryLayerTrue: the in-process backend now
+// advertises the MemoryLayer capability, so the Memory tool routes add/recall
+// here instead of refusing capability_unsupported.
+func TestInprocess_Capabilities_MemoryLayerTrue(t *testing.T) {
+	b := inprocess.New(nil, nil)
+	caps := b.Capabilities()
+	if !caps.MemoryLayer {
+		t.Error("Capabilities().MemoryLayer = false, want true (default backend is now a native layer)")
+	}
+	if !caps.KV || !caps.VectorSearch || !caps.Stats {
+		t.Errorf("Capabilities dropped a flat-Backend capability: %+v", caps)
+	}
+	// The routing hook the tool uses must now succeed.
+	if _, ok := memory.AsMemoryLayer(b); !ok {
+		t.Error("AsMemoryLayer(inprocess) = false; tool would still refuse add/recall")
+	}
+}
+
+// TestInprocess_AddInferTrue_EnqueuesPending: the core (infer=true) path drops
+// the raw messages onto the durable consolidation queue and reports pending —
+// with NO embedder and NO vector support (a bare sqlite backend).
+func TestInprocess_AddInferTrue_EnqueuesPending(t *testing.T) {
+	s, cleanup := newStore(t) // bare sqlite: SupportsVectors() == false
+	defer cleanup()
+	b := inprocess.New(s, nil) // nil embedder — infer=true must not need it
+	ctx := context.Background()
+	scope, id := store.MemoryScopeUser, "alice"
+
+	res, err := b.Add(ctx, scope, id,
+		[]memory.LayerMessage{{Role: "user", Content: "I prefer dark mode"}, {Role: "assistant", Content: "noted"}},
+		memory.AddOptions{Infer: true, Metadata: map[string]string{"src": "chat"}})
+	if err != nil {
+		t.Fatalf("Add(infer=true) on a bare backend must succeed: %v", err)
+	}
+	if res.Status != memory.AddPending {
+		t.Errorf("status = %q, want pending (async consolidation)", res.Status)
+	}
+	if res.EventID == "" {
+		t.Error("pending add must return an EventID (the queue-row correlation handle)")
+	}
+
+	// The row landed on the consolidation queue under (tenant "", scope, id).
+	rows, err := s.MemoryPendingDrain(ctx, "", scope, id, 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingDrain: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("pending queue has %d rows, want 1 (add did not enqueue)", len(rows))
+	}
+	if rows[0].ID != res.EventID {
+		t.Errorf("queue row id %q != returned EventID %q", rows[0].ID, res.EventID)
+	}
+	// The payload carries the verbatim turns for the consolidator.
+	if !strings.Contains(string(rows[0].Payload), "dark mode") || !strings.Contains(string(rows[0].Payload), "noted") {
+		t.Errorf("payload missing the conversation turns: %s", rows[0].Payload)
+	}
+	// infer=true must NOT write a k/v row (extraction is deferred to the queue).
+	if got, _, _ := b.List(ctx, scope, id, "", 100); len(got) != 0 {
+		t.Errorf("infer=true wrote %d k/v rows, want 0 (nothing is stored until consolidation)", len(got))
+	}
+}
+
+// TestInprocess_AddInferFalse_WritesVerbatim: infer=false stores the joined
+// turns as one k/v row (done) that is immediately Get-able by the returned key.
+func TestInprocess_AddInferFalse_WritesVerbatim(t *testing.T) {
+	s, cleanup := newStore(t)
+	defer cleanup()
+	b := inprocess.New(s, nil) // no embedder — verbatim store still works
+	ctx := context.Background()
+	scope, id := store.MemoryScopeAgent, "qa-agent"
+
+	res, err := b.Add(ctx, scope, id,
+		[]memory.LayerMessage{{Role: "user", Content: "line one"}, {Role: "assistant", Content: "line two"}},
+		memory.AddOptions{Infer: false})
+	if err != nil {
+		t.Fatalf("Add(infer=false): %v", err)
+	}
+	if res.Status != memory.AddDone {
+		t.Errorf("status = %q, want done (synchronous verbatim store)", res.Status)
+	}
+	if res.EventID == "" {
+		t.Fatal("verbatim add must return the row key as EventID")
+	}
+	// The row is immediately readable, and holds the joined turns.
+	got, err := b.Get(ctx, scope, id, res.EventID)
+	if err != nil {
+		t.Fatalf("verbatim row not Get-able by returned key: %v", err)
+	}
+	var stored string
+	if err := json.Unmarshal(got.Value, &stored); err != nil {
+		t.Fatalf("verbatim value is not a JSON string: %s", got.Value)
+	}
+	if stored != "line one\nline two" {
+		t.Errorf("stored text = %q, want the newline-joined turns", stored)
+	}
+	// No embedder → the row still landed; the queue stays empty (verbatim ≠ queue).
+	if rows, _ := s.MemoryPendingDrain(ctx, "", scope, id, 10); len(rows) != 0 {
+		t.Errorf("infer=false enqueued %d pending rows, want 0", len(rows))
+	}
+}
+
+// TestInprocess_Recall_ReturnsPlantedFact: recall maps a stored+embedded row
+// onto a RecallFact (key→id, JSON-string value→memory text, cosine→score).
+func TestInprocess_Recall_ReturnsPlantedFact(t *testing.T) {
+	b, _, _, cleanup := vectorFixture(t) // vector-capable store + stub embedder
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeUser, "u1"
+
+	// Plant a fact via the verbatim add path (stores a JSON string + embeds it).
+	if _, err := b.Add(ctx, scope, id,
+		[]memory.LayerMessage{{Role: "user", Content: "alice go rust"}},
+		memory.AddOptions{Infer: false}); err != nil {
+		t.Fatalf("seed add: %v", err)
+	}
+
+	res, err := b.Recall(ctx, scope, id, memory.RecallQuery{Query: "go rust", TopK: 5})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if len(res.Facts) != 1 {
+		t.Fatalf("recall returned %d facts, want 1", len(res.Facts))
+	}
+	f := res.Facts[0]
+	if f.Memory != "alice go rust" {
+		t.Errorf("fact memory = %q, want the decoded verbatim text (not the raw JSON)", f.Memory)
+	}
+	if f.ID == "" {
+		t.Error("fact id (the k/v key) must be non-empty")
+	}
+	if f.Score <= 0 {
+		t.Errorf("fact score = %v, want a positive cosine", f.Score)
+	}
+}
+
+// TestInprocess_Recall_RefusesWithoutVectorStack: recall on a bare backend
+// (no vectors, no embedder) propagates the honest refusal rather than swallowing
+// it into an empty result — the documented RFC BL P2 behavior change.
+func TestInprocess_Recall_RefusesWithoutVectorStack(t *testing.T) {
+	s, cleanup := newStore(t)
+	defer cleanup()
+	b := inprocess.New(s, nil) // bare sqlite: SupportsVectors() == false
+	_, err := b.Recall(context.Background(), store.MemoryScopeUser, "u1", memory.RecallQuery{Query: "x"})
+	if !errors.Is(err, store.ErrVectorUnsupported) {
+		t.Fatalf("Recall on a no-vector store: err = %v, want ErrVectorUnsupported (fail honest, not empty)", err)
+	}
+}
