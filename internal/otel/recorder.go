@@ -354,10 +354,17 @@ const (
 	AttrConsolidateSessionsRead = "loomcycle.memory.consolidate.sessions_read"
 	// AttrConsolidatePendingDrained is how many queue rows the pass acked.
 	AttrConsolidatePendingDrained = "loomcycle.memory.consolidate.pending_drained"
-	// AttrConsolidateCountsTruncated is set when the target holds more keys
-	// than the observation window, so the add/update/supersede counts would be
-	// wrong. They are OMITTED in that case rather than under-reported: a
-	// truncated count that looks plausible is worse than a missing one.
+	// AttrConsolidateCountsTruncated is set when the add/update/supersede counts
+	// could not be determined — the target holds more keys than the observation
+	// window, or a read failed. The counts are OMITTED in that case rather than
+	// reported as 0.
+	//
+	// THIS IS THE RULE FOR EVERY COUNTER HERE: a derived value is emitted only
+	// when its inputs were actually read. Absence means "unknown"; 0 means
+	// "genuinely zero". Reporting an unknown as 0 is the worse failure by far —
+	// every counter on this span has a benign-looking zero (nothing added,
+	// nothing drained, no lag), so an unreadable pass would render as a
+	// perfectly healthy one.
 	AttrConsolidateCountsTruncated = "loomcycle.memory.consolidate.counts_truncated"
 
 	// AttrConsolidateWatermarkLagMs is how far behind now() the target's
@@ -365,8 +372,13 @@ const (
 	// for "is consolidation keeping up". A lag that grows without bound means
 	// that target is stuck: the pass is firing but the watermark is not moving,
 	// which is precisely the livelock the ascending scan and the iteration cap
-	// are designed to prevent. 0 on a target that has never advanced (there is
-	// no meaningful lag against a watermark that was never set).
+	// are designed to prevent.
+	//
+	// ABSENT, never 0, when the target has NEVER advanced or the cursor could
+	// not be read. A never-consolidated target is arguably the most alarming
+	// state there is, and reporting it as lag=0 would render it as the least —
+	// so it is distinguished by the attribute's absence alongside a non-zero
+	// sessions_read.
 	AttrConsolidateWatermarkLagMs = "loomcycle.memory.consolidate.watermark_lag_ms"
 )
 
@@ -426,8 +438,16 @@ type ConsolidateOutcome struct {
 	// CountsTruncated suppresses Added/Updated/Superseded (see
 	// AttrConsolidateCountsTruncated).
 	CountsTruncated bool
-	// WatermarkLag is now() minus the post-pass watermark. Zero when the target
-	// has never advanced.
+	// SessionsReadKnown / PendingDrainedKnown / WatermarkLagKnown gate their
+	// value's emission. Each is false when the underlying read did not happen or
+	// failed, so the attribute is omitted rather than reported as a benign 0 —
+	// see AttrConsolidateCountsTruncated for why that distinction is the whole
+	// point on this span.
+	SessionsReadKnown   bool
+	PendingDrainedKnown bool
+	WatermarkLagKnown   bool
+	// WatermarkLag is now() minus the post-pass watermark. Meaningful only when
+	// WatermarkLagKnown.
 	WatermarkLag time.Duration
 	// Provider / Model are the identities that ACTUALLY served the pass, taken
 	// from the loop's usage events (post-fallback), so they cannot drift from
@@ -446,10 +466,15 @@ func SetMemoryConsolidateResult(span trace.Span, out ConsolidateOutcome) {
 	if span == nil || !span.IsRecording() {
 		return
 	}
-	kvs := []attribute.KeyValue{
-		attribute.Int(AttrConsolidateSessionsRead, out.SessionsRead),
-		attribute.Int(AttrConsolidatePendingDrained, out.PendingDrained),
-		attribute.Int64(AttrConsolidateWatermarkLagMs, out.WatermarkLag.Milliseconds()),
+	var kvs []attribute.KeyValue
+	if out.SessionsReadKnown {
+		kvs = append(kvs, attribute.Int(AttrConsolidateSessionsRead, out.SessionsRead))
+	}
+	if out.PendingDrainedKnown {
+		kvs = append(kvs, attribute.Int(AttrConsolidatePendingDrained, out.PendingDrained))
+	}
+	if out.WatermarkLagKnown {
+		kvs = append(kvs, attribute.Int64(AttrConsolidateWatermarkLagMs, out.WatermarkLag.Milliseconds()))
 	}
 	if out.CountsTruncated {
 		kvs = append(kvs, attribute.Bool(AttrConsolidateCountsTruncated, true))
@@ -468,10 +493,16 @@ func SetMemoryConsolidateResult(span trace.Span, out ConsolidateOutcome) {
 	if out.Model != "" {
 		kvs = append(kvs, attribute.String(AttrModel, out.Model))
 	}
-	span.SetAttributes(kvs...)
+	if len(kvs) > 0 {
+		span.SetAttributes(kvs...)
+	}
 
-	span.AddEvent(EventConsolidateWatermarkLag, trace.WithAttributes(
-		attribute.Int64(AttrConsolidateWatermarkLagMs, out.WatermarkLag.Milliseconds())))
+	// The gauge event fires only for a KNOWN lag: a connector materialising a
+	// gauge from a fabricated 0 would show a stuck target as current.
+	if out.WatermarkLagKnown {
+		span.AddEvent(EventConsolidateWatermarkLag, trace.WithAttributes(
+			attribute.Int64(AttrConsolidateWatermarkLagMs, out.WatermarkLag.Milliseconds())))
+	}
 
 	if out.Err != nil {
 		SetSpanError(span, out.Err)

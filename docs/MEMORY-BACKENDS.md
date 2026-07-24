@@ -185,6 +185,16 @@ its prose would make a pass that silently wrote nothing look healthy:
 | `…consolidate.noop` | The pass changed nothing. The signature of a wedged target, which otherwise looks healthy. |
 | `…consolidate.watermark_lag_ms` | How far behind now() the watermark sits after the pass, also emitted as a span event so a connector can materialise a gauge. **A lag growing without bound is the one signal that a target is stuck.** |
 
+**An unknown value is absent, never 0.** Every counter above is emitted only
+when the read behind it succeeded — so absence means "could not be determined"
+and 0 means "genuinely zero". This matters because each counter has a
+benign-looking zero (nothing added, nothing drained, no lag): a pass whose
+observation failed, or a target that has **never** consolidated anything, would
+otherwise render as a perfectly healthy pass, and a downstream gauge would
+agree. A never-advanced target shows no `watermark_lag_ms` alongside a non-zero
+`sessions_read`; a pass whose reads failed carries
+`…consolidate.counts_truncated`.
+
 The consolidation span is only observed when tracing is configured — the
 before/after reads are gated on the span recording, so an operator without
 OTEL pays nothing for them.
