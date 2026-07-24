@@ -24,6 +24,11 @@ type fakeRunner struct {
 	// onRun is called inside RunOnce. Tests use it to inject delay or
 	// inspect the in-flight call.
 	onRun func(in runner.RunInput)
+	// onCallbacks is called inside RunOnce with the run's callbacks, BEFORE
+	// OnRegistered. The consolidation-telemetry test uses it to drive the
+	// callbacks a real loop would fire (usage events carrying the serving
+	// provider/model, and store writes the pass would have made).
+	onCallbacks func(in runner.RunInput, cb runner.RunCallbacks)
 }
 
 func (f *fakeRunner) RunOnce(_ context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
@@ -32,6 +37,9 @@ func (f *fakeRunner) RunOnce(_ context.Context, in runner.RunInput, cb runner.Ru
 	f.mu.Unlock()
 	if f.onRun != nil {
 		f.onRun(in)
+	}
+	if f.onCallbacks != nil {
+		f.onCallbacks(in, cb)
 	}
 	if cb.OnRegistered != nil {
 		cb.OnRegistered("a_test", "r_test", "", "")

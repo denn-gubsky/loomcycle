@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -543,6 +545,9 @@ func isLocalProvider(providerID string) bool {
 // server-side `scope: user` resolution keys off, so setting it here is what
 // points the pass at this target and nothing else. The def's own user_id is
 // deliberately overridden.
+//
+// This is also where the pass's telemetry is emitted — see observePass for why
+// here and not inside the run.
 func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef, target consolidationTarget) (string, error) {
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
 	in.UserID = target.UserID
@@ -557,11 +562,181 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 	meta[fanoutScopeKey] = string(target.Scope)
 	in.Metadata = meta
 
+	// One loomcycle.memory.consolidate span per pass. The run's ctx is the SPAN's
+	// ctx, so the run's own loomcycle.run / provider.call spans nest underneath —
+	// tokens, model, and per-attempt latency stay sourced from where they are
+	// already authoritative.
+	ctx, span := lcotel.RecordMemoryConsolidate(ctx, lcotel.MemoryConsolidateAttrs{
+		Scope:     string(target.Scope),
+		ScopeID:   target.UserID,
+		AgentName: def.Agent,
+		Tier:      def.UserTier,
+	})
+	defer span.End()
+	before := s.observePass(ctx, target, def.Agent, span.IsRecording())
+
 	var runID string
+	var usage struct {
+		provider string
+		model    string
+	}
+	var usageMu sync.Mutex
 	cb := runner.RunCallbacks{
 		OnRegistered: func(_, id, _, _ string) { runID = id },
+		// The loop populates Usage.Provider/Model with the identity that ACTUALLY
+		// served the call — tryProviderFallback mutates it in place — so reading
+		// them here is drift-free, unlike re-resolving at the dispatcher. OnEvent
+		// may fire from the loop's goroutine, hence the mutex.
+		OnEvent: func(ev providers.Event) {
+			if ev.Usage == nil {
+				return
+			}
+			usageMu.Lock()
+			defer usageMu.Unlock()
+			if ev.Usage.Provider != "" {
+				usage.provider = ev.Usage.Provider
+			}
+			if ev.Usage.Model != "" {
+				usage.model = ev.Usage.Model
+			}
+		},
 	}
-	return runID, s.runner.RunOnce(ctx, in, cb)
+	runErr := s.runner.RunOnce(ctx, in, cb)
+
+	if span.IsRecording() {
+		after := s.observePass(ctx, target, def.Agent, true)
+		usageMu.Lock()
+		provider, model := usage.provider, usage.model
+		usageMu.Unlock()
+		lcotel.SetMemoryConsolidateResult(span, before.diff(after, provider, model, runErr))
+	}
+	return runID, runErr
+}
+
+// consolidateObserveCap bounds the observation window. A target's memory scope is
+// already quota-bounded to a handful of summary keys, so this is only the floor
+// that keeps a pathological scope from turning telemetry into a table walk — and
+// when it trips the counts are omitted rather than under-reported.
+const consolidateObserveCap = 500
+
+// passObservation is the store state a pass is measured against. Two of these —
+// one before, one after — are how the runtime learns what a pass actually DID.
+//
+// WHY OBSERVE THE STORE RATHER THAN READ THE PASS'S REPORT. The pass reports its
+// own added/updated/superseded counts in prose, and it is an LLM: parsing that
+// report into metrics would make the operator's dashboard a measure of the
+// model's phrasing, and a pass that silently wrote nothing while claiming
+// success would look healthy. Row sets, cursor position, and queue depth are
+// facts. So the counts here are a diff of store state, and the two outcomes the
+// runtime genuinely cannot see (a duplicate the pass chose to merge; a fact it
+// chose not to store) are documented as such on the attribute keys rather than
+// given counters that would have to be invented.
+type passObservation struct {
+	// keys maps live memory key -> its updated_at, for the add/update/supersede
+	// diff. nil when unobserved.
+	keys map[string]time.Time
+	// truncated marks the key set as incomplete, so the counts are suppressed.
+	truncated bool
+	// sessionsPastWatermark is the backlog the pass was handed.
+	sessionsPastWatermark int
+	// pendingUndrained is the queue depth.
+	pendingUndrained int
+	// watermark is the cursor's position; zero when never advanced.
+	watermark time.Time
+	// observed is false when telemetry is off, so diff produces a zero outcome.
+	observed bool
+}
+
+// observePass reads the target's consolidation-visible state. It is SKIPPED
+// entirely when the span is not recording: with OTEL unconfigured the tracer is
+// a no-op, and paying for store reads to feed a no-op would tax every operator
+// who never enabled tracing. Read faults degrade to a partial observation rather
+// than failing the pass — telemetry must never break the work it measures.
+func (s *Scheduler) observePass(ctx context.Context, target consolidationTarget, selfAgent string, recording bool) passObservation {
+	if !recording {
+		return passObservation{}
+	}
+	obs := passObservation{keys: map[string]time.Time{}, observed: true}
+
+	entries, truncated, err := s.store.MemoryList(ctx, target.TenantID, target.Scope, target.UserID, "", consolidateObserveCap)
+	if err != nil {
+		obs.truncated = true // counts unknown, not zero
+	} else {
+		obs.truncated = truncated
+		for _, e := range entries {
+			obs.keys[e.Key] = e.UpdatedAt
+		}
+	}
+
+	cursor, err := s.store.MemoryCursorGet(ctx, target.TenantID, target.Scope, target.UserID)
+	if err == nil {
+		obs.watermark = cursor.WatermarkCompletedAt
+	}
+	// selfAgent is EXCLUDED, exactly as the dispatcher's has-new-work probe
+	// excludes it. Each pass creates its own settled session under the target's
+	// user id and never consolidates itself, so those sessions sit past the
+	// watermark forever: counting them would make sessions_read climb by one on
+	// every tick and turn the backlog gauge into a tick counter — the same
+	// perpetual-pass trap the scan's own exclusion closes.
+	sessions, err := s.store.ConsolidatableSessions(ctx, target.TenantID, target.UserID, "", selfAgent,
+		obs.watermark, cursor.WatermarkSessionID, consolidateObserveCap)
+	if err == nil {
+		obs.sessionsPastWatermark = len(sessions)
+	}
+	// pending_drain is a READ (the ack is the side effect), so peeking here does
+	// not consume the queue the pass is about to work on.
+	pending, err := s.store.MemoryPendingDrain(ctx, target.TenantID, target.Scope, target.UserID, consolidateObserveCap)
+	if err == nil {
+		obs.pendingUndrained = len(pending)
+	}
+	return obs
+}
+
+// diff turns a before/after pair into the outcome the span carries.
+//
+// SessionsRead comes from the BEFORE observation (the backlog the pass was
+// handed), while the lag comes from the AFTER one (how far behind it still is) —
+// the two answer different operator questions and taking both from one side
+// would make one of them useless.
+func (before passObservation) diff(after passObservation, provider, model string, err error) lcotel.ConsolidateOutcome {
+	out := lcotel.ConsolidateOutcome{
+		SessionsRead: before.sessionsPastWatermark,
+		Provider:     provider,
+		Model:        model,
+		Err:          err,
+	}
+	if !before.observed || !after.observed {
+		return out
+	}
+	// A negative delta would mean the pass ENQUEUED more than it acked, which is
+	// not a drain; clamp so the counter cannot read as a negative drain.
+	if drained := before.pendingUndrained - after.pendingUndrained; drained > 0 {
+		out.PendingDrained = drained
+	}
+	if !after.watermark.IsZero() {
+		if lag := time.Since(after.watermark); lag > 0 {
+			out.WatermarkLag = lag
+		}
+	}
+	if before.truncated || after.truncated {
+		out.CountsTruncated = true
+		return out
+	}
+	for key, updatedAt := range after.keys {
+		wasAt, existed := before.keys[key]
+		switch {
+		case !existed:
+			out.Added++
+		case updatedAt.After(wasAt):
+			out.Updated++
+		}
+	}
+	for key := range before.keys {
+		if _, still := after.keys[key]; !still {
+			out.Superseded++
+		}
+	}
+	return out
 }
 
 // recordFanoutResult writes the schedule's outcome + next_run_at, mirroring
