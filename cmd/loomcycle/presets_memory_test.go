@@ -39,12 +39,22 @@ func TestConsolidatorBundle_Validates(t *testing.T) {
 	}
 
 	// The tool ceiling: Memory drives the pipeline, History reads the chats,
-	// Document/Path maintain the index, Context is the help surface. Skill is
+	// Document maintains the index, Context is the help surface. Skill is
 	// auto-added for on-demand loading of the body below.
-	for _, want := range []string{"Memory", "History", "Document", "Path", "Skill"} {
+	for _, want := range []string{"Memory", "History", "Document", "Skill"} {
 		if !hasToolPreset(agent.Tools, want) {
 			t.Errorf("memory/consolidator should grant %q; tools=%v", want, agent.Tools)
 		}
+	}
+	// Path must NOT be granted. The pipeline never calls it (Document
+	// get_document / import_md register their own dirents server-side), and
+	// `Path op=rm recursive=true` is a HARD delete — it would sit inside an agent
+	// whose one central safety rule is that consolidation never destroys history,
+	// bypassing the soft-archive (supersede) the whole pipeline is built around.
+	// An unused grant is not free: it is the capability an injected instruction
+	// reaches for.
+	if hasToolPreset(agent.Tools, "Path") {
+		t.Errorf("memory/consolidator grants Path but never calls it — and Path op=rm bypasses the never-destroy-history rule; tools=%v", agent.Tools)
 	}
 	// The consolidation control ops (cursor/supersede/pending queue) are gated by
 	// a grant SEPARATE from memory_scopes — without it every one default-denies.

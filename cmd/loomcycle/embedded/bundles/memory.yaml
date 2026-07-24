@@ -40,7 +40,7 @@ agents:
     # iterations never advances the watermark, so the next pass re-reads the
     # identical page forever. Widen the page only if you widen this too.
     max_iterations: 40
-    tools: [Memory, History, Document, Path, Context]
+    tools: [Memory, History, Document, Context]
     memory_scopes: [agent, user]  # user = the fan-out target; agent = its own bookkeeping
     memory_consolidation: true    # the cursor / supersede / pending-queue control ops
     history_scope: [user]         # narrowest scope that can read the target user's chats
@@ -87,7 +87,7 @@ agents:
 skills:
   memory/consolidate:
     description: The background consolidation pass — lease a target, read its finished chats, distil durable facts, apply them without duplicating, then advance the watermark.
-    tools: [Memory, History, Document, Path, Context]
+    tools: [Memory, History, Document, Context]
     body: |
       # Consolidation pass
 
