@@ -1048,6 +1048,24 @@ type Store interface {
 	// filter and not something a caller can safely post-filter.
 	ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName, excludeAgentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]ConsolidatableSession, error)
 
+	// SessionSettledAt reports WHEN a session settled — max(completed_at) across
+	// its runs — plus the session's owning user id, for a session inside
+	// tenantID. It is the authenticity check behind a consolidation-watermark
+	// advance (RFC BL P2).
+	//
+	// Returns *ErrNotFound when no session with that id exists IN THIS TENANT, so
+	// a caller verifying an untrusted session id gets an opaque refusal instead of
+	// confirming the id exists under someone else. A session that exists but whose
+	// runs have not finished returns the ZERO time and a nil error — "known, not
+	// settled yet" is a different answer from "no such session".
+	//
+	// Why it exists: the consolidation cursor is monotonic and has NO reset op, so
+	// a single bogus far-future watermark would permanently and silently stop a
+	// target's consolidation. Verifying the (session_id, completed_at) pair
+	// against this makes the watermark unforgeable — it can only ever be moved to
+	// a real, already-settled session inside the target's own tenant.
+	SessionSettledAt(ctx context.Context, tenantID, sessionID string) (settledAt time.Time, userID string, err error)
+
 	// RunsForSession returns every run in the session (any status), oldest first.
 	// The archiver uses it to export a session's runs before cascade-deleting it.
 	RunsForSession(ctx context.Context, sessionID string) ([]Run, error)

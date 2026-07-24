@@ -1860,6 +1860,35 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 	return out, rows.Err()
 }
 
+// SessionSettledAt reports a session's max(completed_at) plus its owning user id,
+// tenant-confined (RFC BL P2 watermark authenticity). completed_at is unix-nano
+// here; a session with no finished run yields a NULL max → the zero time.
+func (s *Store) SessionSettledAt(ctx context.Context, tenantID, sessionID string) (time.Time, string, error) {
+	var (
+		userID    sql.NullString
+		completed sql.NullInt64
+	)
+	// LEFT JOIN so a session with zero runs still produces a row — the caller
+	// must be able to tell "exists but unsettled" from "no such session".
+	err := s.db.QueryRowContext(ctx,
+		`SELECT s.user_id, MAX(r.completed_at)
+		 FROM sessions s LEFT JOIN runs r ON r.session_id = s.id
+		 WHERE s.id = ? AND s.tenant_id = ?
+		 GROUP BY s.id, s.user_id`,
+		sessionID, tenantID,
+	).Scan(&userID, &completed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, "", &store.ErrNotFound{Kind: "session", ID: sessionID}
+	}
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	if !completed.Valid {
+		return time.Time{}, userID.String, nil
+	}
+	return time.Unix(0, completed.Int64).UTC(), userID.String, nil
+}
+
 // RunsForSession returns every run in the session (any status), oldest first.
 func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.Run, error) {
 	rows, err := s.db.QueryContext(ctx,

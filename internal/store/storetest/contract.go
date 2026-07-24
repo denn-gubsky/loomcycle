@@ -393,6 +393,9 @@ func Run(t *testing.T, factory Factory) {
 		// RFC BL P2: the consolidator's watermark query — all-terminal only,
 		// strictly-after the composite (completed_at, session_id), ascending.
 		{"ConsolidatableSessionsWatermarkOrder", testConsolidatableSessionsWatermarkOrder},
+		// RFC BL P2: the watermark-authenticity lookup — tenant-confined, and
+		// "exists but unsettled" distinguishable from "no such session".
+		{"SessionSettledAt", testSessionSettledAt},
 		// RFC AF (v1.0.1): the cluster hook registry persists the
 		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
 		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
@@ -1412,6 +1415,84 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 	if !hasSessionID(ids(combined), sessB) {
 		t.Errorf("exclusion + watermark dropped B=%s, the one session that qualifies: %v", sessB, ids(combined))
+	}
+}
+
+// testSessionSettledAt is the RFC BL P2 watermark-authenticity contract. The
+// consolidation cursor is monotonic with no reset op, so an advance is only safe
+// if the (session_id, completed_at) pair can be proven to name a REAL settled
+// session in the caller's own tenant. Four properties:
+//
+//  1. A settled session reports max(completed_at) across its runs, plus its
+//     owning user id — the two facts the advance guard checks.
+//  2. A session with no finished run reports the ZERO time and NO error. This
+//     has to be distinguishable from "no such session": the guard refuses an
+//     unsettled session, but for a different reason than a forged id.
+//  3. An unknown session id is *ErrNotFound.
+//  4. A REAL session id read under a DIFFERENT tenant is *ErrNotFound — the
+//     lookup must not confirm that an id exists somewhere else.
+func testSessionSettledAt(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	sess, err := s.CreateSession(ctx, "settle-tn", "chat", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two runs: the settled instant must be the MAX, not the first or last
+	// inserted, so a query that picks an arbitrary row fails here.
+	var last time.Time
+	for i := 0; i < 2; i++ {
+		run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: fmt.Sprintf("settle-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetRun(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.CompletedAt.After(last) {
+			last = got.CompletedAt
+		}
+	}
+
+	settledAt, userID, err := s.SessionSettledAt(ctx, "settle-tn", sess.ID)
+	if err != nil {
+		t.Fatalf("SessionSettledAt(settled): %v", err)
+	}
+	if userID != "owner-1" {
+		t.Errorf("user_id = %q, want owner-1 — the advance guard needs the owner to refuse another user's session", userID)
+	}
+	if !settledAt.Equal(last.UTC()) {
+		t.Errorf("settled_at = %v, want the max completed_at %v", settledAt, last.UTC())
+	}
+
+	// (2) exists, nothing finished → zero time, no error.
+	live, err := s.CreateSession(ctx, "settle-tn", "chat", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, live.ID, store.RunIdentity{AgentID: "settle-live"}); err != nil {
+		t.Fatal(err)
+	}
+	zero, _, err := s.SessionSettledAt(ctx, "settle-tn", live.ID)
+	if err != nil {
+		t.Fatalf("SessionSettledAt(unsettled) returned an error, want the zero time: %v", err)
+	}
+	if !zero.IsZero() {
+		t.Errorf("settled_at = %v for a session with no finished run, want the zero time", zero)
+	}
+
+	// (3) unknown id.
+	var nf *store.ErrNotFound
+	if _, _, err := s.SessionSettledAt(ctx, "settle-tn", "s_does_not_exist"); !errors.As(err, &nf) {
+		t.Errorf("SessionSettledAt(unknown) error = %v, want *ErrNotFound", err)
+	}
+	// (4) real id, wrong tenant — must be opaque, not a cross-tenant confirmation.
+	if _, _, err := s.SessionSettledAt(ctx, "other-tn", sess.ID); !errors.As(err, &nf) {
+		t.Errorf("SessionSettledAt(real id, other tenant) error = %v, want *ErrNotFound — the tenant filter leaked", err)
 	}
 }
 
