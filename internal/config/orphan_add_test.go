@@ -1,9 +1,49 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestConsolidationCaps_AreOperatorTunable: both fan-out caps were DOCUMENTED as
+// operator-tunable while nothing populated them — the scheduler always fell through
+// to its hardcoded defaults, so an operator setting the knob saw no effect and the
+// doc was simply wrong. This asserts the env→Config path exists, and that leaving
+// them unset stays 0 (which the scheduler reads as "use my documented defaults",
+// NOT as unbounded).
+func TestConsolidationCaps_AreOperatorTunable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte("agents: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("LOOMCYCLE_MAX_CONSOLIDATION_TARGETS", "9")
+	t.Setenv("LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY", "2")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Env.MaxConsolidationTargets != 9 {
+		t.Errorf("MaxConsolidationTargets = %d, want 9 — the env var is not wired", cfg.Env.MaxConsolidationTargets)
+	}
+	if cfg.Env.MaxConsolidationConcurrency != 2 {
+		t.Errorf("MaxConsolidationConcurrency = %d, want 2 — the env var is not wired", cfg.Env.MaxConsolidationConcurrency)
+	}
+
+	// Unset → 0, the sentinel the scheduler turns into its own defaults.
+	t.Setenv("LOOMCYCLE_MAX_CONSOLIDATION_TARGETS", "")
+	t.Setenv("LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY", "")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load (unset): %v", err)
+	}
+	if cfg.Env.MaxConsolidationTargets != 0 || cfg.Env.MaxConsolidationConcurrency != 0 {
+		t.Errorf("unset caps = (%d, %d), want (0, 0) so the scheduler applies its documented defaults",
+			cfg.Env.MaxConsolidationTargets, cfg.Env.MaxConsolidationConcurrency)
+	}
+}
 
 // memAgent builds a memory-capable agent def for the orphan-add advisory tests.
 func memAgent(scopes []string, consolidation bool) AgentDef {

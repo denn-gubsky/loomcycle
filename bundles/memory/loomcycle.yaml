@@ -27,6 +27,22 @@
 #     pgvector). Without it recall refuses and the pass degrades to "write the
 #     new facts, skip the similarity merge" — still correct, just less tidy.
 #
+# COVERAGE LIMIT you need to know about: a pass only reads chats whose runs have
+# ALL reached a terminal state. Interactive runs park at `awaiting_input` and stay
+# `status='running'` until they are ended, so a session left open in the /run
+# terminal is never all-terminal and never gets consolidated — indefinitely, not
+# just for a while. On a deployment where most conversation happens in that
+# terminal, the transcript half of this pipeline sees very little; what covers
+# those turns is the `Memory op=add` queue, which an agent writes explicitly and
+# which this pass drains regardless of session state. If you rely on transcript
+# consolidation, make sure interactive sessions are actually ended.
+#
+# Two fan-out caps are operator-tunable via env:
+#   LOOMCYCLE_MAX_CONSOLIDATION_TARGETS      (default 32) targets per tick
+#   LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY  (default 4)  parallel children;
+#     also the throttle to use if your local model runtime is not recognised as
+#     local by provider-id naming and you do not want it hit in parallel.
+#
 # The operator overlay can override any field by re-declaring the key (last
 # layer wins per field) — retarget the tier, retune the cadence, swap the skill
 # body. It cannot WIDEN tools (the AgentDef capability ceiling is unchanged).

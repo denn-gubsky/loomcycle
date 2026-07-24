@@ -1224,6 +1224,16 @@ func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, 
 // a read-only projection of resolveAgent — the RFC AX operator-key restriction
 // is passed false because this is not admitting a run, only asking where one
 // would land; the real admission still applies its own gate.
+//
+// KNOWN GAP (deferred, not a correctness bug): restricted=false here while the
+// actual fire passes the def's restriction bit. With
+// LOOMCYCLE_OPERATOR_KEY_RESTRICTION on and a restricted def, this probe can
+// therefore answer with a cloud provider that the children will not be allowed to
+// use — they re-resolve under the restriction and may land on a local runtime
+// instead, at which point the batch has already been judged safe to run in
+// parallel and hits the local box N-wide. Threading the def's restriction bit
+// through would fix it; until then LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY is the
+// operator's throttle. See dispatchSerially.
 func (s *Server) ResolveAgentProvider(ctx context.Context, tenantID, userID, agentName, userTier string) (string, error) {
 	providerID, _, _, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, false)
 	return providerID, err

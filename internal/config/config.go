@@ -2932,6 +2932,21 @@ type Env struct {
 	// aborts. Env: LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS.
 	SchedulerFireTimeoutSeconds int
 
+	// MaxConsolidationTargets bounds how many memory-consolidation targets ONE
+	// fan-out tick dispatches (RFC BL P2). 0 → the scheduler default (32). The
+	// per-target watermark makes the fan-out resumable, so the cap defers work to
+	// the next tick rather than dropping it, and a truncated tick is always
+	// logged. Env: LOOMCYCLE_MAX_CONSOLIDATION_TARGETS.
+	MaxConsolidationTargets int
+
+	// MaxConsolidationConcurrency bounds PARALLEL consolidation children when the
+	// resolved model is not local. 0 → the scheduler default (4). A local model
+	// runtime is always dispatched serially regardless of this value. Each child
+	// is a full LLM run, so this is deliberately small — and it is the operator's
+	// escape hatch when the local-provider heuristic does not recognise their
+	// runtime by name. Env: LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY.
+	MaxConsolidationConcurrency int
+
 	// SchedulerEnvAllowlist is the comma-separated env-var name
 	// allowlist for `user_credentials_from_env` resolution. Empty
 	// (default) disables env-credential lookup entirely — a
@@ -3780,6 +3795,19 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.SchedulerFireTimeoutSeconds = n
+		}
+	}
+	// RFC BL P2 consolidation fan-out caps. Left at 0 the scheduler applies its
+	// own documented defaults (32 targets, 4 concurrent), so an unset env is not
+	// "unbounded".
+	if v := os.Getenv("LOOMCYCLE_MAX_CONSOLIDATION_TARGETS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.MaxConsolidationTargets = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.MaxConsolidationConcurrency = n
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST"); v != "" {

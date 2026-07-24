@@ -1046,6 +1046,17 @@ type Store interface {
 	// sessions also accumulate PAST the watermark (a pass never consolidates
 	// itself, so it never advances over them), which is why this is a query
 	// filter and not something a caller can safely post-filter.
+	//
+	// Two known limits, both deferred:
+	//   - limit has a floor (<=0 takes a default) but no CEILING, so a caller can
+	//     ask for an unbounded page. Every in-tree caller clamps its own request
+	//     (Memory op=cursor_scan caps at 50, the has-new-work probe asks for 1),
+	//     so this is a robustness gap rather than a live one.
+	//   - self-exclusion is by NAME, so it holds for exactly one consolidator per
+	//     tenant. Two differently-named consolidators covering one tenant would
+	//     each see the other's sessions as fresh work and consolidate each other's
+	//     reports. Excluding by "holds the consolidation grant" needs the agent's
+	//     resolved config at query time, which the store does not have.
 	ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName, excludeAgentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]ConsolidatableSession, error)
 
 	// SessionSettledAt reports WHEN a session settled — max(completed_at) across

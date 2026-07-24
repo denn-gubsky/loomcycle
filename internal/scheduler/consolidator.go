@@ -63,6 +63,14 @@ const (
 	// candidateScanLimit bounds the session scan that discovers candidate
 	// targets. Sessions come back most-recently-active first, so the scan
 	// window always contains the targets with new work.
+	//
+	// KNOWN GAP (deferred): the window can be STARVED. ListSessions orders
+	// `pinned DESC, last_activity DESC`, so pinned sessions occupy the front
+	// regardless of age, and an empty TenantID filter means "all tenants" at the
+	// store layer — so a shared-tenant schedule draws its 500 rows across every
+	// tenant's sessions. On a large deployment a target with new work can sit
+	// outside the window and never be enumerated. A per-tenant paged scan (or a
+	// dedicated distinct-scope-with-work query) is the fix; deferred.
 	candidateScanLimit = 500
 )
 
@@ -484,6 +492,14 @@ func (s *Scheduler) targetHasNewWork(ctx context.Context, tenantID string, scope
 // target resolving to a local provider serializes the whole batch — as does a
 // target whose provider cannot be resolved at all, because dispatching an
 // unknown volume of parallel work at an unknown backend is the worse failure.
+//
+// KNOWN GAP (deferred): the probe resolves with the operator-key restriction
+// OFF while the fire passes the def's actual restriction bit (see
+// (*http.Server).ResolveAgentProvider). With
+// LOOMCYCLE_OPERATOR_KEY_RESTRICTION on and a restricted def, the probe can
+// answer "anthropic" while the children re-resolve to ollama-local — a batch
+// judged parallel-safe then lands N-wide on the local box.
+// LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY is the operator's throttle meanwhile.
 func (s *Scheduler) dispatchSerially(ctx context.Context, def scheduleDef, targets []consolidationTarget) (bool, string) {
 	if s.providerResolver == nil {
 		return true, "no provider resolver wired — defaulting to serial"
@@ -505,6 +521,14 @@ func (s *Scheduler) dispatchSerially(ctx context.Context, def scheduleDef, targe
 // provider-ID NAMING CONVENTION in the config (`ollama-local`), so the
 // convention is what we match: the exact id, plus the `-local` suffix / `local-`
 // prefix forms an operator may use for their own registrations.
+//
+// KNOWN GAP (deferred): name-matching FALSE-NEGATIVES real local runtimes that do
+// not follow the convention — `localai`, `lmstudio`, `vllm`, or a config-declared
+// `homebox` on the ollama driver all read as remote and get dispatched in
+// parallel at one box. The proper fix is an explicit `local: true` on the
+// `providers:` config entry, so the operator declares it instead of the scheduler
+// guessing from a string; that is a config-schema change and is deferred.
+// LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY is the escape hatch until then.
 func isLocalProvider(providerID string) bool {
 	id := strings.ToLower(strings.TrimSpace(providerID))
 	if id == "" {

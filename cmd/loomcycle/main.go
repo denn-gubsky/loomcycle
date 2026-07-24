@@ -2680,6 +2680,11 @@ func main() {
 			TickInterval: time.Duration(cfg.Env.SchedulerTickSeconds) * time.Second,
 			FireTimeout:  time.Duration(cfg.Env.SchedulerFireTimeoutSeconds) * time.Second,
 			EnvAllowlist: envAllowlist,
+			// RFC BL P2 consolidation fan-out caps. Zero here means "use the
+			// scheduler's documented defaults" (Config.defaults()), so an operator
+			// who sets neither env var still gets 32 targets / 4 concurrent.
+			MaxConsolidationTargets:     cfg.Env.MaxConsolidationTargets,
+			MaxConsolidationConcurrency: cfg.Env.MaxConsolidationConcurrency,
 		}
 		// Materialize static yaml `scheduled_runs:` into the substrate so
 		// they fire autonomously — symmetric with dynamically-created
