@@ -304,6 +304,8 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"inherit_core_blocks":      true,
 		"memory_inject_max_tokens": true,
 		"memory_protocol":          true,
+		"memory_index_max_bytes":   true, // RFC BL P1 — /memory/index soft cap surfaced to the agent
+		"memory_roots":             true, // RFC BL P1 — user-root provisioning control (lazy|force|suppress)
 		"retry_attempts":           true,
 		"run_timeout_seconds":      true, // RFC J per-agent code-js budget (operational, not hashed)
 		"channels":                 true, // F14 — Channel tool ACL on MCP/HTTP-authored agents

@@ -25,6 +25,24 @@ import (
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+)
+
+// user_info composition budget knobs (RFC BL P1 PR4). See composeUserInfo.
+const (
+	// userRootReservationPct is the operator user-root document's first-claim
+	// share of the user_info content budget; the `human` core block fills the
+	// remainder, and either may borrow the other's unused headroom.
+	userRootReservationPct = 60
+	// userInfoStructuralHeadroom reserves bytes for the sub-section labels +
+	// truncation markers so the assembled user_info section stays under the
+	// meminject.Expand token budget (which frames + budgets only CONTENT), and
+	// Expand never rune-truncates the line-truncated body back into a mid-line
+	// cut. Deliberately generous; only the memory CONTENT competes for the rest.
+	userInfoStructuralHeadroom = 160
+	// userInfoTruncMarker flags a boundary-aware truncation (whole trailing
+	// lines dropped, never mid-line). Structural, not counted against the budget.
+	userInfoTruncMarker = "…(truncated)"
 )
 
 // memInject carries the run-entry identity the {{memory:...}} expander needs.
@@ -52,33 +70,64 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	parentInheritable := tools.CoreBlocksPolicy(ctx).Blocks
 	blocks := effectiveCoreBlocks(agentDef.CoreBlocks, agentDef.InheritCoreBlocks, parentInheritable)
 
-	// Fast path: no core blocks and no placeholder → return byte-identical, no
-	// store reads. Keeps every non-memory agent exactly as before.
-	if len(blocks) == 0 && !meminject.References(agentDef.SystemPrompt) {
+	forceRoots := agentDef.MemoryRoots == "force"
+	suppressRoots := agentDef.MemoryRoots == "suppress"
+	wantUserInfo := meminject.ReferencesVariant(agentDef.SystemPrompt, meminject.VariantUserInfo)
+
+	// Fast path: no core blocks, no placeholder, no protocol, no forced
+	// provisioning → return byte-identical with no store reads. Keeps every
+	// non-memory agent exactly as before.
+	if len(blocks) == 0 && !meminject.References(agentDef.SystemPrompt) && !agentDef.MemoryProtocol && !forceRoots {
 		return agentDef, blocks
+	}
+
+	maxTokens := agentDef.MemoryInjectMaxTokens
+	if maxTokens <= 0 {
+		maxTokens = config.DefaultMemoryInjectMaxTokens
+	}
+	maxBytes := maxTokens * 4 // matches meminject.Expand's chars/4 estimator
+
+	// force: pre-provision the user-root document even with no {{memory:user_info}}
+	// reference, so the operator can fill it in before the first run that uses it.
+	if forceRoots {
+		s.ensureUserRootDoc(ctx, mi)
 	}
 
 	sections := make(map[meminject.Variant]string)
 	if body := s.renderCoreBlocks(ctx, mi, blocks); body != "" {
 		sections[meminject.VariantCoreBlocks] = body
 	}
-	if body := s.renderUserInfo(ctx, mi); body != "" {
-		sections[meminject.VariantUserInfo] = body
+	// user_info rendering lazily PROVISIONS the user-root doc — gate it on an
+	// actual reference so a prompt that never mentions user_info never creates it.
+	if wantUserInfo {
+		if body := s.renderUserInfo(ctx, mi, maxBytes, suppressRoots); body != "" {
+			sections[meminject.VariantUserInfo] = body
+		}
 	}
 	if body := s.renderSearchRequest(ctx, mi); body != "" {
 		sections[meminject.VariantSearchRequest] = body
 	}
 	// tenant_info / ontology are accepted variants but resolve to empty in P1
-	// (they need tenant scope + the entity tier — a later phase). memory_protocol
-	// has no variant yet; its protocol note lands with the consolidation tiers.
-
-	maxTokens := agentDef.MemoryInjectMaxTokens
-	if maxTokens <= 0 {
-		maxTokens = config.DefaultMemoryInjectMaxTokens
-	}
+	// (they need tenant scope + the entity tier — a later phase).
 
 	out := agentDef
 	out.SystemPrompt = meminject.Expand(agentDef.SystemPrompt, sections, maxTokens)
+
+	// Prepend the runtime-authored memory protocol in a region ABOVE any
+	// {{memory:...}} DATA blocks. It is trusted guidance (how to USE memory), so
+	// it is not DATA-framed. Deterministic → prompt-cache stable.
+	if agentDef.MemoryProtocol {
+		idx := agentDef.MemoryIndexMaxBytes
+		if idx <= 0 {
+			idx = config.DefaultMemoryIndexMaxBytes
+		}
+		protocol := meminject.MemoryProtocol(idx)
+		if out.SystemPrompt != "" {
+			out.SystemPrompt = protocol + "\n\n" + out.SystemPrompt
+		} else {
+			out.SystemPrompt = protocol
+		}
+	}
 	return out, blocks
 }
 
@@ -138,18 +187,217 @@ func (s *Server) renderCoreBlocks(ctx context.Context, mi memInject, blocks []co
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// renderUserInfo renders the user-scope `human` core block (the user's durable
-// profile). PR4 will prepend the user-root DOCUMENT here; for P3 it is the block.
-func (s *Server) renderUserInfo(ctx context.Context, mi memInject) string {
+// renderUserInfo composes the {{memory:user_info}} section: the operator-authored
+// user-root DOCUMENT first, then the consolidated user-scope `human` core block,
+// each in its own labeled sub-section (the whole thing is DATA-framed by
+// meminject.Expand). The operator doc gets first claim on the content budget
+// (userRootReservationPct); the block fills the remainder; either borrows the
+// other's unused headroom; truncation is boundary-aware. Lazily provisions the
+// user-root doc on this first reference unless suppressed. maxBytes is the total
+// injection byte budget; the returned content is bounded by it (Expand re-caps
+// the grand total).
+func (s *Server) renderUserInfo(ctx context.Context, mi memInject, maxBytes int, suppress bool) string {
 	if s.store == nil || mi.UserID == "" {
 		return ""
 	}
-	// PR4 seam: prepend the user-root document summary above the block.
-	val, ok := s.readCoreBlock(ctx, mi.Tenant, "user", mi.UserID, "human")
-	if !ok {
+	if !suppress {
+		s.ensureUserRootDoc(ctx, mi) // lazy-on-first-reference; serialized per principal
+	}
+	docMD := s.readUserRootMarkdown(ctx, mi)                                   // "" when unavailable
+	humanVal, _ := s.readCoreBlock(ctx, mi.Tenant, "user", mi.UserID, "human") // "" on miss
+	budget := maxBytes - userInfoStructuralHeadroom
+	if budget < 0 {
+		budget = 0
+	}
+	return composeUserInfo(docMD, humanVal, budget)
+}
+
+// composeUserInfo lays out the operator user-root document + the `human` block
+// into two labeled sub-sections under a shared content budget (bytes). The
+// operator doc reserves userRootReservationPct of the budget; the block gets the
+// rest; unused headroom flows to the other side (operator first). Each body is
+// truncated at a LINE boundary with a marker — never mid-line. The sum of the
+// surviving BODY bytes is <= budget (labels + marker are fixed presentation
+// overhead, matching Expand's own "frame is not counted" rule). Pure +
+// deterministic for prompt-cache stability.
+func composeUserInfo(doc, human string, budget int) string {
+	doc = strings.TrimSpace(doc)
+	human = strings.TrimSpace(human)
+	if doc == "" && human == "" {
 		return ""
 	}
-	return val
+	if budget <= 0 {
+		return joinUserInfo(doc, human)
+	}
+	docFloor := budget * userRootReservationPct / 100
+	humanFloor := budget - docFloor
+	docUse := min(len(doc), docFloor)
+	humanUse := min(len(human), humanFloor)
+	// Redistribute unused headroom: the operator doc borrows first (it has the
+	// first claim), then the human block borrows whatever remains.
+	slack := budget - docUse - humanUse
+	if slack > 0 && len(doc) > docUse {
+		take := min(slack, len(doc)-docUse)
+		docUse += take
+		slack -= take
+	}
+	if slack > 0 && len(human) > humanUse {
+		humanUse += min(slack, len(human)-humanUse)
+	}
+	return joinUserInfo(truncateAtLineBoundary(doc, docUse), truncateAtLineBoundary(human, humanUse))
+}
+
+// joinUserInfo assembles the (possibly-truncated) doc + block bodies into their
+// labeled sub-sections, skipping an empty side.
+func joinUserInfo(doc, human string) string {
+	var b strings.Builder
+	if doc != "" {
+		b.WriteString("## Operator-authored user profile\n")
+		b.WriteString(doc)
+	}
+	if human != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("## Learned about the user\n")
+		b.WriteString(human)
+	}
+	return b.String()
+}
+
+// truncateAtLineBoundary returns s cut to at most maxBytes bytes of body at a
+// NEWLINE boundary — whole trailing lines are dropped, never a partial line —
+// with userInfoTruncMarker appended when anything was dropped. A first line that
+// alone exceeds the budget yields only the marker (never a mid-line fragment).
+func truncateAtLineBoundary(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := strings.LastIndexByte(s[:maxBytes], '\n')
+	if cut < 0 {
+		return userInfoTruncMarker // first line already over budget → nothing fits
+	}
+	kept := strings.TrimRight(s[:cut], "\n")
+	if kept == "" {
+		return userInfoTruncMarker
+	}
+	return kept + "\n" + userInfoTruncMarker
+}
+
+// docToolCtx stamps the run's ALREADY-RESOLVED tenant + user (mi, server-sourced;
+// never the wire) onto ctx as a RunIdentity, so the Document tool resolves its
+// user scope to the SAME (tenant, user) the run uses. This reuses the resolved
+// identity — it does NOT introduce a new tenant source — and is needed because
+// WithRunIdentity is not stamped on ctx yet at prompt-assembly time.
+func (s *Server) docToolCtx(ctx context.Context, mi memInject) context.Context {
+	return tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: mi.UserID, TenantID: mi.Tenant})
+}
+
+// ensureUserRootDoc provisions the operator-authored user-root Document from the
+// embedded template the first time it is referenced for a (tenant, user), via the
+// SAME Document create path the Document tool uses (import_md). It closes two
+// duplicate-creation races on the unsynchronized exists-check→create sequence,
+// because createDocument always mints a FRESH doc id (the dirent upsert hides it),
+// so two first-references that both miss the exists-check each import_md and leave
+// a duplicate, orphaned, never-GC'd user-root Document:
+//
+//   - Same process — concurrent first-references for one (tenant,user) collapse
+//     onto a single flight (userRootProvisionSF), so the exists-check + create run
+//     exactly once and the rest share the result. The flight's key is evicted when
+//     it returns, so nothing accumulates per principal (the former persistent memo
+//     grew one entry per distinct principal forever). A repeat, NON-concurrent
+//     reference is cheap and idempotent via the real exists-check below — one
+//     indexed read, dwarfed by the per-run LLM call that gates this path.
+//   - Cross replica — see provisionUserRootDoc: a PG advisory lock admits exactly
+//     one replica to the exists-check + create; a replica that loses it skips this
+//     pass (idempotent — the next reference finds the doc).
+//
+// Best-effort — SQL Memory / store absent, or any failure, degrades to "no doc
+// rendered" (the run continues on the `human` block alone); nothing is cached, so
+// a transient fault retries on the next reference.
+func (s *Server) ensureUserRootDoc(ctx context.Context, mi memInject) {
+	if s.store == nil || s.sqlMem == nil || mi.UserID == "" {
+		return
+	}
+	// The NUL-joined cacheKey is a fine Go map key for the flight; it is NOT
+	// reused for the PG advisory lock (Postgres text params reject NUL 0x00).
+	cacheKey := userRootCacheKey(mi.Tenant, mi.UserID)
+	_, _, _ = s.userRootProvisionSF.Do(cacheKey, func() (any, error) {
+		s.provisionUserRootDoc(ctx, mi)
+		return nil, nil
+	})
+}
+
+// provisionUserRootDoc runs the exists-check + import_md create under the
+// cross-replica advisory lock when clustered. Split out of ensureUserRootDoc so
+// the singleflight closure stays a thin wrapper. Never returns an error —
+// provisioning is best-effort (see ensureUserRootDoc).
+func (s *Server) provisionUserRootDoc(ctx context.Context, mi memInject) {
+	// Cross-replica dedup: in cluster mode hold the PG advisory lock so only one
+	// replica runs the exists-check + create for this principal. A lost lock means
+	// a peer is provisioning — skip (idempotent; the next reference finds the doc).
+	// Nil (single-replica) → the in-process flight is the only guard.
+	if s.sessionLockPG != nil {
+		// NUL-free lock id: pg text params (hashtextextended) reject 0x00, so we do
+		// NOT reuse the NUL-joined userRootCacheKey here. A '/' join can only alias
+		// across principals whose (tenant,user) concatenate identically — harmless,
+		// since a lost lock only skips this pass and the next reference retries
+		// against the principal's own, isolated scope.
+		release, ok := s.sessionLockPG.TryLock(ctx, "memory:userroot:"+mi.Tenant+"/"+mi.UserID)
+		if !ok {
+			return
+		}
+		defer release()
+	}
+
+	dctx := s.docToolCtx(ctx, mi)
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+
+	// Exists-check: a get_document that succeeds means it was provisioned by an
+	// earlier run (this process or another replica) — nothing to do.
+	probe, _ := json.Marshal(map[string]any{"op": "get_document", "scope": "user", "path": meminject.UserRootPath})
+	if res, _ := doc.Execute(dctx, probe); !res.IsError {
+		return
+	}
+
+	create, _ := json.Marshal(map[string]any{
+		"op": "import_md", "scope": "user", "path": meminject.UserRootPath,
+		"markdown": meminject.UserRootTemplate(),
+	})
+	_, _ = doc.Execute(dctx, create) // best-effort; a failure retries next reference
+}
+
+// readUserRootMarkdown exports the user-root Document to clean Markdown for
+// injection. Best-effort: no store / no SQL Memory / no such document → "".
+func (s *Server) readUserRootMarkdown(ctx context.Context, mi memInject) string {
+	if s.store == nil || s.sqlMem == nil || mi.UserID == "" {
+		return ""
+	}
+	dctx := s.docToolCtx(ctx, mi)
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	req, _ := json.Marshal(map[string]any{
+		"op": "export_md", "scope": "user", "path": meminject.UserRootPath, "include_metadata": false,
+	})
+	res, _ := doc.Execute(dctx, req)
+	if res.IsError {
+		return ""
+	}
+	var out struct {
+		Markdown string `json:"markdown"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out.Markdown)
+}
+
+// userRootCacheKey is the NUL-joined memoization key for a provisioned user-root
+// document. Scope is always "user" in P1, so it is folded into the constant.
+func userRootCacheKey(tenant, userID string) string {
+	return "user\x00" + tenant + "\x00" + userID
 }
 
 // renderSearchRequest runs an LLM-free retrieval against the run's initial user

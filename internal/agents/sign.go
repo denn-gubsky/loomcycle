@@ -134,11 +134,15 @@ type AgentContent struct {
 	MaxIterations         int                   `json:"max_iterations,omitempty"`
 	MaxTokens             int                   `json:"max_tokens,omitempty"`
 	MemoryBackend         string                `json:"memory_backend,omitempty"`
-	// MemoryInjectMaxTokens / MemoryProtocol (RFC BL P1) are content-identifying.
-	// Tags sort between memory_backend and memory_quota_bytes.
+	// MemoryIndexMaxBytes / MemoryInjectMaxTokens / MemoryProtocol / MemoryRoots
+	// (RFC BL P1) are content-identifying. Tags are kept in alphabetical order:
+	// memory_index_max_bytes < memory_inject_max_tokens < memory_protocol, and
+	// memory_roots sorts between memory_quota_bytes and memory_scopes.
+	MemoryIndexMaxBytes   int                        `json:"memory_index_max_bytes,omitempty"`
 	MemoryInjectMaxTokens int                        `json:"memory_inject_max_tokens,omitempty"`
 	MemoryProtocol        bool                       `json:"memory_protocol,omitempty"`
 	MemoryQuotaBytes      int                        `json:"memory_quota_bytes,omitempty"`
+	MemoryRoots           string                     `json:"memory_roots,omitempty"`
 	MemoryScopes          []string                   `json:"memory_scopes,omitempty"`
 	Model                 string                     `json:"model,omitempty"`
 	Models                map[string][]TierCandidate `json:"models,omitempty"`
@@ -310,6 +314,8 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		InheritCoreBlocks:     a.InheritCoreBlocks,
 		MemoryInjectMaxTokens: a.MemoryInjectMaxTokens,
 		MemoryProtocol:        a.MemoryProtocol,
+		MemoryIndexMaxBytes:   a.MemoryIndexMaxBytes,
+		MemoryRoots:           a.MemoryRoots,
 	}
 	if len(a.Channels.Publish) > 0 || len(a.Channels.Subscribe) > 0 {
 		c.Channels = &AgentChannelACL{Publish: a.Channels.Publish, Subscribe: a.Channels.Subscribe}

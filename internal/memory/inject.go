@@ -19,6 +19,7 @@
 package memory
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -84,6 +85,23 @@ var placeholderRe = regexp.MustCompile(`(?i)(\\?)\{\{\s*memory\s*:\s*([a-z_]+)\s
 // path — including store reads — for a prompt that references no memory.
 func References(s string) bool {
 	return placeholderRe.MatchString(s)
+}
+
+// ReferencesVariant reports whether s contains an UNESCAPED {{memory:v}}
+// placeholder for the given variant. The caller uses it to gate a variant whose
+// rendering has a SIDE EFFECT (user_info lazily provisions the user-root
+// Document) on an actual reference — so a prompt that never mentions user_info
+// never provisions it. An escaped placeholder is a literal and does not count.
+func ReferencesVariant(s string, v Variant) bool {
+	for _, m := range placeholderRe.FindAllStringSubmatch(s, -1) {
+		if m[1] == `\` {
+			continue
+		}
+		if Variant(strings.ToLower(m[2])) == v {
+			return true
+		}
+	}
+	return false
 }
 
 // UnknownVariants returns the distinct unknown variant names referenced by
@@ -162,6 +180,35 @@ func Expand(prompt string, sections map[Variant]string, maxTokens int) string {
 		}
 	}
 	return out
+}
+
+// MemoryProtocol returns the runtime-authored memory-usage protocol block for an
+// agent that opts in via memory_protocol. Unlike the {{memory:...}} sections this
+// is TRUSTED guidance authored by loomcycle itself — how to USE memory — so it is
+// deliberately NOT wrapped in the <memory> DATA frame; the caller places it ABOVE
+// any {{memory:...}} data blocks. indexMaxBytes is the soft cap the agent is asked
+// to keep its /memory/index document under (rendered in KiB). The text is a pure
+// function of indexMaxBytes, so the assembled system prompt stays byte-stable for
+// provider prompt-caching.
+//
+// HOUSE RULE: this text is model-visible and MUST NOT cite internal RFC letters or
+// numbers — it points the agent to `Context op=help topic=agentic-memory` for the
+// full protocol instead.
+func MemoryProtocol(indexMaxBytes int) string {
+	kib := indexMaxBytes / 1024
+	if kib < 1 {
+		kib = 1
+	}
+	return fmt.Sprintf(`# Memory protocol
+
+You have persistent memory that survives across runs. Follow this protocol:
+
+- Before you start, read your memory index at `+"`/memory/index`"+` (a Document) to recover what you already know; consult it first rather than re-deriving what is recorded there.
+- Keep durable facts, decisions, and learnings — not transient task state.
+- Before you stop, record any new durable learning: put a one-line pointer in `+"`/memory/index`"+` and the detail in `+"`/memory/topics/<slug>`"+`.
+- Keep the index small — aim to hold `+"`/memory/index`"+` under ~%d KB. When it grows past that, move detail out into `+"`/memory/topics/<slug>`"+` and leave only pointers behind.
+
+For the full protocol and conventions, read `+"`Context op=help topic=agentic-memory`"+`.`, kib)
 }
 
 // memoryTagRe matches a literal <memory or </memory token (case-insensitive) —
