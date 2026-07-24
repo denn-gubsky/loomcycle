@@ -1501,6 +1501,22 @@ type Store interface {
 	// no rows returns an empty slice, not an error.
 	MemoryListTenantsForScope(ctx context.Context, scope MemoryScope, scopeID string) ([]string, error)
 
+	// MemoryBumpAccessBatch applies a batch of access-count deltas to the
+	// base memory table (RFC BL hybrid retrieval, OQ #4). For each bump it
+	// runs, per row, an ADDITIVE update:
+	//
+	//	access_count = access_count + delta
+	//	last_accessed_at = GREATEST(last_accessed_at, ts)
+	//
+	// so two replicas' (or two concurrent flushers') deltas SUM and the
+	// timestamp takes the max. Rows are matched on the full
+	// (tenant_id, scope, scope_id, key) key; a bump whose row no longer
+	// exists is a silent no-op (0 rows affected — a row can expire or be
+	// deleted between a search hit and the deferred flush). An empty slice
+	// is a no-op. Backends that don't track access simply update the two
+	// columns PR1 added to the memory table (both sqlite + postgres do).
+	MemoryBumpAccessBatch(ctx context.Context, bumps []MemoryAccessBump) error
+
 	// SupportsVectors reports whether this backend instance can serve
 	// the MemoryEmbed* family. Backends without a vector index loaded
 	// return false; the Memory tool's `search` op + `embed: true`
@@ -1510,6 +1526,16 @@ type Store interface {
 	// installed; SQLite returns false unconditionally (sqlite-vec
 	// support deferred to v0.9.1).
 	SupportsVectors() bool
+
+	// SupportsFullText reports whether the backend can contribute a
+	// keyword (full-text) retrieval leg via MemoryFullTextSearch. Today
+	// only Postgres+pgvector can (migration 0060 adds the tsvector index
+	// behind the pgvector guard); SQLite returns false regardless of build
+	// tag (no tsvector index). It is a NARROWER capability than
+	// SupportsVectors: a store may support vectors but have no full-text
+	// index, in which case a pure-semantic search skips the wasted keyword
+	// round-trip. The in-process backend gates its hybrid over-fetch on this.
+	SupportsFullText() bool
 
 	// MemoryEmbedSet writes the embedding vector for the (scope,
 	// scopeID, key) tuple. Idempotent — re-writes overwrite the
@@ -1546,6 +1572,24 @@ type Store interface {
 	// Backends MUST honour the base table's expires_at filter — a
 	// matching vector for an expired row MUST NOT appear in results.
 	MemoryEmbedSearch(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]MemorySearchEntry, error)
+
+	// MemoryFullTextSearch runs the keyword (lexical) retrieval leg of RFC
+	// BL hybrid retrieval: a Top-K full-text match over the same embedded
+	// entry population MemoryEmbedSearch ranks (memory_embeddings.embed_text
+	// is the canonical searchable text). Same signature-shape and
+	// MemorySearchEntry result as MemoryEmbedSearch, tenant-scoped, honouring
+	// the base row's expires_at and the optional keyPrefix. Results are
+	// ordered best-first by the backend's text relevance (Postgres: ts_rank);
+	// the in-process backend fuses this ordering with the vector ordering via
+	// Reciprocal Rank Fusion, so only the RANK POSITION is load-bearing (the
+	// raw relevance magnitude is not comparable to cosine).
+	//
+	// Empty results return (nil, nil) — NOT an error — and a backend without a
+	// full-text index degrades to (nil, nil) as well (sqlite has no tsvector),
+	// so the caller cleanly falls back to pure-vector retrieval rather than
+	// failing the whole search. Backends MUST populate MemorySearchEntry.Vector
+	// (for the shared dedup pass) and AccessCount when they can.
+	MemoryFullTextSearch(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, queryText string, topK int) ([]MemorySearchEntry, error)
 
 	// MemoryEmbedListByModel returns entries whose stored embedding
 	// was produced by a DIFFERENT (provider, model) than the supplied
@@ -2485,6 +2529,35 @@ type MemorySearchEntry struct {
 		Model    string `json:"model"`
 	} `json:"embedded_with"`
 	Vector []float32 `json:"-"`
+	// SemanticScore is the semantic signal the hybrid ranker scales
+	// (SemanticWeight · SemanticScore) — SEPARATE from Score so ranking never
+	// clobbers the raw-cosine Score the tool renders (RFC BL). For pure-vector
+	// retrieval it equals the cosine; after RRF fusion it is the fused RRF
+	// value (see memory.FuseRRF), while Score stays the raw vector-leg cosine.
+	// Producers (the fusion step, the pure-vector fast path, the mem9 backend)
+	// set it explicitly; json:"-": it feeds ranking, not the agent-facing row.
+	SemanticScore float64 `json:"-"`
+	// AccessCount is the base row's access_count (RFC BL). Populated by the
+	// search legs so the hybrid ranker's frequency_weight term can reward
+	// frequently-recalled entries. Zero when the backend doesn't track it
+	// (e.g. the Mem9 REST backend), which makes the frequency term a no-op
+	// for that entry. json:"-": it feeds ranking, not the agent-facing row.
+	AccessCount int64 `json:"-"`
+}
+
+// MemoryAccessBump is one row's pending access delta for
+// Store.MemoryBumpAccessBatch (RFC BL hybrid retrieval, OQ #4). The
+// in-process backend accumulates these per replica on a search hit and a
+// flusher applies them in batches, so the hot search path never blocks on
+// the access-count write. CountDelta is added to the row's access_count;
+// LastAccess is max-merged into last_accessed_at.
+type MemoryAccessBump struct {
+	TenantID   string
+	Scope      MemoryScope
+	ScopeID    string
+	Key        string
+	CountDelta int64
+	LastAccess time.Time
 }
 
 // MemoryEmbedStats summarises the embedded rows under one scope.
