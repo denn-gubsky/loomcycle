@@ -62,8 +62,11 @@ func consolidatorAgentDef() config.AgentDef {
 }
 
 // newConsolidationEnv builds the server. scripts are the provider's per-call
-// event sequences, in order.
-func newConsolidationEnv(t *testing.T, scripts [][]providers.Event) *consolidationEnv {
+// event sequences, in order. tune, when supplied, adjusts the Memory tool before
+// it is wired in — the eval harness uses it to set a per-scope quota so a
+// refused consolidation write can be asserted (variadic, so existing call sites
+// are unchanged).
+func newConsolidationEnv(t *testing.T, scripts [][]providers.Event, tune ...func(*builtin.Memory)) *consolidationEnv {
 	t.Helper()
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
@@ -84,6 +87,9 @@ func newConsolidationEnv(t *testing.T, scripts [][]providers.Event) *consolidati
 	}
 	memTool := &builtin.Memory{Cfg: cfg}
 	memTool.Store = st
+	for _, fn := range tune {
+		fn(memTool)
+	}
 	histTool := &builtin.History{}
 	histTool.Store = st
 
