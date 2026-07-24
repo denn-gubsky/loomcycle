@@ -209,6 +209,61 @@ func TestConsolidationTelemetry_NoopPassIsFlagged(t *testing.T) {
 			lcotel.AttrConsolidateNoop,
 			ints[lcotel.AttrConsolidateAdded], ints[lcotel.AttrConsolidateUpdated], ints[lcotel.AttrConsolidateSuperseded])
 	}
+	// This target has NEVER advanced its watermark, so the lag must be ABSENT
+	// rather than 0. Emitting 0 would render the most alarming state there is —
+	// a target that has never consolidated anything — as the least alarming one
+	// (perfectly current), and a downstream gauge would agree.
+	if _, present := ints[lcotel.AttrConsolidateWatermarkLagMs]; present {
+		t.Errorf("%s = %d on a target that never advanced; want the attribute ABSENT (unknown), not a fabricated 0",
+			lcotel.AttrConsolidateWatermarkLagMs, ints[lcotel.AttrConsolidateWatermarkLagMs])
+	}
+}
+
+// TestConsolidationTelemetry_UnknownValuesAreOmittedNotZeroed pins the rule that
+// makes every counter on this span trustworthy: a value whose read did not happen
+// is ABSENT, never 0.
+//
+// It matters because each of these counters has a benign-looking zero — nothing
+// added, nothing drained, no lag — so a pass whose observation failed would
+// otherwise render as a perfectly healthy pass. The batch budget expiring
+// mid-pass is the ordinary way that happens, and it is precisely when an operator
+// is looking.
+//
+// FAIL-BEFORE: stamping the counters unconditionally (the original shape) makes
+// every assertion here fail, because the unobserved outcome reports 0 for all of
+// them — verified by reverting the known-bit gates.
+func TestConsolidationTelemetry_UnknownValuesAreOmittedNotZeroed(t *testing.T) {
+	exp := withInMemoryExporter(t)
+
+	// An outcome whose reads all failed: nothing known, so nothing but the
+	// identity attributes may appear.
+	_, span := lcotel.RecordMemoryConsolidate(context.Background(), lcotel.MemoryConsolidateAttrs{
+		Scope: "user", ScopeID: "u-unknown", AgentName: "memory/consolidator",
+	})
+	lcotel.SetMemoryConsolidateResult(span, lcotel.ConsolidateOutcome{CountsTruncated: true})
+	span.End()
+
+	_, _, ints, bools := consolidateSpan(t, exp)
+	for _, key := range []string{
+		lcotel.AttrConsolidateSessionsRead,
+		lcotel.AttrConsolidatePendingDrained,
+		lcotel.AttrConsolidateWatermarkLagMs,
+		lcotel.AttrConsolidateAdded,
+		lcotel.AttrConsolidateUpdated,
+		lcotel.AttrConsolidateSuperseded,
+	} {
+		if v, present := ints[key]; present {
+			t.Errorf("%s = %d on a pass whose observation failed; want it ABSENT — a fabricated 0 reads as a healthy pass", key, v)
+		}
+	}
+	// noop is only meaningful when the counts are trustworthy, so it must not
+	// claim "nothing changed" about a pass nobody could observe.
+	if _, present := bools[lcotel.AttrConsolidateNoop]; present {
+		t.Errorf("%s present on an unobservable pass; want it ABSENT", lcotel.AttrConsolidateNoop)
+	}
+	if !bools[lcotel.AttrConsolidateCountsTruncated] {
+		t.Errorf("%s = false; an unobservable pass must say so", lcotel.AttrConsolidateCountsTruncated)
+	}
 }
 
 // TestConsolidationTelemetry_SessionsReadExcludesThePassOwnSessions guards the

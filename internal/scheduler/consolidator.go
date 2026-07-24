@@ -635,14 +635,25 @@ type passObservation struct {
 	// keys maps live memory key -> its updated_at, for the add/update/supersede
 	// diff. nil when unobserved.
 	keys map[string]time.Time
-	// truncated marks the key set as incomplete, so the counts are suppressed.
-	truncated bool
 	// sessionsPastWatermark is the backlog the pass was handed.
 	sessionsPastWatermark int
 	// pendingUndrained is the queue depth.
 	pendingUndrained int
 	// watermark is the cursor's position; zero when never advanced.
 	watermark time.Time
+
+	// EVERY read has its own known-bit, and a value with a false bit is OMITTED
+	// from the span rather than emitted as 0. This is not defensive padding: each
+	// of these counters has a benign-looking zero (nothing added, nothing
+	// drained, no lag), so a pass whose reads failed — the batch budget expiring
+	// mid-pass is the ordinary way that happens — would otherwise render as a
+	// perfectly healthy one. keysKnown additionally covers TRUNCATION, since a
+	// partial key set produces a plausible-but-wrong diff.
+	keysKnown      bool
+	sessionsKnown  bool
+	pendingKnown   bool
+	watermarkKnown bool
+
 	// observed is false when telemetry is off, so diff produces a zero outcome.
 	observed bool
 }
@@ -659,10 +670,8 @@ func (s *Scheduler) observePass(ctx context.Context, target consolidationTarget,
 	obs := passObservation{keys: map[string]time.Time{}, observed: true}
 
 	entries, truncated, err := s.store.MemoryList(ctx, target.TenantID, target.Scope, target.UserID, "", consolidateObserveCap)
-	if err != nil {
-		obs.truncated = true // counts unknown, not zero
-	} else {
-		obs.truncated = truncated
+	if err == nil && !truncated {
+		obs.keysKnown = true
 		for _, e := range entries {
 			obs.keys[e.Key] = e.UpdatedAt
 		}
@@ -670,6 +679,7 @@ func (s *Scheduler) observePass(ctx context.Context, target consolidationTarget,
 
 	cursor, err := s.store.MemoryCursorGet(ctx, target.TenantID, target.Scope, target.UserID)
 	if err == nil {
+		obs.watermarkKnown = true
 		obs.watermark = cursor.WatermarkCompletedAt
 	}
 	// selfAgent is EXCLUDED, exactly as the dispatcher's has-new-work probe
@@ -681,12 +691,14 @@ func (s *Scheduler) observePass(ctx context.Context, target consolidationTarget,
 	sessions, err := s.store.ConsolidatableSessions(ctx, target.TenantID, target.UserID, "", selfAgent,
 		obs.watermark, cursor.WatermarkSessionID, consolidateObserveCap)
 	if err == nil {
+		obs.sessionsKnown = true
 		obs.sessionsPastWatermark = len(sessions)
 	}
 	// pending_drain is a READ (the ack is the side effect), so peeking here does
 	// not consume the queue the pass is about to work on.
 	pending, err := s.store.MemoryPendingDrain(ctx, target.TenantID, target.Scope, target.UserID, consolidateObserveCap)
 	if err == nil {
+		obs.pendingKnown = true
 		obs.pendingUndrained = len(pending)
 	}
 	return obs
@@ -700,25 +712,33 @@ func (s *Scheduler) observePass(ctx context.Context, target consolidationTarget,
 // would make one of them useless.
 func (before passObservation) diff(after passObservation, provider, model string, err error) lcotel.ConsolidateOutcome {
 	out := lcotel.ConsolidateOutcome{
-		SessionsRead: before.sessionsPastWatermark,
-		Provider:     provider,
-		Model:        model,
-		Err:          err,
+		SessionsRead:      before.sessionsPastWatermark,
+		SessionsReadKnown: before.observed && before.sessionsKnown,
+		Provider:          provider,
+		Model:             model,
+		Err:               err,
 	}
 	if !before.observed || !after.observed {
 		return out
 	}
-	// A negative delta would mean the pass ENQUEUED more than it acked, which is
-	// not a drain; clamp so the counter cannot read as a negative drain.
-	if drained := before.pendingUndrained - after.pendingUndrained; drained > 0 {
-		out.PendingDrained = drained
+	if before.pendingKnown && after.pendingKnown {
+		out.PendingDrainedKnown = true
+		// A negative delta means the target ENQUEUED more during the pass than the
+		// pass acked, which is not a drain; clamp so the counter cannot read as a
+		// negative drain.
+		if drained := before.pendingUndrained - after.pendingUndrained; drained > 0 {
+			out.PendingDrained = drained
+		}
 	}
-	if !after.watermark.IsZero() {
+	// A zero watermark means the target has NEVER consolidated, which is not a
+	// lag of zero — see AttrConsolidateWatermarkLagMs.
+	if after.watermarkKnown && !after.watermark.IsZero() {
 		if lag := time.Since(after.watermark); lag > 0 {
+			out.WatermarkLagKnown = true
 			out.WatermarkLag = lag
 		}
 	}
-	if before.truncated || after.truncated {
+	if !before.keysKnown || !after.keysKnown {
 		out.CountsTruncated = true
 		return out
 	}
