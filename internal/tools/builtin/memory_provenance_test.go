@@ -57,8 +57,12 @@ func TestMemorySet_StampsConsolidatorOriginUnderTheGrant(t *testing.T) {
 // come from the server's view of the run, never the wire. An ordinary agent
 // (no consolidation grant) writing a provenance block gets its class + source
 // ids recorded but NO origin — it cannot label its own writes as consolidator
-// output and poison the "machine-distilled facts" filter. The schema also
-// refuses the field outright (additionalProperties:false inside the block).
+// output and poison the "machine-distilled facts" filter.
+//
+// The Go struct has no Origin field, so the refusal is unconditional whatever the
+// wire says; the schema's additionalProperties:false on the provenance block
+// (asserted separately below) is the belt to that braces, and matters for
+// providers that validate function-call arguments strictly.
 //
 // Fails-before if provenanceForSet ever reads an origin off memoryInput.
 func TestMemorySet_OriginIsNotModelSupplied(t *testing.T) {
@@ -77,6 +81,40 @@ func TestMemorySet_OriginIsNotModelSupplied(t *testing.T) {
 	}
 	if got.Class != "fact" || got.SourceSessionID != "sess-1" {
 		t.Errorf("descriptive provenance = %+v, want class=fact source_session_id=sess-1", got)
+	}
+}
+
+// TestMemory_ProvenanceSchemaIsClosed: the provenance block must declare
+// additionalProperties:false. Two reasons. The comment on
+// TestMemorySet_OriginIsNotModelSupplied claimed it already did and it did not, and
+// a comment that describes a guard which is absent is worse than no comment. And an
+// open sub-object invites a model to send `origin` — silently ignored by the Go
+// decoder, so the model believes it set the writer identity — while providers that
+// validate function-call arguments strictly can now reject it at the boundary
+// instead.
+func TestMemory_ProvenanceSchemaIsClosed(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Provenance struct {
+				AdditionalProperties *bool               `json:"additionalProperties"`
+				Properties           map[string]struct{} `json:"properties"`
+			} `json:"provenance"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(memoryInputSchema), &schema); err != nil {
+		t.Fatalf("decode memoryInputSchema: %v", err)
+	}
+	prov := schema.Properties.Provenance
+	if prov.AdditionalProperties == nil || *prov.AdditionalProperties {
+		t.Error("the provenance block must set additionalProperties:false — an open block invites a model to send `origin`, which the server then silently drops")
+	}
+	if _, ok := prov.Properties["origin"]; ok {
+		t.Error("the provenance schema declares `origin` — the writer identity is server-stamped and must never be offered on the wire")
+	}
+	for _, want := range []string{"class", "source_session_id", "source_run_id"} {
+		if _, ok := prov.Properties[want]; !ok {
+			t.Errorf("closing the block dropped the legitimate field %q", want)
+		}
 	}
 }
 
