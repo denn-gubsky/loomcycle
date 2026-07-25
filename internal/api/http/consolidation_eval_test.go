@@ -168,6 +168,32 @@ func (f evalFixture) fullPassWrites() []string {
 	return writes
 }
 
+// everyMemoryRow is every live row in the store — both scopes, every scope_id —
+// not just the target's.
+//
+// The negative sweep needs this rather than the target's rows: the consolidator
+// also holds AGENT-scope memory for its own bookkeeping, so a secret written there
+// is exactly as durable a leak, and a target-scoped sweep would call it clean.
+func everyMemoryRow(t *testing.T, env *consolidationEnv) []store.MemoryEntry {
+	t.Helper()
+	ctx := context.Background()
+	var out []store.MemoryEntry
+	for _, scope := range []store.MemoryScope{store.MemoryScopeUser, store.MemoryScopeAgent} {
+		sums, err := env.store.MemoryListScopeIDs(ctx, "", scope)
+		if err != nil {
+			t.Fatalf("MemoryListScopeIDs(%s): %v", scope, err)
+		}
+		for _, sum := range sums {
+			entries, _, err := env.store.MemoryList(ctx, "", scope, sum.ScopeID, "", 500)
+			if err != nil {
+				t.Fatalf("MemoryList(%s/%s): %v", scope, sum.ScopeID, err)
+			}
+			out = append(out, entries...)
+		}
+	}
+	return out
+}
+
 // liveEntries is the target's live (non-superseded) memory row set.
 func liveEntries(t *testing.T, env *consolidationEnv) []store.MemoryEntry {
 	t.Helper()
@@ -207,11 +233,14 @@ func runFullPass(t *testing.T, env *consolidationEnv, pendingIDs ...string) (eva
 //     9c. KNOWN-ABSENT FACTS ARE NOT PRESENT — catches a harness that passes by
 //     storing everything, and a pass that fabricates.
 //
-// SCOPE OF THE CLAIM: 9a-9c are properties of the pass's OUTPUT. With a scripted
-// provider they verify the pipeline stores exactly what it was told and nothing
-// more (no injection, no transcript bleed, no over-capture through a reducer) —
-// they do not verify a live model's judgement, which no offline harness can. The
-// checker they run through is itself tested both ways in
+// SCOPE OF THE CLAIM for 9a-9c: what they gate is that the STORE ends up holding
+// exactly the set the tool was handed and nothing more — no injection, no
+// transcript bleed, no over-capture through a reducer, and no row written to some
+// other scope on the side (the sweep covers every scope and scope_id in the store,
+// not just the target's, because the pass also holds agent-scope memory of its
+// own). With a scripted provider they CANNOT detect a model that chooses to leak;
+// the script decides what is written. That is what the live-model suite is for.
+// The checker they run through is itself tested both ways in
 // eval.TestCheckForbidden_DetectsAPlantedLeak.
 //
 // FAIL-BEFORE: dropping the origin stamp in the Memory tool's set path
@@ -237,8 +266,9 @@ func TestConsolidationEval_FullPassIsCleanAndComplete(t *testing.T) {
 	// Invariants 9a-9c FIRST, before the count check below can short-circuit on
 	// t.Fatalf. A leak must report AS a leak: "the secret reached memory" is a
 	// diagnosis, "5 keys, want 2" is a symptom, and the symptom is what a
-	// reviewer would otherwise have to decode.
-	for _, v := range eval.CheckForbidden(live, f.corpus) {
+	// reviewer would otherwise have to decode. Swept over the WHOLE store, so a
+	// row written to another scope is not a hiding place.
+	for _, v := range eval.CheckForbidden(everyMemoryRow(t, env), f.corpus) {
 		t.Error(v)
 	}
 	if len(live) != len(wantKeys) {
@@ -395,7 +425,7 @@ func TestConsolidationEval_WatermarkAdvancesAndLeaseExcludesASecondPass(t *testi
 	// The tool result is a JSON string inside the SSE data frame, so the payload's
 	// own quotes arrive escaped.
 	if !strings.Contains(streamB, `\"acquired\":false`) {
-		t.Errorf("pass B's cursor_lease did not report acquired=false; stream:\n%s", streamB)
+		t.Errorf("pass B's cursor_lease did not report acquired=false; stream:\n%s", redactStream(streamB))
 	}
 	// One refusal per mutating op, so a single one going missing is caught: the
 	// store's advance check and the tool's own gate on supersede / pending_ack.
@@ -430,20 +460,22 @@ func TestConsolidationEval_WatermarkAdvancesAndLeaseExcludesASecondPass(t *testi
 // TestConsolidationEval_ReConsolidationAddsNoDuplicates is invariant 2, and the
 // property that makes a failed pass safe to retry at all.
 //
-// It holds because the skill mints DETERMINISTIC subject-derived keys: the same
-// fact re-derived lands on its own row. A pipeline that appended what it
-// extracted would grow a near-duplicate on every pass, and no dedup threshold
-// saves it — the duplicates are separate rows with separate keys, so they all
-// survive retrieval and split the agent's attention across three phrasings of one
-// fact.
+// WHAT IT GATES, precisely: that a second `set` on an existing key UPSERTS —
+// overwrites the row in place — instead of appending a second row beside it. The
+// re-run deliberately REWORDS each fact, so the in-place assertion is real: a
+// pipeline that appended would end with both phrasings live, and no dedup
+// threshold saves it (separate rows with separate keys both survive retrieval and
+// split the agent's attention across two phrasings of one fact).
 //
-// The re-run deliberately REWORDS each fact, which is what a second model call
-// realistically produces. A harness that replayed byte-identical writes would
-// pass even on a broken append-only pipeline.
+// WHAT IT DOES NOT GATE: that the pass MINTS the same key twice. Deterministic
+// subject-derived key minting is skill discipline — prose in the `memory/consolidate`
+// body — with no runtime guard behind it, and this harness supplies the keys from
+// the fixture. A live model that derived a fresh key per pass would duplicate the
+// fact and pass this test; catching that needs the live-model suite.
 //
 // FAIL-BEFORE: appending a per-pass suffix to the derived key in the scripted
-// writes (the shape of a pipeline that mints a fresh key per pass) doubles the
-// live row count — verified by making that edit.
+// writes doubles the live row count — which is the shape of a pipeline that mints
+// a fresh key per pass, not a production guard being removed.
 func TestConsolidationEval_ReConsolidationAddsNoDuplicates(t *testing.T) {
 	env := newConsolidationEnv(t, nil)
 	f, _ := runFullPass(t, env)
@@ -607,11 +639,20 @@ func TestConsolidationEval_QuotaRefusedWriteFailsLoudly(t *testing.T) {
 	stream := env.runConsolidation(evalUserID)
 
 	if !strings.Contains(stream, "quota") {
-		t.Errorf("a quota-refused consolidation write did not surface a refusal; stream:\n%s", stream)
+		t.Errorf("a quota-refused consolidation write did not surface a refusal; stream:\n%s", redactStream(stream))
 	}
 	if _, err := env.store.MemoryGet(context.Background(), "", store.MemoryScopeUser, evalUserID, fact.Key); err == nil {
 		t.Errorf("the refused fact %q landed anyway — a refusal that still writes is worse than either outcome", fact.Key)
 	}
+}
+
+// redactStream scrubs the planted secret out of an SSE stream before it is quoted
+// into a failure message. The scripts read the transcript that carries the token,
+// so the raw stream contains it — the value is a documented all-zero fake, but the
+// checker redacts its own marker and a harness that then dumps the stream verbatim
+// has trained everyone reading CI output that a credential in the log is normal.
+func redactStream(s string) string {
+	return strings.ReplaceAll(s, eval.FixtureSecret, "<redacted>")
 }
 
 func keyList(entries []store.MemoryEntry) []string {
