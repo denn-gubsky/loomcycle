@@ -1,10 +1,12 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -696,21 +698,40 @@ func (s *ScheduleDef) bootstrapStatic(ctx context.Context, name string, static c
 // defs JOIN), so without this a yaml-only schedule has no run_state row and
 // silently never fires until something forks/run-now's it.
 //
-// Idempotent + fork-respecting: a name that already has an active version is
-// left untouched — whether that version is a prior bootstrap (so restarts
-// don't re-seed / reset next_run_at) or an operator fork (so yaml never
-// clobbers a deliberate override). A name's active pointer + run_state row
-// persist across restarts, so only newly-added yaml schedules are seeded on a
-// subsequent boot.
+// Idempotent + fork-respecting + RECONCILING. A name that already has an
+// active version is compared against the yaml:
 //
-// Intended to run ONCE at boot, before the sweeper starts. Returns the count
-// bootstrapped this call. nil Store/Cfg → no-op.
+//   - identical content → left completely untouched (so restarts don't re-seed
+//     or reset next_run_at; this is the overwhelmingly common case).
+//   - changed content, lineage `bootstrapped_from_static` → a new version is
+//     materialized from the yaml and promoted, and the change is logged. The
+//     yaml is the operator's declaration; it must not be permanently shadowed
+//     by whatever happened to be materialized first.
+//   - changed content, lineage runtime-authored/forked → NOT clobbered. The
+//     persisted def wins and a warning names the drift, so the operator can
+//     see config and reality disagree instead of guessing.
 //
-// NOTE (intentional scope): editing a yaml schedule's cron after it has been
-// materialized does NOT auto-apply on restart (the active version wins);
-// re-fork via the substrate tool to change it. Removing a yaml entry does not
-// retire its substrate row. Those reconciliation refinements are deferred —
-// this method closes the "static schedules never fire" gap only.
+// The reconcile exists because the sweeper's due-query is substrate-only: an
+// operator who set `enabled: true` in yaml and restarted kept a disabled
+// schedule (`last_status: skipped_disabled`, `fire_count: 0`) with nothing
+// anywhere saying why. Silently ignoring operator config is not acceptable;
+// re-materializing is, because a bootstrapped def has no runtime authorship to
+// lose — it IS the yaml, just a stale copy of it.
+//
+// Comparison is on CONTENT, both sides canonicalized through mergedScheduleDef
+// (see canonicalScheduleDefJSON), not on the stored bytes: that way a struct
+// change in a new loomcycle version re-versions at most once, and field-order
+// or omitempty churn never counts as an operator edit.
+//
+// Intended to run ONCE at boot, before the sweeper starts. Returns the count of
+// definitions materialized this call (newly seeded + reconciled). nil
+// Store/Cfg → no-op.
+//
+// NOTE (intentional scope): removing a yaml entry still does not retire its
+// substrate row — a schedule an operator deleted from yaml keeps firing until
+// retired explicitly. That deletion half is deferred deliberately: auto-retiring
+// on absence would make a mistyped preset stack silently disable production
+// schedules.
 func (s *ScheduleDef) BootstrapStaticSchedules(ctx context.Context) (int, error) {
 	if s.Store == nil || s.Cfg == nil {
 		return 0, nil
@@ -726,20 +747,92 @@ func (s *ScheduleDef) BootstrapStaticSchedules(ctx context.Context) (int, error)
 	tenantID := tools.RunIdentity(ctx).TenantID
 	seeded := 0
 	for _, name := range names {
-		_, err := s.Store.ScheduleDefGetActive(ctx, tenantID, name)
+		static := s.Cfg.ScheduledRuns[name]
+		active, err := s.Store.ScheduleDefGetActive(ctx, tenantID, name)
 		if err == nil {
-			continue // already has an active version (prior bootstrap or fork) — leave it
+			// Already materialized — reconcile it against the yaml rather than
+			// letting the first-materialized copy shadow the operator's config.
+			changed, rerr := s.reconcileStaticSchedule(ctx, name, static, active)
+			if rerr != nil {
+				return seeded, fmt.Errorf("bootstrap %q: reconcile: %w", name, rerr)
+			}
+			if changed {
+				seeded++
+			}
+			continue
 		}
 		var nf *store.ErrNotFound
 		if !errors.As(err, &nf) {
 			return seeded, fmt.Errorf("bootstrap %q: get active: %w", name, err)
 		}
-		if _, berr := s.bootstrapStatic(ctx, name, s.Cfg.ScheduledRuns[name]); berr != nil {
+		if _, berr := s.bootstrapStatic(ctx, name, static); berr != nil {
 			return seeded, fmt.Errorf("bootstrap %q: %w", name, berr)
 		}
 		seeded++
 	}
 	return seeded, nil
+}
+
+// reconcileStaticSchedule brings an already-materialized schedule back in line
+// with its yaml. Returns whether a new version was promoted. See
+// BootstrapStaticSchedules for the policy; this is the mechanism.
+func (s *ScheduleDef) reconcileStaticSchedule(ctx context.Context, name string, static config.ScheduledRun, active store.ScheduleDefRow) (bool, error) {
+	want := staticToMergedScheduleDef(static)
+	wantJSON, err := canonicalScheduleDefJSON(want)
+	if err != nil {
+		return false, fmt.Errorf("marshal yaml def: %w", err)
+	}
+	var cur mergedScheduleDef
+	if err := json.Unmarshal(active.Definition, &cur); err != nil {
+		// A definition this method can't parse is one it must not try to
+		// repair — re-materializing would discard content we can't even read.
+		log.Printf("scheduler: schedule %q: active definition is unparseable (%v); leaving it alone", name, err)
+		return false, nil
+	}
+	curJSON, err := canonicalScheduleDefJSON(cur)
+	if err != nil {
+		return false, fmt.Errorf("marshal active def: %w", err)
+	}
+	if bytes.Equal(wantJSON, curJSON) {
+		return false, nil // the common case: nothing to do, don't touch next_run_at
+	}
+
+	// Preserve the runtime-authored layer. A def someone forked or authored at
+	// runtime represents a deliberate override; the yaml must not clobber it.
+	// But it must not shadow the operator SILENTLY either — that is the whole
+	// bug — so name the drift and say how to give the yaml back.
+	if !active.BootstrappedFromStatic {
+		log.Printf("scheduler: schedule %q: yaml differs from the active definition%s, but that definition was authored or forked at runtime — the persisted def WINS. Retire it (ScheduleDef op=retire) to let the yaml re-materialize.",
+			name, describeScheduleEnabledDrift(want, cur))
+		return false, nil
+	}
+
+	if _, err := s.bootstrapStatic(ctx, name, static); err != nil {
+		return false, err
+	}
+	log.Printf("scheduler: schedule %q: yaml changed since it was materialized%s — promoted a new version from the yaml", name, describeScheduleEnabledDrift(want, cur))
+	return true, nil
+}
+
+// describeScheduleEnabledDrift renders ` (yaml says enabled=true but the active
+// def says false)` when the two disagree on `enabled`, else "". Called only on
+// the drift paths. `enabled` gets this treatment specifically because it is the
+// field whose drift is invisible from the outside — a disabled schedule looks
+// exactly like a schedule that simply has not fired yet.
+func describeScheduleEnabledDrift(want, cur mergedScheduleDef) string {
+	if want.Enabled == nil || cur.Enabled == nil || *want.Enabled == *cur.Enabled {
+		return ""
+	}
+	return fmt.Sprintf(" (yaml says enabled=%t but the active def says %t)", *want.Enabled, *cur.Enabled)
+}
+
+// canonicalScheduleDefJSON renders a mergedScheduleDef through the CURRENT
+// struct shape, so the comparison is on content rather than on stored bytes.
+// Re-marshalling the persisted definition this way means an added/removed field
+// in a new loomcycle version cannot masquerade as an operator edit forever — at
+// worst it re-versions once, with the correct content.
+func canonicalScheduleDefJSON(def mergedScheduleDef) ([]byte, error) {
+	return json.Marshal(def)
 }
 
 // validateScheduleDef performs the substrate-side cron + on_complete
