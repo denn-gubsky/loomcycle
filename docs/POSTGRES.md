@@ -54,6 +54,32 @@ PostgreSQL 13–18, so install the extension package matching your server's majo
 (e.g. `postgresql-18-pgvector`, or a `pgvector/pgvector:pg18` image). Without
 pgvector, the embeddings table is skipped gracefully and everything else runs.
 
+### Adding pgvector to an existing database
+
+**Install pgvector before you upgrade.** Migration `0017` creates the
+`memory_embeddings` table only if `CREATE EXTENSION vector` succeeds, and
+golang-migrate tracks a single version pointer — it only applies migrations
+*above* it. So a database that already migrated past `0017` without pgvector
+will never re-run `0017`, however many times you run `loomcycle migrate up`.
+
+Migration `0062_memory_embeddings_repair` is the supported repair path: it
+creates the table (in its fully-migrated shape) when pgvector is present and
+the table is missing. Because it too runs only once, the ordering matters:
+
+| Order | Result |
+|---|---|
+| Install pgvector, **then** upgrade + `migrate up` | ✅ `0062` creates the table; Vector Memory works |
+| Upgrade past `0062` first, **then** install pgvector | ⚠️ table stays absent; Vector Memory stays disabled |
+
+In the second case nothing crashes — `Open()` probes for the table (not just
+the extension) and disables Vector Memory and hybrid (full-text) recall, so
+memory ops refuse with `vector_unsupported` and plain key/value memory is
+unaffected. loomcycle logs one warning at boot naming the fix. There is
+deliberately no boot-time self-healing DDL: loomcycle never issues schema
+changes outside the migration set. To recover, install pgvector and then
+either restore from a dump into a database migrated in the right order, or
+apply the `0062` DDL by hand (see the migration file for the exact statements).
+
 ## Schema migrations
 
 Migrations are embedded in the binary via `golang-migrate/migrate v4`. Two policies:

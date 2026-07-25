@@ -31,17 +31,23 @@ import (
 // a typed ErrDimensionMismatch instead of pgvector's opaque
 // "different vector dimensions" runtime error.
 
-// SupportsVectors reports whether vector ops are available. True
-// only when both Config.PgvectorEnabled was set AND the post-
-// migration extension probe in Open() saw `vector` loaded.
+// SupportsVectors reports whether vector ops are available. True only when
+// Config.PgvectorEnabled was set AND Open()'s probes saw BOTH the `vector`
+// extension loaded AND the memory_embeddings table present. The table is a
+// distinct condition, not a redundant one: a deployment that installed
+// pgvector after already migrating past 0017 has the extension but no table
+// (0017 skipped it and golang-migrate never re-applies a migration — see
+// migration 0062), and reporting true there would send every query at a
+// relation that does not exist.
 func (s *Store) SupportsVectors() bool {
 	return s.pgvectorEnabled
 }
 
 // SupportsFullText reports whether the keyword (full-text) retrieval leg is
 // available (RFC BL). It tracks SupportsVectors exactly: migration 0060's
-// tsvector index lives on memory_embeddings, which exists only behind the
-// pgvector guard, so full-text is available precisely when pgvector is.
+// tsvector column and its GIN index live ON memory_embeddings, so full-text
+// is available precisely when that table is — including the extension-present-
+// but-table-missing case, where both correctly report false.
 func (s *Store) SupportsFullText() bool {
 	return s.pgvectorEnabled
 }
