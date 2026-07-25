@@ -556,14 +556,25 @@ Local models change the economics. A frontier cloud model prefills a 100k-token 
 
 ### The context window (`num_ctx`) — the knob that bites
 
-`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` controls the window for **all** `ollama-local` models. It is sent as `options.num_ctx`, so it both **caps the window the model loads** and **is what the UI context gauge reports**.
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` controls the window for **all** `ollama-local` models (`LOOMCYCLE_OLLAMA_NUM_CTX` does the same for the hosted `ollama` provider). It is sent as `options.num_ctx`, so it both **caps the window the model loads** and **is what the UI context gauge reports**.
 
-- **Unset** → `num_ctx` is omitted; Ollama uses each model's Modelfile `num_ctx`, and the gauge reads the **actual loaded window** from Ollama's `/api/ps` (after the model is in VRAM — it may read 0 while loading).
-- **Set** → that value is forced for every local model and reported verbatim.
+- **Set** → that value is forced for every local model and reported verbatim. Ollama's `/api/ps` is not consulted at all, so this is also the way to override a window you don't want.
+- **Unset** → the driver asks Ollama what the model is currently loaded with (`/api/ps`) and **sends that back** as `options.num_ctx`, so the window it reports is the window it requested. Echoing the loaded window is a no-op for a model already running at that size.
+- **Unset and the window is unknowable** (model not in VRAM yet, a different model resident, an Ollama too old to report it) → `num_ctx` is omitted, exactly as before, so Ollama still applies the model's Modelfile `num_ctx`; the gauge reports Ollama's documented **4096** default as a floor. One turn later `/api/ps` knows the real window and the case above takes over.
+
+> **What changed (and why you may see a different number).** Before this, an unset `NUM_CTX` meant loomcycle *advertised* the `/api/ps` window while sending **no `num_ctx` at all** — it reported a window the request never asked for. That matters beyond the gauge: `autocompact_at_pct` is a percentage **of the advertised window**, so an over-claim both let Ollama truncate the prompt (it drops the overflow silently — no error, just a model answering from a partial view) and kept compaction from firing. The two numbers are now one number.
+
+**When a prompt doesn't fit**, the server log now says so, once per call:
+
+```
+ollama: prompt ~7104 tokens exceeds the 4096-token context window (assumed) for model "glm-4.7-flash" on ollama-local — Ollama silently truncates the overflow; raise the window with LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
+```
+
+The size is an estimate (bytes/4) and gates nothing. `(assumed)` means the window is the 4096 floor above, `(loaded)` that it came from `/api/ps`, `(pinned)` that you set it. Watch for this after a model pull or a restart: a truncated prompt otherwise looks like a model that has simply gone stupid.
 
 Pick a value **every** local model you use can handle (it's global), e.g. `131072`. Too low starves long sessions; too high blows up prefill time and VRAM on a slow GPU. ~128K is a sane middle for a 24GB+ card. A model's *training* context (e.g. 256K) is an upper bound, not what you must load — load only what your GPU can prefill in reasonable time.
 
-> **Symptom:** the gauge shows a small window (e.g. 32K) you didn't expect. Almost always `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is pinned low in the launch env — it's global and overrides the Modelfile. A model also stays resident at whatever window it was first loaded with until it unloads/reloads, so a stale low-context load can linger until the next fresh load.
+> **Symptom:** the gauge shows a small window (e.g. 32K) you didn't expect. Almost always `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is pinned low in the launch env — it's global and overrides the Modelfile. A model also stays resident at whatever window it was first loaded with until it unloads/reloads, so a stale low-context load can linger until the next fresh load. A gauge reading exactly **4096** with nothing pinned is the third case above — Ollama couldn't tell us the window, so that is the floor being reported, not a measurement; it resolves itself once the model is loaded.
 
 ### Slow models — timeouts + heartbeat
 
