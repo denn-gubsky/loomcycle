@@ -70,9 +70,12 @@ func RunMemoryCalibrate(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "memory-calibrate: config: %v", err)
 	}
 
+	// An unknown --embedder, an unconfigured one, or one the config cannot
+	// construct are all "fix the invocation or the yaml" → exit 2. Only the
+	// embed CALL below is operational (a host that will not answer) → exit 1.
 	emb, err := calibrationEmbedder(*embedderKind, *embedDim, cfg)
 	if err != nil {
-		return failOp(stderr, "memory-calibrate: %v", err)
+		return fail(stderr, "memory-calibrate: %v", err)
 	}
 
 	bands := eval.ConfiguredBands{

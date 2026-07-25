@@ -78,8 +78,8 @@ func TestMemoryCalibrate_ReportsTheEmbedderItMeasured(t *testing.T) {
 // number for a model nobody runs.
 func TestMemoryCalibrate_RefusesWithNoConfiguredEmbedder(t *testing.T) {
 	rc, _, errOut := runCalibrate(t, "--config", minimalConfig(t))
-	if rc == 0 {
-		t.Errorf("exit = 0 with no memory.embedder configured, want non-zero")
+	if rc != 2 {
+		t.Errorf("exit = %d with no memory.embedder configured, want 2 (fix the yaml, not the runtime)", rc)
 	}
 	if !strings.Contains(errOut, "no memory.embedder configured") {
 		t.Errorf("stderr = %q, want it to name the missing embedder config", errOut)
@@ -101,8 +101,8 @@ func TestMemoryCalibrate_RejectsABadInvocation(t *testing.T) {
 			}
 		})
 	}
-	if rc, _, _ := runCalibrate(t, "--embedder", "banana", "--config", cfg); rc == 0 {
-		t.Error("exit = 0 for an unknown --embedder, want non-zero")
+	if rc, _, _ := runCalibrate(t, "--embedder", "banana", "--config", cfg); rc != 2 {
+		t.Errorf("exit = %d for an unknown --embedder, want 2 (invocation error)", rc)
 	}
 }
 
