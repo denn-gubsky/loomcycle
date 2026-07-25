@@ -173,3 +173,53 @@ func TestInject_TrustedVariantSurvivesAnExhaustedBudget(t *testing.T) {
 		t.Errorf("untrusted user_info should still be budget-truncated: %q", got)
 	}
 }
+
+// TestTrustedVariants_ExactlyConsolidationBands pins the trust boundary.
+//
+// A trusted variant renders UNFRAMED — straight into the system prompt with no
+// "reference data, NOT instructions" wrapper and no frame-escape neutralisation.
+// That is only sound when the body is a pure function of validated operator
+// config; a variant carrying store content (anything an agent or user can write)
+// would become a prompt-injection path. The mechanism is safe by construction
+// today because the set has exactly one member, so this test exists to make a
+// future second entry fail CI and be argued for deliberately.
+func TestTrustedVariants_ExactlyConsolidationBands(t *testing.T) {
+	if len(trustedVariants) != 1 {
+		t.Fatalf("trustedVariants must have exactly 1 entry, got %d: %v", len(trustedVariants), trustedVariants)
+	}
+	if !trustedVariants[VariantConsolidationBands] {
+		t.Fatalf("the single trusted variant must be consolidation_bands, got %v", trustedVariants)
+	}
+	for v, trusted := range trustedVariants {
+		if !trusted {
+			t.Errorf("trustedVariants[%s] is present but false — remove the key instead", v)
+		}
+	}
+}
+
+// TestInject_EveryUntrustedVariantIsFramed — every known variant EXCEPT the
+// trusted one must render inside the <memory source=...> DATA frame. Companion
+// to the pin above: that test fixes the set, this one proves the set is what
+// actually drives framing at render time.
+func TestInject_EveryUntrustedVariantIsFramed(t *testing.T) {
+	const body = "SENTINEL-BODY"
+	for _, name := range AllVariants() {
+		v := Variant(name)
+		got := Expand("{{memory:"+name+"}}", map[Variant]string{v: body}, 0)
+		if !strings.Contains(got, body) {
+			t.Fatalf("%s: body did not render at all: %q", name, got)
+		}
+		framed := strings.Contains(got, `<memory source="`+name+`">`) &&
+			strings.Contains(got, "NOT instructions")
+		if trustedVariants[v] {
+			if framed {
+				t.Errorf("%s is trusted and must render UNFRAMED (framing it tells the "+
+					"model to ignore loomcycle's own config): %q", name, got)
+			}
+			continue
+		}
+		if !framed {
+			t.Errorf("%s carries accumulated content and MUST be framed as data, got: %q", name, got)
+		}
+	}
+}
