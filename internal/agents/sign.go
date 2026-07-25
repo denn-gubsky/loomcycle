@@ -124,6 +124,13 @@ type AgentContent struct {
 	// omitted); interruption is a pointer for the same empty-struct reason
 	// as Channels above. Tags sort between effort and max_concurrent_children.
 	EvaluationScopes []string `json:"evaluation_scopes,omitempty"`
+	// HistoryScope is the History-tool owner-scope gate. Content-identifying
+	// like MemoryScopes: a fork that changes only which chats the agent may
+	// read must mint a distinct content_sha256, not dedup as identical content.
+	// omitempty keeps an agent that never sets it byte-stable against
+	// pre-feature rows. Tag "history_scope" sorts between evaluation_scopes and
+	// inherit_core_blocks (declaration order = JSON emit order = hash input).
+	HistoryScope []string `json:"history_scope,omitempty"`
 	// InheritCoreBlocks (RFC BL P1) is content-identifying — a fork that flips
 	// it must mint a distinct hash. bool + omitempty keeps pre-feature rows
 	// byte-identical. Tag "inherit_core_blocks" sorts between evaluation_scopes
@@ -170,9 +177,20 @@ type AgentContent struct {
 	//
 	// (RFC BA: `skills:` is deliberately NOT a field here — it is the agent's
 	// pattern-allowlist ACL, excluded from the hash. See the package doc.)
-	Sampling     *Sampling `json:"sampling,omitempty"`
-	SystemPrompt string    `json:"system_prompt,omitempty"`
-	Tier         string    `json:"tier,omitempty"`
+	Sampling *Sampling `json:"sampling,omitempty"`
+	// SqlQuotaBytes / SqlScopes are the SQL-Memory ACL + per-scope byte cap —
+	// content-identifying siblings of MemoryQuotaBytes / MemoryScopes, for the
+	// same reason. omitempty keeps pre-feature rows byte-stable. Tags sort
+	// between sampling/search_providers and system_prompt.
+	//
+	// (`volumes:` is deliberately NOT a field here: a volume NAME resolves
+	// against the operator's own cfg.Volumes, so the same binding grants
+	// different filesystem roots on different deployments — hashing it would
+	// break verify-or-fork across hosts. Excluded like the *_def_scopes gates.)
+	SqlQuotaBytes int      `json:"sql_quota_bytes,omitempty"`
+	SqlScopes     []string `json:"sql_scopes,omitempty"`
+	SystemPrompt  string   `json:"system_prompt,omitempty"`
+	Tier          string   `json:"tier,omitempty"`
 	// Tools is the agent's tool allowlist (the capability ceiling). Tag
 	// "tools" sorts between tier and unbounded_iterations.
 	Tools []string `json:"tools,omitempty"`
@@ -231,6 +249,12 @@ func normalize(c *AgentContent) {
 	}
 	if len(c.EvaluationScopes) == 0 {
 		c.EvaluationScopes = nil
+	}
+	if len(c.HistoryScope) == 0 {
+		c.HistoryScope = nil
+	}
+	if len(c.SqlScopes) == 0 {
+		c.SqlScopes = nil
 	}
 	if len(c.CoreBlocks) == 0 {
 		c.CoreBlocks = nil
@@ -315,6 +339,9 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		MemoryQuotaBytes:      a.MemoryQuotaBytes,
 		MemoryBackend:         a.MemoryBackend,
 		EvaluationScopes:      a.EvaluationScopes,
+		SqlScopes:             a.SqlScopes,
+		SqlQuotaBytes:         a.SqlQuotaBytes,
+		HistoryScope:          a.HistoryScope,
 		// RFC BL P1: core-block config is content-identifying (see AgentContent).
 		CoreBlocks:            a.CoreBlocks,
 		InheritCoreBlocks:     a.InheritCoreBlocks,

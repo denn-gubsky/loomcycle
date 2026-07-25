@@ -90,6 +90,13 @@ type Agent struct {
 	MemoryScopes          []string
 	MemoryQuotaBytes      int
 	MemoryBackend         string
+	// SqlScopes / SqlQuotaBytes / HistoryScope are content-identifying capability
+	// gates (mirrors of config.AgentDef). Carried here so `loomcycle hash agent`
+	// computes the same content_sha256 the deployed substrate does for an agent
+	// that uses them — without this the CLI and the substrate silently disagree.
+	SqlScopes     []string
+	SqlQuotaBytes int
+	HistoryScope  []string
 	// CoreBlocks / InheritCoreBlocks / MemoryInjectMaxTokens / MemoryProtocol
 	// mirror config.AgentDef (RFC BL P1). Carried here so an MD-declared agent
 	// round-trips these to config at boot AND the `hash agent` CLI computes the

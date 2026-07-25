@@ -320,6 +320,16 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"a2a_agent_def_scopes":       true,
 		// RFC AH Phase 2a — the dynamic-volume slice of the F40 closure.
 		"volume_def_scopes": true,
+		// v1.34.0 — the capability gates that were missing from the overlay
+		// entirely, so any fork of an agent using them was born default-deny
+		// (same class as the F40 gap above). sql_scopes / sql_quota_bytes /
+		// history_scope are content-identifying; volumes is not (a volume NAME
+		// resolves against the operator's own cfg.Volumes, so hashing it would
+		// break verify-or-fork across deployments).
+		"sql_scopes":      true,
+		"sql_quota_bytes": true,
+		"history_scope":   true,
+		"volumes":         true,
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateAgentDef{}))
 	for tag := range want {

@@ -882,6 +882,24 @@ type mergedDef struct {
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+	// SqlScopes / SqlQuotaBytes / HistoryScope / Volumes are capability gates
+	// that were missing from this overlay entirely, so any fork of an agent
+	// using them was born DEFAULT-DENY and `bootstrapped_from_static` dropped
+	// them too — the same class as the F40 *_def_scopes gap. Threaded exactly
+	// like MemoryScopes / MemoryQuotaBytes; kept in sync with
+	// lookup.SubstrateAgentDef (the drift test pins it), and a capability drift
+	// test now pins that no future gate on config.AgentDef falls out again.
+	//
+	// SqlScopes / SqlQuotaBytes / HistoryScope are content-identifying (direct
+	// siblings of the already-hashed MemoryScopes / MemoryQuotaBytes). Volumes
+	// is NOT: a volume NAME resolves against the operator's own cfg.Volumes, so
+	// the same binding means different filesystem roots on different
+	// deployments — hashing it would make an otherwise-identical agent fail
+	// verify-or-fork across hosts. Same exclusion rationale as *_def_scopes.
+	SqlScopes     []string `json:"sql_scopes,omitempty"`
+	SqlQuotaBytes int      `json:"sql_quota_bytes,omitempty"`
+	HistoryScope  []string `json:"history_scope,omitempty"`
+	Volumes       []string `json:"volumes,omitempty"`
 	// MemoryBackend mirrors config.AgentDef.MemoryBackend — the named
 	// memory backend this agent routes through. "" = operator default.
 	// RFC I MR-3b.
@@ -1000,6 +1018,21 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.MemoryQuotaBytes != 0 {
 		d.MemoryQuotaBytes = ov.MemoryQuotaBytes
 	}
+	// Capability gates: slice-set-if-supplied / int-set-if-nonzero, the same
+	// idiom as MemoryScopes / MemoryQuotaBytes. Overlays build up; they don't
+	// blank (author a fresh def to revoke).
+	if ov.SqlScopes != nil {
+		d.SqlScopes = ov.SqlScopes
+	}
+	if ov.SqlQuotaBytes != 0 {
+		d.SqlQuotaBytes = ov.SqlQuotaBytes
+	}
+	if ov.HistoryScope != nil {
+		d.HistoryScope = ov.HistoryScope
+	}
+	if ov.Volumes != nil {
+		d.Volumes = ov.Volumes
+	}
 	if ov.MemoryBackend != "" {
 		d.MemoryBackend = ov.MemoryBackend
 	}
@@ -1110,7 +1143,13 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Models:                s.Models,
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
-		MemoryBackend:         s.MemoryBackend,
+		// Capability gates: a static agent bootstrapped into the substrate keeps
+		// them, so a fork of it inherits them instead of coming back default-deny.
+		SqlScopes:     s.SqlScopes,
+		SqlQuotaBytes: s.SqlQuotaBytes,
+		HistoryScope:  s.HistoryScope,
+		Volumes:       s.Volumes,
+		MemoryBackend: s.MemoryBackend,
 		// RFC BL P1: a static agent bootstrapped into the substrate keeps its
 		// core-block config so a fork of it inherits + hashes identically.
 		CoreBlocks:            s.CoreBlocks,
@@ -1227,6 +1266,14 @@ func signFromMergedDef(name string, def mergedDef) string {
 		MemoryQuotaBytes: def.MemoryQuotaBytes,
 		MemoryBackend:    def.MemoryBackend,
 		EvaluationScopes: def.EvaluationScopes,
+		// Content-identifying siblings of MemoryScopes / MemoryQuotaBytes: a fork
+		// that changes ONLY its SQL or History reach must mint a new version
+		// rather than dedup as identical content. omitempty on the AgentContent
+		// side keeps an agent that sets none of them byte-stable. (Volumes is
+		// deliberately NOT here — see the mergedDef field comment.)
+		SqlScopes:     def.SqlScopes,
+		SqlQuotaBytes: def.SqlQuotaBytes,
+		HistoryScope:  def.HistoryScope,
 	}
 	// F14: include the interactive/multi-agent ACLs in the hash so a fork
 	// that changes ONLY channels/interruption/evaluation_scopes mints a new
