@@ -402,10 +402,17 @@ func (s *Server) embedMemoryEntry(ctx context.Context, scope store.MemoryScope, 
 	}
 	// RFC BL: same tenant partition the PUT wrote the k/v row under
 	// (tenantFromCtx reads the principal on the request ctx).
+	//
+	// Dimension is the OBSERVED width, never the embedder's advertised one: a
+	// driver backed by a static (model → dim) table returns 0 for any model
+	// outside it (e.g. the openai driver pointed at a self-hosted server
+	// serving bge-m3), and a stored 0 alongside a real vector makes every later
+	// search in this scope fail dimension_mismatch against an arbitrary probed
+	// row. len(vecs[0]) is always the truth.
 	return s.store.MemoryEmbedSet(ctx, tenantFromCtx(ctx), scope, scopeID, key, store.MemoryEmbedding{
 		Provider:  s.embedder.Provider(),
 		Model:     s.embedder.Model(),
-		Dimension: s.embedder.Dimension(),
+		Dimension: len(vecs[0]),
 		Vector:    vecs[0],
 		EmbedText: text,
 		CreatedAt: time.Now().UTC(),

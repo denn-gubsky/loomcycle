@@ -3955,10 +3955,14 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 				i, scope, e.ScopeID, key, embedErr)
 			continue
 		}
+		// Dimension is the OBSERVED width, never embedder.Dimension(): a driver
+		// backed by a static (model → dim) table returns 0 for any model outside
+		// it, and a stored 0 alongside a real vector poisons every later search
+		// in this scope with dimension_mismatch. len(vecs[0]) is always true.
 		if err := st.MemoryEmbedSet(ctx, "", scope, e.ScopeID, key, store.MemoryEmbedding{
 			Provider:  embedder.Provider(),
 			Model:     embedder.Model(),
-			Dimension: embedder.Dimension(),
+			Dimension: len(vecs[0]),
 			Vector:    vecs[0],
 			EmbedText: string(valBytes),
 			CreatedAt: time.Now().UTC(),

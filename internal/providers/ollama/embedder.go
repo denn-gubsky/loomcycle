@@ -123,11 +123,10 @@ func (e *Embedder) Provider() string { return e.providerID }
 // Matryoshka truncation via the `dimensions` request field, so the width is a
 // runtime fact, not a compile-time one.
 //
-// Every write path that persists a dimension either reads it AFTER an Embed
-// call (cmd/loomcycle bootstrapMemoryEntries, internal/api/http/memory.go) or
-// uses len(vector) directly (history, help index, the reembed admin op), so a
-// pre-first-call 0 never reaches a stored row. It does show as dim=0 in the
-// boot log line and in the /v1/_memory/reembed report until the first embed.
+// No write path persists this value: every site that stores a dimension uses
+// len(vector) from the response it just got, so a pre-first-call 0 cannot reach
+// a stored row whatever the driver advertises. It does show as dim=0 in the boot
+// log line and in the /v1/_memory/reembed report until the first embed.
 func (e *Embedder) Dimension() int { return int(e.dim.Load()) }
 
 // Embed batches texts into chunks of at most e.batchSize and concatenates the
