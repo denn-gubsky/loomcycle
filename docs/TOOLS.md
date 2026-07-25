@@ -345,7 +345,8 @@ enabled …`). `op=capabilities` lets a client **branch before calling**.
   "retention":        {"available": false},
   "code_js":          {"available": false},
   "search":           {"available": true, "providers": ["brave", "searxng"]},
-  "consolidation":    {"available": false, "configured": true},
+  "consolidation":    {"available": false, "configured": true,
+                       "merge_threshold": 0.95, "related_threshold": 0.85},
   "storage":          {"backend": "postgres"},          // admin-only
   "limits": {
     "max_request_bytes": 16777216,
@@ -372,7 +373,12 @@ Every field is read from **live runtime state**, not asserted:
   per-run by nature.
 - `consolidation` separates `configured` from `available`: a staged-off
   consolidator means queued `Memory op=add` items are durable but nothing is
-  draining them — the state that otherwise looks like "recall is broken".
+  draining them — the state that otherwise looks like "recall is broken". It
+  also carries the two similarity bands as **effective** values (an unset band
+  reads as the number in force, never as `0`), because cosine scale is a
+  property of the embedding model: a band this deployment's embedder never
+  reaches means merging can never fire, and nothing else makes that visible.
+  Measure yours with [`loomcycle memory-calibrate`](#calibrating-the-bands--loomcycle-memory-calibrate).
 
 **Security posture.** This surface is readable by every agent and every MCP
 client, so two rules are absolute and CI-enforced by tests driven with planted
