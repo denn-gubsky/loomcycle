@@ -20,7 +20,7 @@ PG_PASSWORD  ?= loomcycle
 
 PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABASE)?sslmode=disable
 
-.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test
+.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock
 
 help:
 	@echo "loomcycle dev targets:"
@@ -29,6 +29,7 @@ help:
 	@echo "  build-all   — build-ui + build → ./bin/loomcycle with the latest UI embedded (use this to deploy)"
 	@echo "  test        — go test ./... (Postgres tests skip without LOOMCYCLE_TEST_PG_DSN)"
 	@echo "  test-pg     — go test ./... with LOOMCYCLE_TEST_PG_DSN set against the local fixture"
+	@echo "  memory-eval-mock — the memory consolidation + retrieval eval gate (offline, no key)"
 	@echo "  pg-up       — start an ephemeral Postgres container for the test fixture"
 	@echo "  pg-down     — stop + remove the test fixture container"
 	@echo "  pg-logs     — tail the test fixture container's logs"
@@ -77,6 +78,30 @@ test:
 test-pg:
 	@echo "Running tests with LOOMCYCLE_TEST_PG_DSN=$(PG_DSN)"
 	LOOMCYCLE_TEST_PG_DSN="$(PG_DSN)" go test ./...
+
+# memory-eval-mock: the memory eval gate — the consolidation pipeline's runtime
+# invariants plus the retrieval-quality harness. Offline and hermetic: mock
+# provider, stub embedder, in-memory SQLite. No network, no API key, no
+# Postgres, seconds not minutes — so it is safe to run per-PR, unlike the
+# runtime-* suites (which boot a binary and wait on cron fires) and unlike
+# runtime-vector (which needs Postgres + pgvector).
+#
+# These tests are ALSO covered by plain `go test ./...`, deliberately: a gate
+# that only fires behind a make target is not a gate. This target exists so a
+# reviewer can run just the memory gate in a couple of seconds when touching
+# the consolidation pipeline, the ranker, or dedup.
+#
+# The two halves live in different packages because they need different
+# machinery — see internal/memory/eval/consolidation_fixtures.go for why.
+memory-eval-mock:
+	@set -e; \
+	echo "=== memory eval: retrieval / erasure / dedup ==="; \
+	go test ./internal/memory/eval/ -run 'TestConsolidationEval|TestCheckForbidden|TestRun_|TestDeterministicEmbedder|TestLoadJSONL' -count=1; \
+	echo "=== memory eval: consolidation pipeline (real loop) ==="; \
+	go test ./internal/api/http/ -run 'TestConsolidat' -count=1; \
+	echo "=== memory eval: consolidation telemetry ==="; \
+	go test ./internal/scheduler/ -run 'TestConsolidationTelemetry' -count=1; \
+	echo "=== memory-eval-mock PASSED ==="
 
 # runtime-mock: the fast, deterministic runtime suites (live binary, mock
 # provider — no real provider, no API key, no Postgres). Each prints

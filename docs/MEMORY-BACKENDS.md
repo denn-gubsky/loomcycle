@@ -116,13 +116,91 @@ implement the memory-layer contract at all. `add` / `recall` honor the
 agent's `memory_scopes` and the run's tenant exactly like the key/value
 ops. See the `memory-layer` `Context.help` topic for the full op reference.
 
+## Background consolidation
+
+`add` returns `pending` because it only **enqueues**. What turns a queued
+conversation into a durable fact is a **consolidation pass**: a scheduled
+agent run that reads settled chats past a per-target watermark, drains the
+queue, and writes the facts — `set` for new or refined ones, `supersede` for
+ones the conversation contradicts.
+
+It is an agent rather than a Go subsystem on purpose. Deciding that "I prefer
+tabs" is durable while "leave the ticket in-progress" is not is a judgement
+call, so it lives in a prompt an operator can read and change.
+
+Two properties make the pass operationally safe:
+
+- **Re-runnable.** Facts are keyed by SUBJECT, not by extraction time, so
+  re-consolidating the same chats overwrites the same rows instead of growing
+  near-duplicates beside them.
+- **Resumable.** The watermark is forward-only and composite
+  (`completed_at`, `session_id`), so an interrupted pass costs at most a
+  repeat of the chats it had not finished — and two chats settling in the same
+  instant cannot collapse into one.
+
+**Consolidation is opt-in.** Without a schedule pointing at a consolidator
+agent, `add` still queues durably and nothing drains it; queued items are not
+lost, just not yet distilled. Every consolidated row carries `origin`,
+`class`, and the source chat/run ids, which is what makes a fact traceable to
+the words that produced it — and what makes removing everything derived from a
+person possible. See the `memory-consolidation` `Context.help` topic for the
+op-level reference and the operator knobs.
+
+| Setting | Effect |
+|---|---|
+| `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). The rest wait for the next tick; the watermark makes that safe. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when a pass resolves to a local model runtime. |
+
+### The eval gate
+
+`make memory-eval-mock` runs the consolidation + retrieval gate: a
+deterministic offline harness (mock provider, stub embedder, in-memory SQLite
+— no network, no API key, a few seconds) pinning the pipeline's runtime
+invariants. Run it before and after any change to the consolidation pipeline,
+the ranker, or dedup. It is also covered by plain `go test ./...`, so it gates
+every PR; the make target exists to run just the memory gate quickly.
+
 ## Observability
 
-Each `memory.search` emits an OTEL span (`loomcycle.memory.search`) tagged
-with `memory.backend` (the resolved backend kind), `memory.top_k`, and
-`memory.recall_latency_ms` — so if a backend that crosses the network is ever
-added, an operator can split its latency against in-process on the existing
-trace dashboards. No secrets, query text, or transcripts are placed on spans.
+Each `memory.search` emits an OTEL span, `loomcycle.memory.search`, whose
+**duration is the retrieval latency** (a downstream spanmetrics connector
+derives the p50/p95 histogram from it — there is no separate latency
+attribute). It is tagged with `loomcycle.memory.backend` (the resolved backend
+kind), `loomcycle.memory.mode` (`hybrid` | `vector`), `loomcycle.memory.top_k`,
+and `loomcycle.memory.deadlink_dropped` — so if a backend that crosses the
+network is ever added, an operator can split its latency against in-process on
+the existing trace dashboards.
+
+Each consolidation pass emits `loomcycle.memory.consolidate`, with the child
+run's own spans nested underneath (so tokens and model come from where they are
+already authoritative). Its counts are a **diff of observed store state**, not
+a parse of the pass's report — the pass is an LLM, and a metric derived from
+its prose would make a pass that silently wrote nothing look healthy:
+
+| Attribute | Meaning |
+|---|---|
+| `…consolidate.added` / `.updated` / `.superseded` | Rows the pass created, rewrote in place, and archived. A duplicate the pass chose to merge appears as `.updated` — under subject-derived keys that IS an in-place rewrite, and the runtime cannot observe the decision itself. |
+| `…consolidate.sessions_read` | Settled chats past the watermark when the pass started — the backlog it was handed. |
+| `…consolidate.pending_drained` | Queue rows the pass acked. |
+| `…consolidate.noop` | The pass changed nothing. The signature of a wedged target, which otherwise looks healthy. |
+| `…consolidate.watermark_lag_ms` | How far behind now() the watermark sits after the pass, also emitted as a span event so a connector can materialise a gauge. **A lag growing without bound is the one signal that a target is stuck.** |
+
+**An unknown value is absent, never 0.** Every counter above is emitted only
+when the read behind it succeeded — so absence means "could not be determined"
+and 0 means "genuinely zero". This matters because each counter has a
+benign-looking zero (nothing added, nothing drained, no lag): a pass whose
+observation failed, or a target that has **never** consolidated anything, would
+otherwise render as a perfectly healthy pass, and a downstream gauge would
+agree. A never-advanced target shows no `watermark_lag_ms` alongside a non-zero
+`sessions_read`; a pass whose reads failed carries
+`…consolidate.counts_truncated`.
+
+The consolidation span is only observed when tracing is configured — the
+before/after reads are gated on the span recording, so an operator without
+OTEL pays nothing for them.
+
+No secrets, query text, transcripts, or memory fact text are placed on any
+span.
 
 ## When to use which
 

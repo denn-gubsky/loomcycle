@@ -52,7 +52,14 @@ type consolidationEnv struct {
 // on is here.
 func consolidatorAgentDef() config.AgentDef {
 	return config.AgentDef{
-		Model:               "stub-model",
+		Model: "stub-model",
+		// The bundle's headroom, and load-bearing here: without it the agent takes
+		// the loop's DEFAULT cap of 16, while the full-pass script is already 15
+		// tool calls. One spare iteration means adding a fourth planted fact or chat
+		// truncates the pass — dropping cursor_advance / cursor_release — and the
+		// full-pass test would stay GREEN on that truncated pass (it never inspects
+		// the cursor), so the symptom would read as a watermark bug.
+		MaxIterations:       60,
 		Tools:               []string{"Memory", "History"},
 		MemoryScopes:        []string{"agent", "user"},
 		MemoryConsolidation: true,
@@ -62,8 +69,11 @@ func consolidatorAgentDef() config.AgentDef {
 }
 
 // newConsolidationEnv builds the server. scripts are the provider's per-call
-// event sequences, in order.
-func newConsolidationEnv(t *testing.T, scripts [][]providers.Event) *consolidationEnv {
+// event sequences, in order. tune, when supplied, adjusts the Memory tool before
+// it is wired in — the eval harness uses it to set a per-scope quota so a
+// refused consolidation write can be asserted (variadic, so existing call sites
+// are unchanged).
+func newConsolidationEnv(t *testing.T, scripts [][]providers.Event, tune ...func(*builtin.Memory)) *consolidationEnv {
 	t.Helper()
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "scripted", Model: "stub-model"},
@@ -84,6 +94,9 @@ func newConsolidationEnv(t *testing.T, scripts [][]providers.Event) *consolidati
 	}
 	memTool := &builtin.Memory{Cfg: cfg}
 	memTool.Store = st
+	for _, fn := range tune {
+		fn(memTool)
+	}
 	histTool := &builtin.History{}
 	histTool.Store = st
 
@@ -344,8 +357,31 @@ func TestConsolidate_UpdateSupersedesSimilar(t *testing.T) {
 			t.Errorf("superseded key %q still listed among live keys %v", staleKey, env.memKeys("alice"))
 		}
 	}
-	// ...but the row is RETAINED: re-writing the same key revives it rather than
-	// inserting a second row, which is only possible if the row survived.
+	// ...but the row is RETAINED. The only Store read that can tell an archive from
+	// a delete is the operator scope-size summary, which does NOT filter
+	// `superseded_at` — every content read (get/list/provenance) filters it and so
+	// behaves identically either way.
+	sums, err := env.store.MemoryListScopeIDs(context.Background(), "", store.MemoryScopeUser)
+	if err != nil {
+		t.Fatalf("MemoryListScopeIDs: %v", err)
+	}
+	counted, found := 0, false
+	for _, sum := range sums {
+		if sum.ScopeID == "alice" {
+			counted, found = sum.KeyCount, true
+		}
+	}
+	if !found {
+		t.Fatalf("no scope summary for alice — the retention assertion would be vacuous")
+	}
+	if want := len(env.memKeys("alice")) + 1; counted != want {
+		t.Errorf("scope key_count = %d, want %d (the live rows + the archived %q) — supersede did not retain the row",
+			counted, want, staleKey)
+	}
+
+	// A re-write onto the archived key revives it, so a preference that flips back
+	// costs one write rather than a new row. (This is the revive path, not the
+	// retention proof: MemorySetProvenance upserts, so it would pass either way.)
 	if err := env.store.MemorySetProvenance(context.Background(), "", store.MemoryScopeUser, "alice", staleKey,
 		json.RawMessage(`"revived"`), 0, store.MemoryProvenance{Origin: "consolidator", Class: "fact"}); err != nil {
 		t.Fatalf("revive: %v", err)
