@@ -57,8 +57,18 @@ memory:
   consolidation:
     merge_threshold: 0.80
 `))
-	if err == nil || !strings.Contains(err.Error(), "related_threshold") {
-		t.Errorf("expected an inverted-band error, got %v", err)
+	if err == nil {
+		t.Fatal("expected an inverted-band error")
+	}
+	// Assert the DEFAULT is what it was compared against. Checking only for
+	// "related_threshold" would also pass if validation read the raw 0 and
+	// tripped the range check instead — a different bug with the same word in
+	// its message.
+	if !strings.Contains(err.Error(), "0.85") {
+		t.Errorf("error must show the default related band (0.85) it was checked against, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "must be <") {
+		t.Errorf("expected the inversion message, got: %v", err)
 	}
 }
 
