@@ -256,12 +256,13 @@ func TestRequestBody_NumCtxOmittedByDefault(t *testing.T) {
 // TestCapabilities_MaxContextTokensReflectsNumCtx pins that the context
 // window the driver advertises equals the operator-pinned num_ctx — the
 // value the interactive terminal's context gauge renders as used/max/%.
-// Without WithNumCtx the per-model window is genuinely unknown (the driver
-// is model-agnostic), so it stays 0 and the gauge shows only the absolute
-// used size. Fail-before: Capabilities hardcoded MaxContextTokens: 0.
+// Without WithNumCtx this static capability is model-agnostic, so it reports
+// Ollama's documented default as a conservative floor rather than 0: 0 meant
+// "unknown" to this driver but reads as "no cap" to every consumer, so an
+// unpinned local model got no gauge and no compaction ceiling at all.
 func TestCapabilities_MaxContextTokensReflectsNumCtx(t *testing.T) {
-	if got := New("ollama-local", "", "", streamhttp.Options{}, nil).Capabilities().MaxContextTokens; got != 0 {
-		t.Errorf("no num_ctx: MaxContextTokens = %d, want 0 (unknown)", got)
+	if got := New("ollama-local", "", "", streamhttp.Options{}, nil).Capabilities().MaxContextTokens; got != defaultNumCtx {
+		t.Errorf("no num_ctx: MaxContextTokens = %d, want %d (conservative default)", got, defaultNumCtx)
 	}
 	if got := New("ollama-local", "", "", streamhttp.Options{}, nil).WithNumCtx(32768).Capabilities().MaxContextTokens; got != 32768 {
 		t.Errorf("num_ctx=32768: MaxContextTokens = %d, want 32768", got)
@@ -557,6 +558,10 @@ func TestRetryEmitsEventToRequestOnEvent(t *testing.T) {
 	var callNum int
 	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" { // window probe — not a chat attempt, don't count
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
 		mu.Lock()
 		callNum++
 		n := callNum
@@ -817,8 +822,10 @@ func jsonString(s string) string {
 // model's ACTUAL loaded context window (read from /api/ps) on the usage event —
 // so the UI gauge is truthful for local models with no explicit num_ctx. An
 // operator num_ctx still wins (exact), and a not-yet-loaded model (absent from
-// /api/ps) reports 0 ("unknown"). Fail-before: the driver never set
+// /api/ps) reports the conservative default. Fail-before: the driver never set
 // usage.MaxContextTokens, so a direct Call always reported 0.
+// See numctx_test.go for the pairing that matters most — the window reported
+// here is the same number sent as options.num_ctx.
 func TestUsage_MaxContextTokensFromLoadedContext(t *testing.T) {
 	chatFrames := `{"model":"qwen3.6:27b","message":{"role":"assistant","content":"ok"},"done":false}` + "\n" +
 		`{"model":"qwen3.6:27b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":10,"eval_count":2}` + "\n"
@@ -867,11 +874,14 @@ func TestUsage_MaxContextTokensFromLoadedContext(t *testing.T) {
 			t.Errorf("MaxContextTokens = %d, want 32768 (operator num_ctx wins)", u.MaxContextTokens)
 		}
 	})
-	t.Run("model not loaded reports 0", func(t *testing.T) {
+	// A window we cannot read is reported as Ollama's documented default, not
+	// as 0 and not as a guess: we send no num_ctx in this case, so whatever
+	// Ollama picks is at least the default — a floor we can't under-deliver on.
+	t.Run("model not loaded reports the conservative default", func(t *testing.T) {
 		srv := newSrv(`{"models":[]}`)
 		defer srv.Close()
-		if u := runCall(t, New("ollama-local", "", srv.URL, streamhttp.Options{}, nil)); u.MaxContextTokens != 0 {
-			t.Errorf("MaxContextTokens = %d, want 0 (model not in /api/ps)", u.MaxContextTokens)
+		if u := runCall(t, New("ollama-local", "", srv.URL, streamhttp.Options{}, nil)); u.MaxContextTokens != defaultNumCtx {
+			t.Errorf("MaxContextTokens = %d, want %d (model not in /api/ps)", u.MaxContextTokens, defaultNumCtx)
 		}
 	})
 }
