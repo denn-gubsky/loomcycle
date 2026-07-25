@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -528,6 +529,33 @@ type EmbedderConfig struct {
 	Provider string `yaml:"provider"`
 	// Model is the wire model id ("text-embedding-3-large" etc.).
 	Model string `yaml:"model"`
+	// BaseURL points the embedder at a self-hosted or alternative
+	// endpoint (a local Ollama, vLLM, LocalAI, Text Embeddings
+	// Inference, an Azure OpenAI deployment, any OpenAI-compatible
+	// gateway). Empty = the driver's own default, so every config
+	// written before this field existed behaves identically. When set
+	// it OVERRIDES the per-provider default cmd/loomcycle picks, and
+	// must be an absolute http(s) URL with a host (validated at load).
+	BaseURL string `yaml:"base_url"`
+	// APIKeyEnv names the ENV VAR holding the credential — never the
+	// credential itself, mirroring the `providers:` map convention.
+	// Empty = the per-provider default env var (OPENAI_API_KEY etc.).
+	// A self-hosted keyless endpoint needs neither.
+	APIKeyEnv string `yaml:"api_key_env"`
+	// Dimensions requests a specific output vector width from models
+	// that support truncation (Matryoshka). 0 = omit the parameter and
+	// keep the model's native size. Honoured today by the `ollama`
+	// driver only.
+	//
+	// Worth setting when the model's native width exceeds 2000: that is
+	// pgvector's ceiling for an HNSW/IVFFlat index, and while loomcycle
+	// creates no vector index today (sequential scan + scope pre-filter,
+	// migration 0017), a wider vector forecloses ever adding one without
+	// re-embedding the whole corpus. Changing this on a populated store
+	// invalidates the stored vectors — the search path compares the
+	// stored `dimension` column first and refuses with
+	// dimension_mismatch until POST /v1/_memory/reembed migrates them.
+	Dimensions int `yaml:"dimensions"`
 	// TimeoutMs overrides LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS for
 	// this specific embedder. 0 = inherit env (30000 default).
 	TimeoutMs int `yaml:"timeout_ms"`
@@ -5805,7 +5833,9 @@ func validate(c *Config) error {
 	// set. Empty block = vector ops refuse with embedder_not_configured
 	// at the tool layer (caught at first use, not boot). Set block
 	// must have a known provider AND a model.
-	if c.Memory.Embedder.Provider != "" || c.Memory.Embedder.Model != "" {
+	if c.Memory.Embedder.Provider != "" || c.Memory.Embedder.Model != "" ||
+		c.Memory.Embedder.BaseURL != "" || c.Memory.Embedder.APIKeyEnv != "" ||
+		c.Memory.Embedder.Dimensions != 0 {
 		if c.Memory.Embedder.Provider == "" {
 			return fmt.Errorf("memory.embedder: provider is required when embedder block is set")
 		}
@@ -5829,10 +5859,38 @@ func validate(c *Config) error {
 		if c.Memory.Embedder.BatchSize < 0 {
 			return fmt.Errorf("memory.embedder.batch_size must be >= 0")
 		}
+		if c.Memory.Embedder.Dimensions < 0 {
+			return fmt.Errorf("memory.embedder.dimensions must be >= 0")
+		}
+		if c.Memory.Embedder.BaseURL != "" {
+			if err := requireHTTPBaseURL("memory.embedder.base_url", c.Memory.Embedder.BaseURL); err != nil {
+				return err
+			}
+		}
 	}
 	// Non-fatal: memory scopes that can enqueue but have no consolidator to
 	// drain them. Runs last so it sees the fully-validated agents + schedules.
 	c.Warnings = append(c.Warnings, orphanAddWarnings(c.Agents, c.ScheduledRuns)...)
+	return nil
+}
+
+// requireHTTPBaseURL rejects an operator-supplied endpoint that is not an
+// absolute http(s) URL with a host. Same shape as the A2A Def check in
+// internal/tools/builtin (requireHTTPURL) — kept local rather than imported
+// because config must not depend on the tools layer. Catching "localhost:11434"
+// (no scheme → url.Parse yields Scheme "localhost", no Host) or a stray
+// file:// at load beats a confusing dial error on the first Memory.search.
+func requireHTTPBaseURL(field, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s %q is not a valid URL: %v", field, raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s must be an http or https URL (got %q)", field, raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s %q has no host", field, raw)
+	}
 	return nil
 }
 

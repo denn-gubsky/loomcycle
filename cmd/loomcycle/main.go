@@ -3140,6 +3140,11 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	// users at Voyage. The operator yaml stays `provider: anthropic`
 	// for ergonomics, but the underlying auth is the separate
 	// VOYAGE_API_KEY env var routed to cfg.Env.VoyageAPIKey.
+	//
+	// Providers with no case here (`ollama`, `stub`) fall through with
+	// both empty: the driver's own default endpoint, keyless. That is
+	// the right default for a self-hosted embedder and the reason a
+	// local Ollama needs no yaml beyond provider + model.
 	var apiKey, baseURL string
 	switch provider {
 	case "openai":
@@ -3153,6 +3158,25 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 		}
 	}
 
+	// The operator's explicit yaml WINS over the per-provider defaults
+	// above — that is the whole point of the two knobs. base_url points
+	// any driver at a self-hosted endpoint (Ollama, vLLM, LocalAI, an
+	// OpenAI-compatible gateway); api_key_env re-points the credential
+	// at the operator's own env var, mirroring the `providers:` map
+	// convention (a NAME, resolved here; the value never appears in
+	// yaml). An empty-valued var is not a silent fallback to the host
+	// key: naming it is an explicit choice, so it wins either way.
+	if cfg.Memory.Embedder.BaseURL != "" {
+		baseURL = cfg.Memory.Embedder.BaseURL
+	}
+	if cfg.Memory.Embedder.APIKeyEnv != "" {
+		apiKey = os.Getenv(cfg.Memory.Embedder.APIKeyEnv)
+		if apiKey == "" {
+			log.Printf("memory.embedder: api_key_env=%s is set but empty — the embedder will call %s unauthenticated",
+				cfg.Memory.Embedder.APIKeyEnv, provider)
+		}
+	}
+
 	timeoutMs := cfg.Memory.Embedder.TimeoutMs
 	if timeoutMs == 0 {
 		timeoutMs = cfg.Env.MemoryEmbedTimeoutMs
@@ -3163,11 +3187,12 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	}
 
 	return providers.NewEmbedder(provider, providers.EmbedderOptions{
-		APIKey:    apiKey,
-		BaseURL:   baseURL,
-		Model:     cfg.Memory.Embedder.Model,
-		Timeout:   time.Duration(timeoutMs) * time.Millisecond,
-		BatchSize: batchSize,
+		APIKey:     apiKey,
+		BaseURL:    baseURL,
+		Model:      cfg.Memory.Embedder.Model,
+		Dimensions: cfg.Memory.Embedder.Dimensions,
+		Timeout:    time.Duration(timeoutMs) * time.Millisecond,
+		BatchSize:  batchSize,
 	})
 }
 

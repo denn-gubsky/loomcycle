@@ -361,6 +361,53 @@ func TestOpenAIEmbedder_PathConcatenation(t *testing.T) {
 	}
 }
 
+// TestOpenAIEmbedder_CustomBaseURLIsDialled — an operator-supplied base_url
+// must be where the request actually LANDS, not just a prefix the driver
+// stores. This is what unlocks every OpenAI-compatible self-hosted embedder
+// (vLLM, LocalAI, Text Embeddings Inference, Infinity, Ollama's own compat
+// layer) with no new driver: the config surface points here.
+func TestOpenAIEmbedder_CustomBaseURLIsDialled(t *testing.T) {
+	var seenHost, seenAuth string
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		seenHost = r.Host
+		seenAuth = r.Header.Get("Authorization")
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(makeEmbeddingResponse(req.Input, 8))
+	}))
+	defer server.Close()
+
+	e, err := openai.NewEmbedder(providers.EmbedderOptions{
+		APIKey:  "self-hosted-placeholder",
+		BaseURL: server.URL,
+		// A model deliberately outside openaiEmbeddingDims — a self-hosted
+		// endpoint serves its own model names and must not trip the static
+		// (model → dimension) sanity check.
+		Model: "bge-m3",
+	})
+	if err != nil {
+		t.Fatalf("NewEmbedder: %v", err)
+	}
+	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("custom base_url server saw %d requests, want 1 (the call went elsewhere)", hits)
+	}
+	wantHost := strings.TrimPrefix(server.URL, "http://")
+	if seenHost != wantHost {
+		t.Errorf("request Host = %q, want %q (the operator's endpoint)", seenHost, wantHost)
+	}
+	if seenAuth != "Bearer self-hosted-placeholder" {
+		t.Errorf("Authorization = %q, want the configured key", seenAuth)
+	}
+}
+
 // dummy var to keep strconv imported (used in helpers above
 // indirectly via the JSON encoder).
 var _ = strconv.Itoa
