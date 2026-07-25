@@ -126,6 +126,11 @@ skills:
       now. **Stop immediately** — do not read, do not write, do not release
       (the lease is not yours to release). Report "target busy".
 
+      The lease is also what AUTHORIZES this pass's bookkeeping: without it the
+      server refuses `supersede`, `pending_ack`, and `cursor_advance` as a
+      non-owner. So there is no partial-progress path here — if you did not
+      acquire, there is nothing you can do but report and stop.
+
       ## 2. Read the watermark
 
       `Memory op=cursor_get scope=user`

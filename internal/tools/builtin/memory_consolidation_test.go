@@ -277,6 +277,7 @@ func TestMemory_SupersedeHidesFromReads(t *testing.T) {
 		t.Fatal(res.Text)
 	}
 
+	leaseTarget(t, tool, gctx, "agent")
 	if res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"supersede","scope":"agent","key":"raw-1"}`)); res.IsError {
 		t.Fatalf("supersede: %s", res.Text)
 	}
@@ -351,15 +352,24 @@ func TestMemory_CursorLeaseAndAdvance(t *testing.T) {
 	}
 }
 
-// leaseUserTarget takes the user-scope lease through the tool, so a following
-// cursor_advance is refused (when it is refused) by the ADVANCE guard and not by
-// the store's lease-ownership check.
+// leaseTarget takes a scope's lease through the tool. Every mutating
+// consolidation op (cursor_advance, supersede, pending_ack) is lease-gated, so a
+// test that means to exercise the op's own guard has to hold the lease first —
+// otherwise it is refused by the ownership check and proves nothing about the op.
+func leaseTarget(t *testing.T, tool *Memory, gctx context.Context, scope string) {
+	t.Helper()
+	res, _ := tool.Execute(gctx, json.RawMessage(
+		fmt.Sprintf(`{"op":"cursor_lease","scope":%q,"lease_ttl_ms":60000}`, scope)))
+	if res.IsError || !strings.Contains(res.Text, `"acquired":true`) {
+		t.Fatalf("cursor_lease(%s) = %q, want acquired:true", scope, res.Text)
+	}
+}
+
+// leaseUserTarget is leaseTarget for the user scope — the target a fan-out pass
+// operates on.
 func leaseUserTarget(t *testing.T, tool *Memory, gctx context.Context) {
 	t.Helper()
-	res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"cursor_lease","scope":"user","lease_ttl_ms":60000}`))
-	if res.IsError || !strings.Contains(res.Text, `"acquired":true`) {
-		t.Fatalf("cursor_lease(user) = %q, want acquired:true", res.Text)
-	}
+	leaseTarget(t, tool, gctx, "user")
 }
 
 // userWatermark reads the user-scope cursor straight from the store.
@@ -539,12 +549,95 @@ func TestMemory_PendingDrainAck(t *testing.T) {
 		t.Fatalf("drain order = %+v, want [mp_older, mp_newer]", drained.Pending)
 	}
 
-	// Ack the older row → the next drain returns only the newer.
+	// Ack the older row → the next drain returns only the newer. The ack is
+	// lease-gated (the drain above is not — it is a read), so take the lease.
+	leaseTarget(t, tool, gctx, "agent")
 	if res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"pending_ack","scope":"agent","ids":["mp_older"]}`)); res.IsError {
 		t.Fatalf("pending_ack: %s", res.Text)
 	}
 	res, _ = tool.Execute(gctx, json.RawMessage(`{"op":"pending_drain","scope":"agent"}`))
 	if strings.Contains(res.Text, "mp_older") || !strings.Contains(res.Text, "mp_newer") {
 		t.Errorf("drain after ack = %q, want only mp_newer", res.Text)
+	}
+}
+
+// TestMemory_SupersedeAndAckRequireTheTargetsLease is the two-concurrent-passes
+// regression on the ops whose loss is not recoverable.
+//
+// The fan-out's advisory lock is per SCHEDULE DEF, so two schedule defs covering
+// one tenant — or an operator kicking a manual pass mid-flight — really do produce
+// two concurrent passes over one target. A racing `set` is harmless (deterministic
+// keys mean the second pass overwrites the same row), but pending_ack stamps
+// drained_at and MemoryPendingDrain filters `drained_at IS NULL`: a pass that acks
+// [p1,p2] and then dies before writing a fact has made those conversations
+// invisible to every future pass, PERMANENTLY. The content lived only in the queue
+// payload, so idempotence cannot bring it back. supersede is the same shape one
+// step down: a non-owner archiving rows the owning pass is mid-way through
+// reasoning about.
+//
+// Fails-before without requireConsolidationLease: an unleased run and a run
+// holding no lease both succeed at supersede and pending_ack.
+func TestMemory_SupersedeAndAckRequireTheTargetsLease(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+
+	if res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"set","scope":"agent","key":"fact","value":"one"}`)); res.IsError {
+		t.Fatal(res.Text)
+	}
+	if err := tool.Store.MemoryPendingEnqueue(context.Background(), store.MemoryPendingRow{
+		ID:        "mp_lease",
+		Scope:     store.MemoryScopeAgent,
+		ScopeID:   "qa-agent",
+		Payload:   json.RawMessage(`{"turn":"queued"}`),
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed the queue: %v", err)
+	}
+
+	mutations := []string{
+		`{"op":"supersede","scope":"agent","key":"fact"}`,
+		`{"op":"pending_ack","scope":"agent","ids":["mp_lease"]}`,
+	}
+	// No lease at all → refused.
+	for _, in := range mutations {
+		res, _ := tool.Execute(gctx, json.RawMessage(in))
+		if !res.IsError || !strings.Contains(res.Text, "not lease owner") {
+			t.Errorf("%s with no lease = (IsError=%v) %q, want a lease refusal", in, res.IsError, res.Text)
+		}
+	}
+
+	// A DIFFERENT run holds the lease → still refused. This is the case that
+	// matters: the concurrent pass is authorized (same grant, same target) and only
+	// the lease separates it from the owner.
+	leaseTarget(t, tool, gctx, "agent")
+	otherRun := tools.WithRunID(gctx, "run_a_second_concurrent_pass")
+	for _, in := range mutations {
+		res, _ := tool.Execute(otherRun, json.RawMessage(in))
+		if !res.IsError || !strings.Contains(res.Text, "not lease owner") {
+			t.Errorf("%s from a non-owner run = (IsError=%v) %q, want a lease refusal", in, res.IsError, res.Text)
+		}
+	}
+	// And nothing moved: the row is still live, the queue row still un-drained.
+	if res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"get","scope":"agent","key":"fact"}`)); res.IsError || strings.Contains(res.Text, `"value":null`) {
+		t.Errorf("a refused supersede archived the row anyway: %q", res.Text)
+	}
+	res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"pending_drain","scope":"agent"}`))
+	if !strings.Contains(res.Text, "mp_lease") {
+		t.Errorf("a refused ack drained the queue row anyway: %q — those turns would be invisible to every future pass", res.Text)
+	}
+
+	// The lease HOLDER succeeds at both, so the gate is a lease check and not a
+	// blanket refusal.
+	for _, in := range mutations {
+		if res, _ := tool.Execute(gctx, json.RawMessage(in)); res.IsError {
+			t.Errorf("%s as the lease owner = %q, want success", in, res.Text)
+		}
+	}
+	if res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"get","scope":"agent","key":"fact"}`)); !strings.Contains(res.Text, `"value":null`) {
+		t.Errorf("the owner's supersede did not archive the row: %q", res.Text)
+	}
+	if res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"pending_drain","scope":"agent"}`)); strings.Contains(res.Text, "mp_lease") {
+		t.Errorf("the owner's ack did not drain the queue row: %q", res.Text)
 	}
 }

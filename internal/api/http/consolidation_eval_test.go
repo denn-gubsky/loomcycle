@@ -300,20 +300,22 @@ func TestConsolidationEval_FullPassIsCleanAndComplete(t *testing.T) {
 // firing the same target's pass in one tick.
 //
 // The second pass here is genuinely excluded, not politely asked to stop: it
-// cannot acquire the lease (a different run id is a different owner), and its
-// cursor_advance is REFUSED by the store's non-owner check — so it cannot move
-// the watermark even if a steered model tried.
+// cannot acquire the lease (a different run id is a different owner), and every
+// MUTATING consolidation op it tries is refused as a non-owner — cursor_advance
+// by the store's ownership check, supersede and pending_ack by the tool's.
 //
 // WHAT THE LEASE DOES NOT GATE, deliberately: a plain `set` is not lease-checked,
-// so a second pass CAN still write facts. That is tolerable only because of
-// invariant 2 — deterministic subject-derived keys mean a concurrent pass
-// re-deriving the same fact overwrites the same row instead of racing a duplicate
-// into existence. The lease protects the WATERMARK (the irreversible,
-// forward-only state); idempotence protects the rows.
+// so a second pass CAN still write facts. That is tolerable because deterministic
+// subject-derived keys mean a concurrent pass re-deriving the same fact overwrites
+// the same row instead of racing a duplicate into existence (invariant 2 gates
+// that overwrite). The three ops that get the lease are the ones with no such
+// safety net: the forward-only watermark, and the archive/ack pair whose loss is
+// unrecoverable.
 //
-// FAIL-BEFORE: removing the `leasedBy != owner` guard from
-// MemoryCursorAdvance lets the second pass move the watermark — verified by
-// making that edit.
+// FAIL-BEFORE: removing the `leasedBy != owner` guard from MemoryCursorAdvance
+// lets the second pass move the watermark; removing the tool's
+// requireConsolidationLease lets it archive a fact and drain the queue — both
+// verified by making those edits.
 func TestConsolidationEval_WatermarkAdvancesAndLeaseExcludesASecondPass(t *testing.T) {
 	env := newConsolidationEnv(t, nil)
 	f := seedEvalFixture(t, env)
@@ -368,13 +370,24 @@ func TestConsolidationEval_WatermarkAdvancesAndLeaseExcludesASecondPass(t *testi
 			newerSettled, afterA.WatermarkCompletedAt)
 	}
 
-	// Pass B, while A's lease is live: it must fail to acquire, and must be
-	// refused the advance it would otherwise be entitled to make.
+	// A queued item for pass B to try to ack. Pass A only DRAINED (a read), so the
+	// row is still un-drained and an unauthorized ack would be observable.
+	enqueuePending(t, env, "pend_nonowner")
+
+	// Pass B, while A's lease is live: it must fail to acquire, and must be refused
+	// every mutation it would otherwise be entitled to make — the advance, the
+	// archive, and the ack.
 	env.prov.calls.Store(0)
+	// A key pass A left LIVE, so an unauthorized archive shows up in the row count
+	// below (re-superseding the already-archived one would be an idempotent no-op).
+	victimKey := f.writtenFacts()[0].Key
+	ackB, _ := json.Marshal(map[string]any{"op": "pending_ack", "scope": "user", "ids": []string{"pend_nonowner"}})
 	env.prov.scripts = [][]providers.Event{
 		toolCall("tu_lease_b", "Memory", `{"op":"cursor_lease","scope":"user","lease_ttl_ms":600000}`),
 		toolCall("tu_advance_b", "Memory", fmt.Sprintf(`{"op":"cursor_advance","scope":"user","completed_at":%q,"session_id":%q}`,
 			newerSettled.UTC().Format(time.RFC3339Nano), newerSess.ID)),
+		toolCall("tu_sup_b", "Memory", fmt.Sprintf(`{"op":"supersede","scope":"user","key":%q}`, victimKey)),
+		toolCall("tu_ack_b", "Memory", string(ackB)),
 		finalText("lease not acquired; standing down"),
 	}
 	streamB := env.runConsolidation(evalUserID)
@@ -384,8 +397,18 @@ func TestConsolidationEval_WatermarkAdvancesAndLeaseExcludesASecondPass(t *testi
 	if !strings.Contains(streamB, `\"acquired\":false`) {
 		t.Errorf("pass B's cursor_lease did not report acquired=false; stream:\n%s", streamB)
 	}
-	if !strings.Contains(streamB, "not lease owner") {
-		t.Errorf("pass B's cursor_advance was not refused as a non-owner; stream:\n%s", streamB)
+	// One refusal per mutating op, so a single one going missing is caught: the
+	// store's advance check and the tool's own gate on supersede / pending_ack.
+	if n := strings.Count(streamB, "not lease owner"); n < 3 {
+		t.Errorf("pass B's mutations produced %d non-owner refusal(s), want 3 (advance, supersede, pending_ack)", n)
+	}
+	// And the ack did not take: the queued item is still there for the owning pass.
+	stillQueued, err := env.store.MemoryPendingDrain(ctx, "", store.MemoryScopeUser, evalUserID, 50)
+	if err != nil {
+		t.Fatalf("MemoryPendingDrain after pass B: %v", err)
+	}
+	if len(stillQueued) != 1 {
+		t.Errorf("un-drained queue rows after the excluded pass = %d, want 1 — a non-owner ack loses those turns permanently", len(stillQueued))
 	}
 
 	afterB, err := env.store.MemoryCursorGet(ctx, "", store.MemoryScopeUser, evalUserID)

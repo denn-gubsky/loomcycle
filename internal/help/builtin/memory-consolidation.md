@@ -111,6 +111,14 @@ are enforced by the server rather than left to you:
 - `cursor_scan` only ever returns chats **strictly after** the stored
   watermark, oldest first, and never your own past passes — so consolidating
   a page and advancing to its last row cannot skip anything.
+- The three ops that CHANGE bookkeeping — `cursor_advance`, `supersede`,
+  `pending_ack` — additionally require that **you hold the target's lease**.
+  Two passes over one target are possible (the dispatcher's lock is per
+  schedule, and an operator can start a pass by hand), and an ack is the one
+  step with no recovery: it marks queued turns drained, so a pass that acks
+  and then fails has removed them from every future pass's view. A plain `set`
+  is deliberately not lease-checked — deterministic keys make a concurrent
+  write overwrite the same row rather than duplicate it.
 
 ## Operator knobs
 

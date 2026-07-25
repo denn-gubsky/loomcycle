@@ -1324,6 +1324,41 @@ func consolidationOwner(ctx context.Context) string {
 	return tools.AgentName(ctx)
 }
 
+// requireConsolidationLease refuses a MUTATING consolidation op unless THIS run
+// holds a live lease on the resolved target. It mirrors the ownership check the
+// store applies to cursor_advance, but has to live here: supersede and
+// pending_ack are ordinary row writes at the store layer, with no cursor row in
+// the call to check against.
+//
+// WHY THESE OPS NEED IT AND `set` DOES NOT. The lease is what stops two passes
+// working one target — and the advisory lock behind the fan-out is per SCHEDULE
+// DEF, so two schedule defs covering one tenant (or an operator kicking a manual
+// pass mid-flight) genuinely produce two concurrent passes. A racing `set` is
+// harmless because the skill mints deterministic subject-derived keys: the second
+// pass overwrites the same row. The two ops here have no such safety net, and
+// pending_ack's failure is UNRECOVERABLE: it stamps drained_at, MemoryPendingDrain
+// filters `drained_at IS NULL`, so a pass that acks and then dies before writing
+// the fact has made those queued conversations invisible to every future pass.
+// The content existed only in the queue payload, so no deterministic key brings
+// it back.
+//
+// Fails CLOSED on a cursor read fault: refusing a destructive op on an unverified
+// lease is recoverable (the next pass redoes it), acking on one is not.
+func (m *Memory) requireConsolidationLease(ctx context.Context, op string, scope store.MemoryScope, scopeID string) (tools.Result, bool) {
+	owner := consolidationOwner(ctx)
+	if owner == "" {
+		return errResult(fmt.Sprintf("%s: no stable run/agent identity to hold the target's lease", op)), true
+	}
+	row, err := m.Store.MemoryCursorGet(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID)
+	if err != nil {
+		return errResult(fmt.Sprintf("%s: cannot verify the target's lease: %s", op, err)), true
+	}
+	if row.LeasedBy != owner || row.LeaseExpiresAt.IsZero() || !row.LeaseExpiresAt.After(time.Now().UTC()) {
+		return errResult(fmt.Sprintf("%s: not lease owner — take this target's lease with cursor_lease (and stop if it reports acquired=false) before %s", op, op)), true
+	}
+	return tools.Result{}, false
+}
+
 // cursorJSON renders a cursor row for the agent (non-secret watermark + lease
 // fields). Zero timestamps render as null via expiresAtRFC3339.
 func cursorJSON(row store.MemoryCursorRow) map[string]any {
@@ -1529,6 +1564,9 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 	if res, denied := consolidationGate(ctx, "supersede"); denied {
 		return res, nil
 	}
+	if res, denied := m.requireConsolidationLease(ctx, "supersede", scope, scopeID); denied {
+		return res, nil
+	}
 	if in.Key == "" {
 		return errResult("supersede: missing required field: key"), nil
 	}
@@ -1568,6 +1606,11 @@ func (m *Memory) execPendingDrain(ctx context.Context, scope store.MemoryScope, 
 
 func (m *Memory) execPendingAck(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if res, denied := consolidationGate(ctx, "pending_ack"); denied {
+		return res, nil
+	}
+	// Lease-gated: an ack is the one consolidation write with no recoverable
+	// failure mode (see requireConsolidationLease).
+	if res, denied := m.requireConsolidationLease(ctx, "pending_ack", scope, scopeID); denied {
 		return res, nil
 	}
 	// The ack is confined server-side to this run's resolved (tenant, scope,
