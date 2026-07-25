@@ -3,9 +3,11 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -68,6 +70,120 @@ func TestAgentDefTool_ForkInheritsScopeGates(t *testing.T) {
 	}
 	if def.SqlQuotaBytes != 4096 {
 		t.Errorf("sql_quota_bytes = %d after fork, want 4096 inherited", def.SqlQuotaBytes)
+	}
+}
+
+// TestAgentDefTool_CreateDoesNotDedupAcrossChangedVolumes is the fail-before
+// regression for the collision that excluding `volumes` from the content hash
+// opens up.
+//
+// `create` returns the ACTIVE row with `deduplicated: true` when
+// content_sha256 matches. Since volumes is not hashed, a create that changes
+// ONLY the volume bindings hashed identically — so the caller got back the OLD
+// definition, with the OLD filesystem bindings, and a success response. A
+// filesystem trust boundary that silently does not move is the worst shape of
+// this bug, which is why it is pinned on `volumes` specifically.
+func TestAgentDefTool_CreateDoesNotDedupAcrossChangedVolumes(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	ctx = tools.WithAgentTools(ctx, []string{"*"})
+
+	first := `{"op":"create","name":"vol-agent","promote":true,"overlay":{
+		"system_prompt":"work","tools":["Read"],"volumes":["a"]}}`
+	res, _ := tool.Execute(ctx, json.RawMessage(first))
+	if res.IsError {
+		t.Fatalf("first create: %s", res.Text)
+	}
+
+	// Byte-identical EXCEPT the volume binding.
+	second := `{"op":"create","name":"vol-agent","promote":true,"overlay":{
+		"system_prompt":"work","tools":["Read"],"volumes":["b"]}}`
+	res2, _ := tool.Execute(ctx, json.RawMessage(second))
+	if res2.IsError {
+		t.Fatalf("second create: %s", res2.Text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res2.Text), &out); err != nil {
+		t.Fatalf("parse second create response: %v\n%s", err, res2.Text)
+	}
+	if out["deduplicated"] == true {
+		t.Error("create deduplicated against the active row despite a CHANGED volume binding — the caller was handed back the old definition, and the filesystem trust boundary silently did not move")
+	}
+
+	def, ok := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "", "vol-agent")
+	if !ok {
+		t.Fatal("resolve: vol-agent not found")
+	}
+	if len(def.Volumes) != 1 || def.Volumes[0] != "b" {
+		t.Errorf("active def volumes = %v, want [b] — the second create must have minted and promoted a new version", def.Volumes)
+	}
+
+	// ...and a genuinely identical create still dedups, or the idempotent
+	// re-register flow this probe protects would start spamming the lineage.
+	res3, _ := tool.Execute(ctx, json.RawMessage(second))
+	var out3 map[string]any
+	if err := json.Unmarshal([]byte(res3.Text), &out3); err != nil {
+		t.Fatalf("parse third create response: %v\n%s", err, res3.Text)
+	}
+	if out3["deduplicated"] != true {
+		t.Errorf("a byte-identical re-create did NOT dedup — idempotent create is broken: %s", res3.Text)
+	}
+}
+
+// TestAgentDefTool_CreateDoesNotDedupAcrossChangedDefScopes covers the same
+// collision for the authority grants (an agent that may suddenly author
+// schedules is as much a boundary change as one that may read a new volume).
+func TestAgentDefTool_CreateDoesNotDedupAcrossChangedDefScopes(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	ctx = tools.WithAgentTools(ctx, []string{"*"})
+
+	base := `{"op":"create","name":"meta","promote":true,"overlay":{
+		"system_prompt":"author","tools":["Read"]%s}}`
+	if res, _ := tool.Execute(ctx, json.RawMessage(fmt.Sprintf(base, ""))); res.IsError {
+		t.Fatalf("first create: %s", res.Text)
+	}
+	res2, _ := tool.Execute(ctx, json.RawMessage(fmt.Sprintf(base, `,"schedule_def_scopes":["any"]`)))
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res2.Text), &out); err != nil {
+		t.Fatalf("parse: %v\n%s", err, res2.Text)
+	}
+	if out["deduplicated"] == true {
+		t.Error("create deduplicated despite a NEW schedule_def_scopes grant — the caller believes the agent may author schedules when the active def still denies it")
+	}
+	def, _ := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "", "meta")
+	if len(def.ScheduleDefScopes) != 1 {
+		t.Errorf("active def schedule_def_scopes = %v, want the granted [any]", def.ScheduleDefScopes)
+	}
+}
+
+// TestUnhashedCapabilityTags_CoversEveryUnhashedOverlayField pins the dedup
+// probe's field list to exactly (mergedDef ∖ agents.AgentContent). Without this
+// the next field added to the overlay but left out of the hash silently
+// reopens the collision the two tests above regress.
+func TestUnhashedCapabilityTags_CoversEveryUnhashedOverlayField(t *testing.T) {
+	mergedTags := jsonTagsOfFields(reflect.TypeOf(mergedDef{}))
+	hashedTags := jsonTagsOfFields(reflect.TypeOf(agents.AgentContent{}))
+
+	want := map[string]bool{}
+	for tag := range mergedTags {
+		if !hashedTags[tag] {
+			want[tag] = true
+		}
+	}
+	got := map[string]bool{}
+	for _, tag := range unhashedCapabilityTags {
+		got[tag] = true
+	}
+	for tag := range want {
+		if !got[tag] {
+			t.Errorf("mergedDef field %q is NOT in the content hash and NOT compared by the dedup probe — a create changing only it would dedup and silently hand back the old definition. Add it to unhashedCapabilityTags (or hash it).", tag)
+		}
+	}
+	for tag := range got {
+		if !want[tag] {
+			t.Errorf("unhashedCapabilityTags lists %q, but that field IS in the content hash (or is not on mergedDef) — comparing it is redundant; remove it", tag)
+		}
 	}
 }
 

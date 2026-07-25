@@ -323,9 +323,9 @@ func TestAgent_DriftDetection(t *testing.T) {
 		// v1.34.0 — the capability gates that were missing from the overlay
 		// entirely, so any fork of an agent using them was born default-deny
 		// (same class as the F40 gap above). sql_scopes / sql_quota_bytes /
-		// history_scope are content-identifying; volumes is not (a volume NAME
-		// resolves against the operator's own cfg.Volumes, so hashing it would
-		// break verify-or-fork across deployments).
+		// history_scope are content-identifying; volumes is not, for
+		// byte-stability — static agents declaring `volumes:` already exist and
+		// hashing it would re-hash every one of them (see agents.AgentContent).
 		"sql_scopes":      true,
 		"sql_quota_bytes": true,
 		"history_scope":   true,

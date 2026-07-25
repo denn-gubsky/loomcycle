@@ -183,10 +183,26 @@ type AgentContent struct {
 	// same reason. omitempty keeps pre-feature rows byte-stable. Tags sort
 	// between sampling/search_providers and system_prompt.
 	//
-	// (`volumes:` is deliberately NOT a field here: a volume NAME resolves
-	// against the operator's own cfg.Volumes, so the same binding grants
-	// different filesystem roots on different deployments — hashing it would
-	// break verify-or-fork across hosts. Excluded like the *_def_scopes gates.)
+	// (`volumes:` is deliberately NOT a field here, for BYTE-STABILITY — the
+	// same reason the F40 *_def_scopes gates are excluded. Static agents that
+	// declare `volumes:` already exist in the wild, and AgentContent is built
+	// from static yaml too (staticToMergedDef → signFromMergedDef, and
+	// FromYAMLAgent for `loomcycle hash agent`), so adding it here re-hashes
+	// every such agent and invalidates any recorded verify-or-fork hash with no
+	// migration path. sql_scopes / history_scope cost nothing by comparison
+	// because no existing agent carries them.
+	//
+	// NOT because a volume name "resolves differently per host": that is true
+	// of `tools` (an mcp__* name resolves against the operator's mounted
+	// servers), `model`/`tier` (operator provider config) and `memory_scopes`
+	// too, and all of those ARE hashed. The hash covers the definition TEXT,
+	// not what it resolves to — two hosts declaring `volumes: [workspace]`
+	// hash identically either way.
+	//
+	// The tradeoff this buys: a create/fork that changes ONLY an unhashed
+	// field would dedup against the active row and silently hand back the old
+	// definition. builtin.unhashedCapabilityTags closes that at the dedup
+	// probe instead; keep the two in sync (a drift test pins it).
 	SqlQuotaBytes int      `json:"sql_quota_bytes,omitempty"`
 	SqlScopes     []string `json:"sql_scopes,omitempty"`
 	SystemPrompt  string   `json:"system_prompt,omitempty"`

@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -257,7 +258,15 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	// MCPServerDef.execCreate; compared only against the ACTIVE row, so
 	// re-creating content that matches a non-active version still mints +
 	// promotes (re-activation is a real state change).
-	if active, gerr := a.Store.AgentDefGetActive(ctx, tenantID, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
+	//
+	// The hash alone is NOT sufficient to dedup on: it deliberately excludes the
+	// capability/authority gates (volumes, the *_def_scopes grants, skills, …),
+	// so a create changing only those hashes identically. Returning the active
+	// row there would silently leave a filesystem trust boundary or an authoring
+	// grant where it was, while telling the caller the create succeeded. So the
+	// gates are compared explicitly on top of the hash.
+	if active, gerr := a.Store.AgentDefGetActive(ctx, tenantID, in.Name); gerr == nil && active.ContentSHA256 == contentSHA &&
+		unhashedCapabilityFieldsMatch(active.Definition, def) {
 		resp := rowResponse(active, true)
 		resp["deduplicated"] = true
 		return okJSON(resp)
@@ -892,10 +901,12 @@ type mergedDef struct {
 	//
 	// SqlScopes / SqlQuotaBytes / HistoryScope are content-identifying (direct
 	// siblings of the already-hashed MemoryScopes / MemoryQuotaBytes). Volumes
-	// is NOT: a volume NAME resolves against the operator's own cfg.Volumes, so
-	// the same binding means different filesystem roots on different
-	// deployments — hashing it would make an otherwise-identical agent fail
-	// verify-or-fork across hosts. Same exclusion rationale as *_def_scopes.
+	// is NOT, for BYTE-STABILITY: static agents declaring `volumes:` already
+	// exist and AgentContent is built from static yaml too, so hashing it would
+	// re-hash every one of them and invalidate recorded verify-or-fork hashes
+	// with no migration path — the same reason the F40 *_def_scopes gates are
+	// excluded. See the rationale on agents.AgentContent, and
+	// unhashedCapabilityTags below for the dedup collision that exclusion opens.
 	SqlScopes     []string `json:"sql_scopes,omitempty"`
 	SqlQuotaBytes int      `json:"sql_quota_bytes,omitempty"`
 	HistoryScope  []string `json:"history_scope,omitempty"`
@@ -1118,6 +1129,65 @@ func (d *mergedDef) normalize() {
 	if d.SystemPromptBase == "" {
 		d.SystemPromptBase = d.SystemPrompt
 	}
+}
+
+// unhashedCapabilityTags are the mergedDef fields that agents.AgentContent
+// deliberately EXCLUDES from content_sha256 — authority and operational knobs
+// kept out of the hash for byte-stability (see the rationale there).
+//
+// That exclusion opens a dedup collision: `create` returns the ACTIVE row
+// unchanged when content_sha256 matches, so a create that changes ONLY these
+// fields would hand the caller back the OLD definition — silently leaving a
+// filesystem trust boundary (`volumes`) or an authoring grant where it was.
+// The dedup probe therefore compares these fields explicitly on top of the
+// hash. A drift test pins this list to exactly (mergedDef ∖ AgentContent), so
+// a future unhashed field cannot silently reopen the collision.
+var unhashedCapabilityTags = []string{
+	"a2a_agent_def_scopes",
+	"a2a_server_card_def_scopes",
+	"agent_def_scopes",
+	"retry_attempts",
+	"run_timeout_seconds",
+	"schedule_def_scopes",
+	"skills", // the skills: pattern allowlist is authority, not content
+	"system_prompt_base",
+	"volume_def_scopes",
+	"volumes",
+}
+
+// unhashedCapabilityFieldsMatch reports whether two definitions agree on every
+// field the content hash ignores. `stored` is the persisted definition JSON of
+// the active row; `incoming` is the normalized mergedDef about to be written.
+//
+// Both sides are compared through their JSON encoding, which is what makes the
+// nil-vs-empty case correct for free: every one of these fields is `omitempty`,
+// so an absent slice and an explicit `[]` both encode to "key missing" and
+// compare equal. Comparison is order-SENSITIVE for slices, matching the hashed
+// path (agents.TestSign_OrderPreservedInArrays pins that reordering `tools`
+// changes the hash, so reordering an authority list should count as a change
+// here too).
+//
+// A stored definition that will not parse returns false: mint a new version
+// rather than dedup against a row whose capabilities cannot be verified.
+func unhashedCapabilityFieldsMatch(stored json.RawMessage, incoming mergedDef) bool {
+	var storedFields map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &storedFields); err != nil {
+		return false
+	}
+	incomingJSON, err := json.Marshal(incoming)
+	if err != nil {
+		return false
+	}
+	var incomingFields map[string]json.RawMessage
+	if err := json.Unmarshal(incomingJSON, &incomingFields); err != nil {
+		return false
+	}
+	for _, tag := range unhashedCapabilityTags {
+		if !bytes.Equal(storedFields[tag], incomingFields[tag]) {
+			return false
+		}
+	}
+	return true
 }
 
 func staticToMergedDef(s config.AgentDef) mergedDef {
