@@ -111,6 +111,12 @@ may instead extract facts server-side with its own LLM.
 
 `recall` needs the vector stack (an embedder + a vector-capable store);
 without it, it refuses with `vector_unsupported` / `embedder_not_configured`.
+The embedder does not have to be a vendor one: `provider: ollama-local`
+embeds against your own Ollama (pull an embedding model first —
+`ollama pull embeddinggemma` — a stock Ollama ships none), and
+`provider: openai` with a `base_url` reaches any OpenAI-compatible server.
+DeepSeek offers no embeddings API, so a DeepSeek deployment pairs with one
+of those. See `docs/TOOLS.md` → "Self-hosted embedders".
 `capability_unsupported` is reached only for a backend that does not
 implement the memory-layer contract at all. `add` / `recall` honor the
 agent's `memory_scopes` and the run's tenant exactly like the key/value
@@ -150,6 +156,16 @@ op-level reference and the operator knobs.
 |---|---|
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). The rest wait for the next tick; the watermark makes that safe. |
 | `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when a pass resolves to a local model runtime. |
+| `memory.consolidation.merge_threshold` | Similarity at or above which two facts are the same fact reworded, and get merged (default `0.95`). |
+| `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
+
+**Calibrate the bands against your embedding model.** Cosine scale is a
+property of the model, and the defaults suit neither of the two local models
+measured: one genuine paraphrase of a single fact scored **0.7675** on a
+768-dim `embeddinggemma` and **0.9005** on a 4096-dim `qwen3-embedding`, so
+under the 0.95 default both write a duplicate row instead of merging. Measure
+a few paraphrase pairs on your model and set the pair from what you see —
+`docs/TOOLS.md` → "Consolidation similarity bands".
 
 ### The eval gate
 

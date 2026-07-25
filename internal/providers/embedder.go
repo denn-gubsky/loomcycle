@@ -74,6 +74,20 @@ type EmbedderOptions struct {
 	// rely on outer ctx. Matches LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS.
 	Timeout time.Duration
 
+	// Dimensions asks the provider for a specific output vector width
+	// (Matryoshka truncation — Ollama's `dimensions`, OpenAI's
+	// `dimensions` on text-embedding-3-*). Zero = omit the parameter
+	// entirely and keep the model's native size; drivers MUST NOT send
+	// a literal 0. Honoured today by the `ollama` driver only; other
+	// drivers ignore it (wiring openai's would also require relaxing
+	// its static (model → dimension) sanity check).
+	//
+	// Changing this on a populated store invalidates the stored vectors:
+	// MemoryEmbedSearch compares the query width against the stored
+	// `dimension` column and refuses with ErrDimensionMismatch until a
+	// /v1/_memory/reembed migration runs.
+	Dimensions int
+
 	// BatchSize is the max number of texts per single API call.
 	// Provider-specific caps still apply on top. Zero = batch
 	// everything in one call (provider's hard cap will surface).

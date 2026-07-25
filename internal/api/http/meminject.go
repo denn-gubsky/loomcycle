@@ -107,6 +107,17 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	if body := s.renderSearchRequest(ctx, mi); body != "" {
 		sections[meminject.VariantSearchRequest] = body
 	}
+	// consolidation_bands is pure config — no store read, no tenant scope, so
+	// it is rendered unconditionally and costs nothing for a prompt that never
+	// places the placeholder (Expand only substitutes what it finds, and this
+	// variant has no implicit-append path). A Server built without config
+	// (tests) still renders the defaults rather than panicking.
+	mergeBand, relatedBand := float64(config.DefaultConsolidationMergeThreshold), float64(config.DefaultConsolidationRelatedThreshold)
+	if s.cfg != nil {
+		mergeBand = s.cfg.Memory.Consolidation.EffectiveMergeThreshold()
+		relatedBand = s.cfg.Memory.Consolidation.EffectiveRelatedThreshold()
+	}
+	sections[meminject.VariantConsolidationBands] = meminject.ConsolidationBands(mergeBand, relatedBand)
 	// tenant_info / ontology are accepted variants but resolve to empty in P1
 	// (they need tenant scope + the entity tier — a later phase).
 

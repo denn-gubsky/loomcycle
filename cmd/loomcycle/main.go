@@ -3140,6 +3140,9 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	// users at Voyage. The operator yaml stays `provider: anthropic`
 	// for ergonomics, but the underlying auth is the separate
 	// VOYAGE_API_KEY env var routed to cfg.Env.VoyageAPIKey.
+	//
+	// Providers with no case here (`stub`) fall through with both empty:
+	// the driver's own default endpoint, keyless.
 	var apiKey, baseURL string
 	switch provider {
 	case "openai":
@@ -3150,6 +3153,37 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 		apiKey, baseURL = cfg.Env.VoyageAPIKey, ""
 		if apiKey == "" {
 			log.Printf("memory.embedder: provider=anthropic uses Voyage AI; set VOYAGE_API_KEY or Embed() calls will fail at 401")
+		}
+	case "ollama-local":
+		// Inherits the SAME OLLAMA_BASE_URL the chat driver uses, so one
+		// setting serves both. "disabled" is the chat side's opt-out
+		// sentinel (providerEnabled), not an endpoint — treat it as unset
+		// so the embedder falls back to the driver default rather than
+		// trying to dial a host literally named "disabled". Keyless.
+		if cfg.Env.OllamaBaseURL != "disabled" {
+			baseURL = cfg.Env.OllamaBaseURL
+		}
+	case "ollama":
+		// Hosted ollama.com — same pair the chat provider reads.
+		apiKey, baseURL = cfg.Env.OllamaAPIKey, cfg.Env.OllamaCloudBaseURL
+	}
+
+	// The operator's explicit yaml WINS over the per-provider defaults
+	// above — that is the whole point of the two knobs. base_url points
+	// any driver at a self-hosted endpoint (Ollama, vLLM, LocalAI, an
+	// OpenAI-compatible gateway); api_key_env re-points the credential
+	// at the operator's own env var, mirroring the `providers:` map
+	// convention (a NAME, resolved here; the value never appears in
+	// yaml). An empty-valued var is not a silent fallback to the host
+	// key: naming it is an explicit choice, so it wins either way.
+	if cfg.Memory.Embedder.BaseURL != "" {
+		baseURL = cfg.Memory.Embedder.BaseURL
+	}
+	if cfg.Memory.Embedder.APIKeyEnv != "" {
+		apiKey = os.Getenv(cfg.Memory.Embedder.APIKeyEnv)
+		if apiKey == "" {
+			log.Printf("memory.embedder: api_key_env=%s is set but empty — the embedder will call %s unauthenticated",
+				cfg.Memory.Embedder.APIKeyEnv, provider)
 		}
 	}
 
@@ -3163,11 +3197,12 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	}
 
 	return providers.NewEmbedder(provider, providers.EmbedderOptions{
-		APIKey:    apiKey,
-		BaseURL:   baseURL,
-		Model:     cfg.Memory.Embedder.Model,
-		Timeout:   time.Duration(timeoutMs) * time.Millisecond,
-		BatchSize: batchSize,
+		APIKey:     apiKey,
+		BaseURL:    baseURL,
+		Model:      cfg.Memory.Embedder.Model,
+		Dimensions: cfg.Memory.Embedder.Dimensions,
+		Timeout:    time.Duration(timeoutMs) * time.Millisecond,
+		BatchSize:  batchSize,
 	})
 }
 
@@ -3920,10 +3955,14 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 				i, scope, e.ScopeID, key, embedErr)
 			continue
 		}
+		// Dimension is the OBSERVED width, never embedder.Dimension(): a driver
+		// backed by a static (model → dim) table returns 0 for any model outside
+		// it, and a stored 0 alongside a real vector poisons every later search
+		// in this scope with dimension_mismatch. len(vecs[0]) is always true.
 		if err := st.MemoryEmbedSet(ctx, "", scope, e.ScopeID, key, store.MemoryEmbedding{
 			Provider:  embedder.Provider(),
 			Model:     embedder.Model(),
-			Dimension: embedder.Dimension(),
+			Dimension: len(vecs[0]),
 			Vector:    vecs[0],
 			EmbedText: string(valBytes),
 			CreatedAt: time.Now().UTC(),

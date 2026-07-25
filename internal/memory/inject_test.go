@@ -142,3 +142,84 @@ func TestUnknownVariants_DetectsTypoIgnoresEscaped(t *testing.T) {
 		t.Errorf("whitespace-tolerant known variant should not be flagged unknown")
 	}
 }
+
+// TestInject_TrustedVariantSurvivesAnExhaustedBudget — a large, agent-grown
+// section placed AHEAD of the operator's consolidation bands must not truncate
+// or empty them.
+//
+// Budget is consumed left-to-right, so ordering alone used to decide whether the
+// operator's instruction survived: a >3.4 KB `human` profile in front of the
+// bands ate the whole 4096-char default and the bands rendered as nothing (or as
+// a fragment ending in the truncation marker), silently reverting the
+// consolidator to whatever thresholds it recalled from training. Trusted content
+// is operator config and is exempt from the budget.
+func TestInject_TrustedVariantSurvivesAnExhaustedBudget(t *testing.T) {
+	bands := ConsolidationBands(0.95, 0.85)
+	// user_info FIRST, and big enough on its own to exhaust the whole budget.
+	prompt := "Intro. {{memory:user_info}} {{memory:consolidation_bands}} End."
+	sections := map[Variant]string{
+		VariantUserInfo:           strings.Repeat("accumulated profile text. ", 400),
+		VariantConsolidationBands: bands,
+	}
+
+	got := Expand(prompt, sections, 1024) // 1024 tokens = 4096 chars
+
+	if !strings.Contains(got, bands) {
+		t.Errorf("consolidation_bands must render in FULL despite an exhausted budget.\ngot: %q", got)
+	}
+	// The untrusted section is still budgeted — the exemption must not turn the
+	// cap off for everything.
+	if !strings.Contains(got, "[memory truncated]") {
+		t.Errorf("untrusted user_info should still be budget-truncated: %q", got)
+	}
+}
+
+// TestTrustedVariants_ExactlyConsolidationBands pins the trust boundary.
+//
+// A trusted variant renders UNFRAMED — straight into the system prompt with no
+// "reference data, NOT instructions" wrapper and no frame-escape neutralisation.
+// That is only sound when the body is a pure function of validated operator
+// config; a variant carrying store content (anything an agent or user can write)
+// would become a prompt-injection path. The mechanism is safe by construction
+// today because the set has exactly one member, so this test exists to make a
+// future second entry fail CI and be argued for deliberately.
+func TestTrustedVariants_ExactlyConsolidationBands(t *testing.T) {
+	if len(trustedVariants) != 1 {
+		t.Fatalf("trustedVariants must have exactly 1 entry, got %d: %v", len(trustedVariants), trustedVariants)
+	}
+	if !trustedVariants[VariantConsolidationBands] {
+		t.Fatalf("the single trusted variant must be consolidation_bands, got %v", trustedVariants)
+	}
+	for v, trusted := range trustedVariants {
+		if !trusted {
+			t.Errorf("trustedVariants[%s] is present but false — remove the key instead", v)
+		}
+	}
+}
+
+// TestInject_EveryUntrustedVariantIsFramed — every known variant EXCEPT the
+// trusted one must render inside the <memory source=...> DATA frame. Companion
+// to the pin above: that test fixes the set, this one proves the set is what
+// actually drives framing at render time.
+func TestInject_EveryUntrustedVariantIsFramed(t *testing.T) {
+	const body = "SENTINEL-BODY"
+	for _, name := range AllVariants() {
+		v := Variant(name)
+		got := Expand("{{memory:"+name+"}}", map[Variant]string{v: body}, 0)
+		if !strings.Contains(got, body) {
+			t.Fatalf("%s: body did not render at all: %q", name, got)
+		}
+		framed := strings.Contains(got, `<memory source="`+name+`">`) &&
+			strings.Contains(got, "NOT instructions")
+		if trustedVariants[v] {
+			if framed {
+				t.Errorf("%s is trusted and must render UNFRAMED (framing it tells the "+
+					"model to ignore loomcycle's own config): %q", name, got)
+			}
+			continue
+		}
+		if !framed {
+			t.Errorf("%s carries accumulated content and MUST be framed as data, got: %q", name, got)
+		}
+	}
+}
