@@ -184,6 +184,27 @@ func TestCalibrate_SafeWindowClearsUnrelatedNotOnlyRelated(t *testing.T) {
 	}
 }
 
+// TestAnalyze_RecommendationStaysInsideAWindowNarrowerThanTheGrid — rounding
+// must never move the recommendation out of the safe window. On a window
+// narrower than the 4-decimal reporting grid, rounding the midpoint lands at or
+// below the window's floor — and a merge threshold at the floor merges a
+// distinct fact, which is the one failure with no undo.
+func TestAnalyze_RecommendationStaysInsideAWindowNarrowerThanTheGrid(t *testing.T) {
+	pairs := []ScoredPair{
+		{Class: ClassDuplicate, Score: 0.70002},
+		{Class: ClassRelated, Score: 0.70001},
+		{Class: ClassUnrelated, Score: 0.1},
+	}
+	rep := Analyze("narrow", EmbedderInfo{}, pairs, ConfiguredBands{MergeThreshold: 0.95, RelatedThreshold: 0.85})
+	if !rep.Separable {
+		t.Fatalf("Separable = false; 0.70002 > 0.70001, the window is narrow but real")
+	}
+	if rep.RecommendedMerge <= rep.SafeWindowLow || rep.RecommendedMerge > rep.SafeWindowHigh {
+		t.Errorf("RecommendedMerge = %.6f, want in (%.6f, %.6f] — rounding pushed it out of the window",
+			rep.RecommendedMerge, rep.SafeWindowLow, rep.SafeWindowHigh)
+	}
+}
+
 // TestAnalyze_SweepCountsEachClassAtEachThreshold — the sweep is what an
 // operator reads to pick a number by hand, so its arithmetic is pinned
 // directly rather than inferred from a recommendation.

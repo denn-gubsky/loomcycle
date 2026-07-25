@@ -363,7 +363,16 @@ func Analyze(corpusName string, emb EmbedderInfo, pairs []ScoredPair, configured
 	case rep.Separable:
 		// Midpoint of the safe window: the furthest any threshold can sit
 		// from both failure modes at once.
-		rep.RecommendedMerge = round4((nonDupMax + dupMin) / 2)
+		mid := (nonDupMax + dupMin) / 2
+		rep.RecommendedMerge = round4(mid)
+		// Rounding must never push the recommendation OUT of the window. On a
+		// window narrower than the 4-decimal grid (e.g. (0.70001, 0.70002])
+		// round4 lands at or below its floor, and a threshold at or below the
+		// floor MERGES a distinct fact — the unrecoverable direction. Keep the
+		// exact midpoint in that case: an ugly number beats a destructive one.
+		if rep.RecommendedMerge <= nonDupMax || rep.RecommendedMerge > dupMin {
+			rep.RecommendedMerge = mid
+		}
 	case nonDupOK:
 		// No window exists. Recommend on the ASYMMETRY rather than on an
 		// accuracy score: a threshold that is too high leaves duplicates
