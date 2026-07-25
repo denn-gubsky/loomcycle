@@ -206,6 +206,7 @@ func TestMemoryProvenanceGet_SupersededRowIsOpaque(t *testing.T) {
 	if res, _ := tool.Execute(gctx, json.RawMessage(in)); res.IsError {
 		t.Fatalf("set: %s", res.Text)
 	}
+	leaseTarget(t, tool, gctx, "agent") // supersede is lease-gated
 	if res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"supersede","scope":"agent","key":"stale"}`)); res.IsError {
 		t.Fatalf("supersede: %s", res.Text)
 	}
