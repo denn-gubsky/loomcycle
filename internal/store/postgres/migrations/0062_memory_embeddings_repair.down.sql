@@ -1,0 +1,20 @@
+-- 0062_memory_embeddings_repair.down.sql — DELIBERATE NO-OP.
+--
+-- The up migration creates `memory_embeddings` only when the table was
+-- missing, so the honest inverse would be "drop it only if WE created it".
+-- Nothing in the schema records that: after the fact, a table created by
+-- 0062 is indistinguishable from one created by 0017 on a deployment that
+-- had pgvector from the start. A `DROP TABLE memory_embeddings` here would
+-- therefore destroy every embedding on the majority of deployments (the ones
+-- where 0017 created it) to unwind a migration that did nothing on them.
+--
+-- Down-migrating past 62 is consequently a no-op, and that is safe: 0062 adds
+-- no column, index, or constraint that 0017/0059/0060 don't already own, so
+-- continuing down through 0060 → 0059 → 0017 unwinds the table exactly as it
+-- would on a from-scratch-with-pgvector database. The only visible residue of
+-- a `down 1` from 62 is that Vector Memory keeps working — which is what an
+-- operator rolling back one version wants anyway.
+--
+-- golang-migrate requires the file to exist; an empty statement body is a
+-- valid, successful migration.
+SELECT 1;

@@ -29,10 +29,22 @@
 -- The CREATE TABLE uses EXECUTE so the planner doesn't resolve the
 -- `vector` type at parse time (which would fail before the EXCEPTION
 -- branch could run). Operators upgrading from v0.8.x without
--- pgvector get a clean migration; they can install pgvector and
--- re-run `migrate up` later to bring the table into existence. The
--- runtime SupportsVectors() check refuses vector ops when the table
--- is missing, so this is safe.
+-- pgvector get a clean migration.
+--
+-- Installing pgvector LATER does NOT re-run this migration —
+-- golang-migrate tracks one monotonic version pointer and only
+-- applies migrations above it, so a database already past 0017 will
+-- never come back here however many times `loomcycle migrate up`
+-- runs. Migration 0062_memory_embeddings_repair is the supported
+-- repair path: it creates the table (in its post-0060 shape) when
+-- pgvector is present and the table is missing.
+--
+-- Until that repair migration applies, the extension can be loaded
+-- while this table is absent. Open() probes for the TABLE — not just
+-- the extension — and degrades SupportsVectors()/SupportsFullText()
+-- to false in that state, so memory ops refuse with the typed
+-- store.ErrVectorUnsupported rather than hitting a nonexistent
+-- relation. That probe is what makes skipping the table here safe.
 
 DO $migration$
 DECLARE
