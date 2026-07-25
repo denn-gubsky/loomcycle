@@ -828,10 +828,21 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 
 	// A zero watermark means "from the beginning" — drop the composite
 	// predicate entirely rather than comparing against a zero timestamp.
+	//
+	// COLLATE "C" on the session_id tie-break (and on the ORDER BY below) is
+	// load-bearing, not decoration. The cursor's second axis is a STRING
+	// comparison, and Postgres resolves it under the database collation while
+	// SQLite compares bytes — so `en_US.utf8` and BINARY disagree on the same
+	// pair of ids, and the shared store contract stopped being a contract. "C"
+	// is byte order, which is what SQLite already does, so both backends now
+	// consume the same total order. The comparison and the ORDER BY must use the
+	// SAME collation as each other too: a cursor whose "strictly after" test
+	// disagrees with the order rows arrive in can skip a session or hand one
+	// back twice.
 	having := ""
 	if !afterCompletedAt.IsZero() {
 		having = fmt.Sprintf(` AND (MAX(r.completed_at) > $%d
-		               OR (MAX(r.completed_at) = $%d AND r.session_id > $%d))`, i, i, i+1)
+		               OR (MAX(r.completed_at) = $%d AND r.session_id COLLATE "C" > $%d))`, i, i, i+1)
 		args = append(args, afterCompletedAt, afterSessionID)
 		i += 2
 	}
@@ -846,7 +857,7 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 		                   OR r.pause_state IN ('paused', 'pausing')
 		                 THEN 1 ELSE 0 END) = 0
 		    AND MAX(r.completed_at) IS NOT NULL`+having+`
-		 ORDER BY MAX(r.completed_at) ASC, r.session_id ASC
+		 ORDER BY MAX(r.completed_at) ASC, r.session_id COLLATE "C" ASC
 		 LIMIT $`+fmt.Sprint(i),
 		args...,
 	)
