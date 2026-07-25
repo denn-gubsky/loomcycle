@@ -56,9 +56,16 @@ type Config struct {
 	// When true, Open() verifies pgvector is installed (the migration
 	// set's 0017_memory_embeddings.up.sql does the CREATE EXTENSION;
 	// Open() re-checks pg_extension after migrations run and refuses
-	// to start if the extension is missing) and SupportsVectors()
-	// returns true. When false, vector ops refuse with
-	// ErrVectorUnsupported regardless of whether the migration ran.
+	// to start if the extension is missing). When false, vector ops
+	// refuse with ErrVectorUnsupported regardless of whether the
+	// migration ran.
+	//
+	// Opting in is necessary but not sufficient: Open() also requires
+	// the `memory_embeddings` table to exist before SupportsVectors()
+	// reports true. See Open() and migration 0062 — a database that
+	// installed pgvector after migrating past 0017 has the extension
+	// but no table, and degrades to the refusal path rather than
+	// failing to boot.
 	//
 	// The pgvector extension itself must be installable on the host
 	// Postgres (`apt install postgresql-16-pgvector` or the
