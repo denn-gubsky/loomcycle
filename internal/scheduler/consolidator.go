@@ -622,6 +622,14 @@ const consolidateObserveCap = 500
 // passObservation is the store state a pass is measured against. Two of these —
 // one before, one after — are how the runtime learns what a pass actually DID.
 //
+// ATTRIBUTION CAVEAT: the diff is of the whole target scope across the run
+// window, so it is what CHANGED during the pass, not provably what the pass
+// changed. Any other writer to that scope while the pass runs — a second
+// concurrent pass, or the user's own chat agent doing `Memory set` under
+// scope: user — lands in these counts. There is no per-writer attribution in the
+// memory table to key off, and the alternative (trusting the pass's prose report)
+// is worse.
+//
 // WHY OBSERVE THE STORE RATHER THAN READ THE PASS'S REPORT. The pass reports its
 // own added/updated/superseded counts in prose, and it is an LLM: parsing that
 // report into metrics would make the operator's dashboard a measure of the
@@ -682,17 +690,26 @@ func (s *Scheduler) observePass(ctx context.Context, target consolidationTarget,
 		obs.watermarkKnown = true
 		obs.watermark = cursor.WatermarkCompletedAt
 	}
+	// The session scan is SKIPPED when the watermark read failed, because
+	// MemoryCursorGet returns a ZERO row on error and a zero watermark means "from
+	// the beginning of time": scanning against it would count the target's entire
+	// history — up to the observe cap — and report it as backlog with
+	// sessionsKnown=true. That is the fabricated-zero bug inverted: unknown
+	// rendered as maximally alarming instead of as healthy, and equally wrong.
+	//
 	// selfAgent is EXCLUDED, exactly as the dispatcher's has-new-work probe
 	// excludes it. Each pass creates its own settled session under the target's
 	// user id and never consolidates itself, so those sessions sit past the
 	// watermark forever: counting them would make sessions_read climb by one on
 	// every tick and turn the backlog gauge into a tick counter — the same
 	// perpetual-pass trap the scan's own exclusion closes.
-	sessions, err := s.store.ConsolidatableSessions(ctx, target.TenantID, target.UserID, "", selfAgent,
-		obs.watermark, cursor.WatermarkSessionID, consolidateObserveCap)
-	if err == nil {
-		obs.sessionsKnown = true
-		obs.sessionsPastWatermark = len(sessions)
+	if obs.watermarkKnown {
+		sessions, serr := s.store.ConsolidatableSessions(ctx, target.TenantID, target.UserID, "", selfAgent,
+			obs.watermark, cursor.WatermarkSessionID, consolidateObserveCap)
+		if serr == nil {
+			obs.sessionsKnown = true
+			obs.sessionsPastWatermark = len(sessions)
+		}
 	}
 	// pending_drain is a READ (the ack is the side effect), so peeking here does
 	// not consume the queue the pass is about to work on.
@@ -719,6 +736,12 @@ func (before passObservation) diff(after passObservation, provider, model string
 		Err:               err,
 	}
 	if !before.observed || !after.observed {
+		// CountsTruncated is what SUPPRESSES added/updated/superseded/noop on the
+		// span. Returning here without it would emit added=0, updated=0,
+		// superseded=0, noop=true — the fabricated-healthy-pass shape this whole
+		// known-bit scheme exists to prevent. Unreachable today (the caller only
+		// diffs a recording pair), which is exactly why it is set explicitly.
+		out.CountsTruncated = true
 		return out
 	}
 	if before.pendingKnown && after.pendingKnown {

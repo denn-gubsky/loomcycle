@@ -394,6 +394,55 @@ func TestConsolidationTelemetry_FailedPassMarksSpanErrored(t *testing.T) {
 	}
 }
 
+// cursorFaultStore embeds a real store but fails every consolidation-cursor read
+// — the transient-fault shape, without needing a genuinely broken backend.
+type cursorFaultStore struct {
+	store.Store
+	err error
+}
+
+func (s cursorFaultStore) MemoryCursorGet(context.Context, string, store.MemoryScope, string) (store.MemoryCursorRow, error) {
+	return store.MemoryCursorRow{}, s.err
+}
+
+// TestConsolidationTelemetry_BacklogIsUnknownWhenTheWatermarkReadFails is the
+// mirror of the fabricated-zero rule: an unknown value must not be rendered as an
+// ALARMING one either.
+//
+// MemoryCursorGet returns a ZERO row alongside its error, and a zero watermark
+// means "from the beginning of time". So a transient cursor fault used to make the
+// session scan enumerate the target's entire history and report it as backlog —
+// with sessionsKnown=true, so the span published it as a measurement. On a
+// long-lived target that reads as "consolidation has fallen 500 chats behind"
+// when nothing is behind at all, and the operator's response to that is the
+// opposite of correct.
+func TestConsolidationTelemetry_BacklogIsUnknownWhenTheWatermarkReadFails(t *testing.T) {
+	const userID = "u-cursorfault"
+	sched, _, st := otelFanoutFixture(t, userID)
+	// Extra settled chats, so a from-the-beginning scan would report a plausible
+	// non-zero backlog rather than an indistinguishable 0.
+	seedSettledSession(t, st, "", userID)
+	seedSettledSession(t, st, "", userID)
+	sched.store = cursorFaultStore{Store: st, err: errors.New("boom-cursor-read")}
+
+	obs := sched.observePass(context.Background(),
+		consolidationTarget{Scope: store.MemoryScopeUser, UserID: userID}, "memory/consolidator", true)
+	if obs.watermarkKnown {
+		t.Fatal("watermarkKnown = true although the cursor read failed — the rest of this test would be vacuous")
+	}
+	if obs.sessionsKnown {
+		t.Errorf("sessionsKnown = true reporting %d session(s) of backlog, measured against a watermark the read never returned — that is a fabrication, not an observation",
+			obs.sessionsPastWatermark)
+	}
+	if obs.sessionsPastWatermark != 0 {
+		t.Errorf("sessionsPastWatermark = %d on an unmeasurable backlog, want 0", obs.sessionsPastWatermark)
+	}
+	// And the span omits it rather than publishing it.
+	if out := obs.diff(obs, "", "", nil); out.SessionsReadKnown {
+		t.Errorf("the span would carry sessions_read = %d it could not measure", out.SessionsRead)
+	}
+}
+
 // TestConsolidationTelemetry_ObservationSkippedWhenNotRecording pins the COST
 // floor.
 //
@@ -423,6 +472,13 @@ func TestConsolidationTelemetry_ObservationSkippedWhenNotRecording(t *testing.T)
 	out := off.diff(off, "", "", nil)
 	if out.Added != 0 || out.Updated != 0 || out.Superseded != 0 || out.PendingDrained != 0 || out.WatermarkLag != 0 {
 		t.Errorf("an unobserved pass produced a non-zero outcome: %+v", out)
+	}
+	// The zero VALUES above are not the property that matters — CountsTruncated is.
+	// It is the bit that suppresses added/updated/superseded/noop on the span, so
+	// without it an unobserved outcome emits added=0 … noop=true: a pass nobody
+	// looked at, rendered as a healthy pass that changed nothing.
+	if !out.CountsTruncated {
+		t.Error("an unobserved pass left CountsTruncated=false — its zero counts would be emitted as a healthy no-op pass")
 	}
 
 	// And with no tracer configured at all, the pass still runs.
