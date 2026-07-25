@@ -438,8 +438,11 @@ Two pieces of operator config gate vector ops:
    ```yaml
    memory:
      embedder:
-       provider: openai     # openai | gemini | anthropic (stub in v0.9.0)
+       provider: openai     # openai | gemini | anthropic (Voyage proxy) | ollama-local | ollama
        model: text-embedding-3-large
+       base_url: ""         # optional; self-hosted / alternative endpoint
+       api_key_env: ""      # optional; env-var NAME holding the credential
+       dimensions: 0        # optional; 0 = the model's native vector width
        timeout_ms: 30000    # optional; env fallback LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
        batch_size: 100      # optional; env fallback LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE
    ```
@@ -447,6 +450,57 @@ Two pieces of operator config gate vector ops:
 When `memory.embedder:` is unset, the `search` op and `embed: true` on `set` refuse with `embedder_not_configured`. The k/v ops are unaffected — operators not wanting semantic search don't have to configure anything.
 
 **Anthropic embedder note:** v0.9.0 ships an Anthropic *stub* that refuses with `embedder_not_implemented`. Anthropic has no native embeddings API today; v0.9.1 will wire Voyage AI under this driver name. Use `openai` or `gemini` for v0.9.0.
+
+##### Self-hosted embedders
+
+Vector Memory does not require a vendor account. Two routes:
+
+**Native Ollama.** `provider: ollama-local` speaks Ollama's `POST /api/embed` directly, keyless:
+
+```yaml
+memory:
+  embedder:
+    provider: ollama-local
+    model: embeddinggemma:latest
+    # base_url inherits OLLAMA_BASE_URL; set it explicitly to override
+```
+
+- **You must pull an embedding model first — this is required, not optional.** A stock Ollama ships none, and every call 404s until you run `ollama pull embeddinggemma` (or `nomic-embed-text`, `qwen3-embedding`, …) on the Ollama host. The error names the model and the pull command.
+- `base_url` must be reachable **from inside the loomcycle container**. In a container `localhost` is the container itself, not the host running Ollama — use the host's LAN address or a compose service name. loomcycle logs the endpoint it defaulted to at boot for exactly this reason.
+- **Precedence:** explicit yaml `base_url` > `OLLAMA_BASE_URL` (the same var the chat provider reads, so one setting serves both) > `http://localhost:11434`. `OLLAMA_BASE_URL=disabled` is the chat side's opt-out marker and is treated as unset here.
+- `provider: ollama` is the hosted ollama.com sibling: `OLLAMA_CLOUD_BASE_URL` + `OLLAMA_API_KEY`. Prefer `ollama-local` for a self-hosted box — the `-local` suffix is also how the consolidation dispatcher recognises a runtime on your own hardware and throttles fan-out accordingly.
+
+**Any OpenAI-compatible server.** `provider: openai` with a `base_url` reaches vLLM, LocalAI, Text Embeddings Inference, Infinity, an Azure OpenAI deployment, or Ollama's own OpenAI-compat layer — no new driver needed:
+
+```yaml
+memory:
+  embedder:
+    provider: openai
+    model: bge-m3
+    base_url: http://vllm.internal:8000/v1
+    api_key_env: MY_EMBED_KEY   # omit entirely for a keyless endpoint
+```
+
+`api_key_env` names an **environment variable**, never a key — the same convention the `providers:` map uses. When set it overrides the provider's default key source; naming a variable that is empty calls the endpoint unauthenticated (and logs that it did).
+
+**DeepSeek has no embeddings API.** It serves chat completions only, so there is no `deepseek` embedder and no amount of configuration produces one. A DeepSeek-for-chat deployment pairs with a local Ollama (above) or any OpenAI-compatible server for the embedding half. If DeepSeek ever ships an OpenAI-compatible embeddings endpoint, `provider: openai` + `base_url` reaches it with no code change.
+
+**`dimensions` and the index ceiling.** Some models (qwen3-embedding) support Matryoshka truncation, and `dimensions:` asks for a narrower vector. Unset (0) keeps the model's native width. It is worth setting when that width exceeds **2000**: pgvector caps HNSW/IVFFlat indexes at 2000 dimensions, and while loomcycle creates no vector index today (sequential scan plus the scope pre-filter — see migration `0017`), a 4096-dim corpus forecloses ever adding one without re-embedding everything. Wide vectors otherwise store and search fine — a 4096-dim vector is 16 KB per row. **Changing `dimensions` on a populated store invalidates the stored vectors**: search compares the stored `dimension` column before the cosine query and refuses with `dimension_mismatch` until `POST /v1/_memory/reembed` migrates them. Only the `ollama-local` / `ollama` drivers send it today.
+
+##### Consolidation similarity bands
+
+The background consolidation pass decides whether a new fact duplicates an existing memory from cosine similarity. **Those thresholds are a property of your embedding model, not of the procedure**, so they are config:
+
+```yaml
+memory:
+  consolidation:
+    merge_threshold: 0.95     # >= this ⇒ the same fact, reworded — merge into the existing row
+    related_threshold: 0.85   # this..merge ⇒ overlapping subject, different claim — add
+```
+
+Both default to the values shown. Calibrate them against your own model: one genuine paraphrase of a single fact measured **0.7675** on a 768-dim `embeddinggemma` and **0.9005** on a 4096-dim `qwen3-embedding` — against the 0.95 default *neither* registers as "the same fact", so a re-worded fact is written as a duplicate row. Measure a couple of paraphrase pairs on your model and set the bands from what you see. Validated at load as `0 < related_threshold < merge_threshold <= 1`, and checked against the default when you set only one of the pair.
+
+The consolidator agent picks them up through the `{{memory:consolidation_bands}}` placeholder in its system prompt; the bundled `memory/consolidate` skill points at that section rather than naming numbers.
 
 #### Failure modes
 

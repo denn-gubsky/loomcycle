@@ -129,6 +129,16 @@ are enforced by the server rather than left to you:
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). Targets beyond it wait for the next tick; the watermark makes that safe. |
 | `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the passes resolve to a local model runtime. |
 | `memory_quota_bytes` / `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | Per-scope byte cap. A consolidation write over budget is **refused, loudly** — it does not silently drop the fact. |
+| `memory.consolidation.merge_threshold` | Similarity at or above which two facts count as the same fact reworded and get merged (default `0.95`). |
+| `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
+
+The two bands are worth calibrating: cosine scale is a property of the
+embedding model, so the defaults are not right for every one. One genuine
+paraphrase of a single fact measured `0.7675` on a 768-dim model and `0.9005`
+on a 4096-dim one — under a `0.95` merge band neither reads as the same fact,
+and the pass writes a duplicate row. Measure a few paraphrase pairs on your
+model and set the pair from what you see. The consolidator agent receives the
+configured bands in its system prompt via `{{memory:consolidation_bands}}`.
 
 Consolidation is **opt-in**: without a schedule pointing at a consolidator
 agent, `add` still queues durably and nothing drains it. Queued items are not
