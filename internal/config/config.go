@@ -4731,6 +4731,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.Tools != nil {
 		out.Tools = override.Tools
 	}
+	if override.Volumes != nil {
+		out.Volumes = override.Volumes
+	}
 	if override.Skills != nil {
 		out.Skills = override.Skills
 	}
@@ -4743,14 +4746,33 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.MaxConcurrentChildren != 0 {
 		out.MaxConcurrentChildren = override.MaxConcurrentChildren
 	}
+	// Bool overlays build up (a yaml override can enable, not disable — same
+	// documented limit as InheritCoreBlocks / Interruption above).
+	if override.UnboundedIterations {
+		out.UnboundedIterations = true
+	}
+	if override.RunTimeoutSeconds != 0 {
+		out.RunTimeoutSeconds = override.RunTimeoutSeconds
+	}
 	if override.Tier != "" {
 		out.Tier = override.Tier
 	}
 	if override.Effort != "" {
 		out.Effort = override.Effort
 	}
+	// Sampling / Compaction merge PER FIELD, mirroring the substrate overlay:
+	// a yaml override that sets only temperature keeps the MD's top_p.
+	if !override.Sampling.IsZero() {
+		out.Sampling = MergeSampling(out.Sampling, override.Sampling)
+	}
+	if !override.Compaction.IsZero() {
+		out.Compaction = MergeCompaction(out.Compaction, override.Compaction)
+	}
 	if override.Providers != nil {
 		out.Providers = override.Providers
+	}
+	if override.SearchProviders != nil {
+		out.SearchProviders = override.SearchProviders
 	}
 	if override.Models != nil {
 		out.Models = override.Models
@@ -4803,11 +4825,32 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.AgentDefScopes != nil {
 		out.AgentDefScopes = override.AgentDefScopes
 	}
+	if override.ScheduleDefScopes != nil {
+		out.ScheduleDefScopes = override.ScheduleDefScopes
+	}
+	if override.A2AServerCardDefScopes != nil {
+		out.A2AServerCardDefScopes = override.A2AServerCardDefScopes
+	}
+	if override.A2AAgentDefScopes != nil {
+		out.A2AAgentDefScopes = override.A2AAgentDefScopes
+	}
 	if override.VolumeDefScopes != nil {
 		out.VolumeDefScopes = override.VolumeDefScopes
 	}
 	if override.EvaluationScopes != nil {
 		out.EvaluationScopes = override.EvaluationScopes
+	}
+	if override.HistoryScope != nil {
+		out.HistoryScope = override.HistoryScope
+	}
+	if override.DisableContext {
+		out.DisableContext = true
+	}
+	// *int, so a yaml override can express an explicit "force 0 retries" as
+	// distinct from "not set" — the same reason the substrate overlay uses a
+	// pointer here.
+	if override.RetryAttempts != nil {
+		out.RetryAttempts = override.RetryAttempts
 	}
 	// F14: yaml interruption override replaces the MD-discovered block when
 	// the operator set any field. Mirrors the substrate applyOverlay's
