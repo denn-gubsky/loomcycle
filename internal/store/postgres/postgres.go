@@ -83,9 +83,14 @@ type Config struct {
 type Store struct {
 	pool *pgxpool.Pool
 
-	// pgvectorEnabled is set in Open() from Config.PgvectorEnabled
-	// AND the post-migration `SELECT FROM pg_extension WHERE
-	// extname='vector'` probe. SupportsVectors() returns this.
+	// pgvectorEnabled means "vector ops are actually serviceable on this
+	// database". Open() sets it only when ALL THREE hold:
+	// Config.PgvectorEnabled, the `vector` extension is loaded, and the
+	// `memory_embeddings` table exists. The table is a separate condition
+	// because migration 0017 skips it when pgvector was absent at migrate
+	// time and golang-migrate never re-applies it (see Open() and migration
+	// 0062). SupportsVectors()/SupportsFullText() return this, and every
+	// MemoryEmbed* op refuses with store.ErrVectorUnsupported when false.
 	pgvectorEnabled bool
 
 	// channelDebug is captured from Config.ChannelDebug at Open()
@@ -184,26 +189,40 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 			pool.Close()
 			return nil, errors.New("postgres: LOOMCYCLE_PGVECTOR_ENABLED=1 but the `vector` extension is not loaded. Install pgvector on your Postgres (`apt install postgresql-<ver>-pgvector` or use the pgvector/pgvector docker image), then restart loomcycle")
 		}
-		// The migration 0017 wraps CREATE TABLE inside a conditional
-		// IF has_vector block. Operators who installed pgvector AFTER
-		// first running migrations would pass the extension probe
-		// above (extension present) but lack the table itself
-		// (migration ran in tolerant-skip mode). Detect that here so
-		// the first vector op doesn't crash with a raw pgx
-		// "relation does not exist" error.
+		// Extension loaded is NOT sufficient: migration 0017 wraps its
+		// CREATE TABLE in an `IF has_vector` block, so a deployment that
+		// installed pgvector AFTER it had already migrated past 0017 passes
+		// the probe above (extension present) while lacking the table
+		// itself. golang-migrate only applies migrations above its single
+		// version pointer, so 0017 never re-runs — migration 0062 is the
+		// repair path that creates the table on such a deployment.
+		//
+		// We must therefore gate on the TABLE, not the extension: with the
+		// table missing, every vector op and the hybrid full-text leg would
+		// otherwise hit a raw pgx "relation does not exist". Degrading
+		// pgvectorEnabled to false routes them all through the typed
+		// store.ErrVectorUnsupported refusal the design already handles
+		// gracefully — this is what makes 0017's safety claim true.
+		//
+		// to_regclass (not information_schema.tables) so the probe honours
+		// search_path: an unqualified information_schema scan matches the
+		// table in ANY schema, which would report a false positive for a
+		// deployment — or a test — running under its own search_path.
 		var tableExists bool
 		err = pool.QueryRow(probeCtx,
-			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'memory_embeddings')`,
+			`SELECT to_regclass('memory_embeddings') IS NOT NULL`,
 		).Scan(&tableExists)
 		if err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("postgres: probe memory_embeddings table: %w", err)
 		}
-		if !tableExists {
-			pool.Close()
-			return nil, errors.New("postgres: pgvector is installed but the `memory_embeddings` table is missing. This means the 0017 migration ran in tolerant-skip mode before pgvector was available. Re-run `loomcycle migrate up` (or restart with LOOMCYCLE_PG_AUTOMIGRATE=1) to create the table")
+		if tableExists {
+			s.pgvectorEnabled = true
+		} else {
+			// The one state that would otherwise be silent-but-degraded, so
+			// say it loudly and actionably exactly once, at boot.
+			log.Printf("postgres: WARNING — pgvector is installed but the `memory_embeddings` table is missing, so Vector Memory and hybrid (full-text) memory recall are DISABLED (memory ops refuse with ErrVectorUnsupported; plain key/value memory is unaffected). Migration 0017 skipped the table because pgvector was not yet installed when it ran, and golang-migrate never re-applies an already-applied migration. Fix: upgrade to a loomcycle build whose migration set includes 0062_memory_embeddings_repair and run `loomcycle migrate up` (or restart with LOOMCYCLE_PG_AUTOMIGRATE=1).")
 		}
-		s.pgvectorEnabled = true
 	}
 
 	return s, nil
