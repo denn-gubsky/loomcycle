@@ -105,6 +105,8 @@ agents:
       sessions you read, how many facts you added / updated / superseded, and
       the watermark you advanced to. No commentary.
 
+      {{memory:consolidation_bands}}
+
 skills:
   memory/consolidate:
     description: The background consolidation pass — lease a target, read its finished chats, distil durable facts, apply them without duplicating, then advance the watermark.
@@ -221,15 +223,22 @@ skills:
 
       1. **Identical content** — the neighbour already says exactly this. Emit
          `noop`. Nothing to do.
-      2. **Near-identical (similarity ≥ 0.95)** — same fact, different wording,
-         or the new one is slightly more precise. Emit `update` against that
-         neighbour's id, MERGING the two into one better sentence. Never add a
-         second row for the same fact.
-      3. **Related but distinct (similarity roughly 0.85–0.95)** — overlapping
-         subject, genuinely different claim. Emit `add`, and mention the related
-         neighbour in the fact's wording so a future reader connects them
-         (e.g. "Unlike the staging deploy, production deploys require …").
-         Do not merge: merging distinct claims destroys both.
+      2. **Near-identical** — same fact, different wording, or the new one is
+         slightly more precise. Emit `update` against that neighbour's id,
+         MERGING the two into one better sentence. Never add a second row for
+         the same fact.
+      3. **Related but distinct** — overlapping subject, genuinely different
+         claim. Emit `add`, and mention the related neighbour in the fact's
+         wording so a future reader connects them (e.g. "Unlike the staging
+         deploy, production deploys require …"). Do not merge: merging distinct
+         claims destroys both.
+
+      For the numbers, use the "Duplicate-detection similarity bands" section of
+      your system prompt. They are calibrated for this deployment's embedding
+      model, and cosine scale differs enough between models that a threshold
+      carried over from a different one reads a plain paraphrase as a new fact.
+      If your system prompt states no bands, fall back to near-identical at
+      ≥ 0.95 and related at 0.85–0.95.
       4. **Contradiction** — the new fact says the OPPOSITE of a neighbour.
          Prefer `update` (rewrite the neighbour to the current truth) over
          `delete`. Use `delete` only when the neighbour is now simply wrong and

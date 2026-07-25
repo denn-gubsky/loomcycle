@@ -170,8 +170,8 @@ func TestConsolidatorBundle_SkillBodyEncodesThePipeline(t *testing.T) {
 		"pending_drain",     // step 3b — the queue
 		"cursor_release",    // step 4 / 9 — always give the lease back
 		"recall",            // step 5 — the neighbour set for dedup
-		"0.95",              // step 5 — the merge band
-		"0.85",              // step 5 — the flag-as-related band
+		"0.95",              // step 5 — the merge band, as the no-bands-configured FALLBACK
+		"0.85",              // step 5 — the flag-as-related band, likewise the fallback
 		"supersede",         // step 6 — soft-archive, never hard delete
 		"provenance",        // step 6 — the audit trail
 		"embed=true",        // step 6 — or the fact is invisible to the next pass
@@ -256,6 +256,38 @@ func TestConsolidatorBundle_NoRFCLettersInModelVisibleText(t *testing.T) {
 				t.Errorf("%s cites an RFC (%q) — model-visible text must not reference RFC letters", where, strings.TrimSpace(line))
 			}
 		}
+	}
+}
+
+// TestConsolidatorBundle_SimilarityBandsComeFromConfig: the dedup bands are a
+// property of the configured EMBEDDING MODEL, not of the procedure — the same
+// paraphrase scores 0.77 on one model and 0.90 on another, so a constant baked
+// into the skill text misclassifies a re-worded fact as a new one on any model
+// it was not calibrated for. The bundle therefore takes them from config via the
+// system-prompt placeholder, and the skill body POINTS at that section.
+//
+// The pointer and the renderer's heading are two halves of one contract living
+// in different packages: this asserts they still agree.
+func TestConsolidatorBundle_SimilarityBandsComeFromConfig(t *testing.T) {
+	cfg := memoryBundleConfig(t)
+	prompt := cfg.Agents["memory/consolidator"].SystemPrompt
+	body := cfg.Skills["memory/consolidate"].Body
+
+	if !strings.Contains(prompt, "{{memory:consolidation_bands}}") {
+		t.Errorf("consolidator system prompt must place the bands placeholder:\n%s", prompt)
+	}
+	// The heading the expander renders — must match meminject.ConsolidationBands.
+	const heading = "Duplicate-detection similarity bands"
+	if !strings.Contains(body, heading) {
+		t.Errorf("skill body must point at the %q section the expander renders", heading)
+	}
+	if !strings.Contains(body, "system prompt") {
+		t.Error("skill body must tell the agent where the bands come from")
+	}
+	// The old inline band must be gone from the procedure step itself; it may
+	// survive only in the explicit no-bands fallback sentence.
+	if strings.Contains(body, "similarity ≥ 0.95") || strings.Contains(body, "roughly 0.85–0.95") {
+		t.Error("skill body still hardcodes the bands in the procedure step")
 	}
 }
 

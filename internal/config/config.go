@@ -490,6 +490,60 @@ type MemoryConfig struct {
 	//   - Failures are logged but don't fail boot — the operator gets
 	//     a degraded substrate they can repair without restart.
 	Entries []MemoryEntryDecl `yaml:"entries"`
+
+	// Consolidation tunes the background consolidation pass's duplicate
+	// detection. Its bands are a property of the CONFIGURED EMBEDDER, not
+	// of the procedure, which is why they are config and not constants in
+	// a prompt: cosine scale differs per model, and a threshold that is
+	// right for one is wrong for another.
+	Consolidation ConsolidationConfig `yaml:"consolidation"`
+}
+
+// ConsolidationConfig carries the similarity bands the consolidation pass uses
+// to decide whether a candidate fact duplicates an existing memory row. Both
+// default (0 = unset) to the values the pass used before they were
+// configurable, so an existing deployment is unchanged.
+//
+// Why this is operator-tunable: the same paraphrase of one fact scores very
+// differently per embedding model — measured at 0.7675 on a 768-dim
+// embeddinggemma and 0.9005 on a 4096-dim qwen3-embedding. Against the 0.95
+// default NEITHER counts as near-identical, so a re-worded fact is written as a
+// second row instead of merged into the first. The lever has to be per
+// deployment because the embedder is.
+type ConsolidationConfig struct {
+	// MergeThreshold is the similarity at or above which two facts are the
+	// SAME fact in different words — the pass merges them into one row.
+	// 0 = DefaultConsolidationMergeThreshold.
+	MergeThreshold float64 `yaml:"merge_threshold"`
+	// RelatedThreshold is the lower edge of the "related but distinct" band:
+	// at or above it (and below MergeThreshold) the facts overlap in subject
+	// but make different claims, so the pass adds rather than merges.
+	// 0 = DefaultConsolidationRelatedThreshold.
+	RelatedThreshold float64 `yaml:"related_threshold"`
+}
+
+// DefaultConsolidationMergeThreshold / DefaultConsolidationRelatedThreshold are
+// the pre-configurability constants. Applied at use-time (not baked into the
+// loaded config) so an unset 0 stays 0 in any content hash.
+const (
+	DefaultConsolidationMergeThreshold   = 0.95
+	DefaultConsolidationRelatedThreshold = 0.85
+)
+
+// EffectiveMergeThreshold returns the configured merge band or the default.
+func (c ConsolidationConfig) EffectiveMergeThreshold() float64 {
+	if c.MergeThreshold == 0 {
+		return DefaultConsolidationMergeThreshold
+	}
+	return c.MergeThreshold
+}
+
+// EffectiveRelatedThreshold returns the configured related band or the default.
+func (c ConsolidationConfig) EffectiveRelatedThreshold() float64 {
+	if c.RelatedThreshold == 0 {
+		return DefaultConsolidationRelatedThreshold
+	}
+	return c.RelatedThreshold
 }
 
 // MemoryEntryDecl is one yaml-declared memory entry, loaded on boot
@@ -5866,6 +5920,23 @@ func validate(c *Config) error {
 			if err := requireHTTPBaseURL("memory.embedder.base_url", c.Memory.Embedder.BaseURL); err != nil {
 				return err
 			}
+		}
+	}
+	// Consolidation similarity bands. Validated on the EFFECTIVE values so
+	// setting only one of the pair is still checked against the other's
+	// default — an operator who lowers merge_threshold to 0.80 and leaves
+	// related_threshold at 0.85 has inverted the bands and must hear about it
+	// at boot, not by watching the pass mis-classify every fact.
+	if cm := c.Memory.Consolidation; cm.MergeThreshold != 0 || cm.RelatedThreshold != 0 {
+		merge, related := cm.EffectiveMergeThreshold(), cm.EffectiveRelatedThreshold()
+		if merge <= 0 || merge > 1 {
+			return fmt.Errorf("memory.consolidation.merge_threshold must be > 0 and <= 1 (got %v)", merge)
+		}
+		if related <= 0 || related > 1 {
+			return fmt.Errorf("memory.consolidation.related_threshold must be > 0 and <= 1 (got %v)", related)
+		}
+		if related >= merge {
+			return fmt.Errorf("memory.consolidation: related_threshold (%v) must be < merge_threshold (%v)", related, merge)
 		}
 	}
 	// Non-fatal: memory scopes that can enqueue but have no consolidator to
