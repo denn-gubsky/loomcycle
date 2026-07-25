@@ -295,8 +295,12 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("evaluation"),
 		},
 		{
-			Name:        "context",
-			Description: "Context tool ops (self/tools/doc/permissions/agents/lineage/evaluations/channels/help/time). Pass-through.",
+			Name: "context",
+			// Hand-written mirror of the Context tool's op list — the InputSchema
+			// below is the tool's own, so the enum can't drift, but this string
+			// can and did (it omitted `compact` for a whole release line). Keep
+			// it in sync with contextInputSchema when adding an op.
+			Description: "Context tool ops (self/tools/doc/permissions/agents/lineage/evaluations/channels/help/time/compact/capabilities). Use capabilities to learn what this deployment supports before calling something that would refuse. Pass-through.",
 			InputSchema: builtinSchema("context"),
 		},
 

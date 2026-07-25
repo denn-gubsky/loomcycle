@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -78,6 +79,13 @@ type Context struct {
 	// Help set, so query still works. Late-bound in main.go alongside Store.
 	Embedder providers.Embedder
 
+	// SqlMem is the constructed SQL-Memory manager, used by `capabilities` to
+	// report whether SQL Memory and Documents actually work. The CONSTRUCTED
+	// manager, not the config flag: the flag says the operator asked for it,
+	// the pointer says they got it. nil = unavailable (the same guard the
+	// Document tool applies). Late-bound in main.go alongside Store.
+	SqlMem *sqlmem.Manager
+
 	// Build identifies the running binary, reported by `self`. Threaded from
 	// main() rather than re-resolved here so `op=self` and `--version` can
 	// never disagree: main owns the ldflags → runtime/debug → "unknown"
@@ -97,7 +105,10 @@ const contextDescription = `Read-only runtime introspection. ` +
 	`Answers "what tools do I have? who am I? what permissions apply to me? ` +
 	`what other agents exist? what's my def's lineage and evaluation history? ` +
 	`what runtime concepts and recipes does loomcycle document? what time is it / how long have I been running?". ` +
-	`Operations: self, tools, doc, permissions, agents, lineage, evaluations, channels, help, time. ` +
+	`Operations: self, tools, doc, permissions, agents, lineage, evaluations, channels, help, time, capabilities. ` +
+	`Use op=capabilities to find out what this deployment actually supports (vector/full-text memory, SQL memory, ` +
+	`documents, bash, sandbox, scheduler, webhooks, search providers, consolidation) BEFORE calling something that ` +
+	`would only refuse. ` +
 	`(To browse/search/read past chats, use the History tool, not this one.) ` +
 	`Always safe to call — no side effects, no storage writes, no network calls. ` +
 	`Useful for self-evolving agents that build their own task plans and want to inspect ` +
@@ -109,7 +120,7 @@ const contextDescription = `Read-only runtime introspection. ` +
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","help","time","compact"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","help","time","compact","capabilities"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
     "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
@@ -172,10 +183,12 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execTime(ctx)
 	case "compact":
 		return c.execCompact(ctx)
+	case "capabilities":
+		return c.execCapabilities(ctx)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, help, time, compact)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, capabilities)", in.Op)), nil
 	}
 }
 
