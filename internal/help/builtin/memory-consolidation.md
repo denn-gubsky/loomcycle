@@ -60,9 +60,11 @@ Two properties fall out of that shape and are worth relying on:
 ## Superseding, not deleting
 
 When a conversation contradicts a stored fact, the pass **archives** the old
-row rather than deleting it: `supersede` hides it from `get`, `list`,
-`search`, and `recall`, but the row survives. Writing the same key again
-revives it — which matters when a preference flips back.
+row rather than deleting it: `supersede` hides it from `get` and `list` — and
+from `search` / `recall` wherever the vector or full-text stack is configured
+(on SQLite without vectors there is no search leg to hide it from) — but the
+row survives. Writing the same key again revives it — which matters when a
+preference flips back.
 
 So a fact disappearing from `recall` does not mean it was destroyed. It means
 something more recent replaced it.

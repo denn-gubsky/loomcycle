@@ -24,6 +24,7 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -276,7 +277,10 @@ func SeedConsolidationChats(ctx context.Context, st store.Store, tenantID, userI
 			return nil, fmt.Errorf("seed chat %q: create run: %w", chat.Label, err)
 		}
 		for i, turn := range chat.Turns {
-			payload := []byte(`{"text":` + quoteJSON(turn) + `}`)
+			payload, merr := json.Marshal(map[string]string{"text": turn})
+			if merr != nil {
+				return nil, fmt.Errorf("seed chat %q turn %d: encode: %w", chat.Label, i, merr)
+			}
 			if err := st.AppendEvent(ctx, run.ID, "text", payload); err != nil {
 				return nil, fmt.Errorf("seed chat %q turn %d: %w", chat.Label, i, err)
 			}
@@ -310,37 +314,6 @@ func SeedConsolidationChats(ctx context.Context, st store.Store, tenantID, userI
 		}
 	}
 	return out, nil
-}
-
-// quoteJSON renders s as a JSON string literal. The fixture turns are plain
-// prose plus the secret token, so only quotes/backslashes/control characters
-// need escaping — but escape them properly rather than assuming, because a
-// fixture that produced malformed JSON would fail as an opaque store error.
-func quoteJSON(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			if r < 0x20 {
-				fmt.Fprintf(&b, `\u%04x`, r)
-				continue
-			}
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
 }
 
 // CheckForbidden is the negative-fixture checker: it reports every Forbidden
