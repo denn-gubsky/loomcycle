@@ -85,6 +85,13 @@ func TestConsolidationBands_RejectsInvertedAndOutOfRange(t *testing.T) {
 		{"merge negative", "merge_threshold: -0.5\n    related_threshold: 0.2", "merge_threshold"},
 		{"related negative", "merge_threshold: 0.9\n    related_threshold: -0.2", "related_threshold"},
 		{"related above one", "merge_threshold: 0.9\n    related_threshold: 1.2", "related_threshold"},
+		// yaml.v3 resolves `.nan` into a float64 NaN. Every IEEE-754 comparison
+		// against NaN is false, so a naively-phrased range check (`merge <= 0 ||
+		// merge > 1`) waves it through and the consolidator's system prompt reads
+		// "similarity >= NaN". The predicates are phrased so NaN lands in the
+		// error branch. (`.inf` / `-.inf` compare normally and were always caught.)
+		{"merge nan", "merge_threshold: .nan\n    related_threshold: 0.5", "merge_threshold"},
+		{"related nan", "merge_threshold: 0.9\n    related_threshold: .nan", "related_threshold"},
 	}
 	for _, tc := range cases {
 		_, err := Load(writeCfg(t, `

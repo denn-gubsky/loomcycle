@@ -5929,13 +5929,19 @@ func validate(c *Config) error {
 	// at boot, not by watching the pass mis-classify every fact.
 	if cm := c.Memory.Consolidation; cm.MergeThreshold != 0 || cm.RelatedThreshold != 0 {
 		merge, related := cm.EffectiveMergeThreshold(), cm.EffectiveRelatedThreshold()
-		if merge <= 0 || merge > 1 {
+		// Phrased as a NEGATED in-range test, not as an out-of-range test, so a
+		// NaN fails it. yaml.v3 resolves `.nan` into a float64 NaN, and every
+		// IEEE-754 comparison against NaN is false — so `merge <= 0 || merge > 1`
+		// waves it through, config loads clean, and the consolidator's system
+		// prompt ends up reading "similarity >= NaN". Inverting puts NaN in the
+		// error branch for free. (`.inf` compares normally and was always caught.)
+		if !(merge > 0 && merge <= 1) {
 			return fmt.Errorf("memory.consolidation.merge_threshold must be > 0 and <= 1 (got %v)", merge)
 		}
-		if related <= 0 || related > 1 {
+		if !(related > 0 && related <= 1) {
 			return fmt.Errorf("memory.consolidation.related_threshold must be > 0 and <= 1 (got %v)", related)
 		}
-		if related >= merge {
+		if !(related < merge) {
 			return fmt.Errorf("memory.consolidation: related_threshold (%v) must be < merge_threshold (%v)", related, merge)
 		}
 	}
