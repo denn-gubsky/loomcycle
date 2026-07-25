@@ -60,6 +60,12 @@ jobs:
           # goreleaser needs full git history for the version
           # template + commit-date stamp.
           fetch-depth: 0
+          # On a tag push, checkout materializes the triggering ref from
+          # GITHUB_SHA, which yields a LIGHTWEIGHT tag pointing at the
+          # commit — the annotated tag OBJECT (and therefore its message,
+          # which is our release body) never reaches the runner. See the
+          # pre-create step below, which force-refetches and verifies.
+          fetch-tags: true
 
       - uses: actions/setup-go@v5
         with:
@@ -121,12 +127,27 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
+          # Force-refetch the tag so we hold the annotated tag OBJECT, not
+          # the lightweight ref checkout materializes from GITHUB_SHA on a
+          # tag push. Without this, `%(contents)` silently falls back to the
+          # COMMIT message and the release ships the squash-merge body —
+          # which is exactly what happened to v1.34.0 (and, unnoticed, the
+          # two releases before it).
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          # Verify it is a real annotated tag BEFORE reading its message.
+          # The old emptiness check could never fire: a lightweight tag's
+          # %(contents) is the commit message, which is never empty, so the
+          # wrong body sailed through the guard. Check the object TYPE
+          # instead — "tag" = annotated, "commit" = lightweight.
+          OBJ_TYPE="$(git cat-file -t "$TAG")"
+          if [ "$OBJ_TYPE" != "tag" ]; then
+            echo "::error::Tag $TAG is lightweight (object type: $OBJ_TYPE), so it carries no release notes — reading it would publish the commit message instead. Re-tag annotated: git tag -a $TAG -F notes.md && git push --force origin $TAG"
+            exit 1
+          fi
           # Extract the annotated tag's message as the release body.
-          # Empty body = unannotated tag → fail loud so we don't ship
-          # a release with no notes.
           git tag -l --format='%(contents)' "$TAG" > /tmp/release-notes.md
           if [ ! -s /tmp/release-notes.md ]; then
-            echo "::error::Tag $TAG has no annotated message. Push annotated tag (git tag -a $TAG -m ...) before triggering the release workflow."
+            echo "::error::Tag $TAG has an empty annotated message. Re-tag with notes before triggering the release workflow."
             exit 1
           fi
           # Skip if release already exists (manual pre-create or retry).
