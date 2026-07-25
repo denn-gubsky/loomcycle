@@ -3141,10 +3141,8 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	// for ergonomics, but the underlying auth is the separate
 	// VOYAGE_API_KEY env var routed to cfg.Env.VoyageAPIKey.
 	//
-	// Providers with no case here (`ollama`, `stub`) fall through with
-	// both empty: the driver's own default endpoint, keyless. That is
-	// the right default for a self-hosted embedder and the reason a
-	// local Ollama needs no yaml beyond provider + model.
+	// Providers with no case here (`stub`) fall through with both empty:
+	// the driver's own default endpoint, keyless.
 	var apiKey, baseURL string
 	switch provider {
 	case "openai":
@@ -3156,6 +3154,18 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 		if apiKey == "" {
 			log.Printf("memory.embedder: provider=anthropic uses Voyage AI; set VOYAGE_API_KEY or Embed() calls will fail at 401")
 		}
+	case "ollama-local":
+		// Inherits the SAME OLLAMA_BASE_URL the chat driver uses, so one
+		// setting serves both. "disabled" is the chat side's opt-out
+		// sentinel (providerEnabled), not an endpoint — treat it as unset
+		// so the embedder falls back to the driver default rather than
+		// trying to dial a host literally named "disabled". Keyless.
+		if cfg.Env.OllamaBaseURL != "disabled" {
+			baseURL = cfg.Env.OllamaBaseURL
+		}
+	case "ollama":
+		// Hosted ollama.com — same pair the chat provider reads.
+		apiKey, baseURL = cfg.Env.OllamaAPIKey, cfg.Env.OllamaCloudBaseURL
 	}
 
 	// The operator's explicit yaml WINS over the per-provider defaults

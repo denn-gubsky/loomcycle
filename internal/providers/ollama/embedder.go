@@ -39,6 +39,13 @@ import (
 // `ollama pull nomic-embed-text` (or another embedding model) first; without
 // it every call 404s. See the 404 branch in embedOnce.
 type Embedder struct {
+	// providerID is the registration this instance serves —
+	// "ollama-local" (self-hosted, keyless) or "ollama" (hosted
+	// ollama.com). Provider() returns it verbatim because the store
+	// compares an embedding row's recorded provider against the
+	// configured embedder's Provider(), so it MUST equal the yaml
+	// `memory.embedder.provider` value.
+	providerID string
 	apiKey     string
 	baseURL    string
 	model      string
@@ -55,17 +62,30 @@ type Embedder struct {
 	dim atomic.Int64
 }
 
+// init registers BOTH ids the chat side uses, so the embedder inherits the
+// same naming — `ollama-local` is the self-hosted runtime, `ollama` is Ollama
+// Cloud. The split is not cosmetic: the consolidation dispatcher decides
+// whether a provider runs on the operator's own hardware from the `-local`
+// naming convention, so an id of `ollama` for a local box would get it
+// dispatched with cloud-shaped parallelism.
 func init() {
+	providers.RegisterEmbedder("ollama-local", func(opts providers.EmbedderOptions) (providers.Embedder, error) {
+		return newEmbedder("ollama-local", opts)
+	})
 	providers.RegisterEmbedder("ollama", func(opts providers.EmbedderOptions) (providers.Embedder, error) {
-		return NewEmbedder(opts)
+		return newEmbedder("ollama", opts)
 	})
 }
 
-// NewEmbedder constructs a configured Ollama embedder. Required: opts.Model
-// (an embedding model the operator has pulled). opts.APIKey is optional —
-// local Ollama is keyless and only a proxied/authenticated deployment needs
-// a Bearer token.
+// NewEmbedder constructs a self-hosted (`ollama-local`) embedder. Required:
+// opts.Model — an embedding model the operator has pulled. opts.APIKey is
+// optional: a local Ollama is keyless and only a proxied or hosted endpoint
+// needs a Bearer token.
 func NewEmbedder(opts providers.EmbedderOptions) (*Embedder, error) {
+	return newEmbedder("ollama-local", opts)
+}
+
+func newEmbedder(providerID string, opts providers.EmbedderOptions) (*Embedder, error) {
 	if opts.Model == "" {
 		return nil, errors.New("ollama embedder: opts.Model is required")
 	}
@@ -79,10 +99,11 @@ func NewEmbedder(opts providers.EmbedderOptions) (*Embedder, error) {
 		// `localhost` is the CONTAINER, not the host running Ollama — the
 		// resulting connection-refused is otherwise mystifying, and this
 		// line is the operator's pointer at memory.embedder.base_url.
-		log.Printf("ollama embedder: no memory.embedder.base_url set — defaulting to %s (in a container, point this at the host's Ollama)", defaultBaseURL)
+		log.Printf("%s embedder: no base_url configured (memory.embedder.base_url / OLLAMA_BASE_URL) — defaulting to %s (in a container, point this at the host's Ollama)", providerID, defaultBaseURL)
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Embedder{
+		providerID: providerID,
 		apiKey:     opts.APIKey,
 		baseURL:    baseURL,
 		model:      opts.Model,
@@ -94,7 +115,7 @@ func NewEmbedder(opts providers.EmbedderOptions) (*Embedder, error) {
 }
 
 func (e *Embedder) Model() string    { return e.model }
-func (e *Embedder) Provider() string { return "ollama" }
+func (e *Embedder) Provider() string { return e.providerID }
 
 // Dimension returns 0 until the first successful Embed, then the observed
 // vector width. Deliberately NOT a hardcoded table: Ollama serves whatever

@@ -273,20 +273,27 @@ func TestOllamaEmbedder_BatchSizeChunksRequests(t *testing.T) {
 	}
 }
 
-// TestOllamaEmbedder_RegisteredUnderOllama — the driver must be reachable via
-// the registry name operators write in `memory.embedder.provider`.
-func TestOllamaEmbedder_RegisteredUnderOllama(t *testing.T) {
-	e, err := providers.NewEmbedder("ollama", providers.EmbedderOptions{
-		Model:   "nomic-embed-text",
-		BaseURL: "http://127.0.0.1:1",
-	})
-	if err != nil {
-		t.Fatalf("NewEmbedder(ollama): %v", err)
-	}
-	if e.Provider() != "ollama" {
-		t.Errorf("Provider() = %q, want ollama", e.Provider())
-	}
-	if e.Dimension() != 0 {
-		t.Errorf("Dimension() = %d before any call, want 0 (unknown until observed)", e.Dimension())
+// TestOllamaEmbedder_RegisteredUnderBothIds — the embedder mirrors the chat
+// side's naming: `ollama-local` is the self-hosted runtime, `ollama` is Ollama
+// Cloud. Provider() must return the registration id verbatim, because the
+// store compares a stored embedding row's provider against the configured
+// embedder's Provider() when deciding what needs re-embedding — and because
+// the consolidation dispatcher reads "runs on the operator's own hardware"
+// off the `-local` suffix.
+func TestOllamaEmbedder_RegisteredUnderBothIds(t *testing.T) {
+	for _, id := range []string{"ollama-local", "ollama"} {
+		e, err := providers.NewEmbedder(id, providers.EmbedderOptions{
+			Model:   "nomic-embed-text",
+			BaseURL: "http://127.0.0.1:1",
+		})
+		if err != nil {
+			t.Fatalf("NewEmbedder(%s): %v", id, err)
+		}
+		if e.Provider() != id {
+			t.Errorf("Provider() = %q, want %q", e.Provider(), id)
+		}
+		if e.Dimension() != 0 {
+			t.Errorf("%s: Dimension() = %d before any call, want 0 (unknown until observed)", id, e.Dimension())
+		}
 	}
 }
