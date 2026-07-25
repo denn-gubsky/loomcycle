@@ -16,6 +16,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
+// cloudBaseURL is the hosted ollama.com endpoint — the no-base_url fallback for
+// the `ollama` registration, mirroring config's OLLAMA_CLOUD_BASE_URL default.
+// Its self-hosted sibling is defaultBaseURL (driver.go), used by `ollama-local`.
+const cloudBaseURL = "https://ollama.com"
+
 // Embedder implements providers.Embedder against Ollama's /api/embed
 // endpoint — the self-hostable embedder. Wire shape:
 //
@@ -94,12 +99,30 @@ func newEmbedder(providerID string, opts providers.EmbedderOptions) (*Embedder, 
 	}
 	baseURL := opts.BaseURL
 	if baseURL == "" {
-		baseURL = defaultBaseURL
-		// Announce the default once, at construction. Inside a container
-		// `localhost` is the CONTAINER, not the host running Ollama — the
-		// resulting connection-refused is otherwise mystifying, and this
-		// line is the operator's pointer at memory.embedder.base_url.
-		log.Printf("%s embedder: no base_url configured (memory.embedder.base_url / OLLAMA_BASE_URL) — defaulting to %s (in a container, point this at the host's Ollama)", providerID, defaultBaseURL)
+		// The fallback follows the REGISTRATION, because both ids share this
+		// constructor: `ollama` is hosted ollama.com, `ollama-local` is a
+		// self-hosted runtime. A single localhost default would silently point a
+		// cloud-configured embedder at a local box while calling itself Ollama
+		// Cloud, and name OLLAMA_BASE_URL — the wrong variable for that id — in
+		// the very log line the operator uses to debug it.
+		//
+		// Not reachable from the shipped binary (buildEmbedder always passes
+		// cfg.Env.OllamaCloudBaseURL for the cloud id, which config defaults to
+		// https://ollama.com), but this constructor is exported for library
+		// callers, who get no such guarantee.
+		var envName, hint string
+		if providerID == "ollama" {
+			baseURL, envName = cloudBaseURL, "OLLAMA_CLOUD_BASE_URL"
+		} else {
+			baseURL, envName = defaultBaseURL, "OLLAMA_BASE_URL"
+			// Inside a container `localhost` is the CONTAINER, not the host
+			// running Ollama — the resulting connection-refused is otherwise
+			// mystifying, and this line is the operator's pointer at
+			// memory.embedder.base_url.
+			hint = " (in a container, point this at the host's Ollama)"
+		}
+		// Announce the default once, at construction.
+		log.Printf("%s embedder: no base_url configured (memory.embedder.base_url / %s) — defaulting to %s%s", providerID, envName, baseURL, hint)
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Embedder{
