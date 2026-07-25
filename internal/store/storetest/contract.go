@@ -1347,7 +1347,15 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 
 	// (4b) tie-break EXCLUDES: same completed_at, session_id below the cursor's.
-	tieOut, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", watermarkA, "\xef\xbf\xbf", 100)
+	//
+	// The cursor id is DERIVED from the row's own id (a prefix extension), not a
+	// hand-picked "high" sentinel. sessA+"z" is greater than sessA under every
+	// collation, because a string always sorts before its own extension. The
+	// earlier U+FFFF sentinel only worked on SQLite's byte comparison: Postgres
+	// resolves the same `>` under the database collation, where a non-character
+	// does not sort above ASCII, so the row came back and this assertion fired —
+	// which is how the backends' disagreement was found. Keep this derived.
+	tieOut, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", watermarkA, sessA+"z", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (tie-break exclude): %v", err)
 	}
