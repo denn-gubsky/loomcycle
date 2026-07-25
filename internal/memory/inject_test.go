@@ -142,3 +142,34 @@ func TestUnknownVariants_DetectsTypoIgnoresEscaped(t *testing.T) {
 		t.Errorf("whitespace-tolerant known variant should not be flagged unknown")
 	}
 }
+
+// TestInject_TrustedVariantSurvivesAnExhaustedBudget — a large, agent-grown
+// section placed AHEAD of the operator's consolidation bands must not truncate
+// or empty them.
+//
+// Budget is consumed left-to-right, so ordering alone used to decide whether the
+// operator's instruction survived: a >3.4 KB `human` profile in front of the
+// bands ate the whole 4096-char default and the bands rendered as nothing (or as
+// a fragment ending in the truncation marker), silently reverting the
+// consolidator to whatever thresholds it recalled from training. Trusted content
+// is operator config and is exempt from the budget.
+func TestInject_TrustedVariantSurvivesAnExhaustedBudget(t *testing.T) {
+	bands := ConsolidationBands(0.95, 0.85)
+	// user_info FIRST, and big enough on its own to exhaust the whole budget.
+	prompt := "Intro. {{memory:user_info}} {{memory:consolidation_bands}} End."
+	sections := map[Variant]string{
+		VariantUserInfo:           strings.Repeat("accumulated profile text. ", 400),
+		VariantConsolidationBands: bands,
+	}
+
+	got := Expand(prompt, sections, 1024) // 1024 tokens = 4096 chars
+
+	if !strings.Contains(got, bands) {
+		t.Errorf("consolidation_bands must render in FULL despite an exhausted budget.\ngot: %q", got)
+	}
+	// The untrusted section is still budgeted — the exemption must not turn the
+	// cap off for everything.
+	if !strings.Contains(got, "[memory truncated]") {
+		t.Errorf("untrusted user_info should still be budget-truncated: %q", got)
+	}
+}

@@ -73,7 +73,13 @@ var knownVariants = map[Variant]bool{
 // Same reasoning as MemoryProtocol, which is likewise unframed.
 //
 // A variant belongs here ONLY if its body is a pure function of validated
-// operator config with no store content in it.
+// operator config with no store content in it. That property is what also makes
+// it safe to exempt from the injection budget in Expand — the body is bounded
+// and deterministic, so it cannot itself be the thing that exhausts the cap.
+//
+// The set is pinned by TestTrustedVariants_ExactlyConsolidationBands: adding an
+// entry here is a trust-boundary decision, not a config change, so it must fail
+// a test and be argued for rather than slip in.
 var trustedVariants = map[Variant]bool{
 	VariantConsolidationBands: true,
 }
@@ -157,7 +163,9 @@ func UnknownVariants(s string) []string {
 //     at the end in its own framed section.
 //   - Budget: the TOTAL injected memory text is capped at maxTokens (chars/4,
 //     matching the loop's estimator). Content beyond the budget is truncated
-//     with a marker. maxTokens <= 0 disables the cap.
+//     with a marker. maxTokens <= 0 disables the cap. Trusted variants (see
+//     trustedVariants) are EXEMPT — operator config must not be crowded out by
+//     accumulated content that happens to be placed ahead of it.
 //
 // The base prompt text is never counted against the budget — only injected
 // memory content is.
@@ -182,12 +190,19 @@ func Expand(prompt string, sections map[Variant]string, maxTokens int) string {
 		if body == "" {
 			return ""
 		}
+		// Trusted variants are checked BEFORE the budget and are exempt from it.
+		// Budget is consumed left-to-right, so with the trust check after it a
+		// prompt that places {{memory:user_info}} ahead of the bands could let a
+		// large agent-grown profile truncate or empty the operator's instruction
+		// — untrusted accumulated content crowding out trusted operator config,
+		// which is the wrong way round. A trusted body is bounded, deterministic
+		// and operator-authored, so it costs nothing predictable to exempt it.
+		if trustedVariants[v] {
+			return body
+		}
 		body = takeBudget(&remaining, body)
 		if body == "" {
 			return ""
-		}
-		if trustedVariants[v] {
-			return body
 		}
 		return frame(v, body)
 	})
