@@ -35,6 +35,14 @@ stores the turns verbatim as one row) — those are synchronous.
 
 ## What a consolidation pass does
 
+A pass is not a subsystem — it is an agent following a procedure, and the
+procedure is the bundled consolidator's **system prompt**. That is
+deliberate: deciding what is durable is a judgement call an operator should
+be able to read and change. It is inlined rather than loaded on demand
+because the indirection cost real reliability — a small local model given
+the procedure behind a tool call made no tool calls at all, and drove the
+same pass correctly once the steps were in front of it.
+
 A pass works on **one memory target** (one scope + scope id) and walks a
 fixed sequence:
 
