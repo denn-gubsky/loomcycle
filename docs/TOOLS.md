@@ -583,9 +583,57 @@ memory:
     related_threshold: 0.85   # this..merge ⇒ overlapping subject, different claim — add
 ```
 
-Both default to the values shown. Calibrate them against your own model: one genuine paraphrase of a single fact measured **0.7675** on a 768-dim `embeddinggemma` and **0.9005** on a 4096-dim `qwen3-embedding` — against the 0.95 default *neither* registers as "the same fact", so a re-worded fact is written as a duplicate row. Measure a couple of paraphrase pairs on your model and set the bands from what you see. Validated at load as `0 < related_threshold < merge_threshold <= 1`, and checked against the default when you set only one of the pair.
+Both default to the values shown, and both are validated at load as `0 < related_threshold < merge_threshold <= 1` (checked against the default when you set only one of the pair). **Do not carry these numbers between models** — measure them, with the command below.
 
-The consolidator agent picks them up through the `{{memory:consolidation_bands}}` placeholder in its system prompt; the bundled `memory/consolidate` skill points at that section rather than naming numbers.
+The consolidator agent picks them up through the `{{memory:consolidation_bands}}` placeholder in its system prompt. The effective values are also readable at runtime from `Context op=capabilities` → `consolidation`.
+
+##### Calibrating the bands — `loomcycle memory-calibrate`
+
+```bash
+loomcycle memory-calibrate --config loomcycle.yaml
+```
+
+The command embeds a labelled corpus with **your** configured embedder, takes every probe-vs-base cosine, and reports where the three classes land:
+
+| class | meaning | must |
+|---|---|---|
+| DUPLICATE | the same fact, reworded | land **above** `merge_threshold` |
+| RELATED | same subject, a **different** claim | land **below** `merge_threshold` |
+| UNRELATED | a different fact entirely | land below both |
+
+It prints each class's `n / min / p05 / median / p95 / max`, the two class gaps, a threshold sweep (how many duplicates each candidate merges, and how many non-duplicates it would destroy), and a recommendation: `merge_threshold` at the midpoint of the safe window `(max(non-duplicate), min(duplicate)]`, `related_threshold` at the highest value that still recalls 75% of the related class.
+
+| flag | effect |
+|---|---|
+| `--config <yaml>` | config to read the embedder + configured bands from (layered exactly as the server loads it: presets → `LOOMCYCLE_CONFIG_DIR` → `LOOMCYCLE_CONFIG_FILES` → `--config`). |
+| `--dataset <file.json>` | your own corpus instead of the bundled one. Same shape as `internal/memory/eval/calibration.json` — copy it and swap in your facts. UNRELATED pairs are derived, never listed. |
+| `--embedder auto\|stub` | `auto` (default) uses the configured embedder. `stub` is a **plumbing check only** — the deterministic stub embedder has no notion of meaning and will always report a model that cannot be calibrated. |
+| `--check` | additionally fail when the **currently configured** bands are inert or destructive on the corpus. This is the regression guard against a silently dead setting. |
+| `--output <file>` | write the JSON report (including every raw pair, so a run can be re-analysed without re-embedding). |
+
+**Exit codes.** `0` — the duplicate and related classes separate, so a merge threshold exists. `1` — they overlap (no threshold both merges every duplicate and spares every distinct fact: either the model cannot tell these facts apart or a probe is mislabelled), or `--check` found the configured bands inert/destructive. `2` — invocation error.
+
+**What it measured on `embeddinggemma`.** 768-dim, served by `ollama-local`; the bundled corpus of 12 facts and 24 labelled probes, reading raw cosine (`Memory op=search`'s `score` is raw cosine — an exact self-match returns 1.0):
+
+| class | n | min | p05 | median | p95 | max |
+|---|---|---|---|---|---|---|
+| DUPLICATE | 12 | 0.7181 | 0.7909 | 0.9035 | 0.9376 | 0.9487 |
+| RELATED | 12 | 0.3722 | 0.3884 | 0.5205 | 0.6129 | 0.6775 |
+| UNRELATED | 72 | 0.1337 | 0.1460 | 0.2953 | 0.5018 | 0.5858 |
+
+- DUPLICATE vs RELATED separate cleanly: gap **+0.0406**, safe window **(0.6775, 0.7181]**, midpoint **0.6978**.
+- Merging at 0.68–0.70 catches **12/12** duplicates with **0** false merges out of the 84 non-duplicate pairs.
+- A related band at 0.45 catches 9/12 related with 8/72 (11%) unrelated false positives; at 0.50, 7/12 and 4/72 (6%).
+
+*(That `n=72` is the by-hand measurement, which read each probe's nearest neighbours out of a top-K search. The command scores the **full** pairwise matrix — 264 unrelated pairs for this corpus — so its UNRELATED row has a lower median and a max that can only be greater or equal. That direction is deliberate: `max(UNRELATED)` is what a merge threshold has to clear.)*
+
+**The finding: the shipped default merges nothing on this model.** The highest genuine paraphrase scores **0.9487**, just under the 0.95 default. On the very model these docs recommend for self-hosting, merging never fires and duplicates accumulate forever — silently, with nothing logged.
+
+**Why the defaults are still 0.95 / 0.85.** The risk is asymmetric. A threshold that is too **high** leaves duplicates lying around: untidy, and every one of them is still there to be merged later. A threshold that is too **low** merges two distinct facts into one, which is data loss with no undo. 0.95 fails safe, so it stays the default. The defect was never the value — it was that nothing told an operator their threshold was inert for their model. That is what the command fixes.
+
+**The RELATED/UNRELATED overlap is a property of the model, not a tuning failure.** Their gap is **−0.2136**: the classes cross, and no `related_threshold` separates them. The command says so explicitly and recommends on the stated recall trade-off rather than presenting a clean split that does not exist. Expect false positives in the related band on this model, and treat the number as a dial, not a solution.
+
+**These numbers describe `embeddinggemma` only.** Cosine scale is a property of the embedding model — a genuine paraphrase measured **0.7675** on this 768-dim model and **0.9005** on a 4096-dim `qwen3-embedding`. **Changing `memory.embedder.model` or `dimensions` invalidates your calibration: re-run the command.**
 
 #### Failure modes
 

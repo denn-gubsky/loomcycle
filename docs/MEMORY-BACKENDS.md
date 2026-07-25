@@ -159,13 +159,29 @@ op-level reference and the operator knobs.
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts are the same fact reworded, and get merged (default `0.95`). |
 | `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
 
-**Calibrate the bands against your embedding model.** Cosine scale is a
-property of the model, and the defaults suit neither of the two local models
-measured: one genuine paraphrase of a single fact scored **0.7675** on a
-768-dim `embeddinggemma` and **0.9005** on a 4096-dim `qwen3-embedding`, so
-under the 0.95 default both write a duplicate row instead of merging. Measure
-a few paraphrase pairs on your model and set the pair from what you see —
-`docs/TOOLS.md` → "Consolidation similarity bands".
+**Calibrate the bands against your embedding model — `loomcycle
+memory-calibrate`.** Cosine scale is a property of the model, so the defaults
+are right for at most one. Measured on a 768-dim `embeddinggemma` with a
+12-fact corpus and 24 labelled probes, the **highest** genuine paraphrase
+scored **0.9487** — just under the 0.95 default, so the shipped band merges
+**0 of 12** duplicates and duplicates accumulate forever with nothing logged.
+The safe window on that model is `(0.6775, 0.7181]`.
+
+The defaults do not change, because the risk is asymmetric: too high leaves
+duplicates lying around (recoverable), too low merges distinct facts (data
+loss). 0.95 fails safe. The problem was never the number — it was having no
+way to learn the number was inert for your model. Run:
+
+```bash
+loomcycle memory-calibrate --config loomcycle.yaml   # add --check in CI
+```
+
+It exits non-zero when no threshold can separate duplicates from related
+facts. Note that the RELATED and UNRELATED classes **overlap** on this model
+(gap −0.2136), so `related_threshold` is a recall/false-positive trade-off
+rather than a clean split — a property of the model, not a tuning failure.
+**Re-run after any change of embedding model or dimension.** Full table and
+flags: `docs/TOOLS.md` → "Calibrating the bands".
 
 ### The eval gate
 

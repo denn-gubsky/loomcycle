@@ -140,13 +140,36 @@ are enforced by the server rather than left to you:
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts count as the same fact reworded and get merged (default `0.95`). |
 | `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
 
-The two bands are worth calibrating: cosine scale is a property of the
-embedding model, so the defaults are not right for every one. One genuine
-paraphrase of a single fact measured `0.7675` on a 768-dim model and `0.9005`
-on a 4096-dim one — under a `0.95` merge band neither reads as the same fact,
-and the pass writes a duplicate row. Measure a few paraphrase pairs on your
-model and set the pair from what you see. The consolidator agent receives the
-configured bands in its system prompt via `{{memory:consolidation_bands}}`.
+### Calibrating the two bands
+
+Cosine scale is a property of the **embedding model**, not a universal, so a
+default band is calibrated to at most one model — and being wrong is silent in
+both directions. A band nothing reaches never merges, so duplicates accumulate
+forever with no error anywhere. A band everything reaches merges two distinct
+facts into one, which is data loss.
+
+Measured on a 768-dim `embeddinggemma` with a 12-fact corpus and 24 labelled
+probes, the **highest** genuine paraphrase scored `0.9487` — just under the
+`0.95` default. On that model the shipped band merges **0 of 12** duplicates.
+The safe window there is `(0.6775, 0.7181]`: merging at 0.68–0.70 catches all
+12 duplicates and makes zero false merges.
+
+The defaults stay `0.95` / `0.85` anyway, because the risk is asymmetric: too
+high leaves duplicates lying around and every one of them is still recoverable,
+while too low destroys a distinct fact and that is not. `0.95` fails safe.
+
+An operator measures their own model with `loomcycle memory-calibrate`, which
+reports each class's distribution, a threshold sweep, and a recommendation, and
+exits non-zero when no threshold can separate duplicates from related facts.
+Two caveats worth knowing: on this model the RELATED and UNRELATED classes
+**overlap** (no threshold separates them, so the related band is a
+recall/false-positive trade-off rather than a clean split), and a calibration
+belongs to one model — **changing the embedding model or its dimension
+invalidates it**.
+
+An agent can read the effective bands at runtime from
+`Context op=capabilities` → `consolidation`; the consolidator agent also
+receives them in its system prompt via `{{memory:consolidation_bands}}`.
 
 Consolidation is **opt-in**: without a schedule pointing at a consolidator
 agent, `add` still queues durably and nothing drains it. Queued items are not
