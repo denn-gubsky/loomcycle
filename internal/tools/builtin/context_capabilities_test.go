@@ -262,3 +262,32 @@ func (s *stubNamedTool) InputSchema() json.RawMessage { return json.RawMessage(`
 func (s *stubNamedTool) Execute(context.Context, json.RawMessage) (tools.Result, error) {
 	return tools.Result{}, nil
 }
+
+// A discovery surface must always return a COMPLETE shape. The config-derived
+// keys were previously nested under `if c.Cfg != nil`, so with no config they
+// vanished entirely and a client branching on caps.scheduler.available read
+// undefined rather than false — falsy in some clients, a KeyError in others.
+// Absent must never stand in for unavailable, and "can't confirm" must report
+// as unavailable so a caller declines to attempt.
+func TestContextTool_CapabilitiesShapeIsCompleteWithoutConfig(t *testing.T) {
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1"})
+	out := capabilitiesOut(t, &Context{}, ctx)
+
+	for _, key := range []string{
+		"bash", "bashbox", "scheduler", "webhooks", "retention", "code_js",
+		"search", "consolidation", "limits", "vector_memory", "full_text_memory",
+		"memory_layer", "sql_memory", "documents", "sandbox",
+	} {
+		if _, ok := out[key]; !ok {
+			t.Errorf("key %q absent with no config; a caller branching on it reads undefined, not false", key)
+		}
+	}
+	for _, key := range []string{
+		"bash", "bashbox", "scheduler", "webhooks", "retention", "code_js",
+		"search", "consolidation", "vector_memory", "sandbox",
+	} {
+		if available(t, out, key) {
+			t.Errorf("%s reports AVAILABLE with no config at all — unconfirmable must fail safe", key)
+		}
+	}
+}

@@ -92,27 +92,35 @@ func (c *Context) execCapabilities(ctx context.Context) (tools.Result, error) {
 	out["documents"] = map[string]any{"available": sqlMemOK && c.Store != nil}
 
 	// --- config-gated subsystems ---
+	// Every key below is emitted UNCONDITIONALLY. With no config the zero Env
+	// reports each feature as unavailable, rather than omitting the key: this
+	// is a discovery surface whose entire purpose is letting a caller branch,
+	// and an ABSENT key deserializes as undefined/nil — which is falsy in some
+	// clients and a KeyError in others. Reporting "can't confirm" as
+	// unavailable is also the fail-safe direction: a caller declines to
+	// attempt rather than attempting something that will refuse.
+	var env config.Env
 	if c.Cfg != nil {
-		env := c.Cfg.Env
-		out["bash"] = map[string]any{"available": env.BashEnabled}
-		out["bashbox"] = map[string]any{"available": env.BashboxEnabled}
-		// The scheduler and webhook loops both additionally require a store;
-		// mirror the boot condition rather than the flag alone, or an agent
-		// authoring a ScheduleDef is told it will fire when it never will.
-		out["scheduler"] = map[string]any{"available": env.SchedulerEnabled && c.Store != nil}
-		out["webhooks"] = map[string]any{"available": env.WebhooksEnabled && c.Store != nil}
-		out["retention"] = map[string]any{"available": env.RetentionEnabled}
-		out["code_js"] = map[string]any{"available": env.CodeAgentsEnabled}
-		out["search"] = searchCapability(c.Cfg)
-		out["consolidation"] = consolidationCapability(c.Cfg)
-		out["limits"] = capabilityLimits(ctx, c.Cfg)
-		if admin {
-			// Purely operator infrastructure: an agent never needs it to decide
-			// whether a call will work, and it describes the deployment rather
-			// than a capability. Kind only — never a DSN, host, or path.
-			// Normalized to "sqlite"/"postgres" at config load.
-			out["storage"] = map[string]any{"backend": c.Cfg.Storage.Backend}
-		}
+		env = c.Cfg.Env
+	}
+	out["bash"] = map[string]any{"available": env.BashEnabled}
+	out["bashbox"] = map[string]any{"available": env.BashboxEnabled}
+	// The scheduler and webhook loops both additionally require a store;
+	// mirror the boot condition rather than the flag alone, or an agent
+	// authoring a ScheduleDef is told it will fire when it never will.
+	out["scheduler"] = map[string]any{"available": env.SchedulerEnabled && c.Store != nil}
+	out["webhooks"] = map[string]any{"available": env.WebhooksEnabled && c.Store != nil}
+	out["retention"] = map[string]any{"available": env.RetentionEnabled}
+	out["code_js"] = map[string]any{"available": env.CodeAgentsEnabled}
+	out["search"] = searchCapability(c.Cfg)
+	out["consolidation"] = consolidationCapability(c.Cfg)
+	out["limits"] = capabilityLimits(ctx, c.Cfg)
+	if admin && c.Cfg != nil {
+		// Purely operator infrastructure: an agent never needs it to decide
+		// whether a call will work, and it describes the deployment rather
+		// than a capability. Kind only — never a DSN, host, or path.
+		// Normalized to "sqlite"/"postgres" at config load.
+		out["storage"] = map[string]any{"backend": c.Cfg.Storage.Backend}
 	}
 
 	// sandbox: the sandboxed-code-execution surface arrives as MCP tools from a
@@ -127,6 +135,9 @@ func (c *Context) execCapabilities(ctx context.Context) (tools.Result, error) {
 // ONLY. The map value (SearchProviderConfig) carries a BaseURL, so it is never
 // serialized — only the keys are.
 func searchCapability(cfg *config.Config) map[string]any {
+	if cfg == nil {
+		return map[string]any{"available": false, "providers": []string{}}
+	}
 	names := make([]string, 0, len(cfg.SearchProviders))
 	for name := range cfg.SearchProviders {
 		names = append(names, name)
@@ -151,6 +162,9 @@ func searchCapability(cfg *config.Config) map[string]any {
 // a recall that keeps coming back empty.
 func consolidationCapability(cfg *config.Config) map[string]any {
 	configured, enabled := false, false
+	if cfg == nil {
+		return map[string]any{"available": false, "configured": false}
+	}
 	for _, sr := range cfg.ScheduledRuns {
 		agent, ok := cfg.Agents[sr.Agent]
 		if !ok || !agent.MemoryConsolidation {
@@ -171,6 +185,10 @@ func consolidationCapability(cfg *config.Config) map[string]any {
 // an agent needs to size its own work; none identifies the deployment.
 func capabilityLimits(ctx context.Context, cfg *config.Config) map[string]any {
 	lim := map[string]any{}
+	if cfg == nil {
+		lim["memory_inject_max_tokens"] = config.DefaultMemoryInjectMaxTokens
+		return lim
+	}
 	if n := cfg.Env.MaxRequestBytes; n > 0 {
 		lim["max_request_bytes"] = n
 	}
