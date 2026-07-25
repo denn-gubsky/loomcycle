@@ -86,9 +86,11 @@ func TestConsolidationEval_FixtureSettlesInDeclaredOrder(t *testing.T) {
 // also makes the NEXT pass skip their (now absent) history silently.
 //
 // The returned row count is the load-bearing observable. No Store read path
-// surfaces a superseded row (MemoryGet / MemoryList / MemoryProvenanceGet all
-// filter `superseded_at IS NULL`), so the count is how the harness proves BOTH
-// that the archive was retained before erasure and that erasure reached it.
+// returns a superseded row's key or value (MemoryGet / MemoryList /
+// MemoryProvenanceGet all filter `superseded_at IS NULL`) — only counts see it:
+// the operator scope-size summary (MemoryListScopeIDs) and this reclaim count. So
+// the count is how the harness proves BOTH that the archive was retained before
+// erasure and that erasure reached it.
 //
 // FAIL-BEFORE: adding `AND superseded_at IS NULL` to MemoryDeleteScope's memory
 // DELETE drops the count to 2 (the archived row survives erasure); removing its

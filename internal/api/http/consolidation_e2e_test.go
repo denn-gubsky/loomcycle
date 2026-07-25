@@ -350,8 +350,31 @@ func TestConsolidate_UpdateSupersedesSimilar(t *testing.T) {
 			t.Errorf("superseded key %q still listed among live keys %v", staleKey, env.memKeys("alice"))
 		}
 	}
-	// ...but the row is RETAINED: re-writing the same key revives it rather than
-	// inserting a second row, which is only possible if the row survived.
+	// ...but the row is RETAINED. The only Store read that can tell an archive from
+	// a delete is the operator scope-size summary, which does NOT filter
+	// `superseded_at` — every content read (get/list/provenance) filters it and so
+	// behaves identically either way.
+	sums, err := env.store.MemoryListScopeIDs(context.Background(), "", store.MemoryScopeUser)
+	if err != nil {
+		t.Fatalf("MemoryListScopeIDs: %v", err)
+	}
+	counted, found := 0, false
+	for _, sum := range sums {
+		if sum.ScopeID == "alice" {
+			counted, found = sum.KeyCount, true
+		}
+	}
+	if !found {
+		t.Fatalf("no scope summary for alice — the retention assertion would be vacuous")
+	}
+	if want := len(env.memKeys("alice")) + 1; counted != want {
+		t.Errorf("scope key_count = %d, want %d (the live rows + the archived %q) — supersede did not retain the row",
+			counted, want, staleKey)
+	}
+
+	// A re-write onto the archived key revives it, so a preference that flips back
+	// costs one write rather than a new row. (This is the revive path, not the
+	// retention proof: MemorySetProvenance upserts, so it would pass either way.)
 	if err := env.store.MemorySetProvenance(context.Background(), "", store.MemoryScopeUser, "alice", staleKey,
 		json.RawMessage(`"revived"`), 0, store.MemoryProvenance{Origin: "consolidator", Class: "fact"}); err != nil {
 		t.Fatalf("revive: %v", err)
