@@ -142,6 +142,25 @@ var (
 	LockKeyHelpIndexReconcile int64
 )
 
+// MemoryConsolidatorLockKey derives the RFC BL P2 consolidation fan-out's
+// advisory-lock key from the SCHEDULE DEF id, so only one replica per tick
+// enumerates that schedule's targets and dispatches their runs.
+//
+// Distinct from the per-target lease the pass itself takes (Memory cursor_lease):
+// the lease stops two passes fighting over one target, this stops N replicas each
+// dispatching a full fan-out in the same tick — which would burn N× the tokens
+// before the leases sorted it out.
+//
+// Per-def rather than one process-wide constant because consolidation schedules
+// FAN OUT and an operator will have several — typically one per tenant. With a
+// single shared key, two defs due in the same tick collide and the loser is
+// skip-but-advanced, so it silently forfeits its whole cadence to whichever def
+// the sweeper reached first. Keyed per def they are independent; the same def
+// still admits exactly one replica.
+func MemoryConsolidatorLockKey(defID string) int64 {
+	return fnvKey("memory_consolidator:" + defID)
+}
+
 func init() {
 	LockKeyHeartbeatSweeper = fnvKey("heartbeat_sweeper")
 	LockKeyMemorySweeper = fnvKey("memory_sweeper")

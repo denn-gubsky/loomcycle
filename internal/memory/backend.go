@@ -85,6 +85,10 @@ type SetOptions struct {
 	// EmbedText is the text to embed when Embed is set. Empty falls back
 	// to the JSON-stringified value (the pre-MR-2 persistEmbedding rule).
 	EmbedText string
+	// Provenance (RFC BL) records where this fact came from — set by a
+	// consolidation write. A zero value takes the plain k/v write path, so
+	// every pre-existing caller is byte-identical.
+	Provenance store.MemoryProvenance
 }
 
 // SetResult reports the embedding outcome of a Set. For a non-embed write

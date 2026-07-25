@@ -790,6 +790,122 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, l
 	return out, rows.Err()
 }
 
+// ConsolidatableSessions lists all-terminal sessions past the composite
+// consolidation watermark (RFC BL P2). completed_at is TIMESTAMPTZ here.
+//
+// The terminal predicate is PrunableAgedSessions' — a session with any
+// running/paused/pausing run is excluded, so a live chat is never consolidated
+// mid-conversation. Unlike that query there is NO pinned exclusion (pinning
+// exempts a chat from deletion, not from being read) and no age cutoff (the
+// watermark IS the cutoff).
+func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName, excludeAgentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]store.ConsolidatableSession, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var (
+		conds = []string{"s.tenant_id = $1"}
+		args  = []any{tenantID}
+		i     = 2
+	)
+	if userID != "" {
+		conds = append(conds, fmt.Sprintf("s.user_id = $%d", i))
+		args = append(args, userID)
+		i++
+	}
+	if agentName != "" {
+		conds = append(conds, fmt.Sprintf("s.agent = $%d", i))
+		args = append(args, agentName)
+		i++
+	}
+	if excludeAgentName != "" {
+		conds = append(conds, fmt.Sprintf("s.agent <> $%d", i))
+		args = append(args, excludeAgentName)
+		i++
+	}
+	terminal := fmt.Sprintf("$%d, $%d, $%d", i, i+1, i+2)
+	args = append(args, string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled))
+	i += 3
+
+	// A zero watermark means "from the beginning" — drop the composite
+	// predicate entirely rather than comparing against a zero timestamp.
+	having := ""
+	if !afterCompletedAt.IsZero() {
+		having = fmt.Sprintf(` AND (MAX(r.completed_at) > $%d
+		               OR (MAX(r.completed_at) = $%d AND r.session_id > $%d))`, i, i, i+1)
+		args = append(args, afterCompletedAt, afterSessionID)
+		i += 2
+	}
+	args = append(args, limit)
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT r.session_id, MAX(r.completed_at), s.user_id, s.agent
+		 FROM runs r JOIN sessions s ON s.id = r.session_id
+		 WHERE `+strings.Join(conds, " AND ")+`
+		 GROUP BY r.session_id, s.user_id, s.agent
+		 HAVING SUM(CASE WHEN r.status NOT IN (`+terminal+`)
+		                   OR r.pause_state IN ('paused', 'pausing')
+		                 THEN 1 ELSE 0 END) = 0
+		    AND MAX(r.completed_at) IS NOT NULL`+having+`
+		 ORDER BY MAX(r.completed_at) ASC, r.session_id ASC
+		 LIMIT $`+fmt.Sprint(i),
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list consolidatable sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ConsolidatableSession
+	for rows.Next() {
+		var (
+			row       store.ConsolidatableSession
+			completed time.Time
+			userIDCol *string
+		)
+		if err := rows.Scan(&row.SessionID, &completed, &userIDCol, &row.AgentName); err != nil {
+			return nil, fmt.Errorf("scan consolidatable session: %w", err)
+		}
+		row.MaxCompletedAt = completed.UTC()
+		if userIDCol != nil {
+			row.UserID = *userIDCol
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// SessionSettledAt reports a session's max(completed_at) plus its owning user id,
+// tenant-confined (RFC BL P2 watermark authenticity). completed_at is TIMESTAMPTZ
+// here; a session with no finished run yields a NULL max → the zero time.
+func (s *Store) SessionSettledAt(ctx context.Context, tenantID, sessionID string) (time.Time, string, error) {
+	var (
+		userID    *string
+		completed *time.Time
+	)
+	// LEFT JOIN so a session with zero runs still produces a row — the caller
+	// must be able to tell "exists but unsettled" from "no such session".
+	err := s.pool.QueryRow(ctx,
+		`SELECT s.user_id, MAX(r.completed_at)
+		 FROM sessions s LEFT JOIN runs r ON r.session_id = s.id
+		 WHERE s.id = $1 AND s.tenant_id = $2
+		 GROUP BY s.id, s.user_id`,
+		sessionID, tenantID,
+	).Scan(&userID, &completed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, "", &store.ErrNotFound{Kind: "session", ID: sessionID}
+	}
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("session settled at: %w", err)
+	}
+	owner := ""
+	if userID != nil {
+		owner = *userID
+	}
+	if completed == nil {
+		return time.Time{}, owner, nil
+	}
+	return completed.UTC(), owner, nil
+}
+
 // RunsForSession returns every run in the session (any status), oldest first.
 func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.Run, error) {
 	rows, err := s.pool.Query(ctx,
@@ -3319,6 +3435,81 @@ func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.Memo
 		return fmt.Errorf("memory set: %w", err)
 	}
 	return nil
+}
+
+// MemorySetProvenance is MemorySet plus the RFC BL provenance columns. The
+// provenance is written wholesale on every upsert (a re-derived fact carries
+// its CURRENT source), and superseded_at is cleared exactly as MemorySet does
+// so a consolidation write REVIVES a soft-archived row. Same transient-connection
+// retry as MemorySet — a dropped consolidation write is a lost fact.
+func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance) error {
+	now := time.Now().UTC()
+	var expiresAt any
+	if ttl > 0 {
+		expiresAt = now.Add(ttl)
+	}
+	// nullify keeps an unset provenance field NULL rather than '' so a
+	// "written with no class" row is distinguishable from a legacy row.
+	nullify := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
+	}
+	if err := retryOnTransientConn(ctx, func() error {
+		_, err := s.pool.Exec(ctx,
+			`INSERT INTO memory (tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at,
+			                     origin, class, source_session_id, source_run_id)
+			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+			 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
+			    value = EXCLUDED.value,
+			    expires_at = EXCLUDED.expires_at,
+			    updated_at = EXCLUDED.updated_at,
+			    origin = EXCLUDED.origin,
+			    class = EXCLUDED.class,
+			    source_session_id = EXCLUDED.source_session_id,
+			    source_run_id = EXCLUDED.source_run_id,
+			    superseded_at = NULL`,
+			tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
+			nullify(prov.Origin), nullify(prov.Class), nullify(prov.SourceSessionID), nullify(prov.SourceRunID),
+		)
+		return err
+	}); err != nil {
+		return fmt.Errorf("memory set with provenance: %w", err)
+	}
+	return nil
+}
+
+// MemoryProvenanceGet reads one row's provenance, applying MemoryGet's
+// visibility rules (superseded and expired rows read as ErrNotFound).
+func (s *Store) MemoryProvenanceGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryProvenance, error) {
+	var origin, class, srcSess, srcRun *string
+	err := s.pool.QueryRow(ctx,
+		`SELECT origin, class, source_session_id, source_run_id
+		 FROM memory
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4
+		   AND superseded_at IS NULL
+		   AND (expires_at IS NULL OR expires_at > now())`,
+		tenantID, string(scope), scopeID, key,
+	).Scan(&origin, &class, &srcSess, &srcRun)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.MemoryProvenance{}, &store.ErrNotFound{Kind: "memory", ID: key}
+	}
+	if err != nil {
+		return store.MemoryProvenance{}, fmt.Errorf("memory provenance get: %w", err)
+	}
+	deref := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	return store.MemoryProvenance{
+		Origin:          deref(origin),
+		Class:           deref(class),
+		SourceSessionID: deref(srcSess),
+		SourceRunID:     deref(srcRun),
+	}, nil
 }
 
 // MemoryGet returns one entry. Expired rows are surfaced as

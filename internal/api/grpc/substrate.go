@@ -56,6 +56,8 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	ctx = tools.WithAgentTools(ctx, []string{"*"})
 	// RFC BL P2: the operator substrate plane also gets the consolidation grant
 	// (own-scope, tenant-confined), consistent with the open memory scope here.
+	// It does NOT get the origin=consolidator provenance stamp — that requires an
+	// actual run and this plane has no run id (see builtin.provenanceForSet).
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user", "global"},
 		Consolidation: true,
