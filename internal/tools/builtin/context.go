@@ -77,6 +77,20 @@ type Context struct {
 	// support), help query degrades to a substring scan over the in-memory
 	// Help set, so query still works. Late-bound in main.go alongside Store.
 	Embedder providers.Embedder
+
+	// Build identifies the running binary, reported by `self`. Threaded from
+	// main() rather than re-resolved here so `op=self` and `--version` can
+	// never disagree: main owns the ldflags → runtime/debug → "unknown"
+	// precedence, and this is a plain copy of its result. Zero value = a
+	// fixture that didn't wire it; `self` then omits the block.
+	Build BuildInfo
+}
+
+// BuildInfo is the non-secret identity of the running loomcycle binary.
+type BuildInfo struct {
+	Version string
+	Commit  string
+	Time    string
 }
 
 const contextDescription = `Read-only runtime introspection. ` +
@@ -307,6 +321,24 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			"token_def_id": p.TokenDefID,
 			"token_suffix": p.TokenSuffix,
 		}
+	}
+	// loomcycle: which BUILD is running. An agent (or an MCP client deciding
+	// whether a feature exists) otherwise has no way to ask, and "unknown"
+	// values are themselves the useful signal that the binary was built outside
+	// a VCS-aware context. Non-secret — a version string identifies software,
+	// not the deployment — so it goes to every caller.
+	if b := c.Build; b.Version != "" || b.Commit != "" || b.Time != "" {
+		lc := map[string]any{}
+		if b.Version != "" {
+			lc["version"] = b.Version
+		}
+		if b.Commit != "" {
+			lc["commit"] = b.Commit
+		}
+		if b.Time != "" {
+			lc["build_time"] = b.Time
+		}
+		out["loomcycle"] = lc
 	}
 	// server: which loomcycle instance this run is on, so an agent (especially an
 	// MCP client) can identify the server it's connected to. listen_addr is the
