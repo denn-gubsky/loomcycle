@@ -52,7 +52,14 @@ type consolidationEnv struct {
 // on is here.
 func consolidatorAgentDef() config.AgentDef {
 	return config.AgentDef{
-		Model:               "stub-model",
+		Model: "stub-model",
+		// The bundle's headroom, and load-bearing here: without it the agent takes
+		// the loop's DEFAULT cap of 16, while the full-pass script is already 15
+		// tool calls. One spare iteration means adding a fourth planted fact or chat
+		// truncates the pass — dropping cursor_advance / cursor_release — and the
+		// full-pass test would stay GREEN on that truncated pass (it never inspects
+		// the cursor), so the symptom would read as a watermark bug.
+		MaxIterations:       60,
 		Tools:               []string{"Memory", "History"},
 		MemoryScopes:        []string{"agent", "user"},
 		MemoryConsolidation: true,
