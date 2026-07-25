@@ -459,20 +459,22 @@ func TestConsolidationEval_ReConsolidationAddsNoDuplicates(t *testing.T) {
 
 // TestConsolidationEval_SupersededFactIsArchivedNotDeleted is invariant 3.
 //
-// A contradicted fact must go SOFT: invisible to every read, but the row
-// retained. A hard delete would destroy the audit trail the provenance columns
-// exist to preserve, and would stop a later pass from reviving the fact if it
-// turns out to be true again.
+// A contradicted fact must go SOFT: invisible to every read that returns
+// content, but the row retained. A hard delete would destroy the audit trail the
+// provenance columns exist to preserve, and would stop a later pass from reviving
+// the fact if it turns out to be true again.
 //
-// Retention is proved by MemoryDeleteScope's row COUNT exceeding the live count.
-// That is the only observable available: no Store read path surfaces a superseded
-// row (MemoryGet / MemoryList / MemoryProvenanceGet all filter
-// `superseded_at IS NULL`), so "retained for audit" is true of the TABLE but not
-// yet reachable through any query — a real gap, flagged rather than papered over.
+// WHICH OBSERVABLE DISCRIMINATES ARCHIVE FROM DELETE, and why it is the whole
+// test. Every CONTENT read filters `superseded_at IS NULL` (MemoryGet /
+// MemoryList / MemoryProvenanceGet), so all of them behave identically whether
+// the tool archived the row or destroyed it — an assertion built on them is
+// vacuous. MemoryListScopeIDs is the one Store read that does NOT filter: the
+// operator scope-size summary still COUNTS an archived row. So that count is the
+// load-bearing assertion here, taken immediately after the pass and before
+// anything else touches the key.
 //
-// FAIL-BEFORE: turning the Memory tool's supersede into a hard delete drops the
-// reclaim count to the live count, and the revive assertion fails — verified by
-// making that edit.
+// FAIL-BEFORE: pointing the Memory tool's supersede at the backend's hard Delete
+// drops the summary's key_count to the live count — verified by making that edit.
 func TestConsolidationEval_SupersededFactIsArchivedNotDeleted(t *testing.T) {
 	env := newConsolidationEnv(t, nil)
 	f, _ := runFullPass(t, env)
@@ -495,8 +497,32 @@ func TestConsolidationEval_SupersededFactIsArchivedNotDeleted(t *testing.T) {
 		t.Errorf("the correction %q did not land: %v", f.corpus.Supersede.NewKey, err)
 	}
 
-	// A later pass can revive it — only possible because the row was archived,
-	// not destroyed.
+	// RETENTION, on the one read that can tell an archive from a delete: the
+	// operator scope-size summary does not filter `superseded_at`, so it must still
+	// count the row the pass archived alongside the live ones.
+	sums, err := env.store.MemoryListScopeIDs(ctx, "", store.MemoryScopeUser)
+	if err != nil {
+		t.Fatalf("MemoryListScopeIDs: %v", err)
+	}
+	counted, found := 0, false
+	for _, sum := range sums {
+		if sum.ScopeID == evalUserID {
+			counted, found = sum.KeyCount, true
+		}
+	}
+	if !found {
+		t.Fatalf("no scope summary for %q — the retention assertion would be vacuous", evalUserID)
+	}
+	if want := len(live) + 1; counted != want {
+		t.Errorf("scope key_count = %d, want %d (%d live + the archived %q) — the tool's supersede did not retain the row",
+			counted, want, len(live), staleKey)
+	}
+
+	// A SEPARATE property, not retention: a re-write onto a superseded key is not
+	// refused, so a later pass can revive a fact that turns out to be true again.
+	// MemorySetProvenance is an upsert that INSERTs a missing key, so this holds
+	// whether the row survived or not — it is asserted for the revive path itself,
+	// and the retention claim rests on the summary count above.
 	revived, _ := json.Marshal("Back on tabs after all.")
 	if err := env.store.MemorySetProvenance(ctx, "", store.MemoryScopeUser, evalUserID, staleKey, revived, 0,
 		store.MemoryProvenance{Origin: "consolidator", Class: "correction", SourceSessionID: f.last.SessionID, SourceRunID: f.last.RunID}); err != nil {
@@ -506,7 +532,9 @@ func TestConsolidationEval_SupersededFactIsArchivedNotDeleted(t *testing.T) {
 		t.Errorf("a re-write of the archived key did not revive it: %v", err)
 	}
 
-	// Retention: archive a row again, then prove the reclaim reaches it.
+	// And ERASURE reaches an archived row: archive again (at the store layer — this
+	// leg is about MemoryDeleteScope's reach, not about what the tool did) and the
+	// reclaim count must exceed the live count.
 	if err := env.store.MemorySupersede(ctx, "", store.MemoryScopeUser, evalUserID, staleKey); err != nil {
 		t.Fatalf("re-supersede: %v", err)
 	}
