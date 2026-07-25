@@ -1029,7 +1029,13 @@ func main() {
 	// power the v0.8.7 PR 2 substrate-coupled ops (agents / lineage /
 	// evaluations); Store is late-bound below alongside the other
 	// substrate tools.
-	contextTool := &builtin.Context{Cfg: cfg, Help: helpSet}
+	contextTool := &builtin.Context{
+		Cfg:  cfg,
+		Help: helpSet,
+		// Already resolved at main() entry (ldflags → runtime/debug → "unknown"),
+		// so `op=self` reports exactly what `--version` does.
+		Build: builtin.BuildInfo{Version: buildVersion, Commit: buildCommit, Time: buildTime},
+	}
 	allTools = append(allTools, contextTool)
 
 	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
@@ -1741,6 +1747,9 @@ func main() {
 		}
 		memoryTool.SqlMem = sqlMemMgr
 		documentTool.SqlMem = sqlMemMgr
+		// Context op=capabilities reports SQL Memory / Documents availability
+		// from the CONSTRUCTED manager, not the config flag.
+		contextTool.SqlMem = sqlMemMgr
 		memoryTool.SqlAudit = sqlAudit
 		memoryTool.SqlAuditMode = cfg.Storage.SqlMemAuditMode
 		// Reuse the server's redactor (same secret-classified env) so an

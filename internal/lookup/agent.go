@@ -219,6 +219,15 @@ type SubstrateAgentDef struct {
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+	// SqlScopes / SqlQuotaBytes / HistoryScope / Volumes mirror config.AgentDef.
+	// Without them a runtime-authored (or forked) agent came back DEFAULT-DENY
+	// on its SQL-Memory, History and filesystem reach — the same class as the
+	// F40 *_def_scopes gap. Kept in sync with builtin.mergedDef (the drift test
+	// pins it).
+	SqlScopes     []string `json:"sql_scopes,omitempty"`
+	SqlQuotaBytes int      `json:"sql_quota_bytes,omitempty"`
+	HistoryScope  []string `json:"history_scope,omitempty"`
+	Volumes       []string `json:"volumes,omitempty"`
 	// MemoryBackend mirrors config.AgentDef.MemoryBackend — the named
 	// memory backend this agent routes through. RFC I MR-3b.
 	MemoryBackend string `json:"memory_backend,omitempty"`
@@ -288,6 +297,12 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
 		MemoryBackend:         s.MemoryBackend,
+		// Surface the capability gates to the policy layer, or the run resolves
+		// them as empty = default-deny.
+		SqlScopes:     s.SqlScopes,
+		SqlQuotaBytes: s.SqlQuotaBytes,
+		HistoryScope:  s.HistoryScope,
+		Volumes:       s.Volumes,
 		// RFC BL P1 core memory blocks.
 		CoreBlocks:            s.CoreBlocks,
 		InheritCoreBlocks:     s.InheritCoreBlocks,

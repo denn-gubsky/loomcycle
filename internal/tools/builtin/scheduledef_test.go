@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -819,6 +820,96 @@ func TestScheduleDefTool_BootstrapStaticSchedules(t *testing.T) {
 	if n2 != 0 {
 		t.Errorf("second bootstrap seeded %d, want 0 (idempotent)", n2)
 	}
+}
+
+// TestScheduleDefTool_BootstrapStaticSchedules_ReconcilesChangedYaml is the
+// regression for the shadowed-config bug: an operator set `enabled: true` in
+// yaml and restarted, and the schedule stayed disabled forever. The def had
+// been materialized while it was `enabled: false`, and bootstrap treated any
+// existing active version as done — so the yaml was permanently shadowed by
+// whatever was persisted first, silently, with no way to tell config from
+// reality.
+//
+// Boot once, edit the yaml, boot again: the change must take effect.
+func TestScheduleDefTool_BootstrapStaticSchedules_ReconcilesChangedYaml(t *testing.T) {
+	tool, _, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	bg := context.Background()
+
+	tool.Cfg.ScheduledRuns["nightly"] = config.ScheduledRun{
+		Agent:    "job-search-batch",
+		Schedule: "0 3 * * *",
+		Prompt: []config.ScheduledRunSegment{{Role: "user", Content: []config.ScheduledRunSegmentContent{
+			{Type: "trusted-text", Text: "go"},
+		}}},
+		Enabled: false, // the state the operator later flips
+	}
+	if _, err := tool.BootstrapStaticSchedules(bg); err != nil {
+		t.Fatalf("first bootstrap: %v", err)
+	}
+	first, err := tool.Store.ScheduleDefGetActive(bg, "", "nightly")
+	if err != nil {
+		t.Fatalf("get active after first bootstrap: %v", err)
+	}
+	if enabled, _ := scheduleDefEnabled(t, first); enabled {
+		t.Fatal("fixture precondition: the first materialized def should be disabled")
+	}
+
+	// The operator edits the yaml and restarts.
+	sr := tool.Cfg.ScheduledRuns["nightly"]
+	sr.Enabled = true
+	sr.Schedule = "0 4 * * *"
+	tool.Cfg.ScheduledRuns["nightly"] = sr
+
+	n, err := tool.BootstrapStaticSchedules(bg)
+	if err != nil {
+		t.Fatalf("second bootstrap: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("second bootstrap reconciled %d, want 1 — the yaml edit must take effect", n)
+	}
+
+	after, err := tool.Store.ScheduleDefGetActive(bg, "", "nightly")
+	if err != nil {
+		t.Fatalf("get active after reconcile: %v", err)
+	}
+	if after.DefID == first.DefID {
+		t.Fatal("the active def is unchanged — the yaml is still shadowed by the first-materialized copy")
+	}
+	if !after.BootstrappedFromStatic {
+		t.Error("the reconciled def must stay bootstrapped-from-static, or the NEXT yaml edit is shadowed again")
+	}
+	enabled, schedule := scheduleDefEnabled(t, after)
+	if !enabled {
+		t.Error("yaml said enabled: true but the active def is still disabled — this is the reported bug")
+	}
+	if schedule != "0 4 * * *" {
+		t.Errorf("active def cron = %q, want the edited 0 4 * * *", schedule)
+	}
+
+	// ...and reconciliation is still idempotent: a third boot with unchanged
+	// yaml must not churn a new version (which would reset next_run_at forever).
+	n3, err := tool.BootstrapStaticSchedules(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n3 != 0 {
+		t.Errorf("third bootstrap materialized %d, want 0 — unchanged yaml must not re-version", n3)
+	}
+}
+
+// scheduleDefEnabled reads `enabled` + `schedule` out of a persisted schedule
+// definition. Enabled is a *bool on the write side; absent = not enabled.
+func scheduleDefEnabled(t *testing.T, row store.ScheduleDefRow) (bool, string) {
+	t.Helper()
+	var def struct {
+		Enabled  *bool  `json:"enabled"`
+		Schedule string `json:"schedule"`
+	}
+	if err := json.Unmarshal(row.Definition, &def); err != nil {
+		t.Fatalf("parse definition %s: %v", row.DefID, err)
+	}
+	return def.Enabled != nil && *def.Enabled, def.Schedule
 }
 
 // TestScheduleDefTool_BootstrapStaticSchedules_DoesNotClobberFork — a static

@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -257,7 +258,15 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	// MCPServerDef.execCreate; compared only against the ACTIVE row, so
 	// re-creating content that matches a non-active version still mints +
 	// promotes (re-activation is a real state change).
-	if active, gerr := a.Store.AgentDefGetActive(ctx, tenantID, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
+	//
+	// The hash alone is NOT sufficient to dedup on: it deliberately excludes the
+	// capability/authority gates (volumes, the *_def_scopes grants, skills, …),
+	// so a create changing only those hashes identically. Returning the active
+	// row there would silently leave a filesystem trust boundary or an authoring
+	// grant where it was, while telling the caller the create succeeded. So the
+	// gates are compared explicitly on top of the hash.
+	if active, gerr := a.Store.AgentDefGetActive(ctx, tenantID, in.Name); gerr == nil && active.ContentSHA256 == contentSHA &&
+		unhashedCapabilityFieldsMatch(active.Definition, def) {
 		resp := rowResponse(active, true)
 		resp["deduplicated"] = true
 		return okJSON(resp)
@@ -882,6 +891,26 @@ type mergedDef struct {
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+	// SqlScopes / SqlQuotaBytes / HistoryScope / Volumes are capability gates
+	// that were missing from this overlay entirely, so any fork of an agent
+	// using them was born DEFAULT-DENY and `bootstrapped_from_static` dropped
+	// them too — the same class as the F40 *_def_scopes gap. Threaded exactly
+	// like MemoryScopes / MemoryQuotaBytes; kept in sync with
+	// lookup.SubstrateAgentDef (the drift test pins it), and a capability drift
+	// test now pins that no future gate on config.AgentDef falls out again.
+	//
+	// SqlScopes / SqlQuotaBytes / HistoryScope are content-identifying (direct
+	// siblings of the already-hashed MemoryScopes / MemoryQuotaBytes). Volumes
+	// is NOT, for BYTE-STABILITY: static agents declaring `volumes:` already
+	// exist and AgentContent is built from static yaml too, so hashing it would
+	// re-hash every one of them and invalidate recorded verify-or-fork hashes
+	// with no migration path — the same reason the F40 *_def_scopes gates are
+	// excluded. See the rationale on agents.AgentContent, and
+	// unhashedCapabilityTags below for the dedup collision that exclusion opens.
+	SqlScopes     []string `json:"sql_scopes,omitempty"`
+	SqlQuotaBytes int      `json:"sql_quota_bytes,omitempty"`
+	HistoryScope  []string `json:"history_scope,omitempty"`
+	Volumes       []string `json:"volumes,omitempty"`
 	// MemoryBackend mirrors config.AgentDef.MemoryBackend — the named
 	// memory backend this agent routes through. "" = operator default.
 	// RFC I MR-3b.
@@ -1000,6 +1029,21 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.MemoryQuotaBytes != 0 {
 		d.MemoryQuotaBytes = ov.MemoryQuotaBytes
 	}
+	// Capability gates: slice-set-if-supplied / int-set-if-nonzero, the same
+	// idiom as MemoryScopes / MemoryQuotaBytes. Overlays build up; they don't
+	// blank (author a fresh def to revoke).
+	if ov.SqlScopes != nil {
+		d.SqlScopes = ov.SqlScopes
+	}
+	if ov.SqlQuotaBytes != 0 {
+		d.SqlQuotaBytes = ov.SqlQuotaBytes
+	}
+	if ov.HistoryScope != nil {
+		d.HistoryScope = ov.HistoryScope
+	}
+	if ov.Volumes != nil {
+		d.Volumes = ov.Volumes
+	}
 	if ov.MemoryBackend != "" {
 		d.MemoryBackend = ov.MemoryBackend
 	}
@@ -1087,6 +1131,65 @@ func (d *mergedDef) normalize() {
 	}
 }
 
+// unhashedCapabilityTags are the mergedDef fields that agents.AgentContent
+// deliberately EXCLUDES from content_sha256 — authority and operational knobs
+// kept out of the hash for byte-stability (see the rationale there).
+//
+// That exclusion opens a dedup collision: `create` returns the ACTIVE row
+// unchanged when content_sha256 matches, so a create that changes ONLY these
+// fields would hand the caller back the OLD definition — silently leaving a
+// filesystem trust boundary (`volumes`) or an authoring grant where it was.
+// The dedup probe therefore compares these fields explicitly on top of the
+// hash. A drift test pins this list to exactly (mergedDef ∖ AgentContent), so
+// a future unhashed field cannot silently reopen the collision.
+var unhashedCapabilityTags = []string{
+	"a2a_agent_def_scopes",
+	"a2a_server_card_def_scopes",
+	"agent_def_scopes",
+	"retry_attempts",
+	"run_timeout_seconds",
+	"schedule_def_scopes",
+	"skills", // the skills: pattern allowlist is authority, not content
+	"system_prompt_base",
+	"volume_def_scopes",
+	"volumes",
+}
+
+// unhashedCapabilityFieldsMatch reports whether two definitions agree on every
+// field the content hash ignores. `stored` is the persisted definition JSON of
+// the active row; `incoming` is the normalized mergedDef about to be written.
+//
+// Both sides are compared through their JSON encoding, which is what makes the
+// nil-vs-empty case correct for free: every one of these fields is `omitempty`,
+// so an absent slice and an explicit `[]` both encode to "key missing" and
+// compare equal. Comparison is order-SENSITIVE for slices, matching the hashed
+// path (agents.TestSign_OrderPreservedInArrays pins that reordering `tools`
+// changes the hash, so reordering an authority list should count as a change
+// here too).
+//
+// A stored definition that will not parse returns false: mint a new version
+// rather than dedup against a row whose capabilities cannot be verified.
+func unhashedCapabilityFieldsMatch(stored json.RawMessage, incoming mergedDef) bool {
+	var storedFields map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &storedFields); err != nil {
+		return false
+	}
+	incomingJSON, err := json.Marshal(incoming)
+	if err != nil {
+		return false
+	}
+	var incomingFields map[string]json.RawMessage
+	if err := json.Unmarshal(incomingJSON, &incomingFields); err != nil {
+		return false
+	}
+	for _, tag := range unhashedCapabilityTags {
+		if !bytes.Equal(storedFields[tag], incomingFields[tag]) {
+			return false
+		}
+	}
+	return true
+}
+
 func staticToMergedDef(s config.AgentDef) mergedDef {
 	return mergedDef{
 		Provider:              s.Provider,
@@ -1110,7 +1213,13 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Models:                s.Models,
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
-		MemoryBackend:         s.MemoryBackend,
+		// Capability gates: a static agent bootstrapped into the substrate keeps
+		// them, so a fork of it inherits them instead of coming back default-deny.
+		SqlScopes:     s.SqlScopes,
+		SqlQuotaBytes: s.SqlQuotaBytes,
+		HistoryScope:  s.HistoryScope,
+		Volumes:       s.Volumes,
+		MemoryBackend: s.MemoryBackend,
 		// RFC BL P1: a static agent bootstrapped into the substrate keeps its
 		// core-block config so a fork of it inherits + hashes identically.
 		CoreBlocks:            s.CoreBlocks,
@@ -1227,6 +1336,14 @@ func signFromMergedDef(name string, def mergedDef) string {
 		MemoryQuotaBytes: def.MemoryQuotaBytes,
 		MemoryBackend:    def.MemoryBackend,
 		EvaluationScopes: def.EvaluationScopes,
+		// Content-identifying siblings of MemoryScopes / MemoryQuotaBytes: a fork
+		// that changes ONLY its SQL or History reach must mint a new version
+		// rather than dedup as identical content. omitempty on the AgentContent
+		// side keeps an agent that sets none of them byte-stable. (Volumes is
+		// deliberately NOT here — see the mergedDef field comment.)
+		SqlScopes:     def.SqlScopes,
+		SqlQuotaBytes: def.SqlQuotaBytes,
+		HistoryScope:  def.HistoryScope,
 	}
 	// F14: include the interactive/multi-agent ACLs in the hash so a fork
 	// that changes ONLY channels/interruption/evaluation_scopes mints a new

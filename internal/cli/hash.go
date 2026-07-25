@@ -227,6 +227,12 @@ func runHashAgentByName(name, cfgPath string, stdout, stderr io.Writer) int {
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,
 		MemoryBackend:         def.MemoryBackend,
+		// The SQL/History capability gates are content-identifying, so the
+		// by-name hash must include them to match the deployed substrate hash
+		// for an agent that uses them (same reason as the F14 block below).
+		SqlScopes:     def.SqlScopes,
+		SqlQuotaBytes: def.SqlQuotaBytes,
+		HistoryScope:  def.HistoryScope,
 		// F14: channels / evaluation_scopes / interruption are now content-
 		// identifying, so the by-name hash must include them to match the
 		// deployed substrate hash for an agent that uses them.

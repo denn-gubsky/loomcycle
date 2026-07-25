@@ -54,6 +54,7 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `Memory`    | Storage backend (SQLite default; Postgres opt-in) + per-agent `memory_scopes:` allowlist. |
 | `Document`  | Always registered (RFC AK Phase 1). Per-agent `tools:[Document]`. **Requires SQL Memory** (`LOOMCYCLE_SQLMEM_ENABLED=1`). Chunked-graph documents: chunk **bodies+fields** in Memory (keyed by UUID), **structure** (hierarchy/type/status/edges/type-schemas) in SQL Memory (4 tables). 13 ops (document/chunk lifecycle, edges, `query_chunks` with structured filters + `under_path` Path join + a validator-gated `sql:` escape hatch, type defs). Optimistic `revision` on update; delete cascades descendants + their Memory bodies. Names documents in the Path tree (`create_document path:`). Scope **agent/user** (tenant deferred); tenant-isolated via the SQL Memory scope key. |
 | `Path`      | Always registered (RFC AL). Per-agent `tools:[Path]`. A Unix-like VFS (`resolve`/`ls`/`stat`/`mkdir`/`mv`/`rm`) over the `dirents` runtime-store table, naming Memory entries / Volume mounts / Documents by tenant-rooted, scope-aware (agent/user/tenant) paths. Resources keep native ids; a dirent is a name, not an authority grant. Paths reject `..`; tenant-isolated. Resources opt in via `Memory.set path:` / `VolumeDef.create mount_at:` / `Document.create_document path:`. |
+| `Context`   | Auto-added to every agent unless `disable_context: true`. Read-only runtime introspection; no side effects. 12 ops: `self` / `tools` / `doc` / `permissions` / `agents` / `lineage` / `evaluations` / `channels` / `help` / `time` / `compact` / `capabilities`. `self` reports identity + resolved provider/model/sampling, the bound `volumes.bindings`, the non-secret `principal` block (never the bearer), the `server` it is connected to, and a **`loomcycle`** block with the running build (`version` / `commit` / `build_time`, threaded from `main` so it always matches `--version`). **`capabilities`** reports what this deployment actually supports — see below. |
 | `History`   | Always registered (RFC BE). Per-agent `history_scope:` YAML gate (default-deny). Browse/search/annotate PAST chats (a chat = a session). 10 ops (`list`/`get`/`search`/`rename`/`annotate`/`pin`/`archive`/`recap`/`resume`/`related`); `get format:markdown` exports the transcript; `recap` stores a refreshable LLM summary on the chat; `resume` returns a continuation handle; `related` finds semantically similar chats via the vector embedder (gated on an embedder; index fills lazily as chats are recapped/renamed/annotated). Owner-scope-aware — `self`/`user`/`tenant`/`global`, with the owner resolved server-side from the run identity and `global` (cross-tenant) admin-only. Every by-id read folds a cross-scope row to an opaque not-found. Per-chat token/cost/run-count stats included; transcripts are already-redacted at write time. Supersedes the removed `Context op=history`. See `docs/HISTORY.md`. |
 
 Bash has additional warnings: it is **not a true sandbox** even when enabled. Run loomcycle inside a container or VM if Bash is exposed to untrusted prompts. See `internal/tools/builtin/bash.go` for the full warning.
@@ -318,6 +319,82 @@ of the invoking agent's `tools`; a widening skill is refused at invoke time.
 
 References: `internal/skills/` (loader), `internal/skillmatch/` (allowlist +
 name/pattern validation), `internal/tools/builtin/skill.go`.
+
+## `Context op=capabilities` — what this deployment supports (v1.34.0)
+
+Loomcycle deployments differ: one has pgvector and an embedder, another has
+neither; one enables Bash, another only the sandbox. Before v1.34.0 an agent
+found out by *calling* and reading a refusal (`vector_unsupported`,
+`embedder_not_configured`, `capability_unsupported`, `SQL Memory is not
+enabled …`). `op=capabilities` lets a client **branch before calling**.
+
+```jsonc
+{
+  "vector_memory":    {"available": true,
+                       "embedder": {"provider": "ollama-local",
+                                    "model": "embeddinggemma", "dimension": 768}},
+  "full_text_memory": {"available": true},
+  "memory_layer":     {"available": true},
+  "sql_memory":       {"available": true},
+  "documents":        {"available": true},
+  "bash":             {"available": false},
+  "bashbox":          {"available": true},
+  "sandbox":          {"available": false},
+  "scheduler":        {"available": true},
+  "webhooks":         {"available": false},
+  "retention":        {"available": false},
+  "code_js":          {"available": false},
+  "search":           {"available": true, "providers": ["brave", "searxng"]},
+  "consolidation":    {"available": false, "configured": true},
+  "storage":          {"backend": "postgres"},          // admin-only
+  "limits": {
+    "max_request_bytes": 16777216,
+    "max_consolidation_targets": 32,
+    "max_consolidation_concurrency": 4,
+    "memory_inject_max_tokens": 1024
+  }
+}
+```
+
+Every field is read from **live runtime state**, not asserted:
+
+- `vector_memory` is end-to-end — a vector-capable store **and** an embedder.
+  The `dimension` is reported because an agent needs it to know whether stored
+  vectors are comparable.
+- `sql_memory` / `documents` read the **constructed** SQL-Memory manager, not
+  the config flag: the flag says the operator asked for it, the pointer says
+  they got it.
+- `scheduler` / `webhooks` mirror the **boot** condition (flag **and** a store),
+  so an agent authoring a `ScheduleDef` is never told it will fire when it
+  won't.
+- `sandbox` has no config flag — it arrives as MCP tools from a builder
+  sidecar — so presence in *this run's* tool list is the truth, making it
+  per-run by nature.
+- `consolidation` separates `configured` from `available`: a staged-off
+  consolidator means queued `Memory op=add` items are durable but nothing is
+  draining them — the state that otherwise looks like "recall is broken".
+
+**Security posture.** This surface is readable by every agent and every MCP
+client, so two rules are absolute and CI-enforced by tests driven with planted
+values:
+
+1. **No secrets** — no API keys, tokens, DSNs or credential values, and no
+   `api_key_env` **names** either (the variable an operator chose is itself a
+   hint about their key management).
+2. **No infrastructure topology** — no base URLs, hostnames, IPs, ports, file
+   paths or container detail. `provider: ollama-local` is a capability;
+   `http://192.168.0.77:11434` is a map of the operator's network. This is why
+   the `search` block emits only the configured provider **names**: the config
+   value behind each carries a SearXNG `base_url`.
+
+**Tenant posture** mirrors the routing view: availability reaches **every**
+caller — a tenant needs it to branch — and only `storage`, which is pure
+operator infrastructure and never needed to decide whether a call will work, is
+admin-gated. A `substrate:tenant` caller's output is therefore always a subset
+of an admin's.
+
+Available in-band to any agent holding `Context`, and over MCP as
+`context {"op":"capabilities"}`.
 
 ## The `Memory` tool — persistent agent-scoped storage (v0.8.0)
 

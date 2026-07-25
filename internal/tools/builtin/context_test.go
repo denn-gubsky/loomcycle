@@ -1055,6 +1055,37 @@ func TestContextTool_SelfPrincipalAndServer(t *testing.T) {
 	}
 }
 
+// TestContextTool_SelfReportsBuildInfo: an agent (or an MCP client deciding
+// whether a feature exists on this deployment) had no way to ask which
+// loomcycle build it is talking to. The values are threaded from main() rather
+// than re-resolved, so op=self and --version cannot disagree.
+func TestContextTool_SelfReportsBuildInfo(t *testing.T) {
+	tool := &Context{
+		Cfg:   &config.Config{Env: config.Env{ListenAddr: "127.0.0.1:8787"}},
+		Build: BuildInfo{Version: "v1.34.0", Commit: "abc1234", Time: "2026-07-25T10:00:00Z"},
+	}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1"})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if res.IsError {
+		t.Fatalf("self: %s", res.Text)
+	}
+	lc, ok := decodeResult(t, res.Text)["loomcycle"].(map[string]any)
+	if !ok {
+		t.Fatalf("loomcycle block missing/wrong type in:\n%s", res.Text)
+	}
+	if lc["version"] != "v1.34.0" || lc["commit"] != "abc1234" || lc["build_time"] != "2026-07-25T10:00:00Z" {
+		t.Errorf("build info wrong: %+v", lc)
+	}
+
+	// A fixture that never wired it omits the block rather than reporting
+	// empty strings that read like a broken build.
+	bare := &Context{Cfg: &config.Config{Env: config.Env{ListenAddr: "127.0.0.1:8787"}}}
+	res2, _ := bare.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if _, has := decodeResult(t, res2.Text)["loomcycle"]; has {
+		t.Errorf("loomcycle block should be omitted when no build info is wired:\n%s", res2.Text)
+	}
+}
+
 // TestContextTool_SelfServerFallsBackToA2AURL pins that when LOOMCYCLE_PUBLIC_URL
 // is unset, server.url falls back to the A2A advertise URL (and listen_addr is
 // always present).
