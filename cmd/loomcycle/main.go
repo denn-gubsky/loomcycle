@@ -454,6 +454,13 @@ func main() {
 			// dataset of (query, expected_recall) tuples — precision@k,
 			// recall@k, duplication_rate. The gating tool for ranker PRs.
 			os.Exit(cli.RunMemoryEval(os.Args[2:], os.Stdout, os.Stderr))
+		case "memory-calibrate":
+			// Measures the consolidation similarity bands against the
+			// operator's OWN embedder. Cosine scale is a property of the
+			// embedding model, so a shipped default is right for at most one
+			// model — and wrong SILENTLY, in both directions. Exits non-zero
+			// when no threshold can separate duplicates from related facts.
+			os.Exit(cli.RunMemoryCalibrate(os.Args[2:], os.Stdout, os.Stderr))
 		case "help", "-h", "--help":
 			cli.PrintHelp(os.Stdout, lcmcp.MetaToolCount())
 			return
