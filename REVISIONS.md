@@ -4,7 +4,7 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased
+## What's in v1.36.2
 
 **🧹 The consolidation pass finally worked, and the 43 facts it wrote showed four things wrong with what it writes.** v1.36.1's pass cleared every bar its predecessors never did — ten chats read, **43 facts written and verified in the store** against a zero baseline, eight of them updated in place, the queue drained and acked, the lease released. The pipeline is right. What it *produced* was not, and none of these were visible until a real model filled the store.
 
