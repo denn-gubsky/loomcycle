@@ -4,7 +4,7 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased
+## What's in v1.35.0
 
 **🎯 `loomcycle memory-calibrate` — because the shipped merge threshold merges nothing on the model these docs recommend.** `memory.consolidation.merge_threshold` decides whether the consolidator treats two facts as the same fact reworded. Cosine scale is a property of the **embedding model**, not a universal, so the 0.95 default is calibrated to at most one model — and being wrong is silent in both directions: a band nothing reaches never merges, so duplicates accumulate forever with no error anywhere; a band everything reaches merges two distinct facts into one, which is data loss. Measured against the live deployment's embedder — `embeddinggemma:latest` via `ollama-local`, 768-dim, a 12-fact corpus with 24 labelled probes, reading raw cosine out of `Memory op=search` (whose `score` is raw cosine: an exact self-match returns 1.0) — **the shipped default merges 0 of 12 duplicates.** The highest genuine paraphrase scores **0.9487**, just under 0.95. On the very model loomcycle's own self-hosting guide recommends, merging never fires.
 
