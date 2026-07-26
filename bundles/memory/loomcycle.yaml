@@ -347,7 +347,21 @@ agents:
           // and common answer ("nothing durable here"), while a reply we cannot
           // read means this chat was never actually examined — so advancing past
           // it would lose it forever.
-          block(st, "extractor returned no readable fact array");
+          //
+          // The two are reported SEPARATELY, and the raw reply comes with them,
+          // because the single message this replaced ("returned no readable
+          // fact array") was actively misleading the one time it fired for
+          // real: the array was perfectly readable and the CALLER was the thing
+          // that could not read it. A report that names the wrong party costs
+          // an operator a transcript archaeology session to find that out.
+          var raw = replyText(out);
+          if (!raw) {
+            block(st, "extractor returned an empty reply");
+          } else {
+            // No "; " inside the reason: report() joins reasons with it, and a
+            // reason that contains the separator reads as two.
+            block(st, "extractor reply could not be parsed as a fact array, reply began: " + replyPreview(raw));
+          }
           return null;
         }
         return validateFacts(st, arr);
@@ -638,21 +652,85 @@ agents:
         with: true, as: true, by: true, from: true, they: true, them: true
       };
 
-      // coerceFactArray accepts what a model plausibly returns and refuses the
-      // rest: a real array (Agent.spawn parses a JSON reply for us), a string
-      // that parses once fences are stripped, or an object wrapping a `facts`
-      // array. null means "this was not a fact array" — a blocking condition,
-      // distinct from an empty array.
+      // coerceFactArray turns whatever the extractor actually returned into a
+      // fact array, or null when it is not one. null is a blocking condition,
+      // deliberately distinct from an empty array.
+      //
+      // THE ORDER BELOW IS THE FIX, and it is the whole of it. The runtime
+      // wraps EVERY sub-agent return as "[sub-agent agent_id=…]\n<final text>"
+      // so a parent model can attribute the answer — a deliberate contract that
+      // other callers rely on, so it is this parser's job to survive it. That
+      // wrapper OPENS WITH "[", the very character the outermost-array scan
+      // looks for, so a scan run before the wrapper is stripped starts on the
+      // wrapper's own bracket and swallows the array whole. Stripping it FIRST
+      // is not tidiness; it is what makes step 4 correct.
+      //
+      //   1. header — drop the runtime's "[sub-agent …]" attribution line
+      //   2. fences — drop a ```json … ``` wrapper
+      //   3. whole  — parse what remains; a well-formed reply ends here, and
+      //               an object wrapping `facts` is still recognised below
+      //   4. slice  — failing that, take first "[" .. last "]" and parse that,
+      //               so a model that prefaces or trails its array with prose
+      //               still costs nothing
+      //
+      // Steps 2 and 4 exist because a small tool-less model does not reliably
+      // emit a bare array however plainly it is asked to, and every reply we
+      // CAN read is a chat we do not have to re-read on the next pass.
       function coerceFactArray(out) {
         if (isArray(out)) { return out; }
         var v = out;
         if (typeof v === "string") {
-          v = parseJSON(stripFences(v));
+          var t = stripFences(stripSubAgentHeader(v));
+          v = parseJSON(t);
+          if (v === null) { v = parseJSON(outermostArray(t)); }
           if (v === null) { return null; }
         }
         if (isArray(v)) { return v; }
         if (v && typeof v === "object" && isArray(v.facts)) { return v.facts; }
         return null;
+      }
+
+      // stripSubAgentHeader removes the runtime's sub-agent attribution header.
+      // Anchored, single-line and non-greedy so it can only ever eat a leading
+      // "[sub-agent …]" line — never a "[" that belongs to the payload.
+      function stripSubAgentHeader(s) {
+        return String(s).replace(/^\s*\[sub-agent[^\]\n]*\]\s*/, "");
+      }
+
+      // outermostArray slices the widest "[" … "]" span, so prose on either
+      // side of the array does not defeat the parse. Returns null when there is
+      // no such span; parseJSON(null) is null, so the caller needs no guard.
+      function outermostArray(s) {
+        var t = String(s);
+        var start = t.indexOf("[");
+        var end = t.lastIndexOf("]");
+        if (start < 0 || end <= start) { return null; }
+        return t.slice(start, end + 1);
+      }
+
+      // replyText is the model's reply as text, for the REPORT only. The
+      // attribution header is stripped first because it is runtime plumbing,
+      // not something the model said — quoting it back at an operator as "the
+      // reply" would point at the wrong suspect all over again. Empty here
+      // means the child genuinely returned nothing.
+      function replyText(out) {
+        if (out === null || out === undefined) { return ""; }
+        var s = (typeof out === "string") ? out : jsonText(out);
+        return stripSubAgentHeader(s).trim();
+      }
+
+      // replyPreview bounds and flattens the reply for the report. This is a
+      // deliberate, bounded disclosure: without the actual shape, diagnosing a
+      // parse failure means reconstructing it from the run transcript, which is
+      // how this bug was found. The extractor is told never to emit secrets and
+      // the full reply is already in the transcript, so the marginal exposure
+      // is 120 characters — but it IS marginal exposure, not zero.
+      function replyPreview(raw) {
+        return jsonText(clip(String(raw).replace(/\s+/g, " ").trim(), 120));
+      }
+
+      function jsonText(v) {
+        try { return JSON.stringify(v); } catch (e) { return String(v); }
       }
 
       function stripFences(s) {
