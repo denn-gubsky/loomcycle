@@ -982,6 +982,49 @@ func TestConsolidator_SkipsOnlyTheUnparseableChatAmongSeveral(t *testing.T) {
 	})
 }
 
+// TestConsolidator_UnparseableQueuedBatchDoesNotBlockTheChatWatermark. The
+// queued-item batch is not a chat and has its own recovery path: an unreadable
+// batch extraction simply leaves the items unacked, so they are re-drained next
+// pass on their own. Holding the CHAT watermark for it — which is what happened
+// before, because both went through the same block() — punished every scanned
+// chat for a failure that had nothing to do with them.
+//
+// It is also not reported as a skipped chat, because nothing was skipped: the
+// items are still queued.
+func TestConsolidator_UnparseableQueuedBatchDoesNotBlockTheChatWatermark(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.pending = []map[string]any{{
+		"id":      "pend-1",
+		"payload": map[string]any{"messages": []any{map[string]any{"role": "user", "content": "I live in Berlin."}}},
+	}}
+	f.transcripts = map[string]string{"sess-a": "user: I prefer Go.\nassistant: ok"}
+	f.factsBySession = map[string]string{
+		"sess-a": `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`,
+	}
+	// The batch's own extraction (its prompt carries no chat transcript, so it
+	// falls through to factsJSON) comes back as prose.
+	f.factsJSON = "Sure, here is a summary of those messages."
+
+	res := runConsolidator(t, f)
+
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("an unreadable QUEUED-BATCH extraction held the chat watermark; the chat was consolidated fine and the items are simply still queued; sequence %v", f.ops())
+	}
+	if f.has("Memory.pending_ack") {
+		t.Errorf("acked a batch whose facts were never written — the items would be unrecoverable; sequence %v", f.ops())
+	}
+	if strings.Contains(res.FinalText, "skipped 1 chat") {
+		t.Errorf("report = %q — the batch is not a chat and nothing was skipped", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "queued batch not consolidated") {
+		t.Errorf("report = %q, want it to name the batch that did not land", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "stay queued for the next pass") {
+		t.Errorf("report = %q, want it to say the items are retried rather than lost", res.FinalText)
+	}
+}
+
 // TestConsolidator_ObjectReplyIsNotAcceptedAsASingleFact pins the boundary of
 // the one lenient branch in the parser. `{"facts":[…]}` is recognised because a
 // model wrapping its array is still handing over an array — but a bare object is
