@@ -265,7 +265,7 @@ agents:
           if (text === null) { continue; }        // read failed; already blocked
           st.chats_read++;
 
-          var facts = extract(st, text, sid);
+          var facts = extract(st, text);
           if (facts === null) { continue; }       // extraction failed; already blocked
           applyFacts(st, facts, sid);
 
@@ -325,7 +325,7 @@ agents:
       // extract runs THE model call: one spawn of the tool-less extractor per
       // transcript. Returns a validated fact array, or null when the child
       // failed or answered with something that is not a fact array at all.
-      function extract(st, text, sourceID) {
+      function extract(st, text) {
         if (!text) { return []; }
         var out;
         st.extractions++;
@@ -385,7 +385,7 @@ agents:
         if (!pending.length) { return []; }
         st.queued_items = pending.length;
 
-        var facts = extract(st, renderPending(pending), "");
+        var facts = extract(st, renderPending(pending));
         if (facts === null) { return []; }
         if (!applyFacts(st, facts, "")) { return []; }
 
@@ -547,6 +547,10 @@ agents:
       // vector stack. A refusal is NOT a pass failure: the documented degraded
       // behaviour is "write every durable fact and say so".
       function recall(st, query) {
+        // Short-circuit after the first refusal: on a deployment with no vector
+        // stack EVERY recall refuses, and each one is a real tool call and a
+        // real loop turn. One is enough to learn the answer.
+        if (st.recall_unavailable) { return []; }
         var res;
         try {
           res = Memory.recall({ scope: CONFIG.scope, query: query, top_k: CONFIG.recall_top_k });
