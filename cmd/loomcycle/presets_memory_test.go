@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -193,7 +194,7 @@ func TestConsolidatorBundle_SystemPromptEncodesThePipeline(t *testing.T) {
 		`{"op":"cursor_lease","scope":"user","lease_ttl_ms":600000}`, // step 1 — one pass per target
 		"If acquired is false",                                // ...and the not-acquired stop
 		`{"op":"cursor_scan","scope":"user","limit":10}`,      // step 2 — the ONLY safe chat-discovery read
-		`{"op":"get","session_id":`,                           // step 5 — then read each scanned chat's turns
+		`{"op":"get","scope":"user","session_id":`,            // step 5 — read each scanned chat (scope is load-bearing: the default is self, which is denied)
 		`{"op":"pending_drain","scope":"user","limit":50}`,    // step 3 — the queue
 		`{"op":"cursor_release","scope":"user"}`,              // step 4 / 10 — always give the lease back
 		`{"op":"recall","scope":"user","query":`,              // step 6 — the neighbour set for dedup
@@ -518,4 +519,43 @@ func tierNames(cfg *config.Config) []string {
 		out = append(out, n)
 	}
 	return out
+}
+
+// TestConsolidatorBundle_EveryToolCallCarriesScope: every tool call the
+// procedure prescribes must pass an explicit scope.
+//
+// Live evidence, v1.35.0 on gpt-oss:latest. Step 5's History call omitted it:
+//
+//	History {"op":"get","session_id":"<id>","format":"markdown"}
+//
+// History defaults to scope "self" and the consolidator is granted
+// history_scope: [user], so every first attempt failed with
+//
+//	history: scope "self" not permitted (allowed: user)
+//
+// The model recovered by retrying with scope, but the wasted turns and the
+// error text cost it the thread: it re-read the same chat six times, then
+// restarted the whole procedure from step 1 and did it again — 15 tool calls,
+// 3,666 thinking events, never reaching the extract/write steps. The pass
+// livelocked without a single fact written.
+//
+// The omission predates the compact rewrite (v1.34.0's prompt had it too); it
+// was simply invisible while the agent made no tool calls at all. Asserting the
+// whole class rather than that one line, since a default-deny gate reached by a
+// scopeless call fails the same way for every op.
+func TestConsolidatorBundle_EveryToolCallCarriesScope(t *testing.T) {
+	cfg := memoryBundleConfig(t)
+	prompt := cfg.Agents["memory/consolidator"].SystemPrompt
+
+	// Steps are written either as `N. Memory {...}` or, for a continuation
+	// line, as bare `Memory {...}` — match both.
+	calls := regexp.MustCompile(`(?m)^\s*(?:\d+\.\s+)?(Memory|History|Document) \{"op":"(\w+)"[^\n]*`).FindAllString(prompt, -1)
+	if len(calls) < 10 {
+		t.Fatalf("found only %d prescribed tool calls; the procedure should prescribe ~11 — did the prompt format change?", len(calls))
+	}
+	for _, c := range calls {
+		if !strings.Contains(c, `"scope":`) {
+			t.Errorf("prescribed call omits an explicit scope, so it inherits the tool default and hits a default-deny gate:\n  %s", strings.TrimSpace(c))
+		}
+	}
 }
