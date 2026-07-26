@@ -28,6 +28,13 @@ import (
 // code-js provider is in-process and the tools are local fakes. It is hermetic
 // by construction, never skipped.
 
+// needleReply scripts one extractor answer, selected by a substring of the
+// prompt the pass actually sent.
+type needleReply struct {
+	Needle string
+	Reply  string
+}
+
 // recordedCall is one tool dispatch the harness observed, decoded far enough to
 // assert on.
 type recordedCall struct {
@@ -54,6 +61,11 @@ type fakeToolset struct {
 	// carries — the same coupling the real pipeline has, and the reason
 	// transcripts must be distinct when this is set.
 	factsBySession map[string]string
+	// factsByNeedle routes the reply on a substring of the PROMPT rather than on
+	// a whole transcript, which is what makes a SPLIT chat scriptable: each part
+	// carries different turns, so each part can be made to answer differently.
+	// First match wins; factsJSON is the fallback.
+	factsByNeedle []needleReply
 	// factsJSON is the extractor sub-agent's final TEXT, before the runtime's
 	// attribution header is prepended (see subAgentHeader).
 	factsJSON string
@@ -233,6 +245,17 @@ func (a *fakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Resul
 				if r, ok := a.f.factsBySession[sid]; ok {
 					reply = r
 				}
+				break
+			}
+		}
+	}
+	// Checked last so a scenario that sets both routings gets the needle, which
+	// is the finer-grained one.
+	if len(a.f.factsByNeedle) > 0 {
+		prompt, _ := in["prompt"].(string)
+		for _, nr := range a.f.factsByNeedle {
+			if strings.Contains(prompt, nr.Needle) {
+				reply = nr.Reply
 				break
 			}
 		}
@@ -1204,26 +1227,167 @@ func TestConsolidator_UnparseableReplyIsReportedWithItsRawPrefix(t *testing.T) {
 		t.Errorf("report quoted the runtime's attribution header instead of the model's reply: %q", res.FinalText)
 	}
 
-	// An empty reply is a DIFFERENT failure and gets the OPPOSITE policy, which is
-	// the one place the two classes must not be collapsed. Nothing coming back at
-	// all points at the child — an overloaded or timed-out model returns empty —
-	// not at the chat, so there is no reason to believe a retry produces the same
-	// nothing. It BLOCKS, and the retry costs one re-read. Skipping here would
-	// throw a chat away over a transient blip.
+	// An empty reply is a DIFFERENT answer with a different policy; see
+	// TestConsolidator_EmptyExtractorReplyMeansNoFactsAndKeepsGoing.
+}
+
+// TestConsolidator_EmptyExtractorReplyMeansNoFactsAndKeepsGoing. An empty reply
+// used to BLOCK the watermark, on the reasoning that nothing coming back points
+// at an overloaded child and is therefore transient. The live evidence says
+// otherwise: two of ten chats came back empty on one pass, and the smaller of
+// them was a scraped model card — install snippets, nothing durable about any
+// user or project anywhere in it. The extractor was right to have nothing to
+// say; it said it as an empty string instead of `[]`. That is a stable property
+// of that chat, so blocking on it pins the watermark forever, and the watermark
+// had in fact never advanced in production across any release.
+//
+// So an empty reply now means "no facts from this chat" and the pass moves on.
+// The count is kept because a rising one is the first visible sign that the
+// extractor itself is degrading — but it is information, not a fault, and the
+// report must not dress it up as one.
+func TestConsolidator_EmptyExtractorReplyMeansNoFactsAndKeepsGoing(t *testing.T) {
+	const good = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+
+	f := newFakeToolset()
+	f.sessions = []map[string]any{
+		scanRow("sess-a", "2026-07-01T10:00:00Z"),
+		scanRow("sess-b", "2026-07-02T10:00:00Z"),
+	}
+	f.transcripts = map[string]string{
+		"sess-a": "user: I prefer Go.\nassistant: ok",
+		// The model-card shape: nothing durable, and the model says so by
+		// returning nothing at all.
+		"sess-b": "user: stall llama.cpp\nassistant: docker model run ...",
+	}
+	f.factsBySession = map[string]string{"sess-a": good, "sess-b": ""}
+
+	res := runConsolidator(t, f)
+
+	if n := f.countOp("Memory.set"); n != 1 {
+		t.Errorf("wrote %d facts, want 1 — the other chat's fact must still be written; sequence %v", n, f.ops())
+	}
+	adv := lastCall(t, f, "Memory.cursor_advance")
+	if adv.Input["session_id"] != "sess-b" || adv.Input["completed_at"] != "2026-07-02T10:00:00Z" {
+		t.Errorf("cursor_advance carried %v/%v, want the last scan row (sess-b) — an empty reply that leaves the mark short of it re-reads that chat on every future pass forever",
+			adv.Input["session_id"], adv.Input["completed_at"])
+	}
+	if !f.has("Memory.cursor_release") {
+		t.Errorf("the lease was not returned; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "empty reply for 1 chat") {
+		t.Errorf("report = %q, want the empty-reply count reported distinctly", res.FinalText)
+	}
+	// The three answers must stay three. An empty reply is not a skip (the chat
+	// was answered, just with nothing) and not a parse failure (there was
+	// nothing to parse).
+	for _, unwanted := range []string{"skipped", "could not be parsed", "watermark NOT advanced"} {
+		if strings.Contains(res.FinalText, unwanted) {
+			t.Errorf("report = %q must not describe an empty reply as %q", res.FinalText, unwanted)
+		}
+	}
+
+	// The `[]` control: the model looked and found nothing. Normal, common, and
+	// NOT the same signal — counting it would bury the one that matters.
 	g := newFakeToolset()
 	g.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	g.transcript = "user: hi\nassistant: hello"
-	g.factsJSON = ""
+	g.factsJSON = "[]"
 
 	gres := runConsolidator(t, g)
-	if g.has("Memory.cursor_advance") {
-		t.Errorf("watermark advanced on an empty extractor reply — a child that returned nothing is a retry, not a skip; sequence %v", g.ops())
+	if !g.has("Memory.cursor_advance") {
+		t.Errorf("an empty ARRAY is a normal answer and must advance the watermark; sequence %v", g.ops())
 	}
-	if !strings.Contains(gres.FinalText, "empty reply") {
-		t.Errorf("report = %q, want it to distinguish an empty reply from an unparseable one", gres.FinalText)
+	if strings.Contains(gres.FinalText, "empty reply") {
+		t.Errorf("report = %q — `[]` is the model answering, not the model returning nothing; conflating them makes the empty-reply count useless as a health signal", gres.FinalText)
 	}
-	if strings.Contains(gres.FinalText, "skipped") {
-		t.Errorf("report = %q — an empty reply must not be reported as a skipped chat", gres.FinalText)
+}
+
+// TestConsolidator_MixedPageReportsEmptyAndUnparseableSeparatelyAndAdvances is
+// the whole three-way distinction in one pass, on the shape the live run
+// actually had: mostly good chats, one that answers with nothing, one that
+// answers with something unreadable. Both are non-blocking now, for different
+// reasons, and an operator has to be able to tell which happened.
+func TestConsolidator_MixedPageReportsEmptyAndUnparseableSeparatelyAndAdvances(t *testing.T) {
+	const good = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+
+	f := newFakeToolset()
+	f.sessions = nil
+	f.transcripts = map[string]string{}
+	f.factsBySession = map[string]string{}
+	for i := 0; i < 10; i++ {
+		sid := fmt.Sprintf("sess-%02d", i)
+		f.sessions = append(f.sessions, scanRow(sid, fmt.Sprintf("2026-07-%02dT10:00:00Z", i+1)))
+		// Distinct per chat: the extractor double routes on the transcript the
+		// prompt carries, so two identical transcripts would be indistinguishable.
+		f.transcripts[sid] = "user: chat " + sid + " about Go.\nassistant: ok"
+		switch i {
+		case 3:
+			f.factsBySession[sid] = "" // returned nothing at all
+		case 7:
+			f.factsBySession[sid] = "I'm sorry, I can't help with that." // not a fact array
+		default:
+			f.factsBySession[sid] = good
+		}
+	}
+
+	res := runConsolidator(t, f)
+
+	if n := f.countOp("Memory.set"); n != 8 {
+		t.Errorf("wrote %d facts, want 8 — the eight good chats must be consolidated around the two that were not; sequence %v", n, f.ops())
+	}
+	adv := lastCall(t, f, "Memory.cursor_advance")
+	if adv.Input["session_id"] != "sess-09" {
+		t.Errorf("cursor_advance carried %v, want sess-09 (the last scan row)", adv.Input["session_id"])
+	}
+	for _, want := range []string{
+		"empty reply for 1 chat",
+		"skipped 1 chat whose extraction could not be parsed",
+		"not recoverable by a later pass",
+		"sess-07",
+	} {
+		if !strings.Contains(res.FinalText, want) {
+			t.Errorf("report = %q, missing %q", res.FinalText, want)
+		}
+	}
+	if strings.Contains(res.FinalText, "watermark NOT advanced") {
+		t.Errorf("report claims a blocked watermark for a pass that advanced: %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_EmptyBatchReplyLeavesTheQueuedItemsQueued is where the empty
+// reply gets the OPPOSITE answer, and the asymmetry is the point.
+//
+// For a chat the cost of moving on is bounded and visible: the watermark passes
+// one chat that had nothing to give. For the queue it would mean `pending_ack`
+// on items the model never examined, and an ack is the one step in the pipeline
+// with no recovery — a drained row is never re-drained. So the batch simply
+// stays queued and costs one re-drain next pass.
+func TestConsolidator_EmptyBatchReplyLeavesTheQueuedItemsQueued(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.pending = []map[string]any{{
+		"id":      "pend-1",
+		"payload": map[string]any{"messages": []any{map[string]any{"role": "user", "content": "I live in Berlin."}}},
+	}}
+	f.transcripts = map[string]string{"sess-a": "user: I prefer Go.\nassistant: ok"}
+	f.factsBySession = map[string]string{
+		"sess-a": `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`,
+	}
+	// The batch's own extraction (its prompt carries no chat transcript, so it
+	// falls through to factsJSON) comes back empty.
+	f.factsJSON = ""
+
+	res := runConsolidator(t, f)
+
+	if f.has("Memory.pending_ack") {
+		t.Errorf("acked queued items the extractor never examined — a drained row is never re-drained, so they are unrecoverable; sequence %v", f.ops())
+	}
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("an empty QUEUED-BATCH reply held the chat watermark; the chat consolidated fine; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "queued batch not consolidated") ||
+		!strings.Contains(res.FinalText, "stay queued for the next pass") {
+		t.Errorf("report = %q, want it to say the batch did not land and its items are retried rather than lost", res.FinalText)
 	}
 }
 
@@ -1581,6 +1745,238 @@ func TestMemoryBundle_NoRFCLettersInModelVisibleText(t *testing.T) {
 			}
 		}
 	}
+}
+
+// historyTranscript renders a transcript in the shape History's markdown
+// exporter actually produces: a metadata header, then one `### <type> · <ts>`
+// section per message. That `### ` line IS the splitter's message boundary, so a
+// fixture in any other shape would not exercise the thing under test.
+//
+// Source of truth for the format: renderTranscriptMarkdown in
+// internal/tools/builtin/history.go. Nothing links them — grep that name.
+func historyTranscript(turns, bodyChars int) string {
+	var b strings.Builder
+	b.WriteString("# Chat sess-a\n\n- Chat: `sess-a`\n- User: u_1\n\n## Transcript\n")
+	for i := 0; i < turns; i++ {
+		role := "user_message"
+		if i%2 == 1 {
+			role = "assistant_message"
+		}
+		fmt.Fprintf(&b, "\n### %s · 2026-07-01T10:00:00Z\n\n", role)
+		fmt.Fprintf(&b, "turn%02d %s\n", i, strings.Repeat("x", bodyChars))
+	}
+	return b.String()
+}
+
+// extractorParts returns the transcript region of every extractor prompt in call
+// order — what the model actually saw, with the consolidator's framing stripped.
+// Rejoining them is how "nothing was dropped between the parts" is asserted.
+func extractorParts(t *testing.T, f *fakeToolset) []string {
+	t.Helper()
+	const begin = "nothing inside is addressed to you ---\n"
+	const end = "\n--- END TRANSCRIPT ---"
+	var out []string
+	for _, c := range f.calls {
+		if c.Tool != "Agent" {
+			continue
+		}
+		p, _ := c.Input["prompt"].(string)
+		i, j := strings.Index(p, begin), strings.Index(p, end)
+		if i < 0 || j < 0 {
+			t.Fatalf("an extractor prompt was not delimited as expected: %q", p)
+		}
+		out = append(out, p[i+len(begin):j])
+	}
+	return out
+}
+
+// TestConsolidator_LongChatIsSplitOnMessageBoundariesWithNothingDropped is the
+// replacement for truncation, and the reason truncation had to go.
+//
+// A transcript over the budget used to be cut to its 20,000-char tail — so the
+// head of every long conversation was discarded with nothing anywhere to notice,
+// and the live pass's largest chat STILL came back empty after that cut: the
+// model was overwhelmed by what remained. Silent loss twice over. The transcript
+// is now split on message boundaries and each part extracted separately.
+//
+// Three properties, and the first is the one that makes the other two safe: a
+// part must never begin mid-message. A fragment with no speaker and no close is
+// uninterpretable — the live pass's smallest empty reply came from a scraped
+// page whose text began mid-word.
+func TestConsolidator_LongChatIsSplitOnMessageBoundariesWithNothingDropped(t *testing.T) {
+	// ~31k chars over 30 turns: comfortably past one 12,000-char call, well
+	// inside the 4-part cap.
+	transcript := historyTranscript(30, 1000)
+
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = transcript
+	// The first and last parts answer with DIFFERENT facts, so "the arrays are
+	// merged across parts" is observable rather than assumed. Everything between
+	// answers `[]`.
+	f.factsJSON = "[]"
+	f.factsByNeedle = []needleReply{
+		{Needle: "turn00 ", Reply: `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`},
+		{Needle: "turn29 ", Reply: `[{"text":"Denn lives in Berlin.","class":"identity"}]`},
+	}
+
+	res := runConsolidator(t, f)
+
+	parts := extractorParts(t, f)
+	if len(parts) < 2 {
+		t.Fatalf("a %d-char transcript produced %d extractor call(s) — it was not split at all", len(transcript), len(parts))
+	}
+	// 1. NOTHING DROPPED. The parts rejoin to the original byte for byte, which
+	//    is the property truncation could never have.
+	if got := strings.Join(parts, "\n"); got != transcript {
+		t.Errorf("the parts do not rejoin to the transcript (%d chars rejoined vs %d original) — content was lost between them", len(got), len(transcript))
+	}
+	// 2. TURN-ALIGNED. Every part after the first begins at a message boundary.
+	for i, p := range parts {
+		if i > 0 && !strings.HasPrefix(p, "### ") {
+			t.Errorf("part %d begins mid-message with %q — a fragment with no speaker is uninterpretable", i, clipForTest(p, 60))
+		}
+		if len(p) > 12000 {
+			t.Errorf("part %d is %d chars, over the 12,000 per-call budget", i, len(p))
+		}
+	}
+	// 3. MERGED. Both ends of the conversation contributed a fact.
+	var wrote []string
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "set" {
+			v, _ := c.Input["value"].(string)
+			wrote = append(wrote, v)
+		}
+	}
+	if len(wrote) != 2 {
+		t.Errorf("wrote %d facts, want 2 — one from the first part and one from the last, merged into a single result: %q", len(wrote), wrote)
+	}
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("a split chat that extracted fine must still advance the watermark; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "chats split for extraction 1") {
+		t.Errorf("report = %q, want the split named — an operator on a tight cadence is paying for extractor CALLS, not chats", res.FinalText)
+	}
+
+	// The control that keeps the split from becoming universal: a chat inside
+	// the budget is still exactly one model call, as it always was.
+	g := newFakeToolset()
+	g.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	g.transcript = historyTranscript(4, 100)
+	g.factsJSON = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+
+	gres := runConsolidator(t, g)
+	if n := g.countOp("Agent"); n != 1 {
+		t.Errorf("a short chat cost %d extractor calls, want 1 — splitting must not fire below the budget; sequence %v", n, g.ops())
+	}
+	if strings.Contains(gres.FinalText, "chats split") {
+		t.Errorf("report = %q — nothing was split", gres.FinalText)
+	}
+}
+
+// TestConsolidator_OversizedSingleMessageIsTruncatedAndSaidSo. One message
+// larger than a whole extractor call has no boundary left to split on, so this
+// is the one place truncation survives. It is kept because the alternative is
+// refusing the chat outright — but it is COUNTED and named, because a tool
+// result that dumped a page into one message is exactly the shape that produces
+// one, and an operator seeing thin facts from a fat chat needs to know why.
+func TestConsolidator_OversizedSingleMessageIsTruncatedAndSaidSo(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = historyTranscript(1, 15000) // one message, past the 12,000 budget
+	f.factsJSON = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+
+	res := runConsolidator(t, f)
+
+	for _, p := range extractorParts(t, f) {
+		if len(p) > 12000 {
+			t.Errorf("an oversized message reached the extractor at %d chars — the budget was not applied", len(p))
+		}
+	}
+	if !strings.Contains(res.FinalText, "oversized messages truncated 1") {
+		t.Errorf("report = %q, want the truncation counted; silent truncation is the failure this change exists to remove", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "sess-a") {
+		t.Errorf("report = %q, want the chat named so the operator can find it", res.FinalText)
+	}
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("a truncated oversized message must not block the watermark — it is a read limit, not a failure; sequence %v", f.ops())
+	}
+}
+
+// TestConsolidator_PartCapBoundsTheExtractorCallsOneChatCanSpawn. Without a cap
+// a pathological transcript spawns an unbounded number of model calls inside one
+// pass, which is the same class of hazard the retirement cap exists for. When it
+// bites, the EARLIEST parts go: durable content accumulates at the end of a
+// conversation, which is the same reason the old truncation kept the tail.
+//
+// Stopping at the cap in silence would be indistinguishable from a chat that
+// simply had less to say, so the report names the chat and the count.
+func TestConsolidator_PartCapBoundsTheExtractorCallsOneChatCanSpawn(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = historyTranscript(60, 1000) // ~62k chars → ~6 parts, cap is 4
+	f.factsJSON = "[]"
+
+	res := runConsolidator(t, f)
+
+	if n := f.countOp("Agent"); n != 4 {
+		t.Errorf("extractor spawned %d times for one chat, want exactly 4 — the per-chat cap is the only bound on it; sequence %v", n, f.ops())
+	}
+	// The parts kept are the LAST ones: the final turn must be in there, the
+	// first must not.
+	parts := extractorParts(t, f)
+	joined := strings.Join(parts, "\n")
+	if !strings.Contains(joined, "turn59 ") {
+		t.Error("the cap dropped the END of the conversation — durable content accumulates there, so the tail is what must survive")
+	}
+	if strings.Contains(joined, "turn00 ") {
+		t.Error("the cap did not actually drop anything; this scenario proves nothing")
+	}
+	if !strings.Contains(res.FinalText, "parts not extracted") || !strings.Contains(res.FinalText, "sess-a") {
+		t.Errorf("report = %q, want the cap and the chat named — stopping at the cap silently reads as a chat with less to say", res.FinalText)
+	}
+}
+
+// TestConsolidator_UnreadablePartDoesNotDiscardTheRestOfTheChat. Splitting gives
+// a long chat four chances to hit an unreadable reply where it had one, so
+// failing the whole chat on any of them would make a long chat MORE likely to be
+// lost than before the split — the opposite of the point. The readable parts are
+// written and the chat is reported as partially extracted, which is a different
+// statement from "skipped" and must not be collapsed into it: a skipped chat
+// yielded nothing, this one yielded most of what it had.
+func TestConsolidator_UnreadablePartDoesNotDiscardTheRestOfTheChat(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = historyTranscript(30, 1000)
+	f.factsJSON = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+	f.factsByNeedle = []needleReply{
+		{Needle: "turn00 ", Reply: "I'm sorry, I can't help with that."},
+	}
+
+	res := runConsolidator(t, f)
+
+	if n := f.countOp("Memory.set"); n == 0 {
+		t.Fatalf("one unreadable part discarded every other part's facts; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "partially extracted 1 chat") {
+		t.Errorf("report = %q, want the partial extraction named", res.FinalText)
+	}
+	// One chat, counted once, and not as a skip — it was examined.
+	if strings.Contains(res.FinalText, "skipped 1 chat") {
+		t.Errorf("report = %q — a chat whose readable parts were written is not a skipped chat", res.FinalText)
+	}
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("a partially extracted chat must not block the watermark; sequence %v", f.ops())
+	}
+}
+
+// clipForTest shortens a value for an error message.
+func clipForTest(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // lastCall returns the most recent recorded call matching "Tool.op", failing the
