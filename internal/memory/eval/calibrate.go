@@ -39,6 +39,30 @@ import (
 //go:embed calibration.json
 var builtinCalibrationCorpus []byte
 
+// clusteredCalibrationCorpus is the region the builtin corpus does not sample.
+//
+// WHY A SECOND CORPUS RATHER THAN MORE FACTS IN THE FIRST. The builtin corpus is
+// twelve MUTUALLY UNRELATED subjects, so every pair it labels UNRELATED is also
+// cross-TOPIC. A real memory scope is not shaped like that: it is a handful of
+// facts about the same few things, and the pairs a merge threshold actually has
+// to clear are same-topic, different-subject ones the builtin corpus contains
+// none of. A threshold measured only on it is therefore unvalidated exactly
+// where it does damage — which is how a live store came to hold
+//
+//	memory/fact/user-downloaded-qwen3-6-27b-q4
+//	  -> "The user's model is gemma-4-12b-it-UD-Q4_K_XL.gguf."
+//
+// under a band that made zero false merges on the builtin corpus.
+//
+// The two stay separate so the published reference measurement keeps meaning
+// what it says: those numbers were measured against the twelve-fact corpus, and
+// silently changing what that name refers to would make the documented table
+// describe a corpus nobody ran. Run both; the recommendation an operator should
+// act on is the more conservative of the two.
+//
+//go:embed calibration-cluster.json
+var clusteredCalibrationCorpus []byte
+
 // The three labels a probe-vs-base pair can carry.
 const (
 	ClassDuplicate = "duplicate"
@@ -91,6 +115,13 @@ type LabeledProbe struct {
 // BuiltinCalibrationCorpus parses the embedded corpus.
 func BuiltinCalibrationCorpus() (CalibrationCorpus, error) {
 	return LoadCalibrationCorpus(bytes.NewReader(builtinCalibrationCorpus))
+}
+
+// ClusteredCalibrationCorpus parses the embedded dense-topic corpus — see
+// clusteredCalibrationCorpus for why it exists and why it is not merged into
+// the builtin one.
+func ClusteredCalibrationCorpus() (CalibrationCorpus, error) {
+	return LoadCalibrationCorpus(bytes.NewReader(clusteredCalibrationCorpus))
 }
 
 // LoadCalibrationCorpus reads a corpus from JSON. Single-object JSON rather

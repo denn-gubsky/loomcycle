@@ -2092,6 +2092,227 @@ func TestConsolidator_NoCallerSideQuestionFilterEatsARealPreference(t *testing.T
 	}
 }
 
+// --- the in-place merge guard ------------------------------------------------
+//
+// A merge is the ONE unrecoverable step in the pipeline: it writes the incoming
+// fact under the neighbour's key, so the neighbour's text is gone with no
+// archive and no audit row, and the key is left asserting a subject its value no
+// longer carries. The four tests below fix the boundary of when that is allowed.
+
+// setCalls returns every Memory op=set the pass issued, in order.
+func setCalls(f *fakeToolset) []recordedCall {
+	var out []recordedCall
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "set" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// TestConsolidator_DoesNotOverwriteANeighbourAboutADifferentSubject replays the
+// two rows a live pass actually corrupted. Both are real: the key names the
+// subject the row was minted for, and the value it now holds is a fact about
+// something else entirely, so the original fact is gone and the key lies about
+// its own contents.
+//
+//	memory/fact/user-downloaded-qwen3-6-27b-q4
+//	  -> "The user's model is gemma-4-12b-it-UD-Q4_K_XL.gguf."
+//	memory/fact/user-s-llama-cpp-server-running
+//	  -> "The user has an AMD GPU for GPU acceleration."
+//
+// Each was one similarity comparison clearing the merge band — the whole of the
+// authority required to destroy a fact. The band itself is not the defect and
+// raising it is not the fix: it was calibrated on a corpus of twelve unrelated
+// subjects, while this store was a dozen facts about one llama.cpp/ROCm
+// deployment, so related-but-distinct facts inside that cluster score far above
+// anything the calibration ever sampled. The pass must therefore refuse on a
+// signal that does not come from the embedding, and write a new row instead.
+func TestConsolidator_DoesNotOverwriteANeighbourAboutADifferentSubject(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		neighbourKey string
+		neighbour    string
+		incoming     string
+	}{
+		{
+			name:         "model overwrites the downloaded-checkpoint fact",
+			neighbourKey: "memory/fact/user-downloaded-qwen3-6-27b-q4",
+			neighbour:    "The user downloaded qwen3-6-27b-q4 for local inference.",
+			incoming:     "The user's model is gemma-4-12b-it-UD-Q4_K_XL.gguf.",
+		},
+		{
+			name:         "GPU overwrites the llama.cpp server fact",
+			neighbourKey: "memory/fact/user-s-llama-cpp-server-running",
+			neighbour:    "The user's llama.cpp server is running on port 8080.",
+			incoming:     "The user has an AMD GPU for GPU acceleration.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeToolset()
+			f.bands = map[string]any{"merge_threshold": 0.70, "related_threshold": 0.40}
+			f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+			f.transcript = "user: here is my setup.\nassistant: noted."
+			f.factsJSON = `[{"text":"` + tc.incoming + `","class":"fact"}]`
+			// 0.83 is squarely inside the band the live deployment ran — the
+			// embedding is not wrong about these being close, it is wrong about
+			// them being the same fact.
+			f.recallFacts = []map[string]any{
+				{"id": tc.neighbourKey, "memory": tc.neighbour, "score": 0.83},
+			}
+
+			res := runConsolidator(t, f)
+
+			sets := setCalls(f)
+			if len(sets) != 1 {
+				t.Fatalf("expected exactly one write, got %d; sequence %v", len(sets), f.ops())
+			}
+			key, _ := sets[0].Input["key"].(string)
+			if key == tc.neighbourKey {
+				value, _ := sets[0].Input["value"].(string)
+				t.Fatalf("the pass rewrote %q with %q — that fact is now unrecoverable and the key names a subject its value no longer carries; a single similarity number must not be sufficient authority to destroy a fact",
+					tc.neighbourKey, value)
+			}
+			if !strings.HasPrefix(key, "memory/fact/") {
+				t.Errorf("new row written to %q, want the deterministic memory/<class>/<subject-slug> form", key)
+			}
+			if f.has("Memory.supersede") {
+				t.Errorf("the refused neighbour was retired instead — supersede is driven by the same comparison and must be refused with it; sequence %v", f.ops())
+			}
+			if !strings.Contains(res.FinalText, "merge refused on subject 1") {
+				t.Errorf("report = %q, want the refusal counted so an operator can see the embedding and the subject disagreeing", res.FinalText)
+			}
+		})
+	}
+}
+
+// TestConsolidator_LowestScoringGenuineParaphraseStillMergesInPlace is the
+// guard's other edge, and the one that matters more: deduplication took several
+// releases to start working and the guard must not undo it.
+//
+// The pair is not invented. It is the WORST genuine paraphrase in the bundled
+// calibration corpus — the lowest word overlap of the twelve labelled duplicate
+// pairs, at 0.353 against a 0.30 floor. Every other labelled paraphrase, in that
+// corpus and in a dense single-topic one, sits at 0.476 or above. So a guard that
+// merges this pair merges all 18 paraphrases measured, and this test is where
+// that margin is pinned: narrow the floor's window and it fails here first.
+func TestConsolidator_LowestScoringGenuineParaphraseStillMergesInPlace(t *testing.T) {
+	const existingKey = "memory/preference/user-favours-simple-unexciting-solutions-rather"
+
+	f := newFakeToolset()
+	f.bands = map[string]any{"merge_threshold": 0.70, "related_threshold": 0.40}
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: keep it simple.\nassistant: noted."
+	f.factsJSON = `[{"text":"The user prefers boring, minimal solutions over speculative abstractions.","class":"preference"}]`
+	f.recallFacts = []map[string]any{{
+		"id":     existingKey,
+		"memory": "The user favours simple, unexciting solutions rather than speculative abstraction.",
+		"score":  0.90,
+	}}
+
+	res := runConsolidator(t, f)
+
+	set := lastCall(t, f, "Memory.set")
+	if key, _ := set.Input["key"].(string); key != existingKey {
+		t.Errorf("the paraphrase was written to a NEW key %q instead of merging onto %q — the guard has swallowed a genuine duplicate and the store grows two rows for one fact", key, existingKey)
+	}
+	if !strings.Contains(res.FinalText, "updated in place 1") {
+		t.Errorf("report = %q, want the paraphrase counted as an in-place update", res.FinalText)
+	}
+	if strings.Contains(res.FinalText, "merge refused") {
+		t.Errorf("report = %q, want no refusal — this pair is a labelled duplicate", res.FinalText)
+	}
+}
+
+// TestConsolidator_DoesNotMergeOntoAKeyOfADifferentClass. The class is the other
+// half of the key, and a `fact` written onto a `constraint` key leaves the key
+// misdescribing its own contents — the same state the corrupted live rows are
+// in, arrived at by a different route. The texts here are IDENTICAL, so word
+// overlap is 1.0 and the class is the only thing that can refuse it.
+//
+// A key the pass did not mint fails the same check: an opaque id from a remote
+// backend, or a row the user wrote themselves under this scope, parses to no
+// class at all and is refused rather than overwritten.
+func TestConsolidator_DoesNotMergeOntoAKeyOfADifferentClass(t *testing.T) {
+	const (
+		text        = "The user prefers boring, minimal solutions over speculative abstractions."
+		constraintK = "memory/constraint/user-prefers-boring-minimal-solutions-over"
+	)
+
+	for _, tc := range []struct{ name, key string }{
+		{"a different class", constraintK},
+		{"a key this pass did not mint", "01H9Z4K7QW8Y2N5V"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeToolset()
+			f.bands = map[string]any{"merge_threshold": 0.70, "related_threshold": 0.40}
+			f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+			f.transcript = "user: keep it simple.\nassistant: noted."
+			f.factsJSON = `[{"text":"` + text + `","class":"fact"}]`
+			f.recallFacts = []map[string]any{{"id": tc.key, "memory": text, "score": 0.99}}
+
+			res := runConsolidator(t, f)
+
+			set := lastCall(t, f, "Memory.set")
+			key, _ := set.Input["key"].(string)
+			if key == tc.key {
+				t.Fatalf("the pass rewrote %q with a `fact` — the key is left describing something its value is not", tc.key)
+			}
+			if !strings.HasPrefix(key, "memory/fact/") {
+				t.Errorf("new row written to %q, want a memory/fact/ key", key)
+			}
+			if !strings.Contains(res.FinalText, "merge refused on class 1") {
+				t.Errorf("report = %q, want the class refusal counted separately — it diagnoses an extractor reclassifying facts, not a mis-set band", res.FinalText)
+			}
+		})
+	}
+}
+
+// TestConsolidator_DoesNotRetireANeighbourItRefusedToMerge closes the second
+// destructive path off the same comparison. When recall returns several rows
+// above the band, the highest is rewritten and the REST are queued for
+// supersede — so a neighbour that the guard refuses to merge onto must not be
+// quietly archived instead. Retirement is a soft archive and therefore
+// recoverable, which is exactly why it would go unnoticed.
+func TestConsolidator_DoesNotRetireANeighbourItRefusedToMerge(t *testing.T) {
+	const refusedKey = "memory/preference/user-s-llama-cpp-server-running"
+
+	f := newFakeToolset()
+	f.bands = map[string]any{"merge_threshold": 0.70, "related_threshold": 0.40}
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: keep it simple.\nassistant: noted."
+	f.factsJSON = `[{"text":"The user prefers boring, minimal solutions over speculative abstractions.","class":"preference"}]`
+	f.recallFacts = []map[string]any{
+		// Two genuine duplicates: the first is rewritten in place, the second is
+		// the one legitimately queued for retirement.
+		{"id": "memory/preference/user-prefers-boring-minimal-solutions", "memory": "The user prefers boring minimal solutions over speculative abstractions.", "score": 0.99},
+		{"id": "memory/preference/user-favours-simple-unexciting-solutions-rather", "memory": "The user favours simple, unexciting solutions rather than speculative abstraction.", "score": 0.95},
+		// Same class, above the band, entirely different subject.
+		{"id": refusedKey, "memory": "The user's llama.cpp server is running on port 8080.", "score": 0.93},
+	}
+
+	res := runConsolidator(t, f)
+
+	var superseded []string
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "supersede" {
+			k, _ := c.Input["key"].(string)
+			superseded = append(superseded, k)
+		}
+	}
+	for _, k := range superseded {
+		if k == refusedKey {
+			t.Fatalf("the pass archived %q — a neighbour it refused to merge onto must not be retired by the same comparison instead", refusedKey)
+		}
+	}
+	if len(superseded) != 1 {
+		t.Errorf("superseded %v, want exactly the one genuine surplus duplicate", superseded)
+	}
+	if !strings.Contains(res.FinalText, "merge refused on subject 1") {
+		t.Errorf("report = %q, want the refusal counted", res.FinalText)
+	}
+}
+
 // clipForTest shortens a value for an error message.
 func clipForTest(s string, n int) string {
 	if len(s) <= n {
