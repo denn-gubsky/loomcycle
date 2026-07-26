@@ -54,6 +54,29 @@ retirements" is a slice — and only the judgement is left to a model.
 Deciding what is durable is still a judgement call an operator can read and
 change: it is the extractor's system prompt, and it is short.
 
+### What the extractor returns, and what the pass accepts
+
+The contract is one JSON array of `{"text": …, "class": …}`, and `class` is one
+of `preference`, `fact`, `decision`, `identity`, `constraint`. An empty array is
+a normal answer — plenty of chats hold nothing durable.
+
+The pass is **tolerant about the wrapping and strict about the content**, and
+the asymmetry is deliberate. A small tool-less model does not reliably emit a
+bare array however plainly it is asked to, so the caller strips the runtime's
+`[sub-agent agent_id=…]` attribution header, strips code fences, and — failing a
+clean parse — takes the outermost `[` … `]` span, so prose either side of the
+array costs nothing. Content gets no such latitude: an entry with no `text`, an
+unknown `class`, or an over-long value is **dropped and counted**, because a
+pass that writes nine of ten facts beats one that aborts on the tenth.
+
+A reply that is not a fact array **at all** is the third case and it is neither
+of those. That chat was never actually examined, so the pass writes nothing for
+it, **holds the watermark** so the next pass re-reads it, and reports the
+failure with a bounded prefix of the raw reply. That last part is the real
+defence against a transcript that talks the extractor into answering it rather
+than extracting from it: the prompt asks the model not to, but only the
+caller's validation *enforces* it.
+
 A pass works on **one memory target** (one scope + scope id) and walks a
 fixed sequence:
 
