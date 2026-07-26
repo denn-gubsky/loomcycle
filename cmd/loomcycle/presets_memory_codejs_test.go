@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +46,14 @@ type fakeToolset struct {
 	sessions      []map[string]any
 	pending       []map[string]any
 	transcript    string
+	// transcripts gives each chat its own content, keyed by session id; nil keeps
+	// the single shared `transcript` every other scenario uses.
+	transcripts map[string]string
+	// factsBySession gives each chat its own extractor reply. The Agent double
+	// has no session id of its own, so it matches on the transcript the prompt
+	// carries — the same coupling the real pipeline has, and the reason
+	// transcripts must be distinct when this is set.
+	factsBySession map[string]string
 	// factsJSON is the extractor sub-agent's final TEXT, before the runtime's
 	// attribution header is prepended (see subAgentHeader).
 	factsJSON string
@@ -61,6 +71,11 @@ type fakeToolset struct {
 	subAgentHeader string
 	// recallFacts is returned by every Memory op=recall.
 	recallFacts []map[string]any
+	// vectors turns Memory set/recall into a working similarity store instead of
+	// the fixed recallFacts list: `set` files the row's embed_text under its key
+	// and `recall` scores the query against every filed row. nil keeps the
+	// static behaviour every other scenario relies on. See scoreOverlap.
+	vectors map[string]string
 	// bands is the consolidation block Context op=capabilities reports; nil
 	// omits the block entirely.
 	bands map[string]any
@@ -141,11 +156,21 @@ func (m *fakeMemory) Execute(_ context.Context, raw json.RawMessage) (tools.Resu
 	case "pending_drain":
 		return okResult(map[string]any{"pending": m.f.pending})
 	case "recall":
+		if m.f.vectors != nil {
+			query, _ := in["query"].(string)
+			return okResult(map[string]any{"facts": m.f.searchVectors(query)})
+		}
 		return okResult(map[string]any{"facts": m.f.recallFacts})
 	case "set":
 		key, _ := in["key"].(string)
 		if m.f.failSetKeys[key] {
 			return tools.Result{IsError: true, Text: "set: quota exceeded for " + key}, nil
+		}
+		if m.f.vectors != nil {
+			// File exactly what the pass asked to be embedded — not the value,
+			// not the key. If the two ever diverge this store is what notices.
+			embed, _ := in["embed_text"].(string)
+			m.f.vectors[key] = embed
 		}
 		return okResult(map[string]any{"ok": true})
 	case "supersede", "pending_ack", "cursor_advance", "cursor_release":
@@ -172,7 +197,12 @@ func (h *fakeHistory) Execute(_ context.Context, raw json.RawMessage) (tools.Res
 	if in["scope"] != "user" {
 		return tools.Result{IsError: true, Text: "history: no history_scope policy (default-deny)"}, nil
 	}
-	return okResult(map[string]any{"scope": "user", "chat": map[string]any{}, "markdown": h.f.transcript})
+	md := h.f.transcript
+	if h.f.transcripts != nil {
+		sid, _ := in["session_id"].(string)
+		md = h.f.transcripts[sid]
+	}
+	return okResult(map[string]any{"scope": "user", "chat": map[string]any{}, "markdown": md})
 }
 
 // --- Agent ------------------------------------------------------------------
@@ -184,15 +214,34 @@ func (a *fakeAgent) Description() string          { return "agent (test double)"
 func (a *fakeAgent) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 
 func (a *fakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Result, error) {
-	a.f.record("Agent", raw)
+	in := a.f.record("Agent", raw)
 	if a.f.failAgent {
 		return tools.Result{IsError: true, Text: "sub-agent failed"}, nil
+	}
+	reply := a.f.factsJSON
+	if len(a.f.factsBySession) > 0 {
+		// Route by the transcript the prompt carries. Sorted so a prompt that
+		// somehow matched two fixtures still resolves the same way every run.
+		prompt, _ := in["prompt"].(string)
+		sids := make([]string, 0, len(a.f.transcripts))
+		for sid := range a.f.transcripts {
+			sids = append(sids, sid)
+		}
+		sort.Strings(sids)
+		for _, sid := range sids {
+			if text := a.f.transcripts[sid]; text != "" && strings.Contains(prompt, text) {
+				if r, ok := a.f.factsBySession[sid]; ok {
+					reply = r
+				}
+				break
+			}
+		}
 	}
 	// A sub-agent's result is its final TEXT behind the runtime's attribution
 	// header, so this is deliberately a string and not a marshalled object —
 	// the JS has to cope with whatever a model actually emits, wrapped the way
 	// the runtime actually wraps it.
-	return tools.Result{Text: a.f.subAgentHeader + a.f.factsJSON}, nil
+	return tools.Result{Text: a.f.subAgentHeader + reply}, nil
 }
 
 // --- Context ----------------------------------------------------------------
@@ -253,6 +302,179 @@ func runConsolidator(t *testing.T, f *fakeToolset) loop.RunResult {
 
 func scanRow(id, ts string) map[string]any {
 	return map[string]any{"session_id": id, "completed_at": ts}
+}
+
+// tokensOf splits text into its set of lowercase alphanumeric words.
+func tokensOf(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+	}) {
+		out[w] = true
+	}
+	return out
+}
+
+// scoreOverlap is a deliberately crude stand-in for an embedder: cosine
+// similarity over word-presence vectors, i.e. |A∩B| / sqrt(|A|·|B|).
+//
+// Crude, but REAL in the one way this file needs. The score is computed from
+// the bytes the pass actually put in `embed_text`, so text appended to a fact
+// dilutes its vector here exactly the way it does on a real embedder — more
+// dimensions, the same overlap, a lower cosine. That is what lets the merge-band
+// test DEMONSTRATE the causal chain (pollute the embedded text → two paraphrases
+// fall out of the merge band) rather than assert it against a hardcoded number.
+// A real embedder would score paraphrases higher than a bag of words can, which
+// is why the fixtures below are lexically close: the metric is a stand-in, the
+// dilution arithmetic is the part under test.
+func scoreOverlap(a, b string) float64 {
+	ta, tb := tokensOf(a), tokensOf(b)
+	if len(ta) == 0 || len(tb) == 0 {
+		return 0
+	}
+	shared := 0
+	for w := range ta {
+		if tb[w] {
+			shared++
+		}
+	}
+	return float64(shared) / math.Sqrt(float64(len(ta)*len(tb)))
+}
+
+// searchVectors answers a recall from the filed rows, highest score first.
+// Ordering is total (score, then key) so the pass replays deterministically.
+func (f *fakeToolset) searchVectors(query string) []map[string]any {
+	keys := make([]string, 0, len(f.vectors))
+	for k := range f.vectors {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, map[string]any{"id": k, "memory": f.vectors[k], "score": scoreOverlap(query, f.vectors[k])})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i]["score"].(float64) > out[j]["score"].(float64) })
+	if len(out) > 8 { // CONFIG.recall_top_k
+		out = out[:8]
+	}
+	return out
+}
+
+// TestConsolidator_StoredFactIsOneSentenceAndIsWhatGetsEmbedded. The pass used
+// to word a fact so a reader would connect it to its nearest neighbour, by
+// appending "(related: <the neighbour's whole text>)" to the stored value. The
+// neighbour's text already carried ITS OWN appended neighbour, so the tails
+// nested and the store filled with entries like
+//
+//	"A. (related: B (related: C))"
+//
+// several of them truncated mid-chain. A stored fact must be one self-contained
+// sentence and nothing else — the fact naming its own subject explicitly is what
+// makes it readable later, and the linkage is not worth a corrupted value.
+//
+// The `value == embed_text` check is a GUARD rather than a fail-before: the old
+// code embedded the polluted string too, so the two were equal and equally
+// wrong. It is here because the 0.70 merge band is calibrated on clean fact
+// sentences, so anything that makes the embedded bytes differ from the stored
+// ones — in either direction — silently invalidates that calibration.
+func TestConsolidator_StoredFactIsOneSentenceAndIsWhatGetsEmbedded(t *testing.T) {
+	const fact = "Denn prefers Go for backend services."
+
+	f := newFakeToolset()
+	f.bands = map[string]any{"merge_threshold": 0.90, "related_threshold": 0.50}
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: I prefer Go.\nassistant: ok"
+	f.factsJSON = `[{"text":"` + fact + `","class":"preference"}]`
+	// A neighbour squarely inside the related band (0.50 ≤ 0.60 < 0.90) — the
+	// exact condition that used to append a tail. Its own text already carries
+	// one, which is how the nesting compounded.
+	f.recallFacts = []map[string]any{{
+		"id":     "memory/identity/assistant-name",
+		"memory": "The assistant's name is CHAT-LOCAL. (related: All processing stays on the local box)",
+		"score":  0.60,
+	}}
+
+	runConsolidator(t, f)
+
+	set := lastCall(t, f, "Memory.set")
+	value, _ := set.Input["value"].(string)
+	embed, _ := set.Input["embed_text"].(string)
+
+	if strings.Contains(value, "(related:") {
+		t.Errorf("stored value carries a cross-reference tail: %q — a fact must be one self-contained sentence and nothing else", value)
+	}
+	if value != fact {
+		t.Errorf("stored value = %q, want the extractor's sentence verbatim (%q)", value, fact)
+	}
+	if value != embed {
+		t.Errorf("value %q and embed_text %q differ — the merge band is calibrated on the stored sentence, so embedding anything else moves every fact off that calibration", value, embed)
+	}
+}
+
+// TestConsolidator_TwoParaphrasesOfOneFactMergeInPlace is the compounding half
+// of the bug, and the reason the tail mattered beyond looking untidy.
+//
+// `embed_text` IS the stored value, so the "(related: …)" tail went into the
+// EMBEDDING. Two wordings of one fact then embed differently — the polluted row
+// carries a pile of tokens belonging to some other fact — and never reach the
+// merge band, so each new wording is stored as yet another row. Four rows in the
+// live store should have been two.
+//
+// The similarity here is computed from the bytes the pass actually embedded (see
+// scoreOverlap), so this is the causal chain end to end rather than an assertion
+// about a number: the tail dilutes the vector, the dilution drops the pair under
+// the band, and the merge that should collapse them never fires.
+//
+// The arithmetic, with a 0.75 merge band:
+//
+//	clean:    7 shared / sqrt(8·9)  = 0.825  → merges
+//	polluted: 7 shared / sqrt(12·9) = 0.674  → does not
+func TestConsolidator_TwoParaphrasesOfOneFactMergeInPlace(t *testing.T) {
+	const (
+		first  = "Denn prefers Go over Python for backend services."
+		second = "Denn prefers Go rather than Python for backend services."
+	)
+
+	f := newFakeToolset()
+	f.bands = map[string]any{"merge_threshold": 0.75, "related_threshold": 0.40}
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: I prefer Go over Python.\nassistant: ok"
+	f.factsJSON = `[{"text":"` + first + `","class":"preference"},
+	                {"text":"` + second + `","class":"preference"}]`
+	// One pre-existing row, deliberately positioned in the RELATED band relative
+	// to both wordings (0.433 / 0.408). Under the old body its presence is what
+	// triggered the tail on the first write; under the new one it is simply a
+	// neighbour that is not a duplicate.
+	f.vectors = map[string]string{
+		"memory/fact/denn-works-mostly-backend-services": "Denn works mostly on backend services.",
+	}
+
+	res := runConsolidator(t, f)
+
+	// The second wording must land on the FIRST one's key — one fact, one row.
+	sets := []recordedCall{}
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "set" {
+			sets = append(sets, c)
+		}
+	}
+	if len(sets) != 2 {
+		t.Fatalf("expected two writes (the new fact, then the paraphrase merged onto it), got %d; sequence %v", len(sets), f.ops())
+	}
+	firstKey, _ := sets[0].Input["key"].(string)
+	secondKey, _ := sets[1].Input["key"].(string)
+	if secondKey != firstKey {
+		t.Errorf("the paraphrase was written to a NEW key %q instead of merging onto %q — two rows for one fact; this is what an embedded cross-reference tail defeats", secondKey, firstKey)
+	}
+	if !strings.Contains(res.FinalText, "updated in place 1") {
+		t.Errorf("report = %q, want the paraphrase counted as an in-place update", res.FinalText)
+	}
+	// Nothing embedded may differ from what is stored, on any of the writes.
+	for _, c := range sets {
+		if c.Input["value"] != c.Input["embed_text"] {
+			t.Errorf("write to %v embedded %q but stored %q", c.Input["key"], c.Input["embed_text"], c.Input["value"])
+		}
+	}
 }
 
 // TestConsolidator_HappyPassAdvancesTheWatermarkAndReleasesTheLease is the bar
@@ -537,31 +759,302 @@ func TestConsolidator_MalformedExtractorEntriesAreDroppedNotFatal(t *testing.T) 
 	}
 }
 
-// TestConsolidator_UnreadableExtractorReplyBlocksTheWatermark is the other half
-// of the rule above, and the distinction matters: an EMPTY array means "nothing
-// durable in this chat" and is a normal answer, while a reply that is not a fact
-// array at all means the chat was never actually examined — so advancing past it
-// would lose it permanently.
-func TestConsolidator_UnreadableExtractorReplyBlocksTheWatermark(t *testing.T) {
+// TestConsolidator_RejectsAFactNamingASessionOrRunId. Nine of the 43 facts the
+// first live pass wrote were not durable, and the extractor prompt already
+// forbade exactly that — so the prompt is a request and this is the guarantee.
+//
+// The matcher is the id SHAPE, not the word "id": the "s_"/"r_" prefix the
+// stores mint followed by the hex encoding of 8 or 16 random bytes. Both widths
+// ship (sqlite mints 8, Postgres 16), so both are covered, and the two survivors
+// below are the reason it is shaped rather than keyword-based — a fact may
+// legitimately talk ABOUT ids, and rejecting it would lose durable knowledge
+// silently. The asymmetry drives the whole design: an id that slips through is
+// one row a later pass can supersede.
+func TestConsolidator_RejectsAFactNamingASessionOrRunId(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	f.factsJSON = `[
+		{"text":"The chat session ID is s_928fc2a7c4ce2a22a287a6d83b3513f8.","class":"fact"},
+		{"text":"The answer was produced during run r_1a2b3c4d5e6f7a8b.","class":"fact"},
+		{"text":"Denn's team prefixes every session id with s_ and every run id with r_.","class":"preference"},
+		{"text":"Denn names the staging bucket s_cafe1234.","class":"fact"},
+		{"text":"Denn prefers Go for backend services.","class":"preference"}
+	]`
+
+	res := runConsolidator(t, f)
+
+	// Three survive: the two that mention ids without carrying one, and the plain
+	// fact. The 32-hex (Postgres) and 16-hex (sqlite) ids are rejected.
+	var wrote []string
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "set" {
+			v, _ := c.Input["value"].(string)
+			wrote = append(wrote, v)
+		}
+	}
+	if len(wrote) != 3 {
+		t.Errorf("wrote %d facts, want 3 (both real ids rejected, both id-mentioning facts kept): %q", len(wrote), wrote)
+	}
+	for _, v := range wrote {
+		if strings.Contains(v, "s_928fc2a7") || strings.Contains(v, "r_1a2b3c4d") {
+			t.Errorf("a fact carrying a real session/run id was stored: %q", v)
+		}
+	}
+	// The near-misses must survive: "s_" with nothing behind it, and a hex-looking
+	// word far too short to be an id. Over-rejecting is the silent failure.
+	for _, want := range []string{"prefixes every session id with s_", "staging bucket s_cafe1234"} {
+		found := false
+		for _, v := range wrote {
+			if strings.Contains(v, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("a legitimate fact mentioning an id in passing (%q) was rejected; wrote %q", want, wrote)
+		}
+	}
+	// Counted SEPARATELY from a malformed entry: one says the extractor is
+	// summarising the conversation, the other says it emitted a broken record.
+	// They point at different fixes, so folding them into one number hides both.
+	if !strings.Contains(res.FinalText, "transient entries rejected 2") {
+		t.Errorf("report = %q, want a separate transient-entry count", res.FinalText)
+	}
+	if strings.Contains(res.FinalText, "malformed entries dropped") {
+		t.Errorf("report = %q — every entry here is well-formed; a transient reject is not a malformed drop", res.FinalText)
+	}
+	// The chat WAS examined, so rejecting entries from it must not hold the mark.
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("rejecting transient entries blocked the watermark; sequence %v", f.ops())
+	}
+}
+
+// TestExtractor_PromptNamesTheDurabilityFailureModes. "Still true in a year" is
+// an abstraction, and a small local model did not apply it: a fifth of the first
+// live pass's facts were puzzle answers, records that a question had been asked,
+// and ids. The prompt now carries the discriminator (a fact is about the USER or
+// their PROJECT, not about this conversation) and names the three failure modes
+// outright, which is what a small model can actually act on.
+func TestExtractor_PromptNamesTheDurabilityFailureModes(t *testing.T) {
+	cfg := memoryBundleConfig(t)
+	prompt := cfg.Agents["memory/extractor"].SystemPrompt
+
+	for _, want := range []string{
+		// The discriminator, stated as a test the model can apply per entry.
+		"about the USER or their PROJECT",
+		// The three observed failure modes, named rather than implied.
+		"a question that was asked",
+		"one-off puzzle",
+		"an id",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("extractor prompt is missing the durability discriminator %q", want)
+		}
+	}
+}
+
+// TestConsolidator_UnreadableExtractionSkipsTheChatAndAdvancesPastIt is the
+// other half of the rule above, and the distinction still matters — but it is
+// no longer a distinction about the watermark.
+//
+// An EMPTY array means "nothing durable in this chat" and is a normal answer. A
+// reply that is not a fact array at all means the chat was never examined, and
+// holding the watermark for it USED to be the answer. It sticks: the same
+// transcript reliably talks the same model into the same non-answer, so every
+// later pass re-reads the same page and never converges. The operator's decision
+// is that such a chat is passed over — the loss is accepted and reported, and
+// the pass makes progress.
+//
+// A write failure is a different class entirely and still blocks; see
+// TestConsolidator_FailedWriteBlocksTheWatermark.
+func TestConsolidator_UnreadableExtractionSkipsTheChatAndAdvancesPastIt(t *testing.T) {
 	f := newFakeToolset()
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	f.transcript = "user: hi\nassistant: hello"
 	f.factsJSON = "I'm sorry, I can't help with that."
 
-	runConsolidator(t, f)
-	if f.has("Memory.cursor_advance") {
-		t.Errorf("watermark advanced past a chat whose extraction could not be read; sequence %v", f.ops())
+	res := runConsolidator(t, f)
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("the pass stuck on a chat that will never parse; sequence %v", f.ops())
+	}
+	if f.has("Memory.set") {
+		t.Errorf("wrote a fact from a reply that is not a fact array; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "not recoverable by a later pass") {
+		t.Errorf("report = %q — advancing past lost content without saying so is worse than sticking", res.FinalText)
 	}
 
-	// The empty-array control: same shape, legitimate answer, watermark moves.
+	// The empty-array control: same shape, legitimate answer, watermark moves and
+	// nothing is reported as skipped.
 	g := newFakeToolset()
 	g.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	g.transcript = "user: hi\nassistant: hello"
 	g.factsJSON = "[]"
 
-	runConsolidator(t, g)
+	gres := runConsolidator(t, g)
 	if !g.has("Memory.cursor_advance") {
 		t.Errorf("an empty fact array is a normal answer and must still advance the watermark; sequence %v", g.ops())
+	}
+	if strings.Contains(gres.FinalText, "skipped") {
+		t.Errorf("report = %q — an empty array is not a skip", gres.FinalText)
+	}
+}
+
+// TestConsolidator_SkipsOnlyTheUnparseableChatAmongSeveral. The skip has to be
+// surgical in both directions: the chats around it are consolidated normally,
+// and the watermark lands past the skipped one rather than short of it.
+//
+// The second scenario is the one a naive fix gets wrong. When the LAST scanned
+// row is the unparseable chat, a fix that simply stops blocking still leaves the
+// watermark on the previous row — and the next pass re-reads the bad chat
+// forever, which is the whole defect. The advance still copies a real scan row's
+// (completed_at, session_id) pair verbatim; it is only sound to move past a
+// skipped row because the skip is deliberate and reported.
+func TestConsolidator_SkipsOnlyTheUnparseableChatAmongSeveral(t *testing.T) {
+	const good = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+
+	t.Run("bad chat in the middle", func(t *testing.T) {
+		f := newFakeToolset()
+		f.sessions = []map[string]any{
+			scanRow("sess-a", "2026-07-01T10:00:00Z"),
+			scanRow("sess-b", "2026-07-02T10:00:00Z"),
+			scanRow("sess-c", "2026-07-03T10:00:00Z"),
+		}
+		f.transcripts = map[string]string{
+			"sess-a": "user: I prefer Go.\nassistant: ok",
+			"sess-b": "user: are you ready?\nassistant: READY",
+			"sess-c": "user: still Go.\nassistant: noted",
+		}
+		f.factsBySession = map[string]string{
+			"sess-a": good,
+			// The reply that held the live pass's watermark. It is an OBJECT, not
+			// a fact array, and "READY" is not a fact.
+			"sess-b": `{"text":"READY"}`,
+			"sess-c": good,
+		}
+
+		res := runConsolidator(t, f)
+
+		if n := f.countOp("Memory.set"); n != 2 {
+			t.Errorf("wrote %d facts, want 2 — the chats either side of the skipped one must still be consolidated; sequence %v", n, f.ops())
+		}
+		adv := lastCall(t, f, "Memory.cursor_advance")
+		if adv.Input["session_id"] != "sess-c" || adv.Input["completed_at"] != "2026-07-03T10:00:00Z" {
+			t.Errorf("cursor_advance carried %v/%v, want the last scan row verbatim (sess-c / 2026-07-03T10:00:00Z)",
+				adv.Input["session_id"], adv.Input["completed_at"])
+		}
+		if !f.has("Memory.cursor_release") {
+			t.Errorf("the lease was not returned; sequence %v", f.ops())
+		}
+		for _, want := range []string{
+			"skipped 1 chat whose extraction could not be parsed",
+			"not recoverable by a later pass",
+			"sess-b",
+		} {
+			if !strings.Contains(res.FinalText, want) {
+				t.Errorf("report = %q, missing %q", res.FinalText, want)
+			}
+		}
+		if strings.Contains(res.FinalText, "watermark NOT advanced") {
+			t.Errorf("report claims a blocked watermark for a pass that advanced: %q", res.FinalText)
+		}
+	})
+
+	t.Run("bad chat is the last row", func(t *testing.T) {
+		f := newFakeToolset()
+		f.sessions = []map[string]any{
+			scanRow("sess-a", "2026-07-01T10:00:00Z"),
+			scanRow("sess-b", "2026-07-02T10:00:00Z"),
+		}
+		f.transcripts = map[string]string{
+			"sess-a": "user: I prefer Go.\nassistant: ok",
+			"sess-b": "user: are you ready?\nassistant: READY",
+		}
+		f.factsBySession = map[string]string{"sess-a": good, "sess-b": `{"text":"READY"}`}
+
+		runConsolidator(t, f)
+
+		adv := lastCall(t, f, "Memory.cursor_advance")
+		if adv.Input["session_id"] != "sess-b" || adv.Input["completed_at"] != "2026-07-02T10:00:00Z" {
+			t.Errorf("cursor_advance carried %v/%v, want sess-b — a watermark left short of a skipped LAST row re-reads it on every future pass, which is the whole defect",
+				adv.Input["session_id"], adv.Input["completed_at"])
+		}
+	})
+}
+
+// TestConsolidator_UnparseableQueuedBatchDoesNotBlockTheChatWatermark. The
+// queued-item batch is not a chat and has its own recovery path: an unreadable
+// batch extraction simply leaves the items unacked, so they are re-drained next
+// pass on their own. Holding the CHAT watermark for it — which is what happened
+// before, because both went through the same block() — punished every scanned
+// chat for a failure that had nothing to do with them.
+//
+// It is also not reported as a skipped chat, because nothing was skipped: the
+// items are still queued.
+func TestConsolidator_UnparseableQueuedBatchDoesNotBlockTheChatWatermark(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.pending = []map[string]any{{
+		"id":      "pend-1",
+		"payload": map[string]any{"messages": []any{map[string]any{"role": "user", "content": "I live in Berlin."}}},
+	}}
+	f.transcripts = map[string]string{"sess-a": "user: I prefer Go.\nassistant: ok"}
+	f.factsBySession = map[string]string{
+		"sess-a": `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`,
+	}
+	// The batch's own extraction (its prompt carries no chat transcript, so it
+	// falls through to factsJSON) comes back as prose.
+	f.factsJSON = "Sure, here is a summary of those messages."
+
+	res := runConsolidator(t, f)
+
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("an unreadable QUEUED-BATCH extraction held the chat watermark; the chat was consolidated fine and the items are simply still queued; sequence %v", f.ops())
+	}
+	if f.has("Memory.pending_ack") {
+		t.Errorf("acked a batch whose facts were never written — the items would be unrecoverable; sequence %v", f.ops())
+	}
+	if strings.Contains(res.FinalText, "skipped 1 chat") {
+		t.Errorf("report = %q — the batch is not a chat and nothing was skipped", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "queued batch not consolidated") {
+		t.Errorf("report = %q, want it to name the batch that did not land", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "stay queued for the next pass") {
+		t.Errorf("report = %q, want it to say the items are retried rather than lost", res.FinalText)
+	}
+}
+
+// TestConsolidator_ObjectReplyIsNotAcceptedAsASingleFact pins the boundary of
+// the one lenient branch in the parser. `{"facts":[…]}` is recognised because a
+// model wrapping its array is still handing over an array — but a bare object is
+// not a fact array, and `{"text":"READY"}` (the reply that stuck the live pass)
+// is not a fact. Widening that branch to accept an object as one fact would turn
+// every hijacked, apologetic, or conversational reply into stored memory.
+func TestConsolidator_ObjectReplyIsNotAcceptedAsASingleFact(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: are you ready?\nassistant: READY"
+	f.factsJSON = `{"text":"READY","class":"fact"}`
+
+	res := runConsolidator(t, f)
+
+	if f.has("Memory.set") {
+		t.Errorf("a bare object was stored as a fact; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "could not be parsed") {
+		t.Errorf("report = %q, want the object treated as unparseable", res.FinalText)
+	}
+
+	// The control: the SAME object shape wrapping a real array is still accepted.
+	g := newFakeToolset()
+	g.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	g.transcript = "user: I prefer Go.\nassistant: ok"
+	g.factsJSON = `{"facts":[{"text":"Denn prefers Go for backend services.","class":"preference"}]}`
+
+	runConsolidator(t, g)
+	if n := g.countOp("Memory.set"); n != 1 {
+		t.Errorf("the {\"facts\":[…]} wrapper must still be read; wrote %d, sequence %v", n, g.ops())
 	}
 }
 
@@ -692,9 +1185,6 @@ func TestConsolidator_UnparseableReplyIsReportedWithItsRawPrefix(t *testing.T) {
 	if f.has("Memory.set") {
 		t.Errorf("wrote a fact from a reply that is not a fact array; sequence %v", f.ops())
 	}
-	if f.has("Memory.cursor_advance") {
-		t.Errorf("watermark advanced past a chat that was never actually examined; sequence %v", f.ops())
-	}
 	if !f.has("Memory.cursor_release") {
 		t.Errorf("the lease was not returned on the unparseable-reply path; sequence %v", f.ops())
 	}
@@ -714,8 +1204,12 @@ func TestConsolidator_UnparseableReplyIsReportedWithItsRawPrefix(t *testing.T) {
 		t.Errorf("report quoted the runtime's attribution header instead of the model's reply: %q", res.FinalText)
 	}
 
-	// An empty reply is a DIFFERENT failure — nothing came back at all — and
-	// says so, so an operator can tell a broken child from an unread shape.
+	// An empty reply is a DIFFERENT failure and gets the OPPOSITE policy, which is
+	// the one place the two classes must not be collapsed. Nothing coming back at
+	// all points at the child — an overloaded or timed-out model returns empty —
+	// not at the chat, so there is no reason to believe a retry produces the same
+	// nothing. It BLOCKS, and the retry costs one re-read. Skipping here would
+	// throw a chat away over a transient blip.
 	g := newFakeToolset()
 	g.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	g.transcript = "user: hi\nassistant: hello"
@@ -723,10 +1217,13 @@ func TestConsolidator_UnparseableReplyIsReportedWithItsRawPrefix(t *testing.T) {
 
 	gres := runConsolidator(t, g)
 	if g.has("Memory.cursor_advance") {
-		t.Errorf("watermark advanced on an empty extractor reply; sequence %v", g.ops())
+		t.Errorf("watermark advanced on an empty extractor reply — a child that returned nothing is a retry, not a skip; sequence %v", g.ops())
 	}
 	if !strings.Contains(gres.FinalText, "empty reply") {
 		t.Errorf("report = %q, want it to distinguish an empty reply from an unparseable one", gres.FinalText)
+	}
+	if strings.Contains(gres.FinalText, "skipped") {
+		t.Errorf("report = %q — an empty reply must not be reported as a skipped chat", gres.FinalText)
 	}
 }
 
