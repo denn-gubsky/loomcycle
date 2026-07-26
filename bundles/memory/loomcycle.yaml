@@ -467,23 +467,31 @@ agents:
         return ok;
       }
 
-      // applyOne is the band ARITHMETIC. Once the thresholds are known this is
-      // not a judgement call: >= merge means the neighbour is this same fact
-      // reworded, so rewrite it in place under ITS key; >= related means same
-      // topic, different claim, so add a new row worded to cross-reference it;
-      // otherwise add a plain new row.
+      // applyOne is the band ARITHMETIC, and there is exactly one band left.
+      // Once the merge threshold is known this is not a judgement call: >= merge
+      // means the neighbour is this same fact reworded, so rewrite it in place
+      // under ITS key; anything below it is a different fact, so add a new row.
+      //
+      // WHY THERE IS NO SECOND BRANCH ANY MORE. A neighbour in the "same topic,
+      // different claim" band used to get a cross-reference: the new row was
+      // stored as `fact + " (related: " + neighbour + ")"`. The neighbour's own
+      // text already carried ITS appended neighbour, so the tails nested —
+      // "A. (related: B (related: C))" — and several rows in the live store were
+      // truncated mid-chain. Worse, embed_text is the stored value, so the tail
+      // went into the EMBEDDING: two wordings of one fact embedded differently
+      // and stopped reaching the merge band, which is precisely the deduplication
+      // the band exists for. A fact is now one self-contained sentence and
+      // nothing else. There is nowhere structured to put the linkage — the
+      // provenance block's schema is closed (class + source ids only) — and it is
+      // not worth a corrupted value, so it is gone.
       function applyOne(st, fact, sourceID) {
         var neighbours = recall(st, fact.text);
-        var dupes = [], related = null;
+        var dupes = [];
 
         for (var i = 0; i < neighbours.length; i++) {
           var n = neighbours[i];
           if (!n || typeof n.id !== "string" || typeof n.score !== "number") { continue; }
-          if (st.bands.merge !== null && n.score >= st.bands.merge) {
-            dupes.push(n);
-          } else if (st.bands.related !== null && n.score >= st.bands.related) {
-            if (related === null || n.score > related.score) { related = n; }
-          }
+          if (st.bands.merge !== null && n.score >= st.bands.merge) { dupes.push(n); }
         }
 
         if (dupes.length) {
@@ -507,15 +515,17 @@ agents:
           return true;
         }
 
-        var value = fact.text;
-        if (related !== null) {
-          value = fact.text + " (related: " + clip(related.memory, 160) + ")";
-        }
-        if (!write(st, factKey(fact), { text: value, cls: fact.cls }, sourceID)) { return false; }
+        if (!write(st, factKey(fact), fact, sourceID)) { return false; }
         st.written++;
         return true;
       }
 
+      // write stores the fact. `value` and `embed_text` are THE SAME STRING and
+      // must stay that way: the merge band is calibrated against clean fact
+      // sentences, so anything that makes the embedded bytes differ from the
+      // stored ones silently moves every fact off that calibration and the
+      // deduplication above quietly stops firing. A test asserts the two are
+      // byte-identical on every write.
       function write(st, key, fact, sourceID) {
         var args = {
           scope: CONFIG.scope,
@@ -562,15 +572,21 @@ agents:
 
       // --------------------------------------------------------------- reads
 
-      // readBands takes the similarity thresholds from the deployment rather
-      // than baking them in. Cosine scale is a property of the embedding model,
-      // so a constant here is inert on any model it was not calibrated for —
-      // which is exactly how a shipped 0.95 ended up merging nothing.
+      // readBands takes the merge threshold from the deployment rather than
+      // baking it in. Cosine scale is a property of the embedding model, so a
+      // constant here is inert on any model it was not calibrated for — which is
+      // exactly how a shipped 0.95 ended up merging nothing.
+      //
+      // `related_threshold` is deliberately NOT read. It used to gate the
+      // cross-reference tail, which is gone (see applyOne), and a band this pass
+      // reads but never acts on would be dead code that reads like a live knob.
+      // The deployment still reports it via Context op=capabilities and the
+      // calibration command still validates it, for any agent that reasons about
+      // near-duplicates in prose.
       //
       // FAIL SAFE: a missing or unusable threshold becomes null, and a null band
-      // never fires. Unknown merge line means "never rewrite a neighbour in
-      // place"; unknown related line means "never cross-reference". Both
-      // degrade to plain adds, which is the recoverable direction.
+      // never fires — an unknown merge line means "never rewrite a neighbour in
+      // place", degrading to plain adds, which is the recoverable direction.
       function readBands() {
         var caps = null;
         try {
@@ -579,7 +595,7 @@ agents:
           caps = null;
         }
         var c = (caps && caps.consolidation) ? caps.consolidation : {};
-        return { merge: band(c.merge_threshold), related: band(c.related_threshold) };
+        return { merge: band(c.merge_threshold) };
       }
 
       function band(v) {
