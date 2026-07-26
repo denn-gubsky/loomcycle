@@ -585,7 +585,7 @@ memory:
 
 Both default to the values shown, and both are validated at load as `0 < related_threshold < merge_threshold <= 1` (checked against the default when you set only one of the pair). **Do not carry these numbers between models** — measure them, with the command below.
 
-The consolidator agent picks them up through the `{{memory:consolidation_bands}}` placeholder in its system prompt. The effective values are also readable at runtime from `Context op=capabilities` → `consolidation`.
+The bundled consolidator reads the effective values at runtime from `Context op=capabilities` → `consolidation` — banding is arithmetic once the numbers are known, so it is done in code against the deployment's configured values rather than described to a model, and a band the deployment cannot report is treated as unknown and never fires (the pass adds a new row instead of rewriting a neighbour). The `{{memory:consolidation_bands}}` system-prompt placeholder remains available for any agent that reasons about duplicates in prose.
 
 ##### Calibrating the bands — `loomcycle memory-calibrate`
 

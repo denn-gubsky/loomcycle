@@ -130,9 +130,28 @@ agent run that reads settled chats past a per-target watermark, drains the
 queue, and writes the facts — `set` for new or refined ones, `supersede` for
 ones the conversation contradicts.
 
-It is an agent rather than a Go subsystem on purpose. Deciding that "I prefer
-tabs" is durable while "leave the ticket in-progress" is not is a judgement
-call, so it lives in a prompt an operator can read and change.
+It is a **pair** of agents rather than a Go subsystem, and the split is where
+the interesting decision is. `memory/consolidator` is a deterministic `code-js`
+agent that owns the sequence — lease, scan, drain, read, band, write, ack,
+advance, release — and calls a model exactly once per transcript, by spawning
+the tool-less `memory/extractor`. Deciding that "I prefer tabs" is durable
+while "leave the ticket in-progress" is not is a judgement call, so it stays in
+a prompt an operator can read and change; deciding to pass `scope` on a read,
+or to advance the watermark only after the writes land, is not, so it is code.
+Both parts stay operator-editable config: one is a prompt, the other is a
+`code:` body in the same bundle.
+
+> ⚠️ The bundle therefore requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` — a
+> `provider: code-js` agent selected without it fails boot by design.
+>
+> It also dispatches **serially** by default. The scheduler decides
+> parallel-vs-serial by resolving the *scheduled* agent's provider, and an
+> in-process provider like `code-js` makes no model call at all — so its id
+> says nothing about where this batch's load actually lands, which is entirely
+> in the extractor children the probe cannot see. That is the same "unknown
+> backend" case an unresolvable provider hits, so it takes the same
+> conservative answer. Raise `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` only if
+> you know those children are not all pointed at one box.
 
 Two properties make the pass operationally safe:
 
@@ -155,7 +174,7 @@ op-level reference and the operator knobs.
 | Setting | Effect |
 |---|---|
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). The rest wait for the next tick; the watermark makes that safe. |
-| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when a pass resolves to a local model runtime. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the scheduled agent resolves to a local runtime **or to an in-process provider** (`code-js`, `mock`), whose id carries no information about where the load lands. The bundled consolidator is a code agent, so it is serial unless you raise this. |
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts are the same fact reworded, and get merged (default `0.95`). |
 | `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
 

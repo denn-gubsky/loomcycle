@@ -35,13 +35,24 @@ stores the turns verbatim as one row) — those are synchronous.
 
 ## What a consolidation pass does
 
-A pass is not a subsystem — it is an agent following a procedure, and the
-procedure is the bundled consolidator's **system prompt**. That is
-deliberate: deciding what is durable is a judgement call an operator should
-be able to read and change. It is inlined rather than loaded on demand
-because the indirection cost real reliability — a small local model given
-the procedure behind a tool call made no tool calls at all, and drove the
-same pass correctly once the steps were in front of it.
+A pass is not a subsystem — it is **two** agents. The bundled
+`memory/consolidator` is a deterministic code agent that owns the whole
+sequence below; it calls a model exactly once per transcript, by spawning the
+tool-less `memory/extractor` sub-agent whose only job is "given this
+transcript, return the durable facts".
+
+That split is deliberate, and it is a correction. The pass used to be one LLM
+agent driving all eleven steps from a prompt, and every failure observed in
+practice was in the ten steps that needed no language understanding: a
+scopeless read hitting a default-deny gate and derailing the run, the same chat
+re-read six times, a procedure restarted from step 1 mid-pass. A prompt can
+only *ask* for an invariant. So leasing, scanning, reading, banding, writing,
+acking, advancing and releasing are now code — where "read each chat once" is a
+visited set, "advance only after the writes land" is an `if`, and "at most five
+retirements" is a slice — and only the judgement is left to a model.
+
+Deciding what is durable is still a judgement call an operator can read and
+change: it is the extractor's system prompt, and it is short.
 
 A pass works on **one memory target** (one scope + scope id) and walks a
 fixed sequence:
@@ -135,7 +146,8 @@ are enforced by the server rather than left to you:
 | Setting | Effect |
 |---|---|
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). Targets beyond it wait for the next tick; the watermark makes that safe. |
-| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the passes resolve to a local model runtime. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the scheduled agent resolves to a local model runtime **or to an in-process provider** (`code-js`, `mock`) — for the latter the resolved id says nothing about where the load goes, since it is all in sub-agents. The bundled consolidator is a code agent, so it dispatches serially; raise this only if you know its extractor children are not all on one box. |
+| `LOOMCYCLE_CODE_AGENTS_ENABLED` | Required — the consolidator is a code agent, and selecting the bundle without this fails boot by design rather than shipping a silently idle pass. |
 | `memory_quota_bytes` / `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | Per-scope byte cap. A consolidation write over budget is **refused, loudly** — it does not silently drop the fact. |
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts count as the same fact reworded and get merged (default `0.95`). |
 | `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
@@ -168,8 +180,16 @@ belongs to one model — **changing the embedding model or its dimension
 invalidates it**.
 
 An agent can read the effective bands at runtime from
-`Context op=capabilities` → `consolidation`; the consolidator agent also
-receives them in its system prompt via `{{memory:consolidation_bands}}`.
+`Context op=capabilities` → `consolidation`, and that is exactly where the
+consolidator reads them: the banding is arithmetic once the numbers are known,
+so it is done in code against the deployment's configured values rather than
+described to a model. A band the deployment cannot report is treated as
+**unknown**, and an unknown band never fires — the pass adds a new row instead
+of rewriting a neighbour, which is the recoverable direction.
+
+(The `{{memory:consolidation_bands}}` system-prompt placeholder still exists
+for any agent that reasons about duplicates in prose. The bundled consolidator
+no longer uses it.)
 
 Consolidation is **opt-in**: without a schedule pointing at a consolidator
 agent, `add` still queues durably and nothing drains it. Queued items are not

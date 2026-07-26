@@ -325,6 +325,93 @@ func TestFanout_SerialForLocalModel(t *testing.T) {
 	}
 }
 
+// TestFanout_SerialForSyntheticOrchestrator is the regression for the local-box
+// hole a code-agent consolidator opened.
+//
+// The probe resolves the SCHEDULED agent's provider. When that agent is a code
+// agent the answer is `code-js`, which is not local, so the batch was judged
+// parallel-safe — while every extractor sub-agent it spawns landed on the
+// operator's one GPU box, N-wide. The provider id was answering a question
+// nobody asked: an in-process provider makes no model call at all, so it says
+// nothing about where the load goes.
+//
+// So a synthetic provider serializes on the same reasoning as an unresolvable
+// one. The parallel case is asserted alongside deliberately: a change that just
+// serializes everything would pass a serial-only test and quietly halve the
+// throughput of every cloud deployment.
+//
+// Fails-before without isSyntheticProvider: the two synthetic cases show a peak
+// > 1.
+func TestFanout_SerialForSyntheticOrchestrator(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		provider   string
+		wantSerial bool
+	}{
+		{"code agent orchestrator serializes", "code-js", true},
+		{"mock provider serializes", "mock", true},
+		{"mock-stable serializes", "mock-stable", true},
+		{"a genuinely remote provider still parallelizes", "anthropic", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), func(c *Config) {
+				c.MaxConsolidationConcurrency = 4
+			})
+			sched.SetProviderResolver(stubProviderResolver{provider: tc.provider})
+
+			for _, u := range []string{"u1", "u2", "u3", "u4"} {
+				seedSettledSession(t, st, "", u)
+			}
+			probe := &concurrencyProbe{hold: 40 * time.Millisecond}
+			fr.onRun = func(runner.RunInput) { probe.enter() }
+
+			fireT(t, sched)
+
+			if got := len(fr.Calls()); got != 4 {
+				t.Fatalf("RunOnce calls = %d, want 4; logs:\n%s", got, logs.all())
+			}
+			peak := probe.Peak()
+			if !tc.wantSerial {
+				if peak < 2 {
+					t.Errorf("peak concurrency = %d against provider %q, want > 1 — a remote provider must still fan out", peak, tc.provider)
+				}
+				return
+			}
+			if peak != 1 {
+				t.Errorf("peak concurrency = %d against the in-process provider %q, want 1 — its sub-agents may all be on one box", peak, tc.provider)
+			}
+			// The reason has to name the actual problem. "not local, therefore
+			// parallel" was the bug; "this probe cannot see where the load goes"
+			// is what an operator can act on, and the log must say which knob.
+			if !logs.contains("sub-agents this probe cannot see") {
+				t.Errorf("the serial reason must explain that the load is in unseen sub-agents; logs:\n%s", logs.all())
+			}
+			if !logs.contains("LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY") {
+				t.Errorf("the serial reason must name the override knob, or the operator has no way out; logs:\n%s", logs.all())
+			}
+		})
+	}
+}
+
+// TestIsSyntheticProvider_MatchesTheShippedInProcessIDs pins the exact set. This
+// is matched by id rather than by a naming convention on purpose (there is no
+// convention for "synthetic" in the config), so the set IS the contract and
+// widening it changes real dispatch behaviour.
+func TestIsSyntheticProvider_MatchesTheShippedInProcessIDs(t *testing.T) {
+	synthetic := []string{"code-js", "CODE-JS", " code-js ", "mock", "mock-stable"}
+	external := []string{"", "anthropic", "openai", "deepseek", "gemini", "ollama", "ollama-local", "mocking", "code-jsx"}
+	for _, id := range synthetic {
+		if !isSyntheticProvider(id) {
+			t.Errorf("isSyntheticProvider(%q) = false, want true", id)
+		}
+	}
+	for _, id := range external {
+		if isSyntheticProvider(id) {
+			t.Errorf("isSyntheticProvider(%q) = true, want false — serializing a real provider silently halves fan-out throughput", id)
+		}
+	}
+}
+
 // TestFanout_SerialWhenProviderCannotBeResolved: an unresolvable provider (or no
 // resolver wired at all) must fall back to SERIAL, not parallel. Dispatching an
 // unknown volume of concurrent work at an unknown backend is the worse failure,
