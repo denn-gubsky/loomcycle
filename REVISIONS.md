@@ -4,7 +4,7 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased
+## What's in v1.36.4
 
 **🩸 A consolidation merge was destroying facts, and one cosine number was the whole of the authority required to do it.** v1.36.3's pass reported `updated in place 21`. Some of those were not merges. Two rows in the resulting store say so by themselves — `memory/fact/user-downloaded-qwen3-6-27b-q4` now holds *"The user's model is gemma-4-12b-it-UD-Q4_K_XL.gguf."*, and `memory/fact/user-s-llama-cpp-server-running` now holds *"The user has an AMD GPU for GPU acceleration."* Each key names the subject its row was minted for; each value is a fact about something else. **A merge writes the incoming fact under the neighbour's key, so the neighbour's text is simply gone** — no supersede row, no audit trail, nothing to notice it by except a key that quietly lies about its own contents. It is the one unrecoverable step in a pipeline where everything else either adds a row or soft-archives one a later pass can revive.
 
