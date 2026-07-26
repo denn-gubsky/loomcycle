@@ -37,6 +37,15 @@ import (
 
 const (
 	defaultBaseURL = "http://localhost:11434"
+
+	// defaultNumCtx is Ollama's documented default context window — what the
+	// server serves when neither the request nor the model's Modelfile pins
+	// options.num_ctx. The driver uses it ONLY as the conservative floor to
+	// advertise when the real window is unknown. Under-claiming costs an early
+	// compaction; over-claiming costs a silently truncated prompt, which is the
+	// failure this driver keeps re-learning. Never sent on the wire — see
+	// resolveContext.
+	defaultNumCtx = 4096
 )
 
 // Driver speaks Ollama's /api/chat. Single struct serves two registrations:
@@ -67,8 +76,8 @@ type Driver struct {
 	// providerID, so no separate id field is needed here.
 	capsPatch *providers.CapabilityPatch
 	// ctxCache memoises each model's loaded context window read from
-	// /api/ps (model name → ctxCacheEntry), so the gauge lookup costs one
-	// cheap request per model, not per turn. Concurrent-safe (the Driver is
+	// /api/ps (model name → ctxCacheEntry), so the lookup costs one cheap
+	// request per model, not per turn. Concurrent-safe (the Driver is
 	// shared across runs).
 	ctxCache sync.Map
 }
@@ -122,16 +131,21 @@ func (d *Driver) SetKeyEnvName(name string) { d.keyEnvName = name }
 //
 //	pr.ollamaLocal = ollama.New(...).WithNumCtx(32768)
 //
-// Default 0 = don't set, which means the Ollama server falls back to
-// the model's Modelfile PARAMETER num_ctx, or 4096 if the Modelfile
-// doesn't specify. The 4096 ceiling is a documented Ollama default
-// and the load-bearing reason this knob exists: without an explicit
-// num_ctx, Ollama silently truncates the prompt at 4096 tokens with
-// no error returned (the request just produces a partial completion).
-// Caught live 2026-05-15: employer-profiler against
-// ollama-local/glm-4.7-flash:q4_K_M produced 190 output tokens with
-// stop_reason empty (not "end_turn") at 4797 input tokens — exactly
-// the truncation signature.
+// Default 0 hands the decision to resolveContext, which sends the window
+// Ollama reports the model is loaded with (/api/ps) and, only when even that
+// is unknown, omits num_ctx so the Ollama server falls back to the model's
+// Modelfile PARAMETER num_ctx, or 4096 if the Modelfile doesn't specify.
+// The 4096 ceiling is a documented Ollama default and the load-bearing
+// reason this knob exists: without an explicit num_ctx, Ollama silently
+// truncates the prompt at 4096 tokens with no error returned (the request
+// just produces a partial completion). Caught live 2026-05-15:
+// employer-profiler against ollama-local/glm-4.7-flash:q4_K_M produced 190
+// output tokens with stop_reason empty (not "end_turn") at 4797 input
+// tokens — exactly the truncation signature.
+//
+// Pinning this is also the escape hatch from the /api/ps-derived window: a
+// pin is sent verbatim and /api/ps is never consulted, so an operator who
+// wants a smaller (or larger) window than the loaded one names it here.
 //
 // Operators wanting per-model overrides can rely on the Modelfile's
 // PARAMETER num_ctx; the driver's num_ctx wins when both are set
@@ -178,23 +192,59 @@ type ctxCacheEntry struct {
 
 const ctxCacheTTL = 5 * time.Minute
 
-// contextWindow returns the model's effective input window to stamp on the
-// usage event so the UI context gauge is truthful for local models.
+// ctxWindow is ONE call's context window, resolved once in Call:
+//
+//   - send is what goes on the wire as options.num_ctx (0 = omit the field).
+//   - advertise is what the loop, the UI gauge and the compaction trigger are
+//     told the window is.
+//
+// The two live on one value, resolved at one place, because they used to
+// diverge: the driver advertised whatever /api/ps reported while sending NO
+// num_ctx at all, so it claimed a window the request never asked for. Ollama
+// answers an over-window prompt by silently dropping the overflow, and
+// autocompact_at_pct is a percentage OF the advertised window — so an
+// over-claim both truncates the prompt and disables the mechanism that would
+// have prevented it. Never introduce a second resolution point.
+type ctxWindow struct {
+	send      int
+	advertise int
+	source    string // "pinned" | "loaded" | "assumed" — names the number's origin in the diagnostic
+}
+
+// resolveContext resolves the window for one call. Three cases, in order:
 //
 //   - An explicit operator num_ctx (WithNumCtx / LOOMCYCLE_OLLAMA*_NUM_CTX)
-//     wins — it's exact and is precisely what we send as options.num_ctx.
-//   - Otherwise we ask Ollama what the model is ACTUALLY loaded with via
-//     /api/ps. Ollama only publishes context_length once the model is in VRAM
-//     (it's absent while loading), so this returns 0 ("unknown") until the
-//     first turn after a load, then the real window. Cached per model.
-//
-// Called at the stream's done frame — the model is loaded by then — so the
-// turn that loaded the model already reports the real window; later turns hit
-// the cache. 0 leaves the gauge showing only the absolute used size, unchanged.
-func (d *Driver) contextWindow(model string) int {
+//     wins: it is exact, and it is sent verbatim. Unchanged behaviour.
+//   - Otherwise ask Ollama what the model is ACTUALLY loaded with via /api/ps
+//     and send THAT back as options.num_ctx. Echoing the loaded window is a
+//     no-op for the running instance (it is already loaded at that size), and
+//     it makes the number we advertise the number we asked for. It also makes
+//     the cache self-fulfilling rather than stale-wrong: a cached value that no
+//     longer matches is re-imposed by the request instead of misreported.
+//   - Neither available (model not in VRAM yet, a DIFFERENT model loaded — the
+//     /api/ps lookup is name-matched so that reads as unknown — old Ollama,
+//     unreachable): send NOTHING and advertise Ollama's documented default.
+//     Sending defaultNumCtx here would be actively harmful: it would force a
+//     4096-token load on a deployment whose Modelfile (or Ollama's own
+//     auto-sizing) would have picked something larger, and since the next turn
+//     reads that back from /api/ps the shrink would then pin itself. Omitting
+//     keeps today's behaviour and 4096 is a floor we cannot under-deliver on,
+//     so the advertised window is pessimistic but never a lie. One turn later
+//     /api/ps reports the real window and the exact case above takes over.
+func (d *Driver) resolveContext(model string) ctxWindow {
 	if d.numCtx > 0 {
-		return d.numCtx
+		return ctxWindow{send: d.numCtx, advertise: d.numCtx, source: "pinned"}
 	}
+	if n := d.loadedContext(model); n > 0 {
+		return ctxWindow{send: n, advertise: n, source: "loaded"}
+	}
+	return ctxWindow{send: 0, advertise: defaultNumCtx, source: "assumed"}
+}
+
+// loadedContext returns the window the model is currently loaded with, read
+// from /api/ps and memoised per model with a short TTL so a model reloaded at
+// a different num_ctx is eventually picked up. 0 = unknown.
+func (d *Driver) loadedContext(model string) int {
 	if v, ok := d.ctxCache.Load(model); ok {
 		if e := v.(ctxCacheEntry); e.ctx > 0 && time.Since(e.at) < ctxCacheTTL {
 			return e.ctx
@@ -208,8 +258,13 @@ func (d *Driver) contextWindow(model string) int {
 }
 
 // queryLoadedContext reads the loaded model's context_length from Ollama's
-// /api/ps. Best-effort with a short timeout: this only feeds the gauge, never
-// correctness, so any failure (loading, network, old Ollama) returns 0.
+// /api/ps. Best-effort with a short timeout: any failure (loading, network,
+// old Ollama) returns 0, which resolveContext reads as "unknown" and answers
+// with the conservative floor. This value is now on the REQUEST path, not
+// gauge-only as it was when introduced — it is sent back as options.num_ctx so
+// what we advertise is what we ask for. A wrong answer therefore costs an
+// unnecessary model reload at the reported size, not just a wrong gauge; that
+// is the price of the two numbers being the same number.
 func (d *Driver) queryLoadedContext(model string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -246,6 +301,67 @@ func (d *Driver) queryLoadedContext(model string) int {
 	return 0
 }
 
+// approxBytesPerToken is the usual rough tokens ≈ bytes/4 heuristic. It backs
+// the over-window diagnostic ONLY: nothing is refused, trimmed or routed on the
+// strength of it, so being off by a third is fine — an order of magnitude is
+// what the warning is looking for.
+const approxBytesPerToken = 4
+
+// estimatePromptTokens approximates the prompt Ollama is about to see. Counts
+// what the driver actually serializes into the prompt — system blocks, message
+// text, tool results, and the tool schemas (a tool-heavy agent's schemas are
+// often the bulk of it, and are exactly what an over-window truncation eats
+// first). Image bytes are excluded: a base64 payload is orders of magnitude
+// larger than the tokens a vision model charges for it, so counting it would
+// fire the warning on every image request.
+func estimatePromptTokens(req providers.Request) int {
+	n := 0
+	for _, sb := range req.System {
+		n += len(sb.Text)
+	}
+	for _, m := range req.Messages {
+		for _, c := range m.Content {
+			n += len(c.Text) + len(c.ToolName) + len(c.ToolInput)
+		}
+	}
+	for _, t := range req.Tools {
+		n += len(t.Name) + len(t.Description) + len(t.InputSchema)
+	}
+	return n / approxBytesPerToken
+}
+
+// warnIfPromptOverWindow logs when the prompt will not fit the window this call
+// actually gets. Ollama does not error on an over-window prompt — it drops the
+// overflow and the model answers from a truncated view, which reads downstream
+// as a confidently wrong answer rather than a failure (2026-05-15: an agent
+// that could no longer see the tail of its own tool schema). A log line is the
+// only signal an operator gets, so it names the three things needed to act: the
+// prompt size, the window plus where that number came from, and the knob that
+// raises it. Fires per call by design — every over-window turn is truncated,
+// not just the first.
+func (d *Driver) warnIfPromptOverWindow(req providers.Request, w ctxWindow) {
+	est := estimatePromptTokens(req)
+	if est <= w.advertise {
+		return
+	}
+	log.Printf("ollama: prompt ~%d tokens exceeds the %d-token context window (%s) for model %q on %s — Ollama silently truncates the overflow; raise the window with %s",
+		est, w.advertise, w.source, req.Model, d.providerID, d.numCtxSetting())
+}
+
+// numCtxSetting names the knob that pins this registration's num_ctx, for the
+// diagnostic above. The two built-in ids have env vars; a config-declared
+// ollama-driver provider is pinned through its own providers: entry.
+func (d *Driver) numCtxSetting() string {
+	switch d.providerID {
+	case "ollama-local":
+		return "LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX"
+	case "ollama":
+		return "LOOMCYCLE_OLLAMA_NUM_CTX"
+	default:
+		return "providers." + d.providerID + ".options.num_ctx"
+	}
+}
+
 func (d *Driver) ID() string { return d.providerID }
 
 // resolveKey returns the Bearer key to authenticate an inference request AND
@@ -272,18 +388,30 @@ func (d *Driver) resolveKey(ctx context.Context) (key, source, scopeID string, e
 // (via SetKeyEnvName) makes a custom-id ollama provider keyable under its own var.
 func (d *Driver) KeyEnvName() string { return d.keyEnvName }
 
+// staticContextWindow is the model-agnostic window for Capabilities(). It
+// cannot consult /api/ps (no model in hand), so an unpinned driver reports the
+// conservative floor — the same floor resolveContext advertises when the real
+// window is unknown, so the two never disagree about what "unknown" means.
+func (d *Driver) staticContextWindow() int {
+	if d.numCtx > 0 {
+		return d.numCtx
+	}
+	return defaultNumCtx
+}
+
 func (d *Driver) Capabilities() providers.Capabilities {
 	return d.capsPatch.Apply(providers.Capabilities{
 		NativePromptCache: false,
 		ParallelToolCalls: true, // model-dependent; we report the optimistic case
 		Streaming:         true,
-		// Static fallback only. The authoritative per-call window is set on
-		// the usage event by the stream path (contextWindow → /api/ps reads
-		// the model's ACTUAL loaded context); the loop prefers that and falls
-		// back here. When the operator pins options.num_ctx (WithNumCtx /
-		// LOOMCYCLE_OLLAMA*_NUM_CTX) that is the exact window; else 0 here
-		// ("unknown") and the per-call /api/ps value fills it in once loaded.
-		MaxContextTokens: d.numCtx,
+		// Static fallback only — the authoritative per-call window rides the
+		// usage event (resolveContext, which also puts it on the wire), and the
+		// loop prefers that. An operator pin is the exact window; otherwise this
+		// is model-agnostic, so it reports Ollama's documented default rather
+		// than 0. 0 meant "unknown" to this driver but reads as "no cap" to
+		// every consumer, which is the over-claim in its worst form: no gauge,
+		// and no compaction ceiling at all.
+		MaxContextTokens: d.staticContextWindow(),
 		SupportsThinking: true,
 		// The effort hint drives Ollama's top-level `think` flag (see
 		// buildRequestBody): medium/high enable a reasoning model's
@@ -307,7 +435,14 @@ func (d *Driver) Capabilities() providers.Capabilities {
 // server). Ollama Cloud may emit a standard Retry-After; we handle it
 // defensively. Same body-bytes-preserved retry as the cloud providers.
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
-	body, err := d.buildRequestBody(req)
+	// Resolve the window ONCE per call and use that one value for both the
+	// wire and the usage stamp: resolving twice (e.g. again at the done frame)
+	// would let the cache TTL expire mid-generation and re-open the gap this
+	// closes.
+	window := d.resolveContext(req.Model)
+	d.warnIfPromptOverWindow(req, window)
+
+	body, err := d.buildRequestBody(req, window.send)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -377,9 +512,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	out := make(chan providers.Event, 16)
 	go func() {
 		defer cancelStream()
-		// maxCtxFn is evaluated lazily at the done frame (model loaded by
-		// then) so the usage event carries the model's real loaded window.
-		streamEvents(streamCtx, resp.Body, out, len(req.Tools) > 0, func() int { return d.contextWindow(req.Model) }, credSource, credScopeID)
+		streamEvents(streamCtx, resp.Body, out, len(req.Tools) > 0, window.advertise, credSource, credScopeID)
 	}()
 	return out, nil
 }
@@ -457,7 +590,11 @@ type wireFunction struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-func (d *Driver) buildRequestBody(req providers.Request) ([]byte, error) {
+// buildRequestBody marshals the chat request. numCtx is the window resolved by
+// resolveContext for THIS call (0 = omit options.num_ctx and let Ollama pick);
+// it is a parameter rather than a d.numCtx read so the value on the wire is
+// provably the same value Call advertises.
+func (d *Driver) buildRequestBody(req providers.Request, numCtx int) ([]byte, error) {
 	w := wireRequest{
 		Model:  req.Model,
 		Stream: true,
@@ -486,12 +623,12 @@ func (d *Driver) buildRequestBody(req providers.Request) ([]byte, error) {
 			d.providerID, req.Model, req.Effort, w.Think != nil)
 	}
 
-	if req.Temperature != nil || req.MaxTokens > 0 || d.numCtx > 0 || d.numGpu > 0 ||
+	if req.Temperature != nil || req.MaxTokens > 0 || numCtx > 0 || d.numGpu > 0 ||
 		req.TopP != nil || req.TopK != nil || req.Seed != nil || len(req.Stop) > 0 {
 		w.Options = &wireOptions{
 			Temperature: req.Temperature,
 			NumPredict:  req.MaxTokens,
-			NumCtx:      d.numCtx,
+			NumCtx:      numCtx,
 			NumGpu:      d.numGpu,
 			TopP:        req.TopP,
 			TopK:        req.TopK,
@@ -625,9 +762,9 @@ type chunkToolCallFn struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-// maxCtxFn (optional) returns the model's effective context window; called
-// once at the done frame to stamp usage.MaxContextTokens. nil → not stamped.
-func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, wantTools bool, maxCtxFn func() int, credSource, credScopeID string) {
+// maxCtx is the window the caller resolved for this call (ctxWindow.advertise)
+// and stamped on usage.MaxContextTokens; 0 → not stamped.
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, wantTools bool, maxCtx int, credSource, credScopeID string) {
 	defer body.Close()
 	defer close(out)
 
@@ -759,9 +896,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 					OutputTokens: c.EvalCount,
 					Model:        model,
 				}
-				if maxCtxFn != nil {
-					usage.MaxContextTokens = maxCtxFn()
-				}
+				usage.MaxContextTokens = maxCtx
 			}
 		}
 	}

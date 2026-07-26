@@ -48,7 +48,9 @@ func TestBuildRequestBody_EffortMapsToThink(t *testing.T) {
 		{"", false, false},
 	}
 	for _, c := range cases {
-		body, err := d.buildRequestBody(req(c.effort))
+		// numCtx=0: the unpinned/window-unknown case, where Call omits
+		// options.num_ctx. Irrelevant to the effort→think mapping under test.
+		body, err := d.buildRequestBody(req(c.effort), 0)
 		if err != nil {
 			t.Fatalf("effort %q: buildRequestBody: %v", c.effort, err)
 		}
