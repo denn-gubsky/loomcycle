@@ -87,7 +87,7 @@ tool, built-in or MCP, is callable. A tool you didn't allow is not a
 |---|---|---|
 | `Memory.<op>(obj)` | Memory | multi-op meta-tool; `<op>` is any Memory op (get/set/delete/list/incr/search/merge/append_dedupe/bounded_list/add/recall); obj is the input minus `op` |
 | `Channel.<op>(obj)` | Channel | multi-op meta-tool; `<op>` is any Channel op (publish/subscribe/ack/peek/list_channels); subscribe is a non-blocking peek |
-| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its result |
+| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its final text **behind an attribution header** — see Return types |
 | `WebFetch(obj)` / `Read(obj)` / `HTTP(obj)` / `WebSearch(obj)` / … | the built-in of that name | every other allowed **built-in**, flat by canonical name |
 | `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |
 
@@ -103,11 +103,30 @@ tool, built-in or MCP, is callable. A tool you didn't allow is not a
 > `WebFetch`/`HTTP` obey the agent's `allowed_hosts` — exactly as for LLM
 > agents.
 
-**Return types.** `Memory` / `Channel` / `Agent` and `mcp__*` tools return
-**parsed values** — their results are structured JSON, so
-`Memory.get(...).value` and `mcp__jobs__getContext(...).foo` just work. The
-plain built-ins (`WebFetch`, `Read`, `HTTP`, `Grep`, …) return their **raw
-string** result; `JSON.parse(WebFetch(...))` yourself if it's a JSON API.
+**Return types.** `Memory` / `Channel` and `mcp__*` tools return **parsed
+values** — their results are structured JSON, so `Memory.get(...).value` and
+`mcp__jobs__getContext(...).foo` just work. The plain built-ins (`WebFetch`,
+`Read`, `HTTP`, `Grep`, …) return their **raw string** result;
+`JSON.parse(WebFetch(...))` yourself if it's a JSON API. A result that is not
+valid JSON falls back to the raw string rather than throwing.
+
+> **`Agent.spawn` is the exception, and it will catch you.** Its result is
+> wrapped as `[sub-agent agent_id=…]\n<the child's final text>` so a parent
+> *model* can attribute the answer — which means it is **never valid JSON**,
+> so it always arrives as a **string**, even when the child replied with a
+> perfect JSON document. `JSON.parse` on it throws on character 0. If you
+> spawn a child to produce structured output, strip the header first:
+>
+> ```js
+> var reply = String(Agent.spawn({ name: "…", prompt: "…" }))
+>   .replace(/^\s*\[sub-agent[^\]\n]*\]\s*/, "");
+> var data = JSON.parse(reply);   // now it parses
+> ```
+>
+> Expect to strip code fences and to tolerate prose either side of the payload
+> too: a small model does not reliably emit a bare document however plainly it
+> is asked to. And validate what you get — a child's reply is model output, so
+> treat an unreadable one as a handled outcome, never as an assertion failure.
 (Return type follows the tool, never the content — so the same code works
 whether a fetched page is JSON or HTML.)
 
