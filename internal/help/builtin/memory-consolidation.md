@@ -71,11 +71,36 @@ pass that writes nine of ten facts beats one that aborts on the tenth.
 
 A reply that is not a fact array **at all** is the third case and it is neither
 of those. That chat was never actually examined, so the pass writes nothing for
-it, **holds the watermark** so the next pass re-reads it, and reports the
-failure with a bounded prefix of the raw reply. That last part is the real
-defence against a transcript that talks the extractor into answering it rather
-than extracting from it: the prompt asks the model not to, but only the
-caller's validation *enforces* it.
+it — and then it **skips it**. The watermark moves past that chat and its facts
+are gone; no later pass recovers them.
+
+That is a deliberate trade, and the cost is the half worth stating plainly.
+Holding the watermark instead is perfectly safe, and it *sticks*: the same
+transcript reliably talks the same model into the same non-answer, so a held
+mark makes every later pass re-read the same page and consolidate nothing behind
+it. Progress is worth more than one chat — but only if the loss is visible, so
+the pass says it in words rather than leaving it to a counter:
+
+```
+skipped 1 chat whose extraction could not be parsed (its facts are not
+recoverable by a later pass); skip detail: s_…: extractor reply could not be
+parsed as a fact array, reply began: "{\"text\":\"READY\"}"
+```
+
+Two failures are deliberately **not** treated this way, because they are a
+different class — the data did not land, rather than this chat having no facts
+to give:
+
+- a **failed write** blocks the watermark exactly as before. Keys are
+  deterministic, so the next pass re-reads those chats and the retry is a no-op.
+- an **empty reply** blocks too. Nothing coming back points at the child — an
+  overloaded or timed-out model returns empty — not at the chat, so there is no
+  reason to think a retry returns the same nothing.
+
+The bounded prefix of the raw reply is also the real defence against a
+transcript that talks the extractor into answering it rather than extracting
+from it: the prompt asks the model not to, but only the caller's validation
+*enforces* it.
 
 A pass works on **one memory target** (one scope + scope id) and walks a
 fixed sequence:
@@ -98,6 +123,22 @@ Two properties fall out of that shape and are worth relying on:
   same rows instead of growing near-duplicates beside them.
 - **A pass is resumable.** The watermark is forward-only, so an interrupted
   pass costs at most a repeat of the chats it had not finished.
+
+### A stored fact is one sentence and nothing else
+
+A fact used to be worded so a reader would connect it to its nearest
+neighbour — `"<the fact> (related: <the whole neighbour>)"`. That was wrong
+twice over. The neighbour's own text already carried *its* appended neighbour,
+so the tails nested (`"A. (related: B (related: C))"`) and rows were truncated
+mid-chain. Worse, `embed_text` is the stored value, so the tail went into the
+**embedding**: two wordings of one fact then embedded differently and stopped
+reaching the merge band, which is precisely the deduplication the band exists
+for.
+
+So a stored fact is now one self-contained sentence, and what is stored is
+byte-identical to what is embedded. What makes a fact readable a year later is
+that it names its own subject — "Denn prefers Go over Python for services" —
+not that it carries a pointer to something else.
 
 ## Superseding, not deleting
 
@@ -136,6 +177,22 @@ one. The same goes for transient state — task status, pleasantries, "I'll do
 that after lunch" — which is stale by the next pass and only crowds out what
 matters.
 
+Transient state is the rule the extractor actually gets wrong. The first live
+pass wrote 43 facts and nine of them were puzzle answers ("10 apples remain
+after eating 5"), records that a question had been asked, or ids — a summary of
+what happened in the chat rather than what is true about the user. So the prompt
+carries the discriminator (**a durable fact is about the USER or their PROJECT,
+never about this conversation**) and the caller enforces the part it can check:
+an entry whose text carries a session or run id — `s_` or `r_` followed by 16 or
+32 hex characters — is **rejected, and counted separately** from a malformed
+one. A broken record and a summarised conversation are different signals and
+point at different fixes.
+
+The match is on the id *shape* and only the shape, so a fact that talks about
+ids ("the team prefixes every session id with `s_`") survives. That asymmetry is
+deliberate: a durable fact wrongly rejected is lost with nothing to notice it,
+while an id that slips through is one row a later pass can supersede.
+
 ## Running a pass yourself
 
 The consolidation ops (`cursor_get`, `cursor_scan`, `cursor_lease`,
@@ -173,7 +230,7 @@ are enforced by the server rather than left to you:
 | `LOOMCYCLE_CODE_AGENTS_ENABLED` | Required — the consolidator is a code agent, and selecting the bundle without this fails boot by design rather than shipping a silently idle pass. |
 | `memory_quota_bytes` / `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | Per-scope byte cap. A consolidation write over budget is **refused, loudly** — it does not silently drop the fact. |
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts count as the same fact reworded and get merged (default `0.95`). |
-| `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
+| `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim" (default `0.85`). **The bundled pass no longer reads it** — it gated the cross-reference described above, which is gone, and a band a pass reads but never acts on is dead code that reads like a live knob. `Context op=capabilities` still reports it and `loomcycle memory-calibrate` still validates it, for any agent that reasons about near-duplicates in prose. |
 
 ### Calibrating the two bands
 
@@ -204,9 +261,9 @@ invalidates it**.
 
 An agent can read the effective bands at runtime from
 `Context op=capabilities` → `consolidation`, and that is exactly where the
-consolidator reads them: the banding is arithmetic once the numbers are known,
-so it is done in code against the deployment's configured values rather than
-described to a model. A band the deployment cannot report is treated as
+consolidator reads the **merge** band: the banding is arithmetic once the number
+is known, so it is done in code against the deployment's configured value rather
+than described to a model. A band the deployment cannot report is treated as
 **unknown**, and an unknown band never fires — the pass adds a new row instead
 of rewriting a neighbour, which is the recoverable direction.
 
