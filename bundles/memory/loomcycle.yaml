@@ -244,6 +244,26 @@ agents:
         // much, since it has to stay under the lease TTL.
         max_parts_per_chat: 4,
         max_fact_chars: 400,
+        // The SECOND signal an in-place rewrite has to clear, alongside the
+        // similarity band — see mergeRefusal for why one number is not enough
+        // authority to destroy a fact. It is the Dice overlap between the two
+        // facts' content words, so UNLIKE a cosine band its scale is not a
+        // property of the embedding model and a shipped constant is legitimate.
+        // That is also why it is not a `memory.consolidation.*` config key:
+        // there is nothing per-deployment to calibrate, and a knob here would
+        // only offer an operator a way to re-open the hole.
+        //
+        // 0.30 is MEASURED, not picked round. Over the 18 labelled paraphrase
+        // pairs available — the 12 in the bundled calibration corpus plus 6 in a
+        // dense single-topic corpus — the lowest-scoring genuine paraphrase is
+        // 0.353 ("favours simple, unexciting solutions" vs "prefers boring,
+        // minimal solutions"); the next lowest is 0.476. The two live overwrites
+        // this guard exists to stop score 0.211 and 0.167. 0.30 sits inside that
+        // window with margin on both sides, biased toward the HIGH end because
+        // the two errors are not symmetric: too high forks a duplicate row,
+        // which the next pass's deterministic key collapses and an operator can
+        // see; too low destroys a fact, which nothing recovers.
+        merge_min_subject_overlap: 0.30,
         extractor: "memory/extractor"
       };
 
@@ -333,6 +353,8 @@ agents:
           parts_capped: 0,          // parts dropped by the per-chat cap
           turns_truncated: 0,       // single messages larger than the whole budget
           seen: {},                 // session_id -> true; the re-read guard
+          merge_refused_subject: 0, // above the band, but about a different subject
+          merge_refused_class: 0,   // above the band, but filed under another class
           supersede_queue: [],      // neighbour keys judged duplicates of a kept row
           written_keys: {},         // never retire a row this pass just wrote
           watermark: null,          // the LAST scan row actually consolidated, by reference
@@ -817,7 +839,16 @@ agents:
         for (var i = 0; i < neighbours.length; i++) {
           var n = neighbours[i];
           if (!n || typeof n.id !== "string" || typeof n.score !== "number") { continue; }
-          if (st.bands.merge !== null && n.score >= st.bands.merge) { dupes.push(n); }
+          if (st.bands.merge === null || n.score < st.bands.merge) { continue; }
+          // The band is necessary but NOT sufficient — see mergeRefusal. A
+          // refused neighbour is dropped here, before `dupes` exists, so it is
+          // excluded from BOTH destructive paths at once: it can neither be
+          // rewritten (dupes[0]) nor retired (dupes[1..]). Both of those were
+          // gated on the same single similarity number.
+          var refusal = mergeRefusal(fact, n);
+          if (refusal === "class") { st.merge_refused_class++; continue; }
+          if (refusal) { st.merge_refused_subject++; continue; }
+          dupes.push(n);
         }
 
         if (dupes.length) {
@@ -844,6 +875,99 @@ agents:
         if (!write(st, factKey(fact), fact, sourceID)) { return false; }
         st.written++;
         return true;
+      }
+
+      // mergeRefusal returns "" when `fact` may rewrite neighbour `n` IN PLACE,
+      // or the reason it may not.
+      //
+      // WHY A SECOND SIGNAL GUARDS THIS AT ALL. A merge is the one unrecoverable
+      // step in the pipeline. Everything else adds a row, or soft-archives one
+      // that a later pass can revive; a merge writes the incoming fact under the
+      // NEIGHBOUR'S key, so the neighbour's text is simply gone — no archive, no
+      // audit row — and the key is left asserting a subject its value no longer
+      // carries. Two rows in a live store are what this is written from:
+      //
+      //   memory/fact/user-downloaded-qwen3-6-27b-q4
+      //     -> "The user's model is gemma-4-12b-it-UD-Q4_K_XL.gguf."
+      //   memory/fact/user-s-llama-cpp-server-running
+      //     -> "The user has an AMD GPU for GPU acceleration."
+      //
+      // Both were minted for one subject and now hold a fact about a different
+      // one. Until this guard existed a single cosine comparison was sufficient
+      // authority for that, and the band it was compared against had been
+      // calibrated on a corpus of twelve UNRELATED subjects — a distribution a
+      // real memory scope (a dozen facts about one deployment) never resembles.
+      // Raising the band only re-tunes against the symptom and the failure
+      // returns as soon as a topic cluster gets denser, so the check below
+      // deliberately does not come from the embedding at all.
+      //
+      // WHAT IT DOES NOT DO. This is a NECESSARY condition, not a sufficient
+      // one. It catches the live failure — two facts about different subjects —
+      // because those share almost no words however close the model puts them.
+      // It cannot catch two facts that share a subject AND most of their words
+      // but assert different claims ("the GPU has 24 GB" vs "the GPU has 48
+      // GB"); separating those is still the merge band's job, and no cheap
+      // deterministic signal substitutes for it.
+      function mergeRefusal(fact, n) {
+        // The class is read off the neighbour's KEY, which this pass mints as
+        // memory/<class>/<subject-slug>. A key that does not parse is refused
+        // rather than merged onto: an opaque id from a remote backend, or a row
+        // the user wrote themselves under this scope, is not something a
+        // consolidation pass may overwrite — that is strictly worse than the
+        // bug above. Merging a `fact` onto a `constraint` key is refused for the
+        // narrower reason that it leaves the key lying about its own contents,
+        // exactly the state the live rows are in. The cost is that an extractor
+        // that reclassifies a fact between passes forks a second row instead of
+        // merging; that row is visible and the next pass can collapse it.
+        if (neighbourClass(n.id) !== fact.cls) { return "class"; }
+        // Compared against the neighbour's CURRENT TEXT, not against the slug in
+        // its key. The key's slug is only the first six content words of
+        // whatever sentence minted it, so it is both lossy and word-order
+        // sensitive: measured over the bundled calibration corpus, NO genuine
+        // paraphrase pair (0 of 12) produces equal slugs, and fuzzy slug overlap
+        // does not separate the classes either (duplicates reach down to 0.167
+        // while merely-related pairs reach up to 0.500). The full sentence does
+        // separate them, and it is also the text a merge would destroy — which
+        // is the thing actually worth protecting. A neighbour that carries no
+        // readable text scores 0 and is refused: unknown fails closed.
+        var text = (typeof n.memory === "string") ? n.memory : "";
+        if (subjectOverlap(fact.text, text) < CONFIG.merge_min_subject_overlap) { return "subject"; }
+        return "";
+      }
+
+      // neighbourClass pulls the class out of a memory/<class>/<slug> key, or
+      // "" when the key is not one this pass minted. No `g` flag — this body is
+      // re-executed from the top on every loop turn and a global regex carries a
+      // mutable lastIndex, so `.exec` would return alternating answers.
+      var KEY_CLASS = /^memory\/([a-z]+)\//;
+      function neighbourClass(id) {
+        var m = KEY_CLASS.exec(String(id));
+        return m ? m[1] : "";
+      }
+
+      // subjectOverlap is the Dice coefficient over the two texts' content
+      // words: 2|A n B| / (|A| + |B|), in [0, 1]. Word PRESENCE, not counts —
+      // a fact that repeats a word is not more about it.
+      function subjectOverlap(a, b) {
+        var A = wordSet(contentWords(a)), B = wordSet(contentWords(b));
+        var na = 0, nb = 0, shared = 0, w;
+        for (w in A) {
+          if (!A.hasOwnProperty(w)) { continue; }
+          na++;
+          if (B[w] === true) { shared++; }
+        }
+        for (w in B) { if (B.hasOwnProperty(w)) { nb++; } }
+        if (!na || !nb) { return 0; }
+        return (2 * shared) / (na + nb);
+      }
+
+      // wordSet collapses a word list to a presence map. `=== true` on lookup
+      // and hasOwnProperty on iteration, because a fact may legitimately contain
+      // a word like "constructor" that Object.prototype already answers to.
+      function wordSet(list) {
+        var m = {};
+        for (var i = 0; i < list.length; i++) { m[list[i]] = true; }
+        return m;
       }
 
       // write stores the fact. `value` and `embed_text` are THE SAME STRING and
@@ -1013,6 +1137,21 @@ agents:
         if (st.notes.length) { parts.push("read detail: " + st.notes.join(" | ")); }
         if (st.recall_unavailable) { parts.push("recall unavailable (no vector stack) — dedup skipped"); }
         if (st.bands.merge === null) { parts.push("merge band unknown — nothing merged in place"); }
+        // The two counts are separate because they diagnose different things,
+        // and both are the operator's earliest warning that similarity is
+        // disagreeing with the stored keys. A rising SUBJECT count means the
+        // merge band is too permissive for what is actually in this store — the
+        // pass kept the data safe, but the band wants re-measuring against a
+        // corpus that looks like this target. A rising CLASS count means the
+        // extractor is reclassifying the same facts between passes.
+        if (st.merge_refused_subject > 0) {
+          parts.push("merge refused on subject " + st.merge_refused_subject +
+            " (a neighbour scored as a duplicate but is about a different subject — written as a new row instead of overwriting it; a rising count means the merge band is too permissive for this store)");
+        }
+        if (st.merge_refused_class > 0) {
+          parts.push("merge refused on class " + st.merge_refused_class +
+            " (a neighbour scored as a duplicate but is filed under a different class, or under a key this pass did not mint — written as a new row instead)");
+        }
 
         if (st.advanced) {
           parts.push("watermark advanced to " + st.advanced.session_id + " @ " + st.advanced.completed_at);
@@ -1036,9 +1175,7 @@ agents:
       }
 
       function slug(text) {
-        var s = String(text).toLowerCase().replace(/[^a-z0-9]+/g, "-");
-        s = s.replace(/^-+/, "").replace(/-+$/, "");
-        var words = s.split("-"), keep = [];
+        var words = rawWords(text), keep = [];
         for (var i = 0; i < words.length && keep.length < 6; i++) {
           if (words[i] && STOPWORDS[words[i]] !== true) { keep.push(words[i]); }
         }
@@ -1046,6 +1183,25 @@ agents:
         var out = keep.join("-");
         if (out.length > 60) { out = out.slice(0, 60).replace(/-+$/, ""); }
         return out || "unnamed";
+      }
+
+      // rawWords / contentWords are the ONE tokenisation in this file, shared by
+      // the key slug and by subjectOverlap. Deliberately shared rather than
+      // written twice: the guard's floor is measured against the words slug()
+      // produces, so a second tokeniser drifting from this one would move the
+      // guard off its calibration silently — the same class of bug as embedding
+      // bytes that differ from the stored ones.
+      function rawWords(text) {
+        var s = String(text).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+        return s.replace(/^-+/, "").replace(/-+$/, "").split("-");
+      }
+
+      function contentWords(text) {
+        var words = rawWords(text), keep = [];
+        for (var i = 0; i < words.length; i++) {
+          if (words[i] && STOPWORDS[words[i]] !== true) { keep.push(words[i]); }
+        }
+        return keep;
       }
 
       var STOPWORDS = {
