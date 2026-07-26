@@ -4,7 +4,7 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased
+## What's in v1.36.0
 
 **🤖 The consolidation pass is now a deterministic `code-js` agent that calls a model for exactly one step — and it is UNVALIDATED against a live deployment.** Read that qualifier first, the same way v1.35.0's had to be read. Nothing here has been driven end-to-end by any model, local or hosted. What changed is the *shape* of the thing, and the argument for the shape; the consolidator should not be assumed to work until a run transcript shows it did.
 
