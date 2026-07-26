@@ -4,7 +4,7 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased
+## What's in v1.36.3
 
 **🚦 The consolidation watermark had never advanced. Not once, on any release — and the reason was that an empty extractor reply was treated as a failure.** The v1.36.2 pass on a wiped store was the best one yet: ten chats read, 18 facts written, four updated in place, **zero** false retirements (three the release before, one of which archived a correct fact), a transient id rejected. It also called `cursor_advance` **zero** times and `cursor_release` twice, and ended `watermark NOT advanced: extractor returned an empty reply`. Every pass since the feature existed has re-read the same page.
 
