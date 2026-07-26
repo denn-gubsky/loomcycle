@@ -4,7 +4,7 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased
+## What's in v1.36.1
 
 **🩹 The consolidation pass ran to completion for the first time — and wrote zero facts, because the CALLER could not read a reply that was perfectly good.** Everything v1.36.0's deterministic consolidator was built to guarantee held: eight tool calls, **zero** thinking events, the whole mechanical sequence inside one second, the watermark correctly held, the lease released, zero tokens spent by the orchestrator. It also reported `chats read 10; facts written 0`. The extractor was not at fault — it returned a well-formed seven-entry array with every `class` valid. Every `Agent.spawn` return is wrapped by the runtime as `[sub-agent agent_id=…]\n<final text>` so a parent *model* can attribute the answer; `JSON.parse` does not skip a prefix, and the body's code-fence stripping did not remove one. A correct reply was discarded as unreadable, ten chats stayed unconsolidated, and holding the watermark was the pass doing exactly the right thing with the wrong input.
 
