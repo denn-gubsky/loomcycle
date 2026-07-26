@@ -77,9 +77,11 @@ type fakeToolset struct {
 
 func newFakeToolset() *fakeToolset {
 	return &fakeToolset{
-		leaseAcquired:  true,
-		bands:          map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
-		failSetKeys:    map[string]bool{},
+		leaseAcquired: true,
+		bands:         map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
+		failSetKeys:   map[string]bool{},
+		// Source of truth for this format: formatSubAgentOutput in
+		// internal/api/http/resume.go. Nothing links them — grep that name.
 		subAgentHeader: "[sub-agent agent_id=a_test000000000000]\n",
 	}
 }
@@ -564,22 +566,27 @@ func TestConsolidator_UnreadableExtractorReplyBlocksTheWatermark(t *testing.T) {
 }
 
 // liveExtractorReply is the reply the extractor actually produced on the first
-// consolidation pass that ran to completion — a well-formed, wholly valid fact
-// array that the caller nonetheless discarded, because the runtime's
-// "[sub-agent agent_id=…]" attribution header sits in front of it and
-// JSON.parse does not skip prose. The pass reported "chats read 10; facts
-// written 0".
+// consolidation pass that ran to completion — verbatim, all seven entries, from
+// session s_b20d062932da25c38e6c9db539fedc30 (2026-07-26T10:35:15–29Z). It is a
+// well-formed, wholly valid fact array that the caller nonetheless discarded,
+// because the runtime's "[sub-agent agent_id=…]" attribution header sits in
+// front of it and JSON.parse does not skip prose. The pass reported "chats read
+// 10; facts written 0".
 //
-// The first two entries are verbatim from that run. The remaining five are
-// same-shape stand-ins reconstructed to the observed length of seven; the
-// count and the classes are what the fixture is pinning, not the prose.
+// It pins more than the parser. The last entry is a `constraint` distilled from
+// an allowed_hosts list the model read out of a TOOL RESULT inside the
+// transcript — a claim about the conversation, in one self-contained sentence,
+// that appears nowhere in it verbatim. That is real extraction rather than
+// echo, and it is the evidence that the model half of this pipeline works when
+// the transcript does not hijack it. A future change that "simplifies" this
+// fixture into synthetic one-liners would throw that evidence away.
 const liveExtractorReply = `[{"text":"The assistant is named CHAT-LOCAL.","class":"identity"},
  {"text":"CHAT-LOCAL runs on the operator's local deepseek-v4-pro model.","class":"fact"},
- {"text":"CHAT-LOCAL runs entirely on the operator's own hardware and sends no data outside it.","class":"constraint"},
- {"text":"CHAT-LOCAL can read and write files, search the web, and spawn sub-agents.","class":"fact"},
- {"text":"Denn prefers the local model over a hosted one for everyday chat.","class":"preference"},
- {"text":"Denn chose to keep conversation history on the local deployment.","class":"decision"},
- {"text":"Denn works in the Europe/Berlin timezone.","class":"identity"}]`
+ {"text":"All data processed by CHAT-LOCAL remains inside the local box; nothing leaves it.","class":"fact"},
+ {"text":"CHAT-LOCAL can read, write, edit, search (grep), and glob files within its sandboxed volume.","class":"fact"},
+ {"text":"CHAT-LOCAL can run shell commands via Bashbox, which is sandboxed with no network access, or via unsandboxed Bash as an escape hatch.","class":"fact"},
+ {"text":"CHAT-LOCAL has web tools WebSearch for discovering current information on the web and WebFetch for extracting text from a specific URL.","class":"fact"},
+ {"text":"The assistant's network access is restricted to hosts with TLDs com, org, net, io, ai, dev, gov, edu, co, me, app, xyz, uk, de.","class":"constraint"}]`
 
 // TestConsolidator_ParsesAReplyBehindTheSubAgentHeader is the regression for
 // the first completed live pass, which wrote nothing. Every Agent.spawn return
@@ -589,7 +596,8 @@ const liveExtractorReply = `[{"text":"The assistant is named CHAT-LOCAL.","class
 // with "[", which is why stripping it has to happen BEFORE any bracket scan.
 func TestConsolidator_ParsesAReplyBehindTheSubAgentHeader(t *testing.T) {
 	f := newFakeToolset()
-	// The agent_id from the live run, verbatim.
+	// The agent_id from that same live call, so header and payload together are
+	// the observed wire bytes end to end.
 	f.subAgentHeader = "[sub-agent agent_id=a_09a83839c24cc271]\n"
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	f.transcript = "user: What model are you? What you can do?\nassistant: I'm CHAT-LOCAL."
@@ -599,6 +607,12 @@ func TestConsolidator_ParsesAReplyBehindTheSubAgentHeader(t *testing.T) {
 
 	if n := f.countOp("Memory.set"); n != 7 {
 		t.Errorf("wrote %d facts, want 7 — the reply behind the attribution header is a valid fact array; sequence %v", n, f.ops())
+	}
+	// Nothing was dropped: all seven entries carried text and a known class. The
+	// reply was not merely parseable, it was wholly valid — which is what makes
+	// "0 facts written" attributable to the caller and to nothing else.
+	if strings.Contains(res.FinalText, "malformed entries dropped") {
+		t.Errorf("the live reply is wholly valid; the pass dropped entries from it: %q", res.FinalText)
 	}
 	if !f.has("Memory.cursor_advance") {
 		t.Errorf("the chat WAS examined, so the watermark must move; sequence %v", f.ops())
