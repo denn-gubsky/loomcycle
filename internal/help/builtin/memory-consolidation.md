@@ -208,6 +208,90 @@ byte-identical to what is embedded. What makes a fact readable a year later is
 that it names its own subject — "Denn prefers Go over Python for services" —
 not that it carries a pointer to something else.
 
+### A merge needs more than a similarity score
+
+Merging is the **one unrecoverable step** in the pipeline. Everything else
+either adds a row or soft-archives one a later pass can revive; a merge writes
+the incoming fact under the *neighbour's* key, so the neighbour's text is gone
+with no archive and no audit row — and the key is left asserting a subject its
+value no longer carries. Two rows in a live store are what this section is
+written from:
+
+```
+memory/fact/user-downloaded-qwen3-6-27b-q4
+  → "The user's model is gemma-4-12b-it-UD-Q4_K_XL.gguf."
+memory/fact/user-s-llama-cpp-server-running
+  → "The user has an AMD GPU for GPU acceleration."
+```
+
+Both were minted for one subject and now hold a fact about a different one.
+Each was **one cosine comparison clearing the merge band** — which was the whole
+of the authority required to destroy a fact.
+
+The band is not the defect, and raising it is not the fix. It had been measured
+honestly, against a corpus of twelve *mutually unrelated* subjects. A real
+memory scope is the opposite shape — a dozen facts about one deployment — and
+inside a dense topic, related-but-distinct facts score far above anything that
+corpus ever sampled. Re-tuning the number only moves the failure to the next
+denser cluster.
+
+So an in-place rewrite now has to clear a **second signal that does not come
+from the embedding at all**, and the pass adds a new row whenever it does not:
+
+- **Class.** The neighbour's key is `memory/<class>/<subject-slug>`, and the
+  class it names must be the class the incoming fact carries. A key that does
+  not parse — an opaque id from a remote backend, or a row you wrote yourself
+  under this scope — is refused rather than merged onto; overwriting one of
+  those is worse than the bug above, not better.
+- **Subject.** The two facts must share enough of their content words, measured
+  as a Dice overlap against a floor of `0.30`. Unlike a cosine band this scale
+  is *not* a property of the embedding model, so it is a fixed constant with no
+  knob — there is nothing per-deployment to calibrate, and a knob would only
+  offer a way to re-open the hole.
+
+The floor is measured rather than picked. Across the 18 labelled paraphrase
+pairs in the two bundled calibration corpora the *lowest* genuine paraphrase
+scores `0.353` and the next lowest `0.476`; the two overwrites above score
+`0.211` and `0.167`. The floor sits inside that window, biased toward the high
+end because the errors are not symmetric: too high forks a duplicate row that
+the next pass's deterministic key collapses and the report names, while too low
+destroys a fact nothing recovers.
+
+The comparison is against the neighbour's **stored text**, not against the slug
+in its key. A slug is only the first six content words of whatever sentence
+minted it, so it is both lossy and word-order sensitive: on the bundled corpus,
+exact slug equality holds for **0 of 12** genuine paraphrases, and fuzzy slug
+overlap does not separate the classes either. The full sentence does — and it is
+also the text a merge would destroy, which is the thing worth protecting.
+
+A refused neighbour is dropped **before** the duplicate list is built, so it is
+excluded from both destructive paths at once: it is neither rewritten nor
+retired. Retirement was gated on the same single number.
+
+Two things this deliberately does **not** do. It is a *necessary* condition, not
+a sufficient one: it cannot separate two facts that share a subject and most of
+their words but assert different claims ("the GPU has 24 GB" / "the GPU has
+48 GB") — that stays the merge band's job. And an extractor that reclassifies a
+fact between passes will fork a second row rather than merge; that row is
+visible, and the next pass can collapse it.
+
+Both refusals are **counted in the report**, separately, because they diagnose
+different things:
+
+```
+merge refused on subject 3 (a neighbour scored as a duplicate but is about a
+  different subject — written as a new row instead of overwriting it; a rising
+  count means the merge band is too permissive for this store)
+merge refused on class 1 (a neighbour scored as a duplicate but is filed under a
+  different class, or under a key this pass did not mint — written as a new row
+  instead)
+```
+
+A rising **subject** count is the earliest signal that similarity and the stored
+keys disagree, and that your merge band wants re-measuring against a corpus
+shaped like your store. A rising **class** count says the extractor is
+reclassifying the same facts between passes.
+
 ## Superseding, not deleting
 
 When a conversation contradicts a stored fact, the pass **archives** the old
@@ -325,7 +409,7 @@ are enforced by the server rather than left to you:
 | `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the scheduled agent resolves to a local model runtime **or to an in-process provider** (`code-js`, `mock`) — for the latter the resolved id says nothing about where the load goes, since it is all in sub-agents. The bundled consolidator is a code agent, so it dispatches serially; raise this only if you know its extractor children are not all on one box. |
 | `LOOMCYCLE_CODE_AGENTS_ENABLED` | Required — the consolidator is a code agent, and selecting the bundle without this fails boot by design rather than shipping a silently idle pass. |
 | `memory_quota_bytes` / `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | Per-scope byte cap. A consolidation write over budget is **refused, loudly** — it does not silently drop the fact. |
-| `memory.consolidation.merge_threshold` | Similarity at or above which two facts count as the same fact reworded and get merged (default `0.95`). |
+| `memory.consolidation.merge_threshold` | Similarity at or above which two facts count as the same fact reworded and get merged (default `0.95`). Necessary but no longer sufficient — see *A merge needs more than a similarity score*. |
 | `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim" (default `0.85`). **The bundled pass no longer reads it** — it gated the cross-reference described above, which is gone, and a band a pass reads but never acts on is dead code that reads like a live knob. `Context op=capabilities` still reports it and `loomcycle memory-calibrate` still validates it, for any agent that reasons about near-duplicates in prose. |
 
 ### Calibrating the two bands
@@ -345,6 +429,17 @@ The safe window there is `(0.6775, 0.7181]`: merging at 0.68–0.70 catches all
 The defaults stay `0.95` / `0.85` anyway, because the risk is asymmetric: too
 high leaves duplicates lying around and every one of them is still recoverable,
 while too low destroys a distinct fact and that is not. `0.95` fails safe.
+
+**Measure against a dense topic as well, not only the bundled corpus.** Those
+twelve subjects are mutually unrelated, so every pair the corpus labels
+UNRELATED is also cross-*topic* — and a threshold measured on it has only ever
+been tested against facts that share nothing. Your store is the opposite shape:
+a handful of facts about the same few things, which is exactly the region the
+two corrupted rows above came from. `--dataset cluster` supplies that region
+(six bases all about one deployment, so all 60 derived unrelated pairs are
+intra-cluster). Run both and act on the **more conservative** of the two
+recommendations; if `cluster` reports a higher `max(UNRELATED)`, a band taken
+from the bundled corpus alone is too permissive for what you actually store.
 
 An operator measures their own model with `loomcycle memory-calibrate`, which
 reports each class's distribution, a threshold sweep, and a recommendation, and
