@@ -31,7 +31,8 @@ import (
 // Flags:
 //
 //	--config <yaml>       config to read the embedder + configured bands from
-//	--dataset <path>      labelled corpus JSON (default: the bundled corpus)
+//	--dataset <path>      labelled corpus JSON, or `builtin` / `cluster`
+//	                      (default: the bundled 12-subject corpus)
 //	--embedder auto|stub  auto = the configured embedder; stub = plumbing only
 //	--check               also fail when the CONFIGURED bands classify badly
 //	--output <file>       write the JSON report (the text report still prints)
@@ -47,7 +48,7 @@ func RunMemoryCalibrate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("memory-calibrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "loomcycle.yaml", "path to config YAML")
-	dataset := fs.String("dataset", "builtin", "labelled corpus: 'builtin' or a path to a .json file")
+	dataset := fs.String("dataset", "builtin", "labelled corpus: 'builtin', 'cluster' (one dense topic — the region 'builtin' does not sample), or a path to a .json file")
 	embedderKind := fs.String("embedder", "auto", "'auto' (the configured embedder) or 'stub' (deterministic, plumbing check only)")
 	check := fs.Bool("check", false, "also fail when the CONFIGURED thresholds classify badly on this corpus")
 	output := fs.String("output", "", "optional path to write the JSON report (the text report still prints)")
@@ -120,6 +121,13 @@ func calibrationExitCode(rep eval.CalibrationReport, check bool) int {
 func loadCalibrationCorpus(name string) (eval.CalibrationCorpus, error) {
 	if name == "" || name == "builtin" || name == "bundled" {
 		return eval.BuiltinCalibrationCorpus()
+	}
+	// `cluster` measures the region `builtin` does not sample: facts that are
+	// all about ONE thing, which is what a real memory scope looks like and
+	// where a band calibrated on twelve unrelated subjects has never been
+	// tested. Run both and act on the more conservative recommendation.
+	if name == "cluster" || name == "clustered" {
+		return eval.ClusteredCalibrationCorpus()
 	}
 	f, err := os.Open(name)
 	if err != nil {

@@ -345,6 +345,47 @@ func TestBuiltinCalibrationCorpus_IsUsableWithNoSetup(t *testing.T) {
 	}
 }
 
+// TestClusteredCalibrationCorpus_SamplesWhatTheBuiltinCorpusDoesNot. The
+// builtin corpus is twelve mutually unrelated subjects, so every pair it labels
+// UNRELATED is also cross-TOPIC — and a merge threshold is therefore measured
+// only against pairs that share nothing. A real memory scope is the opposite: a
+// handful of facts about the same few things, where the pairs a threshold has
+// to clear are same-topic and different-subject. That is the region a live store
+// lost two facts in, under a band the builtin corpus called safe.
+//
+// The property this pins is what makes the corpus worth shipping: every base is
+// about ONE deployment, so each of the 60 derived UNRELATED pairs is an
+// intra-cluster sample. Asserted through the shared vocabulary rather than by
+// eye, so an edit that quietly drops a base out of the topic fails here.
+func TestClusteredCalibrationCorpus_SamplesWhatTheBuiltinCorpusDoesNot(t *testing.T) {
+	c, err := ClusteredCalibrationCorpus()
+	if err != nil {
+		t.Fatalf("ClusteredCalibrationCorpus: %v", err)
+	}
+	if len(c.Bases) < 4 {
+		t.Fatalf("corpus has %d bases; a cluster needs enough of them for the cross-base pairs to be worth measuring", len(c.Bases))
+	}
+	if len(c.Duplicates) != len(c.Bases) || len(c.Related) != len(c.Bases) {
+		t.Fatalf("corpus = %d bases / %d duplicates / %d related, want one probe of each class per base",
+			len(c.Bases), len(c.Duplicates), len(c.Related))
+	}
+	// Every base must name the one deployment this corpus is about. Without
+	// that the cross-base pairs stop being intra-cluster and the corpus
+	// degenerates into a smaller copy of the builtin one.
+	for i, b := range c.Bases {
+		if !strings.Contains(strings.ToLower(b), "user") {
+			t.Errorf("base %d (%q) does not name the subject the cluster is about", i+1, b)
+		}
+	}
+	builtin, err := BuiltinCalibrationCorpus()
+	if err != nil {
+		t.Fatalf("BuiltinCalibrationCorpus: %v", err)
+	}
+	if c.Name == builtin.Name {
+		t.Errorf("both corpora report name %q — a calibration result is attributed by corpus name, so they must not collide", c.Name)
+	}
+}
+
 // TestLoadCalibrationCorpus_RejectsAnUnusableCorpus — a mislabelled corpus is
 // indistinguishable from a bad model in the output, so the structural errors
 // that CAN be caught are caught at load.

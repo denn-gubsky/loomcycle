@@ -1,0 +1,28 @@
+{
+  "name": "cluster",
+  "note": "6 base facts that are all about ONE thing — a single local-inference deployment — so every cross-base pair is a SAME-TOPIC, different-subject sample. The builtin corpus deliberately has none of these: its 12 subjects are mutually unrelated, so its UNRELATED class is entirely cross-topic and a merge threshold measured on it is unvalidated for the region a real memory scope actually occupies. A live store that lost two facts to a bad merge looked exactly like this: a dozen facts about one llama.cpp/ROCm box. Run this corpus alongside the builtin one; if max(UNRELATED) here is higher, the recommendation from the builtin corpus alone is too permissive for your store. Same layout as the builtin corpus, so copy and edit it for your own dense topic.",
+  "bases": [
+    "The user downloaded qwen3-6-27b-q4 for local inference.",
+    "The user's llama.cpp server is running on port 8080.",
+    "The user has an AMD GPU for GPU acceleration.",
+    "The user's model is gemma-4-12b-it-UD-Q4_K_XL.gguf.",
+    "The user runs llama.cpp inside a Docker container.",
+    "The user uses ROCm 6.2 for AMD GPU acceleration."
+  ],
+  "duplicates": [
+    { "base": 1, "text": "For local inference the user pulled down qwen3-6-27b-q4." },
+    { "base": 2, "text": "Port 8080 is where the user's llama.cpp server listens." },
+    { "base": 3, "text": "For GPU acceleration the user relies on an AMD GPU." },
+    { "base": 4, "text": "The model the user runs is gemma-4-12b-it-UD-Q4_K_XL.gguf." },
+    { "base": 5, "text": "llama.cpp is run by the user in a Docker container." },
+    { "base": 6, "text": "AMD GPU acceleration is done with ROCm 6.2 by the user." }
+  ],
+  "related": [
+    { "base": 1, "text": "The user deleted the older qwen2 checkpoint to free disk." },
+    { "base": 2, "text": "The user's llama.cpp server exposes an OpenAI-compatible API." },
+    { "base": 3, "text": "The user's AMD GPU has 24 GB of VRAM." },
+    { "base": 4, "text": "The user quantised the model to Q4_K_XL to fit VRAM." },
+    { "base": 5, "text": "The user's Docker container mounts the model directory read-only." },
+    { "base": 6, "text": "ROCm 6.2 required a kernel upgrade on the user's box." }
+  ]
+}
