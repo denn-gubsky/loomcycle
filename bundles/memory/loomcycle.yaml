@@ -495,6 +495,11 @@ agents:
       // rather than skipped, and the per-part reasons name what was lost.
       function extractChat(st, text, sid) {
         var parts = chatParts(st, text, sid);
+        // An EMPTY transcript has nothing to cut up and costs no model call —
+        // but it is still a chat that was read, so it must not pin the mark
+        // behind it. Returning null here would leave the watermark short of a
+        // chat that will be just as empty next pass, forever.
+        if (!parts.length) { return []; }
         var beforeSkipped = st.skipped, beforeEmpty = st.empty;
         var all = [], readable = 0, unreadable = 0;
 

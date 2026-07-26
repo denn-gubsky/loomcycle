@@ -1971,6 +1971,43 @@ func TestConsolidator_UnreadablePartDoesNotDiscardTheRestOfTheChat(t *testing.T)
 	}
 }
 
+// TestConsolidator_EmptyTranscriptCostsNoModelCallAndStillAdvances. A chat that
+// renders to nothing has nothing to extract from — the pass must not spend a
+// model call on it, and must not leave the watermark short of it either. The
+// second half is the one splitting can get wrong: cutting an empty transcript
+// yields zero parts, and "no part was readable" looks identical to "every part
+// failed" unless the empty case is answered before the loop. A mark left behind
+// an empty chat never moves past it, because it will be just as empty next pass.
+func TestConsolidator_EmptyTranscriptCostsNoModelCallAndStillAdvances(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{
+		scanRow("sess-a", "2026-07-01T10:00:00Z"),
+		scanRow("sess-b", "2026-07-02T10:00:00Z"),
+	}
+	f.transcripts = map[string]string{
+		"sess-a": "user: I prefer Go.\nassistant: ok",
+		"sess-b": "", // the empty one, and deliberately the LAST scanned row
+	}
+	f.factsBySession = map[string]string{
+		"sess-a": `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`,
+	}
+
+	res := runConsolidator(t, f)
+
+	if n := f.countOp("Agent"); n != 1 {
+		t.Errorf("extractor spawned %d times, want 1 — an empty transcript must cost no model call; sequence %v", n, f.ops())
+	}
+	adv := lastCall(t, f, "Memory.cursor_advance")
+	if adv.Input["session_id"] != "sess-b" {
+		t.Errorf("cursor_advance carried %v, want sess-b — a mark left short of an empty LAST chat never moves past it, because that chat is just as empty next pass", adv.Input["session_id"])
+	}
+	for _, unwanted := range []string{"skipped", "empty reply", "watermark NOT advanced"} {
+		if strings.Contains(res.FinalText, unwanted) {
+			t.Errorf("report = %q must not describe an empty transcript as %q — nothing failed and nothing was asked", res.FinalText, unwanted)
+		}
+	}
+}
+
 // TestExtractor_PromptForbidsRecordingThatAQuestionWasAsked. v1.36.2 stopped the
 // model recording ANSWERS to one-off questions; it did not stop it recording
 // that a question was asked. Six of seventeen facts from the next clean pass
