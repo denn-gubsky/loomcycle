@@ -1,0 +1,46 @@
+{
+  "name": "builtin",
+  "note": "12 base facts, each with one DUPLICATE probe (the same fact reworded, which must merge) and one RELATED probe (same topic, a different claim, which must not merge). Every probe scored against a base that is not its own is an UNRELATED sample. Copy this file, edit it, and pass it with --dataset to calibrate on your own facts.",
+  "bases": [
+    "The user prefers TypeScript over JavaScript for new projects.",
+    "The Postgres database listens on port 5432 inside the container.",
+    "The team retired the CLI and SDK runner backends in May 2026 after a cost incident.",
+    "The user is based in Warsaw and works in the Europe/Warsaw timezone.",
+    "loomcycle is deployed as a TrueNAS SCALE app on the home lab.",
+    "The user requires a feature branch for every change; direct commits to main are forbidden.",
+    "Vector memory uses the embeddinggemma model at 768 dimensions.",
+    "The jobs-search-agent repository is the first production consumer of loomcycle.",
+    "The user prefers boring, minimal solutions over speculative abstractions.",
+    "Docker images are published to the denngubsky namespace on Docker Hub.",
+    "The consolidator runs hourly at minute 17 as a scheduled agent.",
+    "The user's primary machine is a Mac running macOS 25.5."
+  ],
+  "duplicates": [
+    { "base": 1, "text": "For new work the user would rather write TypeScript than JavaScript." },
+    { "base": 2, "text": "Inside the container, Postgres is reachable on port 5432." },
+    { "base": 3, "text": "After a cost incident in May 2026, the CLI and SDK runner backends were dropped." },
+    { "base": 4, "text": "The user lives in Warsaw and operates on Europe/Warsaw time." },
+    { "base": 5, "text": "The home lab runs loomcycle as an app on TrueNAS SCALE." },
+    { "base": 6, "text": "Every change must go on a feature branch — committing straight to main is not allowed." },
+    { "base": 7, "text": "Embeddings are produced by embeddinggemma with 768 dimensions." },
+    { "base": 8, "text": "loomcycle's first production user is the jobs-search-agent repo." },
+    { "base": 9, "text": "The user favours simple, unexciting solutions rather than speculative abstraction." },
+    { "base": 10, "text": "Docker Hub images live under the denngubsky namespace." },
+    { "base": 11, "text": "A scheduled agent runs consolidation every hour at 17 minutes past." },
+    { "base": 12, "text": "The user works mainly on a Mac running macOS 25.5." }
+  ],
+  "related": [
+    { "base": 1, "text": "The user prefers Go for backend services." },
+    { "base": 2, "text": "The Postgres role needs CREATEROLE for per-scope isolation." },
+    { "base": 3, "text": "The CLI backend was replaced by a pure HTTP-only loop." },
+    { "base": 4, "text": "The user starts work early in the morning." },
+    { "base": 5, "text": "The TrueNAS box also hosts a Gitea instance." },
+    { "base": 6, "text": "Pull requests must be squash-merged after approval." },
+    { "base": 7, "text": "qwen3-embedding produces 4096-dimensional vectors." },
+    { "base": 8, "text": "jobs-search-agent exposes typed tools over its own MCP route." },
+    { "base": 9, "text": "The user wants surgical diffs that touch the minimum surface." },
+    { "base": 10, "text": "The Homebrew tap repository is denn-gubsky/homebrew-loomcycle." },
+    { "base": 11, "text": "Scheduled runs ship disabled by default in the bundle." },
+    { "base": 12, "text": "The user's Mac cannot reach the GPU box over Tailscale right now." }
+  ]
+}

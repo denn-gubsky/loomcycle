@@ -253,6 +253,58 @@ func TestContextTool_CapabilitiesTenantOutputIsSubsetOfAdmin(t *testing.T) {
 	}
 }
 
+// TestContextTool_CapabilitiesReportsTheEffectiveConsolidationBands — the
+// merge/related similarity bands must be readable, and readable as the values
+// IN FORCE.
+//
+// Why it matters: cosine scale is a property of the embedding model, so a band
+// can be somewhere this deployment's embedder never reaches — on which merging
+// never fires and duplicates accumulate with nothing logged anywhere
+// (`loomcycle memory-calibrate` measures it). An agent reasoning about
+// duplicates cannot notice that if it cannot see the number.
+//
+// Why EFFECTIVE and not the raw config: an unset band is stored as 0 and
+// resolved to the default at use time. Reporting the raw 0 would tell an agent
+// that everything merges, which is the exact opposite of what the consolidator
+// does.
+func TestContextTool_CapabilitiesReportsTheEffectiveConsolidationBands(t *testing.T) {
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1"})
+
+	bands := func(t *testing.T, tool *Context) (float64, float64) {
+		t.Helper()
+		cons, ok := capabilitiesOut(t, tool, ctx)["consolidation"].(map[string]any)
+		if !ok {
+			t.Fatalf("no consolidation block")
+		}
+		merge, mok := cons["merge_threshold"].(float64)
+		related, rok := cons["related_threshold"].(float64)
+		if !mok || !rok {
+			t.Fatalf("consolidation = %+v, want numeric merge_threshold + related_threshold", cons)
+		}
+		return merge, related
+	}
+
+	// Unset: the defaults, reported as the numbers in force rather than as 0.
+	if m, r := bands(t, &Context{Cfg: capabilitiesCfg()}); m != config.DefaultConsolidationMergeThreshold || r != config.DefaultConsolidationRelatedThreshold {
+		t.Errorf("unset bands = %v/%v, want the effective defaults %v/%v",
+			m, r, config.DefaultConsolidationMergeThreshold, config.DefaultConsolidationRelatedThreshold)
+	}
+
+	// Calibrated: an operator's own values, reported verbatim.
+	tuned := capabilitiesCfg()
+	tuned.Memory.Consolidation = config.ConsolidationConfig{MergeThreshold: 0.6978, RelatedThreshold: 0.46}
+	if m, r := bands(t, &Context{Cfg: tuned}); m != 0.6978 || r != 0.46 {
+		t.Errorf("calibrated bands = %v/%v, want 0.6978/0.46", m, r)
+	}
+
+	// No config at all: still the effective defaults, never absent. Same rule
+	// as every other key on this surface — absent must not stand in for a
+	// value, since it deserializes as undefined in some clients.
+	if m, r := bands(t, &Context{}); m != config.DefaultConsolidationMergeThreshold || r != config.DefaultConsolidationRelatedThreshold {
+		t.Errorf("bands with no config = %v/%v, want the effective defaults", m, r)
+	}
+}
+
 // stubNamedTool is a minimal tools.Tool that only needs to answer Name().
 type stubNamedTool struct{ name string }
 

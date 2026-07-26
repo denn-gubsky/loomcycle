@@ -160,10 +160,27 @@ func searchCapability(cfg *config.Config) map[string]any {
 // `Memory op=add` items are durable but nothing is draining them, which is
 // exactly the state an agent should be able to detect rather than infer from
 // a recall that keeps coming back empty.
+//
+// The two similarity bands ride along because an agent reasoning about
+// duplicates otherwise has no way to know where the line is — and, more to the
+// point, no way to notice the line is somewhere nothing ever reaches. Cosine
+// scale is a property of the embedding model, so a band that merges nothing on
+// this deployment's embedder is a real and completely silent state
+// (`loomcycle memory-calibrate` is what measures it). They are reported as
+// EFFECTIVE values, resolved through Effective*Threshold, so an unset config
+// reads as the number in force rather than as absent — a `0` here would be a
+// lie about what the consolidator does. Two plain floats: no secret, no
+// topology, nothing that identifies the deployment.
 func consolidationCapability(cfg *config.Config) map[string]any {
 	configured, enabled := false, false
 	if cfg == nil {
-		return map[string]any{"available": false, "configured": false}
+		var unset config.ConsolidationConfig
+		return map[string]any{
+			"available":         false,
+			"configured":        false,
+			"merge_threshold":   unset.EffectiveMergeThreshold(),
+			"related_threshold": unset.EffectiveRelatedThreshold(),
+		}
 	}
 	for _, sr := range cfg.ScheduledRuns {
 		agent, ok := cfg.Agents[sr.Agent]
@@ -176,8 +193,10 @@ func consolidationCapability(cfg *config.Config) map[string]any {
 		}
 	}
 	return map[string]any{
-		"available":  configured && enabled,
-		"configured": configured,
+		"available":         configured && enabled,
+		"configured":        configured,
+		"merge_threshold":   cfg.Memory.Consolidation.EffectiveMergeThreshold(),
+		"related_threshold": cfg.Memory.Consolidation.EffectiveRelatedThreshold(),
 	}
 }
 
