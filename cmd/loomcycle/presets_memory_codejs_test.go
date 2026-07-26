@@ -727,6 +727,100 @@ func TestConsolidator_MalformedExtractorEntriesAreDroppedNotFatal(t *testing.T) 
 	}
 }
 
+// TestConsolidator_RejectsAFactNamingASessionOrRunId. Nine of the 43 facts the
+// first live pass wrote were not durable, and the extractor prompt already
+// forbade exactly that — so the prompt is a request and this is the guarantee.
+//
+// The matcher is the id SHAPE, not the word "id": the "s_"/"r_" prefix the
+// stores mint followed by the hex encoding of 8 or 16 random bytes. Both widths
+// ship (sqlite mints 8, Postgres 16), so both are covered, and the two survivors
+// below are the reason it is shaped rather than keyword-based — a fact may
+// legitimately talk ABOUT ids, and rejecting it would lose durable knowledge
+// silently. The asymmetry drives the whole design: an id that slips through is
+// one row a later pass can supersede.
+func TestConsolidator_RejectsAFactNamingASessionOrRunId(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	f.factsJSON = `[
+		{"text":"The chat session ID is s_928fc2a7c4ce2a22a287a6d83b3513f8.","class":"fact"},
+		{"text":"The answer was produced during run r_1a2b3c4d5e6f7a8b.","class":"fact"},
+		{"text":"Denn's team prefixes every session id with s_ and every run id with r_.","class":"preference"},
+		{"text":"Denn names the staging bucket s_cafe1234.","class":"fact"},
+		{"text":"Denn prefers Go for backend services.","class":"preference"}
+	]`
+
+	res := runConsolidator(t, f)
+
+	// Three survive: the two that mention ids without carrying one, and the plain
+	// fact. The 32-hex (Postgres) and 16-hex (sqlite) ids are rejected.
+	var wrote []string
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "set" {
+			v, _ := c.Input["value"].(string)
+			wrote = append(wrote, v)
+		}
+	}
+	if len(wrote) != 3 {
+		t.Errorf("wrote %d facts, want 3 (both real ids rejected, both id-mentioning facts kept): %q", len(wrote), wrote)
+	}
+	for _, v := range wrote {
+		if strings.Contains(v, "s_928fc2a7") || strings.Contains(v, "r_1a2b3c4d") {
+			t.Errorf("a fact carrying a real session/run id was stored: %q", v)
+		}
+	}
+	// The near-misses must survive: "s_" with nothing behind it, and a hex-looking
+	// word far too short to be an id. Over-rejecting is the silent failure.
+	for _, want := range []string{"prefixes every session id with s_", "staging bucket s_cafe1234"} {
+		found := false
+		for _, v := range wrote {
+			if strings.Contains(v, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("a legitimate fact mentioning an id in passing (%q) was rejected; wrote %q", want, wrote)
+		}
+	}
+	// Counted SEPARATELY from a malformed entry: one says the extractor is
+	// summarising the conversation, the other says it emitted a broken record.
+	// They point at different fixes, so folding them into one number hides both.
+	if !strings.Contains(res.FinalText, "transient entries rejected 2") {
+		t.Errorf("report = %q, want a separate transient-entry count", res.FinalText)
+	}
+	if strings.Contains(res.FinalText, "malformed entries dropped") {
+		t.Errorf("report = %q — every entry here is well-formed; a transient reject is not a malformed drop", res.FinalText)
+	}
+	// The chat WAS examined, so rejecting entries from it must not hold the mark.
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("rejecting transient entries blocked the watermark; sequence %v", f.ops())
+	}
+}
+
+// TestExtractor_PromptNamesTheDurabilityFailureModes. "Still true in a year" is
+// an abstraction, and a small local model did not apply it: a fifth of the first
+// live pass's facts were puzzle answers, records that a question had been asked,
+// and ids. The prompt now carries the discriminator (a fact is about the USER or
+// their PROJECT, not about this conversation) and names the three failure modes
+// outright, which is what a small model can actually act on.
+func TestExtractor_PromptNamesTheDurabilityFailureModes(t *testing.T) {
+	cfg := memoryBundleConfig(t)
+	prompt := cfg.Agents["memory/extractor"].SystemPrompt
+
+	for _, want := range []string{
+		// The discriminator, stated as a test the model can apply per entry.
+		"about the USER or their PROJECT",
+		// The three observed failure modes, named rather than implied.
+		"a question that was asked",
+		"one-off puzzle",
+		"an id",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("extractor prompt is missing the durability discriminator %q", want)
+		}
+	}
+}
+
 // TestConsolidator_UnreadableExtractorReplyBlocksTheWatermark is the other half
 // of the rule above, and the distinction matters: an EMPTY array means "nothing
 // durable in this chat" and is a normal answer, while a reply that is not a fact
