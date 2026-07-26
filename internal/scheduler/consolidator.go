@@ -495,13 +495,30 @@ func (s *Scheduler) targetHasNewWork(ctx context.Context, tenantID string, scope
 // target whose provider cannot be resolved at all, because dispatching an
 // unknown volume of parallel work at an unknown backend is the worse failure.
 //
-// KNOWN GAP (deferred): the probe resolves with the operator-key restriction
-// OFF while the fire passes the def's actual restriction bit (see
-// (*http.Server).ResolveAgentProvider). With
-// LOOMCYCLE_OPERATOR_KEY_RESTRICTION on and a restricted def, the probe can
-// answer "anthropic" while the children re-resolve to ollama-local — a batch
-// judged parallel-safe then lands N-wide on the local box.
-// LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY is the operator's throttle meanwhile.
+// A SYNTHETIC provider is that same "cannot be resolved" case wearing a
+// resolvable name. An in-process provider (code-js, mock) makes no external
+// model call at all, so its id says nothing about where this batch's model load
+// will actually land — for a code agent that load is entirely in the sub-agents
+// it spawns, which this probe cannot see. Answering "code-js is not local,
+// therefore parallel" is answering a question nobody asked. So it serializes,
+// on the same reasoning as an unresolvable provider.
+//
+// KNOWN GAPS (both deferred):
+//
+//  1. The synthetic check is a CONSERVATIVE STAND-IN, not the fix. The honest
+//     fix is a probe that follows the spawn tree — resolve the providers the
+//     scheduled agent's children would use and decide on those — which needs a
+//     way to enumerate reachable sub-agents from a def and is its own change.
+//     Until then a code-agent orchestrator whose children are all cloud-hosted
+//     is serialized unnecessarily; that costs throughput, where the inverse
+//     error costs an operator's GPU box. LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY
+//     is the escape hatch for anyone who knows their children are parallel-safe.
+//  2. The probe resolves with the operator-key restriction OFF while the fire
+//     passes the def's actual restriction bit (see
+//     (*http.Server).ResolveAgentProvider). With
+//     LOOMCYCLE_OPERATOR_KEY_RESTRICTION on and a restricted def, the probe can
+//     answer "anthropic" while the children re-resolve to ollama-local — a batch
+//     judged parallel-safe then lands N-wide on the local box.
 func (s *Scheduler) dispatchSerially(ctx context.Context, def scheduleDef, targets []consolidationTarget) (bool, string) {
 	if s.providerResolver == nil {
 		return true, "no provider resolver wired — defaulting to serial"
@@ -511,11 +528,41 @@ func (s *Scheduler) dispatchSerially(ctx context.Context, def scheduleDef, targe
 		if err != nil {
 			return true, fmt.Sprintf("provider for agent %q could not be resolved (%v) — defaulting to serial", def.Agent, err)
 		}
+		// Checked BEFORE the local test so the operator gets the specific
+		// reason: "this probe cannot see where the load goes" is actionable,
+		// "provider is not local" would not have been.
+		if isSyntheticProvider(providerID) {
+			return true, fmt.Sprintf(
+				"agent %q resolves to the in-process provider %q, which makes no model call itself — this batch's real model load is in sub-agents this probe cannot see, so parallel-safety is unknown. Set LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY if you know those children are not all on one box",
+				def.Agent, providerID)
+		}
 		if isLocalProvider(providerID) {
 			return true, fmt.Sprintf("provider %q is a local runtime", providerID)
 		}
 	}
 	return false, ""
+}
+
+// isSyntheticProvider reports whether a provider id names an IN-PROCESS
+// provider that never calls an external model: the synthetic code provider and
+// the load-test mocks. For these the resolved id carries no information about
+// the batch's real model load, which lives in whatever sub-agents the run
+// spawns.
+//
+// Matched by exact id rather than by a naming convention, deliberately — unlike
+// "local", synthetic-ness has no established convention in the config, and
+// inventing one here would be a rule operators have never been told about. The
+// cost is the mirror of isLocalProvider's gap: an operator who declares their
+// own provider on the `code-js` or `mock` DRIVER under a different id reads as
+// remote and dispatches in parallel. Same proper fix as that gap — a declared
+// flag on the `providers:` entry instead of the scheduler guessing from a
+// string.
+func isSyntheticProvider(providerID string) bool {
+	switch strings.ToLower(strings.TrimSpace(providerID)) {
+	case "code-js", "mock", "mock-stable":
+		return true
+	}
+	return false
 }
 
 // isLocalProvider reports whether a provider id names a runtime on the

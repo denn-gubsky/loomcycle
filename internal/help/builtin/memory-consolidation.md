@@ -146,7 +146,7 @@ are enforced by the server rather than left to you:
 | Setting | Effect |
 |---|---|
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). Targets beyond it wait for the next tick; the watermark makes that safe. |
-| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Auto-forced to 1 only when the *scheduled agent* resolves to a local model runtime — which the code-agent consolidator never does, so **set this to 1 yourself if your models are local**: the extractor children it spawns do land on the local box. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the scheduled agent resolves to a local model runtime **or to an in-process provider** (`code-js`, `mock`) — for the latter the resolved id says nothing about where the load goes, since it is all in sub-agents. The bundled consolidator is a code agent, so it dispatches serially; raise this only if you know its extractor children are not all on one box. |
 | `LOOMCYCLE_CODE_AGENTS_ENABLED` | Required — the consolidator is a code agent, and selecting the bundle without this fails boot by design rather than shipping a silently idle pass. |
 | `memory_quota_bytes` / `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | Per-scope byte cap. A consolidation write over budget is **refused, loudly** — it does not silently drop the fact. |
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts count as the same fact reworded and get merged (default `0.95`). |

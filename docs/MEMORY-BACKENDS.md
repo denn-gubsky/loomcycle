@@ -142,11 +142,16 @@ Both parts stay operator-editable config: one is a prompt, the other is a
 `code:` body in the same bundle.
 
 > ⚠️ The bundle therefore requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` — a
-> `provider: code-js` agent selected without it fails boot by design. And
-> because the scheduler decides parallel-vs-serial dispatch by resolving the
-> *scheduled* agent, which is now `code-js` and never local, **set
-> `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY=1` on a local-model deployment**:
-> the extractor children do land on the local box.
+> `provider: code-js` agent selected without it fails boot by design.
+>
+> It also dispatches **serially** by default. The scheduler decides
+> parallel-vs-serial by resolving the *scheduled* agent's provider, and an
+> in-process provider like `code-js` makes no model call at all — so its id
+> says nothing about where this batch's load actually lands, which is entirely
+> in the extractor children the probe cannot see. That is the same "unknown
+> backend" case an unresolvable provider hits, so it takes the same
+> conservative answer. Raise `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` only if
+> you know those children are not all pointed at one box.
 
 Two properties make the pass operationally safe:
 
@@ -169,7 +174,7 @@ op-level reference and the operator knobs.
 | Setting | Effect |
 |---|---|
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). The rest wait for the next tick; the watermark makes that safe. |
-| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Auto-forced to 1 only when the *scheduled* agent resolves to a local runtime — which the code-agent consolidator never does. Set it to 1 yourself for local models. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the scheduled agent resolves to a local runtime **or to an in-process provider** (`code-js`, `mock`), whose id carries no information about where the load lands. The bundled consolidator is a code agent, so it is serial unless you raise this. |
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts are the same fact reworded, and get merged (default `0.95`). |
 | `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
 

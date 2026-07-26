@@ -64,14 +64,19 @@
 # bundle costs nothing until you review the cadence and tier and flip that flag.
 # Boot logs an advisory naming the schedule while it stays staged off.
 #
-# ⚠️ FAN-OUT SERIALISATION CHANGED, AND YOU MAY NEED TO ACT. The scheduler
-# decides parallel-vs-serial dispatch by resolving the SCHEDULED AGENT's
-# provider and serialising when it looks local (`ollama-local`, `*-local`,
-# `local-*`). That agent is now `code-js`, which is never local — so a
-# deployment whose consolidator used to serialise because it resolved to a local
-# runtime will now dispatch up to LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY passes
-# in parallel, each spawning extractor children that DO land on the local box.
-# If your models are local, set LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY=1.
+# FAN-OUT IS NOW SERIAL BY DEFAULT for this bundle, and that is deliberate. The
+# scheduler decides parallel-vs-serial by resolving the SCHEDULED AGENT's
+# provider — which is now `code-js`, an in-process provider that makes no model
+# call at all. Its id therefore says nothing about where this batch's real load
+# lands: that load is entirely in the extractor children, which the probe cannot
+# see. So the scheduler treats a synthetic provider the same way it treats an
+# unresolvable one and serialises, rather than reading "not local, therefore
+# parallel" out of an answer to a question nobody asked.
+#
+# The cost is throughput on a deployment whose models are all cloud-hosted:
+# raise LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY only if you know your extractor
+# children are not all pointed at one box. The proper fix — a probe that follows
+# the spawn tree — is a separate change.
 #
 # This bundle carries NO provider matrix and NO pinned model. The consolidator
 # needs none (it never calls a model); `memory/extractor` declares `tier: low`,
@@ -91,8 +96,9 @@
 #
 # Two fan-out caps are operator-tunable via env:
 #   LOOMCYCLE_MAX_CONSOLIDATION_TARGETS      (default 32) targets per tick
-#   LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY  (default 4)  parallel children;
-#     see the serialisation warning above — set it to 1 for local models.
+#   LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY  (default 4)  parallel children —
+#     but see the serialisation note above: a code-agent consolidator is
+#     dispatched serially regardless, so this is the knob that overrides that.
 #
 # The operator overlay can override any field by re-declaring the key (last
 # layer wins per field) — retarget the tier, retune the cadence, replace the
@@ -454,9 +460,18 @@ agents:
         if (dupes.length) {
           dupes.sort(byScoreDesc);
           var primary = dupes[0];
-          // Every OTHER row above the merge line is the same fact under a second
-          // key — a duplicate that predates this pass. Queue it for retirement;
-          // the cap is applied once, pass-wide, in retire().
+          // WHY RETIREMENT ONLY HAS A JOB WHEN dupes.length > 1, which is not
+          // obvious from the steps: a merge REWRITES the neighbour in place,
+          // under ITS OWN key, so the ordinary one-duplicate case leaves nothing
+          // to retire — one row goes in, one row comes out.
+          //
+          // Retirement exists for the case where recall returns TWO OR MORE rows
+          // above the merge line. That means this same fact is already stored
+          // under several keys — duplicates that predate this pass, usually from
+          // a period when the merge band was mis-calibrated and merging never
+          // fired at all. The highest-scoring row is kept and rewritten; the rest
+          // are queued, and retire() applies the pass-wide cap once. Superseding
+          // them is what collapses the pile back to one canonical row.
           for (var d = 1; d < dupes.length; d++) { st.supersede_queue.push(dupes[d].id); }
           if (!write(st, primary.id, fact, sourceID)) { return false; }
           st.updated++;
