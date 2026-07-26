@@ -170,8 +170,9 @@ agents:
          Memory {"op":"cursor_release","scope":"user"}
          Reply "nothing new" and stop.
 
-      5. For each session_id from step 2:
-         History {"op":"get","session_id":"<id>","format":"markdown"}
+      5. For each session_id from step 2, ONE call each — never re-read a
+         session you have already read:
+         History {"op":"get","scope":"user","session_id":"<id>","format":"markdown"}
 
       6. For each distinct topic you read (one per topic, not per sentence):
          Memory {"op":"recall","scope":"user","query":"<topic>","top_k":8}
