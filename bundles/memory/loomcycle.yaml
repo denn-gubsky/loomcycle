@@ -94,6 +94,19 @@
 # which this pass drains regardless of session state. If you rely on transcript
 # consolidation, make sure interactive sessions are actually ended.
 #
+# ⚠️ A CHAT WHOSE EXTRACTION CANNOT BE PARSED IS SKIPPED, and its facts are not
+# recoverable by a later pass. This is the one place the pipeline trades data for
+# progress, so it is stated here rather than left in a counter. Holding the
+# watermark instead is safe and it STICKS: the same transcript reliably talks the
+# same model into the same non-answer, so a held mark makes every later pass
+# re-read the same page and consolidate nothing behind it. The pass names each
+# skip, its session id, and a bounded prefix of the reply in its report.
+#
+# Two failures are deliberately NOT skipped, because they mean the data did not
+# land rather than that the chat has no facts to give: a failed WRITE blocks the
+# watermark (deterministic keys make the retry a no-op), and an EMPTY reply
+# blocks (nothing coming back points at the child, not at the chat).
+#
 # Two fan-out caps are operator-tunable via env:
 #   LOOMCYCLE_MAX_CONSOLIDATION_TARGETS      (default 32) targets per tick
 #   LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY  (default 4)  parallel children —
