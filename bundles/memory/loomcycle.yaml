@@ -258,6 +258,9 @@ agents:
           advanced: null,
           advance_blocked: false,
           block_reasons: [],
+          skipped: 0,               // chats passed over: their extraction was unreadable
+          batch_skipped: false,     // ...and the same for the queued-item batch
+          skip_reasons: [],
           recall_unavailable: false,
           idle: false
         };
@@ -267,6 +270,28 @@ agents:
         st.advance_blocked = true;
         if (st.block_reasons.length < 5 && st.block_reasons.indexOf(reason) < 0) {
           st.block_reasons.push(reason);
+        }
+      }
+
+      // skip records a source whose extraction could not be READ. Unlike block()
+      // it does NOT hold the watermark, and the difference is the whole point:
+      //
+      //   a write failed              data did not land   → BLOCK, retry is right
+      //   an extraction was unreadable this chat has no facts → SKIP, accept the loss
+      //
+      // Blocking on an unreadable extraction is safe but it STICKS. The same
+      // transcript reliably talks the same model into the same non-answer, so a
+      // held watermark makes every later pass re-read the same page forever and
+      // consolidate nothing behind it. The operator's decision is that such a
+      // chat is passed over.
+      //
+      // THE COST IS REAL AND IS SAID IN WORDS, never left to be inferred from a
+      // counter: those facts are gone and no later pass recovers them. Silently
+      // advancing past lost content is the one outcome worse than sticking.
+      function skip(st, sourceID, reason) {
+        if (sourceID) { st.skipped++; } else { st.batch_skipped = true; }
+        if (st.skip_reasons.length < 5 && st.skip_reasons.indexOf(reason) < 0) {
+          st.skip_reasons.push(reason);
         }
       }
 
@@ -293,8 +318,18 @@ agents:
           if (text === null) { continue; }        // read failed; already blocked
           st.chats_read++;
 
-          var facts = extract(st, text);
-          if (facts === null) { continue; }       // extraction failed; already blocked
+          var skippedBefore = st.skipped;
+          var facts = extract(st, text, sid);
+          if (facts === null) {
+            // An UNREADABLE extraction is a deliberate skip (st.skipped moved),
+            // so carry the watermark PAST this chat — otherwise a bad row at the
+            // end of the page pins the mark and the next pass re-reads it, which
+            // is the sticking this change exists to end. Every other extraction
+            // failure has already blocked, and the advance below is gated on that
+            // flag, so leaving the mark behind is the right answer for those.
+            if (st.skipped > skippedBefore) { st.watermark = row; }
+            continue;
+          }
           applyFacts(st, facts, sid);
 
           // The watermark candidate is carried BY REFERENCE from the scan row —
@@ -353,7 +388,18 @@ agents:
       // extract runs THE model call: one spawn of the tool-less extractor per
       // transcript. Returns a validated fact array, or null when the child
       // failed or answered with something that is not a fact array at all.
-      function extract(st, text) {
+      // `sourceID` is the chat's session id, or "" for the queued-item batch.
+      //
+      // THE TWO WAYS IT CAN RETURN null ARE NOT THE SAME FAILURE, and conflating
+      // them is what made the pass stick:
+      //
+      //   * a reply that is not a fact array is a property of THIS SOURCE, so it
+      //     will be a non-array again next pass. SKIPPED — see skip().
+      //   * nothing coming back at all points at the CHILD, not at the chat: an
+      //     overloaded or timed-out model returns empty, and there is no reason
+      //     to think a retry returns the same nothing. A refused spawn is plainly
+      //     infrastructure. Both BLOCK, and the retry costs one re-read.
+      function extract(st, text, sourceID) {
         if (!text) { return []; }
         var out;
         st.extractions++;
@@ -368,7 +414,7 @@ agents:
           // Unparsable is NOT the same as empty: an empty array is a legitimate
           // and common answer ("nothing durable here"), while a reply we cannot
           // read means this chat was never actually examined — so advancing past
-          // it would lose it forever.
+          // it loses it, which is why the skip has to be said out loud.
           //
           // The two are reported SEPARATELY, and the raw reply comes with them,
           // because the single message this replaced ("returned no readable
@@ -376,13 +422,15 @@ agents:
           // real: the array was perfectly readable and the CALLER was the thing
           // that could not read it. A report that names the wrong party costs
           // an operator a transcript archaeology session to find that out.
+          //
+          // No "; " inside a reason: report() joins with it, and a reason that
+          // contains the separator reads as two.
           var raw = replyText(out);
           if (!raw) {
             block(st, "extractor returned an empty reply");
           } else {
-            // No "; " inside the reason: report() joins reasons with it, and a
-            // reason that contains the separator reads as two.
-            block(st, "extractor reply could not be parsed as a fact array, reply began: " + replyPreview(raw));
+            skip(st, sourceID, (sourceID ? sourceID + ": " : "") +
+              "extractor reply could not be parsed as a fact array, reply began: " + replyPreview(raw));
           }
           return null;
         }
@@ -447,7 +495,10 @@ agents:
         if (!pending.length) { return []; }
         st.queued_items = pending.length;
 
-        var facts = extract(st, renderPending(pending));
+        // "" marks this as the queued batch rather than a chat: an unreadable
+        // batch extraction leaves its items unacked, so they are re-drained next
+        // pass on their own and nothing about it should hold the CHAT watermark.
+        var facts = extract(st, renderPending(pending), "");
         if (facts === null) { return []; }
         if (!applyFacts(st, facts, "")) { return []; }
 
@@ -666,6 +717,19 @@ agents:
         if (st.dropped > 0) { parts.push("malformed entries dropped " + st.dropped); }
         if (st.transient > 0) { parts.push("transient entries rejected " + st.transient + " (each named a session or run id)"); }
         if (st.truncated > 0) { parts.push("transcripts truncated " + st.truncated); }
+        // The skip is spelled out, not counted. An operator reading "skipped 1"
+        // would reasonably assume the chat comes back around; it does not, and
+        // the whole justification for advancing past it is that the loss is
+        // stated where the decision is visible.
+        if (st.skipped > 0) {
+          parts.push("skipped " + st.skipped + " chat" + (st.skipped === 1 ? "" : "s") +
+            " whose extraction could not be parsed (" + (st.skipped === 1 ? "its" : "their") +
+            " facts are not recoverable by a later pass)");
+        }
+        if (st.batch_skipped) {
+          parts.push("queued batch not consolidated: its extraction could not be parsed, so its items stay queued for the next pass");
+        }
+        if (st.skip_reasons.length) { parts.push("skip detail: " + st.skip_reasons.join(" | ")); }
         if (st.recall_unavailable) { parts.push("recall unavailable (no vector stack) — dedup skipped"); }
         if (st.bands.merge === null) { parts.push("merge band unknown — nothing merged in place"); }
 

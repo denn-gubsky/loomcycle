@@ -46,6 +46,14 @@ type fakeToolset struct {
 	sessions      []map[string]any
 	pending       []map[string]any
 	transcript    string
+	// transcripts gives each chat its own content, keyed by session id; nil keeps
+	// the single shared `transcript` every other scenario uses.
+	transcripts map[string]string
+	// factsBySession gives each chat its own extractor reply. The Agent double
+	// has no session id of its own, so it matches on the transcript the prompt
+	// carries — the same coupling the real pipeline has, and the reason
+	// transcripts must be distinct when this is set.
+	factsBySession map[string]string
 	// factsJSON is the extractor sub-agent's final TEXT, before the runtime's
 	// attribution header is prepended (see subAgentHeader).
 	factsJSON string
@@ -189,7 +197,12 @@ func (h *fakeHistory) Execute(_ context.Context, raw json.RawMessage) (tools.Res
 	if in["scope"] != "user" {
 		return tools.Result{IsError: true, Text: "history: no history_scope policy (default-deny)"}, nil
 	}
-	return okResult(map[string]any{"scope": "user", "chat": map[string]any{}, "markdown": h.f.transcript})
+	md := h.f.transcript
+	if h.f.transcripts != nil {
+		sid, _ := in["session_id"].(string)
+		md = h.f.transcripts[sid]
+	}
+	return okResult(map[string]any{"scope": "user", "chat": map[string]any{}, "markdown": md})
 }
 
 // --- Agent ------------------------------------------------------------------
@@ -201,15 +214,34 @@ func (a *fakeAgent) Description() string          { return "agent (test double)"
 func (a *fakeAgent) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 
 func (a *fakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Result, error) {
-	a.f.record("Agent", raw)
+	in := a.f.record("Agent", raw)
 	if a.f.failAgent {
 		return tools.Result{IsError: true, Text: "sub-agent failed"}, nil
+	}
+	reply := a.f.factsJSON
+	if len(a.f.factsBySession) > 0 {
+		// Route by the transcript the prompt carries. Sorted so a prompt that
+		// somehow matched two fixtures still resolves the same way every run.
+		prompt, _ := in["prompt"].(string)
+		sids := make([]string, 0, len(a.f.transcripts))
+		for sid := range a.f.transcripts {
+			sids = append(sids, sid)
+		}
+		sort.Strings(sids)
+		for _, sid := range sids {
+			if text := a.f.transcripts[sid]; text != "" && strings.Contains(prompt, text) {
+				if r, ok := a.f.factsBySession[sid]; ok {
+					reply = r
+				}
+				break
+			}
+		}
 	}
 	// A sub-agent's result is its final TEXT behind the runtime's attribution
 	// header, so this is deliberately a string and not a marshalled object —
 	// the JS has to cope with whatever a model actually emits, wrapped the way
 	// the runtime actually wraps it.
-	return tools.Result{Text: a.f.subAgentHeader + a.f.factsJSON}, nil
+	return tools.Result{Text: a.f.subAgentHeader + reply}, nil
 }
 
 // --- Context ----------------------------------------------------------------
@@ -821,31 +853,165 @@ func TestExtractor_PromptNamesTheDurabilityFailureModes(t *testing.T) {
 	}
 }
 
-// TestConsolidator_UnreadableExtractorReplyBlocksTheWatermark is the other half
-// of the rule above, and the distinction matters: an EMPTY array means "nothing
-// durable in this chat" and is a normal answer, while a reply that is not a fact
-// array at all means the chat was never actually examined — so advancing past it
-// would lose it permanently.
-func TestConsolidator_UnreadableExtractorReplyBlocksTheWatermark(t *testing.T) {
+// TestConsolidator_UnreadableExtractionSkipsTheChatAndAdvancesPastIt is the
+// other half of the rule above, and the distinction still matters — but it is
+// no longer a distinction about the watermark.
+//
+// An EMPTY array means "nothing durable in this chat" and is a normal answer. A
+// reply that is not a fact array at all means the chat was never examined, and
+// holding the watermark for it USED to be the answer. It sticks: the same
+// transcript reliably talks the same model into the same non-answer, so every
+// later pass re-reads the same page and never converges. The operator's decision
+// is that such a chat is passed over — the loss is accepted and reported, and
+// the pass makes progress.
+//
+// A write failure is a different class entirely and still blocks; see
+// TestConsolidator_FailedWriteBlocksTheWatermark.
+func TestConsolidator_UnreadableExtractionSkipsTheChatAndAdvancesPastIt(t *testing.T) {
 	f := newFakeToolset()
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	f.transcript = "user: hi\nassistant: hello"
 	f.factsJSON = "I'm sorry, I can't help with that."
 
-	runConsolidator(t, f)
-	if f.has("Memory.cursor_advance") {
-		t.Errorf("watermark advanced past a chat whose extraction could not be read; sequence %v", f.ops())
+	res := runConsolidator(t, f)
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("the pass stuck on a chat that will never parse; sequence %v", f.ops())
+	}
+	if f.has("Memory.set") {
+		t.Errorf("wrote a fact from a reply that is not a fact array; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "not recoverable by a later pass") {
+		t.Errorf("report = %q — advancing past lost content without saying so is worse than sticking", res.FinalText)
 	}
 
-	// The empty-array control: same shape, legitimate answer, watermark moves.
+	// The empty-array control: same shape, legitimate answer, watermark moves and
+	// nothing is reported as skipped.
 	g := newFakeToolset()
 	g.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	g.transcript = "user: hi\nassistant: hello"
 	g.factsJSON = "[]"
 
-	runConsolidator(t, g)
+	gres := runConsolidator(t, g)
 	if !g.has("Memory.cursor_advance") {
 		t.Errorf("an empty fact array is a normal answer and must still advance the watermark; sequence %v", g.ops())
+	}
+	if strings.Contains(gres.FinalText, "skipped") {
+		t.Errorf("report = %q — an empty array is not a skip", gres.FinalText)
+	}
+}
+
+// TestConsolidator_SkipsOnlyTheUnparseableChatAmongSeveral. The skip has to be
+// surgical in both directions: the chats around it are consolidated normally,
+// and the watermark lands past the skipped one rather than short of it.
+//
+// The second scenario is the one a naive fix gets wrong. When the LAST scanned
+// row is the unparseable chat, a fix that simply stops blocking still leaves the
+// watermark on the previous row — and the next pass re-reads the bad chat
+// forever, which is the whole defect. The advance still copies a real scan row's
+// (completed_at, session_id) pair verbatim; it is only sound to move past a
+// skipped row because the skip is deliberate and reported.
+func TestConsolidator_SkipsOnlyTheUnparseableChatAmongSeveral(t *testing.T) {
+	const good = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+
+	t.Run("bad chat in the middle", func(t *testing.T) {
+		f := newFakeToolset()
+		f.sessions = []map[string]any{
+			scanRow("sess-a", "2026-07-01T10:00:00Z"),
+			scanRow("sess-b", "2026-07-02T10:00:00Z"),
+			scanRow("sess-c", "2026-07-03T10:00:00Z"),
+		}
+		f.transcripts = map[string]string{
+			"sess-a": "user: I prefer Go.\nassistant: ok",
+			"sess-b": "user: are you ready?\nassistant: READY",
+			"sess-c": "user: still Go.\nassistant: noted",
+		}
+		f.factsBySession = map[string]string{
+			"sess-a": good,
+			// The reply that held the live pass's watermark. It is an OBJECT, not
+			// a fact array, and "READY" is not a fact.
+			"sess-b": `{"text":"READY"}`,
+			"sess-c": good,
+		}
+
+		res := runConsolidator(t, f)
+
+		if n := f.countOp("Memory.set"); n != 2 {
+			t.Errorf("wrote %d facts, want 2 — the chats either side of the skipped one must still be consolidated; sequence %v", n, f.ops())
+		}
+		adv := lastCall(t, f, "Memory.cursor_advance")
+		if adv.Input["session_id"] != "sess-c" || adv.Input["completed_at"] != "2026-07-03T10:00:00Z" {
+			t.Errorf("cursor_advance carried %v/%v, want the last scan row verbatim (sess-c / 2026-07-03T10:00:00Z)",
+				adv.Input["session_id"], adv.Input["completed_at"])
+		}
+		if !f.has("Memory.cursor_release") {
+			t.Errorf("the lease was not returned; sequence %v", f.ops())
+		}
+		for _, want := range []string{
+			"skipped 1 chat whose extraction could not be parsed",
+			"not recoverable by a later pass",
+			"sess-b",
+		} {
+			if !strings.Contains(res.FinalText, want) {
+				t.Errorf("report = %q, missing %q", res.FinalText, want)
+			}
+		}
+		if strings.Contains(res.FinalText, "watermark NOT advanced") {
+			t.Errorf("report claims a blocked watermark for a pass that advanced: %q", res.FinalText)
+		}
+	})
+
+	t.Run("bad chat is the last row", func(t *testing.T) {
+		f := newFakeToolset()
+		f.sessions = []map[string]any{
+			scanRow("sess-a", "2026-07-01T10:00:00Z"),
+			scanRow("sess-b", "2026-07-02T10:00:00Z"),
+		}
+		f.transcripts = map[string]string{
+			"sess-a": "user: I prefer Go.\nassistant: ok",
+			"sess-b": "user: are you ready?\nassistant: READY",
+		}
+		f.factsBySession = map[string]string{"sess-a": good, "sess-b": `{"text":"READY"}`}
+
+		runConsolidator(t, f)
+
+		adv := lastCall(t, f, "Memory.cursor_advance")
+		if adv.Input["session_id"] != "sess-b" || adv.Input["completed_at"] != "2026-07-02T10:00:00Z" {
+			t.Errorf("cursor_advance carried %v/%v, want sess-b — a watermark left short of a skipped LAST row re-reads it on every future pass, which is the whole defect",
+				adv.Input["session_id"], adv.Input["completed_at"])
+		}
+	})
+}
+
+// TestConsolidator_ObjectReplyIsNotAcceptedAsASingleFact pins the boundary of
+// the one lenient branch in the parser. `{"facts":[…]}` is recognised because a
+// model wrapping its array is still handing over an array — but a bare object is
+// not a fact array, and `{"text":"READY"}` (the reply that stuck the live pass)
+// is not a fact. Widening that branch to accept an object as one fact would turn
+// every hijacked, apologetic, or conversational reply into stored memory.
+func TestConsolidator_ObjectReplyIsNotAcceptedAsASingleFact(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: are you ready?\nassistant: READY"
+	f.factsJSON = `{"text":"READY","class":"fact"}`
+
+	res := runConsolidator(t, f)
+
+	if f.has("Memory.set") {
+		t.Errorf("a bare object was stored as a fact; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "could not be parsed") {
+		t.Errorf("report = %q, want the object treated as unparseable", res.FinalText)
+	}
+
+	// The control: the SAME object shape wrapping a real array is still accepted.
+	g := newFakeToolset()
+	g.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	g.transcript = "user: I prefer Go.\nassistant: ok"
+	g.factsJSON = `{"facts":[{"text":"Denn prefers Go for backend services.","class":"preference"}]}`
+
+	runConsolidator(t, g)
+	if n := g.countOp("Memory.set"); n != 1 {
+		t.Errorf("the {\"facts\":[…]} wrapper must still be read; wrote %d, sequence %v", n, g.ops())
 	}
 }
 
@@ -976,9 +1142,6 @@ func TestConsolidator_UnparseableReplyIsReportedWithItsRawPrefix(t *testing.T) {
 	if f.has("Memory.set") {
 		t.Errorf("wrote a fact from a reply that is not a fact array; sequence %v", f.ops())
 	}
-	if f.has("Memory.cursor_advance") {
-		t.Errorf("watermark advanced past a chat that was never actually examined; sequence %v", f.ops())
-	}
 	if !f.has("Memory.cursor_release") {
 		t.Errorf("the lease was not returned on the unparseable-reply path; sequence %v", f.ops())
 	}
@@ -998,8 +1161,12 @@ func TestConsolidator_UnparseableReplyIsReportedWithItsRawPrefix(t *testing.T) {
 		t.Errorf("report quoted the runtime's attribution header instead of the model's reply: %q", res.FinalText)
 	}
 
-	// An empty reply is a DIFFERENT failure — nothing came back at all — and
-	// says so, so an operator can tell a broken child from an unread shape.
+	// An empty reply is a DIFFERENT failure and gets the OPPOSITE policy, which is
+	// the one place the two classes must not be collapsed. Nothing coming back at
+	// all points at the child — an overloaded or timed-out model returns empty —
+	// not at the chat, so there is no reason to believe a retry produces the same
+	// nothing. It BLOCKS, and the retry costs one re-read. Skipping here would
+	// throw a chat away over a transient blip.
 	g := newFakeToolset()
 	g.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	g.transcript = "user: hi\nassistant: hello"
@@ -1007,10 +1174,13 @@ func TestConsolidator_UnparseableReplyIsReportedWithItsRawPrefix(t *testing.T) {
 
 	gres := runConsolidator(t, g)
 	if g.has("Memory.cursor_advance") {
-		t.Errorf("watermark advanced on an empty extractor reply; sequence %v", g.ops())
+		t.Errorf("watermark advanced on an empty extractor reply — a child that returned nothing is a retry, not a skip; sequence %v", g.ops())
 	}
 	if !strings.Contains(gres.FinalText, "empty reply") {
 		t.Errorf("report = %q, want it to distinguish an empty reply from an unparseable one", gres.FinalText)
+	}
+	if strings.Contains(gres.FinalText, "skipped") {
+		t.Errorf("report = %q — an empty reply must not be reported as a skipped chat", gres.FinalText)
 	}
 }
 
