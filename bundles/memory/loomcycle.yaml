@@ -119,6 +119,22 @@
 # as INFORMATION rather than as a fault: a rising one is the signal that the
 # extractor itself is degrading.
 #
+# THE EXTRACTOR IS FED THE CONVERSATION ONLY, and that is a correctness fix
+# before it is a size one. It used to be handed History's HUMAN export, which
+# opens with a metadata header naming the chat id, the serving agent and the
+# participant, and then renders every event — including the ones with no text
+# body (the system prompt, usage rows, tool calls, tool results), which land as
+# raw JSON. So a model instructed that a durable fact is never a fact ABOUT the
+# conversation was handed exactly that, formatted as content, and on the live
+# store it obliged: its first "fact" was the header's participant line, and a
+# second model answered a puzzle it found in the transcript instead of
+# extracting from it. `History get format:conversation` returns the user and
+# assistant turns and nothing else. A user turn that CONTAINS JSON or a code
+# fence is content and survives verbatim — the strip is by event type, never by
+# pattern. On a production-shaped chat the input drops by roughly an order of
+# magnitude (a 6,095-char export renders as 356 chars of conversation in the
+# regression fixture), which also means fewer parts and fewer part-cap losses.
+#
 # A LONG TRANSCRIPT IS SPLIT, NOT TRUNCATED. The other empty reply that pass came
 # from the largest chat, whose transcript had already been cut to a 20,000-char
 # tail — so the head of the conversation was discarded AND the model was still
@@ -479,19 +495,43 @@ agents:
         }
       }
 
-      // readTranscript returns the chat's markdown, or null when the read failed.
+      // readTranscript returns the chat's CONVERSATION, or null when the read
+      // failed.
+      //
+      // `format: "conversation"` is load-bearing, not a preference. The other
+      // rendering — `format: "markdown"`, what this used to ask for — is the
+      // HUMAN export: it opens with a metadata header naming the chat id, the
+      // serving agent and the participant, then renders every event, including
+      // the ones that carry no text and therefore land as raw JSON (the system
+      // prompt, usage rows, tool calls and tool results). Handing that to the
+      // extractor gave a model whose one instruction is "a durable fact is never
+      // a fact ABOUT the conversation" exactly that, formatted as content: on
+      // the live store its first extracted "fact" was the header's participant
+      // line. The conversation rendering is the user and assistant turns and
+      // nothing else — an order of magnitude smaller on a real chat, so it also
+      // splits into fewer parts and loses fewer of them to the part cap.
       function readTranscript(st, sid) {
         var raw;
         try {
           // `scope` is load-bearing and is a LITERAL. History defaults to "self";
           // this agent is granted history_scope:[user] only, so omitting it is a
           // guaranteed default-deny.
-          raw = History({ op: "get", scope: CONFIG.scope, session_id: sid, format: "markdown" });
+          raw = History({ op: "get", scope: CONFIG.scope, session_id: sid, format: "conversation" });
         } catch (e) {
           block(st, "History get failed for " + sid + ": " + errText(e));
           return null;
         }
         var doc = parseJSON(raw);
+        // A runtime that does not know this format falls through to the
+        // STRUCTURED event array, whose `markdown` is undefined — which would
+        // read as an empty chat and advance the watermark past it in silence.
+        // The format echo is how that is caught; block instead, so an operator
+        // running a bundle newer than the binary sees why nothing is extracted.
+        if (doc && doc.format !== "conversation") {
+          block(st, "History get for " + sid + " did not return the conversation rendering (format=" +
+            String(doc.format) + ") — this runtime is older than this bundle");
+          return null;
+        }
         // Returned WHOLE. Fitting it to the extractor is chatParts' job, and it
         // splits rather than cuts — the truncation that used to happen here
         // discarded the head of every long conversation with no way to tell.
@@ -571,8 +611,9 @@ agents:
       // splitTurns cuts the transcript at message boundaries, keeping every byte
       // and every separator so the parts rejoin to the original exactly.
       //
-      // History's markdown renderer opens each event with a "### <type> · <ts>"
-      // line, so that is the boundary when one is present. A transcript in any
+      // History's conversation renderer opens each turn with a "### user" /
+      // "### assistant" line (and its markdown export a "### <type> · <ts>"
+      // one), so that is the boundary when one is present. A transcript in any
       // other shape has none, and there every LINE is a boundary instead — still
       // never mid-line, and one-line-per-turn renderings stay turn-aligned.
       function splitTurns(text) {
