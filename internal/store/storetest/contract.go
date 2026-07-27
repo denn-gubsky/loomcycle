@@ -157,6 +157,12 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryCursorLeaseCAS", testMemoryCursorLeaseCAS},
 		{"MemoryCursorAdvanceMonotonicAndOwner", testMemoryCursorAdvanceMonotonicAndOwner},
 		{"MemoryDeleteScopeCleansConsolidationRows", testMemoryDeleteScopeCleansConsolidationRows},
+		{"MemoryOrphanScanSkipsGlobal", testMemoryOrphanScanSkipsGlobal},
+		{"MemoryOrphanRepairMovesAndIsIdempotent", testMemoryOrphanRepairMovesAndIsIdempotent},
+		{"MemoryOrphanRepairSkipsCollision", testMemoryOrphanRepairSkipsCollision},
+		{"MemoryOrphanRepairScopeIDFilter", testMemoryOrphanRepairScopeIDFilter},
+		{"MemoryOrphanEmptyTargetRefused", testMemoryOrphanEmptyTargetRefused},
+		{"MemoryLegacyTenantStatsOnlyMixed", testMemoryLegacyTenantStatsOnlyMixed},
 		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
 		// v0.12.x — MemoryAtomicUpdate primitive backing the new
 		// reducer ops (Memory.merge / append_dedupe / bounded_list).
@@ -10343,4 +10349,189 @@ func names(rows []store.DirentRow) []string {
 		out[i] = r.Name
 	}
 	return out
+}
+
+// ─── Legacy-tenant memory orphans ────────────────────────────────────────────
+
+// seedLegacyMemory writes into the legacy "" tenant partition — where every row
+// written before RFC BL added tenant_id still sits.
+func seedLegacyMemory(t *testing.T, s store.Store, scope store.MemoryScope, scopeID, key, val string) {
+	t.Helper()
+	if err := s.MemorySet(context.Background(), "", scope, scopeID, key, json.RawMessage(`"`+val+`"`), 0); err != nil {
+		t.Fatalf("seed legacy %s/%s: %v", scopeID, key, err)
+	}
+}
+
+// testMemoryOrphanScanSkipsGlobal: the scan reports non-global legacy rows as
+// orphans and counts scope='global' separately — that partition is shared by
+// design (the Context op=help index lives there) and "" is its correct home, so
+// a repair that moved it would break help for every other tenant.
+func testMemoryOrphanScanSkipsGlobal(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	seedLegacyMemory(t, s, store.MemoryScopeUser, "u1", "doc.chunk:a", "A")
+	seedLegacyMemory(t, s, store.MemoryScopeUser, "u1", "doc.chunk:b", "B")
+	seedLegacyMemory(t, s, store.MemoryScopeAgent, "ag1", "k", "C")
+	seedLegacyMemory(t, s, store.MemoryScopeGlobal, "__help__", "topic#x", "H")
+
+	rep, err := s.MemoryOrphanScan(ctx, "tnt")
+	if err != nil {
+		t.Fatalf("MemoryOrphanScan: %v", err)
+	}
+	if rep.Orphaned != 3 || rep.SkippedGlobal != 1 || rep.Collisions != 0 {
+		t.Errorf("scan = orphaned %d / global %d / collisions %d, want 3/1/0",
+			rep.Orphaned, rep.SkippedGlobal, rep.Collisions)
+	}
+	if rep.Applied {
+		t.Error("Applied = true on a read-only scan")
+	}
+	// Grouping is what lets an operator tell a single-tenant deployment from a
+	// multi-tenant one before moving anything; "" records no owner.
+	if len(rep.Groups) != 2 {
+		t.Fatalf("Groups = %d, want 2 (user/u1 + agent/ag1): %+v", len(rep.Groups), rep.Groups)
+	}
+	if rep.Groups[0].ScopeID != "u1" || rep.Groups[0].Rows != 2 {
+		t.Errorf("largest group = %+v, want user/u1 with 2 rows", rep.Groups[0])
+	}
+}
+
+// testMemoryOrphanRepairMovesAndIsIdempotent: the repair re-stamps orphans onto
+// the target, leaves global at "", and a second call moves nothing.
+func testMemoryOrphanRepairMovesAndIsIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	seedLegacyMemory(t, s, store.MemoryScopeUser, "u1", "doc.chunk:a", "A")
+	seedLegacyMemory(t, s, store.MemoryScopeGlobal, "__help__", "topic#x", "H")
+
+	rep, err := s.MemoryOrphanRepair(ctx, "tnt", nil)
+	if err != nil {
+		t.Fatalf("MemoryOrphanRepair: %v", err)
+	}
+	if !rep.Applied || rep.Moved != 1 {
+		t.Errorf("Applied=%v Moved=%d, want true/1", rep.Applied, rep.Moved)
+	}
+	if _, err := s.MemoryGet(ctx, "tnt", store.MemoryScopeUser, "u1", "doc.chunk:a"); err != nil {
+		t.Errorf("row not readable at the target tenant after repair: %v", err)
+	}
+	if _, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, "u1", "doc.chunk:a"); err == nil {
+		t.Error("row still present at the legacy tenant after repair")
+	}
+	if _, err := s.MemoryGet(ctx, "", store.MemoryScopeGlobal, "__help__", "topic#x"); err != nil {
+		t.Errorf("global row was moved off the legacy partition: %v", err)
+	}
+
+	rep2, err := s.MemoryOrphanRepair(ctx, "tnt", nil)
+	if err != nil {
+		t.Fatalf("second repair: %v", err)
+	}
+	if rep2.Moved != 0 || rep2.Orphaned != 0 {
+		t.Errorf("second repair moved %d of %d orphans, want 0 of 0", rep2.Moved, rep2.Orphaned)
+	}
+}
+
+// testMemoryOrphanRepairSkipsCollision: when the target already holds a row for
+// the same (scope, scope_id, key) — the PK — the legacy row is left in place
+// rather than merged. Which side should win depends on content the store cannot
+// adjudicate, and overwriting would destroy live data.
+func testMemoryOrphanRepairSkipsCollision(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	seedLegacyMemory(t, s, store.MemoryScopeUser, "u1", "doc.chunk:a", "LEGACY")
+	seedLegacyMemory(t, s, store.MemoryScopeUser, "u1", "doc.chunk:free", "MOVES")
+	if err := s.MemorySet(ctx, "tnt", store.MemoryScopeUser, "u1", "doc.chunk:a", json.RawMessage(`"TARGET"`), 0); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	rep, err := s.MemoryOrphanRepair(ctx, "tnt", nil)
+	if err != nil {
+		t.Fatalf("MemoryOrphanRepair: %v", err)
+	}
+	if rep.Collisions != 1 || rep.Moved != 1 {
+		t.Errorf("collisions=%d moved=%d, want 1/1 (the non-colliding row only)", rep.Collisions, rep.Moved)
+	}
+	got, err := s.MemoryGet(ctx, "tnt", store.MemoryScopeUser, "u1", "doc.chunk:a")
+	if err != nil {
+		t.Fatalf("target get: %v", err)
+	}
+	if string(got.Value) != `"TARGET"` {
+		t.Errorf("target value = %s, want \"TARGET\" (the legacy row overwrote live data)", got.Value)
+	}
+	// Nothing lost: the skipped legacy row is still there to inspect.
+	if _, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, "u1", "doc.chunk:a"); err != nil {
+		t.Errorf("colliding legacy row was deleted instead of skipped: %v", err)
+	}
+}
+
+// testMemoryOrphanRepairScopeIDFilter: a multi-tenant deployment's orphans may
+// belong to different tenants and "" records no owner, so the filter must move
+// only the named scope_ids. Also exercises the bound-only-when-present filter
+// argument, which differs per tier.
+func testMemoryOrphanRepairScopeIDFilter(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	seedLegacyMemory(t, s, store.MemoryScopeUser, "mine", "k", "A")
+	seedLegacyMemory(t, s, store.MemoryScopeUser, "someone-else", "k", "B")
+
+	rep, err := s.MemoryOrphanRepair(ctx, "tnt", []string{"mine"})
+	if err != nil {
+		t.Fatalf("MemoryOrphanRepair: %v", err)
+	}
+	if rep.Moved != 1 {
+		t.Errorf("Moved = %d, want 1", rep.Moved)
+	}
+	if _, err := s.MemoryGet(ctx, "tnt", store.MemoryScopeUser, "mine", "k"); err != nil {
+		t.Errorf("filtered-in row did not move: %v", err)
+	}
+	if _, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, "someone-else", "k"); err != nil {
+		t.Errorf("filtered-out row was moved: %v", err)
+	}
+}
+
+// testMemoryOrphanEmptyTargetRefused: "" IS the legacy partition, so a repair
+// targeting it is a no-op that would otherwise report success.
+func testMemoryOrphanEmptyTargetRefused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, err := s.MemoryOrphanScan(ctx, ""); err == nil {
+		t.Error("MemoryOrphanScan(\"\") succeeded; want a refusal")
+	}
+	if _, err := s.MemoryOrphanRepair(ctx, "", nil); err == nil {
+		t.Error("MemoryOrphanRepair(\"\") succeeded; want a refusal")
+	}
+}
+
+// testMemoryLegacyTenantStatsOnlyMixed pins the boot warning's gating input. The
+// first case is the important one: a deployment holding NOTHING but "" rows is
+// not broken — its reads go to "" as well — so reporting no tenants there is
+// what keeps the warning off every legacy/open-mode install.
+func testMemoryLegacyTenantStatsOnlyMixed(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	seedLegacyMemory(t, s, store.MemoryScopeUser, "u1", "k", "A")
+	legacy, tenants, err := s.MemoryLegacyTenantStats(ctx)
+	if err != nil {
+		t.Fatalf("MemoryLegacyTenantStats: %v", err)
+	}
+	if legacy != 1 {
+		t.Errorf("legacyRows = %d, want 1", legacy)
+	}
+	if len(tenants) != 0 {
+		t.Errorf("tenants = %v, want none (no real tenant → nothing is stranded)", tenants)
+	}
+
+	// Add a real tenant → now it IS the mixed state that strands data.
+	if err := s.MemorySet(ctx, "tnt", store.MemoryScopeUser, "u1", "other", json.RawMessage(`"B"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	legacy, tenants, err = s.MemoryLegacyTenantStats(ctx)
+	if err != nil {
+		t.Fatalf("MemoryLegacyTenantStats: %v", err)
+	}
+	if legacy != 1 || len(tenants) != 1 || tenants[0] != "tnt" {
+		t.Errorf("got legacy=%d tenants=%v, want 1 / [tnt]", legacy, tenants)
+	}
+
+	// scope='global' at "" is not stranded — it belongs there.
+	seedLegacyMemory(t, s, store.MemoryScopeGlobal, "__help__", "topic#x", "H")
+	legacy2, _, err := s.MemoryLegacyTenantStats(ctx)
+	if err != nil {
+		t.Fatalf("MemoryLegacyTenantStats: %v", err)
+	}
+	if legacy2 != legacy {
+		t.Errorf("legacyRows went %d → %d after adding a global row; global must not count", legacy, legacy2)
+	}
 }
