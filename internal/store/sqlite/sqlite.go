@@ -4480,7 +4480,7 @@ func memoryOrphanScan(ctx context.Context, q memoryOrphanQuerier, targetTenant s
 	// scope='global' is shared by design (the help index lives there), so "" is
 	// its correct home — count it separately and never treat it as an orphan.
 	if err := q.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory WHERE COALESCE(tenant_id,'') = '' AND scope = 'global'`,
+		`SELECT COUNT(*) FROM memory WHERE tenant_id = '' AND scope = 'global'`,
 	).Scan(&rep.SkippedGlobal); err != nil {
 		return rep, err
 	}
@@ -4491,9 +4491,9 @@ func memoryOrphanScan(ctx context.Context, q memoryOrphanQuerier, targetTenant s
 		        SUM(CASE WHEN t.key IS NOT NULL THEN 1 ELSE 0 END) AS c
 		   FROM memory m
 		   LEFT JOIN memory t
-		     ON COALESCE(t.tenant_id,'') = ? AND t.scope = m.scope
+		     ON t.tenant_id = ? AND t.scope = m.scope
 		        AND t.scope_id = m.scope_id AND t.key = m.key
-		  WHERE COALESCE(m.tenant_id,'') = '' AND m.scope <> 'global'
+		  WHERE m.tenant_id = '' AND m.scope <> 'global'
 		  GROUP BY m.scope, m.scope_id
 		  ORDER BY n DESC, m.scope, m.scope_id`,
 		targetTenant,
@@ -4549,10 +4549,10 @@ func (s *Store) MemoryOrphanRepair(ctx context.Context, targetTenant string, sco
 	args = append(args, targetTenant)
 	res, err := tx.ExecContext(ctx,
 		`UPDATE memory SET tenant_id = ?
-		  WHERE COALESCE(tenant_id,'') = '' AND scope <> 'global'`+filter+`
+		  WHERE tenant_id = '' AND scope <> 'global'`+filter+`
 		    AND NOT EXISTS (
 		      SELECT 1 FROM memory t
-		       WHERE COALESCE(t.tenant_id,'') = ? AND t.scope = memory.scope
+		       WHERE t.tenant_id = ? AND t.scope = memory.scope
 		         AND t.scope_id = memory.scope_id AND t.key = memory.key)`,
 		args...,
 	)
@@ -4573,14 +4573,14 @@ func (s *Store) MemoryOrphanRepair(ctx context.Context, targetTenant string, sco
 func (s *Store) MemoryLegacyTenantStats(ctx context.Context) (int, []string, error) {
 	var legacy int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory WHERE COALESCE(tenant_id,'') = '' AND scope <> 'global'`,
+		`SELECT COUNT(*) FROM memory WHERE tenant_id = '' AND scope <> 'global'`,
 	).Scan(&legacy); err != nil {
 		return 0, nil, err
 	}
 	// Capped: the boot message names a couple of tenants, and an operator with
 	// hundreds does not need them all enumerated in a log line.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT tenant_id FROM memory WHERE COALESCE(tenant_id,'') <> '' ORDER BY tenant_id LIMIT 9`)
+		`SELECT DISTINCT tenant_id FROM memory WHERE tenant_id <> '' ORDER BY tenant_id LIMIT 9`)
 	if err != nil {
 		return 0, nil, err
 	}
