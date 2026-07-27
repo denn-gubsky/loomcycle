@@ -473,7 +473,7 @@ func (s *Sweeper) sweepChatsOnce(parent context.Context) (int, error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	cutoff := s.now().Add(-s.chatsMaxAge)
-	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, chatsPruneBatch)
+	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, store.SessionAgentsAny, nil, chatsPruneBatch)
 	if err != nil {
 		return 0, err
 	}
@@ -929,7 +929,7 @@ func (s *Sweeper) DryRunCounts(ctx context.Context) (map[string]int, error) {
 	// "chats" (never a def-type name, so no collision). Pinned sessions are
 	// excluded by the store.
 	chatsCutoff := s.now().Add(-s.chatsMaxAge)
-	sessions, err := s.store.PrunableAgedSessions(ctx, chatsCutoff, reportListCap)
+	sessions, err := s.store.PrunableAgedSessions(ctx, chatsCutoff, store.SessionAgentsAny, nil, reportListCap)
 	if err != nil {
 		return nil, err
 	}

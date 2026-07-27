@@ -783,10 +783,40 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 // operator's explicit "keep this" and must exempt the chat from ALL automated
 // retention paths (RFC BM Phase 2 chats sweeper + the legacy RFC AV archiver,
 // both of which consume this list).
-func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error) {
+//
+// match + agents narrow by the session's authoring agent (see
+// store.SessionAgentMatch). The agent lives on sessions, not runs, so the
+// predicate is a subquery against sessions — the same shape as the pinned
+// exemption above it — rather than a join that would have to survive the
+// GROUP BY.
+func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, match store.SessionAgentMatch, agents []string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 500
 	}
+	switch match {
+	case store.SessionAgentsAny, store.SessionAgentsOnly, store.SessionAgentsExcept:
+	default:
+		// Fail closed. An unrecognised mode falling through to "no clause" would
+		// silently widen a caller that asked to narrow, and this list feeds a
+		// cascade delete.
+		return nil, fmt.Errorf("list prunable sessions: unknown agent match %q", match)
+	}
+	if match == store.SessionAgentsOnly && len(agents) == 0 {
+		// "Only these agents" with no agents selects nothing. Answered here rather
+		// than as SQL: `IN ()` is a syntax error, and the alternative reading
+		// (skip the clause → every session) is the destructive one.
+		return nil, nil
+	}
+	// Placeholders in this file are numbered BY HAND, so the counter has to
+	// advance by exactly the number of names the agent clause consumed or the
+	// LIMIT below binds the wrong argument.
+	args := []any{
+		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
+		olderThan,
+	}
+	i := 5
+	agentCond := agentMatchCond(match, agents, &args, &i)
+	args = append(args, limit)
 	rows, err := s.pool.Query(ctx,
 		`SELECT session_id FROM runs
 		 GROUP BY session_id
@@ -795,11 +825,10 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, l
 		                 THEN 1 ELSE 0 END) = 0
 		    AND MAX(completed_at) IS NOT NULL
 		    AND MAX(completed_at) < $4
-		    AND session_id NOT IN (SELECT id FROM sessions WHERE pinned = TRUE)
+		    AND session_id NOT IN (SELECT id FROM sessions WHERE pinned = TRUE)`+agentCond+`
 		 ORDER BY MAX(completed_at) ASC
-		 LIMIT $5`,
-		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
-		olderThan, limit,
+		 LIMIT $`+strconv.Itoa(i),
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list prunable sessions: %w", err)
@@ -814,6 +843,39 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, l
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// agentMatchCond builds PrunableAgedSessions' authoring-agent narrowing clause,
+// appending each name to args and advancing the shared ordinal counter by
+// exactly len(agents) — every query in this file numbers its placeholders by
+// hand, so a counter that does not move leaves the LIMIT bound to an agent name.
+//
+// Returns "" when there is nothing to narrow: SessionAgentsAny, or
+// SessionAgentsExcept over an empty set (SQL has no `NOT IN ()`). The
+// Only-over-an-empty-set case never reaches here — the caller answers it with an
+// empty result, because skipping the clause there would widen a delete to every
+// session rather than to none.
+//
+// The agent lives on `sessions`, not on `runs`, so this is a subquery against
+// sessions rather than a join: PrunableAgedSessions groups runs by session_id,
+// and a joined column would have to be carried through the GROUP BY. Same shape
+// as the pinned exemption it sits beside. sessions.agent is NOT NULL, so the
+// inner `agent IN (…)` can't go three-valued and quietly drop rows.
+func agentMatchCond(match store.SessionAgentMatch, agents []string, args *[]any, i *int) string {
+	if match == store.SessionAgentsAny || len(agents) == 0 {
+		return ""
+	}
+	ph := make([]string, len(agents))
+	for k, n := range agents {
+		ph[k] = fmt.Sprintf("$%d", *i)
+		*i++
+		*args = append(*args, n)
+	}
+	op := "IN"
+	if match == store.SessionAgentsExcept {
+		op = "NOT IN"
+	}
+	return ` AND session_id ` + op + ` (SELECT id FROM sessions WHERE agent IN (` + strings.Join(ph, ", ") + `))`
 }
 
 // excludeAgentsCond builds a `col NOT IN ($n, …)` clause for a name set,

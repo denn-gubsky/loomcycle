@@ -302,7 +302,10 @@ func (s *Sweeper) archiveSessionsOnce(parent context.Context) (int, error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	cutoff := s.now().Add(-s.runRetention)
-	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, runPruneBatch)
+	// No agent dimension here: the legacy archiver has one age for every chat.
+	// The per-agent split lives in the RFC BM retention sweeper, which supersedes
+	// this archiver whenever it owns chats (main.go makes them exclusive).
+	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, store.SessionAgentsAny, nil, runPruneBatch)
 	if err != nil {
 		return 0, err
 	}
