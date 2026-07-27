@@ -41,7 +41,8 @@ func TestMemoryOrphanRepair_DryRunIsTheDefault(t *testing.T) {
 		auth.Principal{TenantID: "tnt", Subject: "root", Scopes: []string{auth.ScopeAdmin}})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/_memory/repair-tenant", strings.NewReader(`{}`)).WithContext(adminCtx)
+	req := httptest.NewRequest(http.MethodPost, "/v1/_memory/repair-tenant",
+		strings.NewReader(`{"tenant":"tnt"}`)).WithContext(adminCtx)
 	srv.handleMemoryOrphanRepair(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -53,14 +54,52 @@ func TestMemoryOrphanRepair_DryRunIsTheDefault(t *testing.T) {
 	if got.Orphaned != 1 {
 		t.Errorf("Orphaned = %d, want 1", got.Orphaned)
 	}
-	// Tenant defaulted to the caller's own, and is echoed so a caller that
-	// relied on the default can see what was acted on.
 	if got.Tenant != "tnt" {
-		t.Errorf("Tenant = %q, want %q (the caller's own)", got.Tenant, "tnt")
+		t.Errorf("Tenant = %q, want tnt echoed back", got.Tenant)
 	}
 	// The row must still be at the legacy partition.
 	if _, err := srv.store.MemoryGet(context.Background(), "", store.MemoryScopeUser, "u1", "doc.chunk:a"); err != nil {
 		t.Errorf("dry run moved the row: %v", err)
+	}
+}
+
+// TestMemoryOrphanRepair_NeverDefaultsToCallerTenant is the regression for a
+// hazard only end-to-end testing exposed: an earlier draft defaulted the target
+// to the principal's own tenant, and a legacy/open-mode token reports tenant
+// "default" rather than "". So a bare POST reported three movable rows against a
+// tenant holding none of them, and one more click would have moved real data to a
+// plausible-but-wrong destination. A tenantless request must never resolve to the
+// caller's tenant — it lists candidates instead.
+func TestMemoryOrphanRepair_NeverDefaultsToCallerTenant(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
+	seedLegacyMemory(t, srv, store.MemoryScopeUser, "u1", "doc.chunk:a")
+	// A real tenant holding a row — the only legitimate target here.
+	if err := srv.store.MemorySet(context.Background(), "acme", store.MemoryScopeUser, "u1", "fresh", json.RawMessage(`"v"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	// Principal tenant is "default", exactly as a legacy token reports.
+	adminCtx := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "default", Subject: "root", Scopes: []string{auth.ScopeAdmin}})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/_memory/repair-tenant", strings.NewReader(`{}`)).WithContext(adminCtx)
+	srv.handleMemoryOrphanRepair(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	got := decodeRepair(t, rec)
+	if got.Tenant == "default" {
+		t.Error(`Tenant = "default": the target was defaulted from the caller, which holds none of the stranded rows`)
+	}
+	if got.Tenant != "" {
+		t.Errorf("Tenant = %q, want empty (no target was chosen)", got.Tenant)
+	}
+	// Instead of guessing, it reports the real candidates so a picker can be shown.
+	if len(got.CandidateTenants) != 1 || got.CandidateTenants[0] != "acme" {
+		t.Errorf("CandidateTenants = %v, want [acme]", got.CandidateTenants)
+	}
+	if got.Orphaned != 1 {
+		t.Errorf("Orphaned = %d, want 1 (the total is target-independent)", got.Orphaned)
 	}
 }
 
@@ -96,15 +135,15 @@ func TestMemoryOrphanRepair_AppliesWhenAsked(t *testing.T) {
 	}
 }
 
-// TestMemoryOrphanRepair_TenantRequiredWithoutOne: a legacy/open-mode admin token
-// carries no tenant, and "" is the legacy partition rather than a repair target —
-// so the server must refuse instead of guessing which tenant the rows belong to.
-func TestMemoryOrphanRepair_TenantRequiredWithoutOne(t *testing.T) {
+// TestMemoryOrphanRepair_TenantRequiredToApply: applying without a target must be
+// refused rather than guessed. "" is the legacy partition itself and records no
+// owner, so there is nothing for the server to infer a destination from.
+func TestMemoryOrphanRepair_TenantRequiredToApply(t *testing.T) {
 	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
 	seedLegacyMemory(t, srv, store.MemoryScopeUser, "u1", "doc.chunk:a")
-	// Admin principal with NO tenant of its own.
+	// Even WITH a tenant on the principal, an apply must name its target.
 	adminCtx := auth.WithPrincipal(context.Background(),
-		auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}})
+		auth.Principal{TenantID: "default", Subject: "root", Scopes: []string{auth.ScopeAdmin}})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/_memory/repair-tenant", strings.NewReader(`{"dry_run":false}`)).WithContext(adminCtx)

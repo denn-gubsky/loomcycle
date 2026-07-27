@@ -432,12 +432,32 @@ function PresetsSection() {
 // appliance-style ones with no shell — the alternative is hand-writing a
 // collision-aware UPDATE against a live database.
 function MaintenanceSection() {
-  const principal = usePrincipal();
-  const [tenant, setTenant] = useState(principal?.tenant_id ?? "");
+  // Deliberately NOT prefilled from the principal. A legacy/open-mode token
+  // reports tenant "default", which holds none of the stranded rows — prefilling
+  // it would put a plausible-but-wrong destination one click from Apply. The
+  // tenantless discovery call below reports the real candidates instead.
+  const [tenant, setTenant] = useState("");
+  const [candidates, setCandidates] = useState<string[]>([]);
   const [report, setReport] = useState<MemoryOrphanReport | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Discovery: what is stranded, and which tenants could own it. Cannot write.
+  const discover = useCallback(async () => {
+    try {
+      const r = await repairTenantMemory("", true);
+      setCandidates(r.candidate_tenants ?? []);
+      setReport(r);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    discover();
+  }, [discover]);
 
   const run = async (dryRun: boolean) => {
     if (busy) return;
@@ -480,13 +500,24 @@ function MaintenanceSection() {
       <div className="settings-row">
         <label>
           Target tenant
-          <input
-            value={tenant}
-            onChange={(e) => setTenant(e.target.value)}
-            placeholder="tenant id"
-          />
+          {candidates.length > 0 ? (
+            <select value={tenant} onChange={(e) => setTenant(e.target.value)}>
+              <option value="">select…</option>
+              {candidates.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={tenant}
+              onChange={(e) => setTenant(e.target.value)}
+              placeholder="tenant id"
+            />
+          )}
         </label>
-        <button type="button" onClick={() => run(true)} disabled={busy}>
+        <button type="button" onClick={() => run(true)} disabled={busy || !tenant}>
           Preview
         </button>
         <button

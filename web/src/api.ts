@@ -669,17 +669,25 @@ export interface MemoryOrphanGroup {
 }
 
 export interface MemoryOrphanReport {
-  tenant: string;
+  // Empty when no target was chosen (the tenantless discovery call).
+  tenant?: string;
   orphaned: number;
   collisions: number;
   skipped_global: number;
   groups?: MemoryOrphanGroup[];
   applied: boolean;
   moved: number;
+  // Tenants that hold rows — the valid targets. Returned only by the tenantless
+  // dry run, because the server must never guess a destination for a bulk
+  // rewrite: a legacy token's own tenant is "default", which holds none of the
+  // stranded rows.
+  candidate_tenants?: string[];
 }
 
 // dryRun defaults to true server-side; passed explicitly here so the call site
 // reads as the action it performs rather than relying on an omitted field.
+// Omitting the tenant is the discovery call — it lists candidate_tenants and the
+// target-independent orphan total, and can never write.
 export async function repairTenantMemory(
   tenant: string,
   dryRun: boolean,
