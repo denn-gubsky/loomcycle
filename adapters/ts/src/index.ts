@@ -302,6 +302,11 @@ export type {
   LimitInfo,
   TokenLimit,
   TokenLimitsResponse,
+  ConfigResponse,
+  ConfigProvider,
+  ConfigModel,
+  ConfigSearch,
+  ConfigInstance,
   SetTokenLimitRequest,
 } from "./types.js";
 

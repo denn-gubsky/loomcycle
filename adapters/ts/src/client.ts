@@ -139,6 +139,7 @@ import type {
   UsageReportResponse,
   TokenLimit,
   TokenLimitsResponse,
+  ConfigResponse,
   SetTokenLimitRequest,
 } from "./types.js";
 
@@ -534,6 +535,21 @@ export class LoomcycleClient {
     if (opts?.tenant) params.set("tenant", opts.tenant);
     const q = params.toString() ? `?${params.toString()}` : "";
     return jsonFetch<UsageReportResponse>(this.ctx, `/v1/_usage${q}`, opts);
+  }
+
+  /** Instance configuration: build identity, the feature matrix, and the live
+   *  provider/model/search cascade with coarse active/inactive status. The
+   *  out-of-band twin of the in-band `Context op=capabilities`, sharing its
+   *  probe server-side so the two cannot disagree. Mirrors `GET /v1/config`.
+   *
+   *  `view` names the disclosure level the response was rendered at, so you can
+   *  tell "this deployment has none" from "you weren't shown them". A deployment
+   *  running with `LOOMCYCLE_PUBLIC_CONFIG=1` also serves this **with no
+   *  bearer**, returning the narrower `"public"` view — which is what a landing
+   *  page fetches directly. `models` is one entry per (provider, model),
+   *  deduplicated across plans, with `selected` marking what actually runs. */
+  async getConfig(opts?: { signal?: AbortSignal }): Promise<ConfigResponse> {
+    return jsonFetch<ConfigResponse>(this.ctx, "/v1/config", opts);
   }
 
   /** List the per-scope token budgets visible to the caller (RFC AW), each with
