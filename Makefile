@@ -181,7 +181,7 @@ pg-up:
 
 pg-down:
 	@if docker ps -a --format '{{.Names}}' | grep -q '^$(PG_CONTAINER)$$'; then \
-		docker rm -f $(PG_CONTAINER) >/dev/null && echo "$(PG_CONTAINER) removed"; \
+		docker rm -f -v $(PG_CONTAINER) >/dev/null && echo "$(PG_CONTAINER) removed"; \
 	else \
 		echo "$(PG_CONTAINER) not running"; \
 	fi
