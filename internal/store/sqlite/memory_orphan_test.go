@@ -174,3 +174,57 @@ func TestMemoryOrphan_EmptyTargetRefused(t *testing.T) {
 		t.Error("MemoryOrphanRepair(\"\") succeeded; want a refusal")
 	}
 }
+
+// TestMemoryLegacyTenantStats_OnlyWarnsOnMixedState pins the gating input for the
+// boot warning across the three states a deployment can be in. The middle case is
+// the important one: a deployment holding NOTHING but "" rows is not broken —
+// its reads go to "" as well — so reporting no tenants there is what keeps the
+// warning off every legacy/open-mode install.
+func TestMemoryLegacyTenantStats_OnlyWarnsOnMixedState(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("legacy only — not affected", func(t *testing.T) {
+		s := newTestStore(t)
+		seedLegacy(t, s, store.MemoryScopeUser, "u1", "k", "A")
+		legacy, tenants, err := s.MemoryLegacyTenantStats(ctx)
+		if err != nil {
+			t.Fatalf("MemoryLegacyTenantStats: %v", err)
+		}
+		if legacy != 1 {
+			t.Errorf("legacyRows = %d, want 1", legacy)
+		}
+		if len(tenants) != 0 {
+			t.Errorf("tenants = %v, want none (no real tenant → nothing is stranded)", tenants)
+		}
+	})
+
+	t.Run("mixed — affected", func(t *testing.T) {
+		s := newTestStore(t)
+		seedLegacy(t, s, store.MemoryScopeUser, "u1", "k", "A")
+		if err := s.MemorySet(ctx, "tnt", store.MemoryScopeUser, "u1", "other", json.RawMessage(`"B"`), 0); err != nil {
+			t.Fatal(err)
+		}
+		legacy, tenants, err := s.MemoryLegacyTenantStats(ctx)
+		if err != nil {
+			t.Fatalf("MemoryLegacyTenantStats: %v", err)
+		}
+		if legacy != 1 || len(tenants) != 1 || tenants[0] != "tnt" {
+			t.Errorf("got legacy=%d tenants=%v, want 1 / [tnt]", legacy, tenants)
+		}
+	})
+
+	t.Run("global at legacy is not stranded", func(t *testing.T) {
+		s := newTestStore(t)
+		seedLegacy(t, s, store.MemoryScopeGlobal, "__help__", "topic#x", "H")
+		if err := s.MemorySet(ctx, "tnt", store.MemoryScopeUser, "u1", "k", json.RawMessage(`"B"`), 0); err != nil {
+			t.Fatal(err)
+		}
+		legacy, _, err := s.MemoryLegacyTenantStats(ctx)
+		if err != nil {
+			t.Fatalf("MemoryLegacyTenantStats: %v", err)
+		}
+		if legacy != 0 {
+			t.Errorf("legacyRows = %d, want 0 (global belongs at \"\")", legacy)
+		}
+	})
+}

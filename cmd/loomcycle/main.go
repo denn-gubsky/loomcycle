@@ -3079,6 +3079,45 @@ func main() {
 // missing-config (postgres backend selected without a DSN) and
 // dial/migration failures (postgres unreachable, schema not initialised
 // when LOOMCYCLE_PG_AUTOMIGRATE=0).
+// warnLegacyTenantMemory says loudly, once at boot, when memory rows are
+// stranded at the legacy "" tenant.
+//
+// RFC BL added tenant_id to the `memory` table without backfilling the rows
+// already in it, so every pre-upgrade row stayed at "" while reads became
+// tenant-scoped. The failure is quiet in a specific and misleading way: Document
+// keeps chunk BODIES in that table but chunk STRUCTURE in SQL Memory, which is
+// not partitioned the same way, so an affected document still lists, still
+// opens, and still exports as a complete heading tree with every section empty.
+// It reads as corruption rather than as an access problem, which is exactly why
+// it needs naming at boot rather than leaving an operator to discover it.
+//
+// Only the MIXED state warns. A deployment holding nothing but "" rows is fine —
+// its reads go to "" too, which is the legacy/open-mode posture — so gating on
+// the presence of real tenants keeps this quiet on every unaffected install.
+// Best-effort: a failed probe must never block boot.
+func warnLegacyTenantMemory(st store.Store) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	legacy, tenants, err := st.MemoryLegacyTenantStats(ctx)
+	if err != nil || legacy == 0 || len(tenants) == 0 {
+		return
+	}
+	target := ""
+	if len(tenants) == 1 {
+		// The overwhelmingly common shape, and the one where we can name the
+		// exact call rather than describing it.
+		target = tenants[0]
+	}
+	msg := fmt.Sprintf("memory: WARNING — %d memory row(s) are stranded at the legacy \"\" tenant and are UNREADABLE from a tenant-scoped session (tenants holding rows: %s). "+
+		"RFC BL added the tenant_id column without backfilling pre-existing rows. Symptoms: a Document created before the upgrade lists and exports as headings with EMPTY bodies (its structure lives in SQL Memory, which is partitioned differently), and an agent's pre-upgrade key/value memory reads as absent. "+
+		"Nothing is deleted. Fix: POST /v1/_memory/repair-tenant (substrate:admin) — it reports by default, and applies with {\"dry_run\":false}; the Settings hub exposes it as Maintenance for shell-less deployments.",
+		legacy, strings.Join(tenants, ", "))
+	if target != "" {
+		msg += fmt.Sprintf(" For this deployment: {\"tenant\":%q,\"dry_run\":false}.", target)
+	}
+	log.Print(msg)
+}
+
 func openStore(cfg *config.Config) (store.Store, func(), error) {
 	switch cfg.Storage.Backend {
 	case "sqlite", "":
@@ -3099,6 +3138,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 		}
 		st.SetChannelDebug(channelDebugEnabled())
 		log.Printf("store: sqlite at %s", dbPath)
+		warnLegacyTenantMemory(st)
 		return st, func() { _ = st.Close() }, nil
 
 	case "postgres":
@@ -3117,6 +3157,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 			return nil, nil, fmt.Errorf("postgres open: %w", err)
 		}
 		log.Printf("store: postgres (automigrate=%v pgvector=%v)", cfg.Storage.PgAutoMigrate, cfg.Env.PgvectorEnabled)
+		warnLegacyTenantMemory(st)
 		return st, func() { _ = st.Close() }, nil
 
 	default:

@@ -1676,6 +1676,18 @@ type Store interface {
 	// non-global orphan.
 	MemoryOrphanRepair(ctx context.Context, targetTenant string, scopeIDs []string) (MemoryOrphanReport, error)
 
+	// MemoryLegacyTenantStats reports the two numbers that decide whether a
+	// deployment is actually affected by the missing RFC BL backfill, for the
+	// boot warning.
+	//
+	// legacyRows counts non-global rows at "". tenants lists the distinct
+	// non-"" tenants holding at least one row, capped — its presence is what
+	// makes legacyRows a problem. A deployment with ONLY "" rows is not broken:
+	// its reads go to "" as well, which is the legacy/open-mode posture that
+	// still works. Only the MIXED state strands data, so warning on legacyRows
+	// alone would be noise on every single-tenant install.
+	MemoryLegacyTenantStats(ctx context.Context) (legacyRows int, tenants []string, err error)
+
 	// MemoryBumpAccessBatch applies a batch of access-count deltas to the
 	// base memory table (RFC BL hybrid retrieval, OQ #4). For each bump it
 	// runs, per row, an ADDITIVE update:

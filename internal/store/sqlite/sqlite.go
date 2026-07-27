@@ -4570,6 +4570,32 @@ func (s *Store) MemoryOrphanRepair(ctx context.Context, targetTenant string, sco
 	return rep, nil
 }
 
+func (s *Store) MemoryLegacyTenantStats(ctx context.Context) (int, []string, error) {
+	var legacy int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory WHERE COALESCE(tenant_id,'') = '' AND scope <> 'global'`,
+	).Scan(&legacy); err != nil {
+		return 0, nil, err
+	}
+	// Capped: the boot message names a couple of tenants, and an operator with
+	// hundreds does not need them all enumerated in a log line.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT tenant_id FROM memory WHERE COALESCE(tenant_id,'') <> '' ORDER BY tenant_id LIMIT 9`)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	var tenants []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return 0, nil, err
+		}
+		tenants = append(tenants, t)
+	}
+	return legacy, tenants, rows.Err()
+}
+
 // placeholders returns "?, ?, ?" for n — the sqlite tier writes `?` natively.
 func placeholders(n int) string {
 	if n <= 0 {
