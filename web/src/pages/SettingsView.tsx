@@ -4,6 +4,7 @@ import {
   CredentialMeta,
   CredentialScope,
   HealthResponse,
+  MemoryOrphanReport,
   PresetUnit,
   RuntimeStateResponse,
   createCredential,
@@ -14,6 +15,7 @@ import {
   listCredentials,
   listPresets,
   pauseRuntime,
+  repairTenantMemory,
   resumeRuntime,
   showPreset,
 } from "../api";
@@ -41,6 +43,7 @@ type Section =
   | "tokens"
   | "presets"
   | "runtime"
+  | "maintenance"
   | "health";
 
 interface SectionDef {
@@ -56,6 +59,10 @@ const SECTIONS: SectionDef[] = [
   { id: "tokens", label: "Tokens", admin: true },
   { id: "presets", label: "Presets", admin: true },
   { id: "runtime", label: "Runtime", admin: true },
+  // Admin-only: the repair rewrites rows across every scope in one statement,
+  // which is not a tenant operator's authority even over its own tenant. The
+  // route enforces this too (defence in depth).
+  { id: "maintenance", label: "Maintenance", admin: true },
   { id: "health", label: "Health", admin: true },
 ];
 
@@ -93,6 +100,7 @@ export default function SettingsView() {
         {section === "tokens" && <TokenManager />}
         {section === "presets" && <PresetsSection />}
         {section === "runtime" && <RuntimeSection />}
+        {section === "maintenance" && <MaintenanceSection />}
         {section === "health" && <HealthSection />}
       </div>
     </div>
@@ -408,6 +416,177 @@ function PresetsSection() {
 }
 
 // ─── Runtime (pause / resume / state) ────────────────────────────────────────
+
+// ─── Maintenance: legacy-tenant memory repair ────────────────────────────────
+
+// MaintenanceSection repairs memory rows stranded at the legacy "" tenant.
+//
+// RFC BL added tenant_id to the memory table without backfilling pre-existing
+// rows, so anything written before that upgrade is unreadable from a
+// tenant-scoped session. It presents as corruption rather than as an access
+// problem: Document keeps chunk BODIES there but chunk STRUCTURE in SQL Memory,
+// which is not partitioned the same way, so an affected document still lists,
+// still opens, and still exports as a full heading tree with empty sections.
+//
+// This lives in the UI because the deployments most likely to be affected are
+// appliance-style ones with no shell — the alternative is hand-writing a
+// collision-aware UPDATE against a live database.
+function MaintenanceSection() {
+  // Deliberately NOT prefilled from the principal. A legacy/open-mode token
+  // reports tenant "default", which holds none of the stranded rows — prefilling
+  // it would put a plausible-but-wrong destination one click from Apply. The
+  // tenantless discovery call below reports the real candidates instead.
+  const [tenant, setTenant] = useState("");
+  const [candidates, setCandidates] = useState<string[]>([]);
+  const [report, setReport] = useState<MemoryOrphanReport | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Discovery: what is stranded, and which tenants could own it. Cannot write.
+  const discover = useCallback(async () => {
+    try {
+      const r = await repairTenantMemory("", true);
+      setCandidates(r.candidate_tenants ?? []);
+      setReport(r);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    discover();
+  }, [discover]);
+
+  const run = async (dryRun: boolean) => {
+    if (busy) return;
+    if (!dryRun) {
+      const n = report ? report.orphaned - report.collisions : 0;
+      if (!confirm(`Move ${n} memory row(s) onto tenant "${tenant}"? Collisions and global-scope rows are left untouched. This rewrites rows in place.`)) {
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      const r = await repairTenantMemory(tenant, dryRun);
+      setReport(r);
+      setErr(null);
+      setFlash(
+        r.applied
+          ? `repaired: ${r.moved} row(s) moved onto ${r.tenant}`
+          : `previewed ${r.tenant}: nothing written`,
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Nothing movable = nothing to apply: all orphans collide, or there are none.
+  const movable = report ? report.orphaned - report.collisions : 0;
+
+  return (
+    <div className="settings-panel">
+      <h2>Maintenance</h2>
+      <p className="settings-help">
+        Re-stamp memory rows stranded at the legacy tenant. Upgrading to v1.33.0
+        partitioned memory by tenant without moving the rows already in it, so
+        anything written earlier is invisible to a tenant-scoped session —
+        documents open with empty sections, and older agent memory reads as
+        absent. Nothing was deleted.
+      </p>
+      <div className="settings-row">
+        <label>
+          Target tenant
+          {candidates.length > 0 ? (
+            <select value={tenant} onChange={(e) => setTenant(e.target.value)}>
+              <option value="">select…</option>
+              {candidates.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={tenant}
+              onChange={(e) => setTenant(e.target.value)}
+              placeholder="tenant id"
+            />
+          )}
+        </label>
+        <button type="button" onClick={() => run(true)} disabled={busy || !tenant}>
+          Preview
+        </button>
+        <button
+          type="button"
+          onClick={() => run(false)}
+          disabled={busy || !tenant || movable <= 0}
+          title={movable <= 0 ? "Preview first — nothing movable found" : undefined}
+        >
+          Apply
+        </button>
+      </div>
+      {err && <div className="settings-error">{err}</div>}
+      {flash && <div className="settings-flash">{flash}</div>}
+      {report && (
+        <>
+          <div className="settings-muted">
+            {report.orphaned === 0 ? (
+              <>Nothing stranded — this deployment is not affected.</>
+            ) : (
+              <>
+                {report.orphaned} stranded · {report.collisions} collision(s)
+                skipped · {report.skipped_global} global row(s) left in place
+                {report.applied && <> · {report.moved} moved</>}
+              </>
+            )}
+          </div>
+          {report.collisions > 0 && (
+            <p className="settings-help">
+              A collision means the target tenant already holds a row for the
+              same key. Those are never merged — which side should win depends on
+              content the server cannot judge, and overwriting would destroy live
+              data. Nothing is lost; inspect them directly.
+            </p>
+          )}
+          {report.groups && report.groups.length > 0 && (
+            <table className="settings-table">
+              <thead>
+                <tr>
+                  <th>scope</th>
+                  <th>scope_id</th>
+                  <th>rows</th>
+                  <th>collisions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.groups.map((g) => (
+                  <tr key={g.scope + "/" + g.scope_id}>
+                    <td>{g.scope}</td>
+                    <td>{g.scope_id}</td>
+                    <td>{g.rows}</td>
+                    <td>{g.collisions}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {report.groups && report.groups.length > 1 && (
+            <p className="settings-help">
+              More than one scope_id is stranded. If they belong to different
+              tenants, applying here would move them all to{" "}
+              <code>{tenant}</code> — the legacy partition records no owner, so
+              check before applying.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function RuntimeSection() {
   const [state, setState] = useState<RuntimeStateResponse | null>(null);

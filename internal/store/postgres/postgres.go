@@ -4049,6 +4049,138 @@ func (s *Store) MemoryListTenantsForScope(ctx context.Context, scope store.Memor
 	return out, rows.Err()
 }
 
+// memoryOrphanQuerier lets the scan run either standalone or inside the
+// repair's transaction, so the returned report describes the same snapshot the
+// UPDATE acted on rather than a re-read a concurrent writer could shift.
+type memoryOrphanQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// memoryOrphanScan is shared by MemoryOrphanScan and MemoryOrphanRepair.
+func memoryOrphanScan(ctx context.Context, q memoryOrphanQuerier, targetTenant string) (store.MemoryOrphanReport, error) {
+	var rep store.MemoryOrphanReport
+	// scope='global' is shared by design (the help index lives there), so "" is
+	// its correct home — count it separately and never treat it as an orphan.
+	if err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM memory WHERE tenant_id = '' AND scope = 'global'`,
+	).Scan(&rep.SkippedGlobal); err != nil {
+		return rep, fmt.Errorf("memory orphan scan global: %w", err)
+	}
+	// A collision is an orphan whose (scope, scope_id, key) already exists at the
+	// target — the PK, so it cannot be moved without clobbering a live row.
+	rows, err := q.Query(ctx,
+		`SELECT m.scope, m.scope_id, COUNT(*) AS n,
+		        COUNT(t.key) AS c
+		   FROM memory m
+		   LEFT JOIN memory t
+		     ON t.tenant_id = $1 AND t.scope = m.scope
+		        AND t.scope_id = m.scope_id AND t.key = m.key
+		  WHERE m.tenant_id = '' AND m.scope <> 'global'
+		  GROUP BY m.scope, m.scope_id
+		  ORDER BY n DESC, m.scope, m.scope_id`,
+		targetTenant,
+	)
+	if err != nil {
+		return rep, fmt.Errorf("memory orphan scan: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var g store.MemoryOrphanGroup
+		var scope string
+		if err := rows.Scan(&scope, &g.ScopeID, &g.Rows, &g.Collisions); err != nil {
+			return rep, fmt.Errorf("memory orphan scan row: %w", err)
+		}
+		g.Scope = store.MemoryScope(scope)
+		rep.Orphaned += g.Rows
+		rep.Collisions += g.Collisions
+		rep.Groups = append(rep.Groups, g)
+	}
+	return rep, rows.Err()
+}
+
+func (s *Store) MemoryOrphanScan(ctx context.Context, targetTenant string) (store.MemoryOrphanReport, error) {
+	if targetTenant == "" {
+		return store.MemoryOrphanReport{}, errors.New("memory orphan scan: target tenant may not be empty (that is the legacy partition itself)")
+	}
+	return memoryOrphanScan(ctx, s.pool, targetTenant)
+}
+
+func (s *Store) MemoryOrphanRepair(ctx context.Context, targetTenant string, scopeIDs []string) (store.MemoryOrphanReport, error) {
+	if targetTenant == "" {
+		return store.MemoryOrphanReport{}, errors.New("memory orphan repair: target tenant may not be empty (that is the legacy partition itself)")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.MemoryOrphanReport{}, fmt.Errorf("begin memory orphan repair tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rep, err := memoryOrphanScan(ctx, tx, targetTenant)
+	if err != nil {
+		return store.MemoryOrphanReport{}, err
+	}
+
+	// $3 is applied only when a filter was requested, so one statement serves
+	// both the narrowed and the move-everything case.
+	filter := ""
+	if len(scopeIDs) > 0 {
+		filter = " AND scope_id = ANY($3)"
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE memory SET tenant_id = $1
+		  WHERE tenant_id = '' AND scope <> 'global'`+filter+`
+		    AND NOT EXISTS (
+		      SELECT 1 FROM memory t
+		       WHERE t.tenant_id = $2 AND t.scope = memory.scope
+		         AND t.scope_id = memory.scope_id AND t.key = memory.key)`,
+		append([]any{targetTenant, targetTenant}, anyScopeIDs(scopeIDs)...)...,
+	)
+	if err != nil {
+		return store.MemoryOrphanReport{}, fmt.Errorf("memory orphan repair: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.MemoryOrphanReport{}, fmt.Errorf("commit memory orphan repair: %w", err)
+	}
+	rep.Applied, rep.Moved = true, int(tag.RowsAffected())
+	return rep, nil
+}
+
+func (s *Store) MemoryLegacyTenantStats(ctx context.Context) (int, []string, error) {
+	var legacy int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM memory WHERE tenant_id = '' AND scope <> 'global'`,
+	).Scan(&legacy); err != nil {
+		return 0, nil, fmt.Errorf("memory legacy tenant stats: %w", err)
+	}
+	// Capped: the boot message names a couple of tenants, and an operator with
+	// hundreds does not need them all enumerated in a log line.
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT tenant_id FROM memory WHERE tenant_id <> '' ORDER BY tenant_id LIMIT 9`)
+	if err != nil {
+		return 0, nil, fmt.Errorf("memory legacy tenant stats tenants: %w", err)
+	}
+	defer rows.Close()
+	var tenants []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return 0, nil, fmt.Errorf("memory legacy tenant stats scan: %w", err)
+		}
+		tenants = append(tenants, t)
+	}
+	return legacy, tenants, rows.Err()
+}
+
+// anyScopeIDs appends the scope_id filter argument only when one was requested,
+// so the $3 placeholder exists exactly when the SQL references it.
+func anyScopeIDs(scopeIDs []string) []any {
+	if len(scopeIDs) == 0 {
+		return nil
+	}
+	return []any{scopeIDs}
+}
+
 // MemorySweep deletes every Memory row whose expires_at has passed.
 // Single atomic DELETE so concurrent sweepers race correctly.
 func (s *Store) MemorySweep(ctx context.Context) (int, error) {

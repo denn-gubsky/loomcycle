@@ -305,13 +305,29 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scop
 	return d.Store.MemorySet(ctx, direntTenant(ctx), mscope, scopeID, chunkBodyKey(chunkID), v, 0)
 }
 
-func (d *Document) readBody(ctx context.Context, mscope store.MemoryScope, scopeID, chunkID string) chunkBody {
-	var cb chunkBody
+// readBody loads a chunk's body + fields from Memory.
+//
+// A chunk with NO body row is normal and reports as an empty body with a nil
+// error: section/parent chunks never get one. Every other store failure is
+// returned, because writeBody rewrites body AND fields together — so a caller
+// that read-modify-writes a zero chunkBody derived from a failed read erases
+// whichever half it did not supply. That is not hypothetical: it blanked a
+// document root in production when a tenant-scoping change (v1.33.0) made the
+// body row unreadable and a fields-only `update_chunk` wrote the emptiness
+// back. A transient store error reaches the same end, which is why the guard
+// belongs here rather than in the tenant fix.
+func (d *Document) readBody(ctx context.Context, mscope store.MemoryScope, scopeID, chunkID string) (chunkBody, error) {
 	entry, err := d.Store.MemoryGet(ctx, direntTenant(ctx), mscope, scopeID, chunkBodyKey(chunkID))
-	if err == nil {
-		_ = json.Unmarshal(entry.Value, &cb)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if asNotFound(err, &nf) {
+			return chunkBody{}, nil
+		}
+		return chunkBody{}, err
 	}
-	return cb
+	var cb chunkBody
+	_ = json.Unmarshal(entry.Value, &cb)
+	return cb, nil
 }
 
 // chunkBodyKey namespaces chunk bodies in the Memory keyspace so they don't
@@ -715,7 +731,11 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				resp["status"] = row.Status
 			}
 		}
-		enabled, scheme := docColorMeta(d.readBody(ctx, mscope, key.ScopeID, rootID))
+		// Colour is decoration, so a read fault degrades to "no scheme" rather
+		// than failing the whole get — matching the getChunkRow probe above.
+		// Content reads (get_chunk, export_md) propagate instead.
+		rootBody, _ := d.readBody(ctx, mscope, key.ScopeID, rootID)
+		enabled, scheme := docColorMeta(rootBody)
 		resp["color_enabled"] = enabled
 		if len(scheme) > 0 {
 			resp["color_scheme"] = scheme
@@ -836,7 +856,10 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 					entry["status"] = row.Status
 				}
 			}
-			enabled, scheme := docColorMeta(d.readBody(ctx, mscope, key.ScopeID, dm.root))
+			// Decoration inside a list loop: one unreadable root must not fail
+			// the whole summary. See the colour note in getDocument.
+			rootBody, _ := d.readBody(ctx, mscope, key.ScopeID, dm.root)
+			enabled, scheme := docColorMeta(rootBody)
 			entry["color_enabled"] = enabled
 			if len(scheme) > 0 {
 				entry["color_scheme"] = scheme
@@ -1003,7 +1026,13 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if !ok {
 		return errResult("get_chunk: no such chunk: " + in.ID), nil
 	}
-	cb := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	// Surface a body-read fault instead of returning the chunk with an empty
+	// body: a silent empty read is indistinguishable from a deleted body, which
+	// is exactly how the v1.33.0 tenant regression went unnoticed.
+	cb, err := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	if err != nil {
+		return errResult("get_chunk: body: " + err.Error()), nil
+	}
 	resp := chunkResponse(row, cb)
 	// RFC BO: surface an image chunk's stored asset (metadata only — the bytes
 	// come from GET /v1/_document/asset/{id}) so a viewer knows to render an img.
@@ -1113,7 +1142,13 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 	// Record the asset facts in the chunk's fields (merged — keep any existing
 	// keys + the caption body). Fields live in Memory alongside the body.
-	cb := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	// This is a fields-only write, but writeBody rewrites the body too — so a
+	// failed read here would blank the caption. Refuse instead of persisting a
+	// body we could not read.
+	cb, rerr := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	if rerr != nil {
+		return errResult("set_asset: body: " + rerr.Error()), nil
+	}
 	fields := map[string]any{}
 	if len(cb.Fields) > 0 {
 		_ = json.Unmarshal(cb.Fields, &fields)
@@ -1243,7 +1278,22 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	_, hasBody := present["body"]
 	_, hasFields := present["fields"]
 	if hasBody || hasFields {
-		cb := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+		var cb chunkBody
+		if !hasBody || !hasFields {
+			// Only one half was supplied, so the other must be preserved from
+			// the stored row. writeBody rewrites both, so a failed read here
+			// would erase the half the caller did not send — refuse instead of
+			// persisting the loss. This is the exact path that blanked a
+			// document root under the v1.33.0 tenant regression: a fields-only
+			// colour-scheme write, on a chunk whose body had become unreadable.
+			stored, rerr := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+			if rerr != nil {
+				return errResult("update_chunk: body: " + rerr.Error()), nil
+			}
+			cb = stored
+		}
+		// When the caller supplies BOTH halves there is nothing to preserve, so
+		// no read happens and a store fault cannot block a complete write.
 		if hasBody {
 			cb.Body = in.Body
 		}
@@ -1713,13 +1763,25 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	includeMeta := in.IncludeMetadata == nil || *in.IncludeMetadata
 
 	var b strings.Builder
+	// An export that renders headings with silently-empty bodies is
+	// indistinguishable from a document that genuinely has none — precisely the
+	// failure mode that let the v1.33.0 tenant regression pass for a full
+	// table-of-contents export. Abort the walk on the first fault instead.
+	var walkErr error
 	var walk func(row chunkRow, depth int)
 	walk = func(row chunkRow, depth int) {
+		if walkErr != nil {
+			return
+		}
 		level := depth + 1
 		if level > 6 {
 			level = 6
 		}
-		cb := d.readBody(ctx, mscope, key.ScopeID, row.ID)
+		cb, rerr := d.readBody(ctx, mscope, key.ScopeID, row.ID)
+		if rerr != nil {
+			walkErr = rerr
+			return
+		}
 		// A heading is one line — collapse any newline in the title to a space
 		// so a multi-line title can't split the heading and corrupt the doc.
 		title := headingReplacer.Replace(row.Title)
@@ -1763,6 +1825,9 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 	for _, r := range roots {
 		walk(r, 0)
+	}
+	if walkErr != nil {
+		return errResult("export_md: body: " + walkErr.Error()), nil
 	}
 
 	// Edges trailer — the free-form graph edges originating from this document's

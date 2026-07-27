@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -1278,5 +1280,141 @@ func TestDocument_ColorMetadataAndSummary(t *testing.T) {
 	}
 	if docs, _ := out["documents"].([]any); len(docs) != 1 {
 		t.Errorf("unknown id should be skipped: %s", res.Text)
+	}
+}
+
+// faultyBodyStore fails chunk-body reads with a STORE FAULT (not a not-found)
+// while armed, and records every chunk-body write so a test can prove nothing
+// was persisted. Wrapping the real store keeps every other op honest.
+type faultyBodyStore struct {
+	store.Store
+	armed bool
+	sets  []string
+}
+
+func (f *faultyBodyStore) MemoryGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
+	if f.armed && strings.HasPrefix(key, "doc.chunk:") {
+		return store.MemoryEntry{}, errors.New("connection reset by peer")
+	}
+	return f.Store.MemoryGet(ctx, tenantID, scope, scopeID, key)
+}
+
+func (f *faultyBodyStore) MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
+	if strings.HasPrefix(key, "doc.chunk:") {
+		f.sets = append(f.sets, string(value))
+	}
+	return f.Store.MemorySet(ctx, tenantID, scope, scopeID, key, value, ttl)
+}
+
+func faultyDocFixture(t *testing.T) (*Document, *faultyBodyStore, context.Context) {
+	t.Helper()
+	base, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	fs := &faultyBodyStore{Store: base}
+	ctx := tools.WithRunIdentity(
+		tools.WithAgentName(context.Background(), "doc-agent"),
+		tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
+	return &Document{Store: fs, SqlMem: mgr, Bus: channels.NewBus()}, fs, ctx
+}
+
+// seedChunk creates a document + one chunk carrying body, with the store healthy.
+// Returns the chunk id, its document id, and its current revision — update_chunk
+// requires the revision for optimistic concurrency, and omitting it makes an
+// update fail at that gate rather than at the behaviour under test.
+func seedChunk(t *testing.T, d *Document, ctx context.Context, body string) (cid, docID string, rev int) {
+	t.Helper()
+	out, res := docExec(t, d, ctx, `{"op":"create_document","scope":"agent","title":"D"}`)
+	if res.IsError {
+		t.Fatalf("create_document: %s", res.Text)
+	}
+	docID = out["document_id"].(string)
+	root := out["root_chunk_id"].(string)
+	out, res = docExec(t, d, ctx, `{"op":"create_chunk","scope":"agent","document_id":"`+docID+`","parent_id":"`+root+`","title":"c","body":"`+body+`"}`)
+	if res.IsError {
+		t.Fatalf("create_chunk: %s", res.Text)
+	}
+	revf, ok := out["revision"].(float64)
+	if !ok {
+		t.Fatalf("create_chunk returned no revision: %s", res.Text)
+	}
+	return out["id"].(string), docID, int(revf)
+}
+
+// TestUpdateChunk_StoreFaultDoesNotBlankBody: a fields-only update_chunk must
+// REFUSE when the stored body cannot be read, rather than writing an empty body
+// back over it. This is the destructive half of the v1.33.0 tenant regression —
+// a fields-only colour-scheme write, on a chunk whose body had become
+// unreadable, blanked a document root in production.
+//
+// Fails on the pre-fix code: readBody returned a zero chunkBody on any error and
+// writeBody persisted it, because writeBody rewrites body AND fields together.
+func TestUpdateChunk_StoreFaultDoesNotBlankBody(t *testing.T) {
+	d, fs, ctx := faultyDocFixture(t)
+	cid, _, rev := seedChunk(t, d, ctx, "KEEP-ME")
+
+	fs.armed, fs.sets = true, nil
+	_, res := docExec(t, d, ctx, `{"op":"update_chunk","scope":"agent","id":"`+cid+`","revision":`+strconv.Itoa(rev)+`,"fields":{"color_scheme":{"a":1}}}`)
+	if !res.IsError {
+		t.Errorf("update_chunk succeeded despite an unreadable body; want a refusal")
+	}
+	if len(fs.sets) != 0 {
+		t.Errorf("update_chunk persisted a body after a failed read: %q", fs.sets)
+	}
+
+	// The original body must be intact once the store recovers.
+	fs.armed = false
+	out, res := docExec(t, d, ctx, `{"op":"get_chunk","scope":"agent","id":"`+cid+`"}`)
+	if res.IsError || out["body"] != "KEEP-ME" {
+		t.Errorf("body = %v, want KEEP-ME (res=%s)", out["body"], res.Text)
+	}
+}
+
+// TestUpdateChunk_FullWriteSkipsBodyRead: when the caller supplies BOTH body and
+// fields there is nothing to preserve, so update_chunk must not read the stored
+// body at all — a read fault cannot block a complete write.
+//
+// The op still reports an error here, because the trailing get_chunk that renders
+// the response reads the body too. The property under test is that the WRITE
+// landed with the full new content, which fs.sets proves.
+func TestUpdateChunk_FullWriteSkipsBodyRead(t *testing.T) {
+	d, fs, ctx := faultyDocFixture(t)
+	cid, _, rev := seedChunk(t, d, ctx, "OLD")
+
+	fs.armed, fs.sets = true, nil
+	docExec(t, d, ctx, `{"op":"update_chunk","scope":"agent","id":"`+cid+`","revision":`+strconv.Itoa(rev)+`,"body":"NEW","fields":{"a":1}}`)
+	if len(fs.sets) != 1 || !strings.Contains(fs.sets[0], "NEW") {
+		t.Fatalf("full write was blocked by a body-read fault; sets = %q", fs.sets)
+	}
+
+	fs.armed = false
+	out, res := docExec(t, d, ctx, `{"op":"get_chunk","scope":"agent","id":"`+cid+`"}`)
+	if res.IsError || out["body"] != "NEW" {
+		t.Errorf("body = %v, want NEW (res=%s)", out["body"], res.Text)
+	}
+}
+
+// TestExportMd_StoreFaultFailsLoudly: export_md must not render a document as
+// headings with silently-empty bodies when the body reads fault — that output is
+// indistinguishable from a document that genuinely has no bodies, and is exactly
+// how the v1.33.0 tenant regression passed as a clean full export.
+func TestExportMd_StoreFaultFailsLoudly(t *testing.T) {
+	d, fs, ctx := faultyDocFixture(t)
+	_, docID, _ := seedChunk(t, d, ctx, "CONTENT")
+
+	fs.armed = true
+	_, res := docExec(t, d, ctx, `{"op":"export_md","scope":"agent","document_id":"`+docID+`"}`)
+	if !res.IsError {
+		t.Errorf("export_md rendered a document with unreadable bodies instead of failing: %s", res.Text)
+	}
+	if strings.Contains(res.Text, "CONTENT") {
+		t.Errorf("export leaked partial content: %s", res.Text)
 	}
 }
