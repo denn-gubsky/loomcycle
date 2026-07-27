@@ -2808,6 +2808,13 @@ func (s *Server) Mux() http.Handler {
 	// purgeable counts + export dir are admin-only (stripped in the handler).
 	// Scope-gated to substrate:tenant in requiredScopeFor.
 	mux.Handle("GET /v1/_retention", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionReport))))
+	// Instance configuration + the live provider/model/search cascade — the
+	// out-of-band twin of `Context op=capabilities`, sharing one probe
+	// (internal/capabilities) so the two cannot disagree. Any authenticated
+	// principal by default (requiredScopeFor's GET default); readable with NO
+	// bearer only under LOOMCYCLE_PUBLIC_CONFIG, which renders a narrowed public
+	// view. A presented-but-invalid bearer still 401s rather than downgrading.
+	mux.Handle("GET /v1/config", recoveryMiddleware(s.publicOrAuthMiddleware(http.HandlerFunc(s.handleConfig))))
 	// Repair memory rows stranded at the legacy "" tenant by the RFC BL tenant
 	// axis. substrate:admin via the /v1/_* catch-all in requiredScopeFor — it
 	// rewrites rows across every scope in one statement. dry_run defaults true,
