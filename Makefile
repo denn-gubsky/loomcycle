@@ -179,22 +179,9 @@ pg-up:
 	done; \
 	echo "Postgres did not become ready in 30s; check 'make pg-logs'" && exit 1
 
-# pg-down: remove the fixture container AND its data volume.
-#
-# The -v is load-bearing. The postgres image declares
-# VOLUME /var/lib/postgresql/data, so `docker run` creates an ANONYMOUS
-# volume for it; `docker rm` without -v removes the container and orphans
-# that volume. Every pg-down/pg-up cycle then leaked a full Postgres data
-# directory — 12 orphans totalling 7.5 GB on the machine where this was
-# found, which eventually filled the Docker VM disk. A full contract run
-# churns ~280 per-test schemas, so once the disk is tight Postgres starts
-# failing writes with SQLSTATE 53100 ("No space left on device"), which
-# surfaces as migration failures and `connection reset by peer` on
-# unrelated subtests — a red suite that looks like a code regression and
-# gets worse the more times you run it.
 pg-down:
 	@if docker ps -a --format '{{.Names}}' | grep -q '^$(PG_CONTAINER)$$'; then \
-		docker rm -f -v $(PG_CONTAINER) >/dev/null && echo "$(PG_CONTAINER) removed (with data volume)"; \
+		docker rm -f -v $(PG_CONTAINER) >/dev/null && echo "$(PG_CONTAINER) removed"; \
 	else \
 		echo "$(PG_CONTAINER) not running"; \
 	fi

@@ -104,8 +104,31 @@ type Store struct {
 	// time. See ChannelPublish for what the debug log contains.
 	channelDebug bool
 
+	// nowFn is this PROCESS's clock, as read by the channel write path
+	// (the message id and published_at). It is a test seam: displacing it
+	// simulates an application host whose clock leads or trails the
+	// database's, which is the skew that used to make a just-published
+	// message invisible — see ChannelPublish. Injecting the skew beats
+	// waiting for the machine to drift into it, because real drift is
+	// small and changes direction within the hour, which would leave the
+	// regression tests probabilistic. Defaults to time.Now; only tests
+	// replace it.
+	nowFn func() time.Time
+
 	// closeOnce guards the Close() idempotency contract.
 	closeOnce sync.Once
+}
+
+// now reads this process's clock. It is deliberately NOT the clock that
+// decides message visibility — that is the server's NOW(), both stamped
+// and filtered in SQL — so displacing this in a test must not change
+// which messages a subscriber sees. That is the invariant the
+// channel_clock_test.go cases assert.
+func (s *Store) now() time.Time {
+	if s.nowFn != nil {
+		return s.nowFn()
+	}
+	return time.Now()
 }
 
 // Open dials Postgres, applies migrations (or verifies schema currency
@@ -171,7 +194,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		}
 	}
 
-	s := &Store{pool: pool, channelDebug: cfg.ChannelDebug}
+	s := &Store{pool: pool, channelDebug: cfg.ChannelDebug, nowFn: time.Now}
 
 	// v0.9.0 Vector Memory: when operator opted in via
 	// LOOMCYCLE_PGVECTOR_ENABLED=1, verify the extension actually
@@ -4272,14 +4295,35 @@ func (s *Store) MemoryCursorRelease(ctx context.Context, tenantID string, scope 
 // publishes (VisibleAt > now) land in storage immediately but are
 // hidden from reads until visible_at <= now; the tool layer schedules
 // a Bus.Notify(channel) at visible_at so long-poll subscribers wake.
+//
+// visible_at is stamped by the SERVER clock for an immediate publish,
+// because channelRead filters `visible_at <= NOW()` on that same clock.
+// It used to be stamped here in Go, which straddled two unrelated
+// clocks: where the application host's clock leads the database's — a
+// few ms is routine with a containerised Postgres, and Docker Desktop
+// re-drifts it within the hour — a just-published message sat in the
+// database's future and was invisible to the publisher's own next read.
+// Channel.await / Channel.broadcast ride that read path, so the messages
+// went intermittently missing in production, not only under test.
+//
+// GREATEST does the clamp that the Go code used to: a caller-supplied
+// visible_at in the future is a DEFERRED publish and is honoured as
+// given (it is the caller's schedule, not a clock reading), while an
+// unset or already-past value collapses to the server's NOW(). Doing it
+// in SQL is what keeps the immediate case off the caller's clock — a
+// Go-side comparison would need a client-clock `now` to compare against
+// and would reintroduce the straddle it is meant to remove.
 func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (string, int, error) {
-	now := time.Now().UTC()
+	now := s.now().UTC()
 	msg.ID = store.MintChannelMessageID(now)
 	msg.PublishedAt = now
-	if msg.VisibleAt.IsZero() || msg.VisibleAt.Before(now) {
-		msg.VisibleAt = now
-	} else {
-		msg.VisibleAt = msg.VisibleAt.UTC()
+
+	// nil => "no caller-supplied visible_at", so GREATEST/COALESCE below
+	// falls through to NOW(). Deliberately NOT pre-clamped against the
+	// process clock.
+	var visibleAt any
+	if !msg.VisibleAt.IsZero() {
+		visibleAt = msg.VisibleAt.UTC()
 	}
 
 	var expiresAt any
@@ -4308,9 +4352,9 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO channel_messages (id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`,
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, GREATEST(NOW(), COALESCE($8::timestamptz, NOW())), $9)`,
 		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload),
-		now, expiresAt, msg.VisibleAt, publishedByUserID,
+		now, expiresAt, visibleAt, publishedByUserID,
 	); err != nil {
 		return "", 0, fmt.Errorf("channel publish insert: %w", err)
 	}
@@ -4537,6 +4581,14 @@ func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn 
 // rows at WHERE; orders by (visible_at, id) tuple so deferred
 // messages don't get skipped by subscribers that already progressed
 // past their publish-time id (v0.8.6).
+//
+// The visibility predicate reads the SERVER clock (NOW()), and so does
+// the visible_at that ChannelPublish stamps for an immediate publish —
+// deliberately one clock on both sides. Binding a process-side `now` here would
+// work for a single replica but let two replicas with skewed clocks
+// disagree about whether the same message is visible; the database is
+// the one clock every replica already shares. See ChannelPublish for the
+// write half.
 func (s *Store) channelRead(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
 	if limit <= 0 {
 		limit = 10
