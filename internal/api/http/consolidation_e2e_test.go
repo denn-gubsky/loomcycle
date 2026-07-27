@@ -256,7 +256,7 @@ func TestConsolidate_PlantedFactsWritten(t *testing.T) {
 		"I always want tabs, never spaces",
 		"and deploys go through staging first")
 
-	rows, err := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", "", time.Time{}, "", 10)
+	rows, err := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", nil, time.Time{}, "", 10)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestConsolidate_PlantedFactsWritten(t *testing.T) {
 func TestConsolidate_ProvenanceStamped(t *testing.T) {
 	env := newConsolidationEnv(t, nil)
 	sessID, runID := seedChat(t, env.store, "alice", "I always want tabs, never spaces")
-	rows, _ := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", "", time.Time{}, "", 10)
+	rows, _ := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", nil, time.Time{}, "", 10)
 	if len(rows) != 1 {
 		t.Fatalf("seeded sessions = %d, want 1", len(rows))
 	}
@@ -330,7 +330,7 @@ func TestConsolidate_ProvenanceStamped(t *testing.T) {
 func TestConsolidate_UpdateSupersedesSimilar(t *testing.T) {
 	env := newConsolidationEnv(t, nil)
 	sessID, runID := seedChat(t, env.store, "alice", "actually I switched to spaces")
-	rows, _ := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", "", time.Time{}, "", 10)
+	rows, _ := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", nil, time.Time{}, "", 10)
 
 	// A pre-existing fact from an earlier pass, now contradicted.
 	staleKey := "memory/preference/editor-indent-style"
@@ -405,7 +405,7 @@ func TestConsolidate_UpdateSupersedesSimilar(t *testing.T) {
 func TestConsolidate_Idempotent(t *testing.T) {
 	env := newConsolidationEnv(t, nil)
 	sessID, runID := seedChat(t, env.store, "alice", "I always want tabs, never spaces")
-	rows, _ := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", "", time.Time{}, "", 10)
+	rows, _ := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", nil, time.Time{}, "", 10)
 	writes := []string{
 		setOp("memory/preference/editor-indent-style", "Alice prefers tabs over spaces in the editor.", "preference", sessID, runID),
 	}
@@ -442,7 +442,7 @@ func TestConsolidate_Idempotent(t *testing.T) {
 func TestConsolidate_WatermarkAdvancesComposite(t *testing.T) {
 	env := newConsolidationEnv(t, nil)
 	sessID, runID := seedChat(t, env.store, "alice", "I always want tabs, never spaces")
-	rows, _ := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", "", time.Time{}, "", 10)
+	rows, _ := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", nil, time.Time{}, "", 10)
 	if len(rows) != 1 {
 		t.Fatalf("seeded sessions = %d, want 1", len(rows))
 	}
@@ -472,7 +472,7 @@ func TestConsolidate_WatermarkAdvancesComposite(t *testing.T) {
 	// under alice's user id, so without the self-exclusion every completed pass
 	// immediately re-qualifies its own target as having new work, forever. The
 	// dispatcher's has-new-work probe passes the same exclusion.
-	remaining, err := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", "memory/consolidator",
+	remaining, err := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", []string{"memory/consolidator"},
 		cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, 10)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions after advance: %v", err)
@@ -482,7 +482,7 @@ func TestConsolidate_WatermarkAdvancesComposite(t *testing.T) {
 	}
 	// Without the exclusion the pass's own session is what comes back — proving
 	// the loop is real and the exclusion is what closes it.
-	withSelf, err := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", "",
+	withSelf, err := env.store.ConsolidatableSessions(context.Background(), "", "alice", "", nil,
 		cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, 10)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (unfiltered): %v", err)

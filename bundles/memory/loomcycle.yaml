@@ -180,6 +180,23 @@ agents:
     # does not deny all skills, so dropping an allowlist alone leaves the tool in
     # place. A code agent has no use for it — it reads no prompt.
     skills: [-*]
+    # MAINTENANCE PLUMBING, not something a person talks to. A run of this agent
+    # still records a session, but that session is runtime bookkeeping — so it is
+    # excluded from consolidation and hidden from the chat listing.
+    #
+    # This is the fix for the pipeline consuming its own output. The pass already
+    # excluded ITSELF by name; its CHILDREN it did not. Each pass spawns one
+    # extractor run per chat read, each child is a session whose transcript
+    # CONTAINS the chat it was extracting, and on the next tick those were
+    # candidates in their own right: on the live store 7 of the last 8 chats were
+    # extractor sessions, out of 95 total, growing ~15 a pass with no bound —
+    # every pass re-extracting nested copies of its own input.
+    #
+    # Marking BOTH agents matters. The consolidator's own name is what the pass
+    # passes as its self-exclusion, but nothing excludes it from the OTHER
+    # surfaces (the chat listing, a second consolidator's scan), and a schedule
+    # pointed at a differently-named agent would not exclude it at all.
+    internal: true
     memory_scopes: [agent, user]  # user = the fan-out target; agent = its own bookkeeping
     memory_consolidation: true    # the cursor / supersede / pending-queue control ops
     history_scope: [user]         # narrowest scope that can read the target user's chats
@@ -1384,6 +1401,10 @@ agents:
     tools: []
     skills: [-*]
     disable_context: true
+    # MAINTENANCE PLUMBING — see the consolidator's `internal:` note. These
+    # children are the bulk of the problem: one session per chat read, every
+    # pass, each transcript containing the chat it just extracted.
+    internal: true
     # This is the one place where model quality shows. Retune the trade-off in
     # your tier policy — never by pinning a provider or model here.
     tier: low

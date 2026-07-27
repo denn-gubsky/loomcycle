@@ -67,6 +67,24 @@ func TestConsolidatorBundle_Validates(t *testing.T) {
 	if !agent.MemoryConsolidation {
 		t.Error("memory/consolidator must set memory_consolidation: true, or every cursor/supersede/pending op default-denies")
 	}
+	// BOTH pipeline agents must be marked internal, or the pipeline consumes its
+	// own output. Each pass spawns one extractor child per chat read, and each
+	// child's session transcript CONTAINS the chat it was extracting — so on the
+	// next tick those became consolidation candidates in their own right: 7 of
+	// the last 8 chats on the live store, growing ~15 a pass with no bound. The
+	// consolidator needs it too: its own name is what the pass passes as its
+	// self-exclusion, but nothing carries that to the chat listing, to a second
+	// consolidator's scan, or to a schedule pointed at a differently-named agent.
+	if !agent.Internal {
+		t.Error("memory/consolidator must set internal: true — otherwise its passes show up as chats and as a peer's consolidation work")
+	}
+	extractor, ok := cfg.Agents["memory/extractor"]
+	if !ok {
+		t.Fatalf("memory/extractor not registered (agents: %v)", agentNames(cfg))
+	}
+	if !extractor.Internal {
+		t.Error("memory/extractor must set internal: true — its sessions are the bulk of the self-consumption loop (one per chat read, every pass, each containing the chat it just extracted)")
+	}
 	// user = the fan-out target's scope; agent = the consolidator's own bookkeeping.
 	for _, want := range []string{"agent", "user"} {
 		if !containsString(agent.MemoryScopes, want) {

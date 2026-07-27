@@ -101,6 +101,7 @@ func nonZeroAgentDef() AgentDef {
 		CoreBlocks:            []CoreBlock{{Label: "human", Scope: "user"}},
 		InheritCoreBlocks:     true,
 		MemoryInjectMaxTokens: 512,
+		Internal:              true,
 		MemoryProtocol:        true,
 		MemoryConsolidation:   true,
 		MemoryIndexMaxBytes:   4096,

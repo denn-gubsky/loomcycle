@@ -102,6 +102,11 @@ func (s *Store) SessionEmbedSearch(ctx context.Context, f store.SessionFilter, q
 		conds = append(conds, "se.agent = ?")
 		args = append(args, f.AgentName)
 	}
+	// Mirrored from ListSessions: a filter field that silently does nothing on
+	// one of the two surfaces that take a SessionFilter is worse than no field.
+	if c := excludeAgentsCond("se.agent", f.ExcludeAgents, &args); c != "" {
+		conds = append(conds, c)
+	}
 	if !f.IncludeArchived {
 		conds = append(conds, "s.archived_at IS NULL")
 	}

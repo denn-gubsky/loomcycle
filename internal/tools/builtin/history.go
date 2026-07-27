@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -54,6 +55,17 @@ type History struct {
 	// (the same posture as TeamDef op=run on a nil Spawn); every other op works.
 	Recap func(ctx context.Context, sessionID string) (summary string, err error)
 
+	// Cfg is the operator config, read for ONE thing: which agents are declared
+	// `internal:` (loomcycle's own maintenance plumbing), so their sessions stay
+	// out of list/search/related by default. A consolidation pass spawns a
+	// dozen-plus extractor children per run and each is a session — on the live
+	// store 7 of the last 8 chats were extractor sessions — so without this a
+	// user's chat list is mostly runtime bookkeeping.
+	//
+	// nil = no exclusion, which is the pre-wiring behaviour and what every unit
+	// test that constructs a bare History gets. Set in main.go.
+	Cfg *config.Config
+
 	// Embedder turns a source text (a chat's title+summary, or a free-text query)
 	// into a vector for op=related's semantic "similar chats" search. It is the
 	// SAME embedder the Memory tool uses, wired from cfg.Memory.Embedder in
@@ -76,6 +88,7 @@ func (h *History) Description() string {
 		"scope selects whose chats: self = this agent's, user = this end-user's, tenant = this tenant's, " +
 		"global = all tenants (admin only). The owner is resolved server-side from the run identity, never the wire; " +
 		"cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats are included. " +
+		"list/search/related hide chats served by the runtime's own maintenance agents; pass include_internal to see them. " +
 		"See Context op=help topic=history for the scope model and examples."
 }
 
@@ -96,6 +109,7 @@ const historyInputSchema = `{
 		"query":           {"type": "string", "description": "search: case-insensitive title match (metadata MVP; full-text content search is not yet available). related: free-text query to find semantically similar chats (use this OR session_id, not both)."},
 		"pinned_only":     {"type": "boolean", "description": "list/search: restrict to pinned chats."},
 		"include_archived":{"type": "boolean", "description": "list/search/related: include archived chats (excluded by default)."},
+		"include_internal":{"type": "boolean", "description": "list/search/related: include chats served by loomcycle's own maintenance agents (excluded by default — they are runtime bookkeeping, not conversations). Set it to debug a background pass."},
 		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 50, cap 500). related: max similar chats to return (default 10, cap 500)."},
 		"offset":          {"type": "integer", "description": "list/search: pagination offset."},
 		"format":          {"type": "string", "description": "get: \"markdown\" renders the full transcript as Markdown (metadata header + every event) instead of a structured event array; \"conversation\" renders ONLY the user and assistant turns, with no header, no tool traffic and no runtime event payloads — use it when feeding a chat to a model."},
@@ -122,6 +136,7 @@ type historyInput struct {
 	Query           string `json:"query"`
 	PinnedOnly      bool   `json:"pinned_only"`
 	IncludeArchived bool   `json:"include_archived"`
+	IncludeInternal bool   `json:"include_internal"`
 	Limit           int    `json:"limit"`
 	Offset          int    `json:"offset"`
 	Format          string `json:"format"`
@@ -209,6 +224,15 @@ func (h *History) filterForScope(ctx context.Context, scope string, in historyIn
 		TitleContains:   in.TitleContains,
 		IncludePinned:   in.PinnedOnly,
 		IncludeArchived: in.IncludeArchived,
+	}
+	// Maintenance agents' sessions are runtime bookkeeping, not chats, so they
+	// are hidden by default. `include_internal` is the deliberate opt-in: an
+	// operator chasing a bad consolidation pass wants to open the extractor
+	// chats, and there is nothing sensitive about them — the same posture as
+	// `include_archived`. A by-id `get` is NOT gated on it, so a listing with the
+	// opt-in and the reads that follow it both work.
+	if !in.IncludeInternal {
+		f.ExcludeAgents = withInternalAgents(h.Cfg)
 	}
 	if in.Status != "" {
 		if !validChatStatus(in.Status) {

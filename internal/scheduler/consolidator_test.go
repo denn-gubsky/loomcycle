@@ -223,7 +223,7 @@ func TestFanout_SkipsTargetsWithNoNewWork(t *testing.T) {
 
 	ctx := context.Background()
 	// Advance alice's watermark past everything she has: she is fully caught up.
-	rows, err := st.ConsolidatableSessions(ctx, "", "alice", "", "", time.Time{}, "", 10)
+	rows, err := st.ConsolidatableSessions(ctx, "", "alice", "", nil, time.Time{}, "", 10)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestFanout_IgnoresItsOwnPastRuns(t *testing.T) {
 	// consolidator runs of her own — the steady state after a few passes.
 	seedSettledSession(t, st, "", "alice")
 	ctx := context.Background()
-	rows, err := st.ConsolidatableSessions(ctx, "", "alice", "", def.Agent, time.Time{}, "", 10)
+	rows, err := st.ConsolidatableSessions(ctx, "", "alice", "", []string{def.Agent}, time.Time{}, "", 10)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions: %v", err)
 	}

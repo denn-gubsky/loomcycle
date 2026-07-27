@@ -184,6 +184,8 @@ const (
 //   - Tag == "" → no tag filter; non-empty → sessions carrying that exact tag.
 //   - TitleContains == "" → no title filter; non-empty → case-insensitive
 //     substring match on the title.
+//   - ExcludeAgents empty/nil → no exclusion; non-empty → drop sessions served
+//     by any of those agents.
 type SessionFilter struct {
 	TenantID      string
 	UserID        string
@@ -192,6 +194,15 @@ type SessionFilter struct {
 	From, To      time.Time
 	Tag           string
 	TitleContains string
+	// ExcludeAgents drops sessions whose serving agent is in the set — the
+	// inverse of AgentName, and a SET rather than one name because the callers
+	// that need it (History hiding loomcycle's maintenance agents; the
+	// consolidation candidate scan) always have several. Empty = no exclusion.
+	//
+	// A caller passing both AgentName and ExcludeAgents containing it gets an
+	// empty page; that is the honest answer to a contradictory filter, not a
+	// case worth special-handling.
+	ExcludeAgents []string
 	// IncludePinned, when true, RESTRICTS the result to pinned sessions only
 	// (the "pinned chats" view). false = no pinned filter — every session,
 	// still ordered pinned-first. (Named for the view it powers; it is a
@@ -1039,25 +1050,31 @@ type Store interface {
 	// this does NOT exclude pinned sessions: pinning exempts a chat from
 	// automated DELETION, and consolidation only reads the transcript.
 	//
-	// excludeAgentName, when non-empty, omits sessions authored by that agent.
-	// The consolidator passes ITS OWN name: each pass creates a session under
-	// the target's user id, which would otherwise report as fresh work forever
-	// — a pass every tick, consolidating its own reports. Those self-authored
-	// sessions also accumulate PAST the watermark (a pass never consolidates
-	// itself, so it never advances over them), which is why this is a query
-	// filter and not something a caller can safely post-filter.
+	// excludeAgents omits sessions authored by any of those agents. It is a SET,
+	// not one name, because one name was never enough: the consolidator passed
+	// only ITS OWN, and its extractor children — one session per chat read, each
+	// transcript CONTAINING the chat it extracted — became consolidation
+	// candidates on the next pass. On the live store that was 7 of the last 8
+	// chats and growing ~15 per pass, unbounded, with each pass re-extracting
+	// nested copies of its own input. Callers now pass every agent declared
+	// `internal:` alongside their own name.
+	//
+	// The exclusion has to be a QUERY filter rather than a post-filter: these
+	// sessions accumulate PAST the watermark (a pass never consolidates them, so
+	// it never advances over them), so a caller dropping them from a page would
+	// still be handed a page full of them.
 	//
 	// Two known limits, both deferred:
 	//   - limit has a floor (<=0 takes a default) but no CEILING, so a caller can
 	//     ask for an unbounded page. Every in-tree caller clamps its own request
 	//     (Memory op=cursor_scan caps at 50, the has-new-work probe asks for 1),
 	//     so this is a robustness gap rather than a live one.
-	//   - self-exclusion is by NAME, so it holds for exactly one consolidator per
-	//     tenant. Two differently-named consolidators covering one tenant would
-	//     each see the other's sessions as fresh work and consolidate each other's
-	//     reports. Excluding by "holds the consolidation grant" needs the agent's
-	//     resolved config at query time, which the store does not have.
-	ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName, excludeAgentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]ConsolidatableSession, error)
+	//   - exclusion is by NAME. The names come from the caller's resolved config,
+	//     which the store does not have — so a consolidator whose peers are not in
+	//     that set (a second, differently-named consolidator, or an internal agent
+	//     authored purely at runtime with no static declaration) still sees their
+	//     sessions as fresh work.
+	ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName string, excludeAgents []string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]ConsolidatableSession, error)
 
 	// SessionSettledAt reports WHEN a session settled — max(completed_at) across
 	// its runs — plus the session's owning user id, for a session inside
