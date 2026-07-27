@@ -253,6 +253,34 @@ type ConsolidatableSession struct {
 	AgentName      string    `json:"agent_name,omitempty"`
 }
 
+// SessionAgentMatch selects which side of an agent-name set a session query
+// operates on. It exists because one caller — the chats retention sweep — needs
+// to run the SAME query twice with opposite senses: once over a named set of
+// agents on one schedule, once over everything else on another.
+//
+// It is an explicit discriminator rather than a pair of "empty means no filter"
+// slices because the two empty cases must NOT behave alike, and the difference
+// is destructive. Under Except an empty set is a no-op (SQL has no `NOT IN ()`,
+// so the clause is skipped and every session qualifies). Under Only an empty set
+// matches NOTHING: the Only arm drives a short-cutoff delete, so "the caller
+// resolved no agent names" has to mean "sweep nothing", never "sweep every
+// chat". A nil-vs-empty slice cannot carry that distinction — len() is 0 either
+// way — so the caller states its intent in the mode.
+type SessionAgentMatch string
+
+const (
+	// SessionAgentsAny ignores the name set entirely: every session qualifies.
+	// This is the zero value, so a caller that does not care about the agent
+	// axis gets the pre-existing unfiltered behaviour by passing nothing.
+	SessionAgentsAny SessionAgentMatch = ""
+	// SessionAgentsOnly returns ONLY sessions authored by one of the named
+	// agents. An EMPTY name set matches nothing (see above).
+	SessionAgentsOnly SessionAgentMatch = "only"
+	// SessionAgentsExcept returns every qualifying session EXCEPT those authored
+	// by one of the named agents. An EMPTY name set is a no-op filter.
+	SessionAgentsExcept SessionAgentMatch = "except"
+)
+
 // SessionMetaPatch is a partial update to a session's RFC BE metadata. A nil
 // pointer leaves that field unchanged; a non-nil pointer writes it (an empty
 // string / empty slice is a legitimate "clear it" value). Archived==true stamps
@@ -1025,8 +1053,14 @@ type Store interface {
 	// transcript. A session with any non-terminal run is never returned. A PINNED
 	// session (sessions.pinned) is likewise never returned — pinning exempts a
 	// chat from ALL automated retention (the RFC BM chats sweeper + this legacy
-	// RFC AV archiver both consume this list).
-	PrunableAgedSessions(ctx context.Context, olderThan time.Time, limit int) ([]string, error)
+	// RFC AV archiver both consume this list), and is the operator's escape hatch
+	// for a chat any age-based sweep would otherwise take.
+	//
+	// match + agents narrow the result by the session's AUTHORING AGENT
+	// (sessions.agent), so one caller can sweep a subset of agents on a different
+	// schedule from the rest. See SessionAgentMatch for the three modes and for
+	// why an empty name set means opposite things under Only and Except.
+	PrunableAgedSessions(ctx context.Context, olderThan time.Time, match SessionAgentMatch, agents []string, limit int) ([]string, error)
 
 	// ConsolidatableSessions returns the sessions a background memory
 	// consolidator has not folded in yet (RFC BL P2): every run in the session

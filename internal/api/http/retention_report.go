@@ -31,6 +31,12 @@ type retentionReportResponse struct {
 	// after the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* alias in config.Load.
 	ChatsMode     string `json:"chats_mode"`
 	ChatsMaxAgeMS int64  `json:"chats_max_age_ms"`
+	// ChatsInternalMaxAgeMS is the shorter age applied to chats authored by an
+	// agent declared `internal:` (the runtime's own maintenance plumbing; those
+	// chats are deleted rather than exported). Reported EFFECTIVE — a configured
+	// 0 means "inherit the global chat age", so this shows the age that actually
+	// applies rather than the literal 0.
+	ChatsInternalMaxAgeMS int64 `json:"chats_internal_max_age_ms"`
 	// MemMode / MemMaxAgeMS are the RFC BM Phase 3 retired-agent memory-reclamation
 	// knobs (config only — tenant-readable).
 	MemMode     string `json:"mem_mode"`
@@ -40,6 +46,10 @@ type retentionReportResponse struct {
 	// settings would purge right now, plus an aged-chat-session count under "chats"
 	// and a retired-agent memory-reclamation count under "mem" (all regardless of
 	// mode — a preview). Admin-only.
+	//
+	// "chats" EXCLUDES chats authored by an `internal:` agent; those are counted
+	// separately under "chats_internal" against their own shorter cutoff, so the
+	// two numbers line up with the two passes the sweep actually makes.
 	Purgeable map[string]int `json:"purgeable,omitempty"`
 	// SQLMemGC surfaces the SEPARATE always-on SQL-Memory garbage collector (RFC AA
 	// Phase 3d/3f — idle-TTL + size-budget eviction of durable scopes), so an
@@ -85,17 +95,24 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	if memMode == "" {
 		memMode = "off"
 	}
+	// 0 = inherit the global chat age (never "delete immediately"), resolved the
+	// same way retention.New resolves it.
+	chatsInternalMaxAge := s.cfg.Env.RetentionChatsInternalMaxAge
+	if chatsInternalMaxAge == 0 {
+		chatsInternalMaxAge = s.cfg.Env.RetentionChatsMaxAge
+	}
 	resp := retentionReportResponse{
-		Admin:         admin,
-		Enabled:       s.cfg.Env.RetentionEnabled,
-		IntervalMS:    interval.Milliseconds(),
-		DefsMode:      mode,
-		DefsMaxAgeMS:  s.cfg.Env.RetentionDefsMaxAge.Milliseconds(),
-		DefsKeepLastN: s.cfg.Env.RetentionDefsKeepLastN,
-		ChatsMode:     chatsMode,
-		ChatsMaxAgeMS: s.cfg.Env.RetentionChatsMaxAge.Milliseconds(),
-		MemMode:       memMode,
-		MemMaxAgeMS:   s.cfg.Env.RetentionMemMaxAge.Milliseconds(),
+		Admin:                 admin,
+		Enabled:               s.cfg.Env.RetentionEnabled,
+		IntervalMS:            interval.Milliseconds(),
+		DefsMode:              mode,
+		DefsMaxAgeMS:          s.cfg.Env.RetentionDefsMaxAge.Milliseconds(),
+		DefsKeepLastN:         s.cfg.Env.RetentionDefsKeepLastN,
+		ChatsMode:             chatsMode,
+		ChatsMaxAgeMS:         s.cfg.Env.RetentionChatsMaxAge.Milliseconds(),
+		ChatsInternalMaxAgeMS: chatsInternalMaxAge.Milliseconds(),
+		MemMode:               memMode,
+		MemMaxAgeMS:           s.cfg.Env.RetentionMemMaxAge.Milliseconds(),
 	}
 
 	if s.store == nil {
@@ -119,6 +136,11 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 			MemMode:       memMode,
 			MemMaxAge:     s.cfg.Env.RetentionMemMaxAge,
 			ExportDir:     s.cfg.Env.RetentionExportDir,
+			// The preview splits chats by authoring agent exactly as the sweep
+			// does, so "chats" vs "chats_internal" in the counts below reflect the
+			// two cutoffs an operator actually gets.
+			ChatsInternalMaxAge: s.cfg.Env.RetentionChatsInternalMaxAge,
+			InternalAgents:      s.cfg.InternalAgentNames(),
 		}
 		// Feed the SQL-Memory manager so the "mem" preview can see which agents
 		// have an SQL-Memory scope. Typed-nil guard (nil pointer → nil interface).

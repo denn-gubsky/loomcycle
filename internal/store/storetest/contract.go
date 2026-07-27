@@ -390,6 +390,10 @@ func Run(t *testing.T, factory Factory) {
 		// RFC BM Phase 2: a PINNED session is exempt from PrunableAgedSessions
 		// (all automated retention). Fails on the pre-fix query (no exclusion).
 		{"PrunableAgedSessionsExcludesPinned", testPrunableAgedSessionsExcludesPinned},
+		// The authoring-agent dimension: only-these / all-but-these, with the two
+		// empty-set senses pinned apart. Two names + a non-zero cutoff, the
+		// combination that catches a mis-advanced Postgres placeholder ordinal.
+		{"PrunableAgedSessionsAgentFilter", testPrunableAgedSessionsAgentFilter},
 		// RFC BL P2: the consolidator's watermark query — all-terminal only,
 		// strictly-after the composite (completed_at, session_id), ascending.
 		{"ConsolidatableSessionsWatermarkOrder", testConsolidatableSessionsWatermarkOrder},
@@ -1134,7 +1138,7 @@ func testSessionArchiver(t *testing.T, s store.Store) {
 	_ = runB2
 
 	// A future cutoff → session A qualifies (all terminal); session B does not.
-	got, err := s.PrunableAgedSessions(ctx, time.Now().Add(time.Hour), 100)
+	got, err := s.PrunableAgedSessions(ctx, time.Now().Add(time.Hour), store.SessionAgentsAny, nil, 100)
 	if err != nil {
 		t.Fatalf("PrunableAgedSessions: %v", err)
 	}
@@ -1149,7 +1153,7 @@ func testSessionArchiver(t *testing.T, s store.Store) {
 		t.Errorf("prunable set included session B, which has a RUNNING run: %v", got)
 	}
 	// A past cutoff → nothing (session A's runs completed just now).
-	if old, _ := s.PrunableAgedSessions(ctx, time.Now().Add(-time.Hour), 100); len(old) != 0 {
+	if old, _ := s.PrunableAgedSessions(ctx, time.Now().Add(-time.Hour), store.SessionAgentsAny, nil, 100); len(old) != 0 {
 		t.Errorf("past-cutoff prunable = %d, want 0", len(old))
 	}
 
@@ -1220,7 +1224,7 @@ func testPrunableAgedSessionsExcludesPinned(t *testing.T, s store.Store) {
 
 	// A future cutoff → both sessions are all-terminal and old enough to qualify;
 	// only the pinned exemption should keep the pinned one out.
-	got, err := s.PrunableAgedSessions(ctx, time.Now().Add(time.Hour), 100)
+	got, err := s.PrunableAgedSessions(ctx, time.Now().Add(time.Hour), store.SessionAgentsAny, nil, 100)
 	if err != nil {
 		t.Fatalf("PrunableAgedSessions: %v", err)
 	}
@@ -1233,6 +1237,113 @@ func testPrunableAgedSessionsExcludesPinned(t *testing.T, s store.Store) {
 	}
 	if !ids[unpinnedID] {
 		t.Errorf("unpinned aged session %s missing from prunable set: %v", unpinnedID, got)
+	}
+}
+
+// testPrunableAgedSessionsAgentFilter is the authoring-agent dimension on
+// PrunableAgedSessions: the chats retention sweep runs the same query twice with
+// opposite senses (a short cutoff over the internal agents, the configured
+// cutoff over everything else), so both senses have to agree on the same rows.
+//
+// Deliberately built with TWO names in the set and a non-zero cutoff. That is
+// the combination the Postgres adapter gets wrong when the hand-numbered
+// placeholder counter does not advance by exactly len(agents): the trailing
+// LIMIT then binds an agent name and the query fails outright. One name would
+// still shift the ordinal but is easier to get accidentally right; a zero cutoff
+// would not bind $4 to a real value.
+//
+// Also pins the two empty-set cases, which must NOT behave alike:
+// SessionAgentsExcept over an empty set is a no-op filter, while
+// SessionAgentsOnly over an empty set matches NOTHING. Getting the second one
+// wrong (skipping the clause, as `NOT IN ()` forces you to for the first) turns
+// "no internal agents configured" into "delete every aged chat".
+func testPrunableAgedSessionsAgentFilter(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// One aged, all-terminal session per agent. Same shape as the pinned arm —
+	// only the session's authoring agent differs.
+	mkAged := func(agent string) string {
+		sess, err := s.CreateSession(ctx, "t", agent, "u1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+			t.Fatal(err)
+		}
+		return sess.ID
+	}
+	extractorID := mkAged("memory/extractor")
+	consolidatorID := mkAged("memory/consolidator")
+	chatID := mkAged("chat")
+	pinnedInternalID := mkAged("memory/extractor")
+	if err := s.SetSessionMeta(ctx, pinnedInternalID, store.SessionMetaPatch{Pinned: boolPtr(true)}); err != nil {
+		t.Fatalf("SetSessionMeta pin: %v", err)
+	}
+
+	internal := []string{"memory/consolidator", "memory/extractor"}
+	// A future cutoff: every session above is old enough, so only the agent
+	// dimension (and the pinned exemption) decides what comes back.
+	cutoff := time.Now().Add(time.Hour)
+	list := func(match store.SessionAgentMatch, agents []string, limit int) map[string]bool {
+		t.Helper()
+		got, err := s.PrunableAgedSessions(ctx, cutoff, match, agents, limit)
+		if err != nil {
+			t.Fatalf("PrunableAgedSessions(%q, %v): %v", match, agents, err)
+		}
+		ids := map[string]bool{}
+		for _, id := range got {
+			ids[id] = true
+		}
+		return ids
+	}
+
+	// Only: the two named agents' sessions, and nothing else.
+	only := list(store.SessionAgentsOnly, internal, 100)
+	if !only[extractorID] || !only[consolidatorID] {
+		t.Errorf("only-internal missing an internal session: %v", only)
+	}
+	if only[chatID] {
+		t.Errorf("only-internal returned the normal chat session %s: %v", chatID, only)
+	}
+	// Pinning outranks the agent dimension — it exempts a chat from every
+	// automated retention path, and that is the operator's escape hatch for an
+	// internal chat they are still reading.
+	if only[pinnedInternalID] {
+		t.Errorf("only-internal returned the PINNED internal session %s: %v", pinnedInternalID, only)
+	}
+
+	// Except: the complement. The same two names, opposite sense.
+	except := list(store.SessionAgentsExcept, internal, 100)
+	if !except[chatID] {
+		t.Errorf("except-internal missing the normal chat session: %v", except)
+	}
+	if except[extractorID] || except[consolidatorID] {
+		t.Errorf("except-internal returned an internal session: %v", except)
+	}
+
+	// The two empty-set cases, which are NOT symmetric.
+	if got := list(store.SessionAgentsOnly, nil, 100); len(got) != 0 {
+		t.Errorf("only-with-empty-set returned %d session(s); it must match NOTHING, not everything: %v", len(got), got)
+	}
+	unfiltered := list(store.SessionAgentsAny, nil, 100)
+	if emptyExcept := list(store.SessionAgentsExcept, nil, 100); len(emptyExcept) != len(unfiltered) {
+		t.Errorf("except-with-empty-set returned %d session(s), want the unfiltered %d — an empty exclusion is a no-op", len(emptyExcept), len(unfiltered))
+	}
+
+	// LIMIT still applies UNDER a two-name filter. On Postgres this is where a
+	// mis-advanced ordinal counter shows up: LIMIT would bind an agent name.
+	if got := list(store.SessionAgentsOnly, internal, 1); len(got) != 1 {
+		t.Errorf("only-internal with limit 1 returned %d session(s), want 1: %v", len(got), got)
+	}
+
+	// An unrecognised mode fails closed rather than falling through to an
+	// unfiltered list — this feeds a cascade delete.
+	if _, err := s.PrunableAgedSessions(ctx, cutoff, store.SessionAgentMatch("bogus"), internal, 100); err == nil {
+		t.Error("PrunableAgedSessions accepted an unknown agent match; it must fail closed")
 	}
 }
 

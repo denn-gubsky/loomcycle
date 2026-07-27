@@ -23,11 +23,20 @@
 // the RFC AV Phase 2b2 aged-session archiver in internal/usage — cmd/loomcycle
 // disables that one whenever this chats sub-sweep is active so a session is never
 // deleted by two sweepers at once.
+//
+// The chats family runs on TWO cutoffs, split by the session's authoring agent:
+// an agent declared `internal:` (the runtime's own maintenance plumbing) ages
+// out at ChatsInternalMaxAge and is deleted outright, everything else at
+// ChatsMaxAge with the export step intact. The split exists because a subsystem
+// generates its own chats at a rate no user does — one consolidation pass spawns
+// 13-18 extractor sessions, forever — and those transcripts are worth days, not
+// months. Declaring no internal agent leaves the sweep exactly as it was.
 package retention
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -93,6 +102,35 @@ type Config struct {
 	// most-recent completed_at is before Now()-ChatsMaxAge are eligible. Zero = no
 	// minimum age (every all-terminal, non-pinned session qualifies).
 	ChatsMaxAge time.Duration
+
+	// ChatsInternalMaxAge is the SEPARATE, shorter age cutoff applied to chats
+	// authored by an InternalAgents name. ZERO means INHERIT ChatsMaxAge (New
+	// resolves it), NOT "delete immediately".
+	//
+	// Internal chats are DELETED OUTRIGHT, never exported, even under
+	// export+prune: a consolidation pass produces ~15 of them and their only
+	// value is short-term debugging, so archiving every one is volume for
+	// content nobody reads twice. Pinning still exempts a chat from both arms —
+	// that is the escape hatch for an internal chat an operator is still
+	// reading.
+	ChatsInternalMaxAge time.Duration
+
+	// InternalAgents names the agents the operator declared `internal:` —
+	// loomcycle's own maintenance plumbing, whose sessions are bookkeeping
+	// rather than conversation. The chats sweep splits on this set: these names
+	// age out at ChatsInternalMaxAge, everything else at ChatsMaxAge.
+	//
+	// EMPTY disables the split entirely (no internal arm, and an empty exclusion
+	// on the normal arm is a no-op) — so a deployment that declares no internal
+	// agent behaves exactly as it did before this existed.
+	//
+	// Resolved from STATIC config by the composition root
+	// (config.InternalAgentNames), which is the same resolution the consolidator
+	// and History use, and carries the same documented gap: an internal agent
+	// authored purely at runtime carries the marker but is not in the static
+	// set, so its chats age out on the normal schedule until the operator also
+	// declares the name in a config layer.
+	InternalAgents []string
 
 	// MemMode is the RFC BM Phase 3 memory-reclamation mode: "off" (default / ""),
 	// "prune" (reclaim a fully-retired agent's per-scope data), or "export+prune"
@@ -174,6 +212,13 @@ type Result struct {
 	// would-be-deleted) this sweep. Counted separately from the def totals above:
 	// a session is not a def version.
 	Chats int
+	// ChatsInternal is the number of INTERNAL-agent chat sessions deleted (or,
+	// under DryRun, would-be) this sweep. Counted apart from Chats so an operator
+	// can see the runtime's own maintenance churn distinctly from real chat
+	// retention — the two run on different cutoffs, and one number hiding ~15
+	// extractor sessions per consolidation pass inside a chat count would make
+	// both unreadable.
+	ChatsInternal int
 	// Mem is the number of retired-agent reclamation UNITS this sweep (or, under
 	// DryRun, would-be). A unit is one (tenant, name) whose SQL-Memory scope
 	// and/or dirents were dropped, PLUS one per name whose globally-dead base
@@ -186,22 +231,24 @@ type Result struct {
 // Sweeper periodically exports + purges retired-and-old substrate def versions.
 // Construct via New, then call Run(ctx) on a goroutine that owns the lifecycle.
 type Sweeper struct {
-	store         store.Store
-	interval      time.Duration
-	defsMode      string
-	defsMaxAge    time.Duration
-	defsKeepLastN int
-	chatsMode     string
-	chatsMaxAge   time.Duration
-	memMode       string
-	memMaxAge     time.Duration
-	sqlMem        SQLMemory
-	exportDir     string
-	dryRun        bool
-	logf          func(format string, args ...any)
-	lock          AdvisoryLocker
-	lockKey       int64
-	now           func() time.Time
+	store               store.Store
+	interval            time.Duration
+	defsMode            string
+	defsMaxAge          time.Duration
+	defsKeepLastN       int
+	chatsMode           string
+	chatsMaxAge         time.Duration
+	chatsInternalMaxAge time.Duration
+	internalAgents      []string
+	memMode             string
+	memMaxAge           time.Duration
+	sqlMem              SQLMemory
+	exportDir           string
+	dryRun              bool
+	logf                func(format string, args ...any)
+	lock                AdvisoryLocker
+	lockKey             int64
+	now                 func() time.Time
 }
 
 // New constructs a Sweeper. A nil store means "no persistence" — Run is then a
@@ -228,6 +275,13 @@ func New(st store.Store, cfg Config) *Sweeper {
 	if memMode == "" {
 		memMode = "off"
 	}
+	// Resolve the internal-chat age ONCE, here, so the sweep and the read-only
+	// report can't disagree about what 0 meant. 0 = inherit the global chat age
+	// (an operator opting out of the split), never "delete immediately".
+	chatsInternalMaxAge := cfg.ChatsInternalMaxAge
+	if chatsInternalMaxAge == 0 {
+		chatsInternalMaxAge = cfg.ChatsMaxAge
+	}
 	keep := cfg.DefsKeepLastN
 	if keep < 0 {
 		// Guard a negative value only. 0 is a valid explicit choice (purge all
@@ -235,22 +289,24 @@ func New(st store.Store, cfg Config) *Sweeper {
 		keep = 0
 	}
 	return &Sweeper{
-		store:         st,
-		interval:      cfg.Interval,
-		defsMode:      mode,
-		defsMaxAge:    cfg.DefsMaxAge,
-		defsKeepLastN: keep,
-		chatsMode:     chatsMode,
-		chatsMaxAge:   cfg.ChatsMaxAge,
-		memMode:       memMode,
-		memMaxAge:     cfg.MemMaxAge,
-		sqlMem:        cfg.SQLMem,
-		exportDir:     cfg.ExportDir,
-		dryRun:        cfg.DryRun,
-		logf:          cfg.Logger,
-		lock:          cfg.AdvisoryLock,
-		lockKey:       cfg.AdvisoryLockKey,
-		now:           cfg.Now,
+		store:               st,
+		interval:            cfg.Interval,
+		defsMode:            mode,
+		defsMaxAge:          cfg.DefsMaxAge,
+		defsKeepLastN:       keep,
+		chatsMode:           chatsMode,
+		chatsMaxAge:         cfg.ChatsMaxAge,
+		chatsInternalMaxAge: chatsInternalMaxAge,
+		internalAgents:      cfg.InternalAgents,
+		memMode:             memMode,
+		memMaxAge:           cfg.MemMaxAge,
+		sqlMem:              cfg.SQLMem,
+		exportDir:           cfg.ExportDir,
+		dryRun:              cfg.DryRun,
+		logf:                cfg.Logger,
+		lock:                cfg.AdvisoryLock,
+		lockKey:             cfg.AdvisoryLockKey,
+		now:                 cfg.Now,
 	}
 }
 
@@ -301,8 +357,8 @@ func (s *Sweeper) Run(ctx context.Context) {
 	if s.store == nil {
 		return
 	}
-	s.logf("retention: sweeper starting (interval=%s, defs_mode=%s, defs_max_age=%s, keep_last_n=%d, chats_mode=%s, chats_max_age=%s, mem_mode=%s, mem_max_age=%s, sqlmem=%v, dry_run=%v)",
-		s.interval, s.defsMode, s.defsMaxAge, s.defsKeepLastN, s.chatsMode, s.chatsMaxAge, s.memMode, s.memMaxAge, s.sqlMem != nil, s.dryRun)
+	s.logf("retention: sweeper starting (interval=%s, defs_mode=%s, defs_max_age=%s, keep_last_n=%d, chats_mode=%s, chats_max_age=%s, chats_internal_max_age=%s, internal_agents=%d, mem_mode=%s, mem_max_age=%s, sqlmem=%v, dry_run=%v)",
+		s.interval, s.defsMode, s.defsMaxAge, s.defsKeepLastN, s.chatsMode, s.chatsMaxAge, s.chatsInternalMaxAge, len(s.internalAgents), s.memMode, s.memMaxAge, s.sqlMem != nil, s.dryRun)
 	if s.defsMode == "export+prune" && s.exportDir == "" {
 		s.logf("retention: defs purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
 	}
@@ -354,7 +410,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 			}
 			if err != nil {
 				s.logf("retention: sweep failed: %v", err)
-			} else if res.Total > 0 || res.Chats > 0 || res.Mem > 0 {
+			} else if res.Total > 0 || res.Chats > 0 || res.ChatsInternal > 0 || res.Mem > 0 {
 				verb := "purged"
 				if s.dryRun {
 					verb = "would purge"
@@ -364,6 +420,13 @@ func (s *Sweeper) Run(ctx context.Context) {
 				}
 				if res.Chats > 0 {
 					s.logf("retention: %s %d aged chat session(s) (mode=%s)", verb, res.Chats, s.chatsMode)
+				}
+				if res.ChatsInternal > 0 {
+					// Reported apart from the chat count above: this is the runtime's
+					// own maintenance churn on its own cutoff, and folding ~15
+					// extractor sessions per consolidation pass into the chat number
+					// would make both unreadable.
+					s.logf("retention: %s %d internal chat session(s) (max_age=%s, delete-only)", verb, res.ChatsInternal, s.chatsInternalMaxAge)
 				}
 				if res.Mem > 0 {
 					s.logf("retention: %s %d retired-agent memory reclamation unit(s) (mode=%s)", verb, res.Mem, s.memMode)
@@ -402,11 +465,12 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 		s.sweepDefsOnce(parent, &res)
 	}
 	if s.chatsPruneEnabled() {
-		n, err := s.sweepChatsOnce(parent)
+		n, internal, err := s.sweepChatsOnce(parent)
 		if err != nil {
 			s.logf("retention: chats sweep failed: %v", err)
 		}
 		res.Chats += n
+		res.ChatsInternal += internal
 	}
 	return res, nil
 }
@@ -460,33 +524,83 @@ func (s *Sweeper) sweepDefsOnce(parent context.Context, res *Result) {
 	}
 }
 
-// sweepChatsOnce archives one batch of aged chat sessions (RFC BM Phase 2): list
-// sessions whose runs are ALL terminal + old (pinned sessions are excluded by the
-// store), export each (export+prune mode) then cascade-delete it (session + runs
-// + events). Prunes by SESSION, not by run — the continuation path replays the
+// sweepChatsOnce archives one batch of aged chat sessions (RFC BM Phase 2) in
+// TWO passes over the same query, split by the session's authoring agent:
+//
+//	internal — agents declared `internal:`, at the shorter chatsInternalMaxAge,
+//	  DELETE-ONLY (never exported). These are the runtime's own maintenance
+//	  chats: one consolidation pass spawns 13-18 extractor sessions, each a
+//	  session whose transcript holds the chat it read, and they accumulate at a
+//	  rate no user generates. They are worth keeping briefly (a bad pass is
+//	  diagnosed by reading them) and worth nothing after that, so exporting ~15
+//	  per pass would be volume for content nobody reads twice.
+//
+//	everything else — at the configured chatsMaxAge, export-then-delete under
+//	  export+prune exactly as before.
+//
+// With no internal agents declared, the first pass is skipped and the second's
+// exclusion set is empty (a no-op filter), so the sweep is what it always was.
+//
+// Both passes prune by SESSION, not by run — the continuation path replays the
 // whole-session transcript, so pruning one aged run inside a still-continued
-// session would corrupt it. This subsumes usage.archiveSessionsOnce (main.go
-// disables that archiver when this sub-sweep is on so the two never double-run).
-// Own 2-minute deadline (export writes files); per-session failures are logged +
-// skipped, and the batch breaks cleanly once the shared deadline expires.
-func (s *Sweeper) sweepChatsOnce(parent context.Context) (int, error) {
+// session would corrupt it. Pinned sessions are excluded by the store in BOTH
+// passes: pinning is the operator's escape hatch for a chat of either kind.
+// This subsumes usage.archiveSessionsOnce (main.go disables that archiver when
+// this sub-sweep is on so the two never double-run). One shared 2-minute
+// deadline (export writes files); per-session failures are logged + skipped, and
+// each batch breaks cleanly once that deadline expires.
+func (s *Sweeper) sweepChatsOnce(parent context.Context) (normal, internal int, err error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
-	cutoff := s.now().Add(-s.chatsMaxAge)
-	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, chatsPruneBatch)
+
+	var errs []error
+	// Internal first: shortest cutoff, highest churn. Skipped entirely when no
+	// agent is declared internal — SessionAgentsOnly over an empty set would
+	// select nothing anyway, but not asking is clearer than asking for nothing.
+	if len(s.internalAgents) > 0 {
+		n, ierr := s.pruneSessionBatch(ctx, s.now().Add(-s.chatsInternalMaxAge),
+			store.SessionAgentsOnly, s.internalAgents, false)
+		internal = n
+		if ierr != nil {
+			// Log + carry on to the normal pass: an internal-arm fault must not
+			// stop real chats being retained on their own schedule.
+			s.logf("retention: list internal chat sessions failed: %v", ierr)
+			errs = append(errs, fmt.Errorf("internal chats: %w", ierr))
+		}
+	}
+
+	n, nerr := s.pruneSessionBatch(ctx, s.now().Add(-s.chatsMaxAge),
+		store.SessionAgentsExcept, s.internalAgents, true)
+	normal = n
+	if nerr != nil {
+		errs = append(errs, nerr)
+	}
+	return normal, internal, errors.Join(errs...)
+}
+
+// pruneSessionBatch lists one batch of aged, all-terminal, non-pinned sessions
+// matching the agent filter and cascade-deletes each (session + runs + events).
+//
+// export gates the export-then-delete step for THIS arm: with export=false the
+// batch is deleted outright whatever the mode says. That is not a shortcut — it
+// is the internal arm's decision, and it lives here as a parameter so the export
+// and no-export arms cannot drift apart in the delete path.
+//
+// Shares the caller's deadline: once it expires every remaining
+// export/DeleteSessionCascade would fail with the same ctx error, so the loop
+// stops cleanly and returns what it finished. The next tick resumes from where
+// this one stopped (the list is re-queried).
+func (s *Sweeper) pruneSessionBatch(ctx context.Context, cutoff time.Time, match store.SessionAgentMatch, agents []string, export bool) (int, error) {
+	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, match, agents, chatsPruneBatch)
 	if err != nil {
 		return 0, err
 	}
 	pruned := 0
 	for _, sid := range sessions {
-		// The whole batch shares one deadline; once it expires every remaining
-		// export/DeleteSessionCascade would fail with the same ctx error — stop
-		// cleanly and return what we finished. The next tick resumes from where
-		// this one stopped (PrunableAgedSessions is re-queried).
 		if ctx.Err() != nil {
 			break
 		}
-		if s.chatsMode == "export+prune" {
+		if export && s.chatsMode == "export+prune" {
 			if err := s.exportSession(ctx, sid); err != nil {
 				// Never delete a session we failed to export — retry next tick.
 				s.logf("retention: export chat session %s failed, skipping delete: %v", sid, err)
@@ -928,12 +1042,28 @@ func (s *Sweeper) DryRunCounts(ctx context.Context) (map[string]int, error) {
 	// Aged-chat sessions preview — mode-independent, like the def counts. Keyed
 	// "chats" (never a def-type name, so no collision). Pinned sessions are
 	// excluded by the store.
+	//
+	// Split the same way the sweep splits, or the preview would lie about which
+	// cutoff applies to what: "chats" counts everything EXCEPT the internal
+	// agents at the configured age, "chats_internal" counts the internal agents
+	// at their own shorter age. Both keys are always present, so the report shape
+	// does not depend on whether any agent is declared internal.
 	chatsCutoff := s.now().Add(-s.chatsMaxAge)
-	sessions, err := s.store.PrunableAgedSessions(ctx, chatsCutoff, reportListCap)
+	sessions, err := s.store.PrunableAgedSessions(ctx, chatsCutoff, store.SessionAgentsExcept, s.internalAgents, reportListCap)
 	if err != nil {
 		return nil, err
 	}
 	out["chats"] = len(sessions)
+
+	out["chats_internal"] = 0
+	if len(s.internalAgents) > 0 {
+		internalCutoff := s.now().Add(-s.chatsInternalMaxAge)
+		internalSessions, ierr := s.store.PrunableAgedSessions(ctx, internalCutoff, store.SessionAgentsOnly, s.internalAgents, reportListCap)
+		if ierr != nil {
+			return nil, ierr
+		}
+		out["chats_internal"] = len(internalSessions)
+	}
 
 	// Retired-agent memory-reclamation preview — mode-independent, keyed "mem"
 	// (never a def-type name). Counts the same reclamation units the sweep would

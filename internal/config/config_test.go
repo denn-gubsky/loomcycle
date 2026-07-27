@@ -727,6 +727,47 @@ agents:
 	}
 }
 
+// The internal-chat retention age defaults to 3 days and treats an EXPLICIT 0
+// as a real value ("inherit the global chat age"), not as unset. The distinction
+// is the whole point of the knob's n >= 0 parse guard: the sibling
+// LOOMCYCLE_RETENTION_*_MS vars guard on n > 0, and copying that here would
+// silently ignore an operator's opt-out and leave the 3-day default in place.
+func TestRetentionChatsInternalMaxAge_DefaultsAndExplicitZero(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 3 * 24 * time.Hour; cfg.Env.RetentionChatsInternalMaxAge != want {
+		t.Errorf("default internal chat age = %v, want %v", cfg.Env.RetentionChatsInternalMaxAge, want)
+	}
+
+	t.Setenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", "0")
+	cfg, err = Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env.RetentionChatsInternalMaxAge != 0 {
+		t.Errorf("explicit 0 = %v, want 0 (0 means inherit the global chat age; it must override the 3-day default, not be discarded as unset)", cfg.Env.RetentionChatsInternalMaxAge)
+	}
+
+	t.Setenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", "7200000")
+	cfg, err = Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 2 * time.Hour; cfg.Env.RetentionChatsInternalMaxAge != want {
+		t.Errorf("override = %v, want %v", cfg.Env.RetentionChatsInternalMaxAge, want)
+	}
+}
+
 // ollama-local gets a generous 600s/600s default timeout pair (cold local
 // model load + large-context eval is slow — a 128K-ctx model can exceed 5 min
 // just to load), distinct from the cloud-shaped 60s/90s global default; the

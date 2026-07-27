@@ -2440,6 +2440,11 @@ func main() {
 			// from the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* config in cfg.Load).
 			ChatsMode:   cfg.Env.RetentionChatsMode,
 			ChatsMaxAge: cfg.Env.RetentionChatsMaxAge,
+			// The runtime's own maintenance chats age out faster, and are deleted
+			// rather than exported. Same static-config resolution the consolidator
+			// and History use, so all three agree on what "internal" means.
+			ChatsInternalMaxAge: cfg.Env.RetentionChatsInternalMaxAge,
+			InternalAgents:      cfg.InternalAgentNames(),
 			// RFC BM Phase 3 retired-agent memory reclamation (opt-in; default OFF).
 			MemMode:   cfg.Env.RetentionMemMode,
 			MemMaxAge: cfg.Env.RetentionMemMaxAge,
