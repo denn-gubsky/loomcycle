@@ -118,6 +118,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.HealthRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.HealthResponse.FromString,
                 _registered_method=True)
+        self.Config = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/Config',
+                request_serializer=loomcycle__pb2.ConfigRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ConfigResponse.FromString,
+                _registered_method=True)
         self.RegisterHook = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/RegisterHook',
                 request_serializer=loomcycle__pb2.RegisterHookRequest.SerializeToString,
@@ -484,6 +489,21 @@ class LoomcycleServicer(object):
 
         Mirrors GET /healthz (which is unauthenticated on the HTTP side;
         the gRPC equivalent stays unauthenticated for parity).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Config(self, request, context):
+        """Config returns the instance-configuration report: build identity, the
+        feature matrix, and the live provider/model/search cascade with coarse
+        active/inactive status.
+
+        Mirrors GET /v1/config at the CALLER's disclosure level. The HTTP side has a
+        third, narrower `public` level reachable with no bearer under
+        LOOMCYCLE_PUBLIC_CONFIG; that level does NOT exist here, because gRPC
+        authenticates before dispatch — so a caller gets `authenticated` or `admin`
+        from its own scopes. `view` in the payload names which.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -975,6 +995,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.Health,
                     request_deserializer=loomcycle__pb2.HealthRequest.FromString,
                     response_serializer=loomcycle__pb2.HealthResponse.SerializeToString,
+            ),
+            'Config': grpc.unary_unary_rpc_method_handler(
+                    servicer.Config,
+                    request_deserializer=loomcycle__pb2.ConfigRequest.FromString,
+                    response_serializer=loomcycle__pb2.ConfigResponse.SerializeToString,
             ),
             'RegisterHook': grpc.unary_unary_rpc_method_handler(
                     servicer.RegisterHook,
@@ -1588,6 +1613,33 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/Health',
             loomcycle__pb2.HealthRequest.SerializeToString,
             loomcycle__pb2.HealthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Config(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/Config',
+            loomcycle__pb2.ConfigRequest.SerializeToString,
+            loomcycle__pb2.ConfigResponse.FromString,
             options,
             channel_credentials,
             insecure,

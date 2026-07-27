@@ -127,28 +127,36 @@ type configSearch struct {
 	Primary  bool   `json:"primary"`
 }
 
+// configViewFor resolves the disclosure level for a request context.
+//
+// Open mode (no auth configured, no principal stamped) is dev/admin — the idiom
+// the routing view and Context op=capabilities both use. The public marker is
+// checked FIRST precisely because open mode looks identical otherwise.
+func configViewFor(ctx context.Context) string {
+	if isPublicView(ctx) {
+		return configViewPublic
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+			return configViewAdmin
+		}
+		return configViewAuthed
+	}
+	return configViewAdmin
+}
+
 // handleConfig serves GET /v1/config. Reachable unauthenticated ONLY under
 // LOOMCYCLE_PUBLIC_CONFIG (see publicOrAuthMiddleware); otherwise any
 // authenticated principal, per requiredScopeFor's GET default.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	writeJSON(w, http.StatusOK, s.buildConfig(r.Context(), configViewFor(r.Context())))
+}
 
-	// Open mode (no auth configured, no principal stamped) is dev/admin — the
-	// idiom the routing view and Context op=capabilities both use. The public
-	// marker is checked FIRST precisely because it looks identical otherwise.
-	view := configViewAdmin
-	switch {
-	case isPublicView(ctx):
-		view = configViewPublic
-	default:
-		if p, ok := auth.PrincipalFromContext(ctx); ok {
-			if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
-				view = configViewAdmin
-			} else {
-				view = configViewAuthed
-			}
-		}
-	}
+// buildConfig assembles the report at the given disclosure level. Shared with the
+// connector (and so with gRPC), because two transports answering the same
+// question from two implementations is the drift this whole surface exists to
+// avoid — it is why the capability probe was extracted in the first place.
+func (s *Server) buildConfig(ctx context.Context, view string) configResponse {
 	public := view == configViewPublic
 	admin := view == configViewAdmin
 
@@ -185,8 +193,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	// landing page asking "are you up" should get an answer.
 	if s.resolver == nil {
 		resp.Providers, resp.Models, resp.Search = []configProvider{}, []configModel{}, []configSearch{}
-		writeJSON(w, http.StatusOK, resp)
-		return
+		return resp
 	}
 
 	// RFC AX operator-key gate, mirroring /v1/_routing exactly: when the gate is
@@ -326,7 +333,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 // publicFeatures reduces the capability map to {name: bool} by reading ONLY each

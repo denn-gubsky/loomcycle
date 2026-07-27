@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"path/filepath"
 	"strings"
@@ -908,6 +909,9 @@ func (m *mockConnector) DeleteChannel(context.Context, string) error {
 }
 func (m *mockConnector) PurgeChannel(context.Context, string) (connector.ChannelPurgeResult, error) {
 	return connector.ChannelPurgeResult{}, nil
+}
+func (m *mockConnector) Config(context.Context) ([]byte, error) {
+	return nil, errors.New("not implemented")
 }
 
 // RFC S client twins. Canned representative results so the gRPC mapping

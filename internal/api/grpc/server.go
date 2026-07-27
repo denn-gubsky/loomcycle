@@ -173,6 +173,25 @@ func (s *Server) Health(ctx context.Context, _ *loomcyclepb.HealthRequest) (*loo
 	}, nil
 }
 
+// Config returns the instance-configuration report as JSON, at the caller's
+// disclosure level. Mirrors GET /v1/config through the shared connector, so the
+// two transports cannot answer the same question differently.
+//
+// The HTTP side's third, narrower `public` level does not exist here: it requires
+// an unauthenticated read under LOOMCYCLE_PUBLIC_CONFIG, and gRPC authenticates
+// before dispatch. A caller therefore gets `authenticated` or `admin` from its own
+// scopes, and `view` in the payload names which.
+func (s *Server) Config(ctx context.Context, _ *loomcyclepb.ConfigRequest) (*loomcyclepb.ConfigResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "config is not wired on this instance")
+	}
+	b, err := s.connector.Config(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "config: %v", err)
+	}
+	return &loomcyclepb.ConfigResponse{ConfigJson: b}, nil
+}
+
 // ========================
 // Agent metadata
 // ========================
@@ -590,6 +609,13 @@ var grpcConsumerScopes = map[string]string{
 	// RFC AV: the usage/cost report is tenant-readable (the handler tenant-scopes
 	// the aggregation), mirroring the HTTP /v1/_usage ScopeTenant gate.
 	"UsageReport": auth.ScopeTenant,
+	// Instance configuration. "" = ANY authenticated principal, which is the same
+	// gate GET /v1/config gets from requiredScopeFor's GET default — the report is
+	// self-narrowing (the handler emits only what the caller's own scopes allow),
+	// so a scope floor would deny a caller a view it is entitled to. It MUST be
+	// listed: an unmapped RPC defaults to substrate:admin, which would make the
+	// gRPC surface stricter than the HTTP one for no reason.
+	"Config": "",
 	// RFC AW: token-budget management. The handler tenant-scopes reads + confines
 	// writes to the caller's own tenant (operator-global + cross-tenant stay
 	// admin-only), mirroring the HTTP /v1/_limits ScopeTenant gate.
