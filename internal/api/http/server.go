@@ -2808,6 +2808,12 @@ func (s *Server) Mux() http.Handler {
 	// purgeable counts + export dir are admin-only (stripped in the handler).
 	// Scope-gated to substrate:tenant in requiredScopeFor.
 	mux.Handle("GET /v1/_retention", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionReport))))
+	// Repair memory rows stranded at the legacy "" tenant by the RFC BL tenant
+	// axis. substrate:admin via the /v1/_* catch-all in requiredScopeFor — it
+	// rewrites rows across every scope in one statement. dry_run defaults true,
+	// so a bare POST reports rather than writes. Reachable from the Settings hub
+	// because the deployments most likely to be affected have no shell.
+	mux.Handle("POST /v1/_memory/repair-tenant", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryOrphanRepair))))
 	// RFC AW — per-scope token budgets (list / upsert / delete). Tenant-scoped
 	// (the handlers confine a substrate:tenant caller to its own tenant + reject
 	// the operator-global / cross-tenant writes with 403).
