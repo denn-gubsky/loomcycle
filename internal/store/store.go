@@ -1647,6 +1647,35 @@ type Store interface {
 	// no rows returns an empty slice, not an error.
 	MemoryListTenantsForScope(ctx context.Context, scope MemoryScope, scopeID string) ([]string, error)
 
+	// MemoryOrphanScan reports memory rows stranded at the legacy "" tenant —
+	// rows a tenant-scoped session cannot reach. Read-only.
+	//
+	// RFC BL added tenant_id to this table without backfilling the rows already
+	// in it, so every pre-upgrade row stayed at "". Document chunk BODIES live
+	// here while their STRUCTURE lives in SQL Memory, which is not partitioned
+	// the same way — so an affected document lists and exports as a complete
+	// heading tree with empty sections, rather than failing outright.
+	//
+	// scope="global" rows are counted in SkippedGlobal and never reported as
+	// orphans: that partition is shared by design (the Context op=help index
+	// lives there) and "" is its correct home.
+	MemoryOrphanScan(ctx context.Context, targetTenant string) (MemoryOrphanReport, error)
+
+	// MemoryOrphanRepair re-stamps legacy-tenant rows onto targetTenant,
+	// transactionally, and returns the same report shape with Applied set.
+	//
+	// A row whose (scope, scope_id, key) ALREADY exists at targetTenant is
+	// skipped, not merged: the PK is (tenant_id, scope, scope_id, key), so
+	// moving it would either violate the constraint or silently overwrite a live
+	// row. Which side should win depends on content the store layer cannot
+	// adjudicate — the report counts collisions so an operator can inspect them.
+	//
+	// Idempotent: a second call moves nothing. Pass scopeIDs to narrow the move
+	// to specific scope_ids (a multi-tenant deployment whose orphans belong to
+	// several tenants must narrow, since "" records no owner); nil moves every
+	// non-global orphan.
+	MemoryOrphanRepair(ctx context.Context, targetTenant string, scopeIDs []string) (MemoryOrphanReport, error)
+
 	// MemoryBumpAccessBatch applies a batch of access-count deltas to the
 	// base memory table (RFC BL hybrid retrieval, OQ #4). For each bump it
 	// runs, per row, an ADDITIVE update:
@@ -2694,6 +2723,36 @@ type MemoryScopeIDSummary struct {
 	KeyCount  int       `json:"key_count"`
 	Bytes     int       `json:"bytes"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// MemoryOrphanGroup counts legacy-tenant rows for one (scope, scope_id). The
+// grouping is what lets an operator tell a single-tenant deployment (all
+// orphans under one scope_id, safe to move wholesale) from a multi-tenant one
+// (several scope_ids that may belong to different tenants, needing narrowing) —
+// the "" partition records no owner, so the store cannot decide this alone.
+type MemoryOrphanGroup struct {
+	Scope      MemoryScope `json:"scope"`
+	ScopeID    string      `json:"scope_id"`
+	Rows       int         `json:"rows"`
+	Collisions int         `json:"collisions"`
+}
+
+// MemoryOrphanReport summarizes rows stranded at the legacy "" tenant, for both
+// the read-only scan and the applied repair.
+type MemoryOrphanReport struct {
+	// Orphaned counts movable non-global rows at "" (collisions included).
+	Orphaned int `json:"orphaned"`
+	// Collisions counts orphans whose (scope, scope_id, key) already exists at
+	// the target tenant. These are never moved — see MemoryOrphanRepair.
+	Collisions int `json:"collisions"`
+	// SkippedGlobal counts scope="global" rows, which belong at "" by design.
+	SkippedGlobal int                 `json:"skipped_global"`
+	Groups        []MemoryOrphanGroup `json:"groups,omitempty"`
+	// Applied is false for a scan, true for a repair that committed.
+	Applied bool `json:"applied"`
+	// Moved is the rows actually re-stamped (Orphaned minus Collisions, minus
+	// anything excluded by a scopeIDs filter).
+	Moved int `json:"moved"`
 }
 
 // MemoryEmbedding is the vector + metadata stored alongside a memory

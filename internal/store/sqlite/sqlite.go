@@ -4466,6 +4466,118 @@ func (s *Store) MemoryListTenantsForScope(ctx context.Context, scope store.Memor
 	return out, rows.Err()
 }
 
+// memoryOrphanQuerier lets the scan run either standalone or inside the
+// repair's transaction, so the returned report describes the same snapshot the
+// UPDATE acted on rather than a re-read that a concurrent writer could shift.
+type memoryOrphanQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// memoryOrphanScan is shared by MemoryOrphanScan and MemoryOrphanRepair.
+func memoryOrphanScan(ctx context.Context, q memoryOrphanQuerier, targetTenant string) (store.MemoryOrphanReport, error) {
+	var rep store.MemoryOrphanReport
+	// scope='global' is shared by design (the help index lives there), so "" is
+	// its correct home — count it separately and never treat it as an orphan.
+	if err := q.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory WHERE COALESCE(tenant_id,'') = '' AND scope = 'global'`,
+	).Scan(&rep.SkippedGlobal); err != nil {
+		return rep, err
+	}
+	// A collision is an orphan whose (scope, scope_id, key) already exists at the
+	// target — the PK, so it cannot be moved without clobbering a live row.
+	rows, err := q.QueryContext(ctx,
+		`SELECT m.scope, m.scope_id, COUNT(*) AS n,
+		        SUM(CASE WHEN t.key IS NOT NULL THEN 1 ELSE 0 END) AS c
+		   FROM memory m
+		   LEFT JOIN memory t
+		     ON COALESCE(t.tenant_id,'') = ? AND t.scope = m.scope
+		        AND t.scope_id = m.scope_id AND t.key = m.key
+		  WHERE COALESCE(m.tenant_id,'') = '' AND m.scope <> 'global'
+		  GROUP BY m.scope, m.scope_id
+		  ORDER BY n DESC, m.scope, m.scope_id`,
+		targetTenant,
+	)
+	if err != nil {
+		return rep, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var g store.MemoryOrphanGroup
+		var scope string
+		if err := rows.Scan(&scope, &g.ScopeID, &g.Rows, &g.Collisions); err != nil {
+			return rep, err
+		}
+		g.Scope = store.MemoryScope(scope)
+		rep.Orphaned += g.Rows
+		rep.Collisions += g.Collisions
+		rep.Groups = append(rep.Groups, g)
+	}
+	return rep, rows.Err()
+}
+
+func (s *Store) MemoryOrphanScan(ctx context.Context, targetTenant string) (store.MemoryOrphanReport, error) {
+	if targetTenant == "" {
+		return store.MemoryOrphanReport{}, errors.New("memory orphan scan: target tenant may not be empty (that is the legacy partition itself)")
+	}
+	return memoryOrphanScan(ctx, s.db, targetTenant)
+}
+
+func (s *Store) MemoryOrphanRepair(ctx context.Context, targetTenant string, scopeIDs []string) (store.MemoryOrphanReport, error) {
+	if targetTenant == "" {
+		return store.MemoryOrphanReport{}, errors.New("memory orphan repair: target tenant may not be empty (that is the legacy partition itself)")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.MemoryOrphanReport{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rep, err := memoryOrphanScan(ctx, tx, targetTenant)
+	if err != nil {
+		return store.MemoryOrphanReport{}, err
+	}
+
+	args := []any{targetTenant}
+	filter := ""
+	if len(scopeIDs) > 0 {
+		filter = " AND scope_id IN (" + placeholders(len(scopeIDs)) + ")"
+		for _, id := range scopeIDs {
+			args = append(args, id)
+		}
+	}
+	args = append(args, targetTenant)
+	res, err := tx.ExecContext(ctx,
+		`UPDATE memory SET tenant_id = ?
+		  WHERE COALESCE(tenant_id,'') = '' AND scope <> 'global'`+filter+`
+		    AND NOT EXISTS (
+		      SELECT 1 FROM memory t
+		       WHERE COALESCE(t.tenant_id,'') = ? AND t.scope = memory.scope
+		         AND t.scope_id = memory.scope_id AND t.key = memory.key)`,
+		args...,
+	)
+	if err != nil {
+		return store.MemoryOrphanReport{}, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return store.MemoryOrphanReport{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return store.MemoryOrphanReport{}, err
+	}
+	rep.Applied, rep.Moved = true, int(n)
+	return rep, nil
+}
+
+// placeholders returns "?, ?, ?" for n — the sqlite tier writes `?` natively.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
 // MemoryFullTextSearch is the RFC BL keyword-retrieval leg. SQLite ships no
 // tsvector index (the vectors themselves are Postgres-only), so per the
 // documented degrade posture this returns (nil, nil) rather than erroring —
