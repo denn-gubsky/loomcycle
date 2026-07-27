@@ -552,6 +552,21 @@ func TestSweeper_ChatsDryRunCountsSplitByInternal(t *testing.T) {
 		t.Errorf("counts[chats] = %d, want 0 — the normal chat is inside its 30-day age, and internal chats must not be counted here", counts["chats"])
 	}
 
+	// 40 days on, every session past every cutoff: this is the case that proves
+	// "chats" actually EXCLUDES the internal ones. At 5 days above, an unfiltered
+	// "chats" query would also have returned 0 (nothing was 30 days old yet), so
+	// that assertion alone never exercised the exclusion.
+	counts, err = New(st, internalChatsConfig(time.Now().Add(40*24*time.Hour))).DryRunCounts(ctx)
+	if err != nil {
+		t.Fatalf("DryRunCounts (all aged): %v", err)
+	}
+	if counts["chats"] != 1 {
+		t.Errorf("counts[chats] = %d, want 1 — the two internal chats belong to chats_internal, not here", counts["chats"])
+	}
+	if counts["chats_internal"] != 2 {
+		t.Errorf("counts[chats_internal] = %d, want 2", counts["chats_internal"])
+	}
+
 	// With no agent declared internal the split is off: everything is a chat, and
 	// the key is still present (reporting 0) so the shape does not shift.
 	plain := internalChatsConfig(time.Now().Add(40 * 24 * time.Hour))
