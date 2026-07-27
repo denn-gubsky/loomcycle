@@ -151,6 +151,17 @@ service Loomcycle {
   // the gRPC equivalent stays unauthenticated for parity).
   rpc Health(HealthRequest) returns (HealthResponse);
 
+  // Config returns the instance-configuration report: build identity, the
+  // feature matrix, and the live provider/model/search cascade with coarse
+  // active/inactive status.
+  //
+  // Mirrors GET /v1/config at the CALLER's disclosure level. The HTTP side has a
+  // third, narrower `public` level reachable with no bearer under
+  // LOOMCYCLE_PUBLIC_CONFIG; that level does NOT exist here, because gRPC
+  // authenticates before dispatch — so a caller gets `authenticated` or `admin`
+  // from its own scopes. `view` in the payload names which.
+  rpc Config(ConfigRequest) returns (ConfigResponse);
+
   // RegisterHook registers a pre- or post-tool webhook. The
   // callback_url must be an http:// or https:// endpoint the consumer
   // runs. Returns the loomcycle-assigned id. Re-registering the same
@@ -978,6 +989,25 @@ message TokenLimitResponse {
 // ========================
 // Health
 // ========================
+
+message ConfigRequest {}
+
+// ConfigResponse carries the report as raw JSON rather than a typed message.
+//
+// Two reasons, both structural. The report's `features` values change SHAPE by
+// disclosure level — nested objects for an authenticated caller, plain booleans
+// for a public one — which no single proto message expresses honestly. And the
+// matrix grows as the runtime gains subsystems, so a typed mirror would need a
+// proto field per capability, in lockstep, forever; a client that wants a new
+// capability's flag would need a regenerated stub to see a boolean. Passing the
+// JSON through means gRPC and HTTP cannot serialize the same report differently,
+// which is the same anti-drift reason the capability probe itself is shared.
+//
+// This follows the SubstrateResponse precedent (bytes output_json) already used
+// by fourteen RPCs.
+message ConfigResponse {
+  bytes config_json = 1;
+}
 
 message HealthRequest {}
 

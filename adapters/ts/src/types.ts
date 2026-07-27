@@ -2187,6 +2187,77 @@ export interface TokenLimitsResponse {
   limits: TokenLimit[];
 }
 
+/** One LLM provider the deployment can route to. `active` is reachable AND not
+ *  excluded — one coarse boolean. A provider probe error is never exposed here
+ *  (those can carry hostnames, ports, and upstream response bodies); an operator
+ *  gets that detail from `GET /v1/_routing`. */
+export interface ConfigProvider {
+  provider: string;
+  active: boolean;
+}
+
+/** One (provider, model) pair the deployment can route to, flattened and
+ *  deduplicated across plans — the same model appears in every plan that
+ *  includes it, and a consumer wants it once. */
+export interface ConfigModel {
+  provider: string;
+  model: string;
+  /** The canonical capability tiers (low/middle/high) this pair serves. These
+   *  are loomcycle's own tier names, never the operator's plan names. */
+  tiers: string[];
+  /** At least one tier would route here right now. */
+  active: boolean;
+  /** It is the FIRST available candidate for at least one tier — what runs. */
+  selected: boolean;
+}
+
+/** One web-search provider (RFC BB), in cascade order. */
+export interface ConfigSearch {
+  provider: string;
+  active: boolean;
+  primary: boolean;
+}
+
+export interface ConfigInstance {
+  /** Identifies the software, not the deployment, so it is public. */
+  version?: string;
+  /** Build provenance — absent from the `public` view. */
+  commit?: string;
+  build_time?: string;
+  /** The operator's advertised base URL — absent from the `public` view. */
+  url?: string;
+}
+
+/** `GET /v1/config` — what this instance is and what it can do.
+ *
+ *  Rendered at one of three disclosure levels, named in `view` so a consumer can
+ *  tell "this deployment has none" from "you weren't shown them":
+ *
+ *  - `public` — version, features, providers, models, search. Reachable with NO
+ *    bearer, and only on a deployment running `LOOMCYCLE_PUBLIC_CONFIG=1`.
+ *  - `authenticated` — adds commit, build_time, url, limits, user_tiers.
+ *  - `admin` — adds `features.storage`.
+ *
+ *  In the `public` view every `features` value is a plain boolean; at the other
+ *  levels each is an object carrying at least `available`. That is deliberate:
+ *  the public view is built by copying only the `available` field, so a
+ *  capability gaining a new field later cannot leak to a public reader. */
+export interface ConfigResponse {
+  generated_at: string;
+  view: "public" | "authenticated" | "admin";
+  instance: ConfigInstance;
+  /** Per-subsystem availability. A `boolean` in the `public` view; otherwise an
+   *  object with `available` plus that capability's own detail. */
+  features: Record<string, boolean | Record<string, unknown>>;
+  providers: ConfigProvider[];
+  models: ConfigModel[];
+  search: ConfigSearch[];
+  /** Configured plan names — omitted from the `public` view. */
+  user_tiers?: string[];
+  /** Deployment caps — omitted from the `public` view. */
+  limits?: Record<string, number>;
+}
+
 /** The PUT /v1/_limits body (RFC AW). A present `soft_limit`/`hard_limit` sets
  *  that tier; omitting it clears the tier (unlimited on that axis) — a full-row
  *  upsert. `tenant_id` is an admin-only target; a tenant operator is confined to

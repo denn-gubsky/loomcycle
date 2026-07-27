@@ -39,6 +39,10 @@ func (m *n8nMock) StreamUserRunStates(_ context.Context, req connector.StreamUse
 	return m.streamErr
 }
 
+func (m *n8nMock) Config(context.Context) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+
 func TestGrpcListChannels_HappyPath(t *testing.T) {
 	mc := &n8nMock{
 		listChannelsResp: connector.ListChannelsResponse{

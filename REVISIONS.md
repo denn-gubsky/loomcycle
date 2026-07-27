@@ -18,7 +18,15 @@ For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool,
 
 **One test in the first draft was vacuous, and it is worth naming.** The model-dedup assertions ran against the default HTTP fixture, which leaves `s.resolver` nil — so the handler took its degraded path, returned an empty model list, and the test passed while asserting nothing. It now installs a real resolver with deepseek reachable and anthropic down, so `active` has to discriminate rather than being constant, and it also asserts the seeded probe error appears nowhere in the public body.
 
-Runtime + docs. One new endpoint, one new env var, no migration, no schema change; adapters unchanged (the endpoint is a plain authenticated GET, and a landing page fetches it directly).
+**📡 Every transport carries it.** `getConfig()` on `@loomcycle/client` is a plain HTTP GET; `get_config()` on the Python client needed a new **gRPC `Config` RPC**, because that adapter is gRPC-only by design — it says so itself, pointing HTTP-only consumers at their own `httpx` client. The RPC shares `buildConfig` through the connector rather than assembling its own report: a second implementation behind gRPC would have reintroduced exactly the drift this surface exists to avoid.
+
+**`ConfigResponse` carries the report as `bytes config_json`,** following the `SubstrateResponse` precedent already used by fourteen RPCs. Two structural reasons rather than laziness: the report's `features` values change **shape** by disclosure level — nested objects for an authenticated caller, plain booleans for a public one — which no single proto message expresses honestly; and the matrix grows as the runtime gains subsystems, so a typed mirror would need a field per capability in lockstep forever, and a client wanting a new capability's flag would need a regenerated stub to see a boolean. The TS type says the same thing in its own idiom: `features` is `boolean | Record<string, unknown>`, because that union is real.
+
+**The two clients differ in one way, and it is a property of the transports.** The TS client can read the `public` view — a deployment with `LOOMCYCLE_PUBLIC_CONFIG=1` serves `/v1/config` with no bearer, which is the landing-page case a browser fetches directly. The Python client cannot, because gRPC authenticates before dispatch, so it gets `authenticated` or `admin` from its own scopes. Both READMEs and both docstrings state it rather than leaving a consumer to find out. The RPC's scope is `""` — **any** authenticated principal, matching what the HTTP route gets from `requiredScopeFor`'s GET default — and it had to be mapped explicitly, because an unmapped RPC defaults to `substrate:admin` and would have made gRPC stricter than HTTP for no reason. The report narrows itself by scope, so a floor would deny a caller a view it is entitled to; a test asserts the mapping directly.
+
+**Both adapter versions move to 1.38.0, and that is not cosmetic.** The publish workflows fire only when the package version equals the tag version, and both were behind (`@loomcycle/client` 1.30.0, Python 1.25.0) — so a `v1.38.0` tag would have skipped-but-passed and shipped nothing.
+
+Runtime + adapters + docs. One new endpoint, one new gRPC RPC, one new env var; no migration, no schema change, no change to any existing wire shape.
 
 ## What's in v1.37.0
 

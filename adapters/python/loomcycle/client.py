@@ -145,6 +145,36 @@ class LoomcycleClient:
             "uptime_seconds": resp.uptime_seconds,
         }
 
+    async def get_config(self) -> Mapping[str, Any]:
+        """Instance configuration: build identity, the feature matrix, and
+        the live provider/model/search cascade with coarse active/inactive
+        status. Mirrors ``GET /v1/config``.
+
+        Returns a plain dict, because the report is a heterogeneous config
+        document whose ``features`` values change shape by disclosure level
+        — the RPC carries it as JSON for that reason (see ``ConfigResponse``
+        in the proto), and decoding to a dict here is the honest surface.
+
+        Useful keys:
+
+        - ``view`` — ``"authenticated"`` or ``"admin"``, naming the
+          disclosure level this response was rendered at, so you can tell
+          "this deployment has none" from "you weren't shown them". The
+          HTTP surface has a third, narrower ``"public"`` level reachable
+          with no bearer; it does not exist over gRPC, which authenticates
+          before dispatch.
+        - ``instance`` — version, commit, build_time, url.
+        - ``features`` — per-subsystem availability.
+        - ``providers`` / ``models`` / ``search`` — each with ``active``;
+          ``models`` is one entry per (provider, model) deduplicated across
+          plans, and ``selected`` marks what actually runs.
+        """
+        try:
+            resp = await self._stub.Config(pb.ConfigRequest())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return json.loads(resp.config_json)
+
     async def get_agent(self, agent_id: str) -> Mapping[str, Any]:
         """Read one agent's status + usage stats. Raises
         ``AgentNotFoundError`` if the ID is unknown."""

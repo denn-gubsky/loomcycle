@@ -143,6 +143,7 @@ The low-level primitives (`runStreaming({interactive:true})` + `sendRunInput` + 
 | `listUserAgents(userId, opts?)` | `Promise<Agent[]>` | Optional filter by status (`running` / `completed` / `failed` / `cancelled`). |
 | `getTranscript(sessionId)` | `Promise<TranscriptResponse>` | Persisted event log; one row per event with seq/run_id/ts_ns/type/event. |
 | `health()` | `Promise<HealthResponse>` | Liveness probe. Hits `/healthz` (no `/v1` prefix). Unauthenticated. |
+| `getConfig(opts?)` | `Promise<ConfigResponse>` | v1.38.0 — instance configuration: build identity, the feature matrix, and the live provider/model/search cascade with `active`/`selected`. `view` names the disclosure level (`public` / `authenticated` / `admin`). Also readable with **no bearer** against a deployment running `LOOMCYCLE_PUBLIC_CONFIG=1`, which serves the narrower `public` view — the landing-page case. |
 | `listUsers()` | `Promise<ListUsersResponse>` | Admin: known users with running-count summary. |
 
 ### Pause / Resume / State (v0.8.17 / v0.8.18)

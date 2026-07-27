@@ -105,6 +105,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `list_user_agents(user_id, status="")` | `list[dict]` | Filters: `running`, `completed`, `failed`, `cancelled`. |
 | `get_transcript(session_id)` | `list[dict]` | Persisted event log; `payload` is raw JSON bytes. |
 | `health()` | `dict` | Liveness + build info. Unauthenticated. |
+| `get_config()` | `dict` | v1.38.0 — instance configuration: build identity, the feature matrix, and the live provider/model/search cascade with `active`/`selected`. `view` names the disclosure level (`authenticated` or `admin`; the HTTP surface's narrower `public` level does not exist over gRPC, which authenticates before dispatch). |
 | `register_hook(owner, name, phase, callback_url, ...)` | `dict` | Pre/PostTool webhook registration. Returns `{"id": ...}`. |
 | `list_hooks()` | `list[dict]` | Every registered hook (in-memory only). |
 | `delete_hook(hook_id)` | `bool` | Idempotent on missing id is NOT supported — raises `HookNotFoundError`. |

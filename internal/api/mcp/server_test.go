@@ -313,6 +313,9 @@ func (m *mockConnector) PurgeChannel(context.Context, string) (connector.Channel
 	m.chanDefCalls.Add(1)
 	return connector.ChannelPurgeResult{}, nil
 }
+func (m *mockConnector) Config(context.Context) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
 func (m *mockConnector) AwaitChannels(context.Context, connector.ChannelAwaitRequest) (connector.ChannelAwaitResult, error) {
 	return connector.ChannelAwaitResult{}, nil
 }

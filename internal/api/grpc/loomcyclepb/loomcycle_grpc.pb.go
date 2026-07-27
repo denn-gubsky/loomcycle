@@ -54,6 +54,7 @@ const (
 	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
 	Loomcycle_TokenLimit_FullMethodName          = "/loomcycle.v1.Loomcycle/TokenLimit"
 	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
+	Loomcycle_Config_FullMethodName              = "/loomcycle.v1.Loomcycle/Config"
 	Loomcycle_RegisterHook_FullMethodName        = "/loomcycle.v1.Loomcycle/RegisterHook"
 	Loomcycle_ListHooks_FullMethodName           = "/loomcycle.v1.Loomcycle/ListHooks"
 	Loomcycle_DeleteHook_FullMethodName          = "/loomcycle.v1.Loomcycle/DeleteHook"
@@ -202,6 +203,16 @@ type LoomcycleClient interface {
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
 	// the gRPC equivalent stays unauthenticated for parity).
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
+	// Config returns the instance-configuration report: build identity, the
+	// feature matrix, and the live provider/model/search cascade with coarse
+	// active/inactive status.
+	//
+	// Mirrors GET /v1/config at the CALLER's disclosure level. The HTTP side has a
+	// third, narrower `public` level reachable with no bearer under
+	// LOOMCYCLE_PUBLIC_CONFIG; that level does NOT exist here, because gRPC
+	// authenticates before dispatch — so a caller gets `authenticated` or `admin`
+	// from its own scopes. `view` in the payload names which.
+	Config(ctx context.Context, in *ConfigRequest, opts ...grpc.CallOption) (*ConfigResponse, error)
 	// RegisterHook registers a pre- or post-tool webhook. The
 	// callback_url must be an http:// or https:// endpoint the consumer
 	// runs. Returns the loomcycle-assigned id. Re-registering the same
@@ -596,6 +607,16 @@ func (c *loomcycleClient) Health(ctx context.Context, in *HealthRequest, opts ..
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HealthResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_Health_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) Config(ctx context.Context, in *ConfigRequest, opts ...grpc.CallOption) (*ConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfigResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_Config_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1072,6 +1093,16 @@ type LoomcycleServer interface {
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
 	// the gRPC equivalent stays unauthenticated for parity).
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
+	// Config returns the instance-configuration report: build identity, the
+	// feature matrix, and the live provider/model/search cascade with coarse
+	// active/inactive status.
+	//
+	// Mirrors GET /v1/config at the CALLER's disclosure level. The HTTP side has a
+	// third, narrower `public` level reachable with no bearer under
+	// LOOMCYCLE_PUBLIC_CONFIG; that level does NOT exist here, because gRPC
+	// authenticates before dispatch — so a caller gets `authenticated` or `admin`
+	// from its own scopes. `view` in the payload names which.
+	Config(context.Context, *ConfigRequest) (*ConfigResponse, error)
 	// RegisterHook registers a pre- or post-tool webhook. The
 	// callback_url must be an http:// or https:// endpoint the consumer
 	// runs. Returns the loomcycle-assigned id. Re-registering the same
@@ -1332,6 +1363,9 @@ func (UnimplementedLoomcycleServer) TokenLimit(context.Context, *TokenLimitReque
 }
 func (UnimplementedLoomcycleServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
+}
+func (UnimplementedLoomcycleServer) Config(context.Context, *ConfigRequest) (*ConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Config not implemented")
 }
 func (UnimplementedLoomcycleServer) RegisterHook(context.Context, *RegisterHookRequest) (*RegisterHookResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RegisterHook not implemented")
@@ -1722,6 +1756,24 @@ func _Loomcycle_Health_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).Health(ctx, req.(*HealthRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_Config_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).Config(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_Config_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).Config(ctx, req.(*ConfigRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2407,6 +2459,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Health",
 			Handler:    _Loomcycle_Health_Handler,
+		},
+		{
+			MethodName: "Config",
+			Handler:    _Loomcycle_Config_Handler,
 		},
 		{
 			MethodName: "RegisterHook",

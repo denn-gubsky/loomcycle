@@ -511,6 +511,25 @@ type Connector interface {
 	// otherwise needed a raw DB delete. Returns ErrChannelNotFound when
 	// the name is neither yaml-declared nor in the runtime table.
 	PurgeChannel(ctx context.Context, name string) (ChannelPurgeResult, error)
+
+	// --- Instance configuration ---
+
+	// Config returns the instance-configuration report — what this deployment is
+	// and what it can do — mirroring GET /v1/config at the CALLER's disclosure
+	// level, resolved from the principal in ctx.
+	//
+	// It returns the marshalled JSON rather than a Go struct, deliberately. The
+	// report is a heterogeneous config document whose `features` values change
+	// SHAPE by disclosure level (nested objects for an authenticated caller,
+	// plain booleans for a public one), which no single Go type expresses
+	// honestly. Every consumer is a JSON transport, so passing the bytes through
+	// means the two transports cannot serialize the same report differently —
+	// the same anti-drift reason the capability probe itself is shared.
+	//
+	// The public level is unreachable here: it requires an unauthenticated HTTP
+	// read under LOOMCYCLE_PUBLIC_CONFIG, and every connector transport
+	// authenticates first.
+	Config(ctx context.Context) ([]byte, error)
 }
 
 // RunStateVisitor is the visitor callback for StreamUserRunStates.
