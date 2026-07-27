@@ -655,6 +655,46 @@ export async function resumeRuntime(): Promise<ResumeResult> {
   return postJSON<ResumeResult>("/v1/_resume", undefined);
 }
 
+// Memory rows stranded at the legacy "" tenant. RFC BL added tenant_id to the
+// memory table without backfilling pre-existing rows, so anything written before
+// the upgrade is unreadable from a tenant-scoped session. Grouping by
+// (scope, scope_id) is what lets an operator tell a single-tenant deployment
+// (safe to move wholesale) from a multi-tenant one (needs narrowing) — the ""
+// partition records no owner.
+export interface MemoryOrphanGroup {
+  scope: string;
+  scope_id: string;
+  rows: number;
+  collisions: number;
+}
+
+export interface MemoryOrphanReport {
+  tenant: string;
+  orphaned: number;
+  collisions: number;
+  skipped_global: number;
+  groups?: MemoryOrphanGroup[];
+  applied: boolean;
+  moved: number;
+}
+
+// dryRun defaults to true server-side; passed explicitly here so the call site
+// reads as the action it performs rather than relying on an omitted field.
+export async function repairTenantMemory(
+  tenant: string,
+  dryRun: boolean,
+  scopeIDs?: string[],
+): Promise<MemoryOrphanReport> {
+  return postJSON<MemoryOrphanReport>(
+    "/v1/_memory/repair-tenant",
+    JSON.stringify({
+      tenant: tenant || undefined,
+      dry_run: dryRun,
+      scope_ids: scopeIDs && scopeIDs.length > 0 ? scopeIDs : undefined,
+    }),
+  );
+}
+
 export interface SnapshotListEntry {
   id: string;
   created_at: string;
