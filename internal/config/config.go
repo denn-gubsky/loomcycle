@@ -425,6 +425,35 @@ type StorageConfig struct {
 // (the local-api spec path, additional resource files).
 func (c *Config) ConfigDir() string { return c.configDir }
 
+// InternalAgentNames returns the names of the agents declared `internal:` —
+// loomcycle's own maintenance plumbing, whose sessions are bookkeeping rather
+// than conversation. Callers use it to exclude those sessions from memory
+// consolidation and from the History listing. Sorted, so a caller that logs or
+// tests it gets a stable order; nil when nothing is marked.
+//
+// SOURCED FROM STATIC CONFIG ONLY, and that is a documented limit rather than an
+// oversight. The `internal:` marker round-trips the AgentDef overlay, so a
+// runtime-authored def can carry it — but resolving THOSE names would mean
+// enumerating every active def on each session listing and each consolidation
+// scan, a store round-trip on a hot read to cover an agent nobody has authored
+// yet. Every internal agent that exists today is declared in yaml (the bundled
+// consolidator and extractor), and a fork of one keeps its name, so the name set
+// still covers it. An operator who authors a NEW internal agent purely at
+// runtime should also declare the name in their config layer.
+func (c *Config) InternalAgentNames() []string {
+	if c == nil {
+		return nil
+	}
+	var out []string
+	for name, def := range c.Agents {
+		if def.Internal {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // HooksConfig is the v0.8.17 top-level config block for the tool-use
 // hooks subsystem. Carries operator-side knobs that can't be set via
 // the dynamic POST /v1/hooks endpoint — they need a trust boundary
@@ -1086,6 +1115,28 @@ type AgentDef struct {
 	// (chars/4 estimate) for this agent. 0 = the DefaultMemoryInjectMaxTokens
 	// default (applied at use-time so 0 stays byte-stable in the content hash).
 	MemoryInjectMaxTokens int `yaml:"memory_inject_max_tokens"`
+
+	// Internal marks the agent as loomcycle's own MAINTENANCE plumbing rather
+	// than something a person talks to. A run of an internal agent still records
+	// a session like any other, but that session is runtime bookkeeping, not a
+	// conversation: it is excluded from memory consolidation and hidden from
+	// History list/search by default.
+	//
+	// It exists because the consolidator was consolidating its own output. Each
+	// pass spawns one `memory/extractor` child per chat, and each child's session
+	// TRANSCRIPT CONTAINS the chat it was extracting — so on the next pass those
+	// sessions became consolidation candidates themselves, and the pipeline
+	// re-extracted nested copies of its own input. On the live store 7 of the
+	// last 8 chats were extractor sessions, growing ~15 a pass, unbounded. The
+	// consolidator already excluded ITSELF by name; one exclusion was never
+	// enough, and a per-agent declaration means any future maintenance agent gets
+	// the behaviour without a name hardcoded in a store call.
+	//
+	// Behaviour-bearing (it changes what the runtime does with every run of this
+	// def), so content-identifying — unlike the *_def_scopes authority gates,
+	// which are excluded from the hash. `omitempty` on the false default keeps
+	// every existing agent row byte-stable.
+	Internal bool `yaml:"internal"`
 
 	// MemoryProtocol, when set, opts the agent into the memory-usage protocol
 	// note (P1 seam — the note body lands with the entity/consolidation tiers).
@@ -4750,6 +4801,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	// documented limit as InheritCoreBlocks / Interruption above).
 	if override.UnboundedIterations {
 		out.UnboundedIterations = true
+	}
+	if override.Internal {
+		out.Internal = true
 	}
 	if override.RunTimeoutSeconds != 0 {
 		out.RunTimeoutSeconds = override.RunTimeoutSeconds

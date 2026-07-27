@@ -302,6 +302,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		// RFC BL P1 — core memory blocks (content-identifying; mirror mergedDef).
 		"core_blocks":              true,
 		"inherit_core_blocks":      true,
+		"internal":                 true,
 		"memory_inject_max_tokens": true,
 		"memory_protocol":          true,
 		"memory_consolidation":     true, // RFC BL P2 — consolidation control-ops grant (content-identifying)

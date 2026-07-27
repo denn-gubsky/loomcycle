@@ -922,6 +922,7 @@ type mergedDef struct {
 	CoreBlocks            []config.CoreBlock `json:"core_blocks,omitempty"`
 	InheritCoreBlocks     bool               `json:"inherit_core_blocks,omitempty"`
 	MemoryInjectMaxTokens int                `json:"memory_inject_max_tokens,omitempty"`
+	Internal              bool               `json:"internal,omitempty"` // maintenance plumbing; content-identifying
 	MemoryProtocol        bool               `json:"memory_protocol,omitempty"`
 	MemoryConsolidation   bool               `json:"memory_consolidation,omitempty"` // RFC BL P2 grant; content-identifying
 	MemoryIndexMaxBytes   int                `json:"memory_index_max_bytes,omitempty"`
@@ -1058,6 +1059,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.MemoryInjectMaxTokens != 0 {
 		d.MemoryInjectMaxTokens = ov.MemoryInjectMaxTokens
+	}
+	if ov.Internal {
+		d.Internal = true
 	}
 	if ov.MemoryProtocol {
 		d.MemoryProtocol = true
@@ -1225,6 +1229,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		CoreBlocks:            s.CoreBlocks,
 		InheritCoreBlocks:     s.InheritCoreBlocks,
 		MemoryInjectMaxTokens: s.MemoryInjectMaxTokens,
+		Internal:              s.Internal,
 		MemoryProtocol:        s.MemoryProtocol,
 		MemoryConsolidation:   s.MemoryConsolidation,
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
@@ -1322,6 +1327,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 		CoreBlocks:            coreBlocks,
 		InheritCoreBlocks:     def.InheritCoreBlocks,
 		MemoryInjectMaxTokens: def.MemoryInjectMaxTokens,
+		Internal:              def.Internal,
 		MemoryProtocol:        def.MemoryProtocol,
 		MemoryConsolidation:   def.MemoryConsolidation,
 		MemoryIndexMaxBytes:   def.MemoryIndexMaxBytes,

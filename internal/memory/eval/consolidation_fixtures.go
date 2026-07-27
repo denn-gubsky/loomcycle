@@ -299,7 +299,7 @@ func SeedConsolidationChats(ctx context.Context, st store.Store, tenantID, userI
 
 	// Premise check: the store's ascending scan must agree with the fixture's
 	// declared order.
-	rows, err := st.ConsolidatableSessions(ctx, tenantID, userID, "", "", time.Time{}, "", len(c.Chats)+1)
+	rows, err := st.ConsolidatableSessions(ctx, tenantID, userID, "", nil, time.Time{}, "", len(c.Chats)+1)
 	if err != nil {
 		return nil, fmt.Errorf("verify seed order: %w", err)
 	}

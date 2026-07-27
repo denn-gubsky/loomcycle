@@ -395,7 +395,16 @@ func (t fanoutTally) outcome(agent string) (status, errStr string, countAsFire b
 // window and permanently starve newly-active targets. Each candidate is then
 // confirmed against its OWN watermark before it earns a dispatch.
 func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, scope store.MemoryScope) ([]consolidationTarget, int, error) {
-	sessions, _, err := s.store.ListSessions(ctx, store.SessionFilter{TenantID: def.TenantID}, candidateScanLimit, 0)
+	// The exclusion is pushed into the QUERY rather than applied to the result:
+	// the scan window is a fixed 500 rows ordered most-recently-active first, and
+	// a pass's own children are by construction the most recent sessions there
+	// are. Post-filtering would leave a window full of extractor sessions and
+	// starve every real target out of it — the fan-out's existing
+	// window-starvation gap, made acute by the thing this exclusion exists for.
+	sessions, _, err := s.store.ListSessions(ctx, store.SessionFilter{
+		TenantID:      def.TenantID,
+		ExcludeAgents: s.excludedAgents(def.Agent),
+	}, candidateScanLimit, 0)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sessions: %w", err)
 	}
@@ -417,12 +426,6 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 		}
 		if sess.UserID == "" {
 			continue // no user id ⇒ no user-scope memory target
-		}
-		if sess.Agent == def.Agent {
-			// The consolidator's own past runs. They are settled sessions under
-			// the target's user id, so counting them as a candidate signal would
-			// keep a fully-consolidated target permanently "active".
-			continue
 		}
 		if seen[sess.UserID] {
 			continue
@@ -456,22 +459,46 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 	return targets, dropped, nil
 }
 
+// excludedAgents is the set of agent names whose sessions the fan-out must look
+// past: the schedule's own agent plus every agent declared `internal:`.
+//
+// Self-exclusion alone was never enough. Each pass creates a session under the
+// target's user id, and a pass never consolidates itself, so those sessions sit
+// past the watermark forever — but so do its CHILDREN's. A pass spawns one
+// extractor run per chat it reads, each child's session transcript contains the
+// chat it was extracting, and on the next tick those became candidates in their
+// own right: on the live store 7 of the last 8 chats were extractor sessions,
+// growing ~15 a pass, with every pass re-extracting nested copies of its own
+// input. Sorted so a caller logging the set gets a stable order.
+func (s *Scheduler) excludedAgents(selfAgent string) []string {
+	out := make([]string, 0, len(s.cfg.InternalAgents)+1)
+	seen := map[string]bool{}
+	for _, n := range append(append([]string{}, s.cfg.InternalAgents...), selfAgent) {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // targetHasNewWork reports whether this target has anything to consolidate:
 // either a settled session past its watermark, or an un-drained queue item.
 // Both are cheap point reads with limit 1 — the fan-out must not pay for the
 // batch it is only deciding whether to dispatch.
 //
-// selfAgent is the consolidator's OWN name, excluded from the session probe.
-// Each pass creates a session under the target's user id, and a pass never
-// consolidates itself, so those sessions sit past the watermark forever: without
-// the exclusion every target reports new work on every tick and the schedule
-// becomes a perpetual pass that only ever consolidates its own reports.
+// The session probe looks past the schedule's own agent AND every internal one
+// — see excludedAgents for why one name was not enough. Without the exclusion
+// every target reports new work on every tick and the schedule becomes a
+// perpetual pass consuming its own output.
 func (s *Scheduler) targetHasNewWork(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, selfAgent string) (bool, error) {
 	cursor, err := s.store.MemoryCursorGet(ctx, tenantID, scope, scopeID)
 	if err != nil {
 		return false, fmt.Errorf("cursor get: %w", err)
 	}
-	sessions, err := s.store.ConsolidatableSessions(ctx, tenantID, scopeID, "", selfAgent, cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, 1)
+	sessions, err := s.store.ConsolidatableSessions(ctx, tenantID, scopeID, "", s.excludedAgents(selfAgent), cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, 1)
 	if err != nil {
 		return false, fmt.Errorf("consolidatable sessions: %w", err)
 	}
@@ -744,14 +771,15 @@ func (s *Scheduler) observePass(ctx context.Context, target consolidationTarget,
 	// sessionsKnown=true. That is the fabricated-zero bug inverted: unknown
 	// rendered as maximally alarming instead of as healthy, and equally wrong.
 	//
-	// selfAgent is EXCLUDED, exactly as the dispatcher's has-new-work probe
-	// excludes it. Each pass creates its own settled session under the target's
-	// user id and never consolidates itself, so those sessions sit past the
-	// watermark forever: counting them would make sessions_read climb by one on
-	// every tick and turn the backlog gauge into a tick counter — the same
-	// perpetual-pass trap the scan's own exclusion closes.
+	// The same exclusion set the dispatcher's has-new-work probe uses — the
+	// schedule's own agent AND every internal one. Each pass creates its own
+	// settled session under the target's user id, and one per extractor child,
+	// and never consolidates any of them, so they sit past the watermark forever:
+	// counting them would make sessions_read climb on every tick and turn the
+	// backlog gauge into a child counter. The gauge has to measure the same set
+	// the scan does or it reports a backlog no pass will ever work through.
 	if obs.watermarkKnown {
-		sessions, serr := s.store.ConsolidatableSessions(ctx, target.TenantID, target.UserID, "", selfAgent,
+		sessions, serr := s.store.ConsolidatableSessions(ctx, target.TenantID, target.UserID, "", s.excludedAgents(selfAgent),
 			obs.watermark, cursor.WatermarkSessionID, consolidateObserveCap)
 		if serr == nil {
 			obs.sessionsKnown = true

@@ -56,6 +56,11 @@ type fakeToolset struct {
 	// transcripts gives each chat its own content, keyed by session id; nil keeps
 	// the single shared `transcript` every other scenario uses.
 	transcripts map[string]string
+	// historyUnknownFormats names `get` formats this double pretends not to
+	// understand, so a scenario can stand in for a runtime OLDER than the bundle.
+	// The real tool answers an unknown format with the structured event array, so
+	// the double does too — no `markdown`, no `format` echo.
+	historyUnknownFormats map[string]bool
 	// factsBySession gives each chat its own extractor reply. The Agent double
 	// has no session id of its own, so it matches on the transcript the prompt
 	// carries — the same coupling the real pipeline has, and the reason
@@ -214,7 +219,23 @@ func (h *fakeHistory) Execute(_ context.Context, raw json.RawMessage) (tools.Res
 		sid, _ := in["session_id"].(string)
 		md = h.f.transcripts[sid]
 	}
-	return okResult(map[string]any{"scope": "user", "chat": map[string]any{}, "markdown": md})
+	// Mirror the real tool's format dispatch. An unrecognised `format` falls
+	// through to the STRUCTURED event array — no `markdown` key and no `format`
+	// echo — which is exactly how a runtime OLDER than this bundle answers a
+	// request for the conversation rendering. Reproducing that here is what makes
+	// the bundle's format guard a behavioural assertion instead of a grep: ask
+	// for a format the runtime does not know and the pass must block loudly, not
+	// read the chat as empty and advance the watermark past it.
+	format, _ := in["format"].(string)
+	if h.f.historyUnknownFormats[format] {
+		format = ""
+	}
+	switch format {
+	case "conversation", "markdown":
+		return okResult(map[string]any{"scope": "user", "chat": map[string]any{}, "format": format, "markdown": md})
+	default:
+		return okResult(map[string]any{"scope": "user", "chat": map[string]any{}, "transcript": []any{}})
+	}
 }
 
 // --- Agent ------------------------------------------------------------------
@@ -614,6 +635,65 @@ func TestConsolidator_EveryMemoryAndHistoryCallCarriesScope(t *testing.T) {
 	// a regression would surface as a failed pass, not just a failed assertion.
 	if !f.has("Memory.supersede") {
 		t.Errorf("expected the second above-merge neighbour to be retired; sequence %v", f.ops())
+	}
+}
+
+// TestConsolidator_ReadsTheConversationNotTheHumanExport. The pass used to ask
+// History for its HUMAN export, which opens with a metadata header naming the
+// chat id, the serving agent and the participant, and then renders every event
+// — including the textless ones (system prompt, usage, tool calls, tool
+// results) that fall through to raw JSON. That handed a model instructed "a
+// durable fact is never a fact ABOUT the conversation" exactly that, formatted
+// as content, and on the live store its first extracted "fact" was the header's
+// participant line.
+//
+// The format is asserted on every History read the pass actually makes, not on
+// the one a happy path reaches.
+func TestConsolidator_ReadsTheConversationNotTheHumanExport(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = historyTranscript(4, 100)
+	f.factsJSON = `[{"text":"Denn prefers Go.","class":"preference"}]`
+
+	runConsolidator(t, f)
+
+	reads := 0
+	for _, c := range f.calls {
+		if c.Tool != "History" {
+			continue
+		}
+		reads++
+		if c.Input["format"] != "conversation" {
+			t.Errorf("History.%s asked for format=%v, want \"conversation\" — the markdown export carries the metadata header the extractor mistakes for content",
+				c.Op, c.Input["format"])
+		}
+	}
+	if reads == 0 {
+		t.Fatalf("the pass made no History read at all; sequence %v", f.ops())
+	}
+}
+
+// TestConsolidator_BlocksWhenTheRuntimeCannotRenderTheConversation is the other
+// half: a runtime older than this bundle does not know `format:conversation` and
+// answers with the structured event array instead, where `markdown` is
+// undefined. Read as an empty chat that would advance the watermark past every
+// unread conversation in silence — so the pass must refuse and say why.
+func TestConsolidator_BlocksWhenTheRuntimeCannotRenderTheConversation(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = historyTranscript(4, 100)
+	f.factsJSON = `[{"text":"Denn prefers Go.","class":"preference"}]`
+	// The double answers only the formats the current runtime knows; strip
+	// "conversation" from that set to stand in for the older binary.
+	f.historyUnknownFormats = map[string]bool{"conversation": true}
+
+	res := runConsolidator(t, f)
+
+	if f.has("Memory.cursor_advance") {
+		t.Errorf("the watermark advanced past a chat that was never actually read; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "older than this bundle") {
+		t.Errorf("report = %q, want it to name the runtime/bundle mismatch — a silent empty read is the failure this guard exists to prevent", res.FinalText)
 	}
 }
 
@@ -1747,23 +1827,28 @@ func TestMemoryBundle_NoRFCLettersInModelVisibleText(t *testing.T) {
 	}
 }
 
-// historyTranscript renders a transcript in the shape History's markdown
-// exporter actually produces: a metadata header, then one `### <type> · <ts>`
-// section per message. That `### ` line IS the splitter's message boundary, so a
-// fixture in any other shape would not exercise the thing under test.
+// historyTranscript renders a transcript in the shape History's CONVERSATION
+// renderer actually produces: no metadata header, no tool traffic, one
+// `### user` / `### assistant` section per turn. That `### ` line IS the
+// splitter's message boundary, so a fixture in any other shape would not
+// exercise the thing under test.
 //
-// Source of truth for the format: renderTranscriptMarkdown in
+// It deliberately no longer carries the markdown export's metadata header. That
+// header is what the extractor turned into a "durable fact" on the live store,
+// and the consolidator now asks for the rendering that has none — a fixture
+// still carrying it would be testing a shape the pass can no longer receive.
+//
+// Source of truth for the format: renderConversationMarkdown in
 // internal/tools/builtin/history.go. Nothing links them — grep that name.
 func historyTranscript(turns, bodyChars int) string {
 	var b strings.Builder
-	b.WriteString("# Chat sess-a\n\n- Chat: `sess-a`\n- User: u_1\n\n## Transcript\n")
 	for i := 0; i < turns; i++ {
-		role := "user_message"
+		role := "user"
 		if i%2 == 1 {
-			role = "assistant_message"
+			role = "assistant"
 		}
-		fmt.Fprintf(&b, "\n### %s · 2026-07-01T10:00:00Z\n\n", role)
-		fmt.Fprintf(&b, "turn%02d %s\n", i, strings.Repeat("x", bodyChars))
+		fmt.Fprintf(&b, "### %s\n\n", role)
+		fmt.Fprintf(&b, "turn%02d %s\n\n", i, strings.Repeat("x", bodyChars))
 	}
 	return b.String()
 }

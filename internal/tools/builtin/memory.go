@@ -1401,7 +1401,14 @@ func (m *Memory) execCursorGet(ctx context.Context, scope store.MemoryScope, sco
 //     advancing to its LAST row can never skip a session;
 //   - only all-terminal sessions qualify, so a live chat is never half-read;
 //   - the pass's OWN agent name is excluded, so a pass structurally cannot see
-//     (or re-consolidate) its own past reports.
+//     (or re-consolidate) its own past reports;
+//   - and so is every agent declared `internal:`. Self-exclusion alone was not
+//     enough: a pass spawns one `memory/extractor` child per chat, each child is
+//     a session whose transcript CONTAINS the chat it just extracted, and those
+//     became candidates on the next pass — the pipeline consuming its own
+//     output, 7 of the last 8 chats on the live store and growing ~15 a pass.
+//     The set is server-resolved from the operator's config, never from the
+//     wire, for the same reason the target is.
 func (m *Memory) execCursorScan(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if res, denied := consolidationGate(ctx, "cursor_scan"); denied {
 		return res, nil
@@ -1424,7 +1431,8 @@ func (m *Memory) execCursorScan(ctx context.Context, scope store.MemoryScope, sc
 	// nothing: an agent-scope target owns bookkeeping, not chat transcripts.
 	//
 	// Over-fetch by one to detect truncation without a second query.
-	rows, err := m.Store.ConsolidatableSessions(ctx, tenantID, scopeID, "", tools.AgentName(ctx),
+	rows, err := m.Store.ConsolidatableSessions(ctx, tenantID, scopeID, "",
+		withInternalAgents(m.Cfg, tools.AgentName(ctx)),
 		cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, limit+1)
 	if err != nil {
 		return errResult(fmt.Sprintf("cursor_scan: %s", err)), nil

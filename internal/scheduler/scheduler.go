@@ -53,6 +53,20 @@ type Config struct {
 	// Each child is a full LLM run, so this is deliberately small; the
 	// per-provider concurrency cap is the real throttle downstream.
 	MaxConsolidationConcurrency int
+
+	// InternalAgents names the agents the operator declared `internal:` —
+	// loomcycle's own maintenance plumbing. Their sessions are runtime
+	// bookkeeping, so the consolidation fan-out neither treats them as evidence
+	// of new work nor hands them to a pass to consolidate.
+	//
+	// Passed as a plain []string rather than the config: this package
+	// deliberately takes no dependency on internal/config, and every other
+	// operator knob here arrives the same way (see EnvAllowlist). main.go fills
+	// it from Config.InternalAgentNames().
+	//
+	// Empty is the pre-feature behaviour: only the schedule's own agent is
+	// excluded, which is what let the extractor children pile up.
+	InternalAgents []string
 }
 
 // defaults applies the documented defaults to a zero-value Config.

@@ -1786,6 +1786,25 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, l
 	return out, rows.Err()
 }
 
+// excludeAgentsCond builds a `col NOT IN (?, …)` clause for a name set,
+// appending each name to args. It returns "" for an empty set: SQL has no
+// `NOT IN ()`, so the caller must skip the clause rather than emit an empty one.
+//
+// Safe as a bare NOT IN because sessions.agent / session_embeddings.agent are
+// both NOT NULL — a nullable column would make `agent NOT IN (…)` evaluate to
+// NULL and silently drop every unnamed row.
+func excludeAgentsCond(col string, names []string, args *[]any) string {
+	if len(names) == 0 {
+		return ""
+	}
+	ph := make([]string, len(names))
+	for i, n := range names {
+		ph[i] = "?"
+		*args = append(*args, n)
+	}
+	return col + " NOT IN (" + strings.Join(ph, ", ") + ")"
+}
+
 // ConsolidatableSessions lists all-terminal sessions past the composite
 // consolidation watermark (RFC BL P2). completed_at is unix-nano here, so the
 // watermark comparison happens in integer space.
@@ -1795,7 +1814,7 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, l
 // mid-conversation. Unlike that query there is NO pinned exclusion (pinning
 // exempts a chat from deletion, not from being read) and no age cutoff (the
 // watermark IS the cutoff).
-func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName, excludeAgentName string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]store.ConsolidatableSession, error) {
+func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, agentName string, excludeAgents []string, afterCompletedAt time.Time, afterSessionID string, limit int) ([]store.ConsolidatableSession, error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -1809,9 +1828,8 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 		conds = append(conds, "s.agent = ?")
 		args = append(args, agentName)
 	}
-	if excludeAgentName != "" {
-		conds = append(conds, "s.agent <> ?")
-		args = append(args, excludeAgentName)
+	if c := excludeAgentsCond("s.agent", excludeAgents, &args); c != "" {
+		conds = append(conds, c)
 	}
 	args = append(args, string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled))
 
@@ -1941,6 +1959,9 @@ func (s *Store) ListSessions(ctx context.Context, f store.SessionFilter, limit, 
 	if f.AgentName != "" {
 		innerConds = append(innerConds, "s.agent = ?")
 		innerArgs = append(innerArgs, f.AgentName)
+	}
+	if c := excludeAgentsCond("s.agent", f.ExcludeAgents, &innerArgs); c != "" {
+		innerConds = append(innerConds, c)
 	}
 	if !f.IncludeArchived {
 		innerConds = append(innerConds, "s.archived_at IS NULL")

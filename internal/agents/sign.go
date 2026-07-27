@@ -135,7 +135,26 @@ type AgentContent struct {
 	// it must mint a distinct hash. bool + omitempty keeps pre-feature rows
 	// byte-identical. Tag "inherit_core_blocks" sorts between evaluation_scopes
 	// and interruption.
-	InheritCoreBlocks     bool                  `json:"inherit_core_blocks,omitempty"`
+	InheritCoreBlocks bool `json:"inherit_core_blocks,omitempty"`
+	// Internal marks the agent as the runtime's own maintenance plumbing, which
+	// changes what happens to every run's SESSION (excluded from memory
+	// consolidation, hidden from the chat listing). That is behaviour, not
+	// authority — an internal agent can do nothing more or less than it otherwise
+	// could — so unlike the *_def_scopes gates and the `skills:` allowlist it is
+	// content-identifying, alongside MemoryConsolidation and UnboundedIterations.
+	// A fork that flips it mints a distinct content_sha256, which is right: the
+	// two defs behave differently.
+	//
+	// Its tag sorts between inherit_core_blocks and interruption, so it is
+	// declared here to keep the alphabetical invariant (declaration order = JSON
+	// emit order = the hash input); omitempty keeps every pre-feature row
+	// byte-identical, since a false bool emits no key at all.
+	//
+	// Not mirrored on agents.Agent (MD frontmatter), deliberately: `internal:` is
+	// an operator decision about the runtime's own plumbing, not something a
+	// discovered agent file declares about itself — the same posture as
+	// unbounded_iterations, which has no loader mirror either.
+	Internal              bool                  `json:"internal,omitempty"`
 	Interruption          *AgentInterruptionACL `json:"interruption,omitempty"`
 	MaxConcurrentChildren int                   `json:"max_concurrent_children,omitempty"`
 	MaxIterations         int                   `json:"max_iterations,omitempty"`

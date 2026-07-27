@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -54,6 +55,17 @@ type History struct {
 	// (the same posture as TeamDef op=run on a nil Spawn); every other op works.
 	Recap func(ctx context.Context, sessionID string) (summary string, err error)
 
+	// Cfg is the operator config, read for ONE thing: which agents are declared
+	// `internal:` (loomcycle's own maintenance plumbing), so their sessions stay
+	// out of list/search/related by default. A consolidation pass spawns a
+	// dozen-plus extractor children per run and each is a session — on the live
+	// store 7 of the last 8 chats were extractor sessions — so without this a
+	// user's chat list is mostly runtime bookkeeping.
+	//
+	// nil = no exclusion, which is the pre-wiring behaviour and what every unit
+	// test that constructs a bare History gets. Set in main.go.
+	Cfg *config.Config
+
 	// Embedder turns a source text (a chat's title+summary, or a free-text query)
 	// into a vector for op=related's semantic "similar chats" search. It is the
 	// SAME embedder the Memory tool uses, wired from cfg.Memory.Embedder in
@@ -67,7 +79,8 @@ func (h *History) Name() string { return "History" }
 func (h *History) Description() string {
 	return "Browse, search, and annotate PAST chats (a chat = a conversation session; session -> runs -> events). " +
 		"Ops: list (chats in a scope, filtered + paginated, pinned-first), search (title match within a scope), " +
-		"get (one chat's metadata + full transcript; format:markdown renders it), rename (set title), " +
+		"get (one chat's metadata + full transcript; format:markdown renders the whole event log for a human, " +
+		"format:conversation renders only the user/assistant turns for a model), rename (set title), " +
 		"annotate (set description and/or tags), pin (float to the top), archive (reversible soft-hide), " +
 		"recap (refresh the stored LLM summary of the chat — idempotent, safe on a live/parked chat), " +
 		"resume (return a handle for continuing the chat in a new run), " +
@@ -75,6 +88,7 @@ func (h *History) Description() string {
 		"scope selects whose chats: self = this agent's, user = this end-user's, tenant = this tenant's, " +
 		"global = all tenants (admin only). The owner is resolved server-side from the run identity, never the wire; " +
 		"cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats are included. " +
+		"list/search/related hide chats served by the runtime's own maintenance agents; pass include_internal to see them. " +
 		"See Context op=help topic=history for the scope model and examples."
 }
 
@@ -95,9 +109,10 @@ const historyInputSchema = `{
 		"query":           {"type": "string", "description": "search: case-insensitive title match (metadata MVP; full-text content search is not yet available). related: free-text query to find semantically similar chats (use this OR session_id, not both)."},
 		"pinned_only":     {"type": "boolean", "description": "list/search: restrict to pinned chats."},
 		"include_archived":{"type": "boolean", "description": "list/search/related: include archived chats (excluded by default)."},
+		"include_internal":{"type": "boolean", "description": "list/search/related: include chats served by loomcycle's own maintenance agents (excluded by default — they are runtime bookkeeping, not conversations). Set it to debug a background pass."},
 		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 50, cap 500). related: max similar chats to return (default 10, cap 500)."},
 		"offset":          {"type": "integer", "description": "list/search: pagination offset."},
-		"format":          {"type": "string", "description": "get: \"markdown\" renders the transcript as Markdown instead of a structured event array."},
+		"format":          {"type": "string", "description": "get: \"markdown\" renders the full transcript as Markdown (metadata header + every event) instead of a structured event array; \"conversation\" renders ONLY the user and assistant turns, with no header, no tool traffic and no runtime event payloads — use it when feeding a chat to a model."},
 		"title":           {"type": "string", "description": "rename: the new title."},
 		"description":     {"type": "string", "description": "annotate: the new description."},
 		"tags":            {"type": "array", "items": {"type": "string"}, "description": "annotate: the new tag set (replaces the existing set)."},
@@ -121,6 +136,7 @@ type historyInput struct {
 	Query           string `json:"query"`
 	PinnedOnly      bool   `json:"pinned_only"`
 	IncludeArchived bool   `json:"include_archived"`
+	IncludeInternal bool   `json:"include_internal"`
 	Limit           int    `json:"limit"`
 	Offset          int    `json:"offset"`
 	Format          string `json:"format"`
@@ -208,6 +224,15 @@ func (h *History) filterForScope(ctx context.Context, scope string, in historyIn
 		TitleContains:   in.TitleContains,
 		IncludePinned:   in.PinnedOnly,
 		IncludeArchived: in.IncludeArchived,
+	}
+	// Maintenance agents' sessions are runtime bookkeeping, not chats, so they
+	// are hidden by default. `include_internal` is the deliberate opt-in: an
+	// operator chasing a bad consolidation pass wants to open the extractor
+	// chats, and there is nothing sensitive about them — the same posture as
+	// `include_archived`. A by-id `get` is NOT gated on it, so a listing with the
+	// opt-in and the reads that follow it both work.
+	if !in.IncludeInternal {
+		f.ExcludeAgents = withInternalAgents(h.Cfg)
 	}
 	if in.Status != "" {
 		if !validChatStatus(in.Status) {
@@ -330,10 +355,24 @@ func (h *History) get(ctx context.Context, scope string, in historyInput) (tools
 	}
 	chat := sessionMeta(sess, runs)
 
+	if in.Format == conversationFormat {
+		// The `format` is echoed so a caller can tell a conversation rendering
+		// from the human export. An older runtime that does not know this value
+		// falls through to the structured event array below, where `markdown` is
+		// absent — the echo is how a consumer detects that instead of reading an
+		// empty chat.
+		return okJSON(map[string]any{
+			"scope":    scope,
+			"chat":     chat,
+			"format":   conversationFormat,
+			"markdown": renderConversationMarkdown(events),
+		})
+	}
 	if in.Format == "markdown" {
 		return okJSON(map[string]any{
 			"scope":    scope,
 			"chat":     chat,
+			"format":   "markdown",
 			"markdown": renderTranscriptMarkdown(sess, chat, events),
 		})
 	}
@@ -808,6 +847,119 @@ func renderTranscriptMarkdown(sess store.Session, meta chatMeta, events []store.
 		}
 	}
 	return b.String()
+}
+
+// conversationFormat is the `get` format that renders ONLY what the human and
+// the assistant said — no metadata header, no per-event JSON, no tool traffic.
+const conversationFormat = "conversation"
+
+// conversationSegment / conversationBlock mirror the loop's PromptSegment /
+// PromptContentBlock just far enough to read a persisted `user_input` payload.
+// Declared locally rather than importing internal/loop, for the same reason
+// document.go keeps its own copy of a loop shape: this package must not take a
+// dependency on the loop to read one field.
+type conversationSegment struct {
+	Role    string              `json:"role"`
+	Content []conversationBlock `json:"content"`
+}
+
+type conversationBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// renderConversationMarkdown renders a chat as the conversation ALONE: the user
+// turns and the assistant's replies, in order, and nothing else.
+//
+// WHY THIS EXISTS SEPARATELY FROM renderTranscriptMarkdown. The memory
+// consolidator hands a chat to an extractor model whose one instruction is that
+// a durable fact is never a fact ABOUT the conversation. The markdown export
+// opens with a metadata header naming the chat id, the serving agent and the
+// participant — so the model was handed exactly the thing it is told to reject,
+// formatted as content, and duly returned "the user <id> is the participant of
+// chat <id>" as its first extracted fact. The body was no better: `user_input`,
+// `system_prompt` and `usage` payloads carry no `text` field, so eventText finds
+// nothing and the export falls through to dumping each one as raw JSON — the
+// user's own words arrive wrapped in loomcycle's request scaffolding, next to
+// the system prompt and every tool payload.
+//
+// The export stays as it is; it is the HUMAN rendering (Web UI, an operator
+// reading a chat) and a metadata header is what a human wants. This is the
+// machine rendering.
+//
+// WHAT IT DELIBERATELY DOES NOT DO is strip structured text. A user turn that
+// contains a JSON blob or a code fence is content, and it is emitted verbatim.
+// Only loomcycle's own event scaffolding is dropped — by event TYPE, never by
+// pattern-matching the text.
+//
+// A COMPACTED chat renders in FULL, unlike replayTranscript: the
+// `context_compaction` marker collapses history for the LOOP, whose next request
+// has a context window to fit, but the transcript keeps every turn and a reader
+// looking for durable facts wants all of them — the summary would be a lossy
+// paraphrase of content still sitting right there.
+func renderConversationMarkdown(events []store.Event) string {
+	var b, asst strings.Builder
+	flushAssistant := func() {
+		if text := strings.TrimSpace(asst.String()); text != "" {
+			fmt.Fprintf(&b, "### assistant\n\n%s\n\n", text)
+		}
+		asst.Reset()
+	}
+	for _, ev := range events {
+		switch ev.Type {
+		case "user_input":
+			// One row per user turn — the initial prompt, a continuation, and an
+			// operator steer (which the runner persists in this same shape).
+			flushAssistant()
+			if text := userTurnText(ev.Payload); text != "" {
+				fmt.Fprintf(&b, "### user\n\n%s\n\n", text)
+			}
+		case "text":
+			// Assistant text is persisted one row PER STREAMED DELTA, so these
+			// accumulate into a single turn instead of becoming a section each.
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil {
+				asst.WriteString(pe.Text)
+			}
+		case "done":
+			// Every loop iteration closes with `done`, and it lands BEFORE that
+			// iteration's tool_result rows (see replayTranscript) — so it is the
+			// boundary that ends an assistant turn. Nothing else flushes:
+			// treating every non-text event as a boundary would let an
+			// interleaved `thinking` or `usage` row split one reply into
+			// fragments with no speaker, which is the shape that produced the
+			// live pass's empty extractions.
+			flushAssistant()
+		}
+	}
+	flushAssistant()
+	return b.String()
+}
+
+// userTurnText pulls the human's own words out of a persisted `user_input`
+// payload (a []PromptSegment). System-role segments are dropped — that is the
+// loop's own framing, not conversation — and so are image blocks, whose "text"
+// is base64 bytes.
+func userTurnText(payload []byte) string {
+	var segs []conversationSegment
+	if err := json.Unmarshal(payload, &segs); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, seg := range segs {
+		if seg.Role != "user" {
+			continue
+		}
+		for _, c := range seg.Content {
+			if c.Type == "image" {
+				continue
+			}
+			if t := strings.TrimSpace(c.Text); t != "" {
+				parts = append(parts, t)
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // eventText extracts a human-readable `text` field from an event payload, if any

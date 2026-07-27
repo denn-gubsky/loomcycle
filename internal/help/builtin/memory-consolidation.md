@@ -148,6 +148,119 @@ Two properties fall out of that shape and are worth relying on:
 - **A pass is resumable.** The watermark is forward-only, so an interrupted
   pass costs at most a repeat of the chats it had not finished.
 
+### What the extractor is actually given
+
+**The conversation, and nothing else.** Not the chat's metadata header, not the
+system prompt, not tool calls or tool results or usage rows — just the user
+turns and the assistant's replies, in order.
+
+That sounds obvious and it was not what happened. The pass used to ask History
+for its *human* export — the rendering an operator reads in the Web UI. That
+rendering opens with a header:
+
+```
+# Chat s_dd271f…
+- Chat: `s_dd271f…`   - Agent: chat-local
+- User: tok-…         - Created: …   - Runs: 4 · Tokens in/out: 0/0
+```
+
+…and then renders every event in the transcript. Events that carry no text body
+— the resolved system prompt, `usage`, `tool_call`, `tool_result` — have nothing
+to show, so the exporter falls back to dumping each one as raw JSON. The user's
+own words arrived wrapped in the runtime's request scaffolding, beside the
+system prompt and every tool payload.
+
+So a model whose single instruction is *"a durable fact is never a fact ABOUT
+the conversation"* was handed exactly that, formatted as content. It obliged.
+Measured against one real 8,450-character transcript part, the first "fact"
+extracted was:
+
+> The user tok-… is the participant of chat s_dd271f….
+
+That is not from the conversation. It is the header's participant line. Earlier
+passes produced the same shape — *"the chat session ID is s_928fc…"* — and a
+second model, given the same input, answered a puzzle it found in the transcript
+instead of extracting from it and returned the answer as a bare integer.
+
+The model was never the variable. Both models handled a clean transcript
+correctly and both degraded on the real one; the input was the problem.
+
+Two things worth knowing about the strip:
+
+- **Structured text the user typed is content and survives verbatim.** A message
+  containing a JSON blob or a code fence arrives unchanged. The filter is by
+  event *type* — it removes the runtime's own scaffolding, not everything that
+  looks structured.
+- **It is also an order-of-magnitude size reduction**, which matters for the
+  splitting below: on a production-shaped chat a 6,095-character export renders
+  as 356 characters of conversation. Fewer parts, fewer part-cap losses, fewer
+  model calls.
+
+The human export is unchanged — `History get format:markdown` still returns the
+header and the full event log, because a header is what a person reading a chat
+wants. The pass asks for `format:conversation` instead, and **blocks loudly** if
+the runtime answers without it rather than reading an empty chat and advancing
+the watermark past every conversation in silence.
+
+### The pass does not consolidate itself — or its children
+
+A pass reads chats, and a pass *is* a chat: every run records a session, and a
+fan-out pass records one under the target's own user id. Those sessions settle
+immediately and sit past the watermark **forever**, because a pass never
+consolidates them and therefore never advances over them.
+
+Excluding the consolidator's own name handled that. It did not handle the
+children. Each pass spawns one `memory/extractor` run per chat it reads, each
+child is a session under the same user, and **each child's transcript contains
+the chat it was extracting**. Nothing excluded them, so on the next tick they
+came back as work — and consolidating an extractor chat means re-extracting
+nested content. On one live store, 7 of the last 8 chats were extractor
+sessions out of 95 total, growing by roughly 15 a pass with no bound.
+
+The fix is a declaration on the agent rather than a name hardcoded in a query:
+
+```yaml
+agents:
+  memory/extractor:
+    internal: true
+```
+
+An agent marked `internal:` is the runtime's own maintenance plumbing. Its runs
+still record sessions — that is the audit trail, and nothing deletes it — but
+those sessions are treated as bookkeeping:
+
+- **excluded from consolidation**, both from the scan a pass performs and from
+  the probe that decides whether a target has work at all;
+- **hidden from `History` `list` / `search` / `related`**, so a person's chat
+  list is their chats.
+
+Both bundled agents carry it. Any maintenance agent you write gets the same
+behaviour by declaring it, which is the point of putting it on the agent.
+
+**To see them anyway** — which is exactly what you want when a pass has gone
+wrong — pass `include_internal`:
+
+```json
+{"op": "list", "scope": "user", "include_internal": true}
+```
+
+A by-id `get` is deliberately *not* gated on it, so you can list with the opt-in
+and then open what you find.
+
+**Two limits worth knowing.** The name set comes from static config, so an
+internal agent authored purely at runtime is not covered — declare its name in
+your config layer as well. And the exclusion is by name, so a second,
+differently-named consolidator is not excluded from the first one's scan unless
+it too is marked `internal:`.
+
+**What happens to sessions already recorded.** Nothing backfills them and
+nothing deletes them. They vanish from History the moment this is deployed —
+the filter matches on the agent name, not on a flag stored at write time — and
+consolidation stops treating them as work on the next pass. What it does *not*
+do is rewind: extractor chats the watermark has already passed stay passed, and
+any facts a previous pass extracted from one remain stored. Advancing past the
+backlog is the watermark's job, not a migration's.
+
 ### A long chat is split, not truncated
 
 A transcript used to be cut to its last 20,000 characters before it reached the

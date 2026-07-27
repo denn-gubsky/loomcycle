@@ -964,7 +964,9 @@ func main() {
 
 	// RFC BE — the History tool (browse/search/annotate past chats). Store
 	// late-bound below; the per-agent history_scope policy gates every op.
-	historyTool := &builtin.History{}
+	// Cfg is read for one thing: which agents are declared `internal:`, so the
+	// runtime's own maintenance sessions stay out of the chat listing.
+	historyTool := &builtin.History{Cfg: cfg}
 	allTools = append(allTools, historyTool)
 
 	// MCPServerDef tool construction is deferred until after the pool
@@ -2702,6 +2704,10 @@ func main() {
 			// who sets neither env var still gets 32 targets / 4 concurrent.
 			MaxConsolidationTargets:     cfg.Env.MaxConsolidationTargets,
 			MaxConsolidationConcurrency: cfg.Env.MaxConsolidationConcurrency,
+			// The agents declared `internal:` — the fan-out neither reads their
+			// sessions as evidence of new work nor hands them to a pass. Passed
+			// as names because internal/scheduler takes no config dependency.
+			InternalAgents: cfg.InternalAgentNames(),
 		}
 		// Materialize static yaml `scheduled_runs:` into the substrate so
 		// they fire autonomously — symmetric with dynamically-created

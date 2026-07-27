@@ -1303,7 +1303,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 
 	// (1)+(2): from the beginning → A then B, ascending; C excluded (live run).
-	all, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", time.Time{}, "", 100)
+	all, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", nil, time.Time{}, "", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (zero watermark): %v", err)
 	}
@@ -1329,7 +1329,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	watermarkA := all[0].MaxCompletedAt
 
 	// (3) strictly-after: the watermark sitting exactly on A excludes A, keeps B.
-	after, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", watermarkA, sessA, 100)
+	after, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", nil, watermarkA, sessA, 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (watermark at A): %v", err)
 	}
@@ -1338,7 +1338,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 
 	// (4a) tie-break INCLUDES: same completed_at, session_id greater than "".
-	tieIn, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", watermarkA, "", 100)
+	tieIn, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", nil, watermarkA, "", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (tie-break include): %v", err)
 	}
@@ -1355,7 +1355,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	// resolves the same `>` under the database collation, where a non-character
 	// does not sort above ASCII, so the row came back and this assertion fired —
 	// which is how the backends' disagreement was found. Keep this derived.
-	tieOut, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", watermarkA, sessA+"z", 100)
+	tieOut, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", nil, watermarkA, sessA+"z", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (tie-break exclude): %v", err)
 	}
@@ -1365,7 +1365,7 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 
 	// limit caps the batch (and keeps the ascending order, so the cap always
 	// trims the NEWEST rows — the next tick picks them up).
-	one, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", time.Time{}, "", 1)
+	one, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", nil, time.Time{}, "", 1)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (limit 1): %v", err)
 	}
@@ -1374,44 +1374,67 @@ func testConsolidatableSessionsWatermarkOrder(t *testing.T, s store.Store) {
 	}
 
 	// Tenant confinement: another tenant sees none of these.
-	if rows, err := s.ConsolidatableSessions(ctx, "other-tenant", "u1", "", "", time.Time{}, "", 100); err != nil {
+	if rows, err := s.ConsolidatableSessions(ctx, "other-tenant", "u1", "", nil, time.Time{}, "", 100); err != nil {
 		t.Fatalf("ConsolidatableSessions (other tenant): %v", err)
 	} else if len(rows) != 0 {
 		t.Errorf("other tenant returned %d rows, want 0 — the tenant filter leaked", len(rows))
 	}
 
-	// excludeAgentName omits an agent's own sessions. The consolidator passes its
-	// own name here: each of its passes creates a settled session under the
-	// target's user id, and a pass never consolidates itself, so those sessions
-	// sit past the watermark forever. Without the exclusion a caught-up target
-	// reports new work on every tick — a perpetual pass consuming its own output.
+	// excludeAgents omits those agents' sessions. The consolidator passes its own
+	// name here: each of its passes creates a settled session under the target's
+	// user id, and a pass never consolidates itself, so those sessions sit past
+	// the watermark forever. Without the exclusion a caught-up target reports new
+	// work on every tick — a perpetual pass consuming its own output.
 	selfSess := mkTerminal("consol-self", "u1", store.RunCompleted)
-	included, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "", time.Time{}, "", 100)
+	included, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", nil, time.Time{}, "", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (no exclusion): %v", err)
 	}
 	if !hasSessionID(ids(included), selfSess) {
 		t.Fatalf("the self-authored session %s should be present without an exclusion; got %v", selfSess, ids(included))
 	}
-	excluded, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "consol-self", time.Time{}, "", 100)
+	excluded, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", []string{"consol-self"}, time.Time{}, "", 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (excluded): %v", err)
 	}
 	if hasSessionID(ids(excluded), selfSess) {
-		t.Errorf("excludeAgentName=%q still returned that agent's own session %s: %v", "consol-self", selfSess, ids(excluded))
+		t.Errorf("excludeAgents=%q still returned that agent's own session %s: %v", "consol-self", selfSess, ids(excluded))
 	}
 	// The exclusion must not swallow anything else.
 	if !hasSessionID(ids(excluded), sessA) || !hasSessionID(ids(excluded), sessB) {
-		t.Errorf("excludeAgentName dropped other agents' sessions: %v, want A=%s and B=%s present", ids(excluded), sessA, sessB)
+		t.Errorf("excludeAgents dropped other agents' sessions: %v, want A=%s and B=%s present", ids(excluded), sessA, sessB)
 	}
+
+	// MULTIPLE exclusions in one call. One name was never enough: the
+	// consolidator excluded only itself while its extractor children — one
+	// session per chat read, each transcript CONTAINING the chat it extracted —
+	// stayed candidates, so every pass re-consolidated the previous pass's
+	// output. This arm is what makes the parameter a set rather than a name, and
+	// on Postgres it is also where the placeholder run must advance by exactly
+	// len(names): a NOT IN that consumes one ordinal for two values misnumbers
+	// every clause after it.
+	helperSess := mkTerminal("consol-helper", "u1", store.RunCompleted)
+	multi, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", []string{"consol-self", "consol-helper"}, time.Time{}, "", 100)
+	if err != nil {
+		t.Fatalf("ConsolidatableSessions (two exclusions): %v", err)
+	}
+	if hasSessionID(ids(multi), selfSess) || hasSessionID(ids(multi), helperSess) {
+		t.Errorf("a two-name exclusion still returned %s / %s: %v — only the first name was applied",
+			selfSess, helperSess, ids(multi))
+	}
+	if !hasSessionID(ids(multi), sessA) || !hasSessionID(ids(multi), sessB) {
+		t.Errorf("a two-name exclusion dropped unrelated sessions: %v, want A=%s and B=%s present", ids(multi), sessA, sessB)
+	}
+
 	// The exclusion COMBINED with a non-zero watermark. This is the arm the
-	// Postgres implementation gets wrong most easily: excludeAgentName consumes a
-	// placeholder ordinal, and the watermark's HAVING predicate plus the LIMIT are
-	// numbered AFTER it — so a mis-counted $N silently compares the timestamp
-	// against an agent name (or the limit against a session id) and the query
-	// either errors or returns the wrong window. Every other assertion above uses
-	// one feature or the other, never both, so nothing else covers this.
-	combined, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", "consol-self", watermarkA, sessA, 100)
+	// Postgres implementation gets wrong most easily: excludeAgents consumes a
+	// placeholder ordinal per name, and the watermark's HAVING predicate plus the
+	// LIMIT are numbered AFTER it — so a mis-counted $N silently compares the
+	// timestamp against an agent name (or the limit against a session id) and the
+	// query either errors or returns the wrong window. Every other assertion above
+	// uses one feature or the other, never both, so nothing else covers this.
+	// Deliberately TWO names, so the ordinal run has to be walked, not assumed.
+	combined, err := s.ConsolidatableSessions(ctx, "tc", "u1", "", []string{"consol-self", "consol-helper"}, watermarkA, sessA, 100)
 	if err != nil {
 		t.Fatalf("ConsolidatableSessions (exclusion + watermark): %v", err)
 	}
@@ -2172,6 +2195,38 @@ func testListSessions(t *testing.T, s store.Store) {
 	_, total, _ = s.ListSessions(ctx, store.SessionFilter{}, 50, 0)
 	if total != 4 {
 		t.Errorf("all-tenants total = %d, want 4", total)
+	}
+
+	// 11. ExcludeAgents drops those agents' sessions from BOTH the page and the
+	// total. This is what hides loomcycle's own maintenance agents from History:
+	// a consolidation pass spawns a dozen-plus extractor children per run and each
+	// is a session, so without it a user's chat list is mostly runtime bookkeeping.
+	// Asserted with TWO names because one is the shape that silently works when
+	// only the first element is bound.
+	excl, exclTotal, err := s.ListSessions(ctx, store.SessionFilter{
+		TenantID:      "t1",
+		ExcludeAgents: []string{"agentB", "no-such-agent"},
+	}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exclTotal != 2 {
+		t.Errorf("ExcludeAgents total = %d, want 2 (s1 + s4; agentB's s2 excluded): %v", exclTotal, summaryIDs(excl))
+	}
+	if _, ok := byID(excl)[s2.ID]; ok {
+		t.Errorf("ExcludeAgents still returned agentB's session s2: %v", summaryIDs(excl))
+	}
+	if _, ok := byID(excl)[s1.ID]; !ok {
+		t.Errorf("ExcludeAgents dropped an unrelated session s1: %v", summaryIDs(excl))
+	}
+	// An empty set must be a no-op, not an empty page — `NOT IN ()` is a syntax
+	// error, so a backend that emits the clause unconditionally fails here.
+	_, noopTotal, err := s.ListSessions(ctx, store.SessionFilter{TenantID: "t1", ExcludeAgents: nil}, 50, 0)
+	if err != nil {
+		t.Fatalf("ExcludeAgents nil: %v", err)
+	}
+	if noopTotal != 3 {
+		t.Errorf("ExcludeAgents nil total = %d, want 3 — an empty exclusion must not filter", noopTotal)
 	}
 }
 
