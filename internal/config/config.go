@@ -2350,7 +2350,20 @@ type Env struct {
 	// the scope is restricted from the operator's host provider key. Stage 1
 	// only THREADS the resulting bit; enforcement lands in stage 2.
 	OperatorKeyRestriction bool
-	DataDir                string
+	// PublicConfig (LOOMCYCLE_PUBLIC_CONFIG=1) lets GET /v1/config be read with
+	// NO bearer, returning a deliberately narrowed public view. Default OFF, so
+	// every existing deployment keeps requiring auth on upgrade and nothing about
+	// it becomes world-readable without the operator asking.
+	//
+	// It exists for a hosted instance that wants its landing page to show which
+	// providers and models are live. The public view therefore drops everything
+	// that is either operator infrastructure or an operational signal beyond
+	// up/down: no provider error strings, no user_tier (plan) names, no storage
+	// backend, no limits, and no counts or volumes. A presented-but-invalid
+	// bearer still fails rather than silently downgrading to the public view —
+	// a bad credential is an error, not an invitation to show less.
+	PublicConfig bool
+	DataDir      string
 	// HTTPHostAllowlist is the comma-separated list of hostnames the
 	// HTTP and WebFetch tools may reach. Empty = both tools refuse all
 	// calls. Suffix-matched: an entry "example.com" matches both
@@ -3321,6 +3334,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		AuditLogPath:                os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
 		AuthVerbose:                 os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
+		PublicConfig:                os.Getenv("LOOMCYCLE_PUBLIC_CONFIG") == "1",
 		DataDir:                     getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
 		HTTPHostAllowlist:           splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist:    splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),

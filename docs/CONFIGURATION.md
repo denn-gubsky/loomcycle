@@ -859,6 +859,30 @@ The first `event: started` (or `event: resolved`) frame carries `provider=...` a
 
 After v0.8.16 (PR #116), the model is also persisted at run start, so `GET /v1/users/{id}/agents` shows it during the run, not just at completion.
 
+### `GET /v1/config`
+
+The out-of-band twin of the in-band `Context op=capabilities`: what this instance is and what it can do, without starting a run. Both share one probe (`internal/capabilities`), so they cannot report different answers to the same question.
+
+```sh
+curl -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" http://localhost:8787/v1/config
+```
+
+It returns the build identity, the feature matrix, the **live** provider/model cascade flattened and deduplicated across plans (`active` = at least one tier would route there now; `selected` = it is what actually runs), and the search-provider cascade.
+
+Three disclosure levels, named in the response as `view` so a consumer can tell "this deployment has none" from "you weren't shown them":
+
+| | `public` | `authenticated` | `admin` |
+|---|---|---|---|
+| version, features, providers, models, search | ✅ | ✅ | ✅ |
+| commit, build_time, `url`, `limits`, `user_tiers` | — | ✅ | ✅ |
+| `features.storage` (backend kind) | — | — | ✅ |
+
+**Publishing it.** Set `LOOMCYCLE_PUBLIC_CONFIG=1` to allow a **bearer-less** read, which returns the `public` view — intended for a hosted instance whose landing page shows which providers and models are live. Default OFF, so upgrading never makes a deployment's inventory world-readable without asking. A presented-but-**invalid** bearer still `401`s: a bad credential is an error, not a request for less detail.
+
+The public view never carries a provider error string, a plan name, a request ceiling, the storage backend, or any URL. Its `features` are reduced to plain booleans by reading only each capability's `available` field — a whitelist by **shape**, so a field added to the capability probe later cannot reach a public reader without someone choosing to expose it.
+
+Notes: `active`/`selected` come from the resolver's in-memory snapshot, so a read costs no upstream probe. Under `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` a non-admin (and a public) caller sees only providers it could key itself, exactly as on `/v1/_routing`. `/v1/_routing` remains the per-caller operator view, with `last_error` and the full per-tier cascade.
+
 ---
 
 ## 9b. Multi-tenant authentication (RFC L)
@@ -889,6 +913,7 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_AUDIT_LOG_PATH` | JSONL audit of every create/rotate/retire (never a token or hash). |
 | `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
+| `LOOMCYCLE_PUBLIC_CONFIG` | Deployment gate (default OFF). When `1`, `GET /v1/config` may be read with **no bearer**, returning a narrowed public view — for a hosted instance whose landing page shows which providers and models are live. OFF ⇒ the endpoint requires auth like every other `/v1` read, so upgrading changes nothing. A presented-but-**invalid** bearer still `401`s rather than downgrading to the public view. See [§ GET /v1/config](#get-v1config). |
 
 Routes enforce a scope from a closed catalog; an under-scoped token gets `403` + `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
 
