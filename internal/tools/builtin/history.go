@@ -891,6 +891,12 @@ type conversationBlock struct {
 // contains a JSON blob or a code fence is content, and it is emitted verbatim.
 // Only loomcycle's own event scaffolding is dropped — by event TYPE, never by
 // pattern-matching the text.
+//
+// A COMPACTED chat renders in FULL, unlike replayTranscript: the
+// `context_compaction` marker collapses history for the LOOP, whose next request
+// has a context window to fit, but the transcript keeps every turn and a reader
+// looking for durable facts wants all of them — the summary would be a lossy
+// paraphrase of content still sitting right there.
 func renderConversationMarkdown(events []store.Event) string {
 	var b, asst strings.Builder
 	flushAssistant := func() {
