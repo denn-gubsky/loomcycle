@@ -269,6 +269,305 @@ func seedCompletedChatSession(t *testing.T, st *sqlite.Store, agentID string) st
 // the cutoff (Now()-ChatsMaxAge with the zero max-age used by these tests).
 func futureHour() time.Time { return time.Now().Add(time.Hour) }
 
+// seedChatSessionForAgent is seedCompletedChatSession with the SESSION's
+// authoring agent under the caller's control. The chats split keys on
+// sessions.agent — the same column #839's consolidation + History exclusions
+// use — not on the run's agent_id, which seedCompletedChatSession varies while
+// pinning every session to "default".
+func seedChatSessionForAgent(t *testing.T, st *sqlite.Store, sessionAgent string) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, "t", sessionAgent, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: sessionAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, run.ID, "text", []byte(`{"t":"hi"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Provider: "p"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	return sess.ID
+}
+
+// internalChatsConfig is the shape every internal-chat test shares: the runtime's
+// own maintenance agents age out after 3 days, real chats after 30. `at` pins
+// Now() so a just-seeded session's age is whatever the test needs it to be.
+func internalChatsConfig(at time.Time) Config {
+	return Config{
+		ChatsMode:           "prune",
+		ChatsMaxAge:         30 * 24 * time.Hour,
+		ChatsInternalMaxAge: 3 * 24 * time.Hour,
+		InternalAgents:      []string{"memory/consolidator", "memory/extractor"},
+		Logger:              quietLogger,
+		Now:                 func() time.Time { return at },
+	}
+}
+
+// TestSweeper_ChatsInternalAgentSessionPrunedAtShortAge: a session authored by an
+// `internal:` agent is deleted once it passes the SHORT age, while a normal chat
+// of the very same age is untouched because it is only 5 days into a 30-day
+// retention. This is the whole feature — the consolidator's extractor children
+// (13-18 per pass, forever) stop accumulating without shortening anyone's chats.
+//
+// The two counts are asserted separately: internal churn has to stay legible
+// next to real chat retention rather than being summed into it.
+func TestSweeper_ChatsInternalAgentSessionPrunedAtShortAge(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	internalID := seedChatSessionForAgent(t, st, "memory/extractor")
+	normalID := seedChatSessionForAgent(t, st, "chat")
+
+	// 5 days on: past the 3-day internal age, far short of the 30-day chat age.
+	sw := New(st, internalChatsConfig(time.Now().Add(5*24*time.Hour)))
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.ChatsInternal != 1 {
+		t.Errorf("res.ChatsInternal = %d, want 1", res.ChatsInternal)
+	}
+	if res.Chats != 0 {
+		t.Errorf("res.Chats = %d, want 0 — a normal chat is 5 days into a 30-day retention", res.Chats)
+	}
+	if _, err := st.GetSession(ctx, internalID); err == nil {
+		t.Errorf("internal session survived past its short age")
+	}
+	if _, err := st.GetSession(ctx, normalID); err != nil {
+		t.Errorf("normal chat was pruned at the internal age: %v", err)
+	}
+}
+
+// TestSweeper_ChatsNormalSessionPrunedAtGlobalAge is the regression guarding the
+// pre-existing behaviour: a normal chat past the CONFIGURED chat age is still
+// deleted exactly as before. The split adds an exclusion to that arm's query, so
+// a botched exclusion (excluding everything, or inverting the sense) would leave
+// real chats accumulating forever — silently, since nothing else would fail.
+func TestSweeper_ChatsNormalSessionPrunedAtGlobalAge(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	normalID := seedChatSessionForAgent(t, st, "chat")
+
+	// 40 days on: past the 30-day chat age.
+	sw := New(st, internalChatsConfig(time.Now().Add(40*24*time.Hour)))
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.Chats != 1 {
+		t.Errorf("res.Chats = %d, want 1", res.Chats)
+	}
+	if _, err := st.GetSession(ctx, normalID); err == nil {
+		t.Errorf("aged normal chat survived the global-age prune")
+	}
+}
+
+// TestSweeper_ChatsInternalSessionYoungerThanShortAgeSurvives: the short age is
+// an age, not a "delete internal chats" switch. A pass being diagnosed is hours
+// old, and its transcripts have to still be there.
+func TestSweeper_ChatsInternalSessionYoungerThanShortAgeSurvives(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	internalID := seedChatSessionForAgent(t, st, "memory/extractor")
+
+	// 1 day on: inside the 3-day internal age.
+	sw := New(st, internalChatsConfig(time.Now().Add(24*time.Hour)))
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.ChatsInternal != 0 {
+		t.Errorf("res.ChatsInternal = %d, want 0 — the session is 1 day old against a 3-day age", res.ChatsInternal)
+	}
+	if _, err := st.GetSession(ctx, internalID); err != nil {
+		t.Errorf("internal session younger than the short age was deleted: %v", err)
+	}
+}
+
+// TestSweeper_ChatsPinnedInternalSessionSurvivesAnyAge: pinning is the documented
+// escape hatch. An operator investigating a bad consolidation pass pins the
+// extractor chat and it survives regardless of age — which is why no second
+// per-chat override exists.
+func TestSweeper_ChatsPinnedInternalSessionSurvivesAnyAge(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	pinnedID := seedChatSessionForAgent(t, st, "memory/extractor")
+	unpinnedID := seedChatSessionForAgent(t, st, "memory/extractor")
+	if err := st.SetSessionMeta(ctx, pinnedID, store.SessionMetaPatch{Pinned: boolPtr(true)}); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	// A year on — far past every cutoff in play.
+	sw := New(st, internalChatsConfig(time.Now().Add(365*24*time.Hour)))
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.ChatsInternal != 1 {
+		t.Errorf("res.ChatsInternal = %d, want 1 (only the unpinned one)", res.ChatsInternal)
+	}
+	if _, err := st.GetSession(ctx, pinnedID); err != nil {
+		t.Errorf("PINNED internal session was deleted; pinning must exempt it from every retention path: %v", err)
+	}
+	if _, err := st.GetSession(ctx, unpinnedID); err == nil {
+		t.Errorf("unpinned internal session survived")
+	}
+}
+
+// TestSweeper_ChatsInternalSessionNeverExported: under export+prune a normal chat
+// is archived before deletion, but an internal chat is deleted outright. Writing
+// ~15 extractor bundles per consolidation pass is volume for content whose only
+// value was short-term debugging.
+func TestSweeper_ChatsInternalSessionNeverExported(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	dir := t.TempDir()
+	internalID := seedChatSessionForAgent(t, st, "memory/extractor")
+	normalID := seedChatSessionForAgent(t, st, "chat")
+
+	// 40 days on: both are past their respective cutoffs.
+	cfg := internalChatsConfig(time.Now().Add(40 * 24 * time.Hour))
+	cfg.ChatsMode = "export+prune"
+	cfg.ExportDir = dir
+	sw := New(st, cfg)
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.Chats != 1 || res.ChatsInternal != 1 {
+		t.Fatalf("res.Chats = %d / res.ChatsInternal = %d, want 1 / 1", res.Chats, res.ChatsInternal)
+	}
+	// The normal chat's bundle is on disk.
+	if m, _ := filepath.Glob(filepath.Join(dir, "chats", "*", normalID+".json")); len(m) != 1 {
+		t.Errorf("normal chat bundle = %v, want one chats/<day>/%s.json", m, normalID)
+	}
+	// The internal chat's is NOT — anywhere under the export dir.
+	if m, _ := filepath.Glob(filepath.Join(dir, "chats", "*", internalID+".json")); len(m) != 0 {
+		t.Errorf("internal chat was exported to %v; internal chats are deleted outright", m)
+	}
+	// Both are gone from the store — skipping the export must not skip the delete.
+	if _, err := st.GetSession(ctx, internalID); err == nil {
+		t.Errorf("internal session survived the delete-only prune")
+	}
+	if _, err := st.GetSession(ctx, normalID); err == nil {
+		t.Errorf("normal session survived export+prune")
+	}
+}
+
+// TestSweeper_ChatsInternalZeroAgeInheritsGlobalAge: a configured 0 means
+// "inherit the global chat age" — the opt-out for an operator who wants one age
+// across the board — and emphatically NOT "delete immediately". Reading 0 as
+// no-minimum-age (which is what it means on every sibling *MaxAge knob) would
+// delete every internal chat on the first tick.
+func TestSweeper_ChatsInternalZeroAgeInheritsGlobalAge(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	internalID := seedChatSessionForAgent(t, st, "memory/extractor")
+
+	// 5 days on, internal age unset: inheriting the 30-day chat age keeps it.
+	cfg := internalChatsConfig(time.Now().Add(5 * 24 * time.Hour))
+	cfg.ChatsInternalMaxAge = 0
+	sw := New(st, cfg)
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.ChatsInternal != 0 {
+		t.Errorf("res.ChatsInternal = %d, want 0 — 0 inherits the 30-day chat age, it does not mean delete now", res.ChatsInternal)
+	}
+	if _, err := st.GetSession(ctx, internalID); err != nil {
+		t.Errorf("internal session deleted under an inherited 30-day age at 5 days: %v", err)
+	}
+
+	// Past the inherited age it does go, on the internal arm.
+	cfg = internalChatsConfig(time.Now().Add(40 * 24 * time.Hour))
+	cfg.ChatsInternalMaxAge = 0
+	if res, err = New(st, cfg).sweepOnce(ctx); err != nil {
+		t.Fatalf("sweepOnce (past inherited age): %v", err)
+	}
+	if res.ChatsInternal != 1 {
+		t.Errorf("res.ChatsInternal = %d, want 1 once past the inherited age", res.ChatsInternal)
+	}
+}
+
+// TestSweeper_ChatsDryRunCountsSplitByInternal: the read-only preview behind
+// GET /v1/_retention splits the same way the sweep does. A preview that counted
+// every aged chat under one key would misreport which cutoff applies to what,
+// and both keys are always present so the report shape is stable.
+func TestSweeper_ChatsDryRunCountsSplitByInternal(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	seedChatSessionForAgent(t, st, "memory/extractor")
+	seedChatSessionForAgent(t, st, "memory/consolidator")
+	seedChatSessionForAgent(t, st, "chat")
+
+	// 5 days on: both internal chats are eligible, the normal one is not.
+	counts, err := New(st, internalChatsConfig(time.Now().Add(5*24*time.Hour))).DryRunCounts(ctx)
+	if err != nil {
+		t.Fatalf("DryRunCounts: %v", err)
+	}
+	if counts["chats_internal"] != 2 {
+		t.Errorf("counts[chats_internal] = %d, want 2", counts["chats_internal"])
+	}
+	if counts["chats"] != 0 {
+		t.Errorf("counts[chats] = %d, want 0 — the normal chat is inside its 30-day age, and internal chats must not be counted here", counts["chats"])
+	}
+
+	// With no agent declared internal the split is off: everything is a chat, and
+	// the key is still present (reporting 0) so the shape does not shift.
+	plain := internalChatsConfig(time.Now().Add(40 * 24 * time.Hour))
+	plain.InternalAgents = nil
+	counts, err = New(st, plain).DryRunCounts(ctx)
+	if err != nil {
+		t.Fatalf("DryRunCounts (no internal agents): %v", err)
+	}
+	if counts["chats"] != 3 {
+		t.Errorf("counts[chats] = %d, want 3 with no internal agents declared", counts["chats"])
+	}
+	if n, ok := counts["chats_internal"]; !ok || n != 0 {
+		t.Errorf("counts[chats_internal] = %d (present=%v), want 0 and present", n, ok)
+	}
+}
+
 // TestSweeper_ChatsPinnedSessionNotPruned: the chats sub-sweep never deletes a
 // PINNED session (the store excludes it), while an identical unpinned aged
 // session IS pruned. Drives the whole stack against a real sqlite store.
