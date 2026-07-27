@@ -2582,6 +2582,26 @@ type Env struct {
 	// is exported (per the mode) and cascade-deleted. 0 = no minimum age.
 	// Env: LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS.
 	RetentionChatsMaxAge time.Duration
+	// RetentionChatsInternalMaxAge is the SEPARATE, shorter age cutoff for chats
+	// authored by an agent declared `internal:` — loomcycle's own maintenance
+	// plumbing (see AgentDef.Internal). Default 3 days.
+	//
+	// It exists because a subsystem's own children accumulate at a rate no user
+	// generates: one consolidation pass spawns 13-18 extractor sessions, every
+	// pass, forever. They have real short-term value — diagnosing a bad pass
+	// means reading those transcripts — so the answer is a short lifespan rather
+	// than not recording them.
+	//
+	// ZERO means INHERIT RetentionChatsMaxAge (treat internal chats like any
+	// other chat), NOT "delete immediately" — the sweeper resolves 0 to the
+	// global age before it computes a cutoff. That is the opt-out for an operator
+	// who wants one retention age across the board.
+	//
+	// Only consulted when the chats sweep is enabled at all: retention is opt-in
+	// (LOOMCYCLE_RETENTION_ENABLED) and a deployment that has not enabled it
+	// keeps accumulating internal chats regardless of this value.
+	// Env: LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS.
+	RetentionChatsInternalMaxAge time.Duration
 	// RetentionMemMode is the RFC BM Phase 3 retired-agent memory-reclamation
 	// mode: "off" (default / "") | "prune" | "export+prune". Reclaims a
 	// fully-retired agent's SQL-Memory scope + dirents (per tenant) and its
@@ -3334,8 +3354,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
 		// mode defaults off and keep-last-N to 5. The env parse below overrides
 		// these only when the corresponding var is set.
-		RetentionDefsMode:      "off",
-		RetentionDefsKeepLastN: 5,
+		RetentionDefsMode:            "off",
+		RetentionDefsKeepLastN:       5,
+		RetentionChatsInternalMaxAge: 3 * 24 * time.Hour,
 	}
 
 	// RFC AH Phase 3 — the legacy filesystem jail is retired. The three env
@@ -3553,6 +3574,14 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.RetentionChatsMaxAge = time.Duration(n) * time.Millisecond
+		}
+	}
+	// Internal-chat age. Accepts 0 — unlike the knobs above, 0 is a MEANINGFUL
+	// value here ("inherit the global chat age"), not an unset one, so the guard
+	// is n >= 0 and an explicit 0 overrides the 3-day default.
+	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Env.RetentionChatsInternalMaxAge = time.Duration(n) * time.Millisecond
 		}
 	}
 	// Back-compat: the RFC AV Phase 2b2 aged-session archiver
