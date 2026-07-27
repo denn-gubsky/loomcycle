@@ -4,7 +4,7 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased
+## What's in v1.36.5
 
 **🔁 The consolidator was consolidating its own output, and the loop had no bound.** Every pass spawns one `memory/extractor` child per chat it reads — 13 to 18 of them on a normal page — and each child is a session under the target's own user id whose transcript **contains the chat it was extracting**. Nothing excluded them. `ConsolidatableSessions` took a *single* exclusion and the pass passed its own name, so on the next tick its children came back as work; and because a pass never consolidates them, it never advances over them either, so they accumulate past the watermark permanently. On the live store **7 of the last 8 chats were extractor sessions out of 95 total, growing by roughly 15 a pass**, with every pass re-extracting nested copies of its own input.
 
