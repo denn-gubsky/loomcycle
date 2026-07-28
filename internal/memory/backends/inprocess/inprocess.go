@@ -368,10 +368,11 @@ func (b *Backend) Capabilities() memory.Capabilities {
 // memory_pending. It carries enough to reconstruct the conversation turns when
 // the consolidator (a later RFC BL P2 PR) drains and folds them, without a
 // back-reference to the originating run.
-type pendingPayload struct {
-	Messages []memory.LayerMessage `json:"messages"`
-	Metadata map[string]string     `json:"metadata,omitempty"`
-}
+// pendingPayload is an ALIAS, not a second declaration: the consolidator parses
+// this shape, so one mismatch between two copies would fail silently (the pass
+// reads a payload it cannot interpret and extracts nothing). Add's behaviour is
+// unchanged — this is the same struct under the same name.
+type pendingPayload = memory.PendingPayload
 
 // Add ingests conversation messages under (scope, scopeID). The tenant is the
 // run's authoritative tenant (ctx-carried RunIdentity, server-supplied — never

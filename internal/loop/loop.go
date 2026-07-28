@@ -91,6 +91,22 @@ type RunOptions struct {
 	// tolerate failures" contract as OnHeartbeat.
 	OnSteer func(steer.Message)
 
+	// BankCompactedSpan, when non-nil, banks the span a compaction is about to
+	// DISCARD onto the consolidation queue, so the pass can extract durable facts
+	// from it later (RFC BL P3). It receives the messages being dropped and
+	// returns a correlation id for the transcript marker.
+	//
+	// A CALLBACK rather than a store handle because the loop is deliberately
+	// store-free: resolving the agent's memory scope, its tenant, and whether
+	// `compaction.memory_flush` is even set all live where the store already
+	// does. Nil therefore covers every "do not bank" case at once — the flag is
+	// off, the agent has no writable memory scope, or there is no store — and the
+	// loop does not have to know which.
+	//
+	// Errors are for the marker only. Compaction exists to keep a run alive;
+	// banking is strictly secondary and must never be able to fail it.
+	BankCompactedSpan func(ctx context.Context, dropped []providers.Message) (string, error)
+
 	// Interactive makes this a PERSISTENT run: instead of terminating when the
 	// model ends its turn, the loop parks on SteerQueue waiting for the
 	// operator's next instruction (resuming on it, ending only on Cancel).
@@ -1071,6 +1087,17 @@ func Summarize(ctx context.Context, provider providers.Provider, model string, m
 // keepFirst taken verbatim from the control, and emits the persisted marker. The
 // loop trusts keepN (the server snapped it on the same in-memory==transcript
 // history). Used by drainSteer + parkForInput.
+//
+// INVARIANT — it takes no RunOptions, and must not start to (RFC BL P3). That is
+// what makes memory banking unreachable from here, which matters because this
+// function runs on paths where the span has ALREADY been banked or must not be:
+// the manual compact banks server-side before pushing the control, and a resumed
+// run replays a compaction that happened once. Give this access to
+// BankCompactedSpan and both become double-banks that no error surfaces —
+// duplicate candidates for the dedup band to absorb, on every resume. Banking
+// belongs in maybeAutoCompact, which is the only path that discards a span nobody
+// has seen yet. loop.Summarize is RunOptions-free for the same reason: it also
+// serves History `recap`, which summarizes without discarding anything.
 func applyCompactSummary(messages []providers.Message, summary string, keepN int, keepFirst bool, emit func(providers.Event)) []providers.Message {
 	before := estimateMessageTokens(messages)
 	if keepN < 0 {
@@ -1197,12 +1224,40 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	}
 	out := CompactionMessages(pinned, strings.TrimSpace(summary), messages[cut:])
 	after := estimateMessageTokens(out)
-	emit(providers.Event{Type: providers.EventContextCompaction,
-		ContextCompaction: &providers.ContextCompactionEventInfo{
-			Summary: strings.TrimSpace(summary), KeepN: len(messages) - cut, KeepFirst: firstIdx > 0,
-			BeforeTokens: before, AfterTokens: after, Trigger: trigger}})
+	info := &providers.ContextCompactionEventInfo{
+		Summary: strings.TrimSpace(summary), KeepN: len(messages) - cut, KeepFirst: firstIdx > 0,
+		BeforeTokens: before, AfterTokens: after, Trigger: trigger}
+	// RFC BL P3: bank the span we are about to drop, if the agent asked for it.
+	// AFTER the summary succeeded and BEFORE the messages are replaced, because
+	// this is the last moment the discarded turns exist. Never fatal — see
+	// RunOptions.BankCompactedSpan.
+	info.MemoryBanked = bankDiscardedSpan(ctx, opts, messages[firstIdx:cut])
+	emit(providers.Event{Type: providers.EventContextCompaction, ContextCompaction: info})
 	lcotel.RecordCompactionCtx(ctx, trigger, before, after) // per-run-shape metric via OTEL span event
 	return out, true
+}
+
+// bankDiscardedSpan hands the span a compaction is dropping to the banking
+// callback, and reports the outcome for the transcript marker. Returns nil when
+// the agent did not opt in, so the marker field stays absent by default.
+//
+// Every failure path returns an Error rather than propagating: the caller has
+// already produced a valid summary, and refusing to complete the compaction
+// because a queue write failed would trade a live run for a memory nicety.
+func bankDiscardedSpan(ctx context.Context, opts RunOptions, dropped []providers.Message) *providers.MemoryBankedInfo {
+	if opts.BankCompactedSpan == nil || len(dropped) == 0 {
+		return nil
+	}
+	id, err := opts.BankCompactedSpan(ctx, dropped)
+	if err != nil {
+		return &providers.MemoryBankedInfo{Error: err.Error()}
+	}
+	if id == "" {
+		// Nothing conversational in the span (all tool traffic) — a legitimate
+		// nothing-to-bank, reported so it is not mistaken for the flag being off.
+		return &providers.MemoryBankedInfo{Error: "no conversational content in the discarded span"}
+	}
+	return &providers.MemoryBankedInfo{PendingID: id, Messages: len(dropped)}
 }
 
 func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
