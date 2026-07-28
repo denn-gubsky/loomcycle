@@ -1752,6 +1752,21 @@ type Store interface {
 	// Returns *ErrNotFound when no such row is visible to the caller.
 	MemoryPendingGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, id string) (MemoryPendingRow, error)
 
+	// MemoryScopeUsage sums a scope's live key count and byte footprint
+	// (len(key)+len(value)) server-side, EXCLUDING keys under excludeKeyPrefix.
+	//
+	// It exists because the quota check cannot be done by listing. Listing is
+	// capped, and a scope holding thousands of Document chunk bodies truncates
+	// before the agent's own memory rows are reached — so the check refused every
+	// write with "more than N keys" while the actual memory footprint was a few
+	// kilobytes. Summing in SQL has no cap and needs one round trip, which also
+	// retires the "if we ever need to scale this" note on the old path.
+	//
+	// excludeKeyPrefix is a caller-supplied namespace (the Document chunk-body
+	// prefix in practice); empty counts everything. Expired and superseded rows
+	// are excluded, matching what a read would actually surface.
+	MemoryScopeUsage(ctx context.Context, tenantID string, scope MemoryScope, scopeID, excludeKeyPrefix string) (keys int, bytes int, err error)
+
 	// MemoryCursorGet returns the consolidation cursor for a target. It is a
 	// GET-OR-DEFAULT: a target with no row yet returns a zero-watermark,
 	// unleased MemoryCursorRow (TenantID/Scope/ScopeID populated, everything

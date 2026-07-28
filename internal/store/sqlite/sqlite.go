@@ -4610,6 +4610,33 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
+// MemoryScopeUsage sums the scope's live footprint in SQL, excluding a namespace.
+// The live predicate mirrors MemoryList exactly (unexpired + not superseded) so
+// the quota measures what a read would actually surface.
+func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, excludeKeyPrefix string) (int, int, error) {
+	// The exclusion is a CONDITIONAL clause, not a sentinel value. An earlier cut
+	// used an impossible-string sentinel to keep the query shape fixed; Postgres
+	// rejected it outright ("invalid byte sequence for encoding UTF8: 0x00"), and
+	// any PRINTABLE sentinel is a value a key could theoretically hold. An empty
+	// prefix must exclude NOTHING, and that is simply a different query.
+	q := `SELECT COUNT(*), COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0)
+		   FROM memory
+		  WHERE tenant_id = ? AND scope = ? AND scope_id = ?
+		    AND (expires_at IS NULL OR expires_at > ?)
+		    AND superseded_at IS NULL`
+	args := []any{tenantID, string(scope), scopeID, time.Now().UnixNano()}
+	if excludeKeyPrefix != "" {
+		q += ` AND key NOT LIKE ? ESCAPE '\'`
+		args = append(args, escapeLikePrefix(excludeKeyPrefix)+"%")
+	}
+	var keys, bytes sql.NullInt64
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&keys, &bytes)
+	if err != nil {
+		return 0, 0, err
+	}
+	return int(keys.Int64), int(bytes.Int64), nil
+}
+
 // MemoryFullTextSearch is the RFC BL keyword-retrieval leg. SQLite ships no
 // tsvector index (the vectors themselves are Postgres-only), so per the
 // documented degrade posture this returns (nil, nil) rather than erroring —
