@@ -1,0 +1,16 @@
+{
+  "name": "loomcycle-landing",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "loomcycle.cloud landing server: serves the static site, proxies the runtime's public /v1 reads (inner links), and mints substrate:tenant tokens behind Cloudflare Access with the admin token held server-side.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "smoke": "node smoke.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "jose": "^5.9.6"
+  }
+}

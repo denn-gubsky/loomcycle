@@ -38,6 +38,14 @@ agents:
       temperature: 0.7
     compaction:
       enabled: true
+      # RFC BL P3: bank the turns each compaction discards onto the
+      # consolidation queue. These agents are exactly the case the bridge
+      # exists for — they compact repeatedly and park at end_turn rather than
+      # terminating, so consolidation's all-runs-terminal predicate never
+      # selects their sessions and nothing would ever be learned from them.
+      # Requires `user` in memory_scopes (above): consolidation drains user
+      # scopes only.
+      memory_flush: true
       autocompact_at_pct: 80
     system_prompt: |
       You are CHAT, a helpful, direct general-purpose assistant for an operator
@@ -78,6 +86,7 @@ agents:
       temperature: 0.7
     compaction:
       enabled: true
+      memory_flush: true                    # RFC BL P3 — see chat/medium above
       autocompact_at_pct: 70
     system_prompt: |
       You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but
@@ -113,6 +122,7 @@ agents:
       temperature: 0.7
     compaction:
       enabled: true
+      memory_flush: true                    # RFC BL P3 — see chat/medium above
       autocompact_at_pct: 70
     system_prompt: |
       You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but

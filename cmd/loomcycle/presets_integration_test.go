@@ -335,3 +335,54 @@ func agentNames(cfg *config.Config) []string {
 	}
 	return out
 }
+
+// TestEmbedded_ChatAgentsOptIntoMemoryFlush pins the RFC BL P3 bundle wiring, and
+// pins the PRECONDITION with it.
+//
+// memory_flush is inert without `user` in memory_scopes: consolidation fans out
+// over user scopes only, so a span banked anywhere else is enqueued and then never
+// drained by anything. That combination — flag on, user scope missing — is a silent
+// no-op at the bundle level, so the two are asserted together rather than apart.
+//
+// The chat agents are the case the bridge exists for: they auto-compact and park
+// at end_turn instead of terminating, so consolidation's all-runs-terminal
+// predicate never selects their sessions.
+func TestEmbedded_ChatAgentsOptIntoMemoryFlush(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	cfg, err := config.LoadLayers(layersFor(t, "base", "chat")...)
+	if err != nil {
+		t.Fatalf("base+chat must load: %v", err)
+	}
+
+	var checked int
+	for name, def := range cfg.Agents {
+		if !strings.HasPrefix(name, "chat/") {
+			continue
+		}
+		checked++
+		if def.Compaction == nil || def.Compaction.Enabled == nil || !*def.Compaction.Enabled {
+			// Not a bridge candidate — nothing to bank if it never compacts.
+			continue
+		}
+		if def.Compaction.MemoryFlush == nil || !*def.Compaction.MemoryFlush {
+			t.Errorf("agent %q auto-compacts but does not set compaction.memory_flush, so everything it discards is lost to memory", name)
+			continue
+		}
+		if !slicesContains(def.MemoryScopes, "user") {
+			t.Errorf("agent %q sets memory_flush but has no `user` in memory_scopes %v — consolidation drains user scopes only, so banked spans would never be consolidated",
+				name, def.MemoryScopes)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no chat/* agents found in the base+chat stack; this test asserts nothing")
+	}
+}
+
+func slicesContains(hay []string, needle string) bool {
+	for _, v := range hay {
+		if v == needle {
+			return true
+		}
+	}
+	return false
+}
