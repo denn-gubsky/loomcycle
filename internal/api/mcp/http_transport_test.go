@@ -550,7 +550,7 @@ func TestHTTPTransport_SpawnRunStreaming_EmitsSSEFrames(t *testing.T) {
 
 	// spawn_run — should reply with text/event-stream.
 	resp, body = postFrame(t, ts.URL, sessionID,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[]}}}`)
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}}}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("spawn_run status=%d", resp.StatusCode)
 	}
@@ -589,7 +589,7 @@ func TestHTTPTransport_SpawnRunWithoutOptIn_ReturnsJSONNotSSE(t *testing.T) {
 
 	// spawn_run — should reply with application/json (blocking path).
 	resp, body := postFrame(t, ts.URL, sessionID,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[]}}}`)
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}}}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
@@ -645,7 +645,7 @@ func TestHTTPTransport_SpawnRunOperatorTimeout(t *testing.T) {
 	// forever and the client deadline gives a clean, fast failure instead
 	// of hanging until the go-test global timeout.
 	req, err := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"x","segments":[]}}}`))
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}}}`))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}

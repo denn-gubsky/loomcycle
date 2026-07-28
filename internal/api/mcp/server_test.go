@@ -556,7 +556,7 @@ func TestServer_SpawnRun_BlockingPath(t *testing.T) {
 	// No runEvents capability → blocking path via Connector.SpawnRun.
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa-agent","segments":[]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa-agent","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}}}`,
 	}, "\n") + "\n"
 	resps, notifs := driveServer(t, srv, in)
 	if len(resps) != 2 {
@@ -628,7 +628,7 @@ func TestServer_SpawnRun_AppliesPrincipalOverWireIdentity(t *testing.T) {
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice"}) // real (non-legacy) principal
-	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[],"tenant_id":"evil","user_id":"mallory"}}}` + "\n"
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil","user_id":"mallory"}}}` + "\n"
 	driveServerCtx(t, srv, ctx, in)
 	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
 	if stored.TenantID != "acme" || stored.UserID != "alice" {
@@ -644,7 +644,7 @@ func TestServer_SpawnRun_LegacyHonorsWireUserID(t *testing.T) {
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "default", Subject: "default", Scopes: []string{auth.ScopeAdmin}, Legacy: true})
-	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[],"tenant_id":"ignored","user_id":"exp1"}}}` + "\n"
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"ignored","user_id":"exp1"}}}` + "\n"
 	driveServerCtx(t, srv, ctx, in)
 	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
 	if stored.TenantID != "default" || stored.UserID != "exp1" {
@@ -657,7 +657,7 @@ func TestServer_SpawnRun_LegacyHonorsWireUserID(t *testing.T) {
 func TestServer_SpawnRun_NoPrincipalPassesWireThrough(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
-	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[],"tenant_id":"wire-t","user_id":"wire-u"}}}` + "\n"
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"wire-t","user_id":"wire-u"}}}` + "\n"
 	driveServer(t, srv, in)
 	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
 	if stored.TenantID != "wire-t" || stored.UserID != "wire-u" {
@@ -674,7 +674,7 @@ func TestServer_SpawnRun_ContinuationSkipsOverride(t *testing.T) {
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice"})
-	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"session_id":"s_prior","segments":[],"tenant_id":"wire-t"}}}` + "\n"
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"session_id":"s_prior","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"wire-t"}}}` + "\n"
 	driveServerCtx(t, srv, ctx, in)
 	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
 	if stored.TenantID != "wire-t" {
@@ -690,7 +690,7 @@ func TestServer_SpawnRuns_AppliesPrincipalToEachChild(t *testing.T) {
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice"})
-	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":"a","segments":[],"tenant_id":"evil"},{"agent":"b","segments":[],"tenant_id":"evil2","user_id":"mallory"}]}}}` + "\n"
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":"a","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil"},{"agent":"b","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil2","user_id":"mallory"}]}}}` + "\n"
 	driveServerCtx(t, srv, ctx, in)
 	stored, _ := mc.batchReq.Load().(connector.BatchSpawnRequest)
 	if len(stored.Spawns) != 2 {
@@ -708,7 +708,7 @@ func TestServer_SpawnRun_CarriesCompaction(t *testing.T) {
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[],"compaction":{"enabled":true,"keep_last_n":6,"autocompact_at_pct":75}}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"compaction":{"enabled":true,"keep_last_n":6,"autocompact_at_pct":75}}}}`,
 	}, "\n") + "\n"
 	driveServer(t, srv, in)
 	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
@@ -913,7 +913,7 @@ func TestServer_SpawnRun_StreamingPath(t *testing.T) {
 
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"loomcycle":{"runEvents":true}},"clientInfo":{"name":"t","version":"1"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa-agent","segments":[]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa-agent","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}}}`,
 	}, "\n") + "\n"
 	resps, notifs := driveServer(t, srv, in)
 	if len(resps) != 2 {
@@ -975,7 +975,7 @@ func TestServer_SpawnRun_NotificationsArriveBeforeResponse(t *testing.T) {
 
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"loomcycle":{"runEvents":true}},"clientInfo":{"name":"t","version":"1"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa-agent","segments":[]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa-agent","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}}}`,
 	}, "\n") + "\n"
 
 	stdout := &bytes.Buffer{}
@@ -1513,8 +1513,8 @@ func TestServer_LongCallDoesNotBlockSubsequent(t *testing.T) {
 	defer ls.close()
 
 	ls.handshake()
-	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`)) // blocks on gate
-	ls.send(toolCallFrame(3, "list_runs", `{"user_id":"u"}`))             // cheap; must not be HOL-blocked
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`)) // blocks on gate
+	ls.send(toolCallFrame(3, "list_runs", `{"user_id":"u"}`))                                                                            // cheap; must not be HOL-blocked
 
 	// id=3 must arrive while id=2 is still blocked.
 	ls.waitResp(3, 2*time.Second)
@@ -1537,8 +1537,8 @@ func TestServer_CancelRunBypassesCapDuringSaturation(t *testing.T) {
 	defer ls.close()
 
 	ls.handshake()
-	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`)) // fills the only slot
-	ls.send(toolCallFrame(3, "cancel_run", `{"agent_id":"a"}`))           // not bounded → must run
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`)) // fills the only slot
+	ls.send(toolCallFrame(3, "cancel_run", `{"agent_id":"a"}`))                                                                          // not bounded → must run
 
 	ls.waitResp(3, 2*time.Second) // cancel_run responds despite the saturated cap
 	if ls.hasResp(2) {
@@ -1559,9 +1559,9 @@ func TestServer_LongCallsRespectConcurrencyCap(t *testing.T) {
 	defer ls.close()
 
 	ls.handshake()
-	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`))
-	ls.send(toolCallFrame(3, "spawn_run", `{"agent":"x","segments":[]}`))
-	ls.send(toolCallFrame(4, "spawn_run", `{"agent":"x","segments":[]}`))
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`))
+	ls.send(toolCallFrame(3, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`))
+	ls.send(toolCallFrame(4, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`))
 
 	// Wait for two to enter the connector; the third must stay parked on
 	// the semaphore (never enters SpawnRun).
@@ -1598,9 +1598,9 @@ func TestServer_QueuedCallErrorsOnShutdown(t *testing.T) {
 	defer ls.close()
 
 	ls.handshake()
-	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`)) // bounded → parks on the sem
-	time.Sleep(50 * time.Millisecond)                                     // let the read loop dispatch the goroutine
-	ls.cancel()                                                           // simulate global shutdown (bgCtx / SIGTERM)
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`)) // bounded → parks on the sem
+	time.Sleep(50 * time.Millisecond)                                                                                                    // let the read loop dispatch the goroutine
+	ls.cancel()                                                                                                                          // simulate global shutdown (bgCtx / SIGTERM)
 
 	r := ls.waitResp(2, 2*time.Second)
 	if r.Error == nil || r.Error.Code != -32603 {
@@ -1653,7 +1653,7 @@ func TestServer_SpawnRunTimesOut(t *testing.T) {
 	defer ls.close()
 
 	ls.handshake()
-	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[],"timeout_ms":120}`))
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"timeout_ms":120}`))
 	got := decodeSpawnResult(t, ls.waitResp(2, 3*time.Second))
 	if got.Status != "timeout" {
 		t.Fatalf("spawn_run status = %q; want \"timeout\"", got.Status)
@@ -1669,7 +1669,7 @@ func TestServer_SpawnRunOperatorTimeout(t *testing.T) {
 	defer ls.close()
 
 	ls.handshake()
-	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`)) // no per-call timeout_ms
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`)) // no per-call timeout_ms
 	got := decodeSpawnResult(t, ls.waitResp(2, 3*time.Second))
 	if got.Status != "timeout" {
 		t.Fatalf("spawn_run status = %q; want \"timeout\" (operator default)", got.Status)
@@ -1686,7 +1686,7 @@ func TestServer_SpawnRunNoTimeoutByDefault(t *testing.T) {
 	defer ls.close()
 
 	ls.handshake()
-	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`))
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`))
 	got := decodeSpawnResult(t, ls.waitResp(2, 3*time.Second))
 	if got.Status != "completed" {
 		t.Fatalf("spawn_run status = %q; want \"completed\" (no timeout by default)", got.Status)
