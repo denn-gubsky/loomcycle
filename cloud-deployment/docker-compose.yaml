@@ -177,21 +177,39 @@ services:
       retries: 12
       start_period: 15s
 
-  # ── Landing page (Caddy) — serves cloud-web/ + proxies /api/* to loomcycle ──
+  # ── Landing (Node) — serves cloud-web/, proxies public /v1 reads (inner links),
+  #    and mints substrate:tenant tokens behind Cloudflare Access (admin token
+  #    held server-side). See landing/server.js. ──
   landing:
-    image: caddy:2
+    build: ./landing
     restart: unless-stopped
     networks: [loomnet]
+    environment:
+      PORT: "8080"
+      LOOMCYCLE_URL: http://tailscale:8787      # loomcycle lives in the tailscale netns
+      LOOMCYCLE_ADMIN_TOKEN: ${LOOMCYCLE_ADMIN_TOKEN}   # secret — the admin bearer that mints
+      CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:-}
+      CF_ACCESS_AUD: ${CF_ACCESS_AUD:-}
+      MINT_SCOPES: ${MINT_SCOPES:-substrate:tenant,runs:create}
+      MINT_TENANT_PREFIX: ${MINT_TENANT_PREFIX:-t_}
+      APP_ORIGIN: ${LANDING_ORIGIN:-https://loomcycle.cloud}   # CSRF origin check
+      # MINT_DEV_ALLOW_UNVERIFIED: "1"   # LOCAL DEV ONLY — skips CF Access JWT verify
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./web:/srv:ro          # copy of the repo's cloud-web/ (see INSTALL.md)
-      - ./caddy-data:/data
-      - ./caddy-config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/_up >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       tailscale:
         condition: service_healthy
 
   # ── Cloudflare tunnel (token method) — app.loomcycle.cloud + loomcycle.cloud ──
+  #    Dashboard routes: app.loomcycle.cloud → http://tailscale:8787 (the runtime),
+  #    loomcycle.cloud → http://landing:8080 (this stack). Protect /api/* on
+  #    loomcycle.cloud with a Cloudflare Access (Google) policy — see INSTALL.md.
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped

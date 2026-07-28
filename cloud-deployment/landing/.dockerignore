@@ -1,0 +1,5 @@
+node_modules
+smoke.mjs
+.env
+.env.*
+*.log
