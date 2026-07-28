@@ -1,0 +1,5 @@
+# Hero/mascot videos — 40 MB of binary, deployed out-of-band (CDN / Cloudflare
+# Pages / the deploy's web/ mount), NOT versioned in git (no LFS in this repo;
+# keeps history lean). They stay on disk locally; only these ignore rules keep
+# them out of commits.
+assets/*.mp4

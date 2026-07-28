@@ -1,0 +1,1758 @@
+<!doctype html>
+<html lang="en" style="--color-bg:#f6f7ed">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>loomcycle.cloud — the agentic runtime, hosted</title>
+<link rel="icon" href="assets/favicon.svg" />
+<script src="./ds-base.js"></script>
+<style>
+/* loomcycle.cloud — Modernist voice: the grid shows, 2px rules draw the
+   structure, red is spent as a mark and takes the field exactly once (the
+   poster close). Motion is structural: rules draw, blocks rise one unit,
+   the loom weaves. Nothing floats, nothing is rounded. */
+:root {
+  --leading: 28px;
+  --half: 14px;
+  --edge: clamp(20px, 5vw, 72px);
+  --measure: 58ch;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  /* tweakables — the page ground is matched to the loom animation's own
+     off-white (#f6f7ed sampled from the clip) so the hero has no seam */
+  --loom-size: 50%;
+  --loom-frame: 0px;
+}
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; text-wrap: pretty; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 var(--edge); }
+
+/* — masthead — */
+.nav { padding-inline: max(var(--edge), calc((100% - 1200px) / 2 + var(--edge)));
+  position: sticky; top: 0; z-index: 40; background: var(--color-bg); }
+.nav a { white-space: nowrap; }
+.nav .brand-lock { display: flex; align-items: center; gap: 10px; margin-right: auto;
+  flex: 0 0 auto; min-width: 0; }
+.nav .brand-lock img { height: 21px; display: block; }
+.nav .brand-lock .cloud { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  color: var(--color-bg); background: var(--color-accent); border: 0; cursor: pointer;
+  padding: 4px 8px 3px; display: flex; flex-direction: column; align-items: flex-start;
+  line-height: 1; text-align: left; }
+.nav .brand-lock .cloud .w { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; }
+.nav .brand-lock .cloud .i { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase;
+  margin-top: 2px; opacity: 0.85; align-self: center; }
+.nav .brand-lock .cloud:hover { background: var(--color-accent-600); }
+.nav .brand-lock .cloud:hover .i { opacity: 1; }
+.nav .brand-lock .cloud:focus-visible { outline: 2px solid var(--color-text); outline-offset: 2px; }
+.nav .nav-status { display: flex; align-items: center; gap: 7px; font-size: 11px;
+  letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; flex: none;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  border-left: 2px solid var(--color-divider); padding-left: 12px; margin-left: 2px; }
+.nav .nav-status .dot { width: 8px; height: 8px; flex: none;
+  background: color-mix(in srgb, var(--color-text) 35%, transparent); }
+.nav .nav-status[data-state="ok"] .dot { background: var(--color-accent); animation: pulse 2.4s ease-in-out infinite; }
+.nav .nav-status b { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+  text-transform: none; color: var(--color-text); font-weight: 400; }
+@media (max-width: 1100px) {
+  /* compact form — the dot and the version still fit where the label will not */
+  .nav .nav-status #nav-st-label { display: none; }
+  .nav .nav-status { padding-left: 10px; }
+}
+@media (max-width: 760px) { .nav .nav-status { display: none; } }
+@media (max-width: 700px) { .nav a[href^="#"] { display: none; } }
+
+/* — drawn structure — */
+.rule2 { height: 2px; border: 0; margin: 0; background: var(--color-divider);
+  transform: scaleX(0); transform-origin: left; transition: transform 900ms cubic-bezier(.16,1,.3,1); }
+.rule2.in { transform: scaleX(1); }
+
+.kicker {
+  display: block; font-size: 13px; line-height: var(--half);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-accent-700);
+  font-feature-settings: "tnum" 1;
+  margin: 0 0 calc(var(--leading) - var(--half));
+}
+
+/* — staggered rise (one leading unit, never more) — */
+.rise { opacity: 0; transform: translateY(var(--half)); transition: opacity 620ms ease, transform 620ms cubic-bezier(.16,1,.3,1); }
+.rise.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .rise { opacity: 1; transform: none; transition: none; }
+  .rule2 { transform: scaleX(1); transition: none; }
+}
+
+/* — hero — */
+.hero { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: var(--leading) clamp(24px, 5vw, 88px); align-items: center;
+  padding: calc(3.5 * var(--leading)) 0 calc(3 * var(--leading)); }
+.display {
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: clamp(40px, 5.2vw, 72px);
+  line-height: clamp(42.4px, 5.51vw, 76.3px);
+  letter-spacing: -0.02em; margin: 0;
+  margin-left: -0.058em;
+  text-box: trim-both cap alphabetic;
+}
+.display .line { display: block; }
+.hero .sub { font-size: 17px; line-height: var(--leading); max-width: var(--measure);
+  margin: calc(1.5 * var(--leading) - 1cap) 0 0;
+  text-box: trim-both cap alphabetic; }
+.hero .row { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--leading); align-items: center; }
+.hero .fine { font-size: 13px; line-height: var(--half);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  margin: var(--leading) 0 0; }
+.g-btn { display: inline-flex; align-items: center; gap: 10px; }
+.g-btn svg { width: 16px; height: 16px; flex: none; }
+
+/* — the loom (hero figure): the brand animation, seamless on the page ground
+   (no frame by default — the clip's own off-white is the page's). The three
+   loom clips play back-to-back as one continuous take. — */
+.loom { margin: 0; position: relative; width: var(--loom-size);
+  border: var(--loom-frame) solid var(--color-text);
+  aspect-ratio: 1 / 1; overflow: hidden; }
+.loom video { position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; display: block; opacity: 0; transition: opacity 260ms linear; }
+.loom video[data-live] { opacity: 1; }
+/* the two overlays share one bottom strip, so they can never collide at a
+   small figure size; below 240px the figure carries no chrome at all */
+.loom .chrome { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 8px;
+  pointer-events: none; container-type: inline-size; }
+.loom figcaption { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--color-bg); background: var(--color-accent); padding: 5px 9px 4px; white-space: nowrap; }
+.loom .ticks { display: flex; gap: 4px; padding: 8px; flex: none; }
+.loom .ticks i { width: 8px; height: 8px; background: color-mix(in srgb, var(--color-text) 25%, transparent); }
+.loom .ticks i[data-on] { background: var(--color-accent); }
+.loom[data-bare] .chrome { display: none; }
+@container (max-width: 240px) { .loom figcaption { display: none; } }
+
+/* — the mascot band: five equal cells, the modular grid at its plainest — */
+.band { padding: calc(2 * var(--leading)) 0 calc(2.5 * var(--leading)); }
+.band .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0;
+  border: 2px solid var(--color-divider); }
+.band .cell { position: relative; outline-offset: -2px; }
+.band .cell:focus-visible { outline: 2px solid var(--color-accent); }
+.band .cell + .cell { border-left: 2px solid var(--color-divider); }
+.band video { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; }
+.band .cap { position: absolute; left: 0; bottom: 0; font-size: 10px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--color-bg); background: var(--color-text); padding: 4px 7px 3px; }
+.band .cell:hover .cap, .band .cell:focus-within .cap { background: var(--color-accent); }
+
+/* the primitive card — a ruled panel hung off the cell, not a floating tooltip */
+.prim { position: absolute; left: -2px; top: calc(100% + 2px); z-index: 30;
+  width: max(280px, calc(200% + 2px)); background: var(--color-bg);
+  border: 2px solid var(--color-text); padding: 16px 18px 18px; text-align: left;
+  opacity: 0; visibility: hidden; transform: translateY(-6px);
+  transition: opacity 160ms ease, transform 160ms cubic-bezier(.16,1,.3,1), visibility 160ms; }
+.band .cell:nth-child(n+4) .prim { left: auto; right: -2px; }
+.band .cell:hover .prim, .band .cell:focus-within .prim {
+  opacity: 1; visibility: visible; transform: none; }
+.prim h3 { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 17px; line-height: 24px; margin: 0; letter-spacing: -0.01em; }
+.prim .tools { display: block; font-family: var(--mono); font-size: 11px; line-height: 18px;
+  color: var(--color-accent-700); margin-top: 4px; word-break: break-word; }
+.prim p { font-size: 13.5px; line-height: 21px; margin: 10px 0 0;
+  color: color-mix(in srgb, var(--color-text) 82%, transparent); }
+@media (hover: none) { .prim { display: none; } }
+
+.band p.note { font-size: 15.5px; line-height: var(--leading); max-width: 62ch;
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  margin: var(--leading) 0 0; text-box: trim-both cap alphabetic; }
+@media (max-width: 760px) {
+  .band .grid { grid-template-columns: repeat(2, 1fr); }
+  .band .cell + .cell { border-left: 0; }
+  .band .cell:nth-child(even) { border-left: 2px solid var(--color-divider); }
+  .band .cell:nth-child(n+3) { border-top: 2px solid var(--color-divider); }
+}
+
+/* — live status strip — */
+.statusbar { display: flex; align-items: baseline; gap: clamp(16px, 2.5vw, 32px); flex-wrap: wrap;
+  padding-bottom: var(--leading); font-size: 13px; line-height: var(--half);
+  letter-spacing: 0.08em; text-transform: uppercase; }
+.statusbar .st { display: flex; align-items: center; gap: 8px; font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight); }
+.statusbar .dot { width: 10px; height: 10px; flex: none;
+  background: color-mix(in srgb, var(--color-text) 35%, transparent); }
+.statusbar[data-state="ok"] .dot { background: var(--color-accent); animation: pulse 2.4s ease-in-out infinite; }
+.statusbar[data-state="static"] .dot { background: color-mix(in srgb, var(--color-text) 35%, transparent); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .statusbar .dot { animation: none; } }
+.statusbar .kv { color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  font-feature-settings: "tnum" 1; }
+.statusbar .kv b { color: var(--color-text); font-weight: 400; font-family: var(--mono);
+  letter-spacing: 0; text-transform: none; }
+
+/* — version / soak strip — */
+.stats { padding: calc(2 * var(--leading)) 0; }
+.stats .grid { display: grid; grid-template-columns: repeat(4, auto); justify-content: space-between; gap: calc(1.5 * var(--leading)) var(--leading); }
+.stat-num { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: clamp(30px, 3.1vw, 44px); line-height: calc(2 * var(--leading));
+  color: var(--color-accent); margin: 0; margin-left: -0.045em;
+  font-variant-numeric: tabular-nums;
+  text-box: trim-both cap alphabetic; }
+.stat-label { font-size: 13px; line-height: var(--half); letter-spacing: 0.08em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  margin: var(--half) 0 0; }
+
+/* — prose block — */
+.prose { padding: calc(2.5 * var(--leading)) 0; }
+.prose .grid { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+  gap: var(--leading) clamp(24px, 4vw, 72px); }
+.prose h2 { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 32px; line-height: calc(1.5 * var(--leading)); letter-spacing: -0.015em;
+  margin: 0; text-box: trim-both cap alphabetic; }
+.prose p { font-size: 16px; line-height: var(--leading); margin: 0 0 var(--leading);
+  max-width: 62ch; text-box: trim-both cap alphabetic; }
+.prose p:last-child { margin-bottom: 0; }
+.prose .dim { color: color-mix(in srgb, var(--color-text) 78%, transparent); }
+
+/* — ruled rows (primitives, steps, trust) — */
+.rows { padding: calc(2.5 * var(--leading)) 0; }
+.row-item { display: grid; grid-template-columns: minmax(64px, 130px) minmax(0, 380px) minmax(0, 1fr);
+  gap: var(--leading) clamp(24px, 4vw, 64px); align-items: baseline;
+  padding: calc(1.25 * var(--leading)) 0; }
+.row-item + .row-item { border-top: 2px solid var(--color-divider); }
+.r-num { position: relative; font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 15px; line-height: var(--leading); color: var(--color-text);
+  font-feature-settings: "tnum" 1; margin: 0; text-box: trim-both cap alphabetic; }
+.r-num::before { content: ""; position: absolute; left: -24px; top: calc(0.5cap - 5px);
+  width: 10px; height: 10px; background: var(--color-accent); }
+@media (max-width: 1280px) { .r-num::before { display: none; } }
+.r-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 22px; line-height: var(--leading); letter-spacing: -0.01em;
+  margin: 0; text-box: trim-both cap alphabetic; }
+.r-copy { font-size: 15.5px; line-height: var(--leading); margin: 0;
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  max-width: 56ch; text-box: trim-both cap alphabetic; }
+.r-copy code, .inline-code { font-family: var(--mono); font-size: 0.9em;
+  background: var(--color-neutral-200); padding: 1px 4px; }
+
+/* — code block — */
+.code-sec { padding: calc(2.5 * var(--leading)) 0 calc(3 * var(--leading)); }
+.code-head { display: flex; align-items: baseline; gap: var(--leading); flex-wrap: wrap;
+  margin-bottom: var(--leading); }
+.tabs { display: flex; gap: 0; margin-left: auto; }
+.tabs button { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  border: 2px solid var(--color-divider); border-right-width: 0; padding: 8px 16px 7px; cursor: pointer; }
+.tabs button:last-child { border-right-width: 2px; }
+.tabs button[aria-selected="true"] { background: var(--color-text); color: var(--color-bg); border-color: var(--color-text); }
+.tabs button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+pre.code { margin: 0; border: 2px solid var(--color-divider); background: var(--color-neutral-100);
+  padding: var(--leading) clamp(16px, 2.5vw, 32px); overflow-x: auto;
+  font-family: var(--mono); font-size: 13.5px; line-height: 22px; }
+pre.code .c { color: color-mix(in srgb, var(--color-text) 62%, transparent); }
+pre.code .k { color: var(--color-accent-700); }
+pre.code .s { color: color-mix(in srgb, var(--color-text) 88%, transparent); }
+pre.code[hidden] { display: none; }
+
+/* — pricing note — */
+.pricing { padding: calc(2 * var(--leading)) 0 calc(2.5 * var(--leading)); }
+.pricing .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0; border: 2px solid var(--color-divider); }
+.pricing .cell { padding: calc(1.25 * var(--leading)) clamp(20px, 2.4vw, 32px); }
+.pricing .cell + .cell { border-left: 2px solid var(--color-divider); }
+@media (max-width: 760px) { .pricing .cell + .cell { border-left: 0; border-top: 2px solid var(--color-divider); } }
+.pricing .cell h3 { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 20px; line-height: var(--leading); margin: 0; text-box: trim-both cap alphabetic; }
+.pricing .cell p { font-size: 15px; line-height: var(--leading);
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  margin: var(--half) 0 0; text-box: trim-both cap alphabetic; }
+.pricing .cell .free { color: var(--color-accent); }
+
+/* — the red poster close — */
+.close { background: var(--color-accent); color: var(--color-bg); }
+.close .wrap { padding-top: calc(3 * var(--leading)); padding-bottom: calc(3 * var(--leading)); }
+.close h3 { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: clamp(34px, 4.2vw, 56px); line-height: clamp(36px, 4.45vw, 59.4px);
+  letter-spacing: -0.015em; margin: 0; margin-left: -0.058em;
+  text-box: trim-both cap alphabetic; }
+.close h3 .line { display: block; }
+.close p { font-size: 16px; line-height: var(--leading); max-width: 52ch;
+  margin: calc(1.5 * var(--leading) - 1cap) 0 0; text-box: trim-both cap alphabetic; }
+.close .row { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-top: calc(1.5 * var(--leading)); }
+.close .btn-ghost { color: var(--color-bg); border-color: var(--color-bg); }
+.close .btn-ghost:hover { background: color-mix(in srgb, var(--color-bg) 16%, transparent); }
+
+footer { padding: calc(2 * var(--leading)) 0; font-size: 13px; line-height: var(--leading);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+footer .cols { display: flex; flex-wrap: wrap; gap: var(--half) clamp(24px, 4vw, 56px); }
+footer nav { display: flex; flex-wrap: wrap; gap: var(--half) clamp(16px, 2.5vw, 32px); }
+footer .meta { margin-left: auto; }
+
+/* — links — */
+a { color: var(--color-accent-700); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--color-accent-700) 40%, transparent); }
+a:hover { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+.nav a, .close a, footer nav a { border-bottom: 0; }
+.nav a { color: var(--color-text); }
+.nav a:hover { color: var(--color-accent); }
+footer nav a { color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+footer nav a:hover { color: var(--color-accent); }
+
+/* ————— the console overlay: sign in → tenant → token ————— */
+.sheet-backdrop { position: fixed; inset: 0; z-index: 90;
+  background: color-mix(in srgb, var(--color-text) 72%, transparent);
+  display: grid; place-items: start center; padding: clamp(16px, 5vh, 72px) 16px;
+  overflow-y: auto; opacity: 0; pointer-events: none; transition: opacity 240ms ease; }
+.sheet-backdrop[data-open] { opacity: 1; pointer-events: auto; }
+.sheet { width: min(720px, 100%); background: var(--color-bg); border: 2px solid var(--color-text);
+  transform: translateY(var(--leading)); transition: transform 320ms cubic-bezier(.16,1,.3,1); }
+.sheet-backdrop[data-open] .sheet { transform: none; }
+.sheet-bar { display: flex; align-items: center; gap: 12px;
+  border-bottom: 2px solid var(--color-divider); padding: 14px clamp(20px, 3vw, 32px); }
+.sheet-bar .step-tag { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--color-bg); background: var(--color-text); padding: 3px 7px 2px; }
+.sheet-bar h2 { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 15px; line-height: var(--leading); letter-spacing: 0.01em; margin: 0; }
+.sheet-bar .x { margin-left: auto; }
+.sheet-body { padding: calc(1.25 * var(--leading)) clamp(20px, 3vw, 32px) calc(1.5 * var(--leading)); }
+.sheet-body > p { font-size: 15.5px; line-height: var(--leading); margin: 0 0 var(--leading);
+  max-width: 56ch; color: color-mix(in srgb, var(--color-text) 82%, transparent); }
+.sheet-body .kicker { margin-bottom: var(--half); }
+.pane[hidden] { display: none; }
+
+/* progress rail across the three steps */
+.rail { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+  border-bottom: 2px solid var(--color-divider); }
+.rail div { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 9px clamp(20px, 3vw, 32px) 8px; color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  position: relative; }
+.rail div + div { border-left: 2px solid var(--color-divider); }
+.rail div::after { content: ""; position: absolute; left: 0; right: 0; bottom: -2px; height: 2px;
+  background: var(--color-accent); transform: scaleX(0); transform-origin: left;
+  transition: transform 420ms cubic-bezier(.16,1,.3,1); }
+.rail div[data-done]::after { transform: scaleX(1); }
+.rail div[data-done] { color: var(--color-text); }
+
+/* choice cards — flat, ruled, no radius */
+.choices { display: grid; gap: 0; border: 2px solid var(--color-divider); margin-bottom: var(--leading); }
+.choice { display: grid; grid-template-columns: 22px 1fr; gap: 14px; align-items: start;
+  padding: calc(0.9 * var(--leading)) clamp(16px, 2.4vw, 24px); cursor: pointer; }
+.choice + .choice { border-top: 2px solid var(--color-divider); }
+.choice:hover { background: var(--color-accent-100); }
+.choice input { position: absolute; opacity: 0; pointer-events: none; }
+.choice .box { width: 18px; height: 18px; border: 2px solid var(--color-text); margin-top: 4px; }
+.choice input:checked + .box { background: var(--color-accent); border-color: var(--color-accent); box-shadow: inset 0 0 0 3px var(--color-bg); }
+.choice input:focus-visible + .box { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.choice strong { display: block; font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 16px; line-height: var(--leading); }
+.choice span.d { display: block; font-size: 14px; line-height: 21px; margin-top: 2px;
+  color: color-mix(in srgb, var(--color-text) 74%, transparent); }
+.choice .scope { font-family: var(--mono); font-size: 12px; }
+
+/* identity strip */
+.who { display: flex; align-items: center; gap: 12px; border: 2px solid var(--color-divider);
+  padding: 12px 16px; margin-bottom: var(--leading); }
+.who .av { width: 34px; height: 34px; background: var(--color-text); color: var(--color-bg);
+  display: grid; place-items: center; font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight); font-size: 14px; flex: none; }
+.who b { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 15px; display: block; line-height: 20px; }
+.who small { font-size: 13px; color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.who .btn { margin-left: auto; }
+
+/* token table */
+table.tokens { width: 100%; border-collapse: collapse; margin-bottom: var(--half); font-size: 14px; }
+table.tokens th { text-align: left; font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; padding: 0 12px 8px 0;
+  border-bottom: 2px solid var(--color-text); color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+table.tokens td { padding: 11px 12px 10px 0; border-bottom: 2px solid var(--color-divider); vertical-align: middle; }
+table.tokens td:last-child, table.tokens th:last-child { text-align: right; padding-right: 0; }
+table.tokens .mask { font-family: var(--mono); font-size: 13px; letter-spacing: 0.02em; }
+table.tokens .revoke { background: transparent; border: 0; padding: 0; cursor: pointer;
+  font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-accent-700); }
+table.tokens .revoke:hover { color: var(--color-accent); }
+table.tokens .revoke:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.quota { display: flex; align-items: center; gap: 12px; font-size: 13px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); margin: 0 0 var(--leading); }
+.quota .bar { flex: 1; height: 6px; background: var(--color-neutral-300); max-width: 200px; }
+.quota .bar i { display: block; height: 100%; background: var(--color-accent);
+  width: 0; transition: width 700ms cubic-bezier(.16,1,.3,1); }
+
+.mint-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end;
+  margin-bottom: var(--half); }
+@media (max-width: 560px) { .mint-row { grid-template-columns: 1fr; } }
+.field label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* the token reveal */
+.reveal { border: 2px solid var(--color-accent); margin-bottom: var(--leading); }
+.reveal .warnbar { background: var(--color-accent); color: var(--color-bg);
+  font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 7px 16px 6px; display: flex; align-items: center; gap: 8px; }
+.reveal .val { display: flex; align-items: center; gap: 12px; padding: 16px;
+  font-family: var(--mono); font-size: 14px; word-break: break-all; }
+.reveal .val code { flex: 1; }
+.reveal .val .btn { flex: none; }
+.snips { border: 2px solid var(--color-divider); margin-bottom: var(--leading); }
+.snips .snip-tabs { display: flex; border-bottom: 2px solid var(--color-divider); }
+.snips .snip-tabs button { flex: 1; background: transparent; border: 0; cursor: pointer;
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; padding: 9px 8px 8px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.snips .snip-tabs button + button { border-left: 2px solid var(--color-divider); }
+.snips .snip-tabs button[aria-selected="true"] { background: var(--color-text); color: var(--color-bg); }
+.snips .snip-tabs button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.snips pre { margin: 0; padding: 16px; overflow-x: auto; font-family: var(--mono);
+  font-size: 13px; line-height: 21px; background: var(--color-neutral-100); }
+.snips pre[hidden] { display: none; }
+.nudge { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 21px;
+  color: var(--color-accent-700); margin: 0 0 var(--leading); }
+.nudge .sq { width: 10px; height: 10px; background: var(--color-accent); flex: none; margin-top: 6px; }
+.sheet-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
+.copied { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-accent);
+  opacity: 0; transition: opacity 200ms ease; }
+.copied[data-on] { opacity: 1; }
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; }
+  .loom { order: -1; }
+}@media (max-width: 880px) {
+  .row-item { grid-template-columns: 1fr; gap: var(--half); }
+  .r-copy { max-width: var(--measure); }
+  .prose .grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .hero { padding-top: calc(2 * var(--leading)); }
+  .stats .grid { grid-template-columns: repeat(2, 1fr); justify-content: start; }
+}
+
+/* token vault */
+.vault { border: 2px solid var(--color-divider); margin-bottom: var(--half); }
+.vault-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-bottom: 2px solid var(--color-divider); }
+.vault-bar .lock { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px 2px; background: var(--color-text); color: var(--color-bg); flex: none; }
+.vault-bar .lock[data-open] { background: var(--color-accent); }
+.vault-bar .vault-note { font-size: 12px; line-height: 18px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.vault-bar .btn { margin-left: auto; flex: none; }
+.vault table.tokens { margin: 0; }
+.vault table.tokens th:first-child, .vault table.tokens td:first-child { padding-left: 14px; }
+.vault table.tokens th:last-child, .vault table.tokens td:last-child { padding-right: 14px; }
+.vault table.tokens tr:last-child td { border-bottom: 0; }
+.vault .empty { font-size: 14px; line-height: 21px; padding: 16px 14px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.src { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  border: 2px solid var(--color-divider); padding: 2px 5px 1px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.rowact { display: flex; gap: 14px; justify-content: flex-end; }
+.rowact button { background: transparent; border: 0; padding: 0; cursor: pointer;
+  font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+.rowact .use { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  color: var(--color-accent-700); }
+.rowact .use:hover { color: var(--color-accent); }
+.rowact .rm { color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.rowact .rm:hover { color: var(--color-accent); }
+.rowact button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.seg-add { display: flex; margin-bottom: var(--half); }
+.seg-add button { flex: 1; background: transparent; border: 2px solid var(--color-divider);
+  border-right-width: 0; padding: 8px 6px 7px; cursor: pointer;
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.seg-add button:last-child { border-right-width: 2px; }
+.seg-add button[aria-pressed="true"] { background: var(--color-text); color: var(--color-bg); border-color: var(--color-text); }
+.seg-add button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.paste-grid { display: grid; gap: 12px; margin-bottom: var(--half); }
+.fineprint { font-size: 13px; line-height: 21px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); margin: 0; }
+
+/* ————— instance info dialog: what GET /v1/config publishes ————— */
+.info-sec + .info-sec { border-top: 2px solid var(--color-divider); }
+.info-sec { padding: calc(1.1 * var(--leading)) clamp(20px, 3vw, 32px); }
+.info-sec > .kicker { margin-bottom: var(--half); }
+.kvline { display: flex; flex-wrap: wrap; gap: 6px clamp(20px, 3vw, 36px); font-size: 14px; line-height: 22px; }
+.kvline span { color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+.kvline b { font-family: var(--mono); font-size: 13px; font-weight: 400; color: var(--color-text); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; line-height: 18px;
+  border: 2px solid var(--color-divider); padding: 5px 9px 4px; font-family: var(--mono); }
+.chip::before { content: ""; width: 8px; height: 8px; flex: none;
+  background: color-mix(in srgb, var(--color-text) 22%, transparent); }
+.chip[data-on]::before { background: var(--color-accent); }
+.chip[data-on] { border-color: var(--color-text); }
+.chip .off { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+table.models { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.models th { text-align: left; font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 0 12px 7px 0;
+  border-bottom: 2px solid var(--color-text);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+table.models td { padding: 8px 12px 7px 0; border-bottom: 2px solid var(--color-divider);
+  font-family: var(--mono); }
+table.models tr:last-child td { border-bottom: 0; }
+table.models td.tiers, table.models td.state { font-family: var(--font-body); font-size: 11px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+table.models td.state b { color: var(--color-accent); font-weight: 400; }
+table.models tr[data-dim] td { color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.info-empty { font-size: 14px; line-height: 22px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); margin: 0; }
+
+/* ————— tweaks panel: flat, ruled, no radius. Toggle with the tab or T. ————— */
+#tweaks { position: fixed; right: 0; bottom: 0; z-index: 80;
+  font-family: var(--font-body); display: flex; flex-direction: column-reverse; align-items: flex-end;
+  max-height: calc(100vh - 24px); }
+#tweaks .tab { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  background: var(--color-text); color: var(--color-bg); border: 0;
+  padding: 9px 14px 8px; cursor: pointer; }
+#tweaks .tab:hover { background: var(--color-accent); }
+#tweaks .tab:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -4px; }
+#tweaks .body { width: 288px; background: var(--color-bg);
+  border: 2px solid var(--color-text); border-bottom: 0; padding: 0; display: none;
+  max-height: calc(100vh - 24px - 29px); overflow-y: auto; }
+#tweaks[data-open] .body { display: block; }
+#tweaks .grp { padding: 14px 16px; }
+#tweaks .grp + .grp { border-top: 2px solid var(--color-divider); }
+#tweaks .lab { display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); margin-bottom: 9px; }
+#tweaks .lab b { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+  color: var(--color-text); font-weight: 400; }
+#tweaks .segz { display: flex; }
+#tweaks .segz button { flex: 1; background: transparent; border: 2px solid var(--color-divider);
+  border-right-width: 0; padding: 7px 4px 6px; cursor: pointer; font-size: 11px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+#tweaks .segz button:last-child { border-right-width: 2px; }
+#tweaks .segz button[aria-pressed="true"] { background: var(--color-text); color: var(--color-bg); border-color: var(--color-text); }
+#tweaks .segz button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+#tweaks .swz { display: flex; gap: 8px; }
+#tweaks .swz button { width: 34px; height: 34px; border: 2px solid var(--color-divider); cursor: pointer; padding: 0; }
+#tweaks .swz button[aria-pressed="true"] { border-color: var(--color-text); box-shadow: inset 0 0 0 2px var(--color-bg); }
+#tweaks .swz button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+#tweaks input[type="range"] { width: 100%; accent-color: var(--color-accent); margin: 0; }
+@media print { #tweaks { display: none; } }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <span class="brand-lock">
+    <img src="assets/loomcycle-logo.svg" alt="loomcycle" />
+    <button type="button" class="cloud" data-open-info aria-haspopup="dialog">
+      <span class="w">Cloud</span>
+      <span class="i">Info</span>
+    </button>
+    <span class="nav-status" id="nav-status" data-state="static" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="nav-st-label">loomcycle</span>
+      <b data-live-version>v1.23.1</b>
+    </span>
+  </span>
+  <a href="#what">What it is</a>
+  <a href="#how">How it works</a>
+  <a href="#trust">Isolation</a>
+  <a href="#plugin">Claude Plugin</a>
+  <a href="#quickstart">Quickstart</a>
+  <button type="button" class="btn btn-primary" data-open-console>Sign in</button>
+</nav>
+
+<div class="wrap">
+
+  <section class="hero">
+    <div>
+      <h1 class="display rise">
+        <span class="line">The runtime is already running.</span>
+        <span class="line">Take a token.</span>
+      </h1>
+      <p class="sub rise">loomcycle.cloud is the fastest path to a live agentic runtime: sign in with Google, mint a named tenant token, point <code class="inline-code">@loomcycle/client</code> at <code class="inline-code">app.loomcycle.cloud</code>. No VPS, no compose file, no <code class="inline-code">brew install</code>. The same Go binary you would self-host — Apache-2.0, unchanged.</p>
+      <div class="row rise">
+        <button type="button" class="btn btn-primary g-btn" data-open-console>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.07 5.07 0 0 1-2.2 3.32v2.76h3.57c2.08-1.92 3.27-4.74 3.27-8.09Z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.76c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23Z"/><path fill="currentColor" d="M5.84 14.11a6.6 6.6 0 0 1 0-4.22V7.05H2.18a11 11 0 0 0 0 9.9l3.66-2.84Z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.05l3.66 2.84C6.71 7.29 9.14 5.38 12 5.38Z"/></svg>
+          Sign in with Google
+        </button>
+        <a class="btn btn-ghost" href="#how">See the three steps</a>
+      </div>
+      <p class="fine rise">Free while in preview · Bring your own provider key · <span data-live-version>v1.23.1</span></p>
+    </div>
+
+    <figure class="loom rise" id="loom">
+      <video src="assets/hero-loom.mp4" muted playsinline preload="auto" data-live
+        aria-label="The loomcycle mascots working a wooden loom"></video>
+      <video src="assets/loom-02.mp4" muted playsinline preload="auto" aria-hidden="true"></video>
+      <video src="assets/loom-03.mp4" muted playsinline preload="auto" aria-hidden="true"></video>
+      <div class="chrome">
+        <figcaption>The loom, running</figcaption>
+        <span class="ticks" aria-hidden="true"><i data-on></i><i></i><i></i></span>
+      </div>    </figure>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="stats" aria-label="loomcycle, by the numbers">
+    <div class="statusbar rise" id="statusbar" data-state="static"
+      data-health-url="/healthz" aria-live="polite">
+      <span class="st"><span class="dot" aria-hidden="true"></span><span id="st-label">loomcycle</span></span>
+      <span class="kv">Version <b id="st-version">v1.23.1</b></span>
+      <span class="kv" data-optional hidden>Commit <b id="st-commit">—</b></span>
+      <span class="kv" data-optional hidden>Uptime <b id="st-uptime">—</b></span>
+      <span class="kv" data-optional hidden>Replicas <b id="st-replicas">—</b></span>
+    </div>
+    <div class="grid">
+      <div class="rise"><p class="stat-num" data-count="1.27" data-suffix="M" data-dec="2">0M</p><p class="stat-label">Circuits, 8-hour soak</p></div>
+      <div class="rise"><p class="stat-num" data-count="3.8" data-suffix="M" data-dec="1">0M</p><p class="stat-label">Agent runs completed</p></div>
+      <div class="rise"><p class="stat-num" data-count="468" data-suffix="" data-dec="0">0</p><p class="stat-label">Waves at 100% completion</p></div>
+      <div class="rise"><p class="stat-num" data-count="0" data-suffix="" data-dec="0">0</p><p class="stat-label">Goroutine or memory leaks</p></div>
+    </div>
+  </section>
+
+  <hr class="rule2" />
+
+  <hr class="rule2" />
+
+  <section class="band" aria-label="The loomcycle agents">
+    <span class="kicker rise">The cast</span>
+    <div class="grid rise">
+      <div class="cell" tabindex="0">
+        <video src="assets/mascot-red.mp4" muted loop playsinline preload="none" aria-hidden="true"></video>
+        <span class="cap">Loop</span>
+        <div class="prim">
+          <h3>The agent loop</h3>
+          <span class="tools">model → tool_use → tool_result</span>
+          <p>The hardened cycle the whole runtime exists to run. Seven inference modes behind tier-based routing with a fallback cascade, per-agent sampling, and context compaction at a clean turn boundary. Pause, resume, snapshot — including cross-instance resume of a parked mid-run. A run survives the client disconnecting and is re-attachable by <code>run_id</code>, replaying from any sequence number.</p>
+        </div>
+      </div>
+      <div class="cell" tabindex="0">
+        <video src="assets/mascot-blue.mp4" muted loop playsinline preload="none" aria-hidden="true"></video>
+        <span class="cap">Memory</span>
+        <div class="prim">
+          <h3>Memory, in three facets</h3>
+          <span class="tools">Memory · sql_query · $embed</span>
+          <p>Key/value; vector search over sqlite-vec or pgvector on a pluggable MemoryBackend; and per-scope SQL — real tables, joins and aggregates in a database the runtime owns, isolated from the main store. Default-deny capability gate, statement timeouts, byte quotas, nested transactions, and a full audit trail on every statement.</p>
+        </div>
+      </div>
+      <div class="cell" tabindex="0">
+        <video src="assets/mascot-green.mp4" muted loop playsinline preload="none" aria-hidden="true"></video>
+        <span class="cap">Tools</span>
+        <div class="prim">
+          <h3>Nineteen built-in tools</h3>
+          <span class="tools">Read Write Edit Grep Glob · Bash Bashbox · HTTP WebFetch WebSearch</span>
+          <p>Claude Code parity on the file tools, plus a true in-process shell sandbox — Bashbox runs commands with no OS process and no network, and honours read-only volumes through a RAM write overlay. Filesystem access exists only through a bound Volume: sandbox by default. MCP servers ingest as tools on one side; loomcycle serves as an MCP server on the other.</p>
+        </div>
+      </div>
+      <div class="cell" tabindex="0">
+        <video src="assets/mascot-yellow.mp4" muted loop playsinline preload="none" aria-hidden="true"></video>
+        <span class="cap">Substrate</span>
+        <div class="prim">
+          <h3>The runtime-mutable substrate</h3>
+          <span class="tools">Agent Skill MCPServer Schedule Webhook MemoryBackend Volume A2A Team</span>
+          <p>Nine content-addressed, tenant-scoped, versioned definition families, authored at runtime from any transport — no redeploy, no config reload. Fork, promote and retire each one; <code>content_sha256</code> is the authority, not a name. Your tenant token authors all of it without ever holding cross-tenant admin.</p>
+        </div>
+      </div>
+      <div class="cell" tabindex="0">
+        <video src="assets/mascot-baby-blue.mp4" muted loop playsinline preload="none" aria-hidden="true"></video>
+        <span class="cap">Teams</span>
+        <div class="prim">
+          <h3>Agent teams &amp; task workflows</h3>
+          <span class="tools">TeamDef · success / pushback / conditional</span>
+          <p>A team is an author-defined state machine: states, transitions, and a per-state handler that is one agent, a parallel fan-out with a consolidator, or a terminal. Loops are bounded by a per-state iteration cap. It renders as a Mermaid state diagram, walks end to end through the sub-agent machinery, and reports progress on a Document task board a human can steer.</p>
+        </div>
+      </div>
+    </div>
+    <p class="note rise">Five primitives, one loop. The runtime is not a wrapper around a model — it is the thing that keeps thousands of agents running 24/7.</p>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="prose" id="what">
+    <div class="grid">
+      <div class="rise">
+        <span class="kicker">What loomcycle is</span>
+        <h2>The agentic runtime, in a sidecar</h2>
+      </div>
+      <div class="rise">
+        <p>One Go binary, ~50 MB. It runs <em>alongside</em> your application, not inside it — your app calls it over HTTP, gRPC, MCP, or the TypeScript and Python adapters, and stays in whatever language you wrote it in.</p>
+        <p>The hardened <code class="inline-code">model → tool_use → tool_result</code> loop, multi-provider routing, memory and channel primitives, MCP server identity, OpenTelemetry traces and multi-replica coordination all live in the binary.</p>
+        <p class="dim">The market gives you three shapes: a library embedded in your process, a managed service welded to one vendor's IAM, or a gateway that proxies model calls without running agents. loomcycle is the fourth — a self-hostable runtime that owns the loop and speaks every wire format your stack already uses. <strong>Cloud is that binary, hosted, so you can start in a minute instead of an afternoon.</strong></p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="rows">
+    <span class="kicker rise">What a tenant gets</span>
+    <div class="row-item rise">
+      <p class="r-num">01</p>
+      <h2 class="r-title">Seven inference modes</h2>
+      <p class="r-copy">Anthropic, OpenAI, DeepSeek, Gemini, Ollama (cloud + local), the synthetic <code>code-js</code> provider and a mock. Tier-based routing with a fallback cascade, model aliases, and a live routing view showing what actually serves you now. More providers land as they clear testing — the catalog is config-declared, so adding one is an option you set, not a release you wait for.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">02</p>
+      <h2 class="r-title">Nineteen built-in tools</h2>
+      <p class="r-copy">Claude Code parity — Read, Write, Edit, Grep, Glob, NotebookEdit — plus HTTP, WebFetch, WebSearch, Bash, Bashbox, Agent, Skill, Memory, Channel, Path, Document and Context. Filesystem access only through a bound Volume; sandbox by default.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">03</p>
+      <h2 class="r-title">A runtime-mutable substrate</h2>
+      <p class="r-copy">Agent, Skill, MCPServer, Schedule, Webhook, MemoryBackend, Volume, A2A and Team defs — content-addressed and versioned, authored at runtime from any transport. Your tenant token authors all of it without ever holding cross-tenant admin.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">04</p>
+      <h2 class="r-title">Memory in three facets</h2>
+      <p class="r-copy">Key/value, vector (sqlite-vec / pgvector) on a pluggable MemoryBackend, and per-scope SQL — real tables, joins and aggregates behind a default-deny capability gate, statement timeouts, byte quotas and a full audit trail.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">05</p>
+      <h2 class="r-title">MCP on both sides</h2>
+      <p class="r-copy">Ingest MCP servers as tools, and serve loomcycle itself as an MCP server on a per-principal transport — your <code>substrate:tenant</code> token drives a fully tenant-confined session, so an MCP agent's documents land where your Web UI reads them.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">06</p>
+      <h2 class="r-title">Budgets, usage and cost attribution</h2>
+      <p class="r-copy">A per-call token ledger tagged with which key paid, a grouped usage report, and soft/hard monthly token limits per tenant and per user. A hard limit refuses new runs at admission; an in-flight run warns and finishes.</p>
+    </div>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="rows" id="how">
+    <span class="kicker rise">How it works</span>
+    <div class="row-item rise">
+      <p class="r-num">Step 01</p>
+      <h2 class="r-title">Sign in with Google</h2>
+      <p class="r-copy">OAuth on loomcycle.cloud, served from Cloudflare. Your Google subject becomes the authoritative principal — no password, no separate account. First sign-in provisions your tenant.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">Step 02</p>
+      <h2 class="r-title">Get a token — yours or your group's</h2>
+      <p class="r-copy">Mint a bearer bound to <code>(tenant, subject, scopes)</code> through the OperatorTokenDef substrate, with the admin token held server-side — or add a token a colleague minted for their tenant and sent you, which puts you in the same documents, memory and Path tree. Either way it is shown once and wrapped into a vault in <em>your</em> browser: AES-256-GCM under a non-extractable key in IndexedDB. No <code>.env</code> file to leave lying around.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">Step 03</p>
+      <h2 class="r-title">Pick a token and sign in</h2>
+      <p class="r-copy">Pick a token by name and sign in. The bearer is handed to the app over an origin-pinned <code>postMessage</code> — never a <code>?token=</code> query string, so it stays out of browser history, out of the <code>Referer</code> header, and out of every Cloudflare and nginx access log. The runtime itself sits behind a reverse proxy on its own VPS.</p>
+    </div>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="rows" id="trust">
+    <span class="kicker rise">Isolation</span>
+    <div class="row-item rise">
+      <p class="r-num">01</p>
+      <h2 class="r-title">Your credentials, encrypted per tenant</h2>
+      <p class="r-copy">Provider keys live in a CredentialDef store: AES-256-GCM with a per-tenant HKDF-derived key, row-bound AAD, fail-closed, metadata-only reads. Bring your own Anthropic or OpenAI key and it is your key that pays and your bill that arrives.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">02</p>
+      <h2 class="r-title">Cross-tenant reads are an opaque 404</h2>
+      <p class="r-copy">Every store read goes through a central tenant-scoping accessor. Writes stamp the authoritative tenant resolved from your bearer, never from the wire. Tokens minted for you carry <code>substrate:tenant</code> — full power inside your tenant, none outside it.</p>
+    </div>
+    <div class="row-item rise">
+      <p class="r-num">03</p>
+      <h2 class="r-title">Secrets never reach the model</h2>
+      <p class="r-copy">The <code>redact</code> context-transform plugin scrubs resolved secrets on the outbound path, and host-command credentials are injected into the child process only — model-invisible. Dial-time SSRF guards apply to every HTTP, WebFetch and MCP call.</p>
+    </div>
+  </section>
+
+  <hr class="rule2" />
+
+  <hr class="rule2" />
+
+  <section class="code-sec" id="plugin">
+    <div class="code-head">
+      <div class="rise">
+        <span class="kicker">Claude Code</span>
+        <h2 class="r-title" style="font-size:26px">Drive your cloud tenant from the IDE</h2>
+      </div>
+      <div class="tabs rise" role="tablist" aria-label="Claude Code setup">
+        <button type="button" role="tab" aria-selected="true" data-snip="plugin">Plugin</button>
+        <button type="button" role="tab" aria-selected="false" data-snip="manual">Manual MCP</button>
+      </div>
+    </div>
+
+    <pre class="code rise" data-snippet="plugin"><span class="c"># in Claude Code</span>
+/plugin marketplace add denn-gubsky/claude-code-plugin-loomcycle
+/plugin install loomcycle</pre>
+
+    <pre class="code rise" data-snippet="manual" hidden><span class="c"># prints a `claude mcp add` line plus a JSON snippet to paste</span>
+loomcycle mcp install
+
+<span class="c"># thin-client form — proxies to your cloud tenant, boots no second runtime</span>
+loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
+
+    <div class="rows" style="padding-top:calc(1.5 * var(--leading));padding-bottom:0">
+      <div class="row-item rise">
+        <p class="r-num">01</p>
+        <h2 class="r-title">What the plugin adds</h2>
+        <p class="r-copy">Six slash commands — <code>/loomcycle:run</code>, <code>:runs</code>, <code>:cancel</code>, <code>:snapshot</code>, <code>:eval</code>, <code>:connect</code>. Four skills: spawn-evaluator, replay-failed-run, diff-agentdefs, import-claude-code. Two opt-in hooks: run telemetry and auto-snapshot-on-error, both off by default.</p>
+      </div>
+      <div class="row-item rise">
+        <p class="r-num">02</p>
+        <h2 class="r-title">Authorization</h2>
+        <p class="r-copy">Install prompts you for the base URL and the bearer, and stores the token in your <strong>OS keychain</strong> — the same posture as the browser vault, one layer down. Point the base URL at <code>https://app.loomcycle.cloud</code> and paste a token from your vault; the MCP session then runs as your <code>(tenant, subject)</code>, so documents and memory an agent writes from the IDE land where your Web UI reads them.</p>
+      </div>
+      <div class="row-item rise">
+        <p class="r-num">03</p>
+        <h2 class="r-title">One runtime, not two</h2>
+        <p class="r-copy">A <code>substrate:tenant</code> token drives a fully tenant-confined MCP session: the admin-only meta-tools — minting, runtime admin, snapshots — are withheld per-tool. Against a cloud tenant always use the thin-client form, <code>--upstream</code>, so the MCP server proxies your running instance instead of booting a second one; that is also what makes <code>cancel_run</code> and <code>interruption_resolve</code> work across the connection.</p>
+      </div>
+    </div>
+
+    <p class="fineprint rise" style="margin-top:var(--leading)">The plugin does not bundle or start a runtime — with loomcycle.cloud you do not need one locally. Source and issues: <a href="https://github.com/denn-gubsky/claude-code-plugin-loomcycle">denn-gubsky/claude-code-plugin-loomcycle</a>.</p>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="code-sec" id="quickstart">
+    <div class="code-head">
+      <div class="rise">
+        <span class="kicker">Quickstart</span>
+        <h2 class="r-title" style="font-size:26px">Two minutes from token to first run</h2>
+      </div>
+      <div class="tabs rise" role="tablist" aria-label="Quickstart language">
+        <button type="button" role="tab" aria-selected="true" data-snip="ts">TypeScript</button>
+        <button type="button" role="tab" aria-selected="false" data-snip="curl">curl</button>
+      </div>
+    </div>
+    <pre class="code rise" data-snippet="ts"><span class="c">// npm i @loomcycle/client</span>
+<span class="k">import</span> { LoomcycleClient } <span class="k">from</span> <span class="s">"@loomcycle/client"</span>;
+
+<span class="k">const</span> lc = <span class="k">new</span> LoomcycleClient({
+  baseUrl: <span class="s">"https://app.loomcycle.cloud"</span>,
+  token: process.env.LOOMCYCLE_AUTH_TOKEN!,   <span class="c">// the token you just minted</span>
+});
+
+<span class="k">for await</span> (<span class="k">const</span> ev <span class="k">of</span> lc.runStreaming({
+  agent: <span class="s">"chat/medium"</span>,
+  prompt: <span class="s">"Read ./CHANGELOG.md and summarise the last release."</span>,
+})) console.log(ev.type, ev);</pre>
+    <pre class="code rise" data-snippet="curl" hidden><span class="c"># the token is a bearer — never put it in a URL</span>
+<span class="k">export</span> LOOMCYCLE_AUTH_TOKEN=lc_...
+
+curl -N https://app.loomcycle.cloud/v1/runs \
+  -H <span class="s">"Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"agent":"chat/medium","prompt":"Summarise the last release."}'</span>
+
+<span class="c"># or point Claude Code / any MCP client at the per-tenant transport</span>
+loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="pricing">
+    <span class="kicker rise">Cost</span>
+    <div class="grid rise">
+      <div class="cell">
+        <h3 class="free">Free while in preview</h3>
+        <p>No card. Open signup. A monthly token budget per tenant, enforced by the runtime's own limit primitive — you see the counter, we do not surprise you.</p>
+      </div>
+      <div class="cell">
+        <h3>Your keys, your bill</h3>
+        <p>Bring your own Anthropic, OpenAI, DeepSeek or Gemini key. It is stored encrypted per tenant and used only for your requests. Inference cost never routes through us.</p>
+      </div>
+      <div class="cell">
+        <h3>Paid tiers — reserved</h3>
+        <p>Not priced yet. When they land they will be about capacity and support, not about unlocking primitives: the runtime is Apache-2.0 and stays whole.</p>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<section class="close" id="start">
+  <div class="wrap">
+    <h3><span class="line">Sign in. Take a token.</span> <span class="line">Run an agent.</span></h3>
+    <p>Google OAuth, one named token, and <code>app.loomcycle.cloud</code> is yours. Self-hosting stays a <code>brew install</code> away — nothing here is a lock-in.</p>
+    <div class="row">
+      <button type="button" class="btn btn-ghost g-btn" data-open-console>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.07 5.07 0 0 1-2.2 3.32v2.76h3.57c2.08-1.92 3.27-4.74 3.27-8.09Z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.76c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23Z"/><path fill="currentColor" d="M5.84 14.11a6.6 6.6 0 0 1 0-4.22V7.05H2.18a11 11 0 0 0 0 9.9l3.66-2.84Z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.05l3.66 2.84C6.71 7.29 9.14 5.38 12 5.38Z"/></svg>
+        Sign in with Google
+      </button>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+  <footer>
+    <div class="cols">
+      <nav aria-label="Footer">
+        <a href="https://loomcycle.dev">loomcycle.dev</a>
+        <a href="https://github.com/denn-gubsky/loomcycle">GitHub</a>
+        <a href="https://github.com/denn-gubsky/claude-code-plugin-loomcycle">Claude Code plugin</a>
+        <a href="https://github.com/denn-gubsky/loomcycle/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+        <a href="https://loomcycle.dev/blog/">Blog</a>
+        <a href="#">Terms</a>
+        <a href="#">Privacy</a>
+      </nav>
+      <span class="meta">loomcycle <span data-live-version>v1.23.1</span> · Apache-2.0 · runtime on app.loomcycle.cloud</span>
+    </div>
+  </footer>
+</div>
+
+<!-- ————— console overlay ————— -->
+<div class="sheet-backdrop" id="console" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+  <div class="sheet">
+    <div class="sheet-bar">
+      <span class="step-tag" id="step-tag">Step 01</span>
+      <h2 id="sheet-title">Sign in to loomcycle.cloud</h2>
+      <button type="button" class="btn btn-ghost btn-icon x" data-close-console aria-label="Close">✕</button>
+    </div>
+    <div class="rail" aria-hidden="true">
+      <div data-rail="1">Identify</div>
+      <div data-rail="2">Tenant &amp; token</div>
+      <div data-rail="3">Hand off</div>
+    </div>
+
+    <!-- pane 1 -->
+    <div class="pane" data-pane="1">
+      <div class="sheet-body">
+        <p>Google OAuth only. Your Google subject becomes the authoritative principal — the same identity your tokens are bound to, so a revoked account revokes its tokens.</p>
+        <div class="sheet-actions">
+          <button type="button" class="btn btn-primary g-btn" data-signin>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.07 5.07 0 0 1-2.2 3.32v2.76h3.57c2.08-1.92 3.27-4.74 3.27-8.09Z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.76c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23Z"/><path fill="currentColor" d="M5.84 14.11a6.6 6.6 0 0 1 0-4.22V7.05H2.18a11 11 0 0 0 0 9.9l3.66-2.84Z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.05l3.66 2.84C6.71 7.29 9.14 5.38 12 5.38Z"/></svg>
+            Continue with Google
+          </button>
+          <span style="font-size:13px;color:color-mix(in srgb, var(--color-text) 70%, transparent)">Google sign-in via Cloudflare Access</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- pane 2 -->
+    <div class="pane" data-pane="2" hidden>
+      <div class="sheet-body">
+        <div class="who">
+          <span class="av">DG</span>
+          <span><b>Denys Gubskyi</b><small>denys@waverleysoftware.com · tenant <code class="inline-code">t_denys</code></small></span>
+          <button type="button" class="btn btn-ghost" data-signout>Sign out</button>
+        </div>
+
+        <p style="font-size:15.5px;line-height:var(--leading);margin:0 0 var(--leading);max-width:56ch;color:color-mix(in srgb, var(--color-text) 82%, transparent)">Two ways in. Mint a token for <strong>your own tenant</strong> — an isolated store, your own substrate, your own encrypted provider keys. Or add a <strong>group token</strong> someone minted for their tenant and handed to you: it puts you in their documents, memory, Path tree and substrate, working on the same material.</p>
+
+        <div>
+          <span class="kicker">Your token vault — this browser only</span>
+          <div class="vault">
+            <div class="vault-bar">
+              <span class="lock" id="vault-lock-tag">Locked</span>
+              <span class="vault-note">AES-256-GCM. The wrapping key is generated <strong>non-extractable</strong> and kept in IndexedDB — usable on this origin, never readable by script, never sent anywhere.</span>
+              <button type="button" class="btn btn-ghost" data-vault-toggle>Unlock</button>
+            </div>
+            <table class="tokens">
+              <thead><tr><th>Name</th><th>Token</th><th>Tenant</th><th></th></tr></thead>
+              <tbody id="token-rows"></tbody>
+            </table>
+          </div>
+          <p class="quota"><span id="quota-text">0 of 5 tokens in use</span><span class="bar"><i id="quota-bar"></i></span></p>
+
+          <span class="kicker">Add a token</span>
+          <div class="seg-add" role="group" aria-label="How to add a token">
+            <button type="button" data-add-mode="mint" aria-pressed="true">Mint for my tenant</button>
+            <button type="button" data-add-mode="paste" aria-pressed="false">Add a group token</button>
+          </div>
+
+          <div data-addpane="mint">
+            <div class="mint-row">
+              <div class="field">
+                <label for="token-name">Name this token</label>
+                <input class="input" id="token-name" type="text" placeholder="e.g. laptop, ci-runner, staging-api" value="mac-studio" />
+              </div>
+              <button type="button" class="btn btn-primary" data-mint>Create token</button>
+            </div>
+            <p class="fineprint">Bound to your tenant and Google subject, scoped <code class="inline-code">substrate:tenant runs:create</code>, minted through the OperatorTokenDef substrate with the admin token held server-side. loomcycle stores a hash and the last four characters; the secret is returned once, wrapped straight into this vault, and shown to you on the next screen.</p>
+          </div>
+
+          <div data-addpane="paste" hidden>
+            <div class="paste-grid">
+              <div class="field">
+                <label for="paste-name">Name</label>
+                <input class="input" id="paste-name" type="text" placeholder="e.g. acme-research, platform-team" />
+              </div>
+              <div class="field">
+                <label for="paste-value">Token</label>
+                <input class="input" id="paste-value" type="password" autocomplete="off" spellcheck="false" placeholder="lc_…" />
+              </div>
+            </div>
+            <div class="sheet-actions" style="margin-bottom:var(--half)">
+              <button type="button" class="btn btn-primary" data-add>Add to vault</button>
+              <span class="fineprint" id="paste-err"></span>
+            </div>
+            <p class="fineprint">A token someone else minted for their tenant and sent you — signing in with it puts you in <em>their</em> tenant: shared documents, shared memory, shared Path tree, one budget. Whoever minted it can revoke it. It is wrapped locally and never sent to loomcycle.cloud.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- pane 3 -->
+    <div class="pane" data-pane="3" hidden>
+      <div class="sheet-body">
+        <div class="reveal">
+          <div class="warnbar"><span style="width:8px;height:8px;background:currentColor;display:block"></span> Shown once — copy it now</div>
+          <div class="val"><code id="token-value">lc_7Qv2xR8mKpL4dW9sT1nB6hJ3yF5aZcXu</code>
+            <button type="button" class="btn btn-primary" data-copy="#token-value">Copy</button>
+          </div>
+        </div>
+
+        <div class="snips">
+          <div class="snip-tabs" role="tablist" aria-label="Use the token">
+            <button type="button" role="tab" aria-selected="true" data-use="cli">CLI</button>
+            <button type="button" role="tab" aria-selected="false" data-use="ts">TypeScript</button>
+            <button type="button" role="tab" aria-selected="false" data-use="mcp">MCP</button>
+          </div>
+          <pre data-usepane="cli">loomcycle login \
+  --url https://app.loomcycle.cloud \
+  --token lc_7Qv2xR8mKpL4dW9sT1nB6hJ3yF5aZcXu</pre>
+          <pre data-usepane="ts" hidden>new LoomcycleClient({
+  baseUrl: "https://app.loomcycle.cloud",
+  token: "lc_7Qv2xR8mKpL4dW9sT1nB6hJ3yF5aZcXu",
+})</pre>
+          <pre data-usepane="mcp" hidden>loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp \
+  --token lc_7Qv2xR8mKpL4dW9sT1nB6hJ3yF5aZcXu</pre>
+        </div>
+
+        <p class="nudge"><span class="sq" aria-hidden="true"></span> <span>This is the last time the secret is displayed. It is already wrapped into your browser vault as <strong>mac-studio</strong> — copy it too if you want it in a password manager. In the vault it will read <code class="inline-code">lc_•••••••••••••Xu</code>.</span></p>
+
+        <div class="sheet-actions">
+          <button type="button" class="btn btn-primary" data-handoff>Sign in to app.loomcycle.cloud →</button>
+          <button type="button" class="btn btn-ghost" data-back-tokens>Back to the vault</button>
+          <span class="copied" id="copied-flag">Copied</span>
+        </div>
+        <p class="fineprint" style="margin-top:var(--half)">The bearer is handed to the app over <code class="inline-code">postMessage</code>, origin-pinned to <code class="inline-code">https://app.loomcycle.cloud</code> — it never appears in a URL, in browser history, or in a Cloudflare or nginx access log.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ————— instance info dialog ————— -->
+<div class="sheet-backdrop" id="infodlg" role="dialog" aria-modal="true" aria-labelledby="info-title" hidden>
+  <div class="sheet">
+    <div class="sheet-bar">
+      <span class="step-tag">Instance</span>
+      <h2 id="info-title">This loomcycle deployment</h2>
+      <button type="button" class="btn btn-ghost btn-icon x" data-close-info aria-label="Close">✕</button>
+    </div>
+    <div id="info-body">
+      <div class="info-sec"><p class="info-empty">Reading <code class="inline-code">/v1/config</code>…</p></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  /* — reveal on scroll: rules draw, blocks rise one unit — */
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      e.target.classList.add('in');
+      io.unobserve(e.target);
+      if (e.target.hasAttribute('data-count')) countUp(e.target);
+    }
+  }, { threshold: 0.18, rootMargin: '0px 0px -8% 0px' });
+
+  document.querySelectorAll('.rule2').forEach((n) => io.observe(n));
+  document.querySelectorAll('.rise').forEach((n, i) => {
+    n.style.transitionDelay = (i % 6) * 55 + 'ms';
+    io.observe(n);
+  });
+  document.querySelectorAll('[data-count]').forEach((n) => io.observe(n));
+  document.querySelector('.loom')?.classList.add('in');
+
+  /* — hero loom: three clips chained into one continuous take — */
+  (() => {
+    const clips = [...document.querySelectorAll('#loom video')];
+    const ticks = [...document.querySelectorAll('#loom .ticks i')];
+    if (!clips.length) return;
+    let i = 0;
+    const active = () => (window.__loomClipMode === 'one' ? clips.slice(0, 1) : clips);
+    const show = (n) => {
+      const set = active();
+      n = n % set.length;
+      clips.forEach((v, k) => {
+        const live = v === set[n];
+        v.toggleAttribute('data-live', live);
+        if (!live) { v.pause(); v.currentTime = 0; }
+      });
+      ticks.forEach((t, k) => {
+        t.hidden = k >= set.length;
+        t.toggleAttribute('data-on', k === n);
+      });
+      set[n].loop = set.length === 1;
+      set[n].play().catch(() => {});
+      if (set.length > 1) set[(n + 1) % set.length].load();
+    };
+    clips.forEach((v) => v.addEventListener('ended', () => { i += 1; show(i); }));
+    document.addEventListener('loom-clips', () => { i = 0; show(0); });
+    show(0);
+    /* pause the whole figure when it scrolls out of view */
+    new IntersectionObserver((es) => {
+      for (const e of es) {
+        const live = clips.find((v) => v.hasAttribute('data-live'));
+        if (!live) continue;
+        e.isIntersecting ? live.play().catch(() => {}) : live.pause();
+      }
+    }, { threshold: 0.15 }).observe(document.getElementById('loom'));
+  })();
+
+  /* — mascot band: only play what is on screen — */
+  const bandIO = new IntersectionObserver((es) => {
+    for (const e of es) {
+      const v = e.target;
+      if (e.isIntersecting) { v.preload = 'auto'; v.play().catch(() => {}); } else v.pause();
+    }
+  }, { threshold: 0.25 });
+  document.querySelectorAll('.band video').forEach((v) => bandIO.observe(v));
+
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function countUp(el) {
+    const target = parseFloat(el.dataset.count);
+    const dec = parseInt(el.dataset.dec, 10) || 0;
+    const suffix = el.dataset.suffix || '';
+    if (reduce || target === 0) { el.textContent = target.toFixed(dec) + suffix; return; }
+    const dur = 1100, t0 = performance.now();
+    const tick = (t) => {
+      const p = Math.min(1, (t - t0) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = (target * eased).toFixed(dec) + suffix;
+      if (p < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  /* — live runtime status: GET /healthz —
+     /healthz is the one unauthenticated route (explicitly exempt from the auth
+     middleware in internal/api/http/server.go) and returns
+     {ok, version, commit, built, uptime_seconds, metrics_enabled,
+      replica_id, replicas[]}.
+     loomcycle ships no CORS headers and no OPTIONS handler, so this must be
+     fetched SAME-ORIGIN: point data-health-url at a Cloudflare Worker route
+     that proxies https://app.loomcycle.cloud/healthz (and caches it ~30s).
+     Falls back to the static labels if the probe fails. */
+  (async () => {
+    const bar = document.getElementById('statusbar');
+    if (!bar) return;
+    const set = (id, v) => { const n = document.getElementById(id); if (n) n.textContent = v; };
+    const fail = () => {
+      /* an unreachable probe is not an outage — fall back to the static version
+         and drop the fields we have no truthful value for */
+      bar.dataset.state = 'static';
+      set('st-label', 'loomcycle');
+      set('st-version', 'v1.23.1');
+      bar.querySelectorAll('[data-optional]').forEach((n) => { n.hidden = true; });
+      const nav = document.getElementById('nav-status');
+      if (nav) nav.dataset.state = 'static';
+      set('nav-st-label', 'loomcycle');
+    };
+    const ok = () => { bar.querySelectorAll('[data-optional]').forEach((n) => { n.hidden = false; }); };
+    const dur = (s) => {
+      if (!s) return '—';
+      const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+      return d ? d + 'd ' + h + 'h' : h ? h + 'h ' + m + 'm' : m + 'm';
+    };
+    async function probe() {
+      const ctl = new AbortController();
+      const to = setTimeout(() => ctl.abort(), 4000);
+      try {
+        const r = await fetch(bar.dataset.healthUrl, { signal: ctl.signal, cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const h = await r.json();
+        if (!h.ok) { fail(); return; }
+        ok();
+        bar.dataset.state = 'ok';
+        set('st-label', 'Runtime healthy');
+        set('st-version', h.version || 'unknown');
+        set('st-commit', (h.commit || 'unknown').slice(0, 7));
+        set('st-uptime', dur(h.uptime_seconds));
+        set('st-replicas', h.replicas ? String(h.replicas.length) : '1');
+        const nav = document.getElementById('nav-status');
+        if (nav) { nav.dataset.state = 'ok'; }
+        set('nav-st-label', 'Healthy');
+        document.querySelectorAll('[data-live-version]').forEach((n) => {
+          if (h.version) n.textContent = h.version;
+        });
+      } catch (e) {
+        fail();
+      } finally { clearTimeout(to); }
+    }
+    probe();
+    setInterval(probe, 60000);
+  })();
+
+  /* — instance info dialog, from GET /v1/config (public view) —
+     Public disclosure carries instance.version, boolean features, providers,
+     models and search. It omits commit, build_time, url, user_tiers and limits,
+     and requires LOOMCYCLE_PUBLIC_CONFIG on the runtime. Fetched same-origin
+     through functions/api/config.js for the same CORS reason as /healthz. */
+  (() => {
+    const dlg = document.getElementById('infodlg');
+    const body = document.getElementById('info-body');
+    if (!dlg) return;
+    let loaded = false, prevFocus = null;
+
+    const FEATURE_LABELS = {
+      vector_memory: 'Vector memory', full_text_memory: 'Full-text memory',
+      memory_layer: 'Memory layer', sql_memory: 'SQL memory', documents: 'Documents',
+      bash: 'Bash', bashbox: 'Bashbox', scheduler: 'Scheduler', webhooks: 'Webhooks',
+      retention: 'Retention', code_js: 'code-js provider', search: 'Web search',
+      consolidation: 'Consolidation', storage: 'Storage',
+    };
+    const label = (k) => FEATURE_LABELS[k] || k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    const truthy = (v) => (v && typeof v === 'object' ? !!v.available : !!v);
+    const el = (tag, cls, txt) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (txt !== undefined) n.textContent = txt;
+      return n;
+    };
+    const section = (kicker) => {
+      const s = el('div', 'info-sec');
+      s.appendChild(el('span', 'kicker', kicker));
+      return s;
+    };
+
+    function renderError(msg) {
+      body.innerHTML = '';
+      const s = section('Unavailable');
+      s.appendChild(el('p', 'info-empty', msg));
+      body.appendChild(s);
+    }
+
+    function render(cfg) {
+      body.innerHTML = '';
+
+      /* instance */
+      const inst = section('Instance');
+      const kv = el('div', 'kvline');
+      const pair = (k, v) => {
+        const wrap = document.createElement('div');
+        wrap.append(el('span', null, k + ' '), el('b', null, v));
+        kv.appendChild(wrap);
+      };
+      pair('Version', cfg.instance?.version || 'unknown');
+      pair('Disclosure', cfg.view || 'public');
+      if (cfg.generated_at) pair('Read', new Date(cfg.generated_at).toUTCString().replace('GMT', 'UTC'));
+      inst.appendChild(kv);
+      body.appendChild(inst);
+
+      /* providers */
+      const provs = Array.isArray(cfg.providers) ? cfg.providers : [];
+      const ps = section('Inference providers');
+      if (!provs.length) {
+        ps.appendChild(el('p', 'info-empty', 'No providers published.'));
+      } else {
+        const box = el('div', 'chips');
+        for (const p of provs) {
+          const c = el('span', 'chip');
+          c.appendChild(document.createTextNode(p.provider));
+          if (p.active) c.setAttribute('data-on', '');
+          else c.appendChild(el('span', 'off', 'idle'));
+          box.appendChild(c);
+        }
+        ps.appendChild(box);
+      }
+      body.appendChild(ps);
+
+      /* models */
+      const models = Array.isArray(cfg.models) ? cfg.models : [];
+      if (models.length) {
+        const ms = section('Models it routes to');
+        const t = el('table', 'models');
+        t.innerHTML = '<thead><tr><th>Provider</th><th>Model</th><th>Tiers</th><th>State</th></tr></thead>';
+        const tb = document.createElement('tbody');
+        for (const m of models) {
+          const tr = document.createElement('tr');
+          if (!m.active) tr.setAttribute('data-dim', '');
+          tr.appendChild(el('td', null, m.provider));
+          tr.appendChild(el('td', null, m.model));
+          tr.appendChild(el('td', 'tiers', (m.tiers || []).join(', ') || '—'));
+          const st = el('td', 'state');
+          if (m.selected) st.appendChild(el('b', null, 'Serving'));
+          else st.textContent = m.active ? 'Standby' : 'Unavailable';
+          tr.appendChild(st);
+          tb.appendChild(tr);
+        }
+        t.appendChild(tb);
+        ms.appendChild(t);
+        body.appendChild(ms);
+      }
+
+      /* search */
+      const search = Array.isArray(cfg.search) ? cfg.search : [];
+      if (search.length) {
+        const ss = section('Web search cascade');
+        const box = el('div', 'chips');
+        for (const s of search) {
+          const c = el('span', 'chip');
+          c.appendChild(document.createTextNode(s.provider + (s.primary ? ' · primary' : '')));
+          if (s.active) c.setAttribute('data-on', '');
+          else c.appendChild(el('span', 'off', 'idle'));
+          box.appendChild(c);
+        }
+        ss.appendChild(box);
+        body.appendChild(ss);
+      }
+
+      /* features */
+      const feats = cfg.features && typeof cfg.features === 'object' ? cfg.features : null;
+      if (feats) {
+        const fs = section('Capabilities');
+        const box = el('div', 'chips');
+        for (const k of Object.keys(feats).sort()) {
+          const c = el('span', 'chip');
+          c.appendChild(document.createTextNode(label(k)));
+          if (truthy(feats[k])) c.setAttribute('data-on', '');
+          else c.appendChild(el('span', 'off', 'off'));
+          box.appendChild(c);
+        }
+        fs.appendChild(box);
+        body.appendChild(fs);
+      }
+
+      /* provenance */
+      const note = el('div', 'info-sec');
+      note.appendChild(el('p', 'info-empty',
+        'Read live from this instance\u2019s GET /v1/config at its public disclosure level \u2014 no bearer, no build provenance, no plan roster, no operational limits.'));
+      body.appendChild(note);
+    }
+
+    async function load() {
+      if (loaded) return;
+      try {
+        const r = await fetch('/v1/config', { cache: 'no-store' });
+        if (!r.ok) return renderError('This deployment does not publish its configuration. The operator must set LOOMCYCLE_PUBLIC_CONFIG to serve /v1/config without a bearer.');
+        const cfg = await r.json();
+        if (cfg && cfg.error) return renderError('This deployment does not publish its configuration. The operator must set LOOMCYCLE_PUBLIC_CONFIG to serve /v1/config without a bearer.');
+        render(cfg);
+        loaded = true;
+      } catch (_) {
+        renderError('The configuration could not be read.');
+      }
+    }
+
+    function open() {
+      prevFocus = document.activeElement;
+      dlg.hidden = false;
+      requestAnimationFrame(() => dlg.setAttribute('data-open', ''));
+      dlg.querySelector('[data-close-info]')?.focus();
+      load();
+    }
+    function close() {
+      dlg.removeAttribute('data-open');
+      setTimeout(() => { dlg.hidden = true; }, 240);
+      prevFocus?.focus();
+    }
+    document.querySelectorAll('[data-open-info]').forEach((b) => b.addEventListener('click', open));
+    document.querySelectorAll('[data-close-info]').forEach((b) => b.addEventListener('click', close));
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) close(); });
+    addEventListener('keydown', (e) => { if (e.key === 'Escape' && !dlg.hidden) close(); });
+  })();
+
+  /* — quickstart tabs → see the scoped handler below — */
+  document.querySelectorAll('.code-sec').forEach((sec) => {
+    sec.querySelectorAll('[data-snip]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        sec.querySelectorAll('[data-snip]').forEach((b) => b.setAttribute('aria-selected', String(b === btn)));
+        sec.querySelectorAll('[data-snippet]').forEach((p) => { p.hidden = p.dataset.snippet !== btn.dataset.snip; });
+      });
+    });
+  });
+
+  /* — console overlay — */
+  const sheet = document.getElementById('console');
+  const tag = document.getElementById('step-tag');
+  const title = document.getElementById('sheet-title');
+  const titles = { 1: 'Sign in to loomcycle.cloud', 2: 'Your tenant and token vault', 3: 'Your token — shown once' };
+  const APP = 'https://app.loomcycle.cloud';
+  let lastFocus = null;
+  let identity = null;   /* { email, tenant, subject } from /api/whoami (Cloudflare Access) */
+
+  /* Cloudflare Access sign-in. The landing's /api/* is Access-gated: as an XHR,
+     /api/whoami is 200 (signed in) or 401 (not). The "Continue with Google" button
+     does a full navigation to /api/whoami, which triggers the Access login and
+     returns to /?signedin=1. */
+  async function checkAuth() {
+    try {
+      const r = await fetch('/api/whoami', { cache: 'no-store', credentials: 'same-origin' });
+      if (!r.ok) { identity = null; return false; }
+      identity = await r.json();
+      const who = sheet.querySelector('.who');
+      if (who && identity && identity.email) {
+        who.querySelector('.av').textContent = identity.email.slice(0, 2).toUpperCase();
+        who.querySelector('b').textContent = identity.email;
+        who.querySelector('small').innerHTML =
+          'tenant <code class="inline-code">' + (identity.tenant || '') + '</code>';
+      }
+      return true;
+    } catch (_) { identity = null; return false; }
+  }
+
+  /* ——— the vault ———
+     Tokens are wrapped with an AES-256-GCM key created with extractable:false
+     and persisted as a live CryptoKey in IndexedDB. Script can USE the key on
+     this origin but can never read its bytes, so a dump of IndexedDB (or an
+     XSS that reads storage) yields ciphertext only. The plaintext bearer is
+     held in memory for exactly as long as the handoff takes. */
+  const Vault = (() => {
+    const DB = 'loomcycle-vault', STORE = 'v';
+    let mem = null;              /* fallback when IndexedDB is unavailable */
+    let key = null;
+    const idb = () => new Promise((res, rej) => {
+      const r = indexedDB.open(DB, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore(STORE);
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const tx = (mode, fn) => idb().then((db) => new Promise((res, rej) => {
+      const t = db.transaction(STORE, mode);
+      const req = fn(t.objectStore(STORE));
+      t.oncomplete = () => res(req instanceof IDBRequest ? req.result : req);
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error);
+    }));
+    async function getKey() {
+      if (key) return key;
+      try {
+        const stored = await tx('readonly', (s) => s.get('key'));
+        if (stored instanceof CryptoKey) { key = stored; return key; }
+      } catch (_) {}
+      key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+      try { await tx('readwrite', (s) => s.put(key, 'key')); } catch (_) {}
+      return key;
+    }
+    async function list() {
+      try {
+        const got = await tx('readonly', (s) => s.get('items'));
+        if (Array.isArray(got)) return got;
+      } catch (_) {}
+      return mem || (mem = []);
+    }
+    async function put(items) {
+      mem = items;
+      try { await tx('readwrite', (s) => s.put(items, 'items')); } catch (_) {}
+    }
+    async function add({ name, token, source }) {
+      const k = await getKey();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, new TextEncoder().encode(token));
+      const items = await list();
+      items.push({
+        id: crypto.randomUUID(), name, source,
+        suffix: token.slice(-4), created: new Date().toISOString(),
+        iv: [...iv], ct: [...new Uint8Array(ct)],
+      });
+      await put(items);
+      return items;
+    }
+    async function reveal(id) {
+      const k = await getKey();
+      const it = (await list()).find((x) => x.id === id);
+      if (!it) return null;
+      const pt = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(it.iv) }, k, new Uint8Array(it.ct).buffer);
+      return new TextDecoder().decode(pt);
+    }
+    async function remove(id) {
+      await put((await list()).filter((x) => x.id !== id));
+    }
+    return { list, add, reveal, remove };
+  })();
+
+  /* the bearer goes to the app over an origin-pinned postMessage — never in a
+     URL, so it stays out of history, Referer, and every proxy access log */
+  function handoff(token) {
+    const w = window.open(APP, 'loomcycle-app');
+    if (!w) { alert('Allow the popup to hand the token to app.loomcycle.cloud.'); return; }
+    let n = 0;
+    const t = setInterval(() => {
+      if (n++ > 40) return clearInterval(t);
+      try { w.postMessage({ type: 'loomcycle.login', token }, APP); } catch (_) {}
+    }, 250);
+    /* the app replies once it has stored the bearer */
+    addEventListener('message', function ack(e) {
+      if (e.origin !== APP || e.data?.type !== 'loomcycle.login.ok') return;
+      clearInterval(t); removeEventListener('message', ack);
+    });
+  }
+
+  function go(step) {
+    document.querySelectorAll('[data-pane]').forEach((p) => { p.hidden = p.dataset.pane !== String(step); });
+    document.querySelectorAll('[data-rail]').forEach((r) => {
+      r.toggleAttribute('data-done', Number(r.dataset.rail) <= step);
+    });
+    tag.textContent = 'Step 0' + step;
+    title.textContent = titles[step];
+    if (step === 2) render();
+  }
+  async function open() {
+    lastFocus = document.activeElement;
+    sheet.hidden = false;
+    requestAnimationFrame(() => sheet.setAttribute('data-open', ''));
+    const signed = await checkAuth();
+    go(signed ? 2 : 1);
+    sheet.querySelector(signed ? '[data-vault-toggle]' : '[data-signin]')?.focus();
+  }
+  function close() {
+    sheet.removeAttribute('data-open');
+    setTimeout(() => { sheet.hidden = true; }, 240);
+    lastFocus?.focus();
+  }
+  document.querySelectorAll('[data-open-console]').forEach((b) => b.addEventListener('click', open));
+  document.querySelectorAll('[data-close-console]').forEach((b) => b.addEventListener('click', close));
+  sheet.addEventListener('click', (e) => { if (e.target === sheet) close(); });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && !sheet.hidden) close(); });
+
+  sheet.querySelector('[data-signin]').addEventListener('click', () => {
+    /* full-page navigation → Cloudflare Access (Google) → returns to /?signedin=1 */
+    window.location.href = '/api/whoami';
+  });
+  sheet.querySelector('[data-signout]').addEventListener('click', () => { unlocked = false; identity = null; go(1); });
+
+  /* add-mode toggle */
+  sheet.querySelectorAll('[data-add-mode]').forEach((b) => {
+    b.addEventListener('click', () => {
+      sheet.querySelectorAll('[data-add-mode]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      sheet.querySelectorAll('[data-addpane]').forEach((p) => { p.hidden = p.dataset.addpane !== b.dataset.addMode; });
+    });
+  });
+
+  /* — vault view — */
+  const rows = document.getElementById('token-rows');
+  const lockTag = document.getElementById('vault-lock-tag');
+  const lockBtn = sheet.querySelector('[data-vault-toggle]');
+  const LIMIT = 5;
+  let unlocked = false;
+
+  function vaultError(msg) {
+    lockTag.textContent = 'Error';
+    lockTag.removeAttribute('data-open');
+    sheet.querySelector('.vault-note').textContent = msg;
+  }
+
+  lockBtn.addEventListener('click', () => { unlocked = !unlocked; render(); });
+
+  async function render() {
+    let items = [];
+    try { items = await Vault.list(); }
+    catch (err) { console.error('vault', err); vaultError('The vault could not be read in this browser.'); }
+    lockTag.textContent = unlocked ? 'Unlocked' : 'Locked';
+    lockTag.toggleAttribute('data-open', unlocked);
+    lockBtn.textContent = unlocked ? 'Lock' : 'Unlock';
+    rows.innerHTML = '';
+    if (!items.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 4; td.className = 'empty';
+      td.textContent = 'No tokens yet. Mint one for your tenant, or add a group token you were given.';
+      tr.appendChild(td); rows.appendChild(tr);
+    }
+    for (const it of items) {
+      const tr = document.createElement('tr');
+      const c = (cls) => { const td = document.createElement('td'); if (cls) td.className = cls; tr.appendChild(td); return td; };
+      c().textContent = it.name;
+      c('mask').textContent = 'lc_•••••••••••••' + it.suffix;
+      const src = c(); const s = document.createElement('span');
+      s.className = 'src'; s.textContent = it.source; src.appendChild(s);
+      const act = c(); const box = document.createElement('div'); box.className = 'rowact';
+      const use = document.createElement('button');
+      use.type = 'button'; use.className = 'use'; use.textContent = 'Sign in →';
+      use.disabled = !unlocked;
+      use.title = unlocked ? 'Hand this token to app.loomcycle.cloud' : 'Unlock the vault first';
+      use.addEventListener('click', async () => {
+        try { handoff(await Vault.reveal(it.id)); }
+        catch (err) { console.error('vault', err); vaultError('Could not unwrap that token.'); }
+      });
+      const rm = document.createElement('button');
+      rm.type = 'button'; rm.className = 'rm'; rm.textContent = 'Remove';
+      rm.addEventListener('click', async () => {
+        try { await Vault.remove(it.id); } catch (err) { console.error('vault', err); }
+        render();
+      });
+      box.append(use, rm); act.appendChild(box);
+      rows.appendChild(tr);
+    }
+    document.getElementById('quota-text').textContent = items.length + ' of ' + LIMIT + ' tokens in use';
+    document.getElementById('quota-bar').style.width = (items.length / LIMIT * 100) + '%';
+    sheet.querySelector('[data-mint]').disabled = items.length >= LIMIT;
+    sheet.querySelector('[data-add]').disabled = items.length >= LIMIT;
+  }
+
+  let liveToken = '';
+  function showReveal(name, tok) {
+    liveToken = tok;
+    document.getElementById('token-value').textContent = tok;
+    sheet.querySelectorAll('.snips pre').forEach((p) => {
+      p.textContent = p.textContent.replace(/lc_[A-Za-z0-9_]+/g, tok);
+    });
+    const nudge = sheet.querySelector('.nudge strong');
+    if (nudge) nudge.textContent = name;
+    sheet.querySelector('.nudge code').textContent = 'lc_•••••••••••••' + tok.slice(-4);
+    go(3);
+  }
+
+  sheet.querySelector('[data-mint]').addEventListener('click', async () => {
+    const name = (document.getElementById('token-name').value || 'token').trim();
+    const btn = sheet.querySelector('[data-mint]');
+    btn.disabled = true;
+    try {
+      /* the admin token is held server-side; the landing forces substrate:tenant
+         and derives (tenant, subject) from the Cloudflare Access identity */
+      const r = await fetch('/api/mint', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (r.status === 401) { vaultError('Your session expired — sign in again.'); go(1); return; }
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok || !out.token) { vaultError(out.error ? ('Mint failed: ' + out.error) : 'Mint failed.'); return; }
+      try { await Vault.add({ name: out.name || name, token: out.token, source: 'Mine' }); }
+      catch (err) { console.error('vault', err); vaultError('Token minted, but could not be wrapped in this browser.'); return; }
+      unlocked = true;
+      showReveal(out.name || name, out.token);
+    } catch (err) {
+      console.error('mint', err); vaultError('Mint failed — the runtime could not be reached.');
+    } finally { btn.disabled = false; }
+  });
+
+  sheet.querySelector('[data-add]').addEventListener('click', async () => {
+    const name = (document.getElementById('paste-name').value || '').trim();
+    const tok = (document.getElementById('paste-value').value || '').trim();
+    const err = document.getElementById('paste-err');
+    if (!name) { err.textContent = 'Give it a name.'; return; }
+    if (tok.length < 12) { err.textContent = 'That does not look like a bearer token.'; return; }
+    err.textContent = '';
+    try { await Vault.add({ name, token: tok, source: 'Group' }); }
+    catch (e2) { console.error('vault', e2); err.textContent = 'Could not wrap the token in this browser.'; return; }
+    document.getElementById('paste-name').value = '';
+    document.getElementById('paste-value').value = '';
+    unlocked = true;
+    render();
+  });
+
+  sheet.querySelector('[data-back-tokens]').addEventListener('click', () => go(2));
+  sheet.querySelector('[data-handoff]').addEventListener('click', () => handoff(liveToken));
+
+  /* use-tabs on the reveal */
+  sheet.querySelectorAll('[data-use]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      sheet.querySelectorAll('[data-use]').forEach((b) => b.setAttribute('aria-selected', String(b === btn)));
+      sheet.querySelectorAll('[data-usepane]').forEach((p) => { p.hidden = p.dataset.usepane !== btn.dataset.use; });
+    });
+  });
+
+  /* copy */
+  const flag = document.getElementById('copied-flag');
+  sheet.querySelector('[data-copy]').addEventListener('click', async (e) => {
+    const txt = sheet.querySelector(e.currentTarget.dataset.copy).textContent.trim();
+    try { await navigator.clipboard.writeText(txt); } catch (_) {}
+    flag.setAttribute('data-on', '');
+    setTimeout(() => flag.removeAttribute('data-on'), 1600);
+  });
+
+  /* returning from the Cloudflare Access login → open the console straight to the
+     token vault (checkAuth in open() will see the Access cookie) */
+  if (new URLSearchParams(location.search).get('signedin') === '1') {
+    history.replaceState(null, '', location.pathname);
+    open();
+  }
+})();
+</script>
+
+<div id="tweaks">
+  <button type="button" class="tab" data-tw-toggle aria-expanded="false">Tweaks</button>
+  <div class="body">
+    <div class="grp">
+      <span class="lab">Page ground <b id="tw-ground-v">#f6f7ed</b></span>
+      <div class="swz" data-tw="ground">
+        <button type="button" data-v="#f6f7ed" style="background:#f6f7ed" title="Loom clip ground"></button>
+        <button type="button" data-v="#f3f2f2" style="background:#f3f2f2" title="Modernist paper"></button>
+        <button type="button" data-v="#ffffff" style="background:#ffffff" title="Pure white"></button>
+        <button type="button" data-v="#ece9e2" style="background:#ece9e2" title="Warm grey"></button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lab">Hero animation size <b id="tw-size-v">50%</b></span>
+      <input type="range" id="tw-size" min="25" max="100" step="5" value="50" />
+    </div>
+    <div class="grp">
+      <span class="lab">Hero frame</span>
+      <div class="segz" data-tw="frame">
+        <button type="button" data-v="0px" aria-pressed="true">None</button>
+        <button type="button" data-v="2px" aria-pressed="false">2px ink</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lab">Hero overlays</span>
+      <div class="segz" data-tw="chrome">
+        <button type="button" data-v="on" aria-pressed="true">Caption</button>
+        <button type="button" data-v="off" aria-pressed="false">Bare</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lab">Loom clips</span>
+      <div class="segz" data-tw="clips">
+        <button type="button" data-v="all" aria-pressed="true">All three</button>
+        <button type="button" data-v="one" aria-pressed="false">First only</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lab">Mascot band</span>
+      <div class="segz" data-tw="band">
+        <button type="button" data-v="on" aria-pressed="true">Show</button>
+        <button type="button" data-v="off" aria-pressed="false">Hide</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const KEY = 'loomcycle-cloud-tweaks';
+  const root = document.documentElement;
+  const defaults = { ground: '#f6f7ed', size: 50, frame: '0px', chrome: 'on', clips: 'all', band: 'on' };
+  let tw = defaults;
+  try { tw = { ...defaults, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch (_) {}
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(tw)); } catch (_) {} };
+
+  function apply() {
+    root.style.setProperty('--color-bg', tw.ground);
+    document.getElementById('tw-ground-v').textContent = tw.ground;
+    root.style.setProperty('--loom-size', tw.size + '%');
+    document.getElementById('tw-size-v').textContent = tw.size + '%';
+    document.getElementById('tw-size').value = tw.size;
+    root.style.setProperty('--loom-frame', tw.frame);
+    document.getElementById('loom')?.toggleAttribute('data-bare', tw.chrome === 'off');
+    const band = document.querySelector('.band');
+    if (band) {
+      band.hidden = tw.band === 'off';
+      band.previousElementSibling?.classList.toggle('hidden-rule', tw.band === 'off');
+      if (band.previousElementSibling) band.previousElementSibling.hidden = tw.band === 'off';
+    }
+    document.querySelectorAll('#tweaks [data-tw] button').forEach((b) => {
+      const key = b.closest('[data-tw]').dataset.tw;
+      b.setAttribute('aria-pressed', String(tw[key] === b.dataset.v));
+    });
+    window.__loomClipMode = tw.clips;
+    document.dispatchEvent(new CustomEvent('loom-clips', { detail: tw.clips }));
+  }
+
+  document.querySelectorAll('#tweaks [data-tw]').forEach((grp) => {
+    grp.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      tw[grp.dataset.tw] = b.dataset.v; save(); apply();
+    });
+  });
+  document.getElementById('tw-size').addEventListener('input', (e) => {
+    tw.size = Number(e.target.value); save(); apply();
+  });
+  const panel = document.getElementById('tweaks');
+  const tabBtn = panel.querySelector('[data-tw-toggle]');
+  tabBtn.addEventListener('click', () => {
+    const open = panel.toggleAttribute('data-open');
+    tabBtn.setAttribute('aria-expanded', String(open));
+  });
+  addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if ((e.key === 't' || e.key === 'T') && !e.metaKey && !e.ctrlKey && !e.altKey) tabBtn.click();
+  });
+
+  apply();
+})();
+</script>
+</body>
+</html>
