@@ -594,6 +594,31 @@ On a slow model, the prefill cost of a near-full window is what times you out �
 
 When the provider reports a window, the loop also caps the kept tail to ~half the window automatically — folding an over-window tail into the summary — so a compaction always actually relieves pressure (it won't "succeed" yet leave you still over the window).
 
+#### `memory_flush` — keep what a compaction throws away
+
+```yaml
+agents:
+  assistant:
+    memory_scopes: [user]        # REQUIRED — see below
+    compaction:
+      enabled: true
+      memory_flush: true
+```
+
+A compaction replaces the conversation with a summary and drops the turns behind it. `memory_flush: true` queues those dropped turns for the memory consolidator first, so durable facts are extracted from them on its next pass.
+
+It exists for a **coverage** gap rather than a capability one. Consolidation selects sessions whose runs are *all terminal* — so an interactive agent that compacts repeatedly and parks at `end_turn` instead of finishing is never consolidated from transcript at all. This is what puts those conversations in front of the consolidator. The bundled `chat/*` agents set it for exactly that reason.
+
+It **banks; it does not flush.** Nothing is extracted at compaction time — the span goes on the same queue `Memory op=add infer=true` uses, and facts appear when the consolidator next runs. Recall will not see them immediately.
+
+**`user` must be in `memory_scopes`, or the flag does nothing useful.** Consolidation drains user scopes only, so a span banked elsewhere would be queued and never read. Rather than fail silently, the runtime names it: every compaction marker then carries a `memory_banked.error` saying the agent has no user scope. Same when the run carries no `user_id`.
+
+What gets banked is **dialogue only** — user and assistant text. Tool calls and tool results are filtered out by block type (a user turn that happens to contain JSON is content and survives verbatim), because feeding the extractor the runtime's own scaffolding is measurably what makes it extract scaffolding.
+
+Reading the outcome: the `context_compaction` transcript event gains a `memory_banked` block with the queue-row id and turn count, or the reason nothing was banked. A failure there **never** fails the compaction — keeping the run alive outranks banking — and an oversized span is refused and named rather than silently truncated.
+
+Once consolidated, a fact records where it came from. `Memory op=get` with `include_provenance: true` returns `origin: compaction` plus the originating run/session and an `origin_available` flag — `false` once retention has deleted that chat. The fact itself is never pruned for having a dead origin; see [§ retention](#9b-multi-tenant-authentication-rfc-l) for the chat clocks.
+
 ### Interactive local agents
 
 For a terminal you steer turn-by-turn:
