@@ -1386,6 +1386,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 			KeepFirst:        cp.KeepFirst,
 			AutoCompactAtPct: cp.AutoCompactAtPct,
 			Model:            cp.Model,
+			MemoryFlush:      cp.MemoryFlush,
 		}
 	}
 	return agents.Sign(c)

@@ -1492,6 +1492,27 @@ type Compaction struct {
 	// Model optionally runs the summary call on a cheaper/faster model SERVED BY
 	// THE SAME PROVIDER (e.g. a haiku-class model). "" / nil = the run's model.
 	Model *string `json:"model,omitempty" yaml:"model"`
+	// MemoryFlush banks the span a compaction is about to discard into the same
+	// pending queue `Memory op=add infer=true` writes to, so the consolidator
+	// extracts durable facts from it on its next pass (RFC BL P3). Default off.
+	//
+	// It exists for a coverage gap, not a capability gap: consolidation only
+	// selects sessions whose runs are all terminal, so an interactive or
+	// long-running agent that compacts repeatedly is never consolidated from
+	// transcript at all. This puts those conversations on the queue.
+	//
+	// It BANKS, it does not flush — facts land when the consolidator next runs,
+	// the same eventual consistency the `add` queue already documents.
+	//
+	// Per-agent ONLY, deliberately not a per-run override like the fields above.
+	// Those are tuning; this decides whether conversation content becomes durable
+	// memory, so a wire caller could otherwise make an agent persist what its def
+	// never authorized. Mirrors `memory_consolidation`, the other memory-authority
+	// field, which is likewise per-agent only.
+	//
+	// The bridge that reads this lands separately; the field is plumbed first so
+	// the overlay/hash plumbing is reviewable on its own.
+	MemoryFlush *bool `json:"memory_flush,omitempty" yaml:"memory_flush"`
 }
 
 // Compaction defaults — applied at use-time when a field is unset.
@@ -1506,7 +1527,8 @@ const (
 // stable content hashes for agents that don't configure compaction).
 func (c *Compaction) IsZero() bool {
 	return c == nil || (c.Enabled == nil && c.TargetPercentage == nil && c.KeepLastN == nil &&
-		c.KeepFirst == nil && c.AutoCompactAtPct == nil && c.Model == nil)
+		c.KeepFirst == nil && c.AutoCompactAtPct == nil && c.Model == nil &&
+		c.MemoryFlush == nil)
 }
 
 // Clone deep-copies (every field is a pointer) so a merge never aliases an input.
@@ -1538,6 +1560,10 @@ func (c *Compaction) Clone() *Compaction {
 	if c.Model != nil {
 		v := *c.Model
 		out.Model = &v
+	}
+	if c.MemoryFlush != nil {
+		v := *c.MemoryFlush
+		out.MemoryFlush = &v
 	}
 	return out
 }
@@ -1581,6 +1607,10 @@ func MergeCompaction(base, over *Compaction) *Compaction {
 	if over.Model != nil {
 		v := *over.Model
 		out.Model = &v
+	}
+	if over.MemoryFlush != nil {
+		v := *over.MemoryFlush
+		out.MemoryFlush = &v
 	}
 	return out
 }

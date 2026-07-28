@@ -185,6 +185,12 @@ type Compaction struct {
 	KeepFirst        *bool   `json:"keep_first,omitempty"`
 	AutoCompactAtPct *int    `json:"autocompact_at_pct,omitempty"`
 	Model            *string `json:"model,omitempty"`
+	// MemoryFlush is content-identifying: it changes what every run of the def
+	// DOES — whether a compaction banks the discarded span into memory — which is
+	// behaviour rather than authority, so it belongs in content_sha256. Same call
+	// as `internal:`, and the opposite of the `*_def_scopes` gates. `omitempty` on
+	// the nil default keeps every existing agent row byte-stable.
+	MemoryFlush *bool `json:"memory_flush,omitempty"`
 }
 
 // CoreBlock mirrors config.CoreBlock locally so the agents package stays
