@@ -817,7 +817,13 @@ agents:
         // items the model never examined is not bounded and not recoverable, so
         // here the same answer means the batch simply stays queued.
         if (st.batch_empty) { return []; }
-        if (!applyFacts(st, facts, "")) { return []; }
+        // Attribute the batch ONLY when it is a single item. Several items are
+        // rendered into one text, so a fact from a multi-item batch cannot honestly
+        // be traced to one of them — and a wrong citation is worse than none. A
+        // compaction banks one span, so the case this exists for is the single one.
+        var attributeTo = (taken.length === 1 && taken[0] && typeof taken[0].id === "string")
+          ? taken[0].id : "";
+        if (!applyFacts(st, facts, "", attributeTo)) { return []; }
 
         var ids = [];
         for (var i = 0; i < taken.length; i++) {
@@ -865,10 +871,10 @@ agents:
       // ---------------------------------------------------------------- write
 
       // applyFacts returns true only when every write it attempted landed.
-      function applyFacts(st, facts, sourceID) {
+      function applyFacts(st, facts, sourceID, pendingID) {
         var ok = true;
         for (var i = 0; i < facts.length; i++) {
-          if (!applyOne(st, facts[i], sourceID)) { ok = false; }
+          if (!applyOne(st, facts[i], sourceID, pendingID)) { ok = false; }
         }
         return ok;
       }
@@ -890,7 +896,7 @@ agents:
       // nothing else. There is nowhere structured to put the linkage — the
       // provenance block's schema is closed (class + source ids only) — and it is
       // not worth a corrupted value, so it is gone.
-      function applyOne(st, fact, sourceID) {
+      function applyOne(st, fact, sourceID, pendingID) {
         var neighbours = recall(st, fact.text);
         var dupes = [];
 
@@ -925,12 +931,12 @@ agents:
           // are queued, and retire() applies the pass-wide cap once. Superseding
           // them is what collapses the pile back to one canonical row.
           for (var d = 1; d < dupes.length; d++) { st.supersede_queue.push(dupes[d].id); }
-          if (!write(st, primary.id, fact, sourceID)) { return false; }
+          if (!write(st, primary.id, fact, sourceID, pendingID)) { return false; }
           st.updated++;
           return true;
         }
 
-        if (!write(st, factKey(fact), fact, sourceID)) { return false; }
+        if (!write(st, factKey(fact), fact, sourceID, pendingID)) { return false; }
         st.written++;
         return true;
       }
@@ -1034,7 +1040,7 @@ agents:
       // stored ones silently moves every fact off that calibration and the
       // deduplication above quietly stops firing. A test asserts the two are
       // byte-identical on every write.
-      function write(st, key, fact, sourceID) {
+      function write(st, key, fact, sourceID, pendingID) {
         var args = {
           scope: CONFIG.scope,
           key: key,
@@ -1044,6 +1050,13 @@ agents:
           provenance: sourceID ? { "class": fact.cls, source_session_id: sourceID }
                                : { "class": fact.cls }
         };
+        // A fact distilled from a QUEUED item relays that item's id so the server
+        // resolves its origin + source ids from the pending row. We cannot author
+        // origin ourselves — it is server-stamped precisely so an agent cannot
+        // label its own writes — so without this the fact lands origin=consolidator
+        // and is indistinguishable from one read out of an ordinary transcript,
+        // which is the whole thing the pending origin column exists to tell apart.
+        if (pendingID) { args.from_pending = pendingID; }
         try {
           Memory.set(args);
         } catch (e) {
