@@ -1,0 +1,14 @@
+# SearXNG — minimal config for loomcycle's search driver.
+# The searxng image's entrypoint substitutes the `ultrasecretkey` sentinel below
+# with the SEARXNG_SECRET env value at startup (set it in .env.secure).
+use_default_settings: true
+
+server:
+  secret_key: "ultrasecretkey"   # replaced from $SEARXNG_SECRET by the entrypoint
+  limiter: false                 # off, or SearXNG 429s loomcycle's plain GET
+
+search:
+  # json is REQUIRED — loomcycle queries /search?format=json; without it → 403.
+  formats:
+    - html
+    - json

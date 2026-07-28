@@ -1,0 +1,31 @@
+# Caddy serves the static landing (cloud-web/ → /srv) and reproduces the two
+# Cloudflare Pages Functions the page calls, proxying them to the loomcycle
+# runtime. loomcycle shares the tailscale netns, so its address is tailscale:8787.
+
+:80 {
+	encode zstd gzip
+
+	# /api/health → loomcycle /healthz (always unauthenticated).
+	handle /api/health {
+		rewrite * /healthz
+		header Cache-Control "public, max-age=30, stale-while-revalidate=60"
+		reverse_proxy tailscale:8787
+	}
+
+	# /api/config → loomcycle GET /v1/config (public view; needs
+	# LOOMCYCLE_PUBLIC_CONFIG=1). Strip any inbound Authorization so we always get
+	# the public disclosure view, never a bearer error.
+	handle /api/config {
+		rewrite * /v1/config
+		header Cache-Control "public, max-age=60, stale-while-revalidate=300"
+		reverse_proxy tailscale:8787 {
+			header_up -Authorization
+		}
+	}
+
+	# Everything else: the static marketing site.
+	handle {
+		root * /srv
+		file_server
+	}
+}

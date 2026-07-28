@@ -1,0 +1,206 @@
+# loomcycle — self-contained cloud deployment (Ubuntu 25.04, Docker Compose)
+#
+# One stack: Postgres 18 + pgvector, the loomcycle runtime + one-shot migrate,
+# the code-exec builder sidecar, SearXNG, a Caddy landing server, a Tailscale
+# egress sidecar (to reach a local Ollama over the tailnet), and a Cloudflare
+# tunnel that exposes app.loomcycle.cloud (the app) + loomcycle.cloud (landing).
+#
+# Run it with BOTH env files so `${VAR}` interpolation resolves (a Makefile wraps
+# this — `make up`):
+#   docker compose --env-file .env.insecure --env-file .env.secure up -d
+#
+# Secrets scoping: each service's `environment:` pulls ONLY the secret it needs
+# via ${VAR}; loomcycle/migrate additionally `env_file:` both files to bulk-load
+# their many LOOMCYCLE_* settings. Never put a secret in an `environment:` literal.
+#
+# NETNS NOTE (Tailscale): the `loomcycle` runtime uses `network_mode:
+# service:tailscale`, so it has NO compose DNS name of its own — everything that
+# dials it targets `http://tailscale:8787`. loomcycle still reaches postgres/
+# searxng/builder-sidecar by service name (the tailscale container is on loomnet),
+# and reaches Ollama by RAW tailnet IP (MagicDNS is not available in the shared
+# netns — see OLLAMA_BASE_URL in .env.insecure).
+
+name: loomcycle
+
+networks:
+  loomnet:
+    driver: bridge
+
+services:
+  # ── Postgres 18 + pgvector — main store (loomcycle) + SQL-Memory aux (loomcycle_sqlmem) ──
+  postgres:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    networks: [loomnet]
+    environment:
+      POSTGRES_USER: loomcycle
+      POSTGRES_DB: loomcycle
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      # Runs ONCE on first init: creates loomcycle_sqlmem + the sqlmem pgvector schema.
+      - ./postgres/initdb.d:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loomcycle -d loomcycle"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  # ── One-shot schema migration for the MAIN db (SQL Memory self-provisions at runtime) ──
+  loomcycle-migrate:
+    image: denngubsky/loomcycle:1.38.0
+    command: ["migrate", "up"]
+    restart: "no"
+    user: "65532:65532"
+    networks: [loomnet]
+    # Non-secret settings from env_file; only the DSN secret is injected explicitly
+    # (scoped — migrate never needs the sidecar tokens).
+    env_file:
+      - ./.env.insecure
+    environment:
+      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Tailscale egress sidecar — kernel mode; owns the netns loomcycle shares ──
+  tailscale:
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    hostname: loomcycle-cloud
+    networks: [loomnet]
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"      # kernel mode → real interface + routes for egress
+      TS_ACCEPT_DNS: "false"     # do NOT let tailscale clobber the netns DNS that
+                                 # loomcycle's service-name resolution depends on
+    volumes:
+      - ./ts-state:/var/lib/tailscale
+    healthcheck:
+      test: ["CMD", "tailscale", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    # Optional local-debug port for the loomcycle UI (it lives in THIS netns).
+    # Uncomment to reach it on the host loopback; not needed for the CF tunnel.
+    # ports:
+    #   - "127.0.0.1:8787:8787"
+
+  # ── Code-execution sandbox sidecar (host-Docker-socket model) ──
+  builder-sidecar:
+    image: denngubsky/loomcycle-builder-docker:1.25.2
+    restart: unless-stopped
+    networks: [loomnet]
+    environment:
+      SANDBOX_PODMAN_BIN: docker         # launch sessions as host-Docker siblings
+      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:latest
+      SANDBOX_WORKSPACE_ROOT: /mnt/work  # per-session /work is tmpfs by default;
+                                         # durable named workspaces need the same
+                                         # HOST path here — see INSTALL.md.
+      SANDBOX_MAX_CPUS: "2"
+      SANDBOX_MAX_MEM_MB: "2048"
+      SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}   # SAME secret loomcycle presents
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./work:/mnt/work
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # ── The loomcycle runtime — shares the tailscale netns (no own DNS name / ports) ──
+  loomcycle:
+    image: denngubsky/loomcycle:1.38.0
+    restart: unless-stopped
+    user: "65532:65532"
+    network_mode: "service:tailscale"   # → reachable at http://tailscale:8787
+    # Non-secret settings via env_file; loomcycle's OWN secrets injected explicitly
+    # so the sidecar tokens (TS/CF/PG/SearXNG) stay OUT of the runtime's env — it
+    # executes agent code, so we keep its blast radius minimal. Optional keys use
+    # ${VAR:-} so an unset one is simply empty (provider excluded), no warning.
+    env_file:
+      - ./.env.insecure
+    environment:
+      LOOMCYCLE_AUTH_TOKEN: ${LOOMCYCLE_AUTH_TOKEN}
+      LOOMCYCLE_OPERATOR_TOKEN_PEPPER: ${LOOMCYCLE_OPERATOR_TOKEN_PEPPER:-}
+      LOOMCYCLE_SECRET_KEY: ${LOOMCYCLE_SECRET_KEY:-}
+      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN}
+      LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN}
+      SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+      - ./work:/mnt/work
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/loomcycle", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      tailscale:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      loomcycle-migrate:
+        condition: service_completed_successfully
+      builder-sidecar:
+        condition: service_healthy
+
+  # ── SearXNG — in-network search backend (keyless; wired via config/loomcycle.yaml) ──
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    networks: [loomnet]
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_SECRET: ${SEARXNG_SECRET}
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # ── Landing page (Caddy) — serves cloud-web/ + proxies /api/* to loomcycle ──
+  landing:
+    image: caddy:2
+    restart: unless-stopped
+    networks: [loomnet]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv:ro          # copy of the repo's cloud-web/ (see INSTALL.md)
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+    depends_on:
+      tailscale:
+        condition: service_healthy
+
+  # ── Cloudflare tunnel (token method) — app.loomcycle.cloud + loomcycle.cloud ──
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    networks: [loomnet]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      tailscale:
+        condition: service_healthy
+      landing:
+        condition: service_started
