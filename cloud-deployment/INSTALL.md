@@ -24,35 +24,56 @@ You also need, ahead of time:
 
 ---
 
-## Phase 1 — Lay down the deploy directory
+## Phase 1 — Copy the deploy directory to the host (rsync over SSH)
 
-Copy this `cloud-deployment/` directory to the host deploy path and create the
-runtime sub-directories:
+Run these from your **workstation** (where this repo is checked out) — nothing here
+needs the repo present on the host. Set the target once:
 
 ```bash
-mkdir -p /home/denn/work/loomcycle-cloud
-cp -r cloud-deployment/* cloud-deployment/.gitignore /home/denn/work/loomcycle-cloud/
-cd /home/denn/work/loomcycle-cloud
+HOST=denn@cloud-home.local            # your hosting PC (SSH access required)
+DEPLOY=/home/denn/work/loomcycle-cloud
+```
 
-mkdir -p data config work pgdata ts-state searxng web retention-exports
-# loomcycle + its migrate run as uid:gid 65532; give them their writable dirs.
-sudo chown -R 65532:65532 data work retention-exports
+rsync `cloud-deployment/` to the host. The excludes keep local build + secret
+artifacts off the wire: the landing image builds **on the host**, and the real
+`.env.*` files are created on the host in Phase 5 (never shipped from your
+workstation). There is **no `--delete`**, so a re-sync updates the config/app
+files without ever touching the host's runtime data (`pgdata/`, `data/`, …) or its
+env files:
+
+```bash
+rsync -avz \
+  --exclude 'landing/node_modules' \
+  --exclude '.env.secure' --exclude '.env.insecure' \
+  cloud-deployment/ "$HOST:$DEPLOY/"
+```
+
+Then, on the host, create the runtime sub-directories + set ownership (`-t` gives
+`sudo` a TTY for its prompt):
+
+```bash
+ssh -t "$HOST" "cd '$DEPLOY' && \
+  mkdir -p data config work pgdata ts-state searxng web retention-exports && \
+  sudo chown -R 65532:65532 data work retention-exports"
 ```
 
 `config/loomcycle.yaml` (SearXNG wiring), `searxng/settings.yml`, the `landing/`
-Node app, and `postgres/initdb.d/00-init.sql` came with the copy — leave them in
-place. The landing image builds on `make up` (`build: ./landing`).
+Node app, and `postgres/initdb.d/00-init.sql` ride along in the sync — leave them
+in place. The landing image builds on `make up` (`build: ./landing`). Re-run the
+rsync anytime to push config/app changes; it never deletes the host's data or env.
 
 ---
 
 ## Phase 2 — Landing page
 
-Copy the drafted static site into `web/` (the Node landing serves it; the
-`functions/` dir is unused because the landing reproduces `/api/*` + the `/v1`
-inner-link proxy server-side):
+rsync the drafted static site into the host's `web/` (the Node landing serves it;
+the `functions/` dir is unused because the landing reproduces `/api/*` + the `/v1`
+inner-link proxy server-side). This also ships the hero/mascot videos, which are
+**not in git** — they live on your workstation and reach the host via this sync:
 
 ```bash
-cp -r /path/to/loomcycle/cloud-web/* /home/denn/work/loomcycle-cloud/web/
+# reuses $HOST / $DEPLOY from Phase 1
+rsync -avz cloud-web/ "$HOST:$DEPLOY/web/"
 ```
 
 ---
@@ -100,6 +121,13 @@ any tailnet device: `tailscale status | grep -i ollama-host`. You'll put it in
 ---
 
 ## Phase 5 — Env files
+
+Phases 5–7 run **on the host** (Phases 3–4 were dashboard steps). SSH in first:
+
+```bash
+ssh "$HOST"                          # open a shell on the hosting PC, then:
+cd /home/denn/work/loomcycle-cloud   # the $DEPLOY path, on the host
+```
 
 ```bash
 cp .env.insecure.example .env.insecure
