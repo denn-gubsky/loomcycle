@@ -275,6 +275,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			scope             TEXT    NOT NULL,
 			scope_id          TEXT    NOT NULL,
 			payload           TEXT    NOT NULL,
+			origin            TEXT,
 			source_session_id TEXT,
 			source_run_id     TEXT,
 			created_at        INTEGER NOT NULL,
@@ -1065,9 +1066,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE memory ADD COLUMN last_accessed_at INTEGER`,
 		// RFC BL P2 — the soft-archive marker. NULL on every legacy row (live);
 		// the consolidator stamps it to hide a consolidated raw row from recall
-		// while retaining it. memory_pending / memory_cursors are pure CREATE
-		// TABLE (no ALTER needed) so they land via the schema block above.
+		// while retaining it.
 		`ALTER TABLE memory ADD COLUMN superseded_at INTEGER`,
+		// RFC BL P3 — what enqueued a pending row (agent_explicit | compaction),
+		// server-set. memory_pending arrived as a pure CREATE TABLE in P2, so an
+		// upgraded DB has the table but not this column and needs the ALTER; a
+		// fresh DB gets it from the schema block above. NULL on rows enqueued
+		// before it existed — deliberately not backfilled to a guess.
+		`ALTER TABLE memory_pending ADD COLUMN origin TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -4712,10 +4718,10 @@ func (s *Store) MemoryPendingEnqueue(ctx context.Context, row store.MemoryPendin
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO memory_pending
-		   (id, tenant_id, scope, scope_id, payload, source_session_id, source_run_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		   (id, tenant_id, scope, scope_id, payload, origin, source_session_id, source_run_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ID, row.TenantID, string(row.Scope), row.ScopeID, string(payload),
-		row.SourceSessionID, row.SourceRunID, createdAt.UnixNano(),
+		row.Origin, row.SourceSessionID, row.SourceRunID, createdAt.UnixNano(),
 	)
 	return err
 }
@@ -4727,7 +4733,7 @@ func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope s
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, tenant_id, scope, scope_id, payload, source_session_id, source_run_id, created_at, drained_at
+		`SELECT id, tenant_id, scope, scope_id, payload, origin, source_session_id, source_run_id, created_at, drained_at
 		 FROM memory_pending
 		 WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND drained_at IS NULL
 		 ORDER BY created_at ASC, id ASC
@@ -4744,16 +4750,18 @@ func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope s
 			r          store.MemoryPendingRow
 			scopeStr   string
 			payload    string
+			origin     sql.NullString
 			srcSession sql.NullString
 			srcRun     sql.NullString
 			createdNs  int64
 			drainedNs  sql.NullInt64
 		)
-		if err := rows.Scan(&r.ID, &r.TenantID, &scopeStr, &r.ScopeID, &payload, &srcSession, &srcRun, &createdNs, &drainedNs); err != nil {
+		if err := rows.Scan(&r.ID, &r.TenantID, &scopeStr, &r.ScopeID, &payload, &origin, &srcSession, &srcRun, &createdNs, &drainedNs); err != nil {
 			return nil, err
 		}
 		r.Scope = store.MemoryScope(scopeStr)
 		r.Payload = json.RawMessage(payload)
+		r.Origin = origin.String
 		r.SourceSessionID = srcSession.String
 		r.SourceRunID = srcRun.String
 		r.CreatedAt = time.Unix(0, createdNs)
@@ -4763,6 +4771,45 @@ func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope s
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// MemoryPendingGet is a point lookup by id within (tenant, scope, scopeID).
+// Those three ARE the authorization check — a foreign row is simply not found.
+// Deliberately no drained_at filter: the caller resolving provenance has already
+// drained the row it is asking about.
+func (s *Store) MemoryPendingGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, id string) (store.MemoryPendingRow, error) {
+	var (
+		r          store.MemoryPendingRow
+		scopeStr   string
+		payload    string
+		origin     sql.NullString
+		srcSession sql.NullString
+		srcRun     sql.NullString
+		createdNs  int64
+		drainedNs  sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, tenant_id, scope, scope_id, payload, origin, source_session_id, source_run_id, created_at, drained_at
+		 FROM memory_pending
+		 WHERE id = ? AND tenant_id = ? AND scope = ? AND scope_id = ?`,
+		id, tenantID, string(scope), scopeID,
+	).Scan(&r.ID, &r.TenantID, &scopeStr, &r.ScopeID, &payload, &origin, &srcSession, &srcRun, &createdNs, &drainedNs)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.MemoryPendingRow{}, &store.ErrNotFound{Kind: "memory_pending", ID: id}
+	}
+	if err != nil {
+		return store.MemoryPendingRow{}, err
+	}
+	r.Scope = store.MemoryScope(scopeStr)
+	r.Payload = json.RawMessage(payload)
+	r.Origin = origin.String
+	r.SourceSessionID = srcSession.String
+	r.SourceRunID = srcRun.String
+	r.CreatedAt = time.Unix(0, createdNs)
+	if drainedNs.Valid {
+		r.DrainedAt = time.Unix(0, drainedNs.Int64)
+	}
+	return r, nil
 }
 
 // MemoryPendingAck marks the given ids drained. `drained_at IS NULL` keeps it

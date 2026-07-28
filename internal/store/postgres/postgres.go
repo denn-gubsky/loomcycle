@@ -4228,10 +4228,10 @@ func (s *Store) MemoryPendingEnqueue(ctx context.Context, row store.MemoryPendin
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO memory_pending
-		   (id, tenant_id, scope, scope_id, payload, source_session_id, source_run_id, created_at)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+		   (id, tenant_id, scope, scope_id, payload, origin, source_session_id, source_run_id, created_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`,
 		row.ID, row.TenantID, string(row.Scope), row.ScopeID, string(payload),
-		nullableString(row.SourceSessionID), nullableString(row.SourceRunID), createdAt,
+		nullableString(row.Origin), nullableString(row.SourceSessionID), nullableString(row.SourceRunID), createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("memory pending enqueue: %w", err)
@@ -4246,7 +4246,7 @@ func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope s
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, tenant_id, scope, scope_id, payload::text, source_session_id, source_run_id, created_at, drained_at
+		`SELECT id, tenant_id, scope, scope_id, payload::text, origin, source_session_id, source_run_id, created_at, drained_at
 		 FROM memory_pending
 		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND drained_at IS NULL
 		 ORDER BY created_at ASC, id ASC
@@ -4263,15 +4263,19 @@ func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope s
 			r           store.MemoryPendingRow
 			scopeStr    string
 			payloadText []byte
+			origin      *string
 			srcSession  *string
 			srcRun      *string
 			drainedAt   *time.Time
 		)
-		if err := rows.Scan(&r.ID, &r.TenantID, &scopeStr, &r.ScopeID, &payloadText, &srcSession, &srcRun, &r.CreatedAt, &drainedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.TenantID, &scopeStr, &r.ScopeID, &payloadText, &origin, &srcSession, &srcRun, &r.CreatedAt, &drainedAt); err != nil {
 			return nil, fmt.Errorf("memory pending drain scan: %w", err)
 		}
 		r.Scope = store.MemoryScope(scopeStr)
 		r.Payload = json.RawMessage(payloadText)
+		if origin != nil {
+			r.Origin = *origin
+		}
 		if srcSession != nil {
 			r.SourceSessionID = *srcSession
 		}
@@ -4287,6 +4291,49 @@ func (s *Store) MemoryPendingDrain(ctx context.Context, tenantID string, scope s
 		return nil, fmt.Errorf("memory pending drain iter: %w", err)
 	}
 	return out, nil
+}
+
+// MemoryPendingGet is a point lookup by id within (tenant, scope, scopeID).
+// Those three ARE the authorization check — a foreign row is simply not found.
+// Deliberately no drained_at filter: the caller resolving provenance has already
+// drained the row it is asking about.
+func (s *Store) MemoryPendingGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, id string) (store.MemoryPendingRow, error) {
+	var (
+		r           store.MemoryPendingRow
+		scopeStr    string
+		payloadText []byte
+		origin      *string
+		srcSession  *string
+		srcRun      *string
+		drainedAt   *time.Time
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, tenant_id, scope, scope_id, payload::text, origin, source_session_id, source_run_id, created_at, drained_at
+		 FROM memory_pending
+		 WHERE id = $1 AND tenant_id = $2 AND scope = $3 AND scope_id = $4`,
+		id, tenantID, string(scope), scopeID,
+	).Scan(&r.ID, &r.TenantID, &scopeStr, &r.ScopeID, &payloadText, &origin, &srcSession, &srcRun, &r.CreatedAt, &drainedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.MemoryPendingRow{}, &store.ErrNotFound{Kind: "memory_pending", ID: id}
+	}
+	if err != nil {
+		return store.MemoryPendingRow{}, fmt.Errorf("memory pending get: %w", err)
+	}
+	r.Scope = store.MemoryScope(scopeStr)
+	r.Payload = json.RawMessage(payloadText)
+	if origin != nil {
+		r.Origin = *origin
+	}
+	if srcSession != nil {
+		r.SourceSessionID = *srcSession
+	}
+	if srcRun != nil {
+		r.SourceRunID = *srcRun
+	}
+	if drainedAt != nil {
+		r.DrainedAt = *drainedAt
+	}
+	return r, nil
 }
 
 // MemoryPendingAck marks the given ids drained. `AND drained_at IS NULL` keeps

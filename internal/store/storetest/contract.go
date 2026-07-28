@@ -153,6 +153,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
 		{"MemorySupersedeRevivedByWrite", testMemorySupersedeRevivedByWrite},
 		{"MemoryPendingEnqueueDrainAck", testMemoryPendingEnqueueDrainAck},
+		{"MemoryPendingOriginRoundTripsAndIsScoped", testMemoryPendingOriginRoundTripsAndIsScoped},
 		{"MemoryCursorGetDefault", testMemoryCursorGetDefault},
 		{"MemoryCursorLeaseCAS", testMemoryCursorLeaseCAS},
 		{"MemoryCursorAdvanceMonotonicAndOwner", testMemoryCursorAdvanceMonotonicAndOwner},
@@ -10533,5 +10534,105 @@ func testMemoryLegacyTenantStatsOnlyMixed(t *testing.T, s store.Store) {
 	}
 	if legacy2 != legacy {
 		t.Errorf("legacyRows went %d → %d after adding a global row; global must not count", legacy, legacy2)
+	}
+}
+
+// ─── Pending-queue origin (RFC BL P3) ────────────────────────────────────────
+
+// testMemoryPendingOriginRoundTripsAndIsScoped: the producer attribution has to
+// survive enqueue→drain→get on BOTH tiers, and the point lookup's
+// (tenant, scope, scope_id) tuple has to BE the authorization check.
+//
+// The lookup deliberately does not filter drained_at, because the only caller —
+// a consolidator resolving provenance for facts it distilled — asks about a row
+// it has already drained. A drained-row filter would make it useless exactly
+// when it is used, which is the kind of thing that passes a naive test.
+func testMemoryPendingOriginRoundTripsAndIsScoped(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const (
+		tenant  = "acme"
+		scopeID = "u1"
+	)
+	scope := store.MemoryScopeUser
+
+	if err := s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{
+		ID: "mp_compaction", TenantID: tenant, Scope: scope, ScopeID: scopeID,
+		Payload: json.RawMessage(`{"messages":[]}`),
+		Origin:  store.PendingOriginCompaction, SourceRunID: "run_1",
+	}); err != nil {
+		t.Fatalf("enqueue compaction row: %v", err)
+	}
+	if err := s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{
+		ID: "mp_explicit", TenantID: tenant, Scope: scope, ScopeID: scopeID,
+		Payload: json.RawMessage(`{"messages":[]}`),
+		Origin:  store.PendingOriginAgentExplicit,
+	}); err != nil {
+		t.Fatalf("enqueue explicit row: %v", err)
+	}
+	// A row with NO origin: legacy rows predate the column and must stay readable
+	// rather than being coerced to a guess.
+	if err := s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{
+		ID: "mp_legacy", TenantID: tenant, Scope: scope, ScopeID: scopeID,
+		Payload: json.RawMessage(`{"messages":[]}`),
+	}); err != nil {
+		t.Fatalf("enqueue legacy row: %v", err)
+	}
+
+	// Drain surfaces origin, so the consolidator can see what produced each item.
+	drained, err := s.MemoryPendingDrain(ctx, tenant, scope, scopeID, 10)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	got := map[string]string{}
+	for _, r := range drained {
+		got[r.ID] = r.Origin
+	}
+	if got["mp_compaction"] != store.PendingOriginCompaction {
+		t.Errorf("drained origin = %q, want %q", got["mp_compaction"], store.PendingOriginCompaction)
+	}
+	if got["mp_explicit"] != store.PendingOriginAgentExplicit {
+		t.Errorf("drained origin = %q, want %q", got["mp_explicit"], store.PendingOriginAgentExplicit)
+	}
+	if got["mp_legacy"] != "" {
+		t.Errorf("legacy row origin = %q, want empty (not backfilled to a guess)", got["mp_legacy"])
+	}
+
+	// Get resolves it by id within the target.
+	row, err := s.MemoryPendingGet(ctx, tenant, scope, scopeID, "mp_compaction")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if row.Origin != store.PendingOriginCompaction || row.SourceRunID != "run_1" {
+		t.Errorf("get returned origin=%q run=%q, want %q/run_1", row.Origin, row.SourceRunID, store.PendingOriginCompaction)
+	}
+
+	// ...and STILL resolves it after the row is acked/drained, which is the only
+	// state the real caller ever sees it in.
+	if err := s.MemoryPendingAck(ctx, tenant, scope, scopeID, []string{"mp_compaction"}); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if row, err = s.MemoryPendingGet(ctx, tenant, scope, scopeID, "mp_compaction"); err != nil {
+		t.Fatalf("get after ack: %v — a drained_at filter would break the only real use", err)
+	}
+	if row.DrainedAt.IsZero() {
+		t.Error("get after ack reports DrainedAt zero; the ack did not land or is not returned")
+	}
+
+	// The scoping tuple IS the authorization check: each axis alone hides the row.
+	for _, bad := range []struct {
+		name                string
+		tenant, scopeID, id string
+		scope               store.MemoryScope
+	}{
+		{"foreign tenant", "evil", scopeID, "mp_compaction", scope},
+		{"foreign scope_id", tenant, "someone-else", "mp_compaction", scope},
+		{"foreign scope", tenant, scopeID, "mp_compaction", store.MemoryScopeAgent},
+		{"unknown id", tenant, scopeID, "mp_does-not-exist", scope},
+	} {
+		_, err := s.MemoryPendingGet(ctx, bad.tenant, bad.scope, bad.scopeID, bad.id)
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			t.Errorf("%s: got err %v, want *ErrNotFound — the lookup tuple must be the authz check", bad.name, err)
+		}
 	}
 }

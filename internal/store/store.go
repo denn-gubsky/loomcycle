@@ -1739,6 +1739,19 @@ type Store interface {
 	// empty slice is a no-op.
 	MemoryPendingAck(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, ids []string) error
 
+	// MemoryPendingGet is a point lookup by id, scoped to (tenant, scope,
+	// scopeID) — which IS the authorization check: a row belonging to another
+	// tenant or another target simply is not found, so a caller cannot resolve
+	// provenance it does not own (RFC BL P3).
+	//
+	// UNLIKE Drain it deliberately does NOT filter on drained_at. The consolidator
+	// resolves provenance while writing the facts it distilled from a row it has
+	// already drained, so excluding drained rows would make the lookup useless in
+	// the only case that uses it.
+	//
+	// Returns *ErrNotFound when no such row is visible to the caller.
+	MemoryPendingGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, id string) (MemoryPendingRow, error)
+
 	// MemoryCursorGet returns the consolidation cursor for a target. It is a
 	// GET-OR-DEFAULT: a target with no row yet returns a zero-watermark,
 	// unleased MemoryCursorRow (TenantID/Scope/ScopeID populated, everything
@@ -2875,16 +2888,35 @@ func (p MemoryProvenance) IsZero() bool {
 // row is retained for TTL sweeping, never re-drained). Payload is opaque to the
 // store (JSONB on Postgres, TEXT-encoded JSON on sqlite).
 type MemoryPendingRow struct {
-	ID              string
-	TenantID        string
-	Scope           MemoryScope
-	ScopeID         string
-	Payload         json.RawMessage
+	ID       string
+	TenantID string
+	Scope    MemoryScope
+	ScopeID  string
+	Payload  json.RawMessage
+	// Origin names WHAT enqueued this row, server-set at enqueue and never
+	// derived from a tool argument (RFC BL P3). It is the only way a fact
+	// consolidated from this row can record that it came from a compaction flush
+	// rather than a scheduled transcript pass — origin on the `memory` table is
+	// stamped from the WRITER's identity, which is `consolidator` either way.
+	//
+	// Empty on rows enqueued before the column existed; they are deliberately not
+	// backfilled to a guess, matching how `memory.origin` treats legacy rows.
+	Origin          string
 	SourceSessionID string
 	SourceRunID     string
 	CreatedAt       time.Time
 	DrainedAt       time.Time // zero = not yet drained
 }
+
+// Pending-queue origins. The taxonomy matches `memory.origin`; these are the two
+// values a producer can be, and both are set by the server at enqueue.
+const (
+	// PendingOriginAgentExplicit — an agent called `Memory op=add infer=true`.
+	PendingOriginAgentExplicit = "agent_explicit"
+	// PendingOriginCompaction — a compaction banked the span it was about to
+	// discard (RFC BL P3).
+	PendingOriginCompaction = "compaction"
+)
 
 // MemoryCursorRow is the per-target consolidation watermark + lease (RFC BL
 // P2). The composite watermark (WatermarkCompletedAt, WatermarkSessionID)

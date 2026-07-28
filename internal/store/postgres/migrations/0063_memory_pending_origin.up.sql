@@ -1,0 +1,16 @@
+-- 0063_memory_pending_origin.up.sql — RFC BL P3 (compaction→memory bridge).
+--
+-- What enqueued a pending row: 'agent_explicit' (Memory op=add) or 'compaction'
+-- (a compaction banked the span it was about to discard). Server-set at enqueue,
+-- never from a tool argument.
+--
+-- Why the column is needed at all: origin on the `memory` table is stamped from
+-- the WRITER's identity, and the writer is the consolidator either way — so
+-- without this there is no way for a consolidated fact to record that it came
+-- from a compaction flush rather than a scheduled transcript pass.
+--
+-- Nullable with NO backfill. A row enqueued before this column existed has an
+-- unknown producer, and guessing one would make the column lie on exactly the
+-- rows an operator is most likely to be auditing. Mirrors how memory.origin
+-- treats its own legacy rows.
+ALTER TABLE memory_pending ADD COLUMN IF NOT EXISTS origin TEXT;

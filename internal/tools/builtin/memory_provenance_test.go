@@ -214,3 +214,198 @@ func TestMemoryProvenanceGet_SupersededRowIsOpaque(t *testing.T) {
 		t.Error("MemoryProvenanceGet returned a superseded row; want ErrNotFound")
 	}
 }
+
+// enqueuePending seeds a pending-queue row for the fixture's target
+// (tenant "", scope agent, scope_id "qa-agent") with a server-set origin.
+func enqueuePending(t *testing.T, tool *Memory, id, origin, sessionID, runID string) {
+	t.Helper()
+	if err := tool.Store.MemoryPendingEnqueue(context.Background(), store.MemoryPendingRow{
+		ID: id, TenantID: "", Scope: store.MemoryScopeAgent, ScopeID: "qa-agent",
+		Payload: json.RawMessage(`{"messages":[]}`),
+		Origin:  origin, SourceSessionID: sessionID, SourceRunID: runID,
+	}); err != nil {
+		t.Fatalf("enqueue pending %s: %v", id, err)
+	}
+}
+
+// TestMemorySet_FromPendingResolvesProvenanceServerSide is the RFC BL P3 write
+// path: the model supplies a POINTER to a row it drained, and the SERVER supplies
+// the values. That is what lets `origin` stay unforgeable while still recording
+// that a fact came from a compaction flush rather than a scheduled pass —
+// provenanceForSet alone would stamp `consolidator` for both.
+//
+// Fails-before: without resolveFromPending the row lands origin=consolidator and
+// no source ids, indistinguishable from any other consolidated fact.
+func TestMemorySet_FromPendingResolvesProvenanceServerSide(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+
+	enqueuePending(t, tool, "mp_1", store.PendingOriginCompaction, "sess-compact", "run-compact")
+
+	in := `{"op":"set","scope":"agent","key":"fact/from-compaction","value":"user runs ROCm",
+	        "from_pending":"mp_1"}`
+	if res, _ := tool.Execute(gctx, json.RawMessage(in)); res.IsError {
+		t.Fatalf("set from_pending: %s", res.Text)
+	}
+
+	got := provenanceOf(t, tool, "fact/from-compaction")
+	want := store.MemoryProvenance{
+		Origin:          store.PendingOriginCompaction,
+		SourceSessionID: "sess-compact",
+		SourceRunID:     "run-compact",
+	}
+	if got != want {
+		t.Errorf("stored provenance = %+v, want %+v — the pending row's server-recorded origin must win over the writer-identity stamp", got, want)
+	}
+}
+
+// TestMemorySet_FromPendingUnownedIsIgnoredAndIndistinguishable is the forgery
+// arm. A pending id the caller does not own must neither attribute the write nor
+// refuse it — and crucially, an unowned id and a nonexistent one must be
+// INDISTINGUISHABLE, or `from_pending` becomes a probe for which ids exist.
+//
+// Ignoring rather than refusing is deliberate: a stale reference must not fail an
+// otherwise-correct write, and the field grants nothing anyway — the caller was
+// already authorized to write this key.
+func TestMemorySet_FromPendingUnownedIsIgnoredAndIndistinguishable(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+
+	// A real row belonging to a DIFFERENT target (another scope_id in the same
+	// tenant) — the id exists, but not for this caller.
+	if err := tool.Store.MemoryPendingEnqueue(context.Background(), store.MemoryPendingRow{
+		ID: "mp_foreign", TenantID: "", Scope: store.MemoryScopeAgent, ScopeID: "someone-else",
+		Payload: json.RawMessage(`{"messages":[]}`),
+		Origin:  store.PendingOriginCompaction, SourceRunID: "run-theirs",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	foreign, _ := tool.Execute(gctx, json.RawMessage(
+		`{"op":"set","scope":"agent","key":"fact/a","value":"x","from_pending":"mp_foreign"}`))
+	unknown, _ := tool.Execute(gctx, json.RawMessage(
+		`{"op":"set","scope":"agent","key":"fact/b","value":"x","from_pending":"mp_nope"}`))
+
+	if foreign.IsError || unknown.IsError {
+		t.Fatalf("an unresolvable from_pending must not fail the write: foreign=%q unknown=%q", foreign.Text, unknown.Text)
+	}
+	if foreign.Text != unknown.Text {
+		t.Errorf("an unowned id and an unknown id produced DIFFERENT responses:\n foreign=%s\n unknown=%s\nthat makes from_pending an existence probe", foreign.Text, unknown.Text)
+	}
+	// Neither write borrowed the foreign row's provenance.
+	for _, key := range []string{"fact/a", "fact/b"} {
+		got := provenanceOf(t, tool, key)
+		if got.SourceRunID == "run-theirs" || got.Origin == store.PendingOriginCompaction {
+			t.Errorf("%s borrowed provenance from a row the caller does not own: %+v", key, got)
+		}
+		// It still gets the ordinary identity-derived stamp — the field is not a
+		// gate, so the write proceeds exactly as it would without it.
+		if got.Origin != "consolidator" {
+			t.Errorf("%s origin = %q, want the ordinary consolidator stamp", key, got.Origin)
+		}
+	}
+}
+
+// TestMemoryGet_OriginAvailableFalseWhenChatDeleted is the Decision 4 invariant,
+// and the one most likely to be implemented wrongly.
+//
+// RFC BM retention deletes chats on a clock, so a fact's origin link is EXPECTED
+// to go dead. When it does, the fact must still be returned, must still carry its
+// recorded ids verbatim, and must simply report origin_available=false. Anything
+// that pruned or blanked the fact here would let retention silently destroy
+// memory — deleting a 3-day-old chat would delete what was learned from it.
+func TestMemoryGet_OriginAvailableFalseWhenChatDeleted(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+
+	// A real session in the fixture's tenant (""), so the link resolves at first.
+	sess, err := tool.Store.CreateSession(context.Background(), "", "qa-agent", "u1")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sessID := sess.ID
+	enqueuePending(t, tool, "mp_live", store.PendingOriginCompaction, sessID, "")
+	if res, _ := tool.Execute(gctx, json.RawMessage(
+		`{"op":"set","scope":"agent","key":"fact/sourced","value":"v","from_pending":"mp_live"}`)); res.IsError {
+		t.Fatalf("set: %s", res.Text)
+	}
+
+	read := func() map[string]any {
+		res, _ := tool.Execute(gctx, json.RawMessage(
+			`{"op":"get","scope":"agent","key":"fact/sourced","include_provenance":true}`))
+		if res.IsError {
+			t.Fatalf("get: %s", res.Text)
+		}
+		out := decodeResult(t, res.Text)
+		prov, ok := out["provenance"].(map[string]any)
+		if !ok {
+			t.Fatalf("get returned no provenance block: %v", out)
+		}
+		return prov
+	}
+
+	prov := read()
+	if prov["origin_available"] != true {
+		t.Errorf("origin_available = %v with the session present, want true", prov["origin_available"])
+	}
+	if prov["source_session_id"] != sessID || prov["origin"] != store.PendingOriginCompaction {
+		t.Errorf("provenance = %v, want session %q + compaction origin", prov, sessID)
+	}
+
+	// Retention deletes the chat.
+	if err := tool.Store.DeleteSessionCascade(context.Background(), sessID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+
+	prov = read()
+	if prov["origin_available"] != false {
+		t.Errorf("origin_available = %v after the chat was deleted, want false", prov["origin_available"])
+	}
+	// The ids are NOT rewritten or cleared — a dead citation is still the honest
+	// record of where the fact came from, and it is what an audit needs.
+	if prov["source_session_id"] != sessID {
+		t.Errorf("source_session_id = %v, want the id retained verbatim (%q)", prov["source_session_id"], sessID)
+	}
+	// And the fact itself survives.
+	res, _ := tool.Execute(gctx, json.RawMessage(`{"op":"get","scope":"agent","key":"fact/sourced"}`))
+	if res.IsError {
+		t.Fatalf("the fact did not survive its origin being deleted: %s", res.Text)
+	}
+	if v, _ := decodeResult(t, res.Text)["value"]; v == nil {
+		t.Error("the fact's value was blanked when its origin went away")
+	}
+}
+
+// TestMemoryAdd_StampsAgentExplicitOrigin covers the real `add` path, which the
+// other tests in this file bypass by seeding pending rows directly.
+//
+// That gap was found by fail-before verification: removing the stamp from
+// inprocess.Add broke NOTHING, because every other test enqueued through the
+// store. An origin the server sets is only trustworthy if something asserts the
+// server actually sets it on the path an agent uses.
+func TestMemoryAdd_StampsAgentExplicitOrigin(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	gctx := grantedConsolidationCtx(ctx)
+
+	in := `{"op":"add","scope":"agent","infer":true,
+	        "messages":[{"role":"user","content":"I use ROCm on an AMD card"}]}`
+	if res, _ := tool.Execute(gctx, json.RawMessage(in)); res.IsError {
+		t.Fatalf("add: %s", res.Text)
+	}
+
+	rows, err := tool.Store.MemoryPendingDrain(context.Background(), "", store.MemoryScopeAgent, "qa-agent", 10)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("drain returned %d rows, want 1", len(rows))
+	}
+	if rows[0].Origin != store.PendingOriginAgentExplicit {
+		t.Errorf("enqueued origin = %q, want %q — an agent reaching `add` IS an explicit agent write, and the value must come from the server rather than the tool input",
+			rows[0].Origin, store.PendingOriginAgentExplicit)
+	}
+}

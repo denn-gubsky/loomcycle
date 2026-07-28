@@ -409,6 +409,12 @@ func (b *Backend) Add(ctx context.Context, scope store.MemoryScope, scopeID stri
 			Scope:    scope,
 			ScopeID:  scopeID,
 			Payload:  payload,
+			// RFC BL P3: WHAT enqueued this, server-set. An agent reaching `add`
+			// is by definition an explicit agent write; the compaction bridge
+			// stamps its own value. Never a tool argument — origin is what a
+			// consolidated fact's provenance is resolved FROM, so a forgeable one
+			// would let an agent dictate how its own writes are labelled.
+			Origin: store.PendingOriginAgentExplicit,
 			// No session-id ctx helper today (RunIdentityValue carries no
 			// session id), so SourceSessionID stays empty; SourceRunID is enough
 			// to correlate the enqueue back to the run that produced it.

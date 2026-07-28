@@ -233,7 +233,9 @@ const memoryInputSchema = `{
     "completed_at":  {"type": "string", "description": "cursor_advance: the watermark timestamp (RFC3339), copied verbatim from the cursor_scan row you consolidated. With session_id it forms the composite watermark; the watermark only ever moves forward, and the server refuses a timestamp that does not match that chat's real finish time."},
     "session_id":    {"type": "string", "description": "cursor_advance: the watermark session id, copied verbatim from the same cursor_scan row as completed_at (required — the pair travels together). Must be a real, finished chat belonging to this memory target."},
     "ids":           {"type": "array", "description": "pending_ack: the pending-row ids to mark drained (as returned by pending_drain).", "items": {"type": "string"}},
-    "provenance":    {"type": "object", "description": "set-only: where this fact came from, recorded alongside the row. class is a short label for the kind of fact (e.g. preference, fact, decision, correction); source_session_id / source_run_id name the chat and run it was distilled from (relay them from pending_drain or the transcript you read). Descriptive only — it never changes what the write can reach. The writer identity is stamped server-side.", "properties": {"class": {"type": "string"}, "source_session_id": {"type": "string"}, "source_run_id": {"type": "string"}}, "additionalProperties": false}
+    "provenance":    {"type": "object", "description": "set-only: where this fact came from, recorded alongside the row. class is a short label for the kind of fact (e.g. preference, fact, decision, correction); source_session_id / source_run_id name the chat and run it was distilled from (relay them from pending_drain or the transcript you read). Descriptive only — it never changes what the write can reach. The writer identity is stamped server-side.", "properties": {"class": {"type": "string"}, "source_session_id": {"type": "string"}, "source_run_id": {"type": "string"}}, "additionalProperties": false},
+    "from_pending":  {"type": "string", "description": "set-only: the id of a pending item you drained, so this fact records what produced it. Pass the id and the server fills in the origin and source ids from that row — you cannot set those yourself. Unknown or unowned ids are ignored and the write still succeeds. Prefer this over filling source_session_id / source_run_id by hand when the fact came from a drained item."},
+    "include_provenance": {"type": "boolean", "description": "get-only: also return where the fact came from, and whether that origin is still readable (origin_available). A false origin_available means the chat has since been deleted — the fact is still valid, you just cannot go re-read its source."}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -306,6 +308,22 @@ type memoryInput struct {
 	// Only class / source_session_id / source_run_id are model-supplied; the
 	// origin is stamped server-side (see provenanceForSet).
 	Provenance *memoryProvenanceInput `json:"provenance,omitempty"`
+	// FromPending attributes this write to a pending-queue row the caller
+	// drained (RFC BL P3). The model supplies a POINTER; the server supplies the
+	// VALUES — origin, source_session_id and source_run_id are read off that row,
+	// which is why `origin` can stay unforgeable while still recording that a
+	// fact came from a compaction flush rather than a scheduled pass.
+	//
+	// The id is resolved within the caller's own (tenant, scope, scope_id), so an
+	// unowned row is not found. A miss is IGNORED, not refused: a stale reference
+	// must not fail an otherwise-correct write, and refusing would turn the field
+	// into a probe for which ids exist. It grants nothing — the caller was
+	// already authorized to write this key.
+	FromPending string `json:"from_pending,omitempty"`
+	// IncludeProvenance asks `get` to also return where the fact came from, plus
+	// whether that origin is still inspectable (RFC BL P3). Opt-in: it costs a
+	// second read, and the default output stays byte-identical.
+	IncludeProvenance bool `json:"include_provenance,omitempty"`
 }
 
 // memoryProvenanceInput is the model-supplied half of store.MemoryProvenance.
@@ -350,6 +368,39 @@ func provenanceForSet(ctx context.Context, in memoryInput) store.MemoryProvenanc
 	}
 	if tools.RunID(ctx) != "" && tools.MemoryPolicy(ctx).Consolidation {
 		prov.Origin = memoryOriginConsolidator
+	}
+	return prov
+}
+
+// resolveFromPending overlays server-authoritative provenance from the pending
+// row `in.FromPending` names (RFC BL P3), leaving `prov` untouched when the field
+// is absent or the row is not visible to this caller.
+//
+// The lookup's (tenant, scope, scopeID) tuple is the authorization check, so a
+// foreign row is simply not found. A miss returns prov UNCHANGED and no error:
+// the write is legal either way, and distinguishing "no such row" from "not
+// yours" would leak which ids exist.
+//
+// What it overrides and what it does not: the pending row's origin and source ids
+// WIN over the model's block, because that is the whole point — a server-recorded
+// producer beats a model-asserted one. Class is untouched; it is the model's
+// judgement about the fact, not a fact about where the fact came from.
+func (m *Memory) resolveFromPending(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput, prov store.MemoryProvenance) store.MemoryProvenance {
+	if in.FromPending == "" || m.Store == nil {
+		return prov
+	}
+	row, err := m.Store.MemoryPendingGet(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, in.FromPending)
+	if err != nil {
+		return prov
+	}
+	if row.Origin != "" {
+		prov.Origin = row.Origin
+	}
+	if row.SourceSessionID != "" {
+		prov.SourceSessionID = row.SourceSessionID
+	}
+	if row.SourceRunID != "" {
+		prov.SourceRunID = row.SourceRunID
 	}
 	return prov
 }
@@ -863,10 +914,80 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
 	}
-	return okJSON(map[string]any{
+	out := map[string]any{
 		"value":      entry.Value,
 		"expires_at": expiresAtRFC3339(entry.ExpiresAt),
-	})
+	}
+	if in.IncludeProvenance {
+		out["provenance"] = m.provenanceView(ctx, scope, scopeID, in.Key)
+	}
+	return okJSON(out)
+}
+
+// provenanceView renders a fact's recorded origin plus whether that origin is
+// STILL inspectable (RFC BL P3). Returns nil when the row carries no provenance,
+// so a caller can tell "unattributed" from "attributed to something gone".
+//
+// origin_available answers "can I go read the conversation this came from". It is
+// resolved live rather than stored, because a stored flag would be wrong the
+// moment the retention sweeper next ran and would then need its own
+// reconciliation — the classic cache-invalidation trap.
+//
+// The recorded ids are returned VERBATIM whether or not they resolve. A dead
+// citation is still the honest record of where the fact came from, and it is what
+// an audit needs after the chat is gone. Nothing here rewrites or clears them,
+// and nothing anywhere prunes a fact for having an unresolvable origin: RFC BM
+// retention deletes chats on a clock, so origin links are EXPECTED to go dead,
+// and pruning on that would make retention silently destroy memory.
+func (m *Memory) provenanceView(ctx context.Context, scope store.MemoryScope, scopeID, key string) map[string]any {
+	if m.Store == nil {
+		return nil
+	}
+	tenant := tools.RunIdentity(ctx).TenantID
+	prov, err := m.Store.MemoryProvenanceGet(ctx, tenant, scope, scopeID, key)
+	if err != nil || prov.IsZero() {
+		return nil
+	}
+	out := map[string]any{}
+	if prov.Origin != "" {
+		out["origin"] = prov.Origin
+	}
+	if prov.Class != "" {
+		out["class"] = prov.Class
+	}
+	if prov.SourceSessionID != "" {
+		out["source_session_id"] = prov.SourceSessionID
+	}
+	if prov.SourceRunID != "" {
+		out["source_run_id"] = prov.SourceRunID
+	}
+	if prov.SourceSessionID != "" || prov.SourceRunID != "" {
+		out["origin_available"] = m.originAvailable(ctx, tenant, prov)
+	}
+	return out
+}
+
+// originAvailable reports whether the conversation a fact was distilled from can
+// still be read, checking the session first and falling back to the run (today's
+// `add` path records only a run id — RunIdentity carries no session id).
+//
+// Both arms compare the fetched row's tenant to the caller's. The ids on a
+// pre-P3 fact are model-supplied, so without that comparison this would answer
+// "does id X exist" for an arbitrary id — a cross-tenant existence oracle. With
+// it, the question collapses to "does this id exist in MY tenant", which leaks
+// nothing the caller could not already determine.
+func (m *Memory) originAvailable(ctx context.Context, tenant string, prov store.MemoryProvenance) bool {
+	if id := prov.SourceSessionID; id != "" {
+		if sess, err := m.Store.GetSession(ctx, id); err == nil && sess.TenantID == tenant {
+			return true
+		}
+	}
+	if id := prov.SourceRunID; id != "" {
+		if run, err := m.Store.GetRun(ctx, id); err == nil && run.TenantID == tenant {
+			return true
+		}
+	}
+	return false
 }
 
 // coreBlockKeyPrefix is the reserved KV namespace for RFC BL P1 core memory
@@ -967,7 +1088,7 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 		TTL:        ttl,
 		Embed:      in.Embed,
 		EmbedText:  in.EmbedText,
-		Provenance: provenanceForSet(ctx, in),
+		Provenance: m.resolveFromPending(ctx, scope, scopeID, in, provenanceForSet(ctx, in)),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrEmbedderNotConfigured) || errors.Is(err, store.ErrVectorUnsupported) {
@@ -1602,8 +1723,14 @@ func (m *Memory) execPendingDrain(ctx context.Context, scope store.MemoryScope, 
 	items := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, map[string]any{
-			"id":                r.ID,
-			"payload":           json.RawMessage(r.Payload),
+			"id":      r.ID,
+			"payload": json.RawMessage(r.Payload),
+			// origin is what produced this item (agent_explicit | compaction),
+			// server-recorded at enqueue. Surfaced so a pass can see what it is
+			// holding; relaying the row's `id` back on `set` as `from_pending` is
+			// what actually attributes the resulting fact, since the model cannot
+			// author origin itself. Empty on rows enqueued before the column.
+			"origin":            r.Origin,
 			"source_session_id": r.SourceSessionID,
 			"source_run_id":     r.SourceRunID,
 			"created_at":        r.CreatedAt.UTC().Format(time.RFC3339Nano),
