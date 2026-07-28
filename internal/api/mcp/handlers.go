@@ -220,6 +220,23 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	if req.Agent == "" && req.SessionID == "" {
 		return toolErr("spawn_run: either agent or session_id must be supplied"), nil
 	}
+	// A FRESH run with no segments reaches the model as a null user turn: it gets
+	// the system prompt and nothing to act on, then answers whatever that implies.
+	// The run COMPLETES, so nothing surfaces as an error — the emptiness is only
+	// visible by reading the thinking trace, and a tool-less extractor answering
+	// "[]" to an absent transcript looks exactly like a model that found nothing.
+	// That cost an afternoon of misattributed debugging.
+	//
+	// HTTP already refuses this (F47, handleRuns) rather than dispatching an empty
+	// messages array; MCP did not, so the same caller error was a 400 on one
+	// transport and a silently-empty run on the other. This is that parity.
+	//
+	// A CONTINUATION may legitimately omit segments — the schema says so, and
+	// "resume with nothing new to add" is a real call — so the guard is scoped to
+	// a fresh run.
+	if req.SessionID == "" && len(req.Segments) == 0 {
+		return toolErr(`spawn_run: segments is required for a fresh run — a run with no user turn sends the model an empty prompt. Pass segments: [{"role":"user","content":[{"type":"trusted-text","text":"..."}]}]`), nil
+	}
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.UserCredentials); !ok {
 		return toolErr("spawn_run: " + errMsg), nil
 	}
