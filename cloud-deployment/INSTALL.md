@@ -34,20 +34,22 @@ mkdir -p /home/denn/work/loomcycle-cloud
 cp -r cloud-deployment/* cloud-deployment/.gitignore /home/denn/work/loomcycle-cloud/
 cd /home/denn/work/loomcycle-cloud
 
-mkdir -p data config work pgdata ts-state searxng web caddy-data caddy-config retention-exports
+mkdir -p data config work pgdata ts-state searxng web retention-exports
 # loomcycle + its migrate run as uid:gid 65532; give them their writable dirs.
 sudo chown -R 65532:65532 data work retention-exports
 ```
 
-`config/loomcycle.yaml` (SearXNG wiring), `searxng/settings.yml`, `Caddyfile`, and
-`postgres/initdb.d/00-init.sql` came with the copy — leave them in place.
+`config/loomcycle.yaml` (SearXNG wiring), `searxng/settings.yml`, the `landing/`
+Node app, and `postgres/initdb.d/00-init.sql` came with the copy — leave them in
+place. The landing image builds on `make up` (`build: ./landing`).
 
 ---
 
 ## Phase 2 — Landing page
 
-Copy the drafted static site into `web/` (Caddy serves it; the `functions/` dir is
-unused because Caddy reproduces those two proxies):
+Copy the drafted static site into `web/` (the Node landing serves it; the
+`functions/` dir is unused because the landing reproduces `/api/*` + the `/v1`
+inner-link proxy server-side):
 
 ```bash
 cp -r /path/to/loomcycle/cloud-web/* /home/denn/work/loomcycle-cloud/web/
@@ -76,13 +78,24 @@ any tailnet device: `tailscale status | grep -i ollama-host`. You'll put it in
    | Hostname | Service |
    |---|---|
    | `app.loomcycle.cloud` | `http://tailscale:8787` |
-   | `loomcycle.cloud`     | `http://landing:80` |
+   | `loomcycle.cloud`     | `http://landing:8080` |
 
    > ⚠️ **The app hostname points at `tailscale:8787`, NOT `loomcycle:8787`.**
    > loomcycle shares the tailscale netns and has no DNS name of its own.
 
-3. Cloudflare auto-creates the proxied DNS records for the tunnel. (Optional but
-   recommended: add a **Cloudflare Access** application over `app.loomcycle.cloud`.)
+3. Cloudflare auto-creates the proxied DNS records for the tunnel.
+
+4. **Cloudflare Access — gate the mint route (required for self-serve minting).**
+   Zero Trust → **Access → Applications → Add → Self-hosted**:
+   - Application domain: `loomcycle.cloud`, **Path: `api`** (protects `/api/*` — the
+     marketing page at `/` stays public).
+   - Identity: add **Google** as the login method; add an Access **policy** (e.g.
+     Allow — emails ending in your domain, or a specific allow-list).
+   - After creating it, open the app's **Overview → Application Audience (AUD) Tag**
+     and copy it → `CF_ACCESS_AUD` in `.env.insecure`. Set `CF_ACCESS_TEAM_DOMAIN`
+     to your team hostname (e.g. `yourteam.cloudflareaccess.com`).
+   - (Optional, recommended: a second Access app over `app.loomcycle.cloud` for
+     defense-in-depth on the runtime UI.)
 
 ---
 
@@ -90,24 +103,46 @@ any tailnet device: `tailscale status | grep -i ollama-host`. You'll put it in
 
 ```bash
 cp .env.insecure.example .env.insecure
-cp .env.secure.example   .env.secure
-chmod 600 .env.secure
+chmod 600 .env.secure   # after you create it below
 ```
 
 Edit **`.env.insecure`** (non-secret):
 - `OLLAMA_BASE_URL` → the Ollama tailnet **IP** (Phase 3).
-- `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud` (already set).
+- `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` → from the Access app (Phase 4).
+- `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud` + `LANDING_ORIGIN=https://loomcycle.cloud`.
 - Adjust presets / retention / GPU knobs to taste.
 
-Edit **`.env.secure`** (secrets — fill every `REPLACE_ME`):
-- Generate tokens: `openssl rand -hex 32` for `LOOMCYCLE_AUTH_TOKEN`,
-  `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`, `SANDBOX_AUTH_TOKEN`, `SEARXNG_SECRET`.
-- `POSTGRES_PASSWORD` and the password embedded in **both**
-  `LOOMCYCLE_PG_DSN` + `LOOMCYCLE_SQLMEM_PG_DSN` **must match**.
-- `TS_AUTHKEY` (Phase 3), `CLOUDFLARE_TUNNEL_TOKEN` (Phase 4).
-- At least one provider key; `BRAVE_API_KEY` only if you want a paid search fallback.
+Create **`.env.secure`** (there is no committed template — repo policy forbids a
+`.env.secure*` file in git). Fill every `REPLACE_ME`, then `chmod 600 .env.secure`:
 
-The DSN host is **`postgres`** (the compose service) — don't change it.
+```bash
+# ── loomcycle core ──
+LOOMCYCLE_AUTH_TOKEN=REPLACE_ME              # openssl rand -hex 32
+LOOMCYCLE_OPERATOR_TOKEN_PEPPER=REPLACE_ME   # openssl rand -hex 32
+LOOMCYCLE_ADMIN_TOKEN=SAME_AS_AUTH_TOKEN     # the landing mints with this; set = LOOMCYCLE_AUTH_TOKEN
+# LOOMCYCLE_SECRET_KEY=REPLACE_ME            # optional (encrypted tenant credentials); openssl rand -base64 32
+# ── Postgres (this password MUST equal the one in the two DSNs) ──
+POSTGRES_PASSWORD=REPLACE_ME_STRONG
+LOOMCYCLE_PG_DSN=postgres://loomcycle:REPLACE_ME_STRONG@postgres:5432/loomcycle?sslmode=disable
+LOOMCYCLE_SQLMEM_PG_DSN=postgres://loomcycle:REPLACE_ME_STRONG@postgres:5432/loomcycle_sqlmem?sslmode=disable
+# ── sidecars ──
+SANDBOX_AUTH_TOKEN=REPLACE_ME                # openssl rand -hex 32 (shared with builder-sidecar)
+TS_AUTHKEY=tskey-auth-REPLACE_ME             # Phase 3 (reusable, tagged)
+CLOUDFLARE_TUNNEL_TOKEN=REPLACE_ME           # Phase 4
+SEARXNG_SECRET=REPLACE_ME                    # openssl rand -hex 32
+# ── provider keys — at least one your tiers route to ──
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+DEEPSEEK_API_KEY=
+BRAVE_API_KEY=                               # optional paid search fallback
+```
+
+Notes:
+- **`LOOMCYCLE_ADMIN_TOKEN` = `LOOMCYCLE_AUTH_TOKEN`** (the super-admin bearer). Do
+  NOT mint a dedicated `substrate:admin` token for it — that disables the
+  `LOOMCYCLE_AUTH_TOKEN` login (no-lockout gate).
+- The DSN host is **`postgres`** (the compose service) — don't change it.
 
 ---
 
@@ -130,12 +165,19 @@ make ps          # all services `running`/`healthy`; loomcycle-migrate `exited (
    layered, **no** `permission denied to create role` and **no** pgvector refusal.
 3. **Tailnet**: `docker compose exec tailscale tailscale status` → connected;
    `docker compose exec tailscale wget -qO- http://100.x.x.x:11434/api/tags` → Ollama models.
-4. **In-network**: `docker compose exec landing wget -qO- http://tailscale:8787/healthz` → ok;
+4. **In-network**: `docker compose exec landing wget -qO- http://localhost:8080/_up` → `{"ok":true}`;
+   the landing's inner-link proxy: `docker compose exec landing wget -qO- http://localhost:8080/v1/config` → the public config;
    SearXNG: `docker compose exec searxng wget -qO- http://localhost:8080/healthz` → ok.
-5. **Public**: `curl -s https://app.loomcycle.cloud/healthz` and
-   `curl -s https://loomcycle.cloud/api/health` (landing → live status strip). Then
-   browse `https://app.loomcycle.cloud/ui` and sign in with `LOOMCYCLE_AUTH_TOKEN`.
-6. **Functional**: run a `chat/medium` agent that uses WebSearch (proves SearXNG),
+5. **Public**: `curl -s https://app.loomcycle.cloud/healthz`; `curl -s https://loomcycle.cloud/healthz`
+   and `https://loomcycle.cloud/v1/config` (the landing's inner-link proxy → live status strip
+   on the page). Then browse `https://app.loomcycle.cloud/ui` and sign in with `LOOMCYCLE_AUTH_TOKEN`.
+6. **Mint flow** (the self-serve path): open `https://loomcycle.cloud`, click **Sign in
+   with Google** → Cloudflare Access → Google → back to the landing signed in; **Create
+   token** → a real `substrate:tenant` token is shown once and vaulted. Confirm server-side:
+   `curl -s -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" https://app.loomcycle.cloud/v1/_operatortokendef/names`
+   lists the new token under its derived `t_…` tenant. (A `curl` to `/api/mint` WITHOUT an
+   Access cookie must return `401`.)
+7. **Functional**: run a `chat/medium` agent that uses WebSearch (proves SearXNG),
    a `dev/sandbox` run (proves the builder sidecar via `mcp__sandbox__*`), and a
    Document op (proves SQL Memory + pgvector).
 
@@ -175,7 +217,10 @@ volumes:
 | runtime logs `sqlmem: … permission denied to create role` | The DSN role lacks `CREATEROLE`. The init makes `loomcycle` a superuser (has it); if you swapped to a non-super role, `ALTER ROLE loomcycle CREATEROLE;`. |
 | runtime refuses to start, pgvector missing | pgvector binaries absent — use the `pgvector/pgvector:pg18` image (it ships them); wipe `pgdata/` and re-init if the first migrate ran before pgvector existed. |
 | `app.loomcycle.cloud` → 502 / 1033 | The tunnel route must target `http://tailscale:8787` (not `loomcycle:…`); confirm `cloudflared` is `running` and the hostname exists in the dashboard. |
-| landing status strip grey / `/api/config` shows "not published" | `LOOMCYCLE_PUBLIC_CONFIG=1` must be set (it is by default); confirm Caddy can reach `tailscale:8787`. |
+| landing status strip grey / config "not published" | `LOOMCYCLE_PUBLIC_CONFIG=1` must be set (it is by default); confirm the landing can reach `tailscale:8787` (`make logs S=landing`). |
+| `landing` exits at boot: `FATAL: CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD required` | Set both in `.env.insecure` from the Access app (Phase 4), or `MINT_DEV_ALLOW_UNVERIFIED=1` for local testing only. `FATAL: LOOMCYCLE_ADMIN_TOKEN required` → set it in `.env.secure`. |
+| **Create token** → `not signed in` (401) | The Access cookie isn't present — the `/api` Access app is missing/misconfigured, or you didn't complete the Google login. Verify the app protects `loomcycle.cloud` path `api` and `CF_ACCESS_AUD` matches. |
+| **Create token** → `502 upstream …` | The landing reached loomcycle but the mint failed: `LOOMCYCLE_ADMIN_TOKEN` isn't a valid admin bearer (must equal `LOOMCYCLE_AUTH_TOKEN`), or the runtime is down. Check `make logs S=landing`. |
 | Ollama unreachable from loomcycle | Use the **raw tailnet IP** in `OLLAMA_BASE_URL` (MagicDNS is unavailable in the shared netns); confirm `tailscale status` shows the peer. |
 | `tailscale` unhealthy | Bad/expired `TS_AUTHKEY`, or `/dev/net/tun` missing; check `make logs S=tailscale`. |
 | Bashbox fallback commands (`git`/`go`/…) "not found" | The plain `denngubsky/loomcycle` image is minimal — either switch the `loomcycle` + `loomcycle-migrate` images to `denngubsky/loomcycle-toolbox:<same-tag>`, or rely on the `sandbox` preset (its session image has the full toolchain). |
