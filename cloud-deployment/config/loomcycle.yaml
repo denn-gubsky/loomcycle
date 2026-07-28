@@ -1,0 +1,12 @@
+# loomcycle config overlay (mounted at /config = LOOMCYCLE_CONFIG_DIR).
+# Deep-merged OVER the embedded presets (RFC AN layering: presets → CONFIG_DIR).
+#
+# SearXNG is wired here, NOT via env — there is no LOOMCYCLE_SEARCH_* var. The
+# base_url is the in-compose service name. `brave` is an optional paid fallback
+# (inert unless BRAVE_API_KEY is set); drop it from search_priority to disable.
+search_providers:
+  searxng:
+    base_url: "http://searxng:8080"
+  brave: {}
+
+search_priority: [searxng, brave]

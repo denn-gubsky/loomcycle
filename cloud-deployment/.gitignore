@@ -1,0 +1,15 @@
+# Only the *.example templates are committed — never the filled secret/config files.
+.env.secure
+.env.insecure
+
+# Runtime state + data (created on the host; never committed even if the deploy
+# directory lives inside a repo checkout).
+data/
+pgdata/
+work/
+ts-state/
+caddy-data/
+caddy-config/
+web/
+retention-exports/
+searxng/uwsgi.ini
