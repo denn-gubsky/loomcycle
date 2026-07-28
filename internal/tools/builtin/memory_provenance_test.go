@@ -3,9 +3,11 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -407,5 +409,82 @@ func TestMemoryAdd_StampsAgentExplicitOrigin(t *testing.T) {
 	if rows[0].Origin != store.PendingOriginAgentExplicit {
 		t.Errorf("enqueued origin = %q, want %q — an agent reaching `add` IS an explicit agent write, and the value must come from the server rather than the tool input",
 			rows[0].Origin, store.PendingOriginAgentExplicit)
+	}
+}
+
+// TestMemoryQuota_DocumentChunksDoNotLockOutMemoryWrites reproduces a live
+// production lockout, exactly.
+//
+// RFC AK stores Document chunk BODIES in the memory keyspace as
+// `doc.chunk:<uuid>`, in the same (tenant, scope, scope_id) partition as an
+// agent's own memory. The quota check listed that scope with a 1000-key cap and
+// treated truncation as a refusal — so a user scope holding 2,998 chunk bodies
+// against 38 facts refused EVERY memory write with "more than 1000 keys; delete
+// unused keys first", while the actual memory footprint was a few kilobytes. The
+// consolidator read ten chats, extracted five facts, and wrote none of them.
+//
+// Two things are asserted, because fixing only the first would leave the quota
+// silently wrong: the write must SUCCEED past the old truncation wall, and the
+// chunk bodies must not COUNT toward the byte quota either.
+//
+// Fails before the fix with the "more than 1000 keys" refusal.
+func TestMemoryQuota_DocumentChunksDoNotLockOutMemoryWrites(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	// A small quota: 4 KB of real memory. The chunk bodies below are ~100 KB
+	// total, so if they were counted the write would fail on bytes even after the
+	// key-count wall is gone.
+	tool.DefaultQuotaBytes = 4096
+
+	// 1200 document chunks — past the old 1000-key list cap.
+	for i := 0; i < 1200; i++ {
+		key := memrank.DocumentChunkKeyPrefix + fmt.Sprintf("%032x", i)
+		body := json.RawMessage(`{"body":"` + strings.Repeat("x", 80) + `"}`)
+		if err := tool.Store.MemorySet(context.Background(), "", store.MemoryScopeAgent, "qa-agent", key, body, 0); err != nil {
+			t.Fatalf("seed chunk %d: %v", i, err)
+		}
+	}
+
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"set","scope":"agent","key":"memory/fact/user-runs-rocm","value":"The user runs ROCm on an AMD card."}`))
+	if res.IsError {
+		t.Fatalf("a memory write was refused because the scope holds Document chunk bodies: %s", res.Text)
+	}
+
+	// The fact really landed.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"agent","key":"memory/fact/user-runs-rocm"}`))
+	if res.IsError || decodeResult(t, res.Text)["value"] == nil {
+		t.Fatalf("the write reported success but nothing is readable: %s", res.Text)
+	}
+
+	// And chunk bytes are excluded from the quota, not merely from the key count:
+	// ~100 KB of bodies against a 4 KB quota would otherwise refuse this.
+	res, _ = tool.Execute(ctx, json.RawMessage(
+		`{"op":"set","scope":"agent","key":"memory/fact/second","value":"Another durable fact."}`))
+	if res.IsError {
+		t.Errorf("Document chunk bytes are being counted toward the memory quota: %s", res.Text)
+	}
+}
+
+// TestMemoryQuota_StillRefusesRealMemoryOverrun: the fix must not disarm the cap
+// it was narrowing. Agent-written keys still count, and a genuine overrun is still
+// refused — otherwise excluding one namespace would have removed the quota.
+func TestMemoryQuota_StillRefusesRealMemoryOverrun(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	tool.DefaultQuotaBytes = 2048
+
+	big := strings.Repeat("y", 1500)
+	if res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"set","scope":"agent","key":"memory/fact/a","value":"`+big+`"}`)); res.IsError {
+		t.Fatalf("first write should fit: %s", res.Text)
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"set","scope":"agent","key":"memory/fact/b","value":"`+big+`"}`))
+	if !res.IsError {
+		t.Error("two 1500-byte facts fit under a 2048-byte quota; the cap is not being enforced")
+	}
+	if !strings.Contains(res.Text, "quota") {
+		t.Errorf("refusal does not name the quota: %s", res.Text)
 	}
 }

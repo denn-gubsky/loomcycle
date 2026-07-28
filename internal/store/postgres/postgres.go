@@ -4181,6 +4181,34 @@ func anyScopeIDs(scopeIDs []string) []any {
 	return []any{scopeIDs}
 }
 
+// MemoryScopeUsage sums the scope's live footprint in SQL, excluding a namespace.
+// The live predicate mirrors MemoryList exactly (unexpired + not superseded) so
+// the quota measures what a read would actually surface. `value` is jsonb here, so
+// the byte length is taken from its text rendering to match the sqlite tier.
+func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, excludeKeyPrefix string) (int, int, error) {
+	// The exclusion is a CONDITIONAL clause, not a sentinel value: an empty prefix
+	// must exclude NOTHING, and that is simply a different query. A NUL sentinel is
+	// not even representable here — Postgres rejects it with "invalid byte sequence
+	// for encoding UTF8: 0x00", which is how the first cut was caught — and any
+	// printable one is a value a key could theoretically hold.
+	q := `SELECT COUNT(*), COALESCE(SUM(LENGTH(key) + LENGTH(value::text)), 0)
+		   FROM memory
+		  WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3
+		    AND (expires_at IS NULL OR expires_at > NOW())
+		    AND superseded_at IS NULL`
+	args := []any{tenantID, string(scope), scopeID}
+	if excludeKeyPrefix != "" {
+		q += ` AND key NOT LIKE $4 ESCAPE '\'`
+		args = append(args, escapeLikePrefix(excludeKeyPrefix)+"%")
+	}
+	var keys, bytes int64
+	err := s.pool.QueryRow(ctx, q, args...).Scan(&keys, &bytes)
+	if err != nil {
+		return 0, 0, fmt.Errorf("memory scope usage: %w", err)
+	}
+	return int(keys), int(bytes), nil
+}
+
 // MemorySweep deletes every Memory row whose expires_at has passed.
 // Single atomic DELETE so concurrent sweepers race correctly.
 func (s *Store) MemorySweep(ctx context.Context) (int, error) {

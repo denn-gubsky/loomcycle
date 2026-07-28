@@ -2119,6 +2119,14 @@ func bytesEqual(a, b []byte) bool {
 //
 // 0 quota = "no cap" (matches the env var convention for "feature
 // disabled"). The check short-circuits then.
+// scopeUsageCounter is the optional backend capability that sums a scope's memory
+// footprint server-side, excluding namespaces that are not agent memory. Only the
+// in-process backend implements it, because only the main store can hold Document
+// chunk bodies; a remote backend keeps the list-based path.
+type scopeUsageCounter interface {
+	ScopeUsage(ctx context.Context, scope store.MemoryScope, scopeID string) (keys int, bytes int, err error)
+}
+
 func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeID, key string, addBytes int) error {
 	policy := tools.MemoryPolicy(ctx)
 	quota := policy.QuotaBytes
@@ -2129,6 +2137,37 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 		return nil
 	}
 
+	// Preferred path: ask the backend to sum the scope in one query, excluding
+	// the Document chunk-body namespace. RFC AK stores chunk bodies in this same
+	// keyspace, and a scope holding thousands of them truncated the list below
+	// before the agent's own rows were reached — refusing every write with "more
+	// than 1000 keys" while the real memory footprint was kilobytes. Documents
+	// are governed by their own quota; counting them here conflated two
+	// subsystems and produced an error that named the wrong problem ("delete
+	// unused keys first" would have an operator deleting their documents).
+	if sc, ok := m.backend(ctx).(scopeUsageCounter); ok {
+		_, used, err := sc.ScopeUsage(ctx, scope, scopeID)
+		if err != nil {
+			return fmt.Errorf("quota check: %w", err)
+		}
+		// An overwrite replaces the existing row, so its bytes are not additive.
+		if existing, gerr := m.backend(ctx).Get(ctx, scope, scopeID, key); gerr == nil {
+			used -= len(key) + len(existing.Value)
+			if used < 0 {
+				used = 0
+			}
+		}
+		if projected := used + len(key) + addBytes; projected > quota {
+			return fmt.Errorf("Memory.set: scope %q quota %d bytes would be exceeded by this write (current=%d, after=%d)",
+				scope, quota, used, projected)
+		}
+		return nil
+	}
+
+	// Fallback for a REMOTE backend, which cannot host Document chunk bodies
+	// (Documents always write to the main store) — so its list-based count is
+	// already correct, and the truncation refusal below is a real signal there.
+	//
 	// Sum existing bytes (key + value) across the whole scope. The
 	// list call is expected to be small for a well-behaved agent — a
 	// noisy agent that writes thousands of keys hits the quota cap

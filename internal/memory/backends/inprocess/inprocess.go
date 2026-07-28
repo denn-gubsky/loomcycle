@@ -519,3 +519,23 @@ var (
 	_ memory.MemoryLayer = (*Backend)(nil)
 	_ memory.Capable     = (*Backend)(nil)
 )
+
+// ScopeUsage reports the scope's live memory footprint EXCLUDING Document chunk
+// bodies (RFC AK stores them in this same keyspace under a reserved prefix).
+//
+// It satisfies the optional capability the Memory tool's quota check probes for.
+// The old check listed the scope with a 1000-key cap and treated truncation as a
+// refusal — correct in spirit (undercounting would let a thousand-tiny-key agent
+// slip the cap) but wrong here: a scope holding thousands of document chunks
+// truncated before reaching the agent's own rows, so every write was refused with
+// "more than 1000 keys" while the real memory footprint was a few kilobytes. That
+// is not a hypothetical; it locked out a live deployment whose user scope held
+// 2,998 chunk bodies against 38 facts.
+//
+// Documents ALWAYS write chunk bodies to the main store, never to a remote
+// backend, which is why only this backend implements the capability — a remote
+// backend's keyspace cannot contain them, so its List-based count is already
+// right.
+func (b *Backend) ScopeUsage(ctx context.Context, scope store.MemoryScope, scopeID string) (int, int, error) {
+	return b.store.MemoryScopeUsage(ctx, runTenant(ctx), scope, scopeID, memory.DocumentChunkKeyPrefix)
+}

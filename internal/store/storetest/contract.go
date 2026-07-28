@@ -154,6 +154,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemorySupersedeRevivedByWrite", testMemorySupersedeRevivedByWrite},
 		{"MemoryPendingEnqueueDrainAck", testMemoryPendingEnqueueDrainAck},
 		{"MemoryPendingOriginRoundTripsAndIsScoped", testMemoryPendingOriginRoundTripsAndIsScoped},
+		{"MemoryScopeUsageExcludesNamespace", testMemoryScopeUsageExcludesNamespace},
 		{"MemoryCursorGetDefault", testMemoryCursorGetDefault},
 		{"MemoryCursorLeaseCAS", testMemoryCursorLeaseCAS},
 		{"MemoryCursorAdvanceMonotonicAndOwner", testMemoryCursorAdvanceMonotonicAndOwner},
@@ -10634,5 +10635,67 @@ func testMemoryPendingOriginRoundTripsAndIsScoped(t *testing.T, s store.Store) {
 		if !errors.As(err, &nf) {
 			t.Errorf("%s: got err %v, want *ErrNotFound — the lookup tuple must be the authz check", bad.name, err)
 		}
+	}
+}
+
+// testMemoryScopeUsageExcludesNamespace: the quota's accounting primitive. It must
+// sum in SQL (no list cap — the whole reason it exists) and honour the exclusion,
+// with the same live-row predicate MemoryList uses so the quota measures what a
+// read would surface.
+func testMemoryScopeUsageExcludesNamespace(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const (
+		tenant  = "acme"
+		scopeID = "u1"
+	)
+	scope := store.MemoryScopeUser
+
+	// Two real memory rows...
+	for _, k := range []string{"memory/fact/a", "memory/fact/b"} {
+		if err := s.MemorySet(ctx, tenant, scope, scopeID, k, json.RawMessage(`"vv"`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// ...and MORE than the old 1000-key list cap of excluded rows, which is the
+	// case that broke: listing truncated before the memory rows were reached.
+	for i := 0; i < 1100; i++ {
+		k := "doc.chunk:" + strconv.Itoa(i)
+		if err := s.MemorySet(ctx, tenant, scope, scopeID, k, json.RawMessage(`"body"`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	keys, bytes, err := s.MemoryScopeUsage(ctx, tenant, scope, scopeID, "doc.chunk:")
+	if err != nil {
+		t.Fatalf("MemoryScopeUsage: %v", err)
+	}
+	if keys != 2 {
+		t.Errorf("keys = %d, want 2 — the excluded namespace leaked into the count (or the sum is list-capped)", keys)
+	}
+	if bytes <= 0 {
+		t.Errorf("bytes = %d, want the two memory rows' footprint", bytes)
+	}
+	// Sanity: the exclusion is doing work, not returning everything.
+	allKeys, allBytes, err := s.MemoryScopeUsage(ctx, tenant, scope, scopeID, "")
+	if err != nil {
+		t.Fatalf("MemoryScopeUsage(no exclusion): %v", err)
+	}
+	if allKeys != 1102 {
+		t.Errorf("unfiltered keys = %d, want 1102 — an empty prefix must exclude NOTHING (a `%%` sentinel would zero this)", allKeys)
+	}
+	if allBytes <= bytes {
+		t.Errorf("unfiltered bytes %d should exceed filtered %d", allBytes, bytes)
+	}
+
+	// A superseded row drops out, matching MemoryList's live predicate.
+	if err := s.MemorySupersede(ctx, tenant, scope, scopeID, "memory/fact/a"); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	keys, _, err = s.MemoryScopeUsage(ctx, tenant, scope, scopeID, "doc.chunk:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys != 1 {
+		t.Errorf("keys = %d after superseding one of two, want 1 — a soft-archived row must not hold quota", keys)
 	}
 }
