@@ -32,7 +32,7 @@ compose network `loomnet`:
 | `builder-sidecar` | `denngubsky/loomcycle-builder-docker:1.25.2` | Sandboxed code exec (`mcp__sandbox__*`) via the host Docker socket. |
 | `loomcycle` | `denngubsky/loomcycle:1.38.0` | The runtime. `network_mode: service:tailscale`. |
 | `searxng` | `searxng/searxng` | Keyless search backend (wired via `config/loomcycle.yaml`). |
-| `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies public `/v1/*` + `/healthz` (inner links), and mints `substrate:tenant` tokens behind Cloudflare Access. |
+| `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies the public reads `/healthz` + `/v1/config` (inner links), and mints `substrate:tenant` tokens behind Cloudflare Access. |
 | `cloudflared` | `cloudflare/cloudflared` | Outbound tunnel; routes managed in the Cloudflare dashboard (token method). |
 
 ### The landing server + self-serve minting
@@ -41,9 +41,13 @@ compose network `loomnet`:
 
 1. **Serves the static marketing site** (`cloud-web/`, bind-mounted at `/srv`, with
    HTTP range so the videos stream).
-2. **Proxies the runtime's public reads as same-origin "inner links"** — `GET
-   /healthz` and `GET /v1/*` go to `http://tailscale:8787`. The operator-admin
-   plane `/v1/_*` is **refused** here (it must never be reachable on the apex).
+2. **Proxies the runtime's public reads as same-origin "inner links"** — a
+   hardcoded **allowlist** (`GET /healthz` + `GET /v1/config`, the only reads the
+   page makes) forwarded to `http://tailscale:8787`. It is deliberately an
+   allowlist forwarding fixed upstream paths — **not** a blanket `/v1/*` proxy with
+   a `/v1/_*` denylist, which a `..`/`%5f` bypass could slip past — so the
+   operator-admin plane is never reachable on the apex. The bearer-gated app API
+   stays on `app.loomcycle.cloud`.
 3. **Mints `substrate:tenant` tokens** for a Cloudflare-Access-authenticated
    visitor. `POST /api/mint` verifies the Access JWT (`Cf-Access-Jwt-Assertion`
    against the team JWKS + AUD), derives a stable `(tenant, subject)` from the

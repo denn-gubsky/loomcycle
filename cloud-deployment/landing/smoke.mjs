@@ -13,28 +13,40 @@ const WEB_ROOT = path.resolve(HERE, "../../cloud-web"); // serve the real landin
 let failures = 0;
 const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) failures++; };
 
-// 1) stub loomcycle upstream — records what /v1/_operatortokendef received.
+// 1) stub loomcycle upstream — records what /v1/_operatortokendef received. It
+// decodes + normalizes the path the way Go's net/http does, so a `..`/`%5f`
+// bypass forwarded by the landing WOULD reach the admin plane here (→ a "leak"
+// the regression catches).
 let mintSaw = null;
 const upstream = http.createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/healthz") {
+  let p;
+  try { p = path.posix.normalize(decodeURIComponent(new URL(req.url, "http://x").pathname)); }
+  catch { p = req.url; }
+  if (req.method === "GET" && p === "/healthz") {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({ ok: true, version: "test" }));
   }
-  if (req.method === "GET" && req.url === "/v1/config") {
+  if (req.method === "GET" && p === "/v1/config") {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({ version: "test", features: { sqlmem: true } }));
   }
-  if (req.method === "POST" && req.url === "/v1/_operatortokendef") {
-    let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-      const body = JSON.parse(b || "{}");
-      mintSaw = { auth: req.headers.authorization || "", body };
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({
-        name: body.name, tenant_id: body.tenant_id, subject: body.subject,
-        allowed_scopes: body.scopes, token: "lc_TESTTOKEN0001", token_suffix: "0001",
-      }));
-    });
-    return;
+  if (p === "/v1/_operatortokendef") {
+    if (req.method === "POST") {
+      let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
+        const body = JSON.parse(b || "{}");
+        mintSaw = { auth: req.headers.authorization || "", body };
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({
+          name: body.name, tenant_id: body.tenant_id, subject: body.subject,
+          allowed_scopes: body.scopes, token: "lc_TESTTOKEN0001", token_suffix: "0001",
+        }));
+      });
+      return;
+    }
+    // reaching the admin plane by any other method means the landing let a bypass
+    // through — a detectable leak.
+    res.statusCode = 200; res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ leaked: true }));
   }
   res.statusCode = 404; res.end("nope");
 });
@@ -71,6 +83,18 @@ try {
   // admin plane blocked on the apex
   const admin = await fetch(base + "/v1/_operatortokendef", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   ok(admin.status === 404, "/v1/_operatortokendef refused on the apex (404)");
+
+  // the /v1 proxy is an ALLOWLIST (not a bypassable /v1/_ denylist): raw requests
+  // that skip fetch's URL normalization — traversal + percent-encoding — must NOT
+  // reach the admin plane or any non-allowlisted endpoint.
+  const rawGet = (pathRaw) => new Promise((resolve) => {
+    const r = http.request({ host: "127.0.0.1", port: 8099, method: "GET", path: pathRaw }, (res) => { res.resume(); resolve(res.statusCode); });
+    r.on("error", () => resolve(0)); r.end();
+  });
+  for (const p of ["/v1/config/../_operatortokendef", "/v1/config/..%2f_operatortokendef", "/v1/%5foperatortokendef", "/v1/runs"]) {
+    const st = await rawGet(p);
+    ok(st === 404, `apex refuses ${p} (allowlist, not a bypassable denylist)`);
+  }
 
   // whoami (dev identity)
   const who = await (await fetch(base + "/api/whoami")).json();
