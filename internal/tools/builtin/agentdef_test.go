@@ -1087,3 +1087,65 @@ func TestAgentDefTool_ListIncludesDefinition(t *testing.T) {
 	// surfaces as a JSON-decoded object. Either shape is acceptable —
 	// what matters is that the field is non-null.
 }
+
+// TestAgentDefTool_MemoryFlushRoundTripsAndAffectsContentSHA is the P3 field's
+// end-to-end plumbing gate, covering both halves of the failure this class has
+// produced before.
+//
+// ROUND-TRIP: `compaction.memory_flush` set through the create overlay must come
+// back on the persisted def. mergeAgentDef and lookup.SubstrateAgentDef both
+// carry *Compaction wholesale, so this really tests Clone/MergeCompaction — a
+// field they forget is dropped with no compile error and no warning.
+//
+// HASH: it must be content-identifying. It changes what every run of the def
+// DOES, which is behaviour rather than authority, so unlike the *_def_scopes
+// gates it belongs in content_sha256. If it were excluded, a create that flipped
+// only this field would come back `deduplicated: true` with the OLD def — the
+// v1.34.0 hole, here on a field that decides whether conversations become
+// durable memory.
+func TestAgentDefTool_MemoryFlushRoundTripsAndAffectsContentSHA(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"banker","overlay":{"system_prompt":"chat"}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	parentSHA, _ := decodeResult(t, res.Text)["content_sha256"].(string)
+
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"banker","overlay":{"compaction":{"memory_flush":true}}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	forkSHA, _ := out["content_sha256"].(string)
+
+	if parentSHA == "" || forkSHA == "" {
+		t.Fatalf("missing content_sha256: parent=%q fork=%q", parentSHA, forkSHA)
+	}
+	if parentSHA == forkSHA {
+		t.Errorf("a fork setting only compaction.memory_flush produced the SAME content_sha256 %q — the field is not in the hash basis, so a create flipping it would dedup to the old def", parentSHA)
+	}
+
+	// The value survives the round-trip through the persisted overlay.
+	defID, _ := out["def_id"].(string)
+	if defID == "" {
+		t.Fatalf("fork returned no def_id: %v", out)
+	}
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	if res.IsError {
+		t.Fatalf("get: %s", res.Text)
+	}
+	got := decodeResult(t, res.Text)
+	def, ok := got["definition"].(map[string]any)
+	if !ok {
+		t.Fatalf("get returned no definition: %v", got)
+	}
+	cp, ok := def["compaction"].(map[string]any)
+	if !ok {
+		t.Fatalf("compaction absent from the persisted def — the overlay was dropped: %v", def)
+	}
+	if cp["memory_flush"] != true {
+		t.Errorf("compaction.memory_flush = %v, want true (dropped by Clone or MergeCompaction)", cp["memory_flush"])
+	}
+}

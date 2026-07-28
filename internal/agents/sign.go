@@ -320,7 +320,8 @@ func normalize(c *AgentContent) {
 	// def yields `"compaction":{}`) → hashes identically to a pre-feature row.
 	if c.Compaction != nil && c.Compaction.Enabled == nil && c.Compaction.TargetPercentage == nil &&
 		c.Compaction.KeepLastN == nil && c.Compaction.KeepFirst == nil &&
-		c.Compaction.AutoCompactAtPct == nil && c.Compaction.Model == nil {
+		c.Compaction.AutoCompactAtPct == nil && c.Compaction.Model == nil &&
+		c.Compaction.MemoryFlush == nil {
 		c.Compaction = nil
 	}
 
