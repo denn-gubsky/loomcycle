@@ -105,12 +105,6 @@ app.use(express.json({ limit: "16kb" }));
 // Liveness of the landing process itself (does NOT proxy the runtime).
 app.get("/_up", (_req, res) => res.json({ ok: true }));
 
-// Refuse the operator-admin plane on the public apex (minting goes via /api/mint).
-app.use((req, res, next) => {
-  if (req.path.startsWith("/v1/_")) return res.status(404).end();
-  next();
-});
-
 // GET /api/whoami — the sign-in probe. As an XHR it returns the identity as JSON
 // (401 when not signed in); as a full-page navigation (the "Sign in" button, which
 // triggers the Cloudflare Access login) it redirects back to the landing.
@@ -180,11 +174,16 @@ app.post("/api/mint", async (req, res) => {
   }
 });
 
-// Same-origin proxy for the runtime's PUBLIC reads (inner links). GET only — the
-// landing never issues state-changing calls to /v1 (mint goes through /api/mint).
-async function proxyGet(req, res) {
+// Same-origin proxy for the runtime's PUBLIC reads, exposed as inner links. This
+// is an explicit ALLOWLIST that forwards a HARDCODED upstream path — never a path
+// derived from the request — so no percent-encoding (`%5f`) or `..` traversal can
+// smuggle a different upstream target (e.g. the operator-admin plane /v1/_*). A
+// blanket `/v1/*` proxy + a `/v1/_` denylist would be bypassable, because the
+// guard sees one form of the path and the upstream re-normalizes another. The
+// app's bearer-gated API stays on app.loomcycle.cloud, not this public apex.
+async function proxyGet(req, res, upstreamPath) {
   try {
-    const up = await fetch(RUNTIME_URL + req.originalUrl, {
+    const up = await fetch(RUNTIME_URL + upstreamPath, {
       headers: { Accept: req.get("accept") || "application/json" },
     });
     res.status(up.status);
@@ -196,8 +195,8 @@ async function proxyGet(req, res) {
     res.status(502).json({ error: "runtime unreachable" });
   }
 }
-app.get("/healthz", proxyGet);
-app.get(/^\/v1\//, proxyGet);
+app.get("/healthz", (req, res) => proxyGet(req, res, "/healthz"));
+app.get("/v1/config", (req, res) => proxyGet(req, res, "/v1/config"));
 
 // The static marketing site last (index at /, assets, range-served videos).
 app.use(express.static(WEB_ROOT, { index: "index.html", extensions: ["html"] }));
