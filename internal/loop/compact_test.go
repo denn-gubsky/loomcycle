@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -375,5 +376,147 @@ func TestCapKeptTailToWindow(t *testing.T) {
 	huge := []providers.Message{userMsg("task"), big}
 	if got := capKeptTailToWindow(huge, 1, 50); got != 1 {
 		t.Errorf("irreducible tail: cut = %d, want 1 (kept, not emptied)", got)
+	}
+}
+
+// ─── RFC BL P3: banking the discarded span ───────────────────────────────────
+
+// TestMaybeAutoCompact_BanksDiscardedSpan: with the callback wired, a compaction
+// hands it EXACTLY the turns it is about to drop, and reports the outcome on the
+// marker so a pass is auditable from the transcript rather than from a log.
+//
+// The span identity assertion is the load-bearing one: banking the kept tail
+// would duplicate what is still in context, and banking the whole history would
+// re-bank the pinned task on every compaction.
+func TestMaybeAutoCompact_BanksDiscardedSpan(t *testing.T) {
+	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	var got []providers.Message
+	opts := RunOptions{
+		Provider:   &steerProvider{},
+		Model:      "x",
+		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
+		BankCompactedSpan: func(_ context.Context, dropped []providers.Message) (string, error) {
+			got = dropped
+			return "mp_banked", nil
+		},
+	}
+	var info *providers.ContextCompactionEventInfo
+	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+		if ev.Type == providers.EventContextCompaction {
+			info = ev.ContextCompaction
+		}
+	}, "auto")
+	if !did {
+		t.Fatal("expected compaction to happen")
+	}
+
+	// Dropped = everything between the pinned first turn and the kept tail.
+	want := []string{"a1", "q2", "a2"}
+	if len(got) != len(want) {
+		t.Fatalf("banked %d messages, want %d — the span must be exactly what was discarded, not the kept tail or the whole history: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Content[0].Text != w {
+			t.Errorf("banked[%d] = %q, want %q", i, got[i].Content[0].Text, w)
+		}
+	}
+
+	if info == nil || info.MemoryBanked == nil {
+		t.Fatalf("the compaction marker carries no memory_banked block: %+v", info)
+	}
+	if info.MemoryBanked.PendingID != "mp_banked" || info.MemoryBanked.Messages != 3 {
+		t.Errorf("marker = %+v, want pending_id mp_banked / messages 3", info.MemoryBanked)
+	}
+	if info.MemoryBanked.Error != "" {
+		t.Errorf("marker carries an error on the success path: %q", info.MemoryBanked.Error)
+	}
+}
+
+// TestMaybeAutoCompact_NoBankWithoutTheCallback: the default is byte-identical.
+// A nil callback is how "the agent did not opt in", "it has no writable memory
+// scope", and "there is no store" all arrive, so the marker must carry no
+// memory_banked block at all rather than an empty one — an absent field is what
+// tells a consumer the feature is off.
+func TestMaybeAutoCompact_NoBankWithoutTheCallback(t *testing.T) {
+	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	opts := RunOptions{
+		Provider:   &steerProvider{},
+		Model:      "x",
+		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
+	}
+	var info *providers.ContextCompactionEventInfo
+	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+		if ev.Type == providers.EventContextCompaction {
+			info = ev.ContextCompaction
+		}
+	}, "auto")
+	if !did || info == nil {
+		t.Fatal("expected compaction + a marker")
+	}
+	if info.MemoryBanked != nil {
+		t.Errorf("memory_banked present with no callback wired: %+v", info.MemoryBanked)
+	}
+}
+
+// TestMaybeAutoCompact_SurvivesBankFailure is the invariant that outranks the
+// feature: compaction exists to keep a run alive, so a failed queue write must
+// name itself on the marker and change nothing else. A compaction that refused to
+// complete because banking failed would trade a live run for a memory nicety.
+func TestMaybeAutoCompact_SurvivesBankFailure(t *testing.T) {
+	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	opts := RunOptions{
+		Provider:   &steerProvider{},
+		Model:      "x",
+		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
+		BankCompactedSpan: func(_ context.Context, _ []providers.Message) (string, error) {
+			return "", errors.New("enqueue: database is locked")
+		},
+	}
+	var info *providers.ContextCompactionEventInfo
+	out, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+		if ev.Type == providers.EventContextCompaction {
+			info = ev.ContextCompaction
+		}
+	}, "auto")
+	if !did {
+		t.Fatal("a failed bank aborted the compaction — the run keeps its full context and will hit the window")
+	}
+	// The compacted history is exactly what it would be without banking at all.
+	if len(out) != 4 || out[2].Content[0].Text != "q3" {
+		t.Errorf("a failed bank changed the compacted history: %+v", out)
+	}
+	if info == nil || info.MemoryBanked == nil || info.MemoryBanked.Error == "" {
+		t.Fatalf("the failure is not named on the marker: %+v", info)
+	}
+	if info.MemoryBanked.PendingID != "" {
+		t.Errorf("a failed bank reported a pending id: %+v", info.MemoryBanked)
+	}
+}
+
+// TestMaybeAutoCompact_ToolOnlySpanReportsNothingToBank: a span with no dialogue
+// (pure tool traffic — the converter drops it) must be distinguishable from the
+// feature being off, or an operator debugging "why is nothing being banked" cannot
+// tell a filtered span from an unset flag.
+func TestMaybeAutoCompact_ToolOnlySpanReportsNothingToBank(t *testing.T) {
+	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	opts := RunOptions{
+		Provider:   &steerProvider{},
+		Model:      "x",
+		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
+		BankCompactedSpan: func(_ context.Context, _ []providers.Message) (string, error) {
+			return "", nil // BankSpan's nothing-to-bank: no id, no error
+		},
+	}
+	var info *providers.ContextCompactionEventInfo
+	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+		if ev.Type == providers.EventContextCompaction {
+			info = ev.ContextCompaction
+		}
+	}, "auto")
+	if !did || info == nil || info.MemoryBanked == nil {
+		t.Fatalf("expected a marker with a memory_banked block: %+v", info)
+	}
+	if info.MemoryBanked.PendingID != "" || info.MemoryBanked.Error == "" {
+		t.Errorf("marker = %+v, want no pending id and a named reason", info.MemoryBanked)
 	}
 }

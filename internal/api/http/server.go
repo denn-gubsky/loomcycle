@@ -2528,34 +2528,37 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, provSlot)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:               provider,
-		Model:                  model,
-		Tools:                  allowedTools,
-		Dispatcher:             dispatcher,
-		Segments:               injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
-		PriorMessages:          priorMessages,
-		PauseGate:              gate,
-		OnEvent:                emit,
-		OnHeartbeat:            heartbeat,
-		MaxTokens:              agentDef.MaxTokens,
-		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
-		UnboundedIterations:    agentDef.UnboundedIterations,
-		SteerQueue:             steerQ,
-		OnSteer:                onSteer,
-		Effort:                 effort,
-		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(in.UserTier),
-		ClearStall:             s.clearStallFn(providerID, model),
-		ToolParallelism:        s.cfg.Env.ToolParallelism,
-		AgentName:              effectiveAgentName,
-		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
-		Metadata:               in.Metadata,
-		PayloadMetadata:        in.PayloadMetadata,
-		RunTimeoutSeconds:      pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
-		Interactive:            in.Interactive,
-		Sampling:               config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
-		Compaction:             config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
-		ContextPlugins:         s.contextPlugins,                                           // RFC Z runtime-wide chain (code-js exempt in the loop)
+		Provider:            provider,
+		Model:               model,
+		Tools:               allowedTools,
+		Dispatcher:          dispatcher,
+		Segments:            injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
+		PriorMessages:       priorMessages,
+		PauseGate:           gate,
+		OnEvent:             emit,
+		OnHeartbeat:         heartbeat,
+		MaxTokens:           agentDef.MaxTokens,
+		MaxIterations:       agentDef.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations: agentDef.UnboundedIterations,
+		SteerQueue:          steerQ,
+		OnSteer:             onSteer,
+		Effort:              effort,
+		MarkStalled:         s.markStalledFn(providerID, model),
+		MarkRateLimited:     s.markRateLimitedFn(in.UserTier),
+		ClearStall:          s.clearStallFn(providerID, model),
+		ToolParallelism:     s.cfg.Env.ToolParallelism,
+		AgentName:           effectiveAgentName,
+		CodeBody:            agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
+		Metadata:            in.Metadata,
+		PayloadMetadata:     in.PayloadMetadata,
+		RunTimeoutSeconds:   pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Interactive:         in.Interactive,
+		Sampling:            config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
+		Compaction:          config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
+		// RFC BL P3: nil unless the agent set compaction.memory_flush, so an
+		// unopted agent's compaction path is byte-identical.
+		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, rid.TenantID, effectiveUserID, in.Agent, runID, sessionID),
+		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -4042,31 +4045,33 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, fbSlot)
 	runOpts := loop.RunOptions{
-		Provider:               provider,
-		Model:                  model,
-		Tools:                  allowedTools,
-		Dispatcher:             dispatcher,
-		Segments:               injectMetadataSegments(req.Segments, provider.Capabilities().MetadataViaInput, req.Metadata, nil),
-		OnEvent:                emit,
-		OnHeartbeat:            heartbeat,
-		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
-		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
-		UnboundedIterations:    agentDef.UnboundedIterations,
-		SteerQueue:             steerQ,
-		OnSteer:                onSteer,
-		Effort:                 effort,
-		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(req.UserTier),
-		ClearStall:             s.clearStallFn(providerID, model),
-		ToolParallelism:        s.cfg.Env.ToolParallelism,
-		AgentName:              req.Agent,
-		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
-		Metadata:               req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
-		RunTimeoutSeconds:      pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
-		Interactive:            req.Interactive,
-		Sampling:               config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
-		Compaction:             config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
-		ContextPlugins:         s.contextPlugins,                                            // RFC Z runtime-wide chain (code-js exempt in the loop)
+		Provider:            provider,
+		Model:               model,
+		Tools:               allowedTools,
+		Dispatcher:          dispatcher,
+		Segments:            injectMetadataSegments(req.Segments, provider.Capabilities().MetadataViaInput, req.Metadata, nil),
+		OnEvent:             emit,
+		OnHeartbeat:         heartbeat,
+		MaxTokens:           agentDef.MaxTokens,     // 0 → driver default
+		MaxIterations:       agentDef.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations: agentDef.UnboundedIterations,
+		SteerQueue:          steerQ,
+		OnSteer:             onSteer,
+		Effort:              effort,
+		MarkStalled:         s.markStalledFn(providerID, model),
+		MarkRateLimited:     s.markRateLimitedFn(req.UserTier),
+		ClearStall:          s.clearStallFn(providerID, model),
+		ToolParallelism:     s.cfg.Env.ToolParallelism,
+		AgentName:           req.Agent,
+		CodeBody:            agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
+		Metadata:            req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
+		RunTimeoutSeconds:   pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Interactive:         req.Interactive,
+		Sampling:            config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
+		Compaction:          config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
+		// RFC BL P3: nil unless the agent set compaction.memory_flush.
+		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, rid.TenantID, req.UserID, req.Agent, runID, sessionID),
+		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -6670,6 +6675,23 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		return connector.CompactResult{}, &compactErr{status: http.StatusBadGateway, msg: "summarization produced no text"}
+	}
+	// RFC BL P3: bank the span this compaction discards, for the manual path
+	// (POST /v1/runs/{id}/compact + Context op=compact). AFTER a successful
+	// summary, mirroring the auto path — a failed summarization discards nothing,
+	// so there is nothing to rescue.
+	//
+	// Banked HERE rather than in the loop because this path summarizes outside the
+	// loop and pushes the finished summary; the loop's applyCompactSummary only
+	// swaps history and never calls maybeAutoCompact, so this cannot double-bank.
+	// It covers the terminal case too, which never reaches the loop at all.
+	//
+	// Best-effort exactly like the auto path: a compact must not fail because a
+	// queue write did.
+	if bank := s.bankCompactedSpanFn(agentDef, run.TenantID, run.UserID, run.Agent, runID, run.SessionID); bank != nil {
+		if _, berr := bank(summCtx, msgs[firstIdx:cut]); berr != nil {
+			log.Printf("compact %s: memory_flush did not bank: %v", runID, berr)
+		}
 	}
 	keepN := len(msgs) - cut
 	pinned := ""

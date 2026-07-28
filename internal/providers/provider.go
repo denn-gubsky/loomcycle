@@ -836,6 +836,26 @@ type ContextCompactionEventInfo struct {
 	// Trigger is "manual" | "auto" | "self" — which path fired the compaction.
 	// Surfaced for metrics + the UI; not used by replay.
 	Trigger string `json:"trigger,omitempty"`
+	// MemoryBanked records that the discarded span was queued for consolidation
+	// (RFC BL P3 `compaction.memory_flush`). Absent when the agent has not opted
+	// in, which is the default. Additive and ignored by replay — banking already
+	// happened when the compaction first ran, so a rebuild must not repeat it.
+	MemoryBanked *MemoryBankedInfo `json:"memory_banked,omitempty"`
+}
+
+// MemoryBankedInfo is the outcome of a compaction's memory flush. It is on the
+// transcript rather than only in a log because five consolidator runs proved a
+// prose report is not evidence — an operator has to be able to read what actually
+// happened out of the run.
+type MemoryBankedInfo struct {
+	// PendingID is the queue row, empty when nothing was banked.
+	PendingID string `json:"pending_id,omitempty"`
+	// Messages counts the conversational turns queued — tool traffic is excluded
+	// before banking, so this is smaller than the span that was dropped.
+	Messages int `json:"messages,omitempty"`
+	// Error names why banking did not happen. Its presence is NOT a failed
+	// compaction: the compaction completed either way, which is the invariant.
+	Error string `json:"error,omitempty"`
 }
 
 // LimitInfo is the structured payload on EventLimit (RFC AW — per-scope token

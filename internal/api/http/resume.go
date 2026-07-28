@@ -327,31 +327,36 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
 	runOpts := loop.RunOptions{
-		Provider:               provider,
-		Model:                  model,
-		Tools:                  allowedTools,
-		Dispatcher:             dispatcher,
-		Segments:               segments,
-		PriorMessages:          priorMessages,
-		OnEvent:                emit,
-		OnHeartbeat:            heartbeat,
-		MaxTokens:              agentDef.MaxTokens,
-		MaxIterations:          agentDef.MaxIterations,
-		UnboundedIterations:    agentDef.UnboundedIterations,
-		SteerQueue:             steerQ,
-		OnSteer:                onSteer,
-		Effort:                 effort,
-		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(run.UserTier),
-		ClearStall:             s.clearStallFn(providerID, model),
-		ToolParallelism:        s.cfg.Env.ToolParallelism,
-		AgentName:              run.Agent,
-		CodeBody:               agentDef.Code,
-		RunTimeoutSeconds:      agentDef.RunTimeoutSeconds, // per-run override not snapshotted
-		Interactive:            run.Interactive,
-		Sampling:               agentDef.Sampling,   // per-run override not snapshotted
-		Compaction:             agentDef.Compaction, // per-run override not snapshotted
-		ContextPlugins:         s.contextPlugins,    // RFC Z runtime-wide chain (code-js exempt in the loop)
+		Provider:            provider,
+		Model:               model,
+		Tools:               allowedTools,
+		Dispatcher:          dispatcher,
+		Segments:            segments,
+		PriorMessages:       priorMessages,
+		OnEvent:             emit,
+		OnHeartbeat:         heartbeat,
+		MaxTokens:           agentDef.MaxTokens,
+		MaxIterations:       agentDef.MaxIterations,
+		UnboundedIterations: agentDef.UnboundedIterations,
+		SteerQueue:          steerQ,
+		OnSteer:             onSteer,
+		Effort:              effort,
+		MarkStalled:         s.markStalledFn(providerID, model),
+		MarkRateLimited:     s.markRateLimitedFn(run.UserTier),
+		ClearStall:          s.clearStallFn(providerID, model),
+		ToolParallelism:     s.cfg.Env.ToolParallelism,
+		AgentName:           run.Agent,
+		CodeBody:            agentDef.Code,
+		RunTimeoutSeconds:   agentDef.RunTimeoutSeconds, // per-run override not snapshotted
+		Interactive:         run.Interactive,
+		Sampling:            agentDef.Sampling,   // per-run override not snapshotted
+		Compaction:          agentDef.Compaction, // per-run override not snapshotted
+		// BankCompactedSpan is deliberately ABSENT (RFC BL P3). A resumed run
+		// replays a compaction that already happened, and its span was banked when
+		// it first ran — wiring it here would re-bank the same conversation on
+		// every resume, quietly duplicating candidates for the dedup band to
+		// absorb. TestReplayCompaction_DoesNotRebank pins this.
+		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               run.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
