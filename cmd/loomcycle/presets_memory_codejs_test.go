@@ -2419,3 +2419,64 @@ func lastCall(t *testing.T, f *fakeToolset, want string) recordedCall {
 	t.Fatalf("no %s call in the sequence %v", want, seq)
 	return recordedCall{}
 }
+
+// TestConsolidator_QueuedFactRelaysThePendingID is the test that should have
+// existed when `from_pending` was added, and did not.
+//
+// The field was built, unit-tested at the tool boundary, and never wired into the
+// bundle — so on a live pass the compaction-banked span was consumed and every
+// resulting fact landed `origin=consolidator`, indistinguishable from one read out
+// of an ordinary transcript. The capability had no caller, which no test noticed
+// because none of them drove the real bundle's write path for a queued item.
+//
+// The pass cannot author `origin` itself (it is server-stamped so an agent cannot
+// label its own writes), so relaying the drained row's id is the ONLY way a fact
+// records that it came from a compaction.
+func TestConsolidator_QueuedFactRelaysThePendingID(t *testing.T) {
+	f := newFakeToolset()
+	// No chats — only the queue, so every Memory.set comes from the queued item
+	// and the assertion cannot be satisfied by a transcript-sourced write.
+	f.pending = []map[string]any{{
+		"id":     "mp_banked_span",
+		"origin": "compaction",
+		"payload": map[string]any{"messages": []any{
+			map[string]any{"role": "user", "content": "I'm in Cluj-Napoca and I take rosuvastatin."},
+		}},
+	}}
+	f.factsJSON = `[{"text":"The user is located in Cluj-Napoca.","class":"fact"}]`
+
+	runConsolidator(t, f)
+
+	set := lastCall(t, f, "Memory.set")
+	if got := set.Input["from_pending"]; got != "mp_banked_span" {
+		t.Errorf("Memory.set carried from_pending=%v, want %q — without it the fact lands origin=consolidator and the compaction it came from is unrecoverable",
+			got, "mp_banked_span")
+	}
+	// The item is still acked: attribution must not change the queue contract.
+	if !f.has("Memory.pending_ack") {
+		t.Errorf("the queued item was not acked; sequence %v", f.ops())
+	}
+}
+
+// TestConsolidator_MultiItemBatchIsNotFalselyAttributed: several queued items are
+// rendered into ONE extractor call, so a fact from that call cannot honestly be
+// traced to one of them. A wrong citation is worse than none — it would point an
+// operator at a conversation the fact did not come from — so attribution is
+// omitted rather than guessed at the first id.
+func TestConsolidator_MultiItemBatchIsNotFalselyAttributed(t *testing.T) {
+	f := newFakeToolset()
+	f.pending = []map[string]any{
+		{"id": "mp_one", "origin": "agent_explicit",
+			"payload": map[string]any{"messages": []any{map[string]any{"role": "user", "content": "I use ROCm."}}}},
+		{"id": "mp_two", "origin": "compaction",
+			"payload": map[string]any{"messages": []any{map[string]any{"role": "user", "content": "I live in Cluj."}}}},
+	}
+	f.factsJSON = `[{"text":"The user runs ROCm.","class":"fact"}]`
+
+	runConsolidator(t, f)
+
+	set := lastCall(t, f, "Memory.set")
+	if got, present := set.Input["from_pending"]; present && got != "" {
+		t.Errorf("a multi-item batch attributed its fact to %v; with two items rendered into one call the source is genuinely unknown, and a wrong citation is worse than an absent one", got)
+	}
+}
