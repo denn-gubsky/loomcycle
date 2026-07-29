@@ -171,6 +171,26 @@ func SaveBaselineEntry(path string, r ExtractionReport) error {
 	if len(r.Abilities) == 0 {
 		return fmt.Errorf("refusing to record a baseline with no ability scores")
 	}
+	// Same argument as the harness-fault refusal above, for the case that actually
+	// happened: a slow local model exhausted the run budget, five cases never ran,
+	// and the resulting `update 0.00` was written in as the number to beat. A
+	// partial run's figures describe a subset of the corpus, so recording them
+	// makes the next full run look like an improvement.
+	if r.TotalErrors > 0 {
+		return fmt.Errorf("refusing to record a baseline from an INCOMPLETE run: %d case(s) never produced an answer, so these numbers describe only part of the corpus", r.TotalErrors)
+	}
+	// A run that emitted forbidden material is not a reference point. Recording it
+	// makes the violations the accepted norm: Regressions() only fires when a count
+	// RISES above the baseline, so a model that leaked 4 things would thereafter
+	// leak 4 things without comment.
+	//
+	// This is not hypothetical — a model measured for comparison stored a
+	// credential mention, chatter, and a prompt-injection attempt as a durable
+	// user PREFERENCE, and all four violations were written in as its baseline.
+	// The gate still refuses such a run; the baseline must not quietly accept it.
+	if r.TotalViolations > 0 {
+		return fmt.Errorf("refusing to record a baseline from a run with %d violation(s): a baseline is a reference for how a healthy run looks, and recording forbidden emissions makes them the norm (Regressions only fires when a count RISES)", r.TotalViolations)
+	}
 	b, err := LoadBaseline(path)
 	if err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -868,5 +869,122 @@ func TestProperty_SymptomMarkerAcceptsEitherFaithfulPhrasing(t *testing.T) {
 		if res.Captured == res.Wanted {
 			t.Errorf("%s: a fact naming only the medication must not satisfy the symptom expectation", name)
 		}
+	}
+}
+
+// erroringCaller fails every call after the first n succeed, mimicking a run whose
+// wall clock expires partway through.
+type erroringCaller struct {
+	okFor int
+	n     int
+	reply string
+}
+
+func (e *erroringCaller) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	e.n++
+	if e.n > e.okFor {
+		return nil, context.DeadlineExceeded
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: e.reply}
+	ch <- providers.Event{Type: providers.EventDone}
+	close(ch)
+	return ch, nil
+}
+
+// TestIncompleteRun_ErroredCasesAreNotRecallMisses is the regression for a live
+// run that slandered a model.
+//
+// A 36B local model exhausted the run's wall clock after 8 of 13 cases. The five
+// cut-off cases were counted as recall misses, producing `update 0.00` and a gate
+// failure reading "a correction the extractor drops leaves the stale fact
+// standing" — a confident diagnosis of a question the model was never asked. A
+// case that never produced an answer is not a case the model got wrong.
+func TestIncompleteRun_ErroredCasesAreNotRecallMisses(t *testing.T) {
+	// Only the canary answers; everything after it errors.
+	rep, err := RunExtraction(context.Background(), &erroringCaller{okFor: 1, reply: canaryReply}, ExtractionInput{
+		Corpus:       ExtractionFixture(),
+		SystemPrompt: "you extract durable facts",
+		Provider:     "test", Model: "slow-model",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rep.HarnessFault != "" {
+		t.Fatalf("the canary answered, so this is not a harness fault: %s", rep.HarnessFault)
+	}
+	if rep.TotalErrors == 0 {
+		t.Fatal("errored cases must be counted")
+	}
+
+	// Every ability whose cases ALL errored must report recall as not-measured,
+	// never 0.00 — which reads as "the model failed".
+	for _, s := range rep.Abilities {
+		if s.Errors == s.Cases && s.Recall == 0 {
+			t.Errorf("ability %q errored on every case yet reports recall 0.00, which reads as a model failure", s.Ability)
+		}
+	}
+
+	// And the gate must fail on INCOMPLETENESS, not on a recall figure.
+	fails := DefaultGate().Check(rep)
+	if len(fails) == 0 {
+		t.Fatal("an incomplete run must not pass the gate")
+	}
+	joined := strings.Join(fails, " | ")
+	if !strings.Contains(joined, "INCOMPLETE") {
+		t.Errorf("the gate should fail on incompleteness: %s", joined)
+	}
+	if strings.Contains(joined, "stale fact standing") {
+		t.Errorf("the gate must NOT blame the model's judgement for a case it never answered: %s", joined)
+	}
+}
+
+// TestIncompleteRun_BaselineRefusesToRecordIt: the partial figures were written in
+// as the number to beat, so the next full run would have looked like an
+// improvement. Same argument as the harness-fault refusal.
+func TestIncompleteRun_BaselineRefusesToRecordIt(t *testing.T) {
+	rep := ExtractionReport{
+		Provider: "p", Model: "m", SystemPromptSHA256: "sha", CorpusSHA256: "corpus",
+		Abilities:   []AbilityScore{{Ability: AbilityUpdate, Recall: 0, Errors: 1, Cases: 1}},
+		TotalErrors: 5,
+	}
+	err := SaveBaselineEntry(filepath.Join(t.TempDir(), "b.json"), rep)
+	if err == nil {
+		t.Fatal("an incomplete run must not be recorded as a baseline")
+	}
+	if !strings.Contains(err.Error(), "INCOMPLETE") {
+		t.Errorf("the refusal should say why: %v", err)
+	}
+}
+
+// TestCaseTimeout_IsPerCase: a whole-run budget makes the LAST cases the victims
+// of a slow model, so which abilities get measured depends on where the wall clock
+// lands rather than on the corpus. With a per-case bound, a slow case costs itself
+// and nothing else.
+func TestCaseTimeout_IsPerCase(t *testing.T) {
+	in := canaryOnlyInput()
+	in.CaseTimeout = 50 * time.Millisecond
+	res := runCase(context.Background(), slowCaller{delay: 2 * time.Second}, in, ExtractionCanary())
+	if res.Err == "" {
+		t.Fatal("a case that outruns its own timeout must error")
+	}
+	// A second case with the same input must still get its own full budget.
+	fast := runCase(context.Background(), alwaysCaller{reply: canaryReply}, in, ExtractionCanary())
+	if fast.Err != "" {
+		t.Errorf("the next case must get a fresh budget, got: %s", fast.Err)
+	}
+}
+
+// slowCaller blocks past the per-case deadline before replying.
+type slowCaller struct{ delay time.Duration }
+
+func (s slowCaller) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	select {
+	case <-time.After(s.delay):
+		ch := make(chan providers.Event, 1)
+		close(ch)
+		return ch, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
