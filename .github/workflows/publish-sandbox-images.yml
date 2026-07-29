@@ -1,0 +1,124 @@
+name: Publish sandbox images
+
+# Builds + publishes the code-execution SANDBOX images that the `sandbox` bundle
+# needs (RFC BQ / docs/SANDBOX.md) but which goreleaser does NOT build:
+#   - denngubsky/loomcycle-builder          (builder sidecar, rootless podman base)
+#   - denngubsky/loomcycle-builder-docker   (builder sidecar, host-Docker-socket base)
+#   - denngubsky/loomcycle-sandbox-session  (the per-session toolchain image)
+#
+# goreleaser (release.yml) builds only the main `loomcycle` + `loomcycle-toolbox`
+# images from the root Go module. The sidecar is a SEPARATE Go module
+# (deploy/builder) and the session image is a pure toolchain image; both self-build
+# (multi-stage), so they get their own multi-arch buildx job here rather than being
+# forced into goreleaser's binary-wrapping `dockers:` stage.
+#
+# Versioning: published in LOCKSTEP with the loomcycle release (a v1.40.0 tag ->
+# `:1.40.0` + `:latest`). Operators pin the version tag; the sidecar's own build
+# stamp comes from the VERSION build-arg. Runs in parallel with release.yml (does
+# not block the goreleaser job) and can also be fired on demand.
+#
+# Gate + credentials: identical to release.yml's docker publish — the job is gated
+# on the repo VARIABLE `DOCKER_PUBLISH_ENABLED == 'true'` and logs in with the
+# `DOCKER_USERNAME` / `DOCKER_PASSWORD` secrets. When the operator hasn't enabled
+# docker publishing the job is SKIPPED cleanly (no failure).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image tag to publish (e.g. 1.40.0). Defaults to the git ref name minus its leading 'v'."
+        required: false
+
+# See release.yml — clears the Node-20 deprecation across JavaScript actions.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: build + push sandbox images
+    runs-on: ubuntu-latest
+    # Same explicit gate as goreleaser's docker publish: skip cleanly until the
+    # operator sets DOCKER_PUBLISH_ENABLED and the Docker Hub credentials.
+    if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve the version tag
+        id: ver
+        # Untrusted input (a workflow_dispatch value) is passed via env, never
+        # interpolated into the shell, and the result is charset-validated before it
+        # flows into later build/tag steps — a crafted value can't inject.
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${INPUT_VERSION:-}"
+          if [ -z "$V" ]; then
+            V="${REF_NAME#v}"   # v1.40.0 -> 1.40.0
+          fi
+          if ! printf '%s' "$V" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
+            echo "::error::Invalid version tag '$V' (a docker tag must match [A-Za-z0-9._-])"
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "::notice::Publishing sandbox images at :$V + :latest"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # ── Builder sidecar — rootless podman base (deploy/builder/Dockerfile) ──
+      - name: Build + push loomcycle-builder (rootless)
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/builder
+          file: deploy/builder/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+          tags: |
+            denngubsky/loomcycle-builder:${{ steps.ver.outputs.version }}
+            denngubsky/loomcycle-builder:latest
+
+      # ── Builder sidecar — host-Docker-socket base (deploy/builder/Dockerfile.docker) ──
+      - name: Build + push loomcycle-builder-docker (docker socket)
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/builder
+          file: deploy/builder/Dockerfile.docker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+          tags: |
+            denngubsky/loomcycle-builder-docker:${{ steps.ver.outputs.version }}
+            denngubsky/loomcycle-builder-docker:latest
+
+      # ── Session toolchain image (deploy/builder/session/Dockerfile) ──
+      # NOTE: the arm64 build runs apt + Go/Rust/gh downloads under QEMU emulation
+      # on the amd64 runner and is SLOW (tens of minutes) — same caveat as the
+      # loomcycle-toolbox image in .goreleaser.yaml. If it becomes a bottleneck,
+      # drop `linux/arm64` from `platforms` below until a native arm64 runner is
+      # available (the sidecar images above are trivial Go builds — keep them multi-arch).
+      - name: Build + push loomcycle-sandbox-session
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/builder/session
+          file: deploy/builder/session/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            denngubsky/loomcycle-sandbox-session:${{ steps.ver.outputs.version }}
+            denngubsky/loomcycle-sandbox-session:latest

@@ -34,7 +34,17 @@ builder-sidecar                    ──►  per-session container
 
 ## Quick start
 
-1. **Build the images** (from `deploy/builder/`):
+1. **Get the images.** Prebuilt multi-arch images are published to Docker Hub on
+   each release (`.github/workflows/publish-sandbox-images.yml`) — pull the tag that
+   matches your loomcycle version (or `:latest`):
+
+   ```bash
+   docker pull denngubsky/loomcycle-builder-docker:latest   # host-Docker-socket sidecar
+   # or the rootless-podman sidecar: denngubsky/loomcycle-builder:latest
+   docker pull denngubsky/loomcycle-sandbox-session:latest  # per-session toolchain
+   ```
+
+   …or build them yourself from `deploy/builder/`:
 
    ```bash
    docker build -t denngubsky/loomcycle-builder:latest deploy/builder
