@@ -269,6 +269,8 @@ func TestDocument_ScopeTenantIsolation(t *testing.T) {
 // already had once.
 func TestDocument_TenantScopeRoundTrips(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
+	// The tenant scope is GATED; the round trip needs the operator's grant.
+	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
 
 	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Tenant handbook"}`)
 	if r.IsError {
@@ -1469,5 +1471,38 @@ func TestExportMd_StoreFaultFailsLoudly(t *testing.T) {
 	}
 	if strings.Contains(res.Text, "CONTENT") {
 		t.Errorf("export leaked partial content: %s", res.Text)
+	}
+}
+
+// TestDocument_TenantScopeDeniedWithoutTheGrant is the gate.
+//
+// It is asserted here rather than assumed because this path had NO grant check at
+// all when the tenant scope was first written: documentFixture stamps no policy,
+// and the round-trip test above passed anyway — an agent holding
+// `tools: [Document]` could publish state the entire tenant reads as ground truth
+// without the operator granting anything.
+//
+// agent and user scope remain ungated on this path (pre-existing since the tool
+// shipped); what must not happen is a NEW cross-user scope inheriting that.
+func TestDocument_TenantScopeDeniedWithoutTheGrant(t *testing.T) {
+	d, ctx, _ := documentFixture(t) // no memory policy stamped at all
+
+	_, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"x"}`)
+	if !r.IsError {
+		t.Fatal("an agent with no memory_scopes grant must NOT reach the tenant scope")
+	}
+	if !strings.Contains(r.Text, "memory_scopes: [tenant]") {
+		t.Errorf("the refusal must name the grant an operator has to add: %q", r.Text)
+	}
+
+	// A grant that omits tenant is still a denial.
+	partial := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}})
+	if _, r := docExec(t, d, partial, `{"op":"create_document","scope":"tenant","title":"x"}`); !r.IsError {
+		t.Error("memory_scopes without `tenant` must not grant the tenant scope")
+	}
+
+	// And the pre-existing scopes are unaffected by the new check.
+	if _, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"ok"}`); r.IsError {
+		t.Errorf("the tenant gate must not change the user scope's behaviour: %s", r.Text)
 	}
 }

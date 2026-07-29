@@ -263,9 +263,28 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 		//           identity, matching global's convention and the Path tree's
 		//           tenant dirent.
 		//
-		// A tenant document is readable AND writable by every user and agent in the
-		// tenant, so it is reachable only when the operator lists `tenant` in the
-		// agent's sql_scopes (structure) and memory_scopes (chunk bodies).
+		// GATED, unlike agent and user above. A tenant document is readable AND
+		// writable by every user and agent in the tenant, so an ungated one lets any
+		// agent holding `tools: [Document]` publish state the whole tenant then reads
+		// as ground truth — which is the poisoning surface, reached without the
+		// operator ever granting anything.
+		//
+		// The check is deliberately scoped to `tenant` and does NOT retrofit onto
+		// agent/user. Those have been ungated on this path since the tool shipped, so
+		// requiring a grant for them would break every existing agent that holds
+		// Document without declaring scopes; that is a separate, breaking change and
+		// does not belong in the commit that introduces a new scope. What must not
+		// happen is a NEW, cross-user scope inheriting the ungated posture.
+		//
+		// memory_scopes is the gate because it governs the tenant keyspace itself.
+		// Document also writes structure into SQL Memory under the same tenant, so a
+		// later consistency pass may require sql_scopes here too; today that would
+		// demand two grants for one operation with no extra safety.
+		if !contains(tools.MemoryPolicy(ctx).AllowedScopes, "tenant") {
+			return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=tenant is not granted to this agent — " +
+				"a tenant document is readable and writable by every user and agent in the tenant, so the " +
+				"operator must opt in with `memory_scopes: [tenant]` on the agent")
+		}
 		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "tenant", ScopeID: sqlTenant}, store.MemoryScopeTenant, nil
 	default:
 		return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: unknown scope %q (agent | user | tenant)", requested)
