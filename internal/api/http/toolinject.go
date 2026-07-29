@@ -168,6 +168,12 @@ func firstSentence(desc string, maxBytes int) string {
 	for cut > 0 && !utf8Start(desc[cut]) {
 		cut--
 	}
+	// Back off to a word boundary so the summary does not end mid-word ("body)
+	// t…"). Only when a boundary is reasonably close — otherwise a description
+	// with no spaces in range would collapse to almost nothing.
+	if sp := strings.LastIndexByte(desc[:cut], ' '); sp > cut/2 {
+		cut = sp
+	}
 	return strings.TrimSpace(desc[:cut]) + "…"
 }
 

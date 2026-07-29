@@ -213,6 +213,36 @@ func TestFirstSentence_CutsAtLineAndSentence(t *testing.T) {
 	}
 }
 
+// TestFirstSentence_HardCapBacksOffToAWordBoundary: the real Document
+// description hit the cap mid-word ("Markdown body) t…"), which reads as
+// corruption rather than truncation.
+func TestFirstSentence_HardCapBacksOffToAWordBoundary(t *testing.T) {
+	got := firstSentence("alpha beta gamma delta epsilon zeta eta theta", 30)
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("want a truncation marker, got %q", got)
+	}
+	trimmed := strings.TrimSuffix(got, "…")
+	if strings.HasSuffix(trimmed, " ") {
+		t.Errorf("trailing space before the marker: %q", got)
+	}
+	// The last kept token must be whole.
+	fields := strings.Fields(trimmed)
+	last := fields[len(fields)-1]
+	if !strings.Contains("alpha beta gamma delta epsilon zeta eta theta", last+" ") &&
+		!strings.HasSuffix("alpha beta gamma delta epsilon zeta eta theta", last) {
+		t.Errorf("last token %q is a fragment: %q", last, got)
+	}
+}
+
+// TestFirstSentence_NoSpaceInRangeStillTruncates: backing off to a word boundary
+// must not collapse a long unbroken token to nothing.
+func TestFirstSentence_NoSpaceInRangeStillTruncates(t *testing.T) {
+	got := firstSentence(strings.Repeat("x", 200), 40)
+	if len(got) < 30 {
+		t.Fatalf("collapsed a space-free description to %q", got)
+	}
+}
+
 // TestFirstSentence_HardCapKeepsRunesIntact: a byte-cap that split a multi-byte
 // rune would render U+FFFD in every affected agent's system prompt.
 func TestFirstSentence_HardCapKeepsRunesIntact(t *testing.T) {
