@@ -113,12 +113,24 @@ func AllVariants() []string {
 	}
 }
 
-// placeholderRe matches an OPTIONAL leading backslash (the escape) followed by
-// {{memory:VARIANT}}. Inner whitespace around `memory`, the colon, and the
-// variant is tolerated; the variant is matched case-insensitively and
+// memoryPlaceholderPattern matches an OPTIONAL leading backslash (the escape)
+// followed by {{memory:VARIANT}}. Inner whitespace around `memory`, the colon,
+// and the variant is tolerated; the variant is matched case-insensitively and
 // normalised to lower-case by the caller. Group 1 is the escape (`\` or ""),
 // group 2 is the raw variant token.
-var placeholderRe = regexp.MustCompile(`(?i)(\\?)\{\{\s*memory\s*:\s*([a-z_]+)\s*\}\}`)
+const memoryPlaceholderPattern = `(\\?)\{\{\s*memory\s*:\s*([a-z_]+)\s*\}\}`
+
+var placeholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern)
+
+// combinedPlaceholderRe matches EITHER family, so Expand substitutes both in a
+// SINGLE pass. That is a correctness requirement, not a tidiness one: two
+// sequential passes would rescan the first pass's OUTPUT, so a {{tool:...}}
+// placeholder sitting inside an injected memory body — the `human` core block is
+// agent-written, and a user can type one into a chat — would be expanded as if
+// the operator had placed it in the prompt. Substitution output is never
+// rescanned within one ReplaceAllStringFunc, which closes that cross-family
+// injection path by construction.
+var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern + `|` + toolPlaceholderPattern)
 
 // References reports whether s contains any {{memory:...}} placeholder
 // (escaped or not). A cheap gate so the caller can skip the whole injection
@@ -165,32 +177,68 @@ func UnknownVariants(s string) []string {
 	return out
 }
 
-// Expand substitutes each UNESCAPED {{memory:VARIANT}} placeholder in prompt
-// with the framed body from sections[VARIANT]. Rules:
+// ExpandInput carries everything Expand substitutes into a prompt. It is a
+// struct rather than a parameter list because the two placeholder families have
+// independent budgets and the set of families is expected to grow.
+type ExpandInput struct {
+	// Sections holds the rendered body for each {{memory:VARIANT}}.
+	Sections map[Variant]string
+	// ToolResults holds the rendered body for each {{tool:Tool.op}}.
+	ToolResults map[ToolRef]string
+	// MaxTokens caps the TOTAL injected memory content (chars/4). <= 0 disables.
+	MaxTokens int
+	// ToolMaxTokens caps the TOTAL injected tool-result content (chars/4).
+	// <= 0 disables.
+	//
+	// Deliberately a SEPARATE budget from MaxTokens rather than a shared one.
+	// Budgets are consumed left-to-right, so one shared cap would make the two
+	// families compete on prompt ORDER: a large tool inventory placed above
+	// {{memory:user_info}} would silently truncate the user's profile, and moving
+	// one line in a prompt would change what the agent remembers. They are
+	// independent kinds of content and get independent ceilings.
+	ToolMaxTokens int
+}
+
+// Expand substitutes each UNESCAPED placeholder in prompt with the framed body
+// from in. Both families are handled in one pass (see combinedPlaceholderRe).
+// Rules:
 //
 //   - Escape: a leading backslash renders the placeholder literally with the
 //     backslash stripped — `\{{memory:core_blocks}}` → `{{memory:core_blocks}}`.
-//   - A known variant with an empty (or missing) section renders to nothing.
-//   - Implicit append: if sections carries a non-empty core_blocks body and the
+//   - A known variant / allowlisted ref with an empty (or missing) body renders
+//     to nothing.
+//   - A NON-allowlisted {{tool:...}} ref renders to nothing. Boot validation
+//     (UnknownToolRefs) is what makes that case loud; by run time the operator
+//     has already been told, and a run must not fail on prompt assembly.
+//   - Implicit append: if Sections carries a non-empty core_blocks body and the
 //     prompt has NO (unescaped) core_blocks placeholder, the block is appended
 //     at the end in its own framed section.
-//   - Budget: the TOTAL injected memory text is capped at maxTokens (chars/4,
-//     matching the loop's estimator). Content beyond the budget is truncated
-//     with a marker. maxTokens <= 0 disables the cap. Trusted variants (see
+//   - Budget: each family is capped independently (see ExpandInput). Content
+//     beyond a budget is truncated with a marker. Trusted variants (see
 //     trustedVariants) are EXEMPT — operator config must not be crowded out by
 //     accumulated content that happens to be placed ahead of it.
 //
-// The base prompt text is never counted against the budget — only injected
-// memory content is.
-func Expand(prompt string, sections map[Variant]string, maxTokens int) string {
+// The base prompt text is never counted against either budget — only injected
+// content is.
+func Expand(prompt string, in ExpandInput) string {
 	remaining := -1 // -1 = unlimited
-	if maxTokens > 0 {
-		remaining = maxTokens * 4
+	if in.MaxTokens > 0 {
+		remaining = in.MaxTokens * 4
+	}
+	toolRemaining := -1
+	if in.ToolMaxTokens > 0 {
+		toolRemaining = in.ToolMaxTokens * 4
 	}
 	sawCoreBlocks := false
 
-	out := placeholderRe.ReplaceAllStringFunc(prompt, func(match string) string {
+	out := combinedPlaceholderRe.ReplaceAllStringFunc(prompt, func(match string) string {
+		// Which family matched: the memory pattern is tried first and only
+		// matches a full {{memory:...}} placeholder, so a non-nil result is
+		// unambiguous.
 		sub := placeholderRe.FindStringSubmatch(match)
+		if sub == nil {
+			return expandToolPlaceholder(match, in.ToolResults, &toolRemaining)
+		}
 		if sub[1] == `\` {
 			// Escaped → emit the literal placeholder, backslash stripped.
 			return match[1:]
@@ -199,7 +247,7 @@ func Expand(prompt string, sections map[Variant]string, maxTokens int) string {
 		if v == VariantCoreBlocks {
 			sawCoreBlocks = true
 		}
-		body := strings.TrimSpace(sections[v])
+		body := strings.TrimSpace(in.Sections[v])
 		if body == "" {
 			return ""
 		}
@@ -222,7 +270,7 @@ func Expand(prompt string, sections map[Variant]string, maxTokens int) string {
 
 	// Implicit append of core_blocks when configured but never placed.
 	if !sawCoreBlocks {
-		if body := strings.TrimSpace(sections[VariantCoreBlocks]); body != "" {
+		if body := strings.TrimSpace(in.Sections[VariantCoreBlocks]); body != "" {
 			if body = takeBudget(&remaining, body); body != "" {
 				if out != "" {
 					out = strings.TrimRight(out, "\n") + "\n\n"

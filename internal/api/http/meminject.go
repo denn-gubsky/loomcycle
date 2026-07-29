@@ -53,6 +53,11 @@ type memInject struct {
 	UserID       string
 	AgentName    string
 	InitialInput string // the run's initial user text, for search_request
+	// Tools is the run's ALREADY-RESOLVED tool list (allowedTools), for the
+	// {{tool:Context.tools}} expander. Every call site resolves it before prompt
+	// assembly, so this reuses that result rather than re-deriving it. Empty →
+	// the placeholder renders to nothing.
+	Tools []tools.Tool
 }
 
 // applyMemoryInjection expands the agent's system prompt with its core memory
@@ -73,11 +78,13 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	forceRoots := agentDef.MemoryRoots == "force"
 	suppressRoots := agentDef.MemoryRoots == "suppress"
 	wantUserInfo := meminject.ReferencesVariant(agentDef.SystemPrompt, meminject.VariantUserInfo)
+	toolRefs := meminject.ReferencesToolRefs(agentDef.SystemPrompt)
 
-	// Fast path: no core blocks, no placeholder, no protocol, no forced
-	// provisioning → return byte-identical with no store reads. Keeps every
-	// non-memory agent exactly as before.
-	if len(blocks) == 0 && !meminject.References(agentDef.SystemPrompt) && !agentDef.MemoryProtocol && !forceRoots {
+	// Fast path: no core blocks, no placeholder of either family, no protocol, no
+	// forced provisioning → return byte-identical with no store reads and no tool
+	// dispatch. Keeps every non-memory agent exactly as before.
+	if len(blocks) == 0 && !meminject.References(agentDef.SystemPrompt) && len(toolRefs) == 0 &&
+		!agentDef.MemoryProtocol && !forceRoots {
 		return agentDef, blocks
 	}
 
@@ -122,7 +129,12 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// (they need tenant scope + the entity tier — a later phase).
 
 	out := agentDef
-	out.SystemPrompt = meminject.Expand(agentDef.SystemPrompt, sections, maxTokens)
+	out.SystemPrompt = meminject.Expand(agentDef.SystemPrompt, meminject.ExpandInput{
+		Sections:      sections,
+		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
+		MaxTokens:     maxTokens,
+		ToolMaxTokens: toolInjectMaxTokens,
+	})
 
 	// Prepend the runtime-authored memory protocol in a region ABOVE any
 	// {{memory:...}} DATA blocks. It is trusted guidance (how to USE memory), so
