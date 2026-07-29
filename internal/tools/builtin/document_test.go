@@ -269,8 +269,10 @@ func TestDocument_ScopeTenantIsolation(t *testing.T) {
 // already had once.
 func TestDocument_TenantScopeRoundTrips(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
-	// The tenant scope is GATED; the round trip needs the operator's grant.
+	// The tenant scope is GATED on BOTH planes — structure in SQL Memory, chunk
+	// bodies in Memory — so the round trip needs both grants.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
+	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
 
 	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Tenant handbook"}`)
 	if r.IsError {
@@ -1474,35 +1476,78 @@ func TestExportMd_StoreFaultFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestDocument_TenantScopeDeniedWithoutTheGrant is the gate.
+// TestDocument_TenantScopeRequiresBothGrants is the gate.
 //
-// It is asserted here rather than assumed because this path had NO grant check at
-// all when the tenant scope was first written: documentFixture stamps no policy,
-// and the round-trip test above passed anyway — an agent holding
-// `tools: [Document]` could publish state the entire tenant reads as ground truth
-// without the operator granting anything.
+// A document write touches BOTH planes — chunk structure in SQL Memory, chunk
+// bodies in k/v Memory — so both grants are required. Half a grant would let an
+// agent reach half a tenant store, and a document with structure and no text is
+// the exact shape this store has already been broken into once.
 //
-// agent and user scope remain ungated on this path (pre-existing since the tool
-// shipped); what must not happen is a NEW cross-user scope inheriting that.
-func TestDocument_TenantScopeDeniedWithoutTheGrant(t *testing.T) {
-	d, ctx, _ := documentFixture(t) // no memory policy stamped at all
+// Asserted rather than assumed because this path had NO grant check at all when
+// the tenant scope was first written: documentFixture stamps no policy, and the
+// round-trip test passed anyway. A test that passes without the grant IS the proof
+// the grant is not required.
+func TestDocument_TenantScopeRequiresBothGrants(t *testing.T) {
+	tenantOnly := []string{"agent", "user", "tenant"}
+	withoutTenant := []string{"agent", "user"}
 
-	_, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"x"}`)
-	if !r.IsError {
-		t.Fatal("an agent with no memory_scopes grant must NOT reach the tenant scope")
-	}
-	if !strings.Contains(r.Text, "memory_scopes: [tenant]") {
-		t.Errorf("the refusal must name the grant an operator has to add: %q", r.Text)
+	cases := []struct {
+		name       string
+		mem, sql   []string
+		wantAllow  bool
+		wantNaming []string
+	}{
+		{
+			name: "neither grant", mem: withoutTenant, sql: withoutTenant,
+			wantNaming: []string{"memory_scopes: [tenant]", "sql_scopes: [tenant]"},
+		},
+		{
+			name: "memory only", mem: tenantOnly, sql: withoutTenant,
+			wantNaming: []string{"sql_scopes: [tenant]"},
+		},
+		{
+			name: "sql only", mem: withoutTenant, sql: tenantOnly,
+			wantNaming: []string{"memory_scopes: [tenant]"},
+		},
+		{
+			name: "both grants", mem: tenantOnly, sql: tenantOnly, wantAllow: true,
+		},
 	}
 
-	// A grant that omits tenant is still a denial.
-	partial := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}})
-	if _, r := docExec(t, d, partial, `{"op":"create_document","scope":"tenant","title":"x"}`); !r.IsError {
-		t.Error("memory_scopes without `tenant` must not grant the tenant scope")
-	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, ctx, _ := documentFixture(t)
+			ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: c.mem})
+			ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: c.sql})
 
-	// And the pre-existing scopes are unaffected by the new check.
-	if _, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"ok"}`); r.IsError {
-		t.Errorf("the tenant gate must not change the user scope's behaviour: %s", r.Text)
+			_, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"x"}`)
+			if c.wantAllow {
+				if r.IsError {
+					t.Fatalf("both grants present, must be allowed: %s", r.Text)
+				}
+				return
+			}
+			if !r.IsError {
+				t.Fatal("a partial or absent grant must NOT reach the tenant scope")
+			}
+			for _, want := range c.wantNaming {
+				if !strings.Contains(r.Text, want) {
+					t.Errorf("the refusal must name the missing grant %q: %q", want, r.Text)
+				}
+			}
+		})
+	}
+}
+
+// TestDocument_TenantGateLeavesOtherScopesAlone: agent and user have been ungated
+// on this path since the tool shipped, and retrofitting a grant onto them would
+// break every existing agent that holds Document without declaring scopes. That is
+// a separate, breaking change; this pins that the new check did not smuggle it in.
+func TestDocument_TenantGateLeavesOtherScopesAlone(t *testing.T) {
+	d, ctx, _ := documentFixture(t) // no policies stamped at all
+	for _, scope := range []string{"user", "agent"} {
+		if _, r := docExec(t, d, ctx, `{"op":"create_document","scope":"`+scope+`","title":"ok"}`); r.IsError {
+			t.Errorf("scope=%s must be unaffected by the tenant gate: %s", scope, r.Text)
+		}
 	}
 }

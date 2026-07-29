@@ -54,7 +54,7 @@ const documentInputSchema = `{
 	"type": "object",
 	"properties": {
 		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
-		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. Each requires the operator to grant that scope."},
+		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
 		"title":       {"type": "string"},
@@ -276,14 +276,29 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 		// does not belong in the commit that introduces a new scope. What must not
 		// happen is a NEW, cross-user scope inheriting the ungated posture.
 		//
-		// memory_scopes is the gate because it governs the tenant keyspace itself.
-		// Document also writes structure into SQL Memory under the same tenant, so a
-		// later consistency pass may require sql_scopes here too; today that would
-		// demand two grants for one operation with no extra safety.
+		// BOTH grants are required, because a document write touches BOTH planes: the
+		// chunk structure goes to SQL Memory (sql_scopes) and the chunk bodies to k/v
+		// Memory (memory_scopes). Granting one and not the other would let an agent
+		// reach half of a tenant store — and a half-written document is not a partial
+		// failure, it is structure with no text, which is the shape this store has
+		// already been broken into once.
+		//
+		// Requiring both also keeps one rule for the whole tenant scope: whichever
+		// tool an operator reasons about, the same two lines of yaml are what opens
+		// it. A single-grant gate here would mean Document needed less authority than
+		// the Memory tool does for the same data.
+		missing := make([]string, 0, 2)
 		if !contains(tools.MemoryPolicy(ctx).AllowedScopes, "tenant") {
-			return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=tenant is not granted to this agent — " +
-				"a tenant document is readable and writable by every user and agent in the tenant, so the " +
-				"operator must opt in with `memory_scopes: [tenant]` on the agent")
+			missing = append(missing, "memory_scopes: [tenant]")
+		}
+		if !contains(tools.SqlMemPolicy(ctx).AllowedScopes, "tenant") {
+			missing = append(missing, "sql_scopes: [tenant]")
+		}
+		if len(missing) > 0 {
+			return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=tenant is not granted to this agent — "+
+				"a tenant document is readable and writable by every user and agent in the tenant, so the "+
+				"operator must opt in. Missing on the agent: %s (a document needs both — structure lives in "+
+				"SQL Memory, chunk bodies in Memory)", strings.Join(missing, " and "))
 		}
 		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "tenant", ScopeID: sqlTenant}, store.MemoryScopeTenant, nil
 	default:
