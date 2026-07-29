@@ -57,8 +57,10 @@ agents:
       ## Notes
       - The sandbox has Python, Go, Rust, C/C++, and Node preinstalled. /work is an
         in-memory workspace that vanishes when the session closes — nothing persists.
-      - By default the sandbox has NO network. If a step must fetch dependencies and
-        the operator enabled it, open the session with network:"egress".
+      - Open with network:"egress" for real dev work (cloning repos, fetching
+        dependencies) — this is a networked dev sandbox. Use network:"none" only for
+        purely offline compute. (If the operator hasn't enabled egress the session
+        silently falls back to no network.)
       - Resource limits (cpu/mem/pids/tmpfs) are capped by the operator; ask for less
         when a task is small, never more than you need.
       - If the sandbox tools are unavailable, the builder sidecar isn't deployed —
@@ -107,8 +109,9 @@ skills:
       - If a caller GIVES you a session_id, reuse it (don't open a new one); if asked to
         KEEP a session open for follow-up, report the session_id and leave it open — a
         parent agent may drive several commands against the same container.
-      - Default to network:"none"; use "egress" only when a step must fetch something
-        and the operator enabled egress.
+      - Default to network:"egress" for dev work (clone/fetch deps); use "none" only
+        for offline compute. (Egress needs the operator's SANDBOX_ALLOW_EGRESS; if it
+        isn't enabled, the session falls back to no network.)
       - Keepalive: if you'll leave a session idle across a gap with no commands (a
         parent is thinking between steps), sandbox_touch {session_id} resets its idle
         timer so it isn't reaped — a normal sandbox_exec already resets it.

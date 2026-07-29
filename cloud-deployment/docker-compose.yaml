@@ -105,6 +105,7 @@ services:
                                          # HOST path here — see INSTALL.md.
       SANDBOX_MAX_CPUS: "2"
       SANDBOX_MAX_MEM_MB: "2048"
+      SANDBOX_ALLOW_EGRESS: "1"          # permit network:"egress" sessions (git clone / fetch deps)
       SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}   # SAME secret loomcycle presents
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
