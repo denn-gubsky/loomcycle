@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -114,9 +115,20 @@ func (r CaseResult) Passed() bool {
 type AbilityScore struct {
 	Ability Ability `json:"ability"`
 	Cases   int     `json:"cases"`
-	// Recall is captured/wanted across the ability's cases. -1 when the ability
-	// asserts no positive expectations (abstention), so a reader is never shown a
-	// meaningless 1.0.
+	// Errors counts cases that never produced an answer — a timeout, a 429, an
+	// unreachable host. They are EXCLUDED from Recall rather than counted as
+	// misses: a case that was never asked is not a case the model got wrong.
+	//
+	// Getting this wrong is not cosmetic. A 36B local model exhausted the run
+	// budget partway through, and the five cut-off cases turned into
+	// `update 0.00` plus a gate failure reading "a correction the extractor drops
+	// leaves the stale fact standing" — a confident, wrong diagnosis of a model
+	// that was never asked the question.
+	Errors int `json:"errors,omitempty"`
+	// Recall is captured/wanted across the ability's ANSWERED cases. -1 when the
+	// ability asserts no positive expectations (abstention) or when every case
+	// errored, so a reader is never shown a meaningless 1.0 or a 0.0 that means
+	// "not measured".
 	Recall float64 `json:"recall"`
 	// Violations is the count of forbidden emissions. For abstention this IS the
 	// score.
@@ -144,6 +156,14 @@ type ExtractionReport struct {
 	Abilities    []AbilityScore `json:"abilities"`
 	// TotalViolations across every ability — the headline safety number.
 	TotalViolations int `json:"total_violations"`
+	// TotalErrors counts cases that never produced an answer. Non-zero means the
+	// run is INCOMPLETE: its numbers describe a subset of the corpus, so they are
+	// not comparable to a full run and must not be recorded as a baseline.
+	TotalErrors int `json:"total_errors,omitempty"`
+	// BudgetExhausted is set when the run's context deadline expired mid-run,
+	// which is the usual cause of a cluster of errors on a slow local model — and
+	// a materially different thing to report than a provider fault.
+	BudgetExhausted bool `json:"budget_exhausted,omitempty"`
 	// HarnessFault is set when the canary failed. Scores in the same report are
 	// then NOT trustworthy and the gate refuses regardless of the numbers.
 	HarnessFault string `json:"harness_fault,omitempty"`
@@ -209,6 +229,13 @@ type ExtractionInput struct {
 	Model     string
 	Effort    string
 	MaxTokens int
+	// CaseTimeout bounds ONE case's call. Zero = no per-case bound (the caller's
+	// ctx is the only limit).
+	//
+	// Per case rather than per run on purpose: a whole-run budget makes the last
+	// cases the victims of a slow model, so which abilities get measured depends on
+	// where the wall clock lands rather than on the corpus.
+	CaseTimeout time.Duration
 }
 
 // RunExtraction scores the corpus against a live model.
@@ -247,6 +274,13 @@ func RunExtraction(ctx context.Context, c Caller, in ExtractionInput) (Extractio
 	rep.Abilities = scoreAbilities(rep.Cases)
 	for _, s := range rep.Abilities {
 		rep.TotalViolations += s.Violations
+		rep.TotalErrors += s.Errors
+	}
+	// A cluster of errors at the END of a run is almost always the wall clock, not
+	// the provider. Checking ctx directly separates "this deployment is broken"
+	// from "raise --timeout", which are different actions.
+	if ctx.Err() != nil {
+		rep.BudgetExhausted = true
 	}
 	return rep, nil
 }
@@ -359,6 +393,12 @@ func runCase(ctx context.Context, c Caller, in ExtractionInput, cs ExtractionCas
 	}
 	if in.MaxTokens > 0 {
 		req.MaxTokens = in.MaxTokens
+	}
+
+	if in.CaseTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, in.CaseTimeout)
+		defer cancel()
 	}
 
 	ch, err := c.Call(ctx, req)
@@ -560,6 +600,13 @@ func scoreAbilities(cases []CaseResult) []AbilityScore {
 		s := AbilityScore{Ability: a, Cases: len(rows), Recall: -1}
 		captured, wanted := 0, 0
 		for _, r := range rows {
+			if r.Err != "" {
+				// Never answered → contributes nothing to recall. Counting its
+				// expectations as misses would report a model failure for a case the
+				// model never saw.
+				s.Errors++
+				continue
+			}
 			captured += r.Captured
 			wanted += r.Wanted
 			s.Violations += len(r.Violations)
@@ -603,6 +650,17 @@ func (g Gate) Check(r ExtractionReport) []string {
 	var fails []string
 	if g.RequireCanary && r.HarnessFault != "" {
 		return []string{"harness fault: " + r.HarnessFault}
+	}
+	// An INCOMPLETE run fails, but on its own terms. Falling through to the recall
+	// checks would report "update recall 0.00 — a correction the extractor drops
+	// leaves the stale fact standing" about a case that timed out before it was
+	// ever asked, which is how a harness slanders a model.
+	if r.TotalErrors > 0 {
+		msg := fmt.Sprintf("INCOMPLETE: %d case(s) never produced an answer, so this run measures only part of the corpus and its numbers are not comparable to a full one", r.TotalErrors)
+		if r.BudgetExhausted {
+			msg += " — the run's wall clock expired, so raise --timeout (it is PER CASE; a slow local model needs minutes each)"
+		}
+		return []string{msg}
 	}
 	if r.TotalViolations > g.MaxViolations {
 		fails = append(fails, fmt.Sprintf("%d violation(s), gate allows %d — a violation is a durable error in a store other agents read as ground truth",

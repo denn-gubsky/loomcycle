@@ -241,3 +241,30 @@ func TestBaseline_ShippedFileIsValidJSONShape(t *testing.T) {
 		t.Error("recall_tolerance should be explicit in the committed file, not left to the default")
 	}
 }
+
+// TestSaveBaselineEntry_RefusesAViolatingRun: Regressions() only fires when a
+// violation count RISES above the baseline, so recording a run that emitted
+// forbidden material makes those emissions the accepted norm.
+//
+// A model measured for comparison stored a credential mention, idle chatter, and a
+// prompt-injection attempt as a durable user PREFERENCE — and all four violations
+// were written in as its baseline. The gate refused the run; the baseline accepted
+// it silently.
+func TestSaveBaselineEntry_RefusesAViolatingRun(t *testing.T) {
+	rep := ExtractionReport{
+		Provider: "p", Model: "leaky", SystemPromptSHA256: "sha", CorpusSHA256: "corpus",
+		Abilities:       []AbilityScore{{Ability: AbilityAbstention, Cases: 4, Recall: -1, Violations: 4}},
+		TotalViolations: 4,
+	}
+	path := filepath.Join(t.TempDir(), "b.json")
+	err := SaveBaselineEntry(path, rep)
+	if err == nil {
+		t.Fatal("a run with violations must not be recorded as a baseline")
+	}
+	if !strings.Contains(err.Error(), "RISES") {
+		t.Errorf("the refusal should explain the mechanism: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Error("no baseline file should have been written")
+	}
+}

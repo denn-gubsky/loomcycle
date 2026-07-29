@@ -49,7 +49,7 @@ const extractorAgentName = "memory/extractor"
 //	--baseline <path>        compare against a committed baseline, and gate on regressions
 //	--update-baseline <path> write this run's scores into a baseline file
 //	--output <path>          write the JSON report (default: human-readable to stdout)
-//	--timeout <dur>          per-run wall clock (default 10m; local models are slow)
+//	--timeout <dur>          wall clock PER CASE (default 5m; local models are slow)
 //	--no-gate                report only; exit 0 even on gate failure
 func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("memory-eval-live", flag.ContinueOnError)
@@ -61,7 +61,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	baseline := fs.String("baseline", "", "compare against this baseline file and gate on regressions")
 	updateBaseline := fs.String("update-baseline", "", "write this run's scores into this baseline file")
 	output := fs.String("output", "", "write the JSON report here (default: human-readable to stdout)")
-	timeout := fs.Duration("timeout", 10*time.Minute, "wall clock for the whole run")
+	timeout := fs.Duration("timeout", 5*time.Minute, "wall clock PER CASE (not for the whole run)")
 	maxTokens := fs.Int("max-tokens", 0, "per-call max_tokens (0 = provider default)")
 	noGate := fs.Bool("no-gate", false, "report only; exit 0 even when the gate fails")
 	showFacts := fs.Bool("show-facts", false, "print every case's emitted facts, including the ones that passed")
@@ -100,10 +100,13 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "memory-eval-live: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-	defer cancel()
-
-	rep, err := eval.RunExtraction(ctx, prov, eval.ExtractionInput{
+	// PER-CASE, not per-run. A total budget makes the LAST cases the victims of a
+	// slow model: a 36B local model got through 8 of 13 and the remaining 5 came
+	// back as timeouts, which scored as zero recall on two abilities and a gate
+	// failure blaming the model for a question it was never asked. Which cases get
+	// measured should not depend on where the wall clock happens to land.
+	rep, err := eval.RunExtraction(context.Background(), prov, eval.ExtractionInput{
+		CaseTimeout:  *timeout,
 		Corpus:       eval.ExtractionFixture(),
 		SystemPrompt: agent.SystemPrompt,
 		Provider:     *providerID,
@@ -189,19 +192,35 @@ func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Base
 		return
 	}
 
+	if r.TotalErrors > 0 {
+		// Stated ABOVE the table, because the table's numbers describe a subset of
+		// the corpus and a reader who skims the columns first will otherwise take
+		// them for a full measurement.
+		msg := fmt.Sprintf("!! INCOMPLETE — %d case(s) never produced an answer; the figures below cover only the rest", r.TotalErrors)
+		if r.BudgetExhausted {
+			msg += ", and the per-case wall clock expired (raise --timeout)"
+		}
+		fmt.Fprintf(w, "\n  %s\n", wrapText(msg, 74, "  "))
+	}
+
 	fmt.Fprintf(w, "\nper-ability\n")
-	fmt.Fprintf(w, "  %-12s %6s %9s %11s %8s\n", "ability", "cases", "recall", "violations", "clean")
+	fmt.Fprintf(w, "  %-12s %6s %9s %11s %8s %7s\n", "ability", "cases", "recall", "violations", "clean", "errors")
 	for _, s := range r.Abilities {
 		recall := "     n/a"
 		if s.Recall >= 0 {
 			recall = fmt.Sprintf("%8.2f", s.Recall)
 		}
+		errs := "       "
+		if s.Errors > 0 {
+			errs = fmt.Sprintf("%7d", s.Errors)
+		}
 		delta := ""
 		if base != nil {
 			delta = base.DeltaFor(r, s)
 		}
-		fmt.Fprintf(w, "  %-12s %6d %9s %11d %5d/%d%s\n",
-			s.Ability, s.Cases, recall, s.Violations, s.CleanCases, s.Cases, delta)
+		answered := s.Cases - s.Errors
+		fmt.Fprintf(w, "  %-12s %6d %9s %11d %5d/%d %s%s\n",
+			s.Ability, s.Cases, recall, s.Violations, s.CleanCases, answered, errs, delta)
 	}
 	fmt.Fprintf(w, "\n  total violations     %d\n", r.TotalViolations)
 
