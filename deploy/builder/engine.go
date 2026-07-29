@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,11 @@ type openOpts struct {
 	MemMB   int64
 	Pids    int64
 	Image   string
+	// Env is operator-injected session environment (validated, non-reserved names
+	// mapped from X-Loom-Sandbox-Env-* headers — e.g. a GitHub token). Empty unless
+	// env injection is enabled. Emitted BEFORE sessionEnv so the toolchain/cache
+	// vars always win on a collision. Values are secrets — never logged.
+	Env map[string]string
 	// WorkspaceHostDir, when set, is a persistent host directory bind-mounted at
 	// /work (durable workspace, RFC BI P2a) instead of the in-memory tmpfs. It is
 	// a resolved + fenced path (see Dispatcher.resolveWorkspaceDir) — never a raw
@@ -122,6 +128,20 @@ func (e *Engine) runArgs(name string, o openOpts) []string {
 		"--cpus", strconv.FormatFloat(o.CPUs, 'f', -1, 64),
 		"--workdir", workDir,
 	)
+	// Operator-injected session env (e.g. a GitHub token for git/gh). Emitted
+	// BEFORE sessionEnv so the read-only-rootfs toolchain/cache vars always win on
+	// a collision (reserved names are rejected at validation; this is belt-and-
+	// suspenders). Sorted for a deterministic argv.
+	if len(o.Env) > 0 {
+		keys := make([]string, 0, len(o.Env))
+		for k := range o.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			a = append(a, "--env", k+"="+o.Env[k])
+		}
+	}
 	for _, kv := range sessionEnv() {
 		a = append(a, "--env", kv)
 	}

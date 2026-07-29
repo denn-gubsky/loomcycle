@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -61,6 +62,10 @@ type caller struct {
 	Principal string
 	RootRun   string
 	Tenant    string
+	// Env is operator-injected session env from X-Loom-Sandbox-Env-* headers,
+	// consumed only by sandbox_open. Nil when none, or when the operator hasn't
+	// enabled injection. Values are secrets (e.g. a token) — never logged.
+	Env map[string]string
 }
 
 // Call dispatches a tools/call. It returns model-facing text and an isError flag
@@ -106,6 +111,23 @@ func (d *Dispatcher) open(ctx context.Context, c caller, raw json.RawMessage) (s
 	}
 	o := clampOpen(d.cfg, in.Network, in.TmpfsMB, in.CPUs, in.MemMB, in.Pids)
 	o.Image = d.cfg.Image
+
+	// Operator-injected session env: e.g. a GitHub token for git/gh, delivered as
+	// X-Loom-Sandbox-Env-* headers whose values loomcycle already resolved from
+	// $cred:/$ghapp: — so the secret rides the transport, never a tool arg (never
+	// the model). Gated by SANDBOX_ALLOW_ENV_INJECTION; when off we drop it and the
+	// run just runs unauthenticated (like egress silently downgrades).
+	if len(c.Env) > 0 {
+		if !d.cfg.AllowEnvInjection {
+			log.Printf("sandbox: %d injected env var(s) ignored (SANDBOX_ALLOW_ENV_INJECTION not set)", len(c.Env))
+		} else {
+			env, verr := validateInjectedEnv(c.Env, d.cfg.MaxEnvVars, d.cfg.MaxEnvValueBytes)
+			if verr != nil {
+				return verr.Error(), true, nil
+			}
+			o.Env = env
+		}
+	}
 
 	// RFC BI P2a — a named durable workspace: bind-mount a persistent host dir at
 	// /work instead of tmpfs, so a checkout + build cache survive container churn.
@@ -463,6 +485,61 @@ func clampOpen(cfg *Config, network string, tmpfsMB int64, cpus float64, memMB, 
 		o.Pids = cfg.MaxPids
 	}
 	return o
+}
+
+// reservedEnvNames are session-integrity vars that injection must never set:
+// overriding them could break the read-only-rootfs toolchain (HOME/cache dirs),
+// the image PATH the toolchain lives on, or slip in a loader hook. (sessionEnv's
+// cache vars also always win by emit order, but rejecting them is clearer.)
+var reservedEnvNames = map[string]bool{
+	"HOME": true, "PATH": true, "TMPDIR": true,
+	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true,
+	"XDG_CACHE_HOME": true, "GOCACHE": true, "GOPATH": true,
+	"GOMODCACHE": true, "CARGO_HOME": true, "PIP_CACHE_DIR": true,
+}
+
+// validateInjectedEnv checks operator-injected session env against the operator
+// caps + a reserved/infra denylist. An empty value is dropped, not an error (a
+// $cred: that resolved to nothing → the run simply runs unauthenticated). Returns
+// the vars to inject, or an error that becomes a tool-level failure.
+func validateInjectedEnv(in map[string]string, maxVars, maxValBytes int) (map[string]string, error) {
+	if len(in) > maxVars {
+		return nil, fmt.Errorf("too many injected env vars (%d > max %d)", len(in), maxVars)
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if v == "" {
+			continue // an unresolved credential — inject nothing, degrade gracefully
+		}
+		if !validEnvName(k) {
+			return nil, fmt.Errorf("invalid injected env name %q (must match [A-Z_][A-Z0-9_]*)", k)
+		}
+		if reservedEnvNames[k] || strings.HasPrefix(k, "LOOMCYCLE_") || k == "PG_DSN" {
+			return nil, fmt.Errorf("injected env name %q is reserved and cannot be set", k)
+		}
+		if len(v) > maxValBytes {
+			return nil, fmt.Errorf("injected env %q value too large (%d > %d bytes)", k, len(v), maxValBytes)
+		}
+		if strings.ContainsAny(v, "\n\r\x00") {
+			return nil, fmt.Errorf("injected env %q value contains a control character", k)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// validEnvName enforces POSIX-ish names [A-Z_][A-Z0-9_]* — upper only, since
+// collectEnvHeaders uppercases header-derived names.
+func validEnvName(s string) bool {
+	for i, r := range s {
+		switch {
+		case r == '_' || (r >= 'A' && r <= 'Z'):
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return s != ""
 }
 
 // safeRelPath validates a caller-supplied workspace path. It must be a relative

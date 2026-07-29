@@ -39,6 +39,15 @@ type Config struct {
 	// network:"egress" only when the operator opts in.
 	AllowEgress bool // SANDBOX_ALLOW_EGRESS=1
 
+	// Env injection. When enabled, X-Loom-Sandbox-Env-<Name> request headers
+	// loomcycle fills — the value substituted server-side from $cred:/$ghapp:, so a
+	// secret never touches the model — are injected as --env into the session
+	// container (e.g. a GitHub token for authenticated git/gh). Off by default: a
+	// generic header->env seam is a capability the operator opts into.
+	AllowEnvInjection bool // SANDBOX_ALLOW_ENV_INJECTION=1
+	MaxEnvVars        int  // SANDBOX_MAX_ENV_VARS (default 32)
+	MaxEnvValueBytes  int  // SANDBOX_MAX_ENV_VALUE_BYTES (default 65536)
+
 	// Resource ceilings (per session container) + defaults when the caller
 	// omits a value.
 	DefTmpfsMB int64 // SANDBOX_DEFAULT_TMPFS_MB (default 512)
@@ -67,27 +76,30 @@ type Config struct {
 // validating the security-critical invariants.
 func LoadConfig() (*Config, error) {
 	c := &Config{
-		ListenAddr:     envStr("SANDBOX_LISTEN_ADDR", ":9000"),
-		AuthToken:      os.Getenv("SANDBOX_AUTH_TOKEN"),
-		AllowAnon:      os.Getenv("SANDBOX_ALLOW_ANON") == "1",
-		PodmanBin:      envStr("SANDBOX_PODMAN_BIN", "podman"),
-		Image:          os.Getenv("SANDBOX_IMAGE"),
-		Runtime:        os.Getenv("SANDBOX_RUNTIME"),
-		CtrUser:        envStr("SANDBOX_CONTAINER_USER", "1000:1000"),
-		WorkspaceRoot:  os.Getenv("SANDBOX_WORKSPACE_ROOT"),
-		AllowEgress:    os.Getenv("SANDBOX_ALLOW_EGRESS") == "1",
-		DefTmpfsMB:     envInt("SANDBOX_DEFAULT_TMPFS_MB", 512),
-		MaxTmpfsMB:     envInt("SANDBOX_MAX_TMPFS_MB", 2048),
-		MaxCPUs:        envFloat("SANDBOX_MAX_CPUS", 2),
-		MaxMemMB:       envInt("SANDBOX_MAX_MEM_MB", 2048),
-		MaxPids:        envInt("SANDBOX_MAX_PIDS", 512),
-		DefTimeout:     30 * time.Second,
-		MaxTimeout:     5 * time.Minute,
-		MaxOutBytes:    envInt("SANDBOX_MAX_OUTPUT_BYTES", 1<<20),
-		SessionIdleTTL: envDur("SANDBOX_SESSION_IDLE_TTL", 15*time.Minute),
-		SessionMaxTTL:  envDur("SANDBOX_SESSION_MAX_TTL", time.Hour),
-		GCInterval:     envDur("SANDBOX_GC_INTERVAL", time.Minute),
-		MaxSessions:    int(envInt("SANDBOX_MAX_SESSIONS", 32)),
+		ListenAddr:        envStr("SANDBOX_LISTEN_ADDR", ":9000"),
+		AuthToken:         os.Getenv("SANDBOX_AUTH_TOKEN"),
+		AllowAnon:         os.Getenv("SANDBOX_ALLOW_ANON") == "1",
+		PodmanBin:         envStr("SANDBOX_PODMAN_BIN", "podman"),
+		Image:             os.Getenv("SANDBOX_IMAGE"),
+		Runtime:           os.Getenv("SANDBOX_RUNTIME"),
+		CtrUser:           envStr("SANDBOX_CONTAINER_USER", "1000:1000"),
+		WorkspaceRoot:     os.Getenv("SANDBOX_WORKSPACE_ROOT"),
+		AllowEgress:       os.Getenv("SANDBOX_ALLOW_EGRESS") == "1",
+		AllowEnvInjection: os.Getenv("SANDBOX_ALLOW_ENV_INJECTION") == "1",
+		MaxEnvVars:        int(envInt("SANDBOX_MAX_ENV_VARS", 32)),
+		MaxEnvValueBytes:  int(envInt("SANDBOX_MAX_ENV_VALUE_BYTES", 64<<10)),
+		DefTmpfsMB:        envInt("SANDBOX_DEFAULT_TMPFS_MB", 512),
+		MaxTmpfsMB:        envInt("SANDBOX_MAX_TMPFS_MB", 2048),
+		MaxCPUs:           envFloat("SANDBOX_MAX_CPUS", 2),
+		MaxMemMB:          envInt("SANDBOX_MAX_MEM_MB", 2048),
+		MaxPids:           envInt("SANDBOX_MAX_PIDS", 512),
+		DefTimeout:        30 * time.Second,
+		MaxTimeout:        5 * time.Minute,
+		MaxOutBytes:       envInt("SANDBOX_MAX_OUTPUT_BYTES", 1<<20),
+		SessionIdleTTL:    envDur("SANDBOX_SESSION_IDLE_TTL", 15*time.Minute),
+		SessionMaxTTL:     envDur("SANDBOX_SESSION_MAX_TTL", time.Hour),
+		GCInterval:        envDur("SANDBOX_GC_INTERVAL", time.Minute),
+		MaxSessions:       int(envInt("SANDBOX_MAX_SESSIONS", 32)),
 	}
 	// Per-session defaults are the ceilings unless separately narrowed — a
 	// caller asking for less is honoured, more is clamped (see clampOpen).
