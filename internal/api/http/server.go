@@ -2305,7 +2305,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// policy here (top-level run) → no inheritance.
 	agentDef, coreBlocks := s.applyMemoryInjection(ctx, agentDef, memInject{
 		Tenant: effectiveTenantID, UserID: effectiveUserID, AgentName: effectiveAgentName,
-		InitialInput: firstUserText(in.Segments),
+		InitialInput: firstUserText(in.Segments), Tools: allowedTools,
 	})
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
@@ -3757,7 +3757,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// RFC BL P1: memory injection + effective core-block set (see RunOnce).
 	agentDef, coreBlocks := s.applyMemoryInjection(r.Context(), agentDef, memInject{
 		Tenant: req.TenantID, UserID: req.UserID, AgentName: req.Agent,
-		InitialInput: firstUserText(req.Segments),
+		InitialInput: firstUserText(req.Segments), Tools: allowedTools,
 	})
 	// Optional system prompt from agent def.
 	if agentDef.SystemPrompt != "" {
@@ -4407,7 +4407,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RFC BL P1: memory injection + effective core-block set (see RunOnce).
 	agentDef, coreBlocks := s.applyMemoryInjection(r.Context(), agentDef, memInject{
 		Tenant: sess.TenantID, UserID: sess.UserID, AgentName: sess.Agent,
-		InitialInput: firstUserText(body.Segments),
+		InitialInput: firstUserText(body.Segments), Tools: allowedTools,
 	})
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
@@ -5666,12 +5666,20 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 	// ctx, so tenantFromCtx(ctx) returns the parent's (== the run's)
 	// authoritative tenant — resolve the sub-agent's skills there.
 	def, promptProv := s.resolveSkillBodiesForRun(ctx, tenantFromCtx(ctx), def)
+	// RFC N FIX 2-mcp: sub-agents run with the parent's RunIdentity already
+	// on ctx, so tenantFromCtx returns the run's authoritative tenant —
+	// the sub-agent advertises the same tenant's MCP tools as its parent.
+	//
+	// Resolved BEFORE applyMemoryInjection because a {{tool:...}} placeholder
+	// renders this list. Safe to hoist: applyMemoryInjection rewrites only
+	// SystemPrompt, so def.Tools is the same value it was below.
+	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.Tools), def.Tools, nil)
 	// RFC BL P1: memory injection for the sub-agent. ctx still carries the
 	// PARENT run's core-block policy, so an inherit_core_blocks sub-agent picks
 	// up the parent's user/tenant blocks here (agent-scope never crosses).
 	def, coreBlocks := s.applyMemoryInjection(ctx, def, memInject{
 		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
-		InitialInput: prompt,
+		InitialInput: prompt, Tools: subTools,
 	})
 	// Build segments: agent's system_prompt (with cache_control) + the
 	// caller-supplied prompt as the first user message. Mirrors the
@@ -5695,10 +5703,6 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		}},
 	})
 
-	// RFC N FIX 2-mcp: sub-agents run with the parent's RunIdentity already
-	// on ctx, so tenantFromCtx returns the run's authoritative tenant —
-	// the sub-agent advertises the same tenant's MCP tools as its parent.
-	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.Tools), def.Tools, nil)
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static
 	// HTTPHostAllowlist — which typically doesn't include localhost

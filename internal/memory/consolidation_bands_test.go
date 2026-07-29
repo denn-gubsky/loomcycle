@@ -51,7 +51,7 @@ func TestConsolidationBands_RendersUnframed(t *testing.T) {
 		meminject.VariantConsolidationBands: meminject.ConsolidationBands(0.9, 0.6),
 		meminject.VariantCoreBlocks:         "name: alice",
 	}
-	out := meminject.Expand("prompt\n\n{{memory:consolidation_bands}}", sections, 0)
+	out := meminject.Expand("prompt\n\n{{memory:consolidation_bands}}", meminject.ExpandInput{Sections: sections, MaxTokens: 0})
 	if strings.Contains(out, `source="consolidation_bands"`) {
 		t.Errorf("bands were DATA-framed:\n%s", out)
 	}
@@ -94,7 +94,7 @@ func TestConsolidationBands_AbsentPlaceholderInjectsNothing(t *testing.T) {
 	sections := map[meminject.Variant]string{
 		meminject.VariantConsolidationBands: meminject.ConsolidationBands(0.9, 0.6),
 	}
-	out := meminject.Expand("a prompt with no placeholders", sections, 0)
+	out := meminject.Expand("a prompt with no placeholders", meminject.ExpandInput{Sections: sections, MaxTokens: 0})
 	if strings.Contains(out, "similarity") {
 		t.Errorf("bands were injected without a placeholder:\n%s", out)
 	}

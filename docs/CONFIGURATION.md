@@ -809,6 +809,38 @@ agents:
 
 (Setting `model: ""` is the explicit "clear" — without it, the discovered `sonnet` would stay.)
 
+### System-prompt placeholders
+
+A `system_prompt` may contain placeholders the server expands at run start, before the first model call. Two closed-set families; anything outside the set **fails config load** rather than silently rendering nothing.
+
+| Placeholder | Expands to |
+|---|---|
+| `{{tool:Context.tools}}` | the framed result of calling `Context op=tools` — the agent's own resolved tool inventory, one compact line per tool |
+| `{{memory:core_blocks}}` | every attached core memory block's value (auto-appended if blocks are attached and no placeholder is placed) |
+| `{{memory:user_info}}` | the operator-authored user-root document + the learned `human` block |
+| `{{memory:search_request}}` | an LLM-free retrieval against the run's initial user input |
+| `{{memory:consolidation_bands}}` | the deployment's duplicate-detection similarity bands |
+
+```yaml
+agents:
+  assistant:
+    tools: [Read, Write, Grep, WebSearch, Memory]
+    system_prompt: |
+      You are a helpful assistant.
+
+      ## Tools
+      {{tool:Context.tools}}
+
+      Choosing among them:
+      - Files: Grep to locate first, then Read.
+```
+
+**`{{tool:...}}` is limited to an allowlist of read-only calls — `Context.tools` today.** Prompt assembly runs at every run entry, sub-agent spawn and resume, so a placeholder naming a mutating tool would write on each one, one naming `Agent` would spawn during its own parent's assembly, and one naming a network tool would put a call on the critical path of every run. A runtime-authored agent's system prompt is model-writable, so what may be called from a prompt is deliberately not model-chosen. `{{tool:Bash.run}}` is a boot error that lists what is allowed.
+
+Use it in place of a hand-written tool list, which cannot be kept in sync with the `tools:` list beside it — the bundled `chat/*` agents had drifted to naming 12 of their 17 tools. Keep the *guidance* hand-written (which tool to prefer, when to reach for one); let the *inventory* be generated. Note this adds no capability: the full schemas are already sent on every request. It exists because smaller local models under-attend to that array and act as though they have no tools until asked to check.
+
+Shared rules: a leading backslash escapes (`\{{tool:Context.tools}}` renders literally); names are case-insensitive; expanded content is framed as reference data and cannot forge its own delimiter; a placeholder appearing *inside* expanded content stays literal; each family has an independent token budget (memory's is `memory_inject_max_tokens`, default 1024) so the two never compete on prompt order; expansion is deterministic, so provider prompt-caching still hits. Agents can read the same reference at runtime via `Context op=help topic=system-prompt-placeholders`.
+
 ---
 
 ## 8. Conflict resolution — what wins when

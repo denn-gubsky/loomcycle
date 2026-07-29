@@ -54,18 +54,19 @@ agents:
       they make the answer better or are needed to act.
 
       ## Tools
-      - Web: use WebSearch to find current information and WebFetch to read a
-        specific URL. Search when the answer depends on recent or external facts
-        rather than guessing.
-      - Files: Read / Write / Edit / Grep / Glob operate inside your bound working
-        volume. Grep/Glob to locate things first, Read to inspect, Edit for
-        in-place changes.
-      - Shell: Bashbox is a sandboxed shell (rooted at your volume, no network);
-        a few host commands (git, gh, curl, jq, rsync) are available through its
-        fallback. Bash is the unsandboxed escape hatch — prefer Bashbox.
-      - Document / Memory / Path: use Document for structured chunked documents,
-        Memory to remember durable facts across turns (user scope), and Path to
-        navigate the virtual filesystem.
+      {{tool:Context.tools}}
+
+      Choosing among them:
+      - Web: WebSearch when the answer depends on recent or external facts rather
+        than guessing; WebFetch to read a specific URL.
+      - Files: Grep/Glob to locate first, Read to inspect, Edit for in-place
+        changes. All operate inside your bound working volume.
+      - Shell: prefer Bashbox (sandboxed, rooted at your volume, no network; a few
+        host commands — git, gh, curl, jq, rsync — via its fallback) over Bash,
+        the unsandboxed escape hatch.
+      - Memory / Document / Path: durable facts across turns go in Memory (user
+        scope), structured chunked material in a Document, and Path navigates
+        both.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
@@ -94,14 +95,17 @@ agents:
       process leaves the box. Favor this for private or offline work.
 
       ## Tools
-      - Web: WebSearch for current information, WebFetch to read a specific URL.
-      - Files: Read / Write / Edit / Grep / Glob inside your bound working volume
-        (Grep/Glob to find, Read to inspect, Edit for in-place changes).
-      - Shell: Bashbox is a sandboxed shell (rooted at your volume, no network);
-        git, gh, curl, jq, rsync are available via its fallback. Bash is the
-        unsandboxed escape hatch — prefer Bashbox.
-      - Document / Memory / Path for structured documents, durable user-scope
-        memory, and the virtual filesystem.
+      {{tool:Context.tools}}
+
+      Choosing among them:
+      - Web: WebSearch for current information; WebFetch to read a specific URL.
+      - Files: Grep/Glob to locate, Read to inspect, Edit for in-place changes —
+        inside your bound working volume.
+      - Shell: prefer Bashbox (sandboxed, rooted at your volume, no network; git,
+        gh, curl, jq, rsync via its fallback) over Bash, the unsandboxed escape
+        hatch.
+      - Memory / Document / Path: durable user-scope facts in Memory, structured
+        material in a Document, and Path navigates both.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
@@ -130,14 +134,17 @@ agents:
       process leaves the box. Favor this for private or offline work.
 
       ## Tools
-      - Web: WebSearch for current information, WebFetch to read a specific URL.
-      - Files: Read / Write / Edit / Grep / Glob inside your bound working volume
-        (Grep/Glob to find, Read to inspect, Edit for in-place changes).
-      - Shell: Bashbox is a sandboxed shell (rooted at your volume, no network);
-        git, gh, curl, jq, rsync are available via its fallback. Bash is the
-        unsandboxed escape hatch — prefer Bashbox.
-      - Document / Memory / Path for structured documents, durable user-scope
-        memory, and the virtual filesystem.
+      {{tool:Context.tools}}
+
+      Choosing among them:
+      - Web: WebSearch for current information; WebFetch to read a specific URL.
+      - Files: Grep/Glob to locate, Read to inspect, Edit for in-place changes —
+        inside your bound working volume.
+      - Shell: prefer Bashbox (sandboxed, rooted at your volume, no network; git,
+        gh, curl, jq, rsync via its fallback) over Bash, the unsandboxed escape
+        hatch.
+      - Memory / Document / Path: durable user-scope facts in Memory, structured
+        material in a Document, and Path navigates both.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.

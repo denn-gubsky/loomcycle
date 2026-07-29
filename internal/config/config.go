@@ -5829,6 +5829,16 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: unknown {{memory:%s}} placeholder in system prompt (recognised: %s)",
 				name, unknown[0], strings.Join(meminject.AllVariants(), ", "))
 		}
+		// A {{tool:<Tool>.<op>}} placeholder must name a ref on the read-only
+		// ALLOWLIST. Rejecting here is the whole reason the allowlist is safe to
+		// state as a bound: an operator who writes {{tool:Bash}} is told at boot
+		// that it is not callable, instead of shipping a prompt that silently
+		// expands to nothing (or, in a design without the allowlist, one that runs
+		// a mutating tool on every run-entry, sub-agent spawn and resume).
+		if unknown := meminject.UnknownToolRefs(agent.SystemPrompt); len(unknown) > 0 {
+			return fmt.Errorf("agent %q: {{tool:%s}} in system prompt is not an allowlisted read-only tool call (allowed: %s)",
+				name, unknown[0], strings.Join(meminject.AllToolRefs(), ", "))
+		}
 		// RFC AA SQL Memory: validate sql_scopes are known scope strings.
 		// Empty = no SQL access (default-deny, enforced at runtime, not here).
 		// Non-empty must be a subset of {agent, user, run}.
