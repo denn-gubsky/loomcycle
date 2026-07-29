@@ -105,9 +105,18 @@ func mergeConfigFiles(files []string) (map[string]any, []string, error) {
 // same value, or an opt-in !prepend/!append sequence merge are NOT conflicts. Both
 // nodes are MappingNodes (Content is a flat [key,value,key,value,...] list).
 func mergeNodes(base, overlay *yaml.Node, file, prefix string, overrides *[]string) {
+	// A layer that supplies BOTH halves of a mutually-exclusive pair is an error in
+	// that one file, and validation must keep catching it — so the sibling-drop
+	// below is suppressed in that case rather than silently letting the
+	// last-listed key win.
+	ovSetsBothExclusive := mapValueIndex(overlay, "model") >= 0 && mapValueIndex(overlay, "model_pattern") >= 0
+
 	for i := 0; i+1 < len(overlay.Content); i += 2 {
 		k := overlay.Content[i]
 		ov := overlay.Content[i+1]
+		if !ovSetsBothExclusive {
+			dropExclusiveSibling(base, k.Value)
+		}
 		path := k.Value
 		if prefix != "" {
 			path = prefix + "." + k.Value
@@ -137,6 +146,40 @@ func mergeNodes(base, overlay *yaml.Node, file, prefix string, overrides *[]stri
 			base.Content[bi] = ov
 		}
 	}
+}
+
+// modelRefExclusive pairs the two mutually-exclusive keys of a `models:` alias
+// (ModelRef): a concrete `model` or a `model_pattern` glob, never both.
+//
+// It is safe to key on the NAMES alone rather than on the path, because
+// model_pattern appears on exactly one type in the schema — a mapping carrying
+// both keys is always a model alias.
+var modelRefExclusive = map[string]string{
+	"model":         "model_pattern",
+	"model_pattern": "model",
+}
+
+// dropExclusiveSibling removes key's mutually-exclusive partner from base, so a
+// later layer's choice wins outright instead of landing beside the earlier one.
+//
+// Without it, overriding a preset's `model_pattern:` alias with a plain `model:`
+// produces a mapping carrying both and config load fails "exactly one of model or
+// model_pattern is required" — an error that names neither the layer that set the
+// pattern nor the one that overrode it, so an operator who wrote only `model:` has
+// nothing to go on. Later-layer-wins is what layering already promises for a
+// scalar; this extends it to a pair where winning means replacing the other
+// spelling, not sitting next to it.
+func dropExclusiveSibling(base *yaml.Node, key string) {
+	sibling, ok := modelRefExclusive[key]
+	if !ok {
+		return
+	}
+	i := mapValueIndex(base, sibling)
+	if i < 0 {
+		return
+	}
+	// mapValueIndex returns the VALUE index; the key node is the one before it.
+	base.Content = append(base.Content[:i-1], base.Content[i+1:]...)
 }
 
 // mapValueIndex returns the index of key's VALUE node within a MappingNode's

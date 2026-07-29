@@ -13,7 +13,7 @@
 models:
   local-fast:  { provider: ollama-local, model: gemma4:9b }        # quick / low-context
   local-chat:  { provider: ollama-local, model: qwen3.6:27b }      # general reasoning
-  local-coder: { provider: ollama-local, model: qwen3-coder-next } # coding / review
+  local-coder: { provider: ollama-local, model_pattern: "qwen3-coder*" } # coding / review
 
 # !prepend → ollama-local goes on top; with `base` its cloud providers follow as
 # fallback (dedup keeps ollama-local's promoted position).
