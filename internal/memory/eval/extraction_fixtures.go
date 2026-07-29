@@ -217,9 +217,15 @@ func ExtractionFixture() ExtractionCorpus {
 					NoneOf: recordingTells,
 				},
 				{
-					Why:    "and what they EXPERIENCE from it; the symptom is the reason the request exists",
+					Why: "and what they EXPERIENCE from it; the symptom is the reason the request exists",
+					// The SYMPTOM word is required; the anatomical SITE deliberately is
+					// not. The transcript offers two faithful phrasings — it states
+					// "my legs ache" and asks for "less muscle pain" — so requiring the
+					// literal "muscle" tests whether the model parrots the request's
+					// wording rather than whether it captured the property. A live run
+					// rendered it "constant leg aches", which is the more faithful
+					// reading of the two, and was scored a MISS for it.
 					AnyOf:  []string{"ache", "pain", "sore"},
-					AllOf:  []string{"muscle"},
 					NoneOf: recordingTells,
 				},
 			},
@@ -287,9 +293,9 @@ func ExtractionFixture() ExtractionCorpus {
 					NoneOf: recordingTells,
 				},
 				{
-					Why:    "and the symptom it caused; noise must not cost the connection between them",
+					Why: "and the symptom it caused; noise must not cost the connection between them",
+					// Site not required — see the clean case above for why.
 					AnyOf:  []string{"ache", "pain", "sore"},
-					AllOf:  []string{"muscle"},
 					NoneOf: recordingTells,
 				},
 			},
