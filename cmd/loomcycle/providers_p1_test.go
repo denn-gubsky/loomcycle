@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -12,7 +13,7 @@ import (
 // override survives, an unset field stays nil so it doesn't clobber a driver
 // default when Apply runs).
 func TestToCapabilityPatch(t *testing.T) {
-	if got := toCapabilityPatch(nil); got != nil {
+	if got := providerbuild.CapabilityPatch(nil); got != nil {
 		t.Errorf("nil override must translate to nil patch, got %+v", got)
 	}
 
@@ -26,7 +27,7 @@ func TestToCapabilityPatch(t *testing.T) {
 		// SupportsEffort / NativePromptCache / ParallelToolCalls intentionally
 		// left nil to prove unset fields stay nil across the boundary.
 	}
-	got := toCapabilityPatch(in)
+	got := providerbuild.CapabilityPatch(in)
 	if got == nil {
 		t.Fatal("non-nil override translated to nil patch")
 	}

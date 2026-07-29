@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
@@ -157,7 +158,7 @@ func TestToDriverOptions_PortsEnvBaseURLsAndTimeouts(t *testing.T) {
 
 	cfg := loadDefaultProvidersOnly(t)
 
-	local := toDriverOptions("ollama-local", cfg.Providers["ollama-local"], cfg)
+	local := providerbuild.DriverOptions("ollama-local", cfg.Providers["ollama-local"], cfg)
 	if local.BaseURL != "http://gpu.local:11434" {
 		t.Errorf("ollama-local BaseURL = %q, want the OLLAMA_BASE_URL value", local.BaseURL)
 	}
@@ -174,7 +175,7 @@ func TestToDriverOptions_PortsEnvBaseURLsAndTimeouts(t *testing.T) {
 		t.Errorf("ollama-local num_gpu = %d, want 99", n)
 	}
 
-	hosted := toDriverOptions("ollama", cfg.Providers["ollama"], cfg)
+	hosted := providerbuild.DriverOptions("ollama", cfg.Providers["ollama"], cfg)
 	if hosted.BaseURL != "https://cloud.example" {
 		t.Errorf("ollama BaseURL = %q, want the OLLAMA_CLOUD_BASE_URL value", hosted.BaseURL)
 	}
@@ -188,12 +189,12 @@ func TestToDriverOptions_PortsEnvBaseURLsAndTimeouts(t *testing.T) {
 		t.Error("hosted ollama must not carry num_gpu (that is ollama-local only)")
 	}
 
-	ds := toDriverOptions("deepseek", cfg.Providers["deepseek"], cfg)
+	ds := providerbuild.DriverOptions("deepseek", cfg.Providers["deepseek"], cfg)
 	if ds.BaseURL != "https://ds.mirror" || ds.KeyEnvName != "DEEPSEEK_API_KEY" {
 		t.Errorf("deepseek opts = {BaseURL:%q KeyEnvName:%q}, want the DEEPSEEK_BASE_URL + DEEPSEEK_API_KEY", ds.BaseURL, ds.KeyEnvName)
 	}
 
-	gm := toDriverOptions("gemini", cfg.Providers["gemini"], cfg)
+	gm := providerbuild.DriverOptions("gemini", cfg.Providers["gemini"], cfg)
 	if gm.BaseURL != "https://vertex.example" {
 		t.Errorf("gemini BaseURL = %q, want the GEMINI_BASE_URL value", gm.BaseURL)
 	}
@@ -220,7 +221,7 @@ func TestToDriverOptions_CodeJSPortsEnvRoot(t *testing.T) {
 		t.Fatalf("cfg.Env.CodeAgentsRoot = %q, want /srv/agent_code (env not parsed?)", cfg.Env.CodeAgentsRoot)
 	}
 
-	opts := toDriverOptions("code-js", cfg.Providers["code-js"], cfg)
+	opts := providerbuild.DriverOptions("code-js", cfg.Providers["code-js"], cfg)
 	if root, ok := providers.StringOption(opts.Options, "code_root"); !ok || root != "/srv/agent_code" {
 		t.Errorf("code-js code_root option = %q (ok=%v), want /srv/agent_code — without it the compiler root is empty and every static code agent fails to load", root, ok)
 	}

@@ -55,6 +55,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
+	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	// RFC BF P2a — the resolver now builds providers via providers.NewDriver, not
 	// each driver's New(), so these driver packages are imported ONLY for their
@@ -454,6 +455,12 @@ func main() {
 			// dataset of (query, expected_recall) tuples — precision@k,
 			// recall@k, duplication_rate. The gating tool for ranker PRs.
 			os.Exit(cli.RunMemoryEval(os.Args[2:], os.Stdout, os.Stderr))
+		case "memory-eval-live":
+			// RFC BL P4a — the memory extraction eval against a REAL model. Scores
+			// the SHIPPED extractor prompt's judgement per ability (extraction,
+			// property, temporal, update, abstention) and gates on updates +
+			// abstention. Not hermetic: it needs a provider and spends tokens.
+			os.Exit(cli.RunMemoryEvalLive(os.Args[2:], os.Stdout, os.Stderr))
 		case "memory-calibrate":
 			// Measures the consolidation similarity bands against the
 			// operator's OWN embedder. Cosine scale is a property of the
@@ -3189,7 +3196,7 @@ type providerResolver struct {
 // RFC BF driver registry (config-driven flip of the pre-P2a hardcoded per-provider
 // construction). It is byte-identical when no operator `providers:` block is
 // declared, because the embedded default-providers layer supplies the built-ins
-// and toDriverOptions/providerEnabled port the exact env behaviour. An
+// and providerbuild.DriverOptions/providerEnabled port the exact env behaviour. An
 // unconstructable provider (bad driver/dialect/base_url) is a boot error.
 func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 	pr := &providerResolver{byID: map[string]providers.Provider{}, cfg: cfg}
@@ -3198,7 +3205,7 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 		if !providerEnabled(id, pc, cfg) {
 			continue
 		}
-		p, err := providers.NewDriver(pc.Driver, toDriverOptions(id, pc, cfg))
+		p, err := providers.NewDriver(pc.Driver, providerbuild.DriverOptions(id, pc, cfg))
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", id, err)
 		}
@@ -3329,83 +3336,6 @@ func newProviderGates(cfg *config.Config) *concurrency.ProviderGates {
 	return gates
 }
 
-// toDriverOptions ports the pre-P2a per-provider construction 1:1 into the driver
-// factory input so an absent `providers:` block is byte-identical. BaseURL:
-// explicit config wins, else the per-id env/driver default (incl. the
-// OLLAMA_*_BASE_URL / DEEPSEEK_BASE_URL / GEMINI_BASE_URL defaults). APIKey +
-// KeyEnvName come from api_key_env (RFC AR per-tenant override). StreamOpts +
-// Options carry the per-provider timeouts and ollama num_ctx/num_gpu.
-func toDriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) providers.DriverOptions {
-	baseURL := pc.BaseURL
-	stream := streamhttp.Options{
-		HeaderTimeout: cfg.Env.ProviderHeaderTimeout,
-		IdleTimeout:   cfg.Env.ProviderIdleTimeout,
-	}
-	opts := map[string]any{}
-	switch id {
-	case "ollama": // hosted ollama.com
-		if baseURL == "" {
-			baseURL = cfg.Env.OllamaCloudBaseURL
-		}
-		if cfg.Env.OllamaNumCtx > 0 {
-			opts["num_ctx"] = cfg.Env.OllamaNumCtx
-		}
-	case "ollama-local":
-		if baseURL == "" {
-			baseURL = cfg.Env.OllamaBaseURL
-		}
-		// Local Ollama is slow on first-token (cold model load + large-context
-		// eval), so it gets its own, more generous timeout pair.
-		stream = streamhttp.Options{
-			HeaderTimeout: cfg.Env.OllamaLocalHeaderTimeout,
-			IdleTimeout:   cfg.Env.OllamaLocalIdleTimeout,
-		}
-		if cfg.Env.OllamaLocalNumCtx > 0 {
-			opts["num_ctx"] = cfg.Env.OllamaLocalNumCtx
-		}
-		if cfg.Env.OllamaLocalNumGpu > 0 {
-			opts["num_gpu"] = cfg.Env.OllamaLocalNumGpu
-		}
-	case "deepseek":
-		if baseURL == "" {
-			baseURL = cfg.Env.DeepSeekBaseURL
-		}
-	case "gemini":
-		if baseURL == "" {
-			baseURL = cfg.Env.GeminiBaseURL
-		}
-	case "code-js":
-		// RFC BF P2a regression fix (b8d3f42d line): the code-js driver factory
-		// (codejs.newFromOptions) sources code_root/deterministic/run_timeout_seconds
-		// from this options map — but P2a's flip to the registry never ported the
-		// pre-P2a codejs.New(Config{CodeRoot: cfg.Env.CodeAgentsRoot, ...}) mapping,
-		// so with no `providers: code-js: options:` block the compiler root was empty
-		// and EVERY static `provider: code-js` agent failed to load ("no index.js at
-		// <name>/index.js" — a relative path, the empty-root tell). CodeAgentsRoot
-		// defaults to ./agent_code (never empty), so this is byte-identical to
-		// pre-P2a; an explicit options entry still wins via the pc.Options merge below.
-		opts["code_root"] = cfg.Env.CodeAgentsRoot
-		opts["deterministic"] = cfg.Env.CodeAgentsDeterministic
-		opts["run_timeout_seconds"] = int(cfg.Env.CodeAgentsRunTimeout / time.Second)
-	}
-	// Operator-declared options override the env-derived defaults (e.g. mock-stable's
-	// `stable: true`, or a per-provider num_ctx).
-	for k, v := range pc.Options {
-		opts[k] = v
-	}
-	return providers.DriverOptions{
-		ID:           id,
-		Dialect:      pc.Dialect,
-		BaseURL:      baseURL,
-		APIKey:       os.Getenv(pc.APIKeyEnv),
-		KeyEnvName:   pc.APIKeyEnv,
-		StreamOpts:   stream,
-		Options:      opts,
-		Capabilities: toCapabilityPatch(pc.Capabilities),
-		Logf:         log.Printf,
-	}
-}
-
 // notConfiguredError reproduces the pre-P2a "not configured" error for a
 // declared-but-disabled provider so callers (and the probe) see the exact same
 // message they did before the flip. Built-in ids keep their bespoke text; a
@@ -3456,27 +3386,6 @@ func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 	}
 	sort.Strings(enabled)
 	log.Printf("providers: %d configured, %d enabled (%s)", len(cfg.Providers), len(pr.byID), strings.Join(enabled, ", "))
-}
-
-// toCapabilityPatch translates a config.CapabilityOverride (the `capabilities:`
-// block on an RFC BF `providers:` entry) into the providers-side
-// providers.CapabilityPatch the driver registry applies inside Capabilities().
-// The providers package can't import config (it would need config.CapabilityOverride,
-// and providers is a dependency of config), so this boundary translation lives
-// here at the composition root and toDriverOptions feeds the result to every
-// driver factory. Nil in → nil out (no override → advertise driver defaults).
-func toCapabilityPatch(o *config.CapabilityOverride) *providers.CapabilityPatch {
-	if o == nil {
-		return nil
-	}
-	return &providers.CapabilityPatch{
-		SupportsThinking:  o.SupportsThinking,
-		SupportsVision:    o.SupportsVision,
-		SupportsEffort:    o.SupportsEffort,
-		NativePromptCache: o.NativePromptCache,
-		ParallelToolCalls: o.ParallelToolCalls,
-		MaxContextTokens:  o.MaxContextTokens,
-	}
 }
 
 // validateCodeAgents fails loud at startup for any statically-configured
