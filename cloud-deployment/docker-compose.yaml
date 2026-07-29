@@ -120,7 +120,16 @@ services:
 
   # ── The loomcycle runtime — shares the tailscale netns (no own DNS name / ports) ──
   loomcycle:
-    image: denngubsky/loomcycle:1.38.0
+    # Derived image = official loomcycle + the PinchTab MCP client binary, so the
+    # runtime can spawn `pinchtab … mcp` (stdio) against the pinchtab sidecar. See
+    # loomcycle.Dockerfile. (loomcycle-migrate keeps the plain image — it needs no
+    # browser.)
+    build:
+      context: .
+      dockerfile: loomcycle.Dockerfile
+      args:
+        LOOMCYCLE_TAG: "1.38.0"
+        PINCHTAB_TAG: "0.15.0"
     restart: unless-stopped
     user: "65532:65532"
     network_mode: "service:tailscale"   # → reachable at http://tailscale:8787
@@ -142,6 +151,9 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      # Auth for the pinchtab MCP stdio bridge → the pinchtab sidecar. The stdio
+      # child inherits loomcycle's env, so no config interpolation is needed.
+      PINCHTAB_TOKEN: ${PINCHTAB_TOKEN:-}
     volumes:
       - ./data:/data
       - ./config:/config:ro
@@ -178,6 +190,30 @@ services:
       timeout: 5s
       retries: 12
       start_period: 15s
+
+  # ── Headless browser (PinchTab) — internal MCP browser for the dev/sandbox agent.
+  #    stdio-only MCP, so loomcycle spawns `pinchtab … mcp` (client baked into its
+  #    derived image) against THIS server; Chromium lives here, not in loomcycle.
+  #    Internal ONLY — no published port (pinchtab's control plane is not for public
+  #    exposure). Widen its browsing domain allowlist (IDPI) per your needs — see
+  #    INSTALL.md and the pinchtab security guide.
+  pinchtab:
+    image: pinchtab/pinchtab:0.15.0
+    restart: unless-stopped
+    networks: [loomnet]
+    environment:
+      PINCHTAB_TOKEN: ${PINCHTAB_TOKEN}   # SAME secret loomcycle presents on the MCP bridge
+    volumes:
+      - ./pinchtab-data:/data             # HOME/config + Chrome profile (rootfs is read-only)
+    shm_size: "2gb"                       # Chrome stability
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+      - /run:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    mem_limit: 2g
 
   # ── Landing (Node) — serves cloud-web/, proxies public /v1 reads (inner links),
   #    and mints substrate:tenant tokens behind Cloudflare Access (admin token

@@ -10,3 +10,21 @@ search_providers:
   brave: {}
 
 search_priority: [searxng, brave]
+
+# ── Headless browser (PinchTab) for the dev/sandbox agent (cloud deployment only) ─
+# PinchTab's MCP is stdio-only, so loomcycle spawns the pinchtab client (baked into
+# the derived image, loomcycle.Dockerfile) as a stdio MCP bridge to the `pinchtab`
+# server sidecar. The child inherits PINCHTAB_TOKEN from loomcycle's env, so no
+# ${...} interpolation is needed here. This overlay layers OVER the embedded
+# `sandbox` preset (presets → CONFIG_DIR), adding the browser server and widening
+# the dev/sandbox tool ceiling to include mcp__browser__* (the list is restated in
+# full because a sequence override replaces, not appends).
+mcp_servers:
+  browser:
+    transport: stdio
+    command: /usr/local/bin/pinchtab
+    args: ["--server", "http://pinchtab:9867", "mcp"]
+
+agents:
+  dev/sandbox:
+    tools: [mcp__sandbox__*, mcp__browser__*, Interruption]
