@@ -118,9 +118,15 @@ memory-eval-mock:
 # so a run is measured against a number rather than a memory; add MEMEVAL_UPDATE=1
 # to record the result as the new baseline.
 #
-#   make memory-eval-live MEMEVAL_MODEL=qwen3.6:30b
+# MEMEVAL_SHOW_FACTS=1 prints every case's emitted facts, including the ones that
+# passed — worth it on a first measurement, where a surprising result is often a
+# PASS you want to read rather than a failure. MEMEVAL_EFFORT overrides the
+# extractor's configured effort (on Ollama, effort=medium sets think:true, so a
+# model that spends its whole reply reasoning is worth retrying at low).
+#
+#   make memory-eval-live MEMEVAL_MODEL=qwen3.6:27b
 #   make memory-eval-live MEMEVAL_PROVIDER=anthropic MEMEVAL_MODEL=claude-haiku-4-5
-#   make memory-eval-live MEMEVAL_MODEL=qwen3.6:30b MEMEVAL_UPDATE=1
+#   make memory-eval-live MEMEVAL_MODEL=qwen3.6:27b MEMEVAL_SHOW_FACTS=1 MEMEVAL_UPDATE=1
 MEMEVAL_PROVIDER ?= ollama-local
 MEMEVAL_MODEL    ?=
 MEMEVAL_PRESETS  ?= base,memory
@@ -132,6 +138,8 @@ memory-eval-live:
 	LOOMCYCLE_PRESETS=$(MEMEVAL_PRESETS) go run ./cmd/loomcycle memory-eval-live \
 	  --provider $(MEMEVAL_PROVIDER) --model $(MEMEVAL_MODEL) \
 	  --baseline $(MEMEVAL_BASELINE) \
+	  $(if $(MEMEVAL_EFFORT),--effort $(MEMEVAL_EFFORT),) \
+	  $(if $(MEMEVAL_SHOW_FACTS),--show-facts,) \
 	  $(if $(MEMEVAL_UPDATE),--update-baseline $(MEMEVAL_BASELINE),)
 
 # runtime-mock: the fast, deterministic runtime suites (live binary, mock
