@@ -101,6 +101,7 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Principal: principal,
 			RootRun:   strings.TrimSpace(r.Header.Get("X-Loom-Root-Run")),
 			Tenant:    strings.TrimSpace(r.Header.Get("X-Loom-Tenant")),
+			Env:       collectEnvHeaders(r.Header),
 		}
 		text, isErr, cerr := h.disp.Call(r.Context(), c, p.Name, p.Arguments)
 		if cerr != nil {
@@ -143,6 +144,36 @@ func (h *MCPHandler) authenticate(r *http.Request) (principal string, ok bool) {
 func principalFromToken(tok string) string {
 	sum := sha256.Sum256([]byte(tok))
 	return "op:" + hex.EncodeToString(sum[:8])
+}
+
+// envHeaderPrefix is the canonical prefix loomcycle uses to inject session env
+// into a sandbox: an X-Loom-Sandbox-Env-<Name> header whose value is the (already
+// server-side-resolved) secret. Carried out-of-band from tool args so it never
+// reaches the model.
+const envHeaderPrefix = "X-Loom-Sandbox-Env-"
+
+// collectEnvHeaders extracts injected session env from the request headers. The
+// header name maps to an env var name (strip the prefix, uppercase, '-' -> '_') —
+// e.g. X-Loom-Sandbox-Env-Gh-Token -> GH_TOKEN. Only sandbox_open consumes it;
+// the operator gate + name validation live at open time (Dispatcher.open). Returns
+// nil when no env headers are present.
+func collectEnvHeaders(h http.Header) map[string]string {
+	var env map[string]string
+	for k, vals := range h {
+		ck := http.CanonicalHeaderKey(k)
+		if len(vals) == 0 || len(ck) <= len(envHeaderPrefix) || !strings.HasPrefix(ck, envHeaderPrefix) {
+			continue
+		}
+		name := strings.ToUpper(strings.ReplaceAll(ck[len(envHeaderPrefix):], "-", "_"))
+		if name == "" {
+			continue
+		}
+		if env == nil {
+			env = make(map[string]string)
+		}
+		env[name] = vals[0]
+	}
+	return env
 }
 
 const sessionHeaderName = "Mcp-Session-Id"

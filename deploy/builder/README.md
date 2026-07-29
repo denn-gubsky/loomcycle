@@ -122,6 +122,8 @@ secret — forwarding it would 401).
 | `SANDBOX_RUNTIME` | `""` | OCI runtime: `""`\|`runc`\|`crun`\|`runsc`\|`kata`. |
 | `SANDBOX_CONTAINER_USER` | `1000:1000` | In-container user (never root). |
 | `SANDBOX_ALLOW_EGRESS` | `0` | `1` permits `network:"egress"` sessions. |
+| `SANDBOX_ALLOW_ENV_INJECTION` | `0` | `1` permits **env injection** — `X-Loom-Sandbox-Env-<Name>` request headers (value resolved by loomcycle from `$cred:`/`$ghapp:`, so a secret never reaches the model) are injected as `--env` into the session container, e.g. a GitHub token for authenticated `git`/`gh`. Off = the headers are ignored. |
+| `SANDBOX_MAX_ENV_VARS` / `SANDBOX_MAX_ENV_VALUE_BYTES` | `32` / `65536` | Caps on injected env: max var count per open + max value bytes. |
 | `SANDBOX_WORKSPACE_ROOT` | (unset) | Absolute host dir enabling **durable workspaces** — a session opened with `workspace:<name>` bind-mounts `<root>/<principal>/<name>` at `/work` instead of tmpfs (see below). Unset = tmpfs-only. |
 | `SANDBOX_DEFAULT_TMPFS_MB` / `SANDBOX_MAX_TMPFS_MB` | `512` / `2048` | Workspace tmpfs size + ceiling. |
 | `SANDBOX_MAX_CPUS` / `SANDBOX_MAX_MEM_MB` / `SANDBOX_MAX_PIDS` | `2` / `2048` / `512` | Per-session resource ceilings. |
@@ -129,6 +131,28 @@ secret — forwarding it would 401).
 | `SANDBOX_GC_INTERVAL` | `1m` | GC tick. |
 | `SANDBOX_MAX_SESSIONS` | `32` | Concurrent session cap. |
 | `SANDBOX_MAX_OUTPUT_BYTES` | `1048576` | Per-exec output cap. |
+
+## Env injection (credentials into a session)
+
+By default a session container gets only a fixed, non-secret env (cache-dir
+redirects). To do real dev — clone/push a private repo, use `gh` — a session
+needs a credential. `SANDBOX_ALLOW_ENV_INJECTION=1` turns on a header→env seam:
+
+- loomcycle carries the secret in an `X-Loom-Sandbox-Env-<Name>` request header
+  whose value it resolves **server-side** from a stored credential (`$cred:` /
+  `$ghapp:`), so the token is never in a tool argument and never reaches the
+  model. The header name maps to an env var name (strip the prefix, uppercase,
+  `-`→`_`): `X-Loom-Sandbox-Env-Gh-Token` → `GH_TOKEN`.
+- On `sandbox_open` the sidecar validates each name (`[A-Z_][A-Z0-9_]*`, and
+  rejects reserved/toolchain names — `HOME`, `PATH`, `LD_*`, the cache vars — plus
+  `LOOMCYCLE_*` / `PG_DSN`), caps count + value size, and injects the rest as
+  `--env`. `docker exec` inherits them, so `git`/`gh` in a later `sandbox_exec`
+  see the token. Injected values are **never logged**.
+- Trust model: the env value is visible to the session's own process (that's the
+  point) and to anyone with host-Docker access (the operator, who already holds
+  the credential). With `network:"egress"` a token in env is an exfiltration
+  surface under prompt injection — prefer short-lived, repo-scoped tokens (a
+  GitHub App installation token) over a broad PAT.
 
 ## Durable workspaces (persistent `/work`)
 

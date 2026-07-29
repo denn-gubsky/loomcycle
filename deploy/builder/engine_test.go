@@ -32,6 +32,7 @@ func testCfg() *Config {
 		DefMemMB: 2048, MaxMemMB: 2048, DefPids: 512, MaxPids: 512,
 		DefTimeout: 30 * time.Second, MaxTimeout: 5 * time.Minute, MaxOutBytes: 1 << 20,
 		SessionIdleTTL: 15 * time.Minute, SessionMaxTTL: time.Hour, MaxSessions: 32,
+		MaxEnvVars: 32, MaxEnvValueBytes: 1 << 16,
 	}
 }
 

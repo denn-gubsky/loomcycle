@@ -71,6 +71,45 @@ unresolved `$cred:` ref drops the header (no literal token is ever sent).
 > can't carry per-user tokens. Use an http MCP server (token as a per-request
 > header) for the per-user case.
 
+## Minting a GitHub App token — `$ghapp:<name>`
+
+For **short-lived, repo-scoped** git auth (preferred over a long-lived PAT), store
+a **GitHub App** config instead of a token and reference it with `$ghapp:<name>`.
+loomcycle mints a fresh installation access token (an RS256 JWT exchanged at
+GitHub's installation-token API), caches it until ~5 min before it expires (~1 h
+TTL), and substitutes it exactly like `$cred:`. **The App private key never leaves
+loomcycle — only the minted, scoped token is ever sent.**
+
+Store the App config as a credential whose value is a JSON object:
+
+```jsonc
+// value is a JSON string; app_id/installation_id/private_key are required.
+// repositories + permissions are optional and DOWN-SCOPE the minted token.
+{
+  "app_id": "123456",
+  "installation_id": "7654321",
+  "private_key": "-----BEGIN RSA PRIVATE KEY-----\n…\n-----END RSA PRIVATE KEY-----\n",
+  "repositories": ["my-repo"],
+  "permissions": {"contents": "write"},
+  "base_url": "https://api.github.com"   // optional; GitHub Enterprise Server, https only
+}
+```
+
+```jsonc
+// create it (the value is the JSON above, as a single JSON-escaped string)
+credentialdef  op=create  scope=user  name=sandbox_github_app  value='{"app_id":"123456",…}'
+```
+
+Then reference it in an http-MCP header, the same place a `$cred:` would go:
+
+```yaml
+headers:
+  Authorization: "Bearer $ghapp:my_github_app"   # or X-Loom-Sandbox-Env-Gh-Token for the dev sandbox
+```
+
+An unresolved ref — or a mint failure (bad key, network) — **drops the header**
+(no literal token is ever sent).
+
 ## Overriding a provider / tool API key by its env-var name
 
 Some credentials aren't referenced with `$cred:` — they **override the operator's
