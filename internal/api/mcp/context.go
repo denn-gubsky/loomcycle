@@ -112,9 +112,34 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	// actual run, and this plane has no run id. An operator writing a fact by hand
 	// is not a machine distilling one from a transcript, and the column has to stay
 	// a trustworthy filter for the latter. See builtin.provenanceForSet.
+	//
+	// `tenant` (RFC BL P4b) is granted here for BOTH admin and tenant principals.
+	// This plane IS the operator — a substrate:tenant token is the tenant operator,
+	// with full power inside its own tenant — and curating tenant-shared reference
+	// material is exactly what it is for. Confinement is the TenantID stamped from
+	// the principal, so a tenant token reaches only ITS tenant's tenant scope; the
+	// scope list is not what keeps tenants apart.
+	//
+	// It is deliberately WIDER than an ordinary agent's grant, because the trust is
+	// different in kind: an agent gets `tenant` only when an operator lists it in
+	// yaml, whereas this session is the operator, authenticated as themselves.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "global"},
+		AllowedScopes: []string{"agent", "user", "tenant", "global"},
 		Consolidation: true,
+	})
+	// SQL Memory: never stamped before, which meant EVERY sql_* op over MCP failed
+	// default-deny with "this agent has no sql_scopes configured" — at any scope,
+	// since v1.2.0. Verified against a live deployment rather than inferred.
+	//
+	// Documents hid the gap: the Document tool talks to sqlmem directly instead of
+	// through the Memory tool's policy check, so document ops over MCP worked while
+	// the SQL ops beside them did not.
+	//
+	// `run` is omitted on purpose: an MCP-direct call has no run, so granting it
+	// would trade a clear "not configured" refusal for a confusing "requires an
+	// active run" one.
+	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
+		AllowedScopes: []string{"agent", "user", "tenant"},
 	})
 	// Channel: open ACL ("*" matches every channel name).
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{

@@ -238,3 +238,76 @@ func TestOperatorCtx_PreservesParentValues(t *testing.T) {
 		t.Errorf("operatorCtx dropped parent ctx value; got %q want %q", got, "parent-marker")
 	}
 }
+
+// TestMCPPolicies_TenantTokenMayWriteMemorySqlAndDocuments pins the capability an
+// operator asked for by name: an MCP session on a substrate:tenant token can write
+// to Memory, SQL Memory and Documents at TENANT scope.
+//
+// Both halves of this were broken, and one had been broken since v1.2.0:
+//
+//   - MemoryPolicy granted [agent, user, global] — no `tenant`, so the tenant
+//     keyspace was unreachable.
+//   - SqlMemPolicy was NEVER stamped, so every sql_* op over MCP failed
+//     default-deny with "this agent has no sql_scopes configured", at ANY scope.
+//     Verified against a live deployment, not inferred. Documents hid it, because
+//     the Document tool talks to sqlmem directly rather than through the Memory
+//     tool's policy check.
+//
+// A tenant-scoped Document needs BOTH grants (structure in SQL Memory, bodies in
+// k/v Memory), so this asserts them together.
+func TestMCPPolicies_TenantTokenMayWriteMemorySqlAndDocuments(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+	}{
+		{"tenant token", []string{auth.ScopeTenant}},
+		{"admin token", []string{auth.ScopeAdmin}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: tc.scopes}
+			ctx := mcpPrincipalCtx(auth.WithPrincipal(context.Background(), p))
+
+			mem := tools.MemoryPolicy(ctx).AllowedScopes
+			if !containsStr(mem, "tenant") {
+				t.Errorf("memory_scopes = %v, missing `tenant` — the tenant keyspace is unreachable", mem)
+			}
+			sql := tools.SqlMemPolicy(ctx).AllowedScopes
+			if len(sql) == 0 {
+				t.Fatalf("sql_scopes is EMPTY — every sql_* op over MCP fails default-deny")
+			}
+			if !containsStr(sql, "tenant") {
+				t.Errorf("sql_scopes = %v, missing `tenant` — a tenant Document's structure cannot be written", sql)
+			}
+			for _, want := range []string{"agent", "user"} {
+				if !containsStr(sql, want) {
+					t.Errorf("sql_scopes = %v, missing %q", sql, want)
+				}
+			}
+
+			// Confinement is the TENANT STAMP, not the scope list — a tenant token
+			// reaches only its own tenant's tenant scope.
+			if got := tools.RunIdentity(ctx).TenantID; got != "acme" {
+				t.Errorf("TenantID = %q, want the principal's tenant; without it the scope list would not confine anything", got)
+			}
+		})
+	}
+}
+
+// TestMCPPolicies_SqlScopesOmitsRun: an MCP-direct call has no run, so granting
+// `run` would trade a clear "not configured" refusal for a confusing "requires an
+// active run" one.
+func TestMCPPolicies_SqlScopesOmitsRun(t *testing.T) {
+	ctx := operatorCtx(context.Background())
+	if containsStr(tools.SqlMemPolicy(ctx).AllowedScopes, "run") {
+		t.Error("sql_scopes should not include `run` on a plane that has no run")
+	}
+}
+
+func containsStr(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
