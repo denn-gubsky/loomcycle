@@ -64,6 +64,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	timeout := fs.Duration("timeout", 10*time.Minute, "wall clock for the whole run")
 	maxTokens := fs.Int("max-tokens", 0, "per-call max_tokens (0 = provider default)")
 	noGate := fs.Bool("no-gate", false, "report only; exit 0 even when the gate fails")
+	showFacts := fs.Bool("show-facts", false, "print every case's emitted facts, including the ones that passed")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -130,7 +131,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "wrote report to %s\n", *output)
 	} else {
-		printExtractionReport(stdout, rep, base)
+		printExtractionReport(stdout, rep, base, *showFacts)
 	}
 
 	if *updateBaseline != "" {
@@ -168,13 +169,19 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 // printExtractionReport renders the per-ability table plus every miss and
 // violation. Layout mirrors printEvalReport / printCalibrationReport: an operator
 // reads this in a terminal next to the prompt they are about to change.
-func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Baseline) {
+// showFacts prints the emitted facts for EVERY case, not just the ones with a
+// problem. The default report is problem-only, which is right for a regression
+// check and wrong for the first measurement of a new model: the first live run
+// scored 2/2 on the ability that fails in production, and there was no way to read
+// what the model had actually written without re-running.
+func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Baseline, showFacts bool) {
 	fmt.Fprintf(w, "memory-eval-live: %s / %s", r.Provider, r.Model)
 	if r.Effort != "" {
 		fmt.Fprintf(w, " (effort=%s)", r.Effort)
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "  extractor prompt     %s\n", shortSHA(r.SystemPromptSHA256))
+	fmt.Fprintf(w, "  corpus               %s\n", shortSHA(r.CorpusSHA256))
 
 	if r.HarnessFault != "" {
 		fmt.Fprintf(w, "\n  !! HARNESS FAULT — scores withheld\n")
@@ -202,7 +209,9 @@ func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Base
 	// explanation is not actionable, and the reason is what tells you whether to
 	// change the prompt or the corpus.
 	for _, c := range r.Cases {
-		if c.Err == "" && len(c.Misses) == 0 && len(c.Violations) == 0 && len(c.ClassMismatches) == 0 {
+		quiet := c.Err == "" && len(c.Misses) == 0 && len(c.Violations) == 0 &&
+			len(c.ClassMismatches) == 0 && !c.EmptyReply
+		if quiet && !showFacts {
 			continue
 		}
 		fmt.Fprintf(w, "\n%s [%s]\n", c.Name, c.Ability)
@@ -220,6 +229,17 @@ func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Base
 		}
 		for _, m := range c.ClassMismatches {
 			fmt.Fprintf(w, "  class      %s\n", m)
+		}
+		if c.EmptyReply {
+			// Production treats this as zero facts and consolidates the chat, so it
+			// is NOT a failure — but a rising rate is the earliest sign of a
+			// degrading extractor, which is why it is surfaced at all.
+			note := "empty reply (no `[]`) — production counts this and treats it as zero facts"
+			if c.ThinkingOnly {
+				note = "REASONING TRACE ONLY, no answer — on Ollama effort=medium sets think:true; " +
+					"try --effort low or a larger --max-tokens"
+			}
+			fmt.Fprintf(w, "  note       %s\n", wrapText(note, 72, "             "))
 		}
 		if c.Dropped > 0 {
 			fmt.Fprintf(w, "  dropped    %d fact(s) production would discard\n", c.Dropped)

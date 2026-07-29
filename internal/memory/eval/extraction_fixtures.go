@@ -33,6 +33,8 @@ package eval
 // appears that markers cannot express.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -247,6 +249,70 @@ func ExtractionFixture() ExtractionCorpus {
 			}},
 		},
 
+		{
+			Name:    "request-implies-condition-buried",
+			Ability: AbilityProperty,
+			// SAME property signal as request-implies-condition, buried in a
+			// production-shaped transcript.
+			//
+			// The clean version of this case passed 2/2 on the first model measured,
+			// which CONTRADICTS the observed production failure on this exact
+			// ability. The most likely difference is not judgement but INPUT: a real
+			// compaction-banked span is a long working session where the durable
+			// signal is two lines among dozens of task chatter, while a 2-line
+			// fixture puts it under a spotlight. If a model passes the clean case
+			// and fails this one, the failure is localised to signal-in-noise and
+			// the eval becomes predictive of production; if it passes both, the
+			// problem is not the extractor's judgement and we are looking in the
+			// wrong place. Either answer is worth more than another model A/B.
+			Turns: []string{
+				"morning — can we pick up the invoice importer where we left off?",
+				"Sure. Last time we had the CSV parser working but the date column was ambiguous.",
+				"right, the european format one. did you push that branch?",
+				"Yes, it's on feature-invoice-dates. The tests pass locally.",
+				"ok let me pull it. while that's running — I've been on atorvastatin for a while " +
+					"and my legs ache constantly, can you find me alternatives with less muscle pain?",
+				"I can look into that separately. Back to the importer: do you want the parser to " +
+					"reject an ambiguous date, or guess from the locale?",
+				"reject. I'd rather it fail loudly than silently book an invoice to the wrong month.",
+				"Understood — it'll return an error listing the ambiguous rows.",
+				"perfect. also the CI run is still queued, can you kick it?",
+				"Queued job restarted.",
+				"thanks, that's it for now — I'll review the branch after lunch.",
+			},
+			Want: []ExpectedFact{
+				{
+					Why:    "the buried request still reveals what the user TAKES, two lines in among task chatter",
+					AllOf:  []string{"statin"},
+					NoneOf: recordingTells,
+				},
+				{
+					Why:    "and the symptom it caused; noise must not cost the connection between them",
+					AnyOf:  []string{"ache", "pain", "sore"},
+					AllOf:  []string{"muscle"},
+					NoneOf: recordingTells,
+				},
+			},
+			Forbid: []Forbidden{
+				{
+					Kind:   ForbiddenDistractor,
+					Why:    "recording that a question was ASKED is a fact about the conversation",
+					Marker: "asked",
+				},
+				{
+					Kind:   ForbiddenDistractor,
+					Why:    "a queued CI job is transient task state, stale the moment it runs",
+					Marker: "still queued",
+				},
+				{
+					Kind: ForbiddenDistractor,
+					Why: "a branch name and its test status are working state, not durable facts " +
+						"about the user or the project",
+					Marker: "feature-invoice-dates",
+				},
+			},
+		},
+
 		// ---- temporal: the qualifier is load-bearing ----
 		{
 			Name:    "bounded-by-time",
@@ -383,6 +449,34 @@ func (c ExtractionCorpus) CasesByAbility() map[Ability][]ExtractionCase {
 		out[cs.Ability] = append(out[cs.Ability], cs)
 	}
 	return out
+}
+
+// Digest is a stable content hash of the corpus: every case's name, ability,
+// turns, expectations and forbidden markers.
+//
+// It exists so a baseline can be keyed by the fixture set that produced it.
+// Adding a case changes recall denominators, and editing one changes what a
+// number means, so a baseline recorded against an older corpus is not a number
+// the current run can be compared to — the same argument the prompt digest
+// already makes, applied to the other input. Without it, adding a case would
+// silently turn every stored figure into a false regression or a false pass.
+func (c ExtractionCorpus) Digest() string {
+	h := sha256.New()
+	for _, cs := range c.Cases {
+		fmt.Fprintf(h, "case\x00%s\x00%s\x00%t\x00", cs.Name, cs.Ability, cs.Canary)
+		for _, t := range cs.Turns {
+			fmt.Fprintf(h, "turn\x00%s\x00", t)
+		}
+		for _, w := range cs.Want {
+			fmt.Fprintf(h, "want\x00%s\x00%s\x00%s\x00%s\x00%s\x00",
+				w.Why, strings.Join(w.AllOf, "|"), strings.Join(w.AnyOf, "|"),
+				strings.Join(w.NoneOf, "|"), w.Class)
+		}
+		for _, f := range cs.Forbid {
+			fmt.Fprintf(h, "forbid\x00%s\x00%s\x00%s\x00", f.Kind, f.Marker, f.Key)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Validate checks the corpus's own coherence, so a fixture typo surfaces as a

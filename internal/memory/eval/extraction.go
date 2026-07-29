@@ -87,6 +87,18 @@ type CaseResult struct {
 	// RawReply is kept ONLY when the reply could not be parsed, so a malformed
 	// answer is diagnosable without a re-run. Truncated.
 	RawReply string `json:"raw_reply,omitempty"`
+	// EmptyReply records that the model answered with nothing at all rather than
+	// with `[]`. Production treats the two identically (zero facts), so this is
+	// NOT a failure — but a rising rate is the earliest sign of a degrading
+	// extractor, which is why it is counted rather than folded away.
+	EmptyReply bool `json:"empty_reply,omitempty"`
+	// ThinkingOnly records that the model produced a reasoning trace and NO
+	// answer. On Ollama, effort=medium sets `think:true`, and a model can spend
+	// its whole reply in the thinking channel — which arrives as EventThinking and
+	// is deliberately not accumulated into the answer. "Reasoned and never
+	// answered" is a different diagnosis from "abstained", and without this they
+	// are indistinguishable in the report.
+	ThinkingOnly bool `json:"thinking_only,omitempty"`
 	// Err is a per-case call failure. A cases's error does not abort the run —
 	// one 429 must not discard the other twelve scores.
 	Err string `json:"error,omitempty"`
@@ -122,9 +134,14 @@ type ExtractionReport struct {
 	// is only comparable against another run of the SAME prompt, and this is what
 	// makes "the baseline moved because the prompt changed" visible instead of
 	// mysterious.
-	SystemPromptSHA256 string         `json:"system_prompt_sha256"`
-	Cases              []CaseResult   `json:"cases"`
-	Abilities          []AbilityScore `json:"abilities"`
+	SystemPromptSHA256 string `json:"system_prompt_sha256"`
+	// CorpusSHA256 identifies the fixture set that produced these numbers. Adding
+	// or editing a case moves every recall figure just as surely as editing the
+	// prompt does, so it belongs in the baseline key for the same reason — see
+	// Baseline's header.
+	CorpusSHA256 string         `json:"corpus_sha256"`
+	Cases        []CaseResult   `json:"cases"`
+	Abilities    []AbilityScore `json:"abilities"`
 	// TotalViolations across every ability — the headline safety number.
 	TotalViolations int `json:"total_violations"`
 	// HarnessFault is set when the canary failed. Scores in the same report are
@@ -157,21 +174,28 @@ type Caller interface {
 // empty reply: an empty reply is exactly what the canary exists to disambiguate,
 // and swallowing a 401 into one would make an auth failure look like a model that
 // declined to extract anything.
-func collectReply(ch <-chan providers.Event) (string, error) {
+func collectReply(ch <-chan providers.Event) (reply string, sawThinking bool, err error) {
 	var b strings.Builder
 	for ev := range ch {
 		switch ev.Type {
 		case providers.EventText:
 			b.WriteString(ev.Text)
+		case providers.EventThinking:
+			// Counted, never accumulated. The reasoning trace is not the answer,
+			// but knowing it arrived is what separates "the model reasoned and
+			// never answered" from "the model abstained" when the reply is empty.
+			if strings.TrimSpace(ev.Text) != "" {
+				sawThinking = true
+			}
 		case providers.EventError:
 			msg := ev.Error
 			if msg == "" {
 				msg = ev.Text
 			}
-			return "", fmt.Errorf("provider error: %s", msg)
+			return "", sawThinking, fmt.Errorf("provider error: %s", msg)
 		}
 	}
-	return b.String(), nil
+	return b.String(), sawThinking, nil
 }
 
 // ExtractionInput is everything a run needs.
@@ -205,6 +229,7 @@ func RunExtraction(ctx context.Context, c Caller, in ExtractionInput) (Extractio
 		Model:              in.Model,
 		Effort:             in.Effort,
 		SystemPromptSHA256: sha256Hex(in.SystemPrompt),
+		CorpusSHA256:       in.Corpus.Digest(),
 	}
 
 	// Canary first.
@@ -259,6 +284,12 @@ func canaryFault(r CaseResult) string {
 	if r.Err != "" {
 		return fmt.Sprintf("canary case could not be called (%s) — no scores were produced. "+
 			"Check the provider, model name and credentials before reading anything else.", r.Err)
+	}
+	if len(r.Facts) == 0 && r.ThinkingOnly {
+		return "canary case produced a REASONING TRACE and no answer. Its transcript states one " +
+			"unmissable fact, so the model received it and spent the whole reply thinking. On Ollama, " +
+			"effort=medium sets think:true — try --effort low, or raise --max-tokens so the answer has " +
+			"room after the trace. Scores are withheld."
 	}
 	if len(r.Facts) == 0 {
 		return "canary case returned NO facts. Its transcript states one unmissable fact, so an empty " +
@@ -335,10 +366,14 @@ func runCase(ctx context.Context, c Caller, in ExtractionInput, cs ExtractionCas
 		res.Err = err.Error()
 		return res
 	}
-	reply, err := collectReply(ch)
+	reply, sawThinking, err := collectReply(ch)
 	if err != nil {
 		res.Err = err.Error()
 		return res
+	}
+	if strings.TrimSpace(reply) == "" {
+		res.EmptyReply = true
+		res.ThinkingOnly = sawThinking
 	}
 
 	facts, dropped, parseErr := ParseExtractorReply(reply)
@@ -360,13 +395,28 @@ func runCase(ctx context.Context, c Caller, in ExtractionInput, cs ExtractionCas
 var jsonArrayRe = regexp.MustCompile(`(?s)\[.*\]`)
 
 // ParseExtractorReply parses the extractor's reply into validated facts, applying
-// the SAME validation the bundle's validateFacts applies: drop a non-object, an
-// empty or over-long text, or an unknown class. Returns (facts, dropped, error);
-// an error means the reply held no JSON array at all.
+// the SAME validation production applies — both halves of it.
+//
+// An EMPTY reply is zero facts, not an error. That is production's own semantics:
+//
+//	if (!raw) { st.empty++; return []; }   // "no facts here", said badly
+//
+// The consolidator counts it and consolidates the chat with nothing. Treating it
+// as an error here scored a model that correctly abstained as a harness failure,
+// which is exactly backwards on an ABSTENTION case — and abstention is one of the
+// two gated abilities. The first live run surfaced this: the credential case came
+// back empty (the right answer) and was reported as `ERROR empty reply`.
+//
+// It is still worth COUNTING separately, for the reason the bundle gives: a rising
+// empty rate is how a degrading extractor shows up before anything else notices.
+// That is what EmptyReply on the result carries.
+//
+// Returns (facts, dropped, error); an error now means only that the reply held
+// text which was not a JSON array.
 func ParseExtractorReply(raw string) ([]ExtractedFact, int, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
-		return nil, 0, fmt.Errorf("empty reply")
+		return nil, 0, nil
 	}
 	m := jsonArrayRe.FindString(s)
 	if m == "" {

@@ -122,6 +122,32 @@ func TestBaseline_PromptChangeIsNotARegression(t *testing.T) {
 	}
 }
 
+// TestBaseline_CorpusChangeIsNotARegression is the corpus half of the
+// prompt-digest argument, and it was verified against a real near-miss: a baseline
+// had just been recorded when the buried property case was added. Without the
+// corpus digest in the key, the very next run reported "property recall fell
+// 1.00 -> 0.50" — a spurious regression caused entirely by adding a harder case,
+// which is how a gate teaches people to pass --no-gate.
+func TestBaseline_CorpusChangeIsNotARegression(t *testing.T) {
+	b := Baseline{RecallTolerance: DefaultRecallTolerance, Entries: []BaselineEntry{{
+		Provider: "p", Model: "m", Effort: "medium",
+		SystemPromptSHA256: "sha", CorpusSHA256: "corpus-old",
+		Recall:     map[string]float64{"property": 1.0},
+		Violations: map[string]int{"property": 0},
+	}}}
+	newCorpus := ExtractionReport{
+		Provider: "p", Model: "m", Effort: "medium",
+		SystemPromptSHA256: "sha", CorpusSHA256: "corpus-new",
+		Abilities: []AbilityScore{{Ability: AbilityProperty, Recall: 0.5}},
+	}
+	if got := b.Regressions(newCorpus); len(got) != 0 {
+		t.Fatalf("a different corpus is a different measurement, not a regression: %v", got)
+	}
+	if _, ok := b.EntryFor(newCorpus); ok {
+		t.Error("a run against a new corpus must not match the old entry")
+	}
+}
+
 // TestSaveBaselineEntry_RefusesAFaultedRun: recording scores from a run whose
 // canary failed would bake 0.0 in as the number to beat, and the next run would
 // then look like an improvement.

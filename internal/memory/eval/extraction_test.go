@@ -382,10 +382,27 @@ func TestParseExtractorReply_ToleratesWrappedArray(t *testing.T) {
 	}
 }
 
-func TestParseExtractorReply_EmptyAndMalformed(t *testing.T) {
-	if _, _, err := ParseExtractorReply("   "); err == nil {
-		t.Error("an empty reply must be an error, so it is never silently scored as zero facts")
+// TestParseExtractorReply_EmptyIsZeroFactsNotAnError mirrors production, which
+// does `if (!raw) { st.empty++; return []; }` — an empty reply is "no facts here",
+// said badly, and the chat is consolidated with nothing.
+//
+// This test previously asserted the OPPOSITE and was wrong. The first live run
+// exposed it: the credential-in-transcript abstention case came back empty — the
+// CORRECT answer — and was reported as `ERROR empty reply`, scoring a model that
+// abstained properly as a harness failure on one of the two GATED abilities.
+func TestParseExtractorReply_EmptyIsZeroFactsNotAnError(t *testing.T) {
+	for _, raw := range []string{"", "   ", "\n\t "} {
+		facts, dropped, err := ParseExtractorReply(raw)
+		if err != nil {
+			t.Errorf("ParseExtractorReply(%q) = error %v; production treats an empty reply as zero facts", raw, err)
+		}
+		if len(facts) != 0 || dropped != 0 {
+			t.Errorf("ParseExtractorReply(%q) = %d facts / %d dropped, want 0/0", raw, len(facts), dropped)
+		}
 	}
+}
+
+func TestParseExtractorReply_Malformed(t *testing.T) {
 	if _, _, err := ParseExtractorReply("I could not do that."); err == nil {
 		t.Error("a reply with no array must be an error")
 	}
@@ -567,6 +584,7 @@ func TestRunExtraction_ScoresAPerfectRunClean(t *testing.T) {
 		"request-implies-stack":             `[{"text":"Runs Postgres and finds the bill high.","class":"fact"}]`,
 		"bounded-by-time":                   `[{"text":"Works from the Lisbon office from March through the end of the year.","class":"fact"}]`,
 		"corrects-earlier-preference":       `[{"text":"Uses spaces for indentation on the new repo.","class":"preference"}]`,
+		"request-implies-condition-buried":  `[{"text":"Takes atorvastatin, a statin.","class":"fact"},{"text":"Experiences constant muscle ache in the legs.","class":"fact"},{"text":"Wants the invoice importer to reject an ambiguous date rather than guess from the locale.","class":"decision"}]`,
 		"credential-in-transcript":          `[]`,
 		"pure-chatter":                      `[]`,
 		"question-is-not-a-fact":            `[]`,
@@ -669,6 +687,137 @@ func TestCanary_UnparseableReplyIsADifferentDiagnosis(t *testing.T) {
 	for _, want := range []string{"DID reach the model", "JSON-array", "max_tokens"} {
 		if !strings.Contains(fault, want) {
 			t.Errorf("the message should mention %q:\n%s", want, fault)
+		}
+	}
+}
+
+// TestAbstention_EmptyReplyIsAPassNotAnError is the regression for the bug the
+// first live run exposed.
+//
+// The credential-in-transcript case came back with an entirely empty reply — the
+// CORRECT answer, since the transcript holds only a secret and transient task
+// state — and the harness reported `ERROR empty reply`, marking the case unclean.
+// Abstention is one of the two GATED abilities, so mis-scoring it is the worst
+// place for this to happen. Production's own branch is
+// `if (!raw) { st.empty++; return []; }`.
+func TestAbstention_EmptyReplyIsAPassNotAnError(t *testing.T) {
+	var credCase ExtractionCase
+	for _, cs := range ExtractionFixture().Cases {
+		if cs.Name == "credential-in-transcript" {
+			credCase = cs
+		}
+	}
+	if credCase.Name == "" {
+		t.Fatal("the credential case is missing from the corpus")
+	}
+
+	res := runCase(context.Background(), alwaysCaller{reply: ""}, canaryOnlyInput(), credCase)
+	if res.Err != "" {
+		t.Errorf("an empty reply must not be an error: %s", res.Err)
+	}
+	if len(res.Violations) != 0 {
+		t.Errorf("abstaining must produce no violations: %v", res.Violations)
+	}
+	if !res.Passed() {
+		t.Errorf("a correct abstention must count as a clean case (err=%q violations=%v)", res.Err, res.Violations)
+	}
+	if !res.EmptyReply {
+		t.Error("the empty reply should still be RECORDED — a rising rate is how a degrading extractor shows up")
+	}
+}
+
+// TestEmptyReply_DistinguishesThinkingOnly: on Ollama, effort=medium sets
+// think:true, so a model can spend its whole reply reasoning and emit no answer.
+// That is a different diagnosis from abstaining and must not be reported as one.
+func TestEmptyReply_DistinguishesThinkingOnly(t *testing.T) {
+	res := runCase(context.Background(), thinkingOnlyCaller{}, canaryOnlyInput(), ExtractionCanary())
+	if !res.EmptyReply {
+		t.Fatal("want EmptyReply")
+	}
+	if !res.ThinkingOnly {
+		t.Fatal("a reasoning trace with no answer must be recorded as ThinkingOnly")
+	}
+	fault := canaryFault(res)
+	if !strings.Contains(fault, "REASONING TRACE") {
+		t.Errorf("the canary fault should name the cause:\n%s", fault)
+	}
+	if !strings.Contains(fault, "think:true") {
+		t.Errorf("the fault should point at the actual knob:\n%s", fault)
+	}
+}
+
+// thinkingOnlyCaller emits a reasoning trace and no answer.
+type thinkingOnlyCaller struct{}
+
+func (thinkingOnlyCaller) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	ch := make(chan providers.Event, 3)
+	ch <- providers.Event{Type: providers.EventThinking, Text: "Let me think about what is durable here..."}
+	ch <- providers.Event{Type: providers.EventText, Text: ""}
+	ch <- providers.Event{Type: providers.EventDone}
+	close(ch)
+	return ch, nil
+}
+
+// TestCorpusDigest_ChangesWithTheFixtures pins why the baseline key carries it:
+// adding or editing a case moves every recall figure, so a stored number measured
+// against a different corpus is not comparable.
+func TestCorpusDigest_ChangesWithTheFixtures(t *testing.T) {
+	base := ExtractionFixture()
+	d1 := base.Digest()
+	if d1 == "" {
+		t.Fatal("digest must not be empty")
+	}
+	if d1 != ExtractionFixture().Digest() {
+		t.Fatal("the digest must be stable for identical fixtures")
+	}
+
+	// Add a case.
+	added := base
+	added.Cases = append(append([]ExtractionCase{}, base.Cases...),
+		ExtractionCase{Name: "extra", Ability: AbilityExtraction, Turns: []string{"t"}})
+	if added.Digest() == d1 {
+		t.Error("adding a case must change the digest — recall denominators moved")
+	}
+
+	// Edit an expectation in place.
+	edited := ExtractionCorpus{Cases: append([]ExtractionCase{}, base.Cases...)}
+	for i := range edited.Cases {
+		if len(edited.Cases[i].Want) > 0 {
+			edited.Cases[i].Want = append([]ExpectedFact{}, edited.Cases[i].Want...)
+			edited.Cases[i].Want[0].AllOf = []string{"something-else"}
+			break
+		}
+	}
+	if edited.Digest() == d1 {
+		t.Error("editing an expectation must change the digest — the number means something different")
+	}
+}
+
+// TestCorpus_HasABuriedPropertyCase: the clean property case passed 2/2 on the
+// first model measured, contradicting the production failure. The buried variant is
+// what distinguishes "the model cannot do the transformation" from "the model
+// cannot find the signal in a real transcript", so its absence would leave the
+// eval unable to tell those apart.
+func TestCorpus_HasABuriedPropertyCase(t *testing.T) {
+	var buried ExtractionCase
+	for _, cs := range ExtractionFixture().Cases {
+		if cs.Name == "request-implies-condition-buried" {
+			buried = cs
+		}
+	}
+	if buried.Name == "" {
+		t.Fatal("no buried property case in the corpus")
+	}
+	if buried.Ability != AbilityProperty {
+		t.Errorf("ability = %q, want %q", buried.Ability, AbilityProperty)
+	}
+	if len(buried.Turns) < 8 {
+		t.Errorf("a buried case needs enough surrounding noise to be buried; got %d turns", len(buried.Turns))
+	}
+	// The signal must not be in the first or last turn, or it is not buried.
+	for _, edge := range []string{buried.Turns[0], buried.Turns[len(buried.Turns)-1]} {
+		if strings.Contains(strings.ToLower(edge), "statin") {
+			t.Errorf("the property signal sits on an edge turn, so it is not buried: %q", edge)
 		}
 	}
 }

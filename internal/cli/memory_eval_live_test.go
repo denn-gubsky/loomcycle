@@ -94,7 +94,7 @@ func TestPrintExtractionReport_WithholdsScoresOnAFault(t *testing.T) {
 		// Deliberately populated: even if scores are present on the struct, a
 		// faulted report must not print them.
 		Abilities: []eval.AbilityScore{{Ability: eval.AbilityExtraction, Recall: 0}},
-	}, nil)
+	}, nil, false)
 	s := out.String()
 	if !strings.Contains(s, "HARNESS FAULT") {
 		t.Errorf("the fault must be prominent: %s", s)
@@ -112,7 +112,7 @@ func TestPrintExtractionReport_SaysWhenThereIsNoBaseline(t *testing.T) {
 	printExtractionReport(&out, eval.ExtractionReport{
 		Provider: "p", Model: "m",
 		Abilities: []eval.AbilityScore{{Ability: eval.AbilityExtraction, Cases: 1, Recall: 1}},
-	}, nil)
+	}, nil, false)
 	if !strings.Contains(out.String(), "compared against nothing") {
 		t.Errorf("the report should say there is no baseline: %s", out.String())
 	}
@@ -133,7 +133,7 @@ func TestPrintExtractionReport_ShowsMissesAndViolationsWithTheirReason(t *testin
 			Violations: []string{"distractor fixture: \"The user asked about alternatives.\" — recording that a question was ASKED"},
 			Facts:      []eval.ExtractedFact{{Text: "The user asked about alternatives.", Class: "fact"}},
 		}},
-	}, nil)
+	}, nil, false)
 	s := out.String()
 	for _, want := range []string{"MISS", "VIOLATION", "statin", "asked", "emitted"} {
 		if !strings.Contains(s, want) {
