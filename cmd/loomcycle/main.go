@@ -1429,6 +1429,18 @@ func main() {
 	}
 	credEngine := credential.NewEngine(storeIface, credSealer)
 	credentialDefTool.Engine = credEngine
+	// $ghapp:<name> — mint a short-lived GitHub App installation token from a
+	// stored App config (the private key never leaves loomcycle; only the ~1h,
+	// repo-scoped token is substituted). Resolves the App config through the same
+	// scope-precedence credential lookup as $cred:.
+	ghAppMinter := credential.NewGitHubAppMinter(
+		func(ctx context.Context, tenantID, agentName, userID, name string) (string, bool, error) {
+			res, found, err := credEngine.Resolve(ctx, tenantID, agentName, userID, name)
+			if err != nil || !found {
+				return "", found, err
+			}
+			return res.Value, true, nil
+		}, nil)
 	// srv is assigned below at lchttp.New; the credential closures capture it by
 	// reference so a resolved value can be registered in the server's redactor.
 	// registerSecret is only CALLED during a run (long after srv exists), so the
@@ -1450,13 +1462,24 @@ func main() {
 	// a pooled client binds each request's own user-scoped token.
 	credSubstitute = func(ctx context.Context, s string) (string, []string, error) {
 		// Fast-path: when nothing can resolve (no KEK / no external backend) skip
-		// the store reads. Report any $cred: refs as unresolved so the caller still
-		// drops them (never send a literal token downstream).
+		// the store reads. Report any $cred: / $ghapp: refs as unresolved so the
+		// caller still drops them (never send a literal token downstream).
 		if !credEngine.CanResolve() {
-			return s, credential.RefNames(s), nil
+			return s, append(credential.RefNames(s), credential.GHAppRefNames(s)...), nil
 		}
 		ri := tools.RunIdentity(ctx)
-		return credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, registerSecret)
+		// $ghapp: (mint an installation token) then $cred: (durable secret). The two
+		// syntaxes don't overlap; each drops its own header on an unresolved/failed
+		// ref, and a mint/resolve error aborts so no literal token is sent.
+		out, un1, err := ghAppMinter.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, s, registerSecret)
+		if err != nil {
+			return "", nil, err
+		}
+		out, un2, err := credEngine.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), ri.UserID, out, registerSecret)
+		if err != nil {
+			return "", nil, err
+		}
+		return out, append(un1, un2...), nil
 	}
 	// RFC AR: resolve a tenant/user credential by env-var NAME (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for the run's identity, so a tenant's own key overrides

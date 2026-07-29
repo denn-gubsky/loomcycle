@@ -107,7 +107,9 @@ real dev — clone/push a **private** repo, use `gh` — inject a GitHub token:
 1. Enable env injection on the sidecar: `SANDBOX_ALLOW_ENV_INJECTION=1`.
 2. Store the token as a per-tenant/user credential named **`sandbox_github`**
    (`credentialdef op=create scope=user name=sandbox_github value=<token>`) — a
-   PAT/fine-grained token, or a GitHub App token (see below).
+   PAT / fine-grained token. For a **short-lived, repo-scoped** token instead,
+   store a GitHub App config and reference it with `$ghapp:<name>` (see
+   [CREDENTIALS.md](CREDENTIALS.md#minting-a-github-app-token----ghappname)).
 3. The `sandbox` bundle already forwards it: `mcp_servers.sandbox.headers` carries
    `X-Loom-Sandbox-Env-Gh-Token: "$cred:sandbox_github"`, which loomcycle resolves
    **server-side** (never in the model) and the sidecar maps to `GH_TOKEN` in the
@@ -117,7 +119,8 @@ real dev — clone/push a **private** repo, use `gh` — inject a GitHub token:
 Unresolved (no such credential, or injection disabled) → the header is dropped →
 git runs unauthenticated, public repos still work. Because the token lives in the
 session env with egress on, prefer a **short-lived, repo-scoped GitHub App token**
-over a broad PAT. Full mechanism + caps:
+(`$ghapp:` — overlay the header value to `$ghapp:sandbox_github_app`) over a broad
+PAT. Full mechanism + caps:
 [`../deploy/builder/README.md`](../deploy/builder/README.md#env-injection-credentials-into-a-session).
 
 ## Delegating from other agents
