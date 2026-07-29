@@ -133,6 +133,36 @@ session env with egress on, prefer a **short-lived, repo-scoped GitHub App token
 PAT. Full mechanism + caps:
 [`../deploy/builder/README.md`](../deploy/builder/README.md#env-injection-credentials-into-a-session).
 
+### Headless browser (web-UI testing)
+
+To give the agent a browser (`mcp__browser__*`) for ad-hoc web-UI testing, run the
+runtime as the **`denngubsky/loomcycle-browser`** image (the standard loomcycle
+image + the [PinchTab](https://github.com/pinchtab/pinchtab) MCP client, published
+alongside every release) and add a **`pinchtab/pinchtab` server sidecar**. PinchTab's
+MCP is stdio-only, so loomcycle spawns `pinchtab … mcp` as a stdio bridge to the
+sidecar — Chromium lives only in the sidecar, not in loomcycle.
+
+1. Run the sidecar **internal only** (no published port — its control plane is not
+   for public exposure), with `PINCHTAB_TOKEN` set, `shm_size: 2gb`, and the usual
+   hardening (`read_only`, tmpfs, `cap_drop: ALL`, `no-new-privileges`).
+2. Use `denngubsky/loomcycle-browser:<version>` for the loomcycle runtime and give
+   it the same `PINCHTAB_TOKEN` (the stdio child inherits loomcycle's env).
+3. Overlay the config (a file in `LOOMCYCLE_CONFIG_DIR`):
+   ```yaml
+   mcp_servers:
+     browser:
+       transport: stdio
+       command: /usr/local/bin/pinchtab
+       args: ["--server", "http://pinchtab:9867", "mcp"]
+   agents:
+     dev/sandbox:
+       tools: [mcp__sandbox__*, mcp__browser__*, Interruption]
+   ```
+
+Scope: reachable URLs (public sites / your deployment / preview URLs). PinchTab
+keeps browsing local-only until you widen its domain allowlist (IDPI). A full worked
+example is in [`../cloud-deployment/`](../cloud-deployment/).
+
 ## Delegating from other agents
 
 An agent doesn't hold the `mcp__sandbox__*` tools directly (by design — tool ceilings

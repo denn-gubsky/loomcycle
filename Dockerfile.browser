@@ -1,0 +1,27 @@
+# Dockerfile.browser — goreleaser variant: the distroless loomcycle image + the
+# PinchTab MCP CLIENT binary.
+#
+# Why: PinchTab's MCP server is stdio-only, so loomcycle drives a browser by
+# SPAWNING `pinchtab --server http://<pinchtab-server>:9867 mcp` as a stdio MCP
+# subprocess — which needs the pinchtab client binary in loomcycle's OWN container.
+# Chromium stays in a separate `pinchtab/pinchtab` server sidecar; only the ~28 MB
+# client (no browser) is added here, so this image stays distroless + tiny.
+#
+# Wire it: run a `pinchtab/pinchtab` server sidecar, add an mcp_servers.browser
+# (transport: stdio, command: /usr/local/bin/pinchtab, args: [--server,
+# http://pinchtab:9867, mcp]) and grant the agent mcp__browser__* — see
+# docs/SANDBOX.md.
+#
+# Same pre-built binary as Dockerfile.release (goreleaser builds every arch in its
+# `builds:` stage; this only COPYs it). pinchtab/pinchtab is multi-arch, so the
+# `FROM` resolves per target platform under buildx. Published to
+# docker.io/denngubsky/loomcycle-browser.
+FROM pinchtab/pinchtab:0.15.0 AS pinchtab
+
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY loomcycle /usr/local/bin/loomcycle
+COPY --from=pinchtab /usr/local/bin/pinchtab /usr/local/bin/pinchtab
+USER nonroot
+EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/loomcycle"]
