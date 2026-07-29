@@ -988,3 +988,128 @@ func (s slowCaller) Call(ctx context.Context, _ providers.Request) (<-chan provi
 		return nil, ctx.Err()
 	}
 }
+
+// TestBuriedCase_MarkersDiscriminateBetweenRealModels is the corpus's own
+// discrimination check, written from four live model outputs.
+//
+// The buried case originally forbade the BRANCH NAME, and all four models
+// recorded it — so the gate failed every one of them with exactly one violation.
+// A gate that fires on every candidate carries no signal, and the cause was a
+// marker encoding an opinion ("a branch name is working state") rather than a
+// rule. "The date feature lives on branch X" is arguably a durable project fact.
+//
+// Transient STATUS and transient INTENT are not arguable, and they discriminate:
+// the model that merely named the branch comes back clean, while the three that
+// recorded a test result or a plan for after lunch do not. This pins that, using
+// each model's real emitted text.
+func TestBuriedCase_MarkersDiscriminateBetweenRealModels(t *testing.T) {
+	var buried ExtractionCase
+	for _, cs := range ExtractionFixture().Cases {
+		if cs.Name == "request-implies-condition-buried" {
+			buried = cs
+		}
+	}
+	if buried.Name == "" {
+		t.Fatal("buried case missing")
+	}
+
+	cases := []struct {
+		model      string
+		facts      []string
+		wantClean  bool
+		wantReason string
+	}{
+		{
+			model: "qwen3.6:latest",
+			facts: []string{
+				"The user takes atorvastatin and experiences constant muscle pain.",
+				"The user prefers the invoice importer CSV parser to fail loudly on ambiguous dates rather than guess from the locale.",
+				"The project's date handling feature is developed on a branch named feature-invoice-dates.",
+			},
+			wantClean:  true,
+			wantReason: "names the branch but records no transient status or intent",
+		},
+		{
+			model: "laguna-xs-2.1:latest",
+			facts: []string{
+				"The user takes atorvastatin and experiences constant leg pain from it.",
+				"There is a branch called feature-invoice-dates for the invoice importer where tests pass locally.",
+			},
+			wantClean:  false,
+			wantReason: "recorded a test result, which is true only until the next commit",
+		},
+		{
+			model: "glm-4.7-flash:latest",
+			facts: []string{
+				"The user is taking atorvastatin.",
+				"The tests for the branch pass locally.",
+				"The user will review the feature-invoice-dates branch after lunch.",
+			},
+			wantClean:  false,
+			wantReason: "recorded both a test result and a plan for the next hour",
+		},
+		{
+			model: "gpt-oss:latest",
+			facts: []string{
+				"The user has been taking atorvastatin for a while and experiences constant leg aches.",
+				"Branch feature-invoice-dates exists and its tests pass locally.",
+				"The CI job was queued and restarted.",
+			},
+			wantClean:  false,
+			wantReason: "recorded a test result and a queue position",
+		},
+	}
+
+	for _, c := range cases {
+		facts := make([]ExtractedFact, 0, len(c.facts))
+		for _, f := range c.facts {
+			facts = append(facts, ExtractedFact{Text: f, Class: "fact"})
+		}
+		res := CaseResult{Wanted: len(buried.Want)}
+		scoreCase(&res, buried, facts)
+
+		clean := len(res.Violations) == 0
+		if clean != c.wantClean {
+			t.Errorf("%s: violations=%d, want clean=%v (%s)\n  %v",
+				c.model, len(res.Violations), c.wantClean, c.wantReason, res.Violations)
+		}
+	}
+}
+
+// TestStatedPreference_CatchesAFabricatedIdentity: a live model lifted the
+// extractor prompt's own example name ("Denn prefers Go over Python") into a fact
+// about a transcript that names nobody — inventing an identity out of its
+// instructions. An identity is what other facts get attached to, so this is worse
+// than an ordinary fabrication.
+func TestStatedPreference_CatchesAFabricatedIdentity(t *testing.T) {
+	var cs ExtractionCase
+	for _, c := range ExtractionFixture().Cases {
+		if c.Name == "stated-preference" {
+			cs = c
+		}
+	}
+	if cs.Name == "" {
+		t.Fatal("stated-preference case missing")
+	}
+	// No transcript in the corpus names the user.
+	for _, turn := range cs.Turns {
+		if strings.Contains(strings.ToLower(turn), "denn") {
+			t.Fatalf("the fixture itself names the user, so the marker is not a fabrication check: %q", turn)
+		}
+	}
+
+	lifted := CaseResult{Wanted: len(cs.Want)}
+	scoreCase(&lifted, cs, []ExtractedFact{{Text: "Denn prefers tabs over spaces for indentation.", Class: "preference"}})
+	if len(lifted.Violations) == 0 {
+		t.Error("a fact naming a user the transcript never names must be a violation")
+	}
+
+	ok := CaseResult{Wanted: len(cs.Want)}
+	scoreCase(&ok, cs, []ExtractedFact{{Text: "The user prefers tabs over spaces for indentation.", Class: "preference"}})
+	if len(ok.Violations) != 0 {
+		t.Errorf("the correct, subject-neutral phrasing must be clean: %v", ok.Violations)
+	}
+	if ok.Captured != ok.Wanted {
+		t.Errorf("and must still score the capture: %d/%d %v", ok.Captured, ok.Wanted, ok.Misses)
+	}
+}
