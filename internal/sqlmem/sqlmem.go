@@ -156,8 +156,20 @@ type Manager struct {
 // name-hashed defensively by each backend before they touch the filesystem
 // (sqlite) or become a postgres identifier (postgres).
 type ScopeKey struct {
-	Tenant  string
-	Scope   string // "agent" | "user" | "run"
+	Tenant string
+	// Scope is "agent" | "user" | "tenant" | "run".
+	//
+	// Nothing in this package validates the value — pgScopeNames hashes the
+	// triple, the sqlite backend joins root/<tenant>/<scope>/<id>.db, and
+	// scope_registry records it verbatim — so a new scope needs no plumbing here.
+	// The list is documentation, not enforcement; the closed set that matters is
+	// the per-agent grant in config (validMemoryScopes / validSqlScopes).
+	Scope string
+	// ScopeID must be NON-EMPTY for every durable scope, including `tenant`, where
+	// it repeats the tenant. pgScopeNames rejects an empty component because the
+	// value becomes half of a schema + LOGIN role name. Note the k/v Memory plane
+	// uses an EMPTY scope_id for its tenant scope for the opposite reason — its
+	// tenant_id column already carries the identity.
 	ScopeID string
 }
 

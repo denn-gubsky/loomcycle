@@ -258,10 +258,67 @@ func TestDocument_ScopeTenantIsolation(t *testing.T) {
 	}
 }
 
-func TestDocument_TenantScopeRefused(t *testing.T) {
+// TestDocument_TenantScopeRoundTrips replaces TestDocument_TenantScopeRefused:
+// scope=tenant is real as of RFC BL P4b.
+//
+// A document is split across two planes — structure in SQL Memory, chunk BODIES
+// in k/v Memory — and the two take DIFFERENT scope ids for the tenant scope (the
+// tenant vs ""), each for its own reason. This asserts the round trip through both
+// halves, because a mismatch between them shows up as a document whose structure
+// exists and whose text is empty, which is exactly the failure this store has
+// already had once.
+func TestDocument_TenantScopeRoundTrips(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
-	if _, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"x"}`); !r.IsError || !strings.Contains(r.Text, "not yet supported") {
-		t.Errorf("scope=tenant should be refused; got %q", r.Text)
+	// The tenant scope is GATED on BOTH planes — structure in SQL Memory, chunk
+	// bodies in Memory — so the round trip needs both grants.
+	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
+	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
+
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Tenant handbook"}`)
+	if r.IsError {
+		t.Fatalf("create_document scope=tenant: %s", r.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	rootID, _ := out["root_chunk_id"].(string)
+	if docID == "" {
+		t.Fatalf("no document id in %v", out)
+	}
+
+	// A body write + read exercises the Memory half under the tenant partition.
+	if rootID != "" {
+		if _, r := docExec(t, d, ctx, `{"op":"update_chunk","scope":"tenant","id":"`+rootID+`","body":"shared reference text","revision":1}`); r.IsError {
+			t.Fatalf("update_chunk scope=tenant: %s", r.Text)
+		}
+		got, r := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+rootID+`"}`)
+		if r.IsError {
+			t.Fatalf("get_chunk scope=tenant: %s", r.Text)
+		}
+		if body, _ := got["body"].(string); !strings.Contains(body, "shared reference text") {
+			t.Errorf("the chunk body did not survive the tenant round trip: %q — the two planes' scope ids disagree", body)
+		}
+	}
+
+	// And it must be visible via the tenant scope, not the user scope.
+	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"tenant","id":"`+docID+`"}`); r.IsError {
+		t.Errorf("get_document scope=tenant: %s", r.Text)
+	}
+	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+docID+`"}`); !r.IsError {
+		t.Error("a tenant document must NOT be reachable through the user scope — the scopes would not be isolated")
+	}
+}
+
+// TestDocument_UnknownScopeRefused: the closed set still refuses anything outside
+// it, and the message names what IS valid.
+func TestDocument_UnknownScopeRefused(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	_, r := docExec(t, d, ctx, `{"op":"create_document","scope":"session","title":"x"}`)
+	if !r.IsError {
+		t.Fatal("an unknown scope must be refused")
+	}
+	for _, want := range []string{"agent", "user", "tenant"} {
+		if !strings.Contains(r.Text, want) {
+			t.Errorf("the refusal should list %q as valid: %q", want, r.Text)
+		}
 	}
 }
 
@@ -1416,5 +1473,81 @@ func TestExportMd_StoreFaultFailsLoudly(t *testing.T) {
 	}
 	if strings.Contains(res.Text, "CONTENT") {
 		t.Errorf("export leaked partial content: %s", res.Text)
+	}
+}
+
+// TestDocument_TenantScopeRequiresBothGrants is the gate.
+//
+// A document write touches BOTH planes — chunk structure in SQL Memory, chunk
+// bodies in k/v Memory — so both grants are required. Half a grant would let an
+// agent reach half a tenant store, and a document with structure and no text is
+// the exact shape this store has already been broken into once.
+//
+// Asserted rather than assumed because this path had NO grant check at all when
+// the tenant scope was first written: documentFixture stamps no policy, and the
+// round-trip test passed anyway. A test that passes without the grant IS the proof
+// the grant is not required.
+func TestDocument_TenantScopeRequiresBothGrants(t *testing.T) {
+	tenantOnly := []string{"agent", "user", "tenant"}
+	withoutTenant := []string{"agent", "user"}
+
+	cases := []struct {
+		name       string
+		mem, sql   []string
+		wantAllow  bool
+		wantNaming []string
+	}{
+		{
+			name: "neither grant", mem: withoutTenant, sql: withoutTenant,
+			wantNaming: []string{"memory_scopes: [tenant]", "sql_scopes: [tenant]"},
+		},
+		{
+			name: "memory only", mem: tenantOnly, sql: withoutTenant,
+			wantNaming: []string{"sql_scopes: [tenant]"},
+		},
+		{
+			name: "sql only", mem: withoutTenant, sql: tenantOnly,
+			wantNaming: []string{"memory_scopes: [tenant]"},
+		},
+		{
+			name: "both grants", mem: tenantOnly, sql: tenantOnly, wantAllow: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, ctx, _ := documentFixture(t)
+			ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: c.mem})
+			ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: c.sql})
+
+			_, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"x"}`)
+			if c.wantAllow {
+				if r.IsError {
+					t.Fatalf("both grants present, must be allowed: %s", r.Text)
+				}
+				return
+			}
+			if !r.IsError {
+				t.Fatal("a partial or absent grant must NOT reach the tenant scope")
+			}
+			for _, want := range c.wantNaming {
+				if !strings.Contains(r.Text, want) {
+					t.Errorf("the refusal must name the missing grant %q: %q", want, r.Text)
+				}
+			}
+		})
+	}
+}
+
+// TestDocument_TenantGateLeavesOtherScopesAlone: agent and user have been ungated
+// on this path since the tool shipped, and retrofitting a grant onto them would
+// break every existing agent that holds Document without declaring scopes. That is
+// a separate, breaking change; this pins that the new check did not smuggle it in.
+func TestDocument_TenantGateLeavesOtherScopesAlone(t *testing.T) {
+	d, ctx, _ := documentFixture(t) // no policies stamped at all
+	for _, scope := range []string{"user", "agent"} {
+		if _, r := docExec(t, d, ctx, `{"op":"create_document","scope":"`+scope+`","title":"ok"}`); r.IsError {
+			t.Errorf("scope=%s must be unaffected by the tenant gate: %s", scope, r.Text)
+		}
 	}
 }

@@ -209,7 +209,7 @@ const memoryInputSchema = `{
   "type": "object",
   "properties": {
     "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_scan","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — add enqueues for background consolidation, recall needs the vector stack); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_scan,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
-    "scope":      {"type": "string", "enum": ["agent","user","run"], "description": "Which keyspace/database. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). run: ephemeral per-run, dropped at run end — SQL ops only."},
+    "scope":      {"type": "string", "enum": ["agent","user","tenant","run"], "description": "Which keyspace/database. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). tenant: shared by every user and agent in the tenant — what you write here, they all read. run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
@@ -513,7 +513,7 @@ func (m *Memory) resolveScope(ctx context.Context, requested string) (store.Memo
 	}
 	if !contains(policy.AllowedScopes, requested) {
 		if len(policy.AllowedScopes) == 0 {
-			return "", "", fmt.Errorf("Memory tool: this agent has no memory_scopes configured — add `memory_scopes: [agent]` (or [user], or both) to the agent yaml")
+			return "", "", fmt.Errorf("Memory tool: this agent has no memory_scopes configured — add `memory_scopes: [agent]` (and/or user, tenant) to the agent yaml")
 		}
 		return "", "", fmt.Errorf("Memory tool: scope %q not in this agent's memory_scopes %v", requested, policy.AllowedScopes)
 	}
@@ -531,8 +531,20 @@ func (m *Memory) resolveScope(ctx context.Context, requested string) (store.Memo
 			return "", "", fmt.Errorf("Memory tool: scope=user requires a user_id on the run (caller must supply user_id when starting the run)")
 		}
 		return store.MemoryScopeUser, ident.UserID, nil
+	case store.MemoryScopeTenant:
+		// scope_id is EMPTY on purpose: the tenant_id column already carries the
+		// identity, so a second copy here would be redundant and would make the
+		// retention fan-out ambiguous about which column is authoritative. Matches
+		// the global scope's convention and the Path tree's tenant dirent.
+		//
+		// The tenant itself needs no presence check: it is stamped on every run's
+		// identity from server-side auth (never the wire), and the single-tenant /
+		// open-mode value "" is a legitimate tenant, not a missing one. Requiring
+		// non-empty here would make the scope unusable in exactly the deployment
+		// where it is least dangerous.
+		return store.MemoryScopeTenant, "", nil
 	default:
-		return "", "", fmt.Errorf("Memory tool: unknown scope %q (only agent / user are supported in v0.8.0)", requested)
+		return "", "", fmt.Errorf("Memory tool: unknown scope %q (want one of: agent, user, tenant)", requested)
 	}
 }
 
@@ -562,7 +574,7 @@ func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, 
 	}
 	pol := tools.SqlMemPolicy(ctx)
 	if len(pol.AllowedScopes) == 0 {
-		return "", "", fmt.Errorf("Memory tool: this agent has no sql_scopes configured — add `sql_scopes: [agent]` (and/or user, run) to the agent yaml")
+		return "", "", fmt.Errorf("Memory tool: this agent has no sql_scopes configured — add `sql_scopes: [agent]` (and/or user, run, tenant) to the agent yaml")
 	}
 	if !contains(pol.AllowedScopes, requested) {
 		return "", "", fmt.Errorf("Memory tool: sql scope %q not in this agent's sql_scopes %v", requested, pol.AllowedScopes)
@@ -592,8 +604,18 @@ func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, 
 			return "", "", fmt.Errorf("Memory tool: sql scope=run requires an active run (no run id on the context)")
 		}
 		return "run", rid, nil
+	case "tenant":
+		// scope_id is the TENANT here, NOT empty — the opposite of the k/v tenant
+		// scope above, and deliberately so. sqlmem derives a postgres schema + LOGIN
+		// role from sha256(tenant \x1f scope \x1f scope_id) and rejects an empty
+		// component, so the id has to be non-empty; {t, tenant, t} still hashes
+		// distinctly from {t, user, t} because the scope segment differs.
+		//
+		// The k/v plane has no such constraint and uses "" so its tenant_id column
+		// stays the single source of identity. Two conventions, one reason each.
+		return "tenant", sqlScopeTenant(ctx), nil
 	default:
-		return "", "", fmt.Errorf("Memory tool: unknown sql scope %q (want one of: agent, user, run)", requested)
+		return "", "", fmt.Errorf("Memory tool: unknown sql scope %q (want one of: agent, user, run, tenant)", requested)
 	}
 }
 

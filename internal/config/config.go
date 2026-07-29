@@ -5185,20 +5185,28 @@ var validEffortLevels = map[string]bool{
 }
 
 // validMemoryScopes is the closed set of Memory tool scope names
-// accepted in agent yaml. v0.8.0 ships agent + user; future versions
-// may add session / tenant.
+// accepted in agent yaml.
+//
+// `tenant` is SHARED-WRITE across every user and agent in the tenant, so an
+// agent granted it can store state that every other agent and user then reads
+// as ground truth. That is the poisoning surface the memory design flags, and
+// the grant IS the gate — there is deliberately no second mechanism, because two
+// places to get this wrong is worse than one. Grant it to curator-shaped agents,
+// not to anything that ingests untrusted text.
 var validMemoryScopes = map[string]bool{
-	"agent": true,
-	"user":  true,
+	"agent":  true,
+	"user":   true,
+	"tenant": true,
 }
 
 // validSqlScopes is the closed set of RFC AA SQL Memory scope names
 // accepted in agent yaml. Unlike Memory's k/v scopes it also includes
 // `run` — an ephemeral per-run database dropped at run completion.
 var validSqlScopes = map[string]bool{
-	"agent": true,
-	"user":  true,
-	"run":   true,
+	"agent":  true,
+	"user":   true,
+	"run":    true,
+	"tenant": true, // shared-write across the tenant — see validMemoryScopes
 }
 
 // validChannelScopes is the closed set of Channel tool scope names

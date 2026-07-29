@@ -364,6 +364,10 @@ agents:
 // — silent drop would let a typoed `memmory_scopes: [agnet]` produce
 // an agent that calls Memory.set with no policy applied at runtime.
 func TestMemoryScopesValidation(t *testing.T) {
+	// `tenant` used to be the rejected example here; it is a real scope now, so the
+	// rejection is asserted against a scope that genuinely does not exist. A
+	// validation test whose invalid input later becomes valid stops testing
+	// anything, and silently.
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
 	os.WriteFile(yamlPath, []byte(`
@@ -371,14 +375,40 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   bad:
     model: claude-sonnet-4-6
-    memory_scopes: [agent, tenant]
+    memory_scopes: [agent, session]
 `), 0o600)
 	_, err := Load(yamlPath)
 	if err == nil {
 		t.Fatal("expected error for unknown memory scope")
 	}
-	if !strings.Contains(err.Error(), "tenant") {
+	if !strings.Contains(err.Error(), "session") {
 		t.Errorf("error should name the offending scope: %v", err)
+	}
+}
+
+// TestMemoryScopesTenantAccepted: `tenant` is a granted, shared-write scope as of
+// RFC BL P4b. The grant IS the gate, so an operator must be able to declare it.
+func TestMemoryScopesTenantAccepted(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  curator:
+    model: claude-sonnet-4-6
+    memory_scopes: [agent, user, tenant]
+    sql_scopes: [tenant]
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("tenant must be a valid grant: %v", err)
+	}
+	a := cfg.Agents["curator"]
+	if len(a.MemoryScopes) != 3 || a.MemoryScopes[2] != "tenant" {
+		t.Errorf("memory_scopes = %v, want the tenant grant preserved", a.MemoryScopes)
+	}
+	if len(a.SqlScopes) != 1 || a.SqlScopes[0] != "tenant" {
+		t.Errorf("sql_scopes = %v, want [tenant]", a.SqlScopes)
 	}
 }
 
