@@ -202,7 +202,7 @@ rather than a clean split — a property of the model, not a tuning failure.
 **Re-run after any change of embedding model or dimension.** Full table and
 flags: `docs/TOOLS.md` → "Calibrating the bands".
 
-### The eval gate
+### The eval gates — two halves
 
 `make memory-eval-mock` runs the consolidation + retrieval gate: a
 deterministic offline harness (mock provider, stub embedder, in-memory SQLite
@@ -210,6 +210,50 @@ deterministic offline harness (mock provider, stub embedder, in-memory SQLite
 invariants. Run it before and after any change to the consolidation pipeline,
 the ranker, or dedup. It is also covered by plain `go test ./...`, so it gates
 every PR; the make target exists to run just the memory gate quickly.
+
+It replays a **scripted** provider, so it proves the pipeline and says nothing
+about the model's judgement — whether what got written down was worth writing
+down. That is the other half:
+
+```bash
+make memory-eval-live MEMEVAL_MODEL=qwen3.6:30b                     # score a local model
+make memory-eval-live MEMEVAL_PROVIDER=anthropic MEMEVAL_MODEL=claude-haiku-4-5
+make memory-eval-live MEMEVAL_MODEL=qwen3.6:30b MEMEVAL_UPDATE=1    # record the baseline
+```
+
+`loomcycle memory-eval-live` scores the **shipped** extractor prompt against a
+real model, per ability, and gates on two of them:
+
+| Ability | What it measures | Gated |
+|---|---|---|
+| `extraction` | a durable fact stated plainly | reported |
+| `property` | a fact the transcript *implies*, usually through a request — "find me statin alternatives, my legs ache" says the user takes statins and has muscle pain | reported |
+| `temporal` | a time qualifier that is load-bearing; dropping "since March" makes a bounded fact permanent | reported |
+| `update` | a correction is emitted as the new state | **yes** |
+| `abstention` | chatter, credentials, one-off answers and fabrications are refused | **yes** |
+
+The asymmetry is deliberate: a missed fact costs recall and is retried next
+pass, while a stored secret, a fabricated fact, or a stale fact left standing
+after its correction is a durable error in a store other agents read as ground
+truth. Recall is tracked against the committed baseline
+(`internal/memory/eval/extraction-baseline.json`) so a change is measured
+against a number rather than a memory; the baseline is keyed by
+`(provider, model, effort, prompt digest)`, so editing the extractor prompt
+reads as "no baseline yet" instead of a spurious regression.
+
+It is **not** hermetic — it needs a reachable provider and spends tokens — so
+it is not in `go test ./...` or CI. Run it when you change the extractor's
+prompt, tier, or model, which is exactly what the offline gate is blind to.
+
+**One thing it does that is worth knowing about.** The corpus carries a *canary*
+case whose transcript states one unmissable fact. If the canary comes back
+empty, the command reports a harness fault and **refuses to print any scores**.
+That is because an empty reply is what a model returns both when it correctly
+finds nothing durable *and* when it received no transcript at all — an
+ambiguity that previously produced three confidently wrong conclusions from a
+broken ad-hoc harness before anyone read the actual request. A run whose canary
+trips has no interpretable numbers, so it publishes none, and
+`--update-baseline` refuses to record them.
 
 ## Observability
 

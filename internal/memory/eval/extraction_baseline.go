@@ -1,0 +1,210 @@
+package eval
+
+// The extraction eval's committed baseline.
+//
+// WHY A FILE AND NOT A JUDGEMENT CALL. A score on its own says nothing: "property
+// recall 0.5" is only information next to what it was yesterday. Every tuning
+// session before this one compared against memory — "I think abstention was fine
+// last time" — which is how a regression survives a review. The baseline turns
+// each ability into a number a run can be measured against, and a drop into a
+// gate failure that names the ability and both values.
+//
+// KEYED BY (provider, model, effort, PROMPT DIGEST). The prompt digest is the part
+// that is easy to leave out and expensive to omit: change the extractor prompt and
+// every score legitimately moves, so a baseline that ignored the prompt would
+// either block every prompt change or silently compare across incomparable runs.
+// With the digest in the key, editing the prompt produces "no baseline for this
+// prompt yet" — which is the truth — instead of a spurious regression.
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+	"time"
+)
+
+// BaselineEntry is one measured run's scores.
+type BaselineEntry struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Effort   string `json:"effort,omitempty"`
+	// SystemPromptSHA256 is the extractor prompt these numbers were measured
+	// against. See the file header for why it is part of the key.
+	SystemPromptSHA256 string `json:"system_prompt_sha256"`
+	// MeasuredAt is informational — it tells a reader how stale the number is. It
+	// is NOT part of the key.
+	MeasuredAt string `json:"measured_at,omitempty"`
+	// Recall per ability. Absent = the ability asserts no positive expectations.
+	Recall map[string]float64 `json:"recall,omitempty"`
+	// Violations per ability. Present even at 0, because 0 is the interesting value.
+	Violations map[string]int `json:"violations"`
+}
+
+// Key identifies the run this entry describes.
+func (e BaselineEntry) Key() string {
+	return e.Provider + "|" + e.Model + "|" + e.Effort + "|" + e.SystemPromptSHA256
+}
+
+// Baseline is the committed set of measured runs.
+type Baseline struct {
+	// RecallTolerance is how far recall may fall below the baseline before it
+	// counts as a regression. Non-zero because a live model is not deterministic:
+	// the same model on the same corpus will disagree with itself at the margin,
+	// and a zero-tolerance gate would fail on noise and teach everyone to pass
+	// --no-gate. A drop larger than this is a signal, not jitter.
+	RecallTolerance float64         `json:"recall_tolerance"`
+	Entries         []BaselineEntry `json:"entries"`
+}
+
+// DefaultRecallTolerance is the shipped allowance. One case out of the smallest
+// ability (a single-case ability moves in steps of 1.0, a two-case one in 0.5), so
+// this admits sub-case jitter without admitting a lost case.
+const DefaultRecallTolerance = 0.15
+
+// LoadBaseline reads a baseline file. A MISSING file is not an error — the first
+// run against a new model legitimately has nothing to compare to, and forcing the
+// operator to create an empty file first would just be friction.
+func LoadBaseline(path string) (Baseline, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return Baseline{RecallTolerance: DefaultRecallTolerance}, nil
+	}
+	if err != nil {
+		return Baseline{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	var out Baseline
+	if err := json.Unmarshal(b, &out); err != nil {
+		return Baseline{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if out.RecallTolerance <= 0 {
+		out.RecallTolerance = DefaultRecallTolerance
+	}
+	return out, nil
+}
+
+// EntryFor returns the baseline entry matching a report's exact key.
+func (b Baseline) EntryFor(r ExtractionReport) (BaselineEntry, bool) {
+	want := BaselineEntry{
+		Provider: r.Provider, Model: r.Model, Effort: r.Effort,
+		SystemPromptSHA256: r.SystemPromptSHA256,
+	}.Key()
+	for _, e := range b.Entries {
+		if e.Key() == want {
+			return e, true
+		}
+	}
+	return BaselineEntry{}, false
+}
+
+// Regressions reports every ability that got WORSE than the baseline, beyond
+// tolerance. A run with no matching baseline entry reports nothing: an unmeasured
+// model is not a regression, and pretending otherwise would block the first run
+// against every new candidate.
+//
+// A new violation is ALWAYS a regression regardless of tolerance — tolerance
+// exists for recall jitter, and there is no jitter that turns "stored no secrets"
+// into "stored one".
+func (b Baseline) Regressions(r ExtractionReport) []string {
+	base, ok := b.EntryFor(r)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, s := range r.Abilities {
+		name := string(s.Ability)
+		if was, had := base.Violations[name]; had && s.Violations > was {
+			out = append(out, fmt.Sprintf("%s violations rose %d → %d against the baseline", name, was, s.Violations))
+		}
+		if was, had := base.Recall[name]; had && s.Recall >= 0 && s.Recall < was-b.RecallTolerance {
+			out = append(out, fmt.Sprintf("%s recall fell %.2f → %.2f against the baseline (tolerance %.2f)",
+				name, was, s.Recall, b.RecallTolerance))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// DeltaFor renders an ability's change against the baseline for the report table,
+// or "" when there is nothing to compare.
+func (b Baseline) DeltaFor(r ExtractionReport, s AbilityScore) string {
+	base, ok := b.EntryFor(r)
+	if !ok {
+		return "   (new)"
+	}
+	name := string(s.Ability)
+	if was, had := base.Recall[name]; had && s.Recall >= 0 {
+		d := s.Recall - was
+		switch {
+		case d > 0.001:
+			return fmt.Sprintf("  +%.2f", d)
+		case d < -0.001:
+			return fmt.Sprintf("  %.2f", d)
+		default:
+			return "   ="
+		}
+	}
+	if was, had := base.Violations[name]; had {
+		if s.Violations != was {
+			return fmt.Sprintf("  %+d viol", s.Violations-was)
+		}
+		return "   ="
+	}
+	return ""
+}
+
+// SaveBaselineEntry upserts this report's scores into the baseline at path and
+// writes it back, entries sorted by key so the committed file diffs cleanly.
+//
+// It REFUSES a harness-faulted report. Recording scores from a run whose canary
+// failed would bake "0.0 recall" in as the number to beat, and the next run would
+// then look like an improvement.
+func SaveBaselineEntry(path string, r ExtractionReport) error {
+	if r.HarnessFault != "" {
+		return fmt.Errorf("refusing to record a baseline from a harness-faulted run: %s", r.HarnessFault)
+	}
+	if len(r.Abilities) == 0 {
+		return fmt.Errorf("refusing to record a baseline with no ability scores")
+	}
+	b, err := LoadBaseline(path)
+	if err != nil {
+		return err
+	}
+	entry := BaselineEntry{
+		Provider: r.Provider, Model: r.Model, Effort: r.Effort,
+		SystemPromptSHA256: r.SystemPromptSHA256,
+		MeasuredAt:         time.Now().UTC().Format(time.RFC3339),
+		Recall:             map[string]float64{},
+		Violations:         map[string]int{},
+	}
+	for _, s := range r.Abilities {
+		if s.Recall >= 0 {
+			entry.Recall[string(s.Ability)] = s.Recall
+		}
+		entry.Violations[string(s.Ability)] = s.Violations
+	}
+
+	replaced := false
+	for i := range b.Entries {
+		if b.Entries[i].Key() == entry.Key() {
+			// Preserve nothing from the old entry: a re-measurement replaces it
+			// wholesale, including dropping an ability that no longer scores.
+			b.Entries[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		b.Entries = append(b.Entries, entry)
+	}
+	sort.Slice(b.Entries, func(i, j int) bool { return b.Entries[i].Key() < b.Entries[j].Key() })
+	if b.RecallTolerance <= 0 {
+		b.RecallTolerance = DefaultRecallTolerance
+	}
+
+	out, err := json.MarshalIndent(b, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
+}

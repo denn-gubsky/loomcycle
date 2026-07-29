@@ -455,6 +455,12 @@ func main() {
 			// dataset of (query, expected_recall) tuples — precision@k,
 			// recall@k, duplication_rate. The gating tool for ranker PRs.
 			os.Exit(cli.RunMemoryEval(os.Args[2:], os.Stdout, os.Stderr))
+		case "memory-eval-live":
+			// RFC BL P4a — the memory extraction eval against a REAL model. Scores
+			// the SHIPPED extractor prompt's judgement per ability (extraction,
+			// property, temporal, update, abstention) and gates on updates +
+			// abstention. Not hermetic: it needs a provider and spends tokens.
+			os.Exit(cli.RunMemoryEvalLive(os.Args[2:], os.Stdout, os.Stderr))
 		case "memory-calibrate":
 			// Measures the consolidation similarity bands against the
 			// operator's OWN embedder. Cosine scale is a property of the

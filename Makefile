@@ -20,7 +20,7 @@ PG_PASSWORD  ?= loomcycle
 
 PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABASE)?sslmode=disable
 
-.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock
+.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock memory-eval-live
 
 help:
 	@echo "loomcycle dev targets:"
@@ -30,6 +30,7 @@ help:
 	@echo "  test        — go test ./... (Postgres tests skip without LOOMCYCLE_TEST_PG_DSN)"
 	@echo "  test-pg     — go test ./... with LOOMCYCLE_TEST_PG_DSN set against the local fixture"
 	@echo "  memory-eval-mock — the memory consolidation + retrieval eval gate (offline, no key)"
+	@echo "  memory-eval-live — the memory extraction eval against a REAL model (needs a provider; MEMEVAL_MODEL=…)"
 	@echo "  pg-up       — start an ephemeral Postgres container for the test fixture"
 	@echo "  pg-down     — stop + remove the test fixture container"
 	@echo "  pg-logs     — tail the test fixture container's logs"
@@ -102,6 +103,36 @@ memory-eval-mock:
 	echo "=== memory eval: consolidation telemetry ==="; \
 	go test ./internal/scheduler/ -run 'TestConsolidationTelemetry' -count=1; \
 	echo "=== memory-eval-mock PASSED ==="
+
+# memory-eval-live: the memory extraction eval against a REAL model — the other
+# half of the gate. memory-eval-mock proves the consolidation PIPELINE with a
+# scripted provider; this scores the extractor's JUDGEMENT: given a transcript,
+# does the model write down the right things and refuse the wrong ones.
+#
+# NOT hermetic and NOT part of `test` or CI: it needs a reachable provider and it
+# spends tokens. Run it before/after a change to the extractor prompt, its tier, or
+# its model — which is the change the offline gate is blind to.
+#
+# Scores per ability (extraction / property / temporal / update / abstention) and
+# gates on updates + abstention. --baseline compares against the committed numbers
+# so a run is measured against a number rather than a memory; add MEMEVAL_UPDATE=1
+# to record the result as the new baseline.
+#
+#   make memory-eval-live MEMEVAL_MODEL=qwen3.6:30b
+#   make memory-eval-live MEMEVAL_PROVIDER=anthropic MEMEVAL_MODEL=claude-haiku-4-5
+#   make memory-eval-live MEMEVAL_MODEL=qwen3.6:30b MEMEVAL_UPDATE=1
+MEMEVAL_PROVIDER ?= ollama-local
+MEMEVAL_MODEL    ?=
+MEMEVAL_PRESETS  ?= base,memory
+MEMEVAL_BASELINE ?= internal/memory/eval/extraction-baseline.json
+memory-eval-live:
+	@test -n "$(MEMEVAL_MODEL)" || { \
+	  echo "set MEMEVAL_MODEL — a score is only meaningful against a named model."; \
+	  echo "  e.g. make memory-eval-live MEMEVAL_MODEL=qwen3.6:30b"; exit 2; }
+	LOOMCYCLE_PRESETS=$(MEMEVAL_PRESETS) go run ./cmd/loomcycle memory-eval-live \
+	  --provider $(MEMEVAL_PROVIDER) --model $(MEMEVAL_MODEL) \
+	  --baseline $(MEMEVAL_BASELINE) \
+	  $(if $(MEMEVAL_UPDATE),--update-baseline $(MEMEVAL_BASELINE),)
 
 # runtime-mock: the fast, deterministic runtime suites (live binary, mock
 # provider — no real provider, no API key, no Postgres). Each prints
