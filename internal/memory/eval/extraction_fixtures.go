@@ -175,11 +175,28 @@ func ExtractionFixture() ExtractionCorpus {
 				AllOf: []string{"tab"},
 				Class: "preference",
 			}},
-			Forbid: []Forbidden{{
-				Kind:   ForbiddenDistractor,
-				Why:    "a pleasantry is not a durable fact",
-				Marker: "really helpful",
-			}},
+			Forbid: []Forbidden{
+				{
+					Kind:   ForbiddenDistractor,
+					Why:    "a pleasantry is not a durable fact",
+					Marker: "really helpful",
+				},
+				{
+					// The extractor prompt illustrates the "name your subject" rule with
+					// "Denn prefers Go over Python". A live model lifted that example NAME
+					// into a fact about this transcript, which names nobody — so it
+					// invented an identity out of its own instructions.
+					//
+					// That is worse than an ordinary fabrication: an identity is what other
+					// facts get attached to, and it is sourced from text the operator cannot
+					// see in the transcript. If the prompt's example name ever changes, this
+					// marker changes with it.
+					Kind: ForbiddenAbsent,
+					Why: "no transcript in this corpus names the user — a name here is lifted " +
+						"from the prompt's own example, which is a fabricated identity",
+					Marker: "Denn",
+				},
+			},
 		},
 		{
 			Name:    "stated-constraint",
@@ -197,7 +214,7 @@ func ExtractionFixture() ExtractionCorpus {
 			Forbid: []Forbidden{{
 				Kind:   ForbiddenDistractor,
 				Why:    "a queued pipeline is transient task state, stale the moment it runs",
-				Marker: "still queued",
+				Marker: "queued",
 			}},
 		},
 
@@ -308,13 +325,28 @@ func ExtractionFixture() ExtractionCorpus {
 				{
 					Kind:   ForbiddenDistractor,
 					Why:    "a queued CI job is transient task state, stale the moment it runs",
-					Marker: "still queued",
+					Marker: "queued",
 				},
+				// The BRANCH NAME is deliberately NOT forbidden, though it was at first.
+				// Four independent models all recorded it, and when every model fails one
+				// fixture the fixture is the thing to doubt: "the date feature lives on
+				// branch X" is arguably a durable project fact, unlike a queue position.
+				// A gate that fires on every model carries no signal, and a marker that
+				// encodes the author's opinion rather than a rule is how that happens.
+				//
+				// What IS unambiguous is transient STATUS and transient INTENT, so those
+				// are forbidden instead — and they discriminate: they caught three of the
+				// four models while leaving the one that only named the branch clean.
 				{
 					Kind: ForbiddenDistractor,
-					Why: "a branch name and its test status are working state, not durable facts " +
-						"about the user or the project",
-					Marker: "feature-invoice-dates",
+					Why: "a test result is true until the next commit — recording it as a durable " +
+						"fact means memory asserts a green suite forever",
+					Marker: "pass locally",
+				},
+				{
+					Kind:   ForbiddenDistractor,
+					Why:    "an intention for the next hour is not a durable fact about the user",
+					Marker: "after lunch",
 				},
 			},
 		},
