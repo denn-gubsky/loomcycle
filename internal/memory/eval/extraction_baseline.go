@@ -9,12 +9,15 @@ package eval
 // each ability into a number a run can be measured against, and a drop into a
 // gate failure that names the ability and both values.
 //
-// KEYED BY (provider, model, effort, PROMPT DIGEST). The prompt digest is the part
-// that is easy to leave out and expensive to omit: change the extractor prompt and
-// every score legitimately moves, so a baseline that ignored the prompt would
-// either block every prompt change or silently compare across incomparable runs.
-// With the digest in the key, editing the prompt produces "no baseline for this
-// prompt yet" — which is the truth — instead of a spurious regression.
+// KEYED BY (provider, model, effort, PROMPT DIGEST, CORPUS DIGEST). The two
+// digests are the part that is easy to leave out and expensive to omit: change the
+// extractor prompt, or add a case to the corpus, and every score legitimately
+// moves. A baseline that ignored either would block the change as a regression, or
+// worse, silently compare across incomparable runs. With both in the key, editing
+// a prompt or a fixture produces "no baseline for this yet" — which is the truth.
+//
+// The corpus digest was added after the first live run, when adding a realistic
+// case would have silently invalidated a stored figure with nothing to signal it.
 
 import (
 	"encoding/json"
@@ -32,6 +35,8 @@ type BaselineEntry struct {
 	// SystemPromptSHA256 is the extractor prompt these numbers were measured
 	// against. See the file header for why it is part of the key.
 	SystemPromptSHA256 string `json:"system_prompt_sha256"`
+	// CorpusSHA256 is the fixture set these numbers were measured against.
+	CorpusSHA256 string `json:"corpus_sha256"`
 	// MeasuredAt is informational — it tells a reader how stale the number is. It
 	// is NOT part of the key.
 	MeasuredAt string `json:"measured_at,omitempty"`
@@ -43,7 +48,7 @@ type BaselineEntry struct {
 
 // Key identifies the run this entry describes.
 func (e BaselineEntry) Key() string {
-	return e.Provider + "|" + e.Model + "|" + e.Effort + "|" + e.SystemPromptSHA256
+	return e.Provider + "|" + e.Model + "|" + e.Effort + "|" + e.SystemPromptSHA256 + "|" + e.CorpusSHA256
 }
 
 // Baseline is the committed set of measured runs.
@@ -87,7 +92,7 @@ func LoadBaseline(path string) (Baseline, error) {
 func (b Baseline) EntryFor(r ExtractionReport) (BaselineEntry, bool) {
 	want := BaselineEntry{
 		Provider: r.Provider, Model: r.Model, Effort: r.Effort,
-		SystemPromptSHA256: r.SystemPromptSHA256,
+		SystemPromptSHA256: r.SystemPromptSHA256, CorpusSHA256: r.CorpusSHA256,
 	}.Key()
 	for _, e := range b.Entries {
 		if e.Key() == want {
@@ -173,6 +178,7 @@ func SaveBaselineEntry(path string, r ExtractionReport) error {
 	entry := BaselineEntry{
 		Provider: r.Provider, Model: r.Model, Effort: r.Effort,
 		SystemPromptSHA256: r.SystemPromptSHA256,
+		CorpusSHA256:       r.CorpusSHA256,
 		MeasuredAt:         time.Now().UTC().Format(time.RFC3339),
 		Recall:             map[string]float64{},
 		Violations:         map[string]int{},
