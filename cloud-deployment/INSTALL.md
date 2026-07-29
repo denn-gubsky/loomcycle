@@ -53,7 +53,7 @@ Then, on the host, create the runtime sub-directories + set ownership (`-t` give
 
 ```bash
 ssh -t "$HOST" "cd '$DEPLOY' && \
-  mkdir -p data config work pgdata ts-state searxng web retention-exports && \
+  mkdir -p data config work pgdata ts-state searxng web retention-exports pinchtab-data && \
   sudo chown -R 65532:65532 data work retention-exports"
 ```
 
@@ -158,6 +158,7 @@ SANDBOX_AUTH_TOKEN=REPLACE_ME                # openssl rand -hex 32 (shared with
 TS_AUTHKEY=tskey-auth-REPLACE_ME             # Phase 3 (reusable, tagged)
 CLOUDFLARE_TUNNEL_TOKEN=REPLACE_ME           # Phase 4
 SEARXNG_SECRET=REPLACE_ME                    # openssl rand -hex 32
+PINCHTAB_TOKEN=REPLACE_ME                    # openssl rand -hex 32 (dev/sandbox headless browser)
 # ── provider keys — at least one your tiers route to ──
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
@@ -171,6 +172,13 @@ Notes:
   NOT mint a dedicated `substrate:admin` token for it — that disables the
   `LOOMCYCLE_AUTH_TOKEN` login (no-lockout gate).
 - The DSN host is **`postgres`** (the compose service) — don't change it.
+- **Headless browser (dev/sandbox):** the `pinchtab` sidecar gives the dev agent
+  `mcp__browser__*` tools. PinchTab's MCP is stdio-only, so loomcycle uses a derived
+  image (`loomcycle.Dockerfile`) that bakes in the pinchtab MCP client — `make up`
+  therefore BUILDS the loomcycle image (first run is slower; needs Docker Hub
+  access). The sidecar is internal-only (no published port), and PinchTab keeps
+  browsing **local-only** until you widen its domain allowlist (IDPI) — to test
+  external sites or your own deployment, follow the pinchtab security guide.
 
 ---
 
