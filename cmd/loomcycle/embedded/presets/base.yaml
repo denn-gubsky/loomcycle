@@ -24,9 +24,24 @@ models:
   # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
   cloud-kimi: { provider: ollama, model: kimi-k2.6 }
   # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
-  local-small:  { provider: ollama-local, model: gemma4:9b }        # low tier
-  local-medium: { provider: ollama-local, model: qwen3.6:27b }      # middle tier
-  local-coder:  { provider: ollama-local, model: qwen3-coder-next } # high tier (coding)
+  # Matched as GLOBS against what your Ollama actually serves, not pinned tags.
+  # A pinned tag names one specific pull ("qwen3.6:27b"), and a model that the
+  # provider does not list is SKIPPED as a tier candidate — silently, because a
+  # skipped candidate is indistinguishable from one that was never reachable. So
+  # a preset naming a tag you did not pull does not fall back to your local model,
+  # it walks straight past ollama-local to a paid provider, and the cost floor the
+  # provider_priority above exists to enforce quietly stops applying.
+  #
+  # Measured on a real deployment: the box served qwen3.6:latest, gemma4:latest
+  # and qwen3-coder:latest, and ALL THREE aliases below named tags it did not
+  # have — so every local tier was dead and every `tier: middle` run was billed
+  # to a cloud provider.
+  #
+  # A glob resolves to the newest LISTED match, so it fits whichever tag you
+  # pulled (`:latest`, `:27b`, a date-stamped build) without you editing this file.
+  local-small:  { provider: ollama-local, model_pattern: "gemma4*" }      # low tier
+  local-medium: { provider: ollama-local, model_pattern: "qwen3.6*" }     # middle tier
+  local-coder:  { provider: ollama-local, model_pattern: "qwen3-coder*" } # high tier (coding)
 
 # Cost-floor-first: try the workstation GPU, then DeepSeek, then OpenAI, then
 # Anthropic; hosted ollama.com last (opt-in via OLLAMA_API_KEY).
