@@ -54,7 +54,7 @@ const documentInputSchema = `{
 	"type": "object",
 	"properties": {
 		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","get_chunk","update_chunk","delete_chunk","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
-		"scope":       {"type": "string", "enum": ["agent","user"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run). tenant scope is not yet supported."},
+		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. Each requires the operator to grant that scope."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
 		"title":       {"type": "string"},
@@ -253,9 +253,22 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 		}
 		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "user", ScopeID: uid}, store.MemoryScopeUser, nil
 	case "tenant":
-		return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=tenant is not yet supported (SQL Memory has no tenant scope); use agent or user")
+		// The two planes take DIFFERENT scope ids for the same logical scope, and
+		// the asymmetry is load-bearing rather than an oversight:
+		//
+		//   sqlmem  ScopeID = the tenant — pgScopeNames hashes
+		//           sha256(tenant \x1f scope \x1f scope_id) into a schema + LOGIN
+		//           role name and REJECTS an empty component.
+		//   Memory  scope_id = ""       — the tenant_id column already carries the
+		//           identity, matching global's convention and the Path tree's
+		//           tenant dirent.
+		//
+		// A tenant document is readable AND writable by every user and agent in the
+		// tenant, so it is reachable only when the operator lists `tenant` in the
+		// agent's sql_scopes (structure) and memory_scopes (chunk bodies).
+		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "tenant", ScopeID: sqlTenant}, store.MemoryScopeTenant, nil
 	default:
-		return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: unknown scope %q (agent | user)", requested)
+		return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: unknown scope %q (agent | user | tenant)", requested)
 	}
 }
 

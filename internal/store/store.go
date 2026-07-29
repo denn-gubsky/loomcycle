@@ -2740,6 +2740,26 @@ const (
 	// cursor regardless of agent or user. Reserved for cross-tenant
 	// fan-out streams the operator has reviewed.
 	MemoryScopeGlobal MemoryScope = "global"
+	// MemoryScopeTenant — one keyspace per TENANT, shared by every user
+	// and agent inside it (scope_id = ""; the tenant_id column already
+	// carries the identity, exactly as for global).
+	//
+	// Distinct from global in the axis it shares along: global is one
+	// keyspace across ALL tenants, this is one per tenant. A row here is
+	// (tenant_id='t1', scope='tenant', scope_id=''), which cannot collide
+	// with a global row (tenant_id='', scope='global') under the
+	// (tenant_id, scope, scope_id, key) primary key.
+	//
+	// It is SHARED-WRITE, which is the poisoning surface: anything an
+	// agent stores here is read by every other agent and user in the
+	// tenant. It is therefore default-deny and reachable only when the
+	// operator lists `tenant` in an agent's memory_scopes — the same
+	// per-agent allowlist that gates the other scopes, deliberately not a
+	// second mechanism.
+	//
+	// No DDL was needed to add it: `scope` is a plain text column with no
+	// CHECK constraint, and the tenant axis arrived with migration 0059.
+	MemoryScopeTenant MemoryScope = "tenant"
 )
 
 // MemoryEntry is one row in the memory table. ExpiresAt is zero when

@@ -160,7 +160,7 @@ type Connector interface {
 
 	// Document — RFC AK chunked-graph documents. Op-discriminated (13 ops:
 	// document/chunk lifecycle, edges, query_chunks, type defs). Scope-aware
-	// (agent / user; tenant deferred) and tenant-isolated via the SQL Memory
+	// (agent / user / tenant) and tenant-isolated via the SQL Memory
 	// scope key; gated by the agent's tools. Requires SQL Memory.
 	// Reachable via POST /v1/_document, the gRPC Document RPC, the LoomCycle
 	// MCP meta-tool `document`, and the TS/Python adapters' client.document()

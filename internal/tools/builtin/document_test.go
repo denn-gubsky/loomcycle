@@ -258,10 +258,63 @@ func TestDocument_ScopeTenantIsolation(t *testing.T) {
 	}
 }
 
-func TestDocument_TenantScopeRefused(t *testing.T) {
+// TestDocument_TenantScopeRoundTrips replaces TestDocument_TenantScopeRefused:
+// scope=tenant is real as of RFC BL P4b.
+//
+// A document is split across two planes — structure in SQL Memory, chunk BODIES
+// in k/v Memory — and the two take DIFFERENT scope ids for the tenant scope (the
+// tenant vs ""), each for its own reason. This asserts the round trip through both
+// halves, because a mismatch between them shows up as a document whose structure
+// exists and whose text is empty, which is exactly the failure this store has
+// already had once.
+func TestDocument_TenantScopeRoundTrips(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
-	if _, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"x"}`); !r.IsError || !strings.Contains(r.Text, "not yet supported") {
-		t.Errorf("scope=tenant should be refused; got %q", r.Text)
+
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Tenant handbook"}`)
+	if r.IsError {
+		t.Fatalf("create_document scope=tenant: %s", r.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	rootID, _ := out["root_chunk_id"].(string)
+	if docID == "" {
+		t.Fatalf("no document id in %v", out)
+	}
+
+	// A body write + read exercises the Memory half under the tenant partition.
+	if rootID != "" {
+		if _, r := docExec(t, d, ctx, `{"op":"update_chunk","scope":"tenant","id":"`+rootID+`","body":"shared reference text","revision":1}`); r.IsError {
+			t.Fatalf("update_chunk scope=tenant: %s", r.Text)
+		}
+		got, r := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+rootID+`"}`)
+		if r.IsError {
+			t.Fatalf("get_chunk scope=tenant: %s", r.Text)
+		}
+		if body, _ := got["body"].(string); !strings.Contains(body, "shared reference text") {
+			t.Errorf("the chunk body did not survive the tenant round trip: %q — the two planes' scope ids disagree", body)
+		}
+	}
+
+	// And it must be visible via the tenant scope, not the user scope.
+	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"tenant","id":"`+docID+`"}`); r.IsError {
+		t.Errorf("get_document scope=tenant: %s", r.Text)
+	}
+	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+docID+`"}`); !r.IsError {
+		t.Error("a tenant document must NOT be reachable through the user scope — the scopes would not be isolated")
+	}
+}
+
+// TestDocument_UnknownScopeRefused: the closed set still refuses anything outside
+// it, and the message names what IS valid.
+func TestDocument_UnknownScopeRefused(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	_, r := docExec(t, d, ctx, `{"op":"create_document","scope":"session","title":"x"}`)
+	if !r.IsError {
+		t.Fatal("an unknown scope must be refused")
+	}
+	for _, want := range []string{"agent", "user", "tenant"} {
+		if !strings.Contains(r.Text, want) {
+			t.Errorf("the refusal should list %q as valid: %q", want, r.Text)
+		}
 	}
 }
 

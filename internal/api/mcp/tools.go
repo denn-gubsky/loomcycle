@@ -281,7 +281,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "document",
-			Description: "Document tool ops (create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks, define_type/list_types). RFC AK chunked-graph documents — each chunk is a first-class unit (UUID, hierarchy, type, fields, edges, Markdown body). Requires SQL Memory. Scope agent/user (tenant deferred); tenant-isolated. Pass-through.",
+			Description: "Document tool ops (create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks, define_type/list_types). RFC AK chunked-graph documents — each chunk is a first-class unit (UUID, hierarchy, type, fields, edges, Markdown body). Requires SQL Memory. Scope agent/user/tenant (tenant = shared across the whole tenant); tenant-isolated. Pass-through.",
 			InputSchema: builtinSchema("document"),
 		},
 		{
