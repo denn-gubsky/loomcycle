@@ -821,3 +821,52 @@ func TestCorpus_HasABuriedPropertyCase(t *testing.T) {
 		}
 	}
 }
+
+// TestProperty_SymptomMarkerAcceptsEitherFaithfulPhrasing is the regression for a
+// FALSE MISS a live run produced.
+//
+// The buried transcript states "my legs ache constantly" and asks for "less muscle
+// pain" — two faithful ways to name the same symptom. The model wrote "The user is
+// taking atorvastatin and experiences constant leg aches", which is the more
+// faithful reading of the statement, and the expectation scored it a miss because
+// it demanded the literal token "muscle".
+//
+// That is the marker encoding the author's expected PHRASING instead of the
+// property under test — the same class of error as scoring a recording of the
+// request as a capture, and it inflates a failure count on the one ability this
+// eval exists to measure. Both phrasings must pass; a fact with no symptom at all
+// must still fail.
+func TestProperty_SymptomMarkerAcceptsEitherFaithfulPhrasing(t *testing.T) {
+	for _, name := range []string{"request-implies-condition", "request-implies-condition-buried"} {
+		var cs ExtractionCase
+		for _, c := range ExtractionFixture().Cases {
+			if c.Name == name {
+				cs = c
+			}
+		}
+		if cs.Name == "" {
+			t.Fatalf("case %q missing from the corpus", name)
+		}
+
+		for _, phrasing := range []string{
+			"The user is taking atorvastatin and experiences constant leg aches.",
+			"Takes atorvastatin and has constant muscle pain in the legs.",
+			"On a statin; reports persistent soreness in the legs.",
+		} {
+			res := CaseResult{Wanted: len(cs.Want)}
+			scoreCase(&res, cs, []ExtractedFact{{Text: phrasing, Class: "fact"}})
+			if res.Captured != res.Wanted {
+				t.Errorf("%s: %q scored %d/%d — a faithful phrasing must not be a miss (%v)",
+					name, phrasing, res.Captured, res.Wanted, res.Misses)
+			}
+		}
+
+		// And the marker must still have teeth: the medication with NO symptom
+		// satisfies only the first expectation.
+		res := CaseResult{Wanted: len(cs.Want)}
+		scoreCase(&res, cs, []ExtractedFact{{Text: "Takes atorvastatin.", Class: "fact"}})
+		if res.Captured == res.Wanted {
+			t.Errorf("%s: a fact naming only the medication must not satisfy the symptom expectation", name)
+		}
+	}
+}
