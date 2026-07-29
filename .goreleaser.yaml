@@ -225,6 +225,49 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
     goarch: arm64
 
+  # loomcycle-browser — the distroless loomcycle image + the PinchTab MCP client
+  # binary, so the runtime can spawn `pinchtab … mcp` (stdio) against a pinchtab
+  # server sidecar and expose mcp__browser__* to agents. Reuses the same pre-built
+  # binary (ids: [loomcycle]); Dockerfile.browser adds only the ~28MB client
+  # (Chromium stays in the sidecar), so BOTH arches are a trivial COPY — no
+  # QEMU-slow layers like the toolbox. See docs/SANDBOX.md.
+  - id: loomcycle-browser-amd64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-browser:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-browser:latest-amd64"
+    dockerfile: Dockerfile.browser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=loomcycle-browser"
+      - "--label=org.opencontainers.image.description=loomcycle + the PinchTab MCP client for headless-browser (mcp__browser__*) agents"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: amd64
+  - id: loomcycle-browser-arm64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-browser:{{ .Version }}-arm64"
+      - "denngubsky/loomcycle-browser:latest-arm64"
+    dockerfile: Dockerfile.browser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=loomcycle-browser"
+      - "--label=org.opencontainers.image.description=loomcycle + the PinchTab MCP client for headless-browser (mcp__browser__*) agents"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: arm64
+
 # docker_manifests joins per-arch images into one multi-arch manifest
 # the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
 # regardless of their host arch.
@@ -245,3 +288,11 @@ docker_manifests:
     image_templates:
       - "denngubsky/loomcycle-toolbox:latest-amd64"
       - "denngubsky/loomcycle-toolbox:latest-arm64"
+  - name_template: "denngubsky/loomcycle-browser:{{ .Version }}"
+    image_templates:
+      - "denngubsky/loomcycle-browser:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-browser:{{ .Version }}-arm64"
+  - name_template: "denngubsky/loomcycle-browser:latest"
+    image_templates:
+      - "denngubsky/loomcycle-browser:latest-amd64"
+      - "denngubsky/loomcycle-browser:latest-arm64"
