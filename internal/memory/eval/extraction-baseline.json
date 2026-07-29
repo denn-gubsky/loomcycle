@@ -1,4 +1,26 @@
 {
   "recall_tolerance": 0.15,
-  "entries": []
+  "entries": [
+    {
+      "provider": "ollama-local",
+      "model": "qwen3.6:latest",
+      "effort": "medium",
+      "system_prompt_sha256": "7104816985db9c7ca6368b4adde74f140aa5255bd1176124b2fbd8e89dbf525b",
+      "corpus_sha256": "37f893a438c6c047b0eb2604a6ca5795479ab3a3c1c552069e052c8e0c0b3655",
+      "measured_at": "2026-07-29T15:34:03Z",
+      "recall": {
+        "extraction": 1,
+        "property": 1,
+        "temporal": 1,
+        "update": 1
+      },
+      "violations": {
+        "abstention": 0,
+        "extraction": 0,
+        "property": 0,
+        "temporal": 0,
+        "update": 0
+      }
+    }
+  ]
 }
