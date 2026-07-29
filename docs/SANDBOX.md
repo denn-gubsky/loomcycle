@@ -99,6 +99,27 @@ workspace root into the sidecar at the **same host path** so the dir the sidecar
 creates is the dir the host engine bind-mounts. Full detail:
 [`../deploy/builder/README.md`](../deploy/builder/README.md#durable-workspaces-persistent-work).
 
+### Authenticated git / gh (private repos)
+
+By default a session has no credentials, so only **public** repos clone. To do
+real dev — clone/push a **private** repo, use `gh` — inject a GitHub token:
+
+1. Enable env injection on the sidecar: `SANDBOX_ALLOW_ENV_INJECTION=1`.
+2. Store the token as a per-tenant/user credential named **`sandbox_github`**
+   (`credentialdef op=create scope=user name=sandbox_github value=<token>`) — a
+   PAT/fine-grained token, or a GitHub App token (see below).
+3. The `sandbox` bundle already forwards it: `mcp_servers.sandbox.headers` carries
+   `X-Loom-Sandbox-Env-Gh-Token: "$cred:sandbox_github"`, which loomcycle resolves
+   **server-side** (never in the model) and the sidecar maps to `GH_TOKEN` in the
+   session env. In-session, `dev/sandbox` runs `gh auth setup-git` so `git` over
+   HTTPS uses it too.
+
+Unresolved (no such credential, or injection disabled) → the header is dropped →
+git runs unauthenticated, public repos still work. Because the token lives in the
+session env with egress on, prefer a **short-lived, repo-scoped GitHub App token**
+over a broad PAT. Full mechanism + caps:
+[`../deploy/builder/README.md`](../deploy/builder/README.md#env-injection-credentials-into-a-session).
+
 ## Delegating from other agents
 
 An agent doesn't hold the `mcp__sandbox__*` tools directly (by design — tool ceilings

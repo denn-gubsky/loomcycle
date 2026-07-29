@@ -9,6 +9,9 @@
 #   - LOOMCYCLE_SANDBOX_TOKEN set to the SAME shared secret as the sidecar's
 #     SANDBOX_AUTH_TOKEN (the mcp_servers header below consumes it).
 #   - a `low` tier — select `base` alongside, or supply your own.
+#   - (optional) authenticated git/gh: set SANDBOX_ALLOW_ENV_INJECTION=1 on the
+#     sidecar and store a `sandbox_github` credential (a GitHub token) via
+#     `credentialdef op=create` — it is injected into the session as GH_TOKEN.
 # Without the sidecar the mcp__sandbox__* tools are registered-but-unreachable
 # (the MCP pool retries lazily); nothing else in the bundle is affected.
 #
@@ -61,6 +64,9 @@ agents:
         dependencies) — this is a networked dev sandbox. Use network:"none" only for
         purely offline compute. (If the operator hasn't enabled egress the session
         silently falls back to no network.)
+      - For git/gh, run `gh auth setup-git` once at session start: a GitHub token
+        (GH_TOKEN) is injected when the operator configured one, letting you clone
+        and push PRIVATE repos over HTTPS. Never paste a token yourself.
       - Resource limits (cpu/mem/pids/tmpfs) are capped by the operator; ask for less
         when a task is small, never more than you need.
       - If the sandbox tools are unavailable, the builder sidecar isn't deployed —
@@ -102,6 +108,16 @@ skills:
         then re-run "go build ./... && go test ./..."
       - sandbox_read {session_id, path:"bin/app"} to pull the built binary
       - sandbox_close {session_id}
+
+      ## Git / GitHub (authenticated)
+      When the operator configured a GitHub token it is injected into the session as
+      GH_TOKEN. To use it for git over HTTPS, run this ONCE per session first:
+        sandbox_exec {session_id, command:"gh auth setup-git && git config --global user.name loomcycle && git config --global user.email loomcycle@users.noreply.github.com"}
+      (gh already reads GH_TOKEN; `gh auth setup-git` makes git use it too.) Then
+      clone/push private repos over HTTPS:
+        sandbox_exec {session_id, command:"git clone https://github.com/OWNER/PRIVATE ."}
+      If `gh auth status` reports no token, the operator hasn't configured one — only
+      public repos will clone. Never paste a token yourself; tell the human.
 
       ## Rules
       - Reuse ONE session for a task — don't open a new one per command (you'd lose the
@@ -213,3 +229,11 @@ mcp_servers:
       # run-liveness GC + sandbox_close_run (empty when the run carries none).
       X-Loom-Root-Run: "${run.root_run_id}"
       X-Loom-Tenant: "${run.tenant_id}"
+      # A GitHub token for authenticated git/gh inside the session, resolved from
+      # the per-tenant/user CredentialDef `sandbox_github` (store a PAT/fine-grained
+      # token, or a GitHub App token). The sidecar maps this header to GH_TOKEN in
+      # the session env; the value is resolved server-side so it never reaches the
+      # model. Unresolved -> the header is dropped -> git runs unauthenticated
+      # (public repos still clone). Requires SANDBOX_ALLOW_ENV_INJECTION=1 on the
+      # sidecar.
+      X-Loom-Sandbox-Env-Gh-Token: "$cred:sandbox_github"

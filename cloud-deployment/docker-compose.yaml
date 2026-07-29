@@ -106,6 +106,7 @@ services:
       SANDBOX_MAX_CPUS: "2"
       SANDBOX_MAX_MEM_MB: "2048"
       SANDBOX_ALLOW_EGRESS: "1"          # permit network:"egress" sessions (git clone / fetch deps)
+      SANDBOX_ALLOW_ENV_INJECTION: "1"   # permit X-Loom-Sandbox-Env-* -> session env (git/gh token)
       SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}   # SAME secret loomcycle presents
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
