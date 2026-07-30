@@ -312,9 +312,23 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	// grant (own-scope, tenant-confined), consistent with the open scope here.
 	// It does NOT get the origin=consolidator provenance stamp — that requires an
 	// actual run and this plane has no run id (see builtin.provenanceForSet).
+	// `tenant` joins the list to match the MCP operator plane, which got it when
+	// tenant scope shipped while this plane was missed. Not a widening: `global` is
+	// already here and is strictly broader, and the tenant itself comes from the
+	// principal (dispatchSubstrate's RunIdentity), never the wire. Without it the
+	// Web UI could SEE a tenant document in the Path tree and not open it — which is
+	// how the omission surfaced.
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "global"},
+		AllowedScopes: []string{"agent", "user", "tenant", "global"},
 		Consolidation: true,
+	})
+	// SQL Memory: same omission, one layer down. A tenant Document needs BOTH grants
+	// (structure in SQL Memory, chunk bodies in Memory), so stamping only the memory
+	// half above would still refuse. `global` is deliberately absent — SQL Memory has
+	// no global tier, and listing a scope the engine cannot create would turn a clear
+	// refusal into a confusing provisioning error.
+	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
+		AllowedScopes: []string{"agent", "user", "tenant"},
 	})
 	// Channel: "*" wildcard matches every channel name.
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
