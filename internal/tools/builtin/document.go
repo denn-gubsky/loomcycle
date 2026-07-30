@@ -53,7 +53,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -66,6 +66,12 @@ const documentInputSchema = `{
 		"direction":   {"type": "string", "enum": ["up","down"], "description": "reorder_chunk: move the chunk up or down within its current level."},
 		"type":        {"type": "string", "description": "Optional supertag-like chunk type."},
 		"body":        {"type": "string", "description": "Markdown body."},
+		"seed_ids":  {"type": "array", "items": {"type": "string"}, "description": "graph_recall: chunk ids to start from. Use this to hand in results you already found some other way (a Memory search, a previous recall) and follow the graph out from them."},
+		"query":     {"type": "string", "description": "graph_recall: find starting chunks whose title matches this text. Use seed_ids instead when you already know where to start."},
+		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. 0 = the starting chunks only, 1 = their neighbours (default), 2 = the maximum."},
+		"as_of":     {"type": "integer", "description": "graph_recall: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
+		"include_retired": {"type": "boolean", "description": "graph_recall: also return facts that have been superseded. Off by default, so you get only what is currently true."},
+		"limit":     {"type": "integer", "description": "graph_recall: maximum chunks returned (default 50)."},
 		"natural_key": {"type": "string", "description": "upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
 		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Defaults to now. Distinct from when it was recorded."},
@@ -135,6 +141,13 @@ type docInput struct {
 	Confidence *float64 `json:"confidence"`
 	// Class is 'derived' | 'evidential' — the retention-exemption signal.
 	Class string `json:"class"`
+
+	// graph_recall inputs.
+	SeedIDs        []string `json:"seed_ids"`
+	Query          string   `json:"query"`
+	Hops           *int     `json:"hops"`
+	AsOf           *int64   `json:"as_of"`
+	IncludeRetired bool     `json:"include_retired"`
 	// MediaType/Data/Filename carry an image asset for set_asset (RFC BO). Data
 	// is standard base64 (no data: prefix); it is decoded to raw bytes and stored
 	// in the chunk_assets BYTEA/BLOB table.
@@ -274,6 +287,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.upsertChunk(ctx, key, mscope, in)
 	case "supersede_chunk":
 		return d.supersedeChunk(ctx, key, in)
+	case "graph_recall":
+		return d.graphRecall(ctx, key, in)
 	case "link_chunks":
 		return d.linkChunks(ctx, key, in)
 	case "unlink_chunks":
