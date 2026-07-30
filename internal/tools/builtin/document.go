@@ -189,6 +189,15 @@ var docSchemaDDL = []string{
 	// the DDL would let a scope exist in two shapes and force every later read to
 	// ask which one it got; one empty table per scope is the cheaper answer.
 	//
+	// `confidence` is DOUBLE PRECISION, not REAL, and the difference is not
+	// cosmetic: postgres REAL is 4-byte float4, so a confidence written as 0.9 read
+	// back as 0.8999999761581421 there while sqlite (whose REAL is always 8-byte)
+	// returned 0.9. The two tiers disagreed on a stored value, which is how a shared
+	// contract quietly stops being one — and a `WHERE confidence >= 0.9` filter would
+	// have excluded a row written as exactly 0.9 on postgres only. sqlite gives
+	// DOUBLE PRECISION the same REAL affinity, so one spelling serves both.
+	// migrateConfidencePrecision widens the column on scopes created before this.
+	//
 	// TWO timelines, which is the whole point:
 	//   valid_at / invalid_at    — when the fact was true IN THE WORLD
 	//   created_at / expired_at  — when the SYSTEM learned and retired it
@@ -211,7 +220,7 @@ var docSchemaDDL = []string{
 		chunk_id TEXT PRIMARY KEY,
 		valid_at BIGINT, invalid_at BIGINT,
 		created_at BIGINT, expired_at BIGINT,
-		class TEXT, origin TEXT, confidence REAL,
+		class TEXT, origin TEXT, confidence DOUBLE PRECISION,
 		session_id TEXT, run_id TEXT, event_seq BIGINT,
 		natural_key TEXT)`,
 	// UNIQUE per SCOPE, not per document: each scope owns its own database (a
@@ -421,7 +430,44 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if _, err := d.SqlMem.Exec(ctx, key, assetDDL, nil, 0); err != nil {
 		return err
 	}
-	return nil
+	return d.migrateConfidencePrecision(ctx, key)
+}
+
+// migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
+// float4 to float8 on a scope provisioned before the column was declared DOUBLE
+// PRECISION.
+//
+// Postgres-only: sqlite's REAL is already 8-byte, so its rows never lost precision,
+// and sqlite cannot ALTER a column type at all. A `CREATE TABLE IF NOT EXISTS`
+// silently leaves an existing table alone, so without this a scope created in the
+// window where the column was REAL keeps float4 forever — and "some scopes are
+// float4" is exactly the two-shapes problem the sidecar's own comment argues against
+// above.
+//
+// It CHECKS before it alters rather than running an unconditional ALTER TYPE. The
+// unconditional form takes an ACCESS EXCLUSIVE lock and can rewrite the table, and
+// ensureSchema runs on every Document op — so the guard is what keeps this from
+// being a lock on the hot path. The catalog read is one round trip among the ~9 DDL
+// statements already issued here.
+func (d *Document) migrateConfidencePrecision(ctx context.Context, key sqlmem.ScopeKey) error {
+	if d.SqlMem.Tier() != "postgres" {
+		return nil
+	}
+	res, err := d.query(ctx, key,
+		`SELECT data_type FROM information_schema.columns
+		  WHERE table_schema = current_schema()
+		    AND table_name = 'chunk_memory_meta' AND column_name = 'confidence'`)
+	if err != nil || len(res.Rows) == 0 {
+		// A missing row means the table is not there yet, which the DDL above just
+		// handled; either way this is best-effort widening, not a correctness gate.
+		return err
+	}
+	if !strings.EqualFold(asStr(res.Rows[0][0]), "real") {
+		return nil // already double precision
+	}
+	_, err = d.SqlMem.Exec(ctx, key,
+		`ALTER TABLE chunk_memory_meta ALTER COLUMN confidence TYPE DOUBLE PRECISION`, nil, 0)
+	return err
 }
 
 // --- chunk body (Memory) helpers ---
