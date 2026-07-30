@@ -131,7 +131,13 @@ jobs:
           go test -count=1 -race ./internal/sqlmem/...
           # The {"$embed"} round-trip lives in the Memory tool package; run the
           # vector tests there too (they skip without the aux DSN).
-          go test -count=1 -run 'TestEmbedDirective|TestEncodePgvector|TestResolveEmbedArgs|TestMemorySQL_EmbedDirective|TestDocument_Postgres' ./internal/tools/builtin/...
+          #
+          # This filter is NOT optional bookkeeping: a postgres-tier test absent
+          # from it never runs in CI at all, because the step above owns the aux DB
+          # and `go test ./...` cannot run both packages against it concurrently.
+          # Add every new postgres-tier test in this package here, or it is
+          # decoration rather than a gate.
+          go test -count=1 -run 'TestEmbedDirective|TestEncodePgvector|TestResolveEmbedArgs|TestMemorySQL_EmbedDirective|TestDocument_Postgres|TestSidecar_PostgresTierParity' ./internal/tools/builtin/...
 
   runtime-codejs:
     name: Runtime suites (code-js)
