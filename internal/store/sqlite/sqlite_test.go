@@ -927,3 +927,92 @@ func BenchmarkConcurrentRuns(b *testing.B) {
 		_ = s.Close()
 	}
 }
+
+// TestMigrate_ReHomesTenantDirents covers the data repair for tenant-scope dirents
+// written at the SQL-Memory scope id instead of the dirent plane's empty one.
+//
+// Setup writes the three states an upgraded database can be in — a stale tenant row
+// to move, a stale row whose destination is already taken, and a correct row of each
+// other scope — then re-opens the store so migrate() runs, because the repair has to
+// be safe on a database that already holds a mix.
+func TestMigrate_ReHomesTenantDirents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dirents.db")
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	ins := func(tenant, scope, scopeID, parent, name string) {
+		t.Helper()
+		if _, err := s1.db.Exec(
+			`INSERT INTO dirents (tenant_id, scope, scope_id, parent_path, name, kind, resource_ref, created_at, updated_at)
+			 VALUES (?,?,?,?,?, 'document', '{}', 1, 1)`,
+			tenant, scope, scopeID, parent, name); err != nil {
+			t.Fatalf("insert %s/%s/%s%s: %v", scope, scopeID, parent, name, err)
+		}
+	}
+	// Stale: written by the Document tool at its SQL-Memory tenant scope id.
+	ins("acme", "tenant", "acme", "/memory/", "ontology")
+	// Stale AND colliding: a correct '' row already occupies the coordinate.
+	ins("acme", "tenant", "", "/", "notes")
+	ins("acme", "tenant", "acme", "/", "notes")
+	// Other scopes: their two planes already agree, so these must not move.
+	ins("acme", "user", "alice", "/", "diary")
+	ins("acme", "agent", "curator", "/", "scratch")
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := Open(path) // runs migrate()
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	defer s2.Close()
+
+	scopeIDOf := func(scope, parent, name string) []string {
+		t.Helper()
+		rows, err := s2.db.Query(
+			`SELECT scope_id FROM dirents WHERE scope = ? AND parent_path = ? AND name = ? ORDER BY scope_id`,
+			scope, parent, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, v)
+		}
+		return out
+	}
+
+	// Moved onto the coordinate the Path tool reads.
+	if got := scopeIDOf("tenant", "/memory/", "ontology"); len(got) != 1 || got[0] != "" {
+		t.Errorf("the stale tenant dirent was not re-homed: scope_ids = %q", got)
+	}
+	// The collision is left alone rather than merged — both rows survive, and the
+	// reachable '' one is unchanged.
+	if got := scopeIDOf("tenant", "/", "notes"); len(got) != 2 || got[0] != "" {
+		t.Errorf("a colliding row should be skipped, not merged or dropped: scope_ids = %q", got)
+	}
+	// Scopes whose planes already agree are untouched: moving these would break the
+	// rows that were correct all along.
+	if got := scopeIDOf("user", "/", "diary"); len(got) != 1 || got[0] != "alice" {
+		t.Errorf("user dirent should be untouched, got %q", got)
+	}
+	if got := scopeIDOf("agent", "/", "scratch"); len(got) != 1 || got[0] != "curator" {
+		t.Errorf("agent dirent should be untouched, got %q", got)
+	}
+
+	// Idempotent: a third boot changes nothing.
+	if err := s2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s3, err := Open(path)
+	if err != nil {
+		t.Fatalf("third Open: %v", err)
+	}
+	defer s3.Close()
+}

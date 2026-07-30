@@ -1100,6 +1100,28 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate backfill runs.tenant_id: %w", err)
 	}
 
+	// Re-home tenant-scope dirents onto the dirent plane's own scope-id convention.
+	// Mirrors postgres migration 0064.
+	//
+	// The Document tool wrote a dirent using its SQL-Memory scope key, and SQL
+	// Memory requires a non-empty scope id (it becomes half of a schema name and a
+	// database login role), so tenant scope carried the tenant there. The dirent
+	// plane does the opposite — scope_id is empty for tenant, tenant_id carries the
+	// identity — which is what the Path tool resolves. A tenant document was
+	// therefore named at a coordinate nothing else reads: invisible in the Path tree
+	// and the browser, with no error on either side.
+	//
+	// OR IGNORE leaves a row whose destination is already occupied where it is: the
+	// '' row is the reachable one, so the stale row is a harmless duplicate, and
+	// picking which resource_ref survives is not a decision a migration should make
+	// silently. Idempotent — after the first pass only those collisions remain, and
+	// they are skipped again. Path-created rows already use '' and never match.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE OR IGNORE dirents SET scope_id = ''
+		 WHERE scope = 'tenant' AND scope_id <> ''`); err != nil {
+		return fmt.Errorf("migrate re-home tenant dirents: %w", err)
+	}
+
 	addIndexes := []string{
 		// Drives the hot lookup paths for the cancel/get endpoints.
 		// Partial indexes (WHERE ... IS NOT NULL) keep the index small —
