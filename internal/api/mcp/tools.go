@@ -280,8 +280,15 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("path"),
 		},
 		{
-			Name:        "document",
-			Description: "Document tool ops (create_document/get_document/delete_document, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk, link_chunks/unlink_chunks, query_chunks, define_type/list_types). RFC AK chunked-graph documents — each chunk is a first-class unit (UUID, hierarchy, type, fields, edges, Markdown body). Requires SQL Memory. Scope agent/user/tenant (tenant = shared across the whole tenant); tenant-isolated. Pass-through.",
+			Name: "document",
+			// Keep this op list in step with the `op` enum in documentInputSchema — the
+			// schema is generated from the tool, this prose is not, and it had drifted
+			// ten ops behind (the whole entity tier, set_path, reorder_chunk, the image
+			// assets and the Markdown round-trip were all callable but unadvertised).
+			// A model reads this description; an under-advertised op is one it will not
+			// reach for. Same failure as a hand-written tool inventory beside the list
+			// it describes.
+			Description: "Document tool ops (create_document/get_document/documents_summary/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk, upsert_chunk/supersede_chunk/graph_recall, link_chunks/unlink_chunks/get_edges, query_chunks, define_type/list_types, set_asset/get_asset, export_md/import_md). RFC AK chunked-graph documents — each chunk is a first-class unit (UUID, hierarchy, type, fields, edges, Markdown body). upsert_chunk/supersede_chunk/graph_recall add a bi-temporal fact tier: write by natural_key, correct without deleting, and recall across relations as of a past instant. Requires SQL Memory. Scope agent/user/tenant (tenant = shared across the whole tenant, and requires BOTH memory_scopes and sql_scopes to grant it); tenant-isolated. Pass-through.",
 			InputSchema: builtinSchema("document"),
 		},
 		{

@@ -137,7 +137,7 @@ jobs:
           # and `go test ./...` cannot run both packages against it concurrently.
           # Add every new postgres-tier test in this package here, or it is
           # decoration rather than a gate.
-          go test -count=1 -run 'TestEmbedDirective|TestEncodePgvector|TestResolveEmbedArgs|TestMemorySQL_EmbedDirective|TestDocument_Postgres|TestSidecar_PostgresTierParity|TestUpsert_ReObservation' ./internal/tools/builtin/...
+          go test -count=1 -run 'TestEmbedDirective|TestEncodePgvector|TestResolveEmbedArgs|TestMemorySQL_EmbedDirective|TestDocument_Postgres|TestSidecar_PostgresTierParity|TestUpsert_ReObservation|TestConfidence_' ./internal/tools/builtin/...
 
   runtime-codejs:
     name: Runtime suites (code-js)
