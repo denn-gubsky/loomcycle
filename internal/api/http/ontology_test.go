@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -156,45 +157,11 @@ func (s *Server) ontologyDocExists(t *testing.T, mi memInject) bool {
 }
 
 // confirmOntology flips the root chunk to `confirmed`, which is what an operator
-// does in the Web UI.
+// does in the Web UI — and now literally so: it drives POST /v1/_ontology rather
+// than re-deriving the get_document → get_chunk → update_chunk sequence itself. A
+// helper with its own copy of that sequence would keep passing after the real route
+// broke, which is the wrong way round for the path an operator depends on.
 func (s *Server) confirmOntology(t *testing.T, mi memInject) {
 	t.Helper()
-	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-	dctx := tools.WithMemoryPolicy(s.docToolCtx(context.Background(), mi),
-		tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
-
-	get, _ := json.Marshal(map[string]any{
-		"op": "get_document", "scope": "tenant", "path": meminject.OntologyPath,
-	})
-	res, _ := doc.Execute(dctx, get)
-	if res.IsError {
-		t.Fatalf("confirmOntology: get: %s", res.Text)
-	}
-	var meta struct {
-		RootChunkID string `json:"root_chunk_id"`
-	}
-	if err := json.Unmarshal([]byte(res.Text), &meta); err != nil {
-		t.Fatalf("confirmOntology: decode: %v", err)
-	}
-	// The revision comes from get_chunk: get_document does not return one, and
-	// provisioning already bumped the root to 2 by stamping `draft`.
-	gc, _ := json.Marshal(map[string]any{"op": "get_chunk", "scope": "tenant", "id": meta.RootChunkID})
-	cres, _ := doc.Execute(dctx, gc)
-	if cres.IsError {
-		t.Fatalf("confirmOntology: get_chunk: %s", cres.Text)
-	}
-	var chunk struct {
-		Revision int `json:"revision"`
-	}
-	if err := json.Unmarshal([]byte(cres.Text), &chunk); err != nil {
-		t.Fatalf("confirmOntology: decode chunk: %v", err)
-	}
-	upd, _ := json.Marshal(map[string]any{
-		"op": "update_chunk", "scope": "tenant", "id": meta.RootChunkID,
-		"status": meminject.OntologyConfirmedStatus, "revision": chunk.Revision,
-	})
-	if r, _ := doc.Execute(dctx, upd); r.IsError {
-		t.Fatalf("confirmOntology: update: %s", r.Text)
-	}
+	s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
 }

@@ -778,6 +778,31 @@ func (d *Document) setPath(ctx context.Context, key sqlmem.ScopeKey, in docInput
 	return jsonResult(map[string]any{"document_id": docID, "path": p})
 }
 
+// direntScopeID maps a SQL-Memory scope key onto the DIRENT plane's scope id.
+//
+// They agree for agent and user scope (the agent name / the user id) and diverge
+// for TENANT, because the two planes key a tenant differently and each is right in
+// its own plane:
+//
+//   - SQL Memory REQUIRES a non-empty scope id — it becomes half of a schema name
+//     and a database login role, so tenant scope carries the tenant there.
+//   - The dirent plane leaves scope_id EMPTY for tenant and lets the tenant_id
+//     column carry the identity. That is what the Path tool resolves, what Memory
+//     does, and what the store's schema defaults to.
+//
+// Writing the SQL-Memory id into a dirent leaks a storage-engine constraint into a
+// plane that does not share it, and the symptom is silent: the Document tool's own
+// path lookups keep working (it reads back at the same wrong coordinate it wrote),
+// while the Path tool — and therefore the whole browser — lists nothing. A
+// document present in one tool's view and absent from the other's, with no error
+// on either side.
+func direntScopeID(key sqlmem.ScopeKey) string {
+	if key.Scope == "tenant" {
+		return ""
+	}
+	return key.ScopeID
+}
+
 // registerDocDirent names a document in the Path tree (a `document` dirent).
 func (d *Document) registerDocDirent(ctx context.Context, key sqlmem.ScopeKey, docID, rawPath string) (string, error) {
 	canonical, err := normalizePath(rawPath)
@@ -790,7 +815,7 @@ func (d *Document) registerDocDirent(ctx context.Context, key sqlmem.ScopeKey, d
 	}
 	ref, _ := json.Marshal(map[string]any{"document_id": docID})
 	if _, err := d.Store.DirentCreate(ctx, store.DirentRow{
-		TenantID: direntTenant(ctx), Scope: key.Scope, ScopeID: key.ScopeID,
+		TenantID: direntTenant(ctx), Scope: key.Scope, ScopeID: direntScopeID(key),
 		ParentPath: parent, Name: name, Kind: "document", ResourceRef: ref,
 	}); err != nil {
 		return "", err
@@ -814,7 +839,7 @@ func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in d
 	if isRoot {
 		return "", fmt.Errorf("path may not be the root")
 	}
-	row, err := d.Store.DirentGet(ctx, direntTenant(ctx), key.Scope, key.ScopeID, parent, name)
+	row, err := d.Store.DirentGet(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), parent, name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
@@ -1057,7 +1082,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// document_id (works whether the caller addressed by id or path, so a
 	// delete-by-id never leaves a dangling name). Scans the scope's document
 	// dirents (bounded; a scope's name count is small).
-	if rows, lerr := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, key.ScopeID, "/"); lerr == nil {
+	if rows, lerr := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), "/"); lerr == nil {
 		for _, r := range rows {
 			if r.Kind != "document" {
 				continue
@@ -1067,7 +1092,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 			_ = json.Unmarshal(r.ResourceRef, &ref)
 			if ref.DocumentID == docID {
-				_, _ = d.Store.DirentDelete(ctx, direntTenant(ctx), key.Scope, key.ScopeID, r.ParentPath, r.Name)
+				_, _ = d.Store.DirentDelete(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), r.ParentPath, r.Name)
 			}
 		}
 	}
@@ -1839,7 +1864,7 @@ func (d *Document) documentsUnderPath(ctx context.Context, key sqlmem.ScopeKey, 
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, key.ScopeID, dirPrefix(canonical))
+	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), dirPrefix(canonical))
 	if err != nil {
 		return nil, err
 	}

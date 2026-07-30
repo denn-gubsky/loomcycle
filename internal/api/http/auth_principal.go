@@ -552,6 +552,14 @@ func requiredScopeFor(method, path string) string {
 	// ScopeTenant), not at this path. Mirrors the /v1/_*def/names posture.
 	case path == "/v1/_library/agents" || path == "/v1/_library/skills" || path == "/v1/_library/mcp-servers":
 		return auth.ScopeTenant
+	// The tenant ontology surface (GET state + POST the draft↔confirmed flip).
+	// ScopeTenant on BOTH methods: the ontology is one document per tenant, the
+	// handler derives that tenant from the principal (never the wire), and the same
+	// token can already write the same root-chunk status through /v1/_document
+	// update_chunk — so gating the write harder here would deny the intended actor
+	// without closing anything. ScopeAdmin also satisfies it (+ ?tenant= focus).
+	case path == "/v1/_ontology":
+		return auth.ScopeTenant
 	// RFC AS: the Web UI schedules surface (list-all + per-def state / run-now /
 	// pause / resume). list-all is tenant-scoped (the handler filters substrate
 	// schedules to the caller's tenant; operator-global static crons stay

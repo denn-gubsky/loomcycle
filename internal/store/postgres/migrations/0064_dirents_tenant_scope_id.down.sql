@@ -1,0 +1,13 @@
+-- Reverses 0064 — except it cannot, and deliberately does not try.
+--
+-- The forward migration moves a tenant dirent from a SQL-Memory-shaped scope_id to
+-- the empty one the dirent plane uses. Reversing it would mean reconstructing which
+-- tenant each row's scope_id used to hold, and that value is exactly what was
+-- overwritten. Guessing it from tenant_id would be right only for deployments where
+-- the two planes happened to agree.
+--
+-- Nothing is lost by leaving the rows re-homed: '' is the coordinate the Path tool
+-- reads, so a rolled-back binary still finds them through Path. Only the Document
+-- tool's own pre-fix path lookups would miss them, and those were already the
+-- broken half.
+SELECT 1;
