@@ -1,218 +1,82 @@
 # embedded bundle: sandbox
-# A code-execution agent that runs code in an ISOLATED, ephemeral sandbox
-# container via the builder sidecar — compile, test, and run Python/Go/Rust/C++/
-# Node WITHOUT giving the agent access to loomcycle's own container.
+# The isolated code-execution sandbox WIRING — the mcp__sandbox__* tools served by
+# the builder sidecar — plus a caller-facing skill for delegating code execution to
+# the deterministic `dev/exec` agent.
+#
+# This bundle carries NO agent, so it is flag-independent: layer it to grant your own
+# agents the mcp__sandbox__* tools. For the bundled deterministic executor, also
+# layer the `dev-exec` bundle (which needs LOOMCYCLE_CODE_AGENTS_ENABLED):
+#   LOOMCYCLE_PRESETS=…,sandbox,dev-exec
 #
 # Selected via `LOOMCYCLE_PRESETS=…,sandbox`. Requires:
 #   - the builder sidecar deployed on the app network (deploy/builder/; see
 #     docs/SANDBOX.md) — the mcp__sandbox__* tools are served by it.
-#   - LOOMCYCLE_SANDBOX_TOKEN set to the SAME shared secret as the sidecar's
+#   - SANDBOX_AUTH_TOKEN set to the SAME shared secret as the sidecar's
 #     SANDBOX_AUTH_TOKEN (the mcp_servers header below consumes it).
-#   - a `low` tier — select `base` alongside, or supply your own.
 #   - (optional) authenticated git/gh: set SANDBOX_ALLOW_ENV_INJECTION=1 on the
 #     sidecar and store a `sandbox_github` credential (a GitHub token) via
 #     `credentialdef op=create` — it is injected into the session as GH_TOKEN.
 # Without the sidecar the mcp__sandbox__* tools are registered-but-unreachable
-# (the MCP pool retries lazily); nothing else in the bundle is affected.
+# (the MCP pool retries lazily).
 #
 # The operator overlay can override any field (last layer wins) — e.g. re-declare
 # mcp_servers.sandbox.url if the sidecar isn't at http://builder-sidecar:9000.
 #
-# Besides the dev/sandbox AGENT, this bundle ships a `dev/sandbox-usage` SKILL so any
-# agent with the `Agent` tool (e.g. the chat/* agents) can DELEGATE to dev/sandbox —
-# spawn it for a one-shot task, or drive a multi-step session by sharing a session_id
-# — without holding the powerful mcp__sandbox__* tools itself.
-
-agents:
-  dev/sandbox:
-    tier: low
-    effort: medium
-    # mcp__sandbox__* grants the whole sidecar tool family (prefix glob, matched at
-    # exposure AND the fork/create ceiling check) — so future sandbox_* tools are
-    # picked up without editing the bundle.
-    tools: [mcp__sandbox__*, Interruption]
-    skills: [dev/sandbox]
-    compaction:
-      enabled: true
-      autocompact_at_pct: 80
-    system_prompt: |
-      You are SANDBOX, an agent that writes, compiles, tests, and runs code in an
-      isolated ephemeral sandbox. You never run code on the host — every command
-      runs inside a disposable container reached through your sandbox tools.
-
-      ## How you work
-      1. Open ONE sandbox session at the start (sandbox_open) and reuse it for the
-         whole task — the workspace (/work), installed dependencies, and the build
-         cache persist across commands. Only open another for genuinely separate work.
-      2. Put source in with sandbox_write (paths relative to /work), then build and
-         test with sandbox_exec. Read a non-zero exit + its output, fix, and re-run —
-         that compile→test→fix loop is the core of the job.
-      3. Pull results out with sandbox_read when you need to show an artifact.
-      4. Session lifecycle — follow the caller's intent exactly:
-         - GIVEN a session_id → reuse it; do NOT open a new one, and do NOT close it
-           (the caller owns that session's lifecycle, even when your task is done).
-         - Asked to KEEP the session open (a parent will drive more commands) → leave
-           it open and end your reply with a clear `session_id: <id>` line so the
-           caller can address the next command to the same container.
-         - Otherwise (a self-contained one-shot) → sandbox_close when done so the
-           container doesn't leak.
-
-      ## Notes
-      - The sandbox has Python, Go, Rust, C/C++, and Node preinstalled. /work is an
-        in-memory workspace that vanishes when the session closes — nothing persists.
-      - Open with network:"egress" for real dev work (cloning repos, fetching
-        dependencies) — this is a networked dev sandbox. Use network:"none" only for
-        purely offline compute. (If the operator hasn't enabled egress the session
-        silently falls back to no network.)
-      - For git/gh, run `gh auth setup-git` once at session start: a GitHub token
-        (GH_TOKEN) is injected when the operator configured one, letting you clone
-        and push PRIVATE repos over HTTPS. Never paste a token yourself.
-      - Resource limits (cpu/mem/pids/tmpfs) are capped by the operator; ask for less
-        when a task is small, never more than you need.
-      - If the sandbox tools are unavailable, the builder sidecar isn't deployed —
-        tell the human rather than trying to run code some other way.
-
-      ## Style
-      - Lead with the result (did it build? did tests pass?), then the details.
-      - Show the command you ran and the relevant output, not the whole log.
-      - Ask a clarifying question when the task is ambiguous instead of guessing.
+# (History: the LLM `dev/sandbox` agent + its tool-driving skill were retired in
+# favor of the deterministic code-js `dev/exec` agent — its job was mechanism, not
+# judgment. See the dev-exec bundle + docs/SANDBOX.md.)
 
 skills:
-  dev/sandbox:
-    description: Compile, test, and run code safely in an isolated ephemeral sandbox container (Python/Go/Rust/C++/Node) via the builder sidecar.
-    tools: [mcp__sandbox__*]
-    body: |
-      # Running code in the sandbox
-
-      All code runs INSIDE a disposable container, never on the host. One session =
-      one long-lived container you reuse across a compile→test→fix loop.
-
-      ## Lifecycle
-      1. sandbox_open → returns a session_id; pass it to every later call. Options
-         (all optional, all clamped to operator ceilings): network ("none" default |
-         "egress"), tmpfs_mb, cpu, mem_mb, pids.
-      2. sandbox_write {session_id, path, content} — write a file under /work (parent
-         dirs are created). Use encoding:"base64" for binary content.
-      3. sandbox_exec {session_id, command} — run a shell command in /work. You get
-         combined stdout+stderr and the exit code; a non-zero exit is reported so you
-         can read the error and fix it. timeout_seconds is clamped to the operator max.
-      4. sandbox_read {session_id, path} — read a file back out (encoding:"base64" for
-         binary artifacts).
-      5. sandbox_close {session_id} — destroy the session. Always close when done;
-         sessions also expire on an idle timeout.
-
-      ## Example: clone, build, test (Go)
-      - sandbox_open {network:"egress"} → session_id
-      - sandbox_exec {session_id, command:"git clone https://github.com/OWNER/REPO . && go build ./..."}
-      - if the exit code is non-zero, read the error, fix a file with sandbox_write,
-        then re-run "go build ./... && go test ./..."
-      - sandbox_read {session_id, path:"bin/app"} to pull the built binary
-      - sandbox_close {session_id}
-
-      ## Git / GitHub (authenticated)
-      When the operator configured a GitHub token it is injected into the session as
-      GH_TOKEN. To use it for git over HTTPS, run this ONCE per session first:
-        sandbox_exec {session_id, command:"gh auth setup-git && git config --global user.name loomcycle && git config --global user.email loomcycle@users.noreply.github.com"}
-      (gh already reads GH_TOKEN; `gh auth setup-git` makes git use it too.) Then
-      clone/push private repos over HTTPS:
-        sandbox_exec {session_id, command:"git clone https://github.com/OWNER/PRIVATE ."}
-      If `gh auth status` reports no token, the operator hasn't configured one — only
-      public repos will clone. Never paste a token yourself; tell the human.
-
-      ## Rules
-      - Reuse ONE session for a task — don't open a new one per command (you'd lose the
-        checkout + build cache).
-      - If a caller GIVES you a session_id, reuse it (don't open a new one); if asked to
-        KEEP a session open for follow-up, report the session_id and leave it open — a
-        parent agent may drive several commands against the same container.
-      - Default to network:"egress" for dev work (clone/fetch deps); use "none" only
-        for offline compute. (Egress needs the operator's SANDBOX_ALLOW_EGRESS; if it
-        isn't enabled, the session falls back to no network.)
-      - Keepalive: if you'll leave a session idle across a gap with no commands (a
-        parent is thinking between steps), sandbox_touch {session_id} resets its idle
-        timer so it isn't reaped — a normal sandbox_exec already resets it.
-      - Bulk teardown: sandbox_close_run {root_run_id} closes EVERY session you opened
-        for a run at once — use it when a driving parent asks you to clean up a run's
-        sandboxes, not for a single session (use sandbox_close for that).
-      - Never assume host access — you only have these sandbox tools.
-
   dev/sandbox-usage:
-    description: How to run/compile/test code by delegating to the dev/sandbox agent — a one-shot task, or a multi-step session you drive command by command. For agents that have the Agent tool but not the sandbox tools.
+    description: How to run/compile/test code by delegating to the deterministic dev/exec agent — send a JSON command envelope, read structured results, iterate on failures. For agents that have the Agent tool but not the sandbox tools.
     tools: [Agent]
     body: |
-      # Using the sandbox (delegate to the dev/sandbox agent)
+      # Running code in the sandbox (delegate to dev/exec)
 
       You don't hold the sandbox tools directly — by design. To run, compile, or test
-      code, delegate to the `dev/sandbox` sub-agent (it has an isolated, ephemeral
-      container with a full toolchain). You drive it with the `Agent` tool.
+      code, delegate to the `dev/exec` sub-agent via the `Agent` tool. dev/exec is a
+      DETERMINISTIC executor (no LLM): you send it a JSON command envelope, it runs the
+      steps in an isolated, ephemeral container and returns STRUCTURED results. You own
+      the judgment — read the results, and if a step failed, decide the fix and send a
+      corrected envelope. (Requires the `dev-exec` bundle + LOOMCYCLE_CODE_AGENTS_ENABLED.)
 
-      ## Mental model — there is no live session between your spawns
-      Each `Agent {op:"spawn", name:"dev/sandbox"}` is a FRESH, independent invocation —
-      dev/sandbox does NOT stay running between your calls, and it has no memory of the
-      previous spawn. The only thing that persists is the CONTAINER, which the sandbox
-      holds and addresses by an opaque `session_id`. So YOU are the continuity:
-        - capture the `session_id` dev/sandbox reports on the first spawn,
-        - keep it across your OWN turns (put it in your reply so it survives),
-        - pass it back on EVERY follow-up spawn.
-      Without the id, the next spawn can't find the container and starts from nothing.
+      ## The command envelope (JSON, passed as the spawn prompt)
+        {
+          "commands": ["git clone https://github.com/OWNER/REPO .", "go build ./...", "go test ./..."],
+          "files":    [{"path": "main.go", "content": "package main\n..."}],  // optional; written first
+          "read":     ["bin/app"],            // optional artifacts to read back
+          "network":  "egress",               // default; "none" for offline compute
+          "keep_open": true,                   // keep the container for follow-ups
+          "session_id": "<id>",                // reuse a container from a previous call
+          "continue_on_error": false,          // stop at the first failing command (default)
+          "close": false                       // force-close a reused session
+        }
+      Commands run in order and STOP at the first failure unless continue_on_error.
+      The result carries { ok, session_id, results:[{command, ok, output}], artifacts }.
+      Authenticated git "just works" when the operator configured a `sandbox_github`
+      credential (dev/exec runs `gh auth setup-git` at open).
 
-      ## One-shot task (simplest)
-      When you can describe the whole job upfront, spawn once and let dev/sandbox run
-      the compile→test→fix loop itself:
+      ## One-shot
+        Agent {op:"spawn", name:"dev/exec",
+               prompt:"{\"commands\":[\"git clone https://github.com/OWNER/REPO .\",\"go build ./... && go test ./...\"]}"}
+      Read `results`. If a command failed, decide the fix and spawn again with corrected
+      `commands` (and any `files` to write first) — that fix loop is YOURS now, because
+      dev/exec does not reason, it executes.
 
-        Agent {op:"spawn", name:"dev/sandbox",
-               prompt:"Clone https://github.com/OWNER/REPO, run 'go build ./... && go test ./...', fix any failures, and report the result."}
-
-      It opens a session, iterates, closes it, and returns the result.
-
-      ## Resident session (preferred for interactive, multi-step work)
-      When you'll drive several commands and inspect each result, keep dev/sandbox
-      RESIDENT with the Agent open/send/close ops. The child stays alive between your
-      instructions — its container stays warm and it remembers the conversation, so you
-      never re-thread a session_id:
-
-      1. Open — it runs the first command and parks, holding its container:
-         Agent {op:"open", name:"dev/sandbox",
-                prompt:"Open a sandbox session, keep it open, run: <command>, and report the output."}
-         → capture child_run_id from the returned envelope.
-      2. Each next step — no session_id to pass; it sees its whole prior conversation:
-         Agent {op:"send", child_run_id:"<child_run_id>", prompt:"Now run: <command>."}
-      3. When finished — close it (frees the container):
-         Agent {op:"close", child_run_id:"<child_run_id>"}
-
-      Full lifecycle: Context op=help topic=resident-sub-agents.
-
-      ## Multi-step session without resident ops (fallback)
-      If you can't use open/send/close, you can still keep ONE container alive across
-      plain spawns by sharing its session_id (fragile — you must carry the id yourself):
-
-      1. Open + first command — tell it to KEEP the session open and report the id:
-         Agent {op:"spawn", name:"dev/sandbox",
-                prompt:"Open a sandbox session and KEEP IT OPEN (do not close it). Run: <command>. Report the session_id and the output."}
-         → capture the session_id from the returned text.
-      2. Next commands — reuse that session (same container, state preserved):
-         Agent {op:"spawn", name:"dev/sandbox",
-                prompt:"Reuse sandbox session <session_id> — do not open a new one, do not close it. Run: <command>. Report the output."}
-      3. Shut it down when finished:
-         Agent {op:"spawn", name:"dev/sandbox", prompt:"Close sandbox session <session_id>."}
+      ## Multi-step against one warm container
+      1. First call with "keep_open": true — capture `session_id` from the result.
+      2. Later calls pass that "session_id" (same container, state + build cache preserved).
+         A reused session is NOT auto-closed.
+      3. When done, send a final envelope with that "session_id" and "close": true
+         (or just stop — the idle timeout reaps it).
 
       ## Notes
-      - The container persists between spawns (the sandbox holds it), so the checkout,
-        installed deps, and build cache carry over — as long as you pass the same
-        session_id and don't leave it idle too long.
-      - Idle timeout: the container is reaped after a period with no commands. Across a
-        SHORT gap between your spawns that's fine (each command resets the clock). Across
-        a LONG gap — e.g. you're waiting on the human between turns — it will be reaped:
-        the next spawn should just reopen and start fresh (the previous /work is gone),
-        unless the operator configured a durable workspace. There is no way to keep a
-        container alive across a long human pause from here — that's a limitation of
-        driving the sandbox spawn-by-spawn.
-      - Always close the session when the task is genuinely done; don't leave sandboxes
-        running. (If the human may continue, keep it open and hold onto the session_id.)
-      - Compiled binaries run inside the sandbox (it's a real container), so
-        `./your-binary` works there.
-      - If dev/sandbox reports the sandbox tools are unavailable, the builder sidecar
-        isn't deployed — tell the human rather than trying to run code another way.
+      - The container persists only while warm; a long idle gap reaps it (its /work is
+        gone) unless the operator configured a durable `workspace`.
+      - If dev/exec reports the sandbox tools are unavailable, the builder sidecar isn't
+        deployed — tell the human rather than trying to run code another way.
+      - Compiled binaries run inside the sandbox (a real container), so `./your-binary`
+        works there; pull artifacts out with the envelope's `read`.
 
 mcp_servers:
   sandbox:

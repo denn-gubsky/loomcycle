@@ -1,0 +1,203 @@
+# RFC AQ embedded bundle: dev-exec
+#
+# Deterministic, zero-token code-js agent (RFC J) that EXECUTES a caller's command
+# envelope in the isolated sandbox (open -> write files -> run commands -> read
+# artifacts -> close). The reliable replacement for the retired LLM dev/sandbox.
+#
+# WHY code-js and not an LLM: the sandbox agent's real job is MECHANISM — translate
+# a caller's commands into sandbox_* tool calls and report the results — not
+# judgment. An LLM there only added token cost, latency, and a flakiness class (on a
+# slow local model it mis-typed args and let sessions get reaped between turns). The
+# code-agent runs the exact open/exec/read/close sequence deterministically and
+# returns structured results; the JUDGMENT (read a failure, decide the fix, re-run)
+# stays with the CALLER, where it belongs.
+#
+# REQUIREMENTS
+#   - LOOMCYCLE_CODE_AGENTS_ENABLED=1 — code agents are opt-in; a `provider: code-js`
+#     agent selected WITHOUT this flag FAILS BOOT by design, so layer this bundle
+#     ONLY with the flag set and never add it to a default preset stack.
+#   - the `sandbox` bundle (or your own mcp_servers.sandbox) — this agent drives the
+#     mcp__sandbox__* tools that bundle serves:  LOOMCYCLE_PRESETS=...,sandbox,dev-exec
+#   - (optional) an mcp__browser__* server (e.g. the pinchtab sidecar) — the optional
+#     `browser` section of the envelope drives it; absent, browser steps report
+#     "unavailable" and everything else still works.
+#
+# The caller-facing `dev/sandbox-usage` skill (in the `sandbox` bundle) documents the
+# command envelope for agents that delegate here via the Agent tool.
+
+agents:
+  dev/exec:
+    provider: code-js
+    description: "Deterministically run a caller's command envelope in the isolated sandbox (open/write/exec/read/close) — zero-token, no LLM (RFC J). Optional browser passthrough."
+    # Globs expand against the connected servers at run time; mcp__sandbox__* is the
+    # core surface, mcp__browser__* an optional add-on when a browser server is up.
+    tools: [mcp__sandbox__*, mcp__browser__*]
+    code: |
+      // dev/exec (RFC J code-js) — a DETERMINISTIC sandbox command executor. The
+      // caller sends a JSON "command envelope" as the run prompt; this runs it via
+      // the mcp__sandbox__* tools and returns structured results. No LLM: the caller
+      // owns the judgment (read a failure -> decide the fix -> re-send commands).
+      //
+      // Envelope (JSON in the run prompt; you need commands, files, read, or browser
+      // for it to do anything):
+      //   session_id  string  reuse an existing session (its lifecycle is the
+      //                       caller's: not opened here, and not closed unless close=true)
+      //   network     string  "egress" (default) | "none"
+      //   workspace   string  durable /work name (needs SANDBOX_WORKSPACE_ROOT)
+      //   cpu,mem_mb,pids,tmpfs_mb  numbers  resource requests (operator-clamped)
+      //   git_setup   bool    run `gh auth setup-git` at open when GH_TOKEN present (default true)
+      //   files       array   [{path, content, encoding?}] written before commands
+      //   commands    array   ordered shell commands; stop at first failure unless continue_on_error
+      //   continue_on_error bool  run every command even after a failure (default false)
+      //   timeout_seconds, max_output_bytes  numbers  per-exec bounds (clamped)
+      //   read        array   artifacts to read back: "path" or {path, encoding?}
+      //   keep_open   bool    do not close the session (leave it for follow-ups)
+      //   close       bool    force-close even a reused (caller-owned) session
+      //   browser     array   optional [{op, args}] steps against mcp__browser__*
+      //                       (op: navigate|get_text|snapshot|screenshot|click|type|press|wait)
+      //
+      // Returns { final_text, ok, session_id, kept_open, files_written, results,
+      //           artifacts, browser }.
+
+      function run(input) {
+        var env = parseEnvelope(input);
+        if (env._error) return { final_text: env._error, ok: false };
+
+        var reused = !!env.session_id;
+        var sid;
+        try { sid = reused ? env.session_id : openSession(env); }
+        catch (e) { return { final_text: "sandbox_open failed: " + errText(e), ok: false }; }
+
+        // Best-effort: wire git-over-HTTPS to the injected GH_TOKEN (if any).
+        if (!reused && env.git_setup !== false) {
+          tryExec(sid, "command -v gh >/dev/null 2>&1 && [ -n \"$GH_TOKEN\" ] && gh auth setup-git >/dev/null 2>&1 || true");
+        }
+
+        var wrote = [];
+        var files = env.files || [];
+        for (var i = 0; i < files.length; i++) {
+          var f = files[i] || {};
+          mcp__sandbox__sandbox_write({ session_id: sid, path: f.path, content: f.content, encoding: f.encoding || "utf8" });
+          wrote.push(f.path);
+        }
+
+        var results = [], failed = false;
+        var cmds = env.commands || [];
+        for (var j = 0; j < cmds.length; j++) {
+          if (failed && !env.continue_on_error) { results.push({ command: cmds[j], skipped: true }); continue; }
+          var a = { session_id: sid, command: cmds[j] };
+          if (env.timeout_seconds) a.timeout_seconds = env.timeout_seconds;
+          if (env.max_output_bytes) a.max_output_bytes = env.max_output_bytes;
+          try { results.push({ command: cmds[j], ok: true, output: asText(mcp__sandbox__sandbox_exec(a)) }); }
+          catch (e) { results.push({ command: cmds[j], ok: false, output: errText(e) }); failed = true; }
+        }
+
+        var artifacts = [];
+        var reads = env.read || [];
+        for (var k = 0; k < reads.length; k++) {
+          var r = (typeof reads[k] === "string") ? { path: reads[k] } : (reads[k] || {});
+          if (!r.path) continue;
+          var ra = { session_id: sid, path: r.path };
+          if (r.encoding) ra.encoding = r.encoding;
+          try { artifacts.push({ path: r.path, ok: true, content: asText(mcp__sandbox__sandbox_read(ra)) }); }
+          catch (e) { artifacts.push({ path: r.path, ok: false, error: errText(e) }); }
+        }
+
+        var browser = runBrowser(env.browser);
+
+        // Close a session we opened (unless keep_open), or a reused one on close=true.
+        var closed = false;
+        if (env.close === true || (!reused && !env.keep_open)) {
+          try { mcp__sandbox__sandbox_close({ session_id: sid }); closed = true; } catch (e) {}
+        }
+
+        return {
+          final_text: summarize(results, browser, sid, failed, !closed),
+          ok: !failed, session_id: sid, kept_open: !closed,
+          files_written: wrote, results: results, artifacts: artifacts, browser: browser
+        };
+      }
+
+      function parseEnvelope(input) {
+        var raw = (input && typeof input.prompt === "string") ? input.prompt : "";
+        var env = {};
+        if (raw && raw.length) {
+          try { env = JSON.parse(raw); }
+          catch (e) { return { _error: "dev/exec expects a JSON command envelope in the prompt, e.g. {\"commands\":[\"go build ./...\"]}. Parse error: " + errText(e) }; }
+        }
+        if (typeof env !== "object" || env === null) return { _error: "envelope must be a JSON object" };
+        var hasWork = (env.commands && env.commands.length) || (env.files && env.files.length) ||
+                      (env.read && env.read.length) || (env.browser && env.browser.length);
+        if (!hasWork) return { _error: "nothing to do: provide commands, files, read, or browser in the envelope" };
+        return env;
+      }
+
+      function openSession(env) {
+        var o = { network: env.network || "egress" };
+        if (env.workspace) o.workspace = env.workspace;
+        if (env.tmpfs_mb) o.tmpfs_mb = env.tmpfs_mb;
+        if (env.cpu) o.cpu = env.cpu;
+        if (env.mem_mb) o.mem_mb = env.mem_mb;
+        if (env.pids) o.pids = env.pids;
+        var res = mcp__sandbox__sandbox_open(o);
+        if (!res || !res.session_id) throw new Error("no session_id returned");
+        return res.session_id;
+      }
+
+      function tryExec(sid, cmd) {
+        try { mcp__sandbox__sandbox_exec({ session_id: sid, command: cmd }); } catch (e) {}
+      }
+
+      // runBrowser dispatches optional browser steps against a connected
+      // mcp__browser__* server. typeof-guarded so a sandbox-only deployment (no
+      // browser server) degrades gracefully instead of throwing.
+      function runBrowser(steps) {
+        if (!steps || !steps.length) return null;
+        var fns = browserFns();
+        var out = [];
+        for (var i = 0; i < steps.length; i++) {
+          var s = steps[i] || {};
+          var fn = fns[s.op];
+          if (!fn) { out.push({ op: s.op, ok: false, error: "unavailable/unsupported browser op (needs an mcp__browser__* server)" }); continue; }
+          try { out.push({ op: s.op, ok: true, result: asText(fn(s.args || {})) }); }
+          catch (e) { out.push({ op: s.op, ok: false, error: errText(e) }); }
+        }
+        return out;
+      }
+
+      function browserFns() {
+        var m = {};
+        if (typeof mcp__browser__pinchtab_navigate   !== "undefined") m.navigate   = mcp__browser__pinchtab_navigate;
+        if (typeof mcp__browser__pinchtab_get_text   !== "undefined") m.get_text   = mcp__browser__pinchtab_get_text;
+        if (typeof mcp__browser__pinchtab_snapshot   !== "undefined") m.snapshot   = mcp__browser__pinchtab_snapshot;
+        if (typeof mcp__browser__pinchtab_screenshot !== "undefined") m.screenshot = mcp__browser__pinchtab_screenshot;
+        if (typeof mcp__browser__pinchtab_click      !== "undefined") m.click      = mcp__browser__pinchtab_click;
+        if (typeof mcp__browser__pinchtab_type       !== "undefined") m.type       = mcp__browser__pinchtab_type;
+        if (typeof mcp__browser__pinchtab_press      !== "undefined") m.press      = mcp__browser__pinchtab_press;
+        if (typeof mcp__browser__pinchtab_wait       !== "undefined") m.wait       = mcp__browser__pinchtab_wait;
+        return m;
+      }
+
+      function summarize(results, browser, sid, failed, kept) {
+        var ok = 0, bad = 0, skip = 0;
+        for (var i = 0; i < results.length; i++) {
+          if (results[i].skipped) skip++; else if (results[i].ok) ok++; else bad++;
+        }
+        var s = "ran " + results.length + " command(s): " + ok + " ok, " + bad + " failed";
+        if (skip) s += ", " + skip + " skipped";
+        if (browser && browser.length) s += "; " + browser.length + " browser step(s)";
+        s += "; session " + sid + (kept ? " (kept open)" : " (closed)");
+        if (failed) {
+          for (var j = 0; j < results.length; j++) {
+            if (results[j].ok === false) { s += " :: first failure: " + results[j].command; break; }
+          }
+        }
+        return s;
+      }
+
+      function asText(x) {
+        if (x === undefined || x === null) return "";
+        return (typeof x === "string") ? x : JSON.stringify(x);
+      }
+
+      function errText(e) { return (e && e.message) ? String(e.message) : String(e); }
