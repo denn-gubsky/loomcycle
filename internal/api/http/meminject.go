@@ -114,6 +114,14 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	if body := s.renderSearchRequest(ctx, mi); body != "" {
 		sections[meminject.VariantSearchRequest] = body
 	}
+	// ontology: gated on an actual reference, like user_info, because rendering it
+	// PROVISIONS the tenant's ontology document. A prompt that never mentions the
+	// ontology must not create one as a side effect of being assembled.
+	if meminject.ReferencesVariant(agentDef.SystemPrompt, meminject.VariantOntology) {
+		if body := s.renderOntology(ctx, mi); body != "" {
+			sections[meminject.VariantOntology] = body
+		}
+	}
 	// consolidation_bands is pure config — no store read, no tenant scope, so
 	// it is rendered unconditionally and costs nothing for a prompt that never
 	// places the placeholder (Expand only substitutes what it finds, and this
@@ -125,8 +133,8 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 		relatedBand = s.cfg.Memory.Consolidation.EffectiveRelatedThreshold()
 	}
 	sections[meminject.VariantConsolidationBands] = meminject.ConsolidationBands(mergeBand, relatedBand)
-	// tenant_info / ontology are accepted variants but resolve to empty in P1
-	// (they need tenant scope + the entity tier — a later phase).
+	// tenant_info is still an accepted-but-empty variant (it needs the tenant-root
+	// document, a later deliverable). ontology is live — see renderOntology.
 
 	out := agentDef
 	out.SystemPrompt = meminject.Expand(agentDef.SystemPrompt, meminject.ExpandInput{

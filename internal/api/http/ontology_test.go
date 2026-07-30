@@ -1,0 +1,200 @@
+package http
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+)
+
+// TestOntology_ReachesTheAssembledPromptAndStartsInert is the wiring plus the gate,
+// in one pass over the path a run actually takes.
+//
+// A capability with no caller passes every test it has — this subsystem has shipped
+// that mistake twice — so the assertion is on the prompt the run gets, not on the
+// renderer in isolation.
+func TestOntology_ReachesTheAssembledPromptAndStartsInert(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	def := config.AgentDef{SystemPrompt: "You extract entities.\n\n{{memory:ontology}}"}
+
+	got, _ := s.applyMemoryInjection(context.Background(), def, mi)
+
+	// The seed reached the prompt.
+	for _, want := range []string{"Entity types", "person", "organization", "preference", "fact"} {
+		if !strings.Contains(got.SystemPrompt, want) {
+			t.Errorf("missing %q in the assembled prompt:\n%s", want, got.SystemPrompt)
+		}
+	}
+	if strings.Contains(got.SystemPrompt, "{{memory:") {
+		t.Errorf("placeholder left unexpanded:\n%s", got.SystemPrompt)
+	}
+	// UNFRAMED — it is a schema to apply, not data to distrust.
+	if strings.Contains(got.SystemPrompt, `<memory source="ontology">`) {
+		t.Errorf("ontology must render unframed:\n%s", got.SystemPrompt)
+	}
+	// And a freshly provisioned deployment is INERT: the document exists, its terms
+	// are not applied, and the prompt says so.
+	if !strings.Contains(got.SystemPrompt, "has not confirmed") {
+		t.Errorf("a newly provisioned tenant should read as unconfirmed:\n%s", got.SystemPrompt)
+	}
+	if strings.Contains(got.SystemPrompt, "incident") {
+		t.Errorf("the template's sample terms applied while still draft:\n%s", got.SystemPrompt)
+	}
+}
+
+// TestOntology_ProvisionsTheDocumentOnFirstReference: lazily, because there is no
+// tenant-creation event to hang it on — a tenant exists the moment a token names
+// one, and nothing observes that transition. Hooking token mint would have missed
+// every tenant that already exists.
+func TestOntology_ProvisionsTheDocumentOnFirstReference(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	def := config.AgentDef{SystemPrompt: "{{memory:ontology}}"}
+	s.applyMemoryInjection(context.Background(), def, mi)
+
+	terms, confirmed := s.tenantOntologyTerms(context.Background(), mi)
+	if confirmed {
+		t.Error("a provisioned document must start unconfirmed")
+	}
+	// The template's three worked examples are present as terms, ready to edit —
+	// they are just not in force yet.
+	names := map[string]bool{}
+	for _, term := range terms {
+		names[strings.ToLower(term.Name)] = true
+	}
+	for _, want := range []string{"project", "incident", "constraint"} {
+		if !names[want] {
+			t.Errorf("the provisioned document should carry the %q sample term (have %v)", want, names)
+		}
+	}
+}
+
+// TestOntology_NotReferencedNeverProvisions: rendering PROVISIONS a document, so a
+// prompt that never mentions the ontology must not create one as a side effect of
+// being assembled. The same rule user_info follows.
+func TestOntology_NotReferencedNeverProvisions(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	def := config.AgentDef{SystemPrompt: "A prompt with no placeholders."}
+
+	got, _ := s.applyMemoryInjection(context.Background(), def, mi)
+	if got.SystemPrompt != def.SystemPrompt {
+		t.Errorf("the fast path should return byte-identical, got:\n%s", got.SystemPrompt)
+	}
+	if s.ontologyDocExists(t, mi) {
+		t.Error("an unreferenced ontology must not be provisioned")
+	}
+}
+
+// TestOntology_ConfirmedLayerApplies closes the loop: flip the root chunk to
+// confirmed and the operator's terms take effect. Without this the gate is only
+// proven in one direction, which is how a gate that never opens ships.
+func TestOntology_ConfirmedLayerApplies(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	def := config.AgentDef{SystemPrompt: "{{memory:ontology}}"}
+	s.applyMemoryInjection(context.Background(), def, mi) // provision
+
+	s.confirmOntology(t, mi)
+
+	got, _ := s.applyMemoryInjection(context.Background(), def, mi)
+	if strings.Contains(got.SystemPrompt, "has not confirmed") {
+		t.Errorf("a confirmed deployment should not read as unconfirmed:\n%s", got.SystemPrompt)
+	}
+	for _, want := range []string{"project", "incident", "constraint"} {
+		if !strings.Contains(got.SystemPrompt, want) {
+			t.Errorf("confirmed tenant term %q missing from the prompt:\n%s", want, got.SystemPrompt)
+		}
+	}
+	// The seed survives alongside the tenant layer — this is a layering, not a
+	// replacement.
+	if !strings.Contains(got.SystemPrompt, "person") {
+		t.Errorf("the base seed was lost when the tenant layer activated:\n%s", got.SystemPrompt)
+	}
+}
+
+// ---- fixture + helpers ----
+
+// ontologyFixture builds a Server with a real store and a real SQL Memory manager
+// — the ontology lives in a tenant-scope Document, so a stub would prove nothing
+// about the path a run takes.
+func ontologyFixture(t *testing.T) (*Server, memInject) {
+	t.Helper()
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	s := &Server{store: st, sqlMem: mgr}
+	return s, memInject{Tenant: "acme", UserID: "alice", AgentName: "curator"}
+}
+
+// ontologyDocExists reports whether the tenant's ontology document is present,
+// WITHOUT provisioning it — a probe that provisioned would make
+// TestOntology_NotReferencedNeverProvisions vacuous.
+func (s *Server) ontologyDocExists(t *testing.T, mi memInject) bool {
+	t.Helper()
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	dctx := tools.WithMemoryPolicy(s.docToolCtx(context.Background(), mi),
+		tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
+	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	req, _ := json.Marshal(map[string]any{
+		"op": "get_document", "scope": "tenant", "path": meminject.OntologyPath,
+	})
+	res, _ := doc.Execute(dctx, req)
+	return !res.IsError
+}
+
+// confirmOntology flips the root chunk to `confirmed`, which is what an operator
+// does in the Web UI.
+func (s *Server) confirmOntology(t *testing.T, mi memInject) {
+	t.Helper()
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	dctx := tools.WithMemoryPolicy(s.docToolCtx(context.Background(), mi),
+		tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
+	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+
+	get, _ := json.Marshal(map[string]any{
+		"op": "get_document", "scope": "tenant", "path": meminject.OntologyPath,
+	})
+	res, _ := doc.Execute(dctx, get)
+	if res.IsError {
+		t.Fatalf("confirmOntology: get: %s", res.Text)
+	}
+	var meta struct {
+		RootChunkID string `json:"root_chunk_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &meta); err != nil {
+		t.Fatalf("confirmOntology: decode: %v", err)
+	}
+	// The revision comes from get_chunk: get_document does not return one, and
+	// provisioning already bumped the root to 2 by stamping `draft`.
+	gc, _ := json.Marshal(map[string]any{"op": "get_chunk", "scope": "tenant", "id": meta.RootChunkID})
+	cres, _ := doc.Execute(dctx, gc)
+	if cres.IsError {
+		t.Fatalf("confirmOntology: get_chunk: %s", cres.Text)
+	}
+	var chunk struct {
+		Revision int `json:"revision"`
+	}
+	if err := json.Unmarshal([]byte(cres.Text), &chunk); err != nil {
+		t.Fatalf("confirmOntology: decode chunk: %v", err)
+	}
+	upd, _ := json.Marshal(map[string]any{
+		"op": "update_chunk", "scope": "tenant", "id": meta.RootChunkID,
+		"status": meminject.OntologyConfirmedStatus, "revision": chunk.Revision,
+	})
+	if r, _ := doc.Execute(dctx, upd); r.IsError {
+		t.Fatalf("confirmOntology: update: %s", r.Text)
+	}
+}

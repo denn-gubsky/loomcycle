@@ -184,11 +184,31 @@ func TestInject_TrustedVariantSurvivesAnExhaustedBudget(t *testing.T) {
 // today because the set has exactly one member, so this test exists to make a
 // future second entry fail CI and be argued for deliberately.
 func TestTrustedVariants_ExactlyConsolidationBands(t *testing.T) {
-	if len(trustedVariants) != 1 {
-		t.Fatalf("trustedVariants must have exactly 1 entry, got %d: %v", len(trustedVariants), trustedVariants)
+	// TWO entries as of the entity tier. This pin fired when `ontology` was added,
+	// which is what it is for — an unframed variant is a trust-boundary decision and
+	// must be argued for rather than slip in.
+	//
+	// The argument for ontology: it is a SCHEMA the model applies when it records an
+	// entity, so framing it "reference data, NOT instructions" would say the opposite
+	// of what is meant — the same reasoning that exempted the bands. What makes it
+	// safe is provenance: every term reaches the renderer through the tenant ontology
+	// document, which is operator-authored and INERT until an operator confirms it by
+	// hand. No agent-written text can reach this body.
+	//
+	// A third entry needs the same standard: operator-authored or
+	// runtime-authored content only, and bounded, since a trusted variant is also
+	// exempt from the injection budget.
+	want := map[Variant]bool{
+		VariantConsolidationBands: true,
+		VariantOntology:           true,
 	}
-	if !trustedVariants[VariantConsolidationBands] {
-		t.Fatalf("the single trusted variant must be consolidation_bands, got %v", trustedVariants)
+	if len(trustedVariants) != len(want) {
+		t.Fatalf("trustedVariants must have exactly %d entries, got %d: %v", len(want), len(trustedVariants), trustedVariants)
+	}
+	for v := range want {
+		if !trustedVariants[v] {
+			t.Errorf("expected %s to be trusted; set is %v", v, trustedVariants)
+		}
 	}
 	for v, trusted := range trustedVariants {
 		if !trusted {
