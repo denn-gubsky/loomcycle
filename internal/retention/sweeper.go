@@ -53,6 +53,20 @@ import (
 // fake and so a nil Manager (SQL Memory disabled) cleanly disables only the
 // SQL-Memory facet of reclamation (base memory + dirents still reclaim).
 // *sqlmem.Manager satisfies it.
+// ChunkPruner prunes retired entity-tier content in ONE scope. Implemented by the
+// Document tool, which owns the chunk cascade.
+//
+// An interface rather than a direct dependency so this package does not import the
+// builtin tools — and, more usefully, so the cascade stays in exactly one place. A
+// prune that reimplemented the delete here would drift from delete_chunk, and the
+// drift would surface as orphaned edges or a body left in the Memory plane, which
+// nothing reads and nothing reports.
+//
+// nil disables the family, so a deployment that wires no Document tool is unaffected.
+type ChunkPruner interface {
+	PruneRetiredChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, cutoff int64, dryRun bool) (int, error)
+}
+
 type SQLMemory interface {
 	// ListScopes enumerates every DURABLE (agent/user) scope. Used to gate
 	// export+drop on a scope that actually EXISTS (ExportScope would otherwise
@@ -131,6 +145,34 @@ type Config struct {
 	// set, so its chats age out on the normal schedule until the operator also
 	// declares the name in a config layer.
 	InternalAgents []string
+
+	// MemContentMode is the RFC BL P4d class-aware memory-CONTENT mode: "off"
+	// (default / ""), "prune", or "export+prune". Unknown → off. Independent of
+	// every other family.
+	//
+	// Distinct from MemMode, and the distinction matters: MemMode reclaims a
+	// fully-RETIRED AGENT's whole scope, whereas this prunes retired CONTENT inside
+	// scopes that are very much alive. Supersede-not-delete is what makes it
+	// necessary — a corrected fact is kept so that questions about an earlier moment
+	// still have an answer, which means retired rows accumulate forever unless
+	// something reaps them.
+	//
+	// `evidential` content is EXEMPT regardless of age. Derived material can be
+	// re-derived; evidential material IS what everything else was derived from, so
+	// ageing it out loses the source. Mirrors the pinned-session exemption.
+	MemContentMode string
+
+	// MemContentMaxAge is the age cutoff: content retired before
+	// Now()-MemContentMaxAge is eligible. Zero = no minimum age, which for this
+	// family means "prune everything already retired" — deliberately allowed, since
+	// a deployment that never wants history is entitled to say so, but it is not the
+	// default because the default is off.
+	MemContentMaxAge time.Duration
+
+	// ChunkPruner prunes retired entity-tier content, one scope at a time. nil
+	// disables the mem_content family. Wired at the composition root from the
+	// Document tool, which owns the chunk cascade.
+	ChunkPruner ChunkPruner
 
 	// MemMode is the RFC BM Phase 3 memory-reclamation mode: "off" (default / ""),
 	// "prune" (reclaim a fully-retired agent's per-scope data), or "export+prune"
@@ -219,6 +261,11 @@ type Result struct {
 	// extractor sessions per consolidation pass inside a chat count would make
 	// both unreadable.
 	ChatsInternal int
+	// MemContent is the number of retired entity-tier chunks pruned (or, under
+	// DryRun, that would be) this sweep. Counted apart from Mem because the two
+	// measure different things: Mem counts whole scopes reclaimed from dead agents,
+	// this counts rows removed from live ones.
+	MemContent int
 	// Mem is the number of retired-agent reclamation UNITS this sweep (or, under
 	// DryRun, would-be). A unit is one (tenant, name) whose SQL-Memory scope
 	// and/or dirents were dropped, PLUS one per name whose globally-dead base
@@ -242,6 +289,9 @@ type Sweeper struct {
 	internalAgents      []string
 	memMode             string
 	memMaxAge           time.Duration
+	memContentMode      string
+	memContentMaxAge    time.Duration
+	chunkPruner         ChunkPruner
 	sqlMem              SQLMemory
 	exportDir           string
 	dryRun              bool
@@ -299,6 +349,9 @@ func New(st store.Store, cfg Config) *Sweeper {
 		chatsInternalMaxAge: chatsInternalMaxAge,
 		internalAgents:      cfg.InternalAgents,
 		memMode:             memMode,
+		memContentMode:      cfg.MemContentMode,
+		memContentMaxAge:    cfg.MemContentMaxAge,
+		chunkPruner:         cfg.ChunkPruner,
 		memMaxAge:           cfg.MemMaxAge,
 		sqlMem:              cfg.SQLMem,
 		exportDir:           cfg.ExportDir,
@@ -340,6 +393,80 @@ func (s *Sweeper) chatsPruneEnabled() bool {
 // memory-reclamation sweep: "prune" always, "export+prune" only with a
 // configured ExportDir. "off"/unknown → false. Independent of SQLMem being set —
 // base memory + dirents reclaim even with SQL Memory disabled.
+// memContentEnabled reports whether the class-aware content prune runs. A nil
+// pruner disables it regardless of mode: a deployment with no Document tool has no
+// entity content to prune, and reporting "enabled" while doing nothing would be
+// worse than reporting off.
+func (s *Sweeper) memContentEnabled() bool {
+	if s.chunkPruner == nil || s.sqlMem == nil {
+		return false
+	}
+	switch s.memContentMode {
+	case "prune":
+		return true
+	case "export+prune":
+		// No separate export arm YET: the retired chunks a prune removes are already
+		// reachable through the document's own export_md until the moment they are
+		// deleted, so an operator wanting a copy exports the document. Treated as
+		// `prune` rather than refused, because refusing a mode the other three
+		// families accept would be a surprising asymmetry — and noted at the call
+		// site so the log does not imply an archive was written.
+		return true
+	}
+	return false
+}
+
+// sweepMemContentOnce prunes retired entity-tier chunks across every durable scope.
+//
+// Walks scopes rather than agents: retired content lives in whatever scope wrote it,
+// including tenant scopes shared by many agents, so an agent-keyed walk would miss
+// exactly the shared graph the entity tier exists for.
+func (s *Sweeper) sweepMemContentOnce(parent context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	defer cancel()
+
+	scopes, err := s.sqlMem.ListScopes(ctx)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := s.now().Add(-s.memContentMaxAge).UnixNano()
+
+	total := 0
+	for _, key := range scopes {
+		// The memory scope for chunk BODIES follows the SQL scope name. A scope value
+		// this maps no case for (today: `run`, which is ephemeral and dropped whole at
+		// run end) is skipped rather than guessed at — pruning bodies out of the wrong
+		// partition would delete another scope's text.
+		mscope, ok := memScopeFor(key.Scope)
+		if !ok {
+			continue
+		}
+		n, perr := s.chunkPruner.PruneRetiredChunks(ctx, key, mscope, cutoff, s.dryRun)
+		if perr != nil {
+			// One bad scope must not abort the sweep: the others are independent, and a
+			// scope whose prune failed is retried next interval.
+			s.logf("retention: mem_content: scope %s/%s/%s: %v", key.Tenant, key.Scope, key.ScopeID, perr)
+			continue
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// memScopeFor maps a SQL Memory scope name to the k/v Memory scope that holds its
+// chunk bodies. Reports ok=false for a scope with no body partition.
+func memScopeFor(sqlScope string) (store.MemoryScope, bool) {
+	switch sqlScope {
+	case "agent":
+		return store.MemoryScopeAgent, true
+	case "user":
+		return store.MemoryScopeUser, true
+	case "tenant":
+		return store.MemoryScopeTenant, true
+	}
+	return "", false
+}
+
 func (s *Sweeper) memReclaimEnabled() bool {
 	switch s.memMode {
 	case "prune":
@@ -460,6 +587,13 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 			s.logf("retention: mem sweep failed: %v", err)
 		}
 		res.Mem += n
+	}
+	if s.memContentEnabled() {
+		n, err := s.sweepMemContentOnce(parent)
+		if err != nil {
+			s.logf("retention: mem_content sweep: %v", err)
+		}
+		res.MemContent += n
 	}
 	if s.defsPurgeEnabled() {
 		s.sweepDefsOnce(parent, &res)

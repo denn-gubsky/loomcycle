@@ -2478,13 +2478,22 @@ func main() {
 			// RFC BM Phase 3 retired-agent memory reclamation (opt-in; default OFF).
 			MemMode:   cfg.Env.RetentionMemMode,
 			MemMaxAge: cfg.Env.RetentionMemMaxAge,
-			ExportDir: cfg.Env.RetentionExportDir,
+			// RFC BL P4d class-aware memory-CONTENT prune (opt-in; default OFF).
+			MemContentMode:   cfg.Env.RetentionMemContentMode,
+			MemContentMaxAge: cfg.Env.RetentionMemContentMaxAge,
+			ExportDir:        cfg.Env.RetentionExportDir,
 		}
 		// SQL-Memory scope reclamation needs the manager; nil (SQL Memory off) is
 		// fine — the mem sweep then reclaims base memory + dirents only. Typed-nil
 		// guard: only assign the interface field from a non-nil pointer.
 		if sqlMemMgr != nil {
 			rCfg.SQLMem = sqlMemMgr
+			// The content prune needs the Document tool, which owns the chunk cascade —
+			// the family stays off without it, so a deployment with no SQL Memory is
+			// unaffected. Same typed-nil discipline as the interface assignments around it.
+			if documentTool != nil {
+				rCfg.ChunkPruner = documentTool
+			}
 		}
 		// Same typed-nil guard as the usage block: only assign the interface field
 		// from a non-nil pointer, or the sweeper's nil-check would see a non-nil
