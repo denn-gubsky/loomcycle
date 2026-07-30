@@ -52,9 +52,11 @@ skills:
           "close": false                       // force-close a reused session
         }
       Commands run in order and STOP at the first failure unless continue_on_error.
-      The result carries { ok, session_id, results:[{command, ok, output}], artifacts }.
-      Authenticated git "just works" when the operator configured a `sandbox_github`
-      credential (dev/exec runs `gh auth setup-git` at open).
+      dev/exec's reply is a summary header ("ran N command(s): X ok, Y failed …") plus
+      each command's OUTPUT (tail-capped; set `output_cap` to change the cap) and any
+      `read` artifacts — read it to see what ran and why anything failed, and to get
+      the `session_id` to reuse. Authenticated git "just works" when the operator
+      configured a `sandbox_github` credential (dev/exec runs `gh auth setup-git` at open).
 
       ## One-shot
         Agent {op:"spawn", name:"dev/exec",

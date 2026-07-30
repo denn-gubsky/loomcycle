@@ -24,11 +24,14 @@ import (
 type fakeSandbox struct {
 	calls   []recordedCall
 	openN   int
-	openNet []string        // network arg of each sandbox_open
-	execErr map[string]bool // commands whose exec should return IsError
+	openNet []string          // network arg of each sandbox_open
+	execErr map[string]bool   // commands whose exec should return IsError
+	execOut map[string]string // commands whose exec returns a scripted output
 }
 
-func newFakeSandbox() *fakeSandbox { return &fakeSandbox{execErr: map[string]bool{}} }
+func newFakeSandbox() *fakeSandbox {
+	return &fakeSandbox{execErr: map[string]bool{}, execOut: map[string]string{}}
+}
 
 func (s *fakeSandbox) execs() []string {
 	var out []string
@@ -76,6 +79,9 @@ func (t *sbxTool) Execute(_ context.Context, raw json.RawMessage) (tools.Result,
 		if t.s.execErr[cmd] {
 			// Mirror the real tool: a non-zero exit is IsError with the output.
 			return tools.Result{IsError: true, Text: "boom\n[exit: 1]"}, nil
+		}
+		if out, ok := t.s.execOut[cmd]; ok {
+			return tools.Result{Text: out}, nil // scripted output (e.g. a long one)
 		}
 		return tools.Result{Text: "ok: " + cmd}, nil // raw command output (not JSON)
 	case "mcp__sandbox__sandbox_write":
@@ -170,9 +176,15 @@ func TestDevExec_RunsEnvelopeOpenWriteExecReadClose(t *testing.T) {
 	if res.StopReason != "end_turn" {
 		t.Errorf("stop reason = %q, want end_turn", res.StopReason)
 	}
-	// The structured result reports both commands succeeded.
+	// final_text reports the counts AND carries each command's OUTPUT (v1.42.1) — a
+	// blocking caller only ever sees final_text, so the outputs must be in it.
 	if !strings.Contains(res.FinalText, "2 ok, 0 failed") {
 		t.Errorf("final_text = %q, want it to report 2 ok / 0 failed", res.FinalText)
+	}
+	for _, want := range []string{"ok: echo hi", "ok: go build ./...", "file-contents"} {
+		if !strings.Contains(res.FinalText, want) {
+			t.Errorf("final_text must include the command/artifact output %q; got:\n%s", want, res.FinalText)
+		}
 	}
 }
 
@@ -195,8 +207,13 @@ func TestDevExec_StopsAtFirstFailingCommand(t *testing.T) {
 	if !s.hasTool("mcp__sandbox__sandbox_close") {
 		t.Errorf("the session must still close after a failing command")
 	}
-	if !strings.Contains(res.FinalText, "1 failed") || !strings.Contains(res.FinalText, "first failure: boom") {
-		t.Errorf("final_text = %q, want it to report the failure + which command", res.FinalText)
+	if !strings.Contains(res.FinalText, "1 failed") {
+		t.Errorf("final_text = %q, want it to report the failure count", res.FinalText)
+	}
+	// The failing command's block must carry its OUTPUT (+ a FAILED tag) so the
+	// caller can diagnose — "[exit: 1]" appears only in the command output.
+	if !strings.Contains(res.FinalText, "[exit: 1]") || !strings.Contains(res.FinalText, "[FAILED]") {
+		t.Errorf("final_text must include the failed command's output + a FAILED tag; got:\n%s", res.FinalText)
 	}
 }
 
@@ -236,6 +253,24 @@ func TestDevExec_EmptyEnvelopeDoesNothing(t *testing.T) {
 	}
 	if !strings.Contains(res.FinalText, "nothing to do") {
 		t.Errorf("final_text = %q, want a usage/nothing-to-do message", res.FinalText)
+	}
+}
+
+// TestDevExec_TailCapsLongOutput: a per-command output longer than output_cap is
+// truncated to its TAIL (a failure's message is at the end), with a marker.
+func TestDevExec_TailCapsLongOutput(t *testing.T) {
+	s := newFakeSandbox()
+	s.execOut["big"] = "UNIQUEHEAD" + strings.Repeat("x", 200) + "UNIQUETAIL"
+	res := runDevExec(t, s, `{"output_cap":20,"commands":["big"]}`)
+
+	if !strings.Contains(res.FinalText, "truncated") {
+		t.Errorf("expected a truncation marker; got:\n%s", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "UNIQUETAIL") {
+		t.Errorf("tail-cap must keep the output TAIL; got:\n%s", res.FinalText)
+	}
+	if strings.Contains(res.FinalText, "UNIQUEHEAD") {
+		t.Errorf("tail-cap must drop the output HEAD; got:\n%s", res.FinalText)
 	}
 }
 
