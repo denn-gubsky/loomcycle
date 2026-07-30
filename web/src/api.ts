@@ -2561,6 +2561,56 @@ export function getRouting(): Promise<RoutingResponse> {
   return jsonFetch<RoutingResponse>("/v1/_routing");
 }
 
+// ---- Tenant ontology (GET/POST /v1/_ontology) ----
+// The entity types the memory tier extracts against: a base seed every tenant
+// gets, optionally layered with types this tenant defines in a document. The
+// tenant layer is INERT until an operator confirms it, and this is the surface
+// that shows that state and flips it.
+//
+// `terms` and `effective` are both reported because the difference between them
+// IS the gate: while draft, `terms` is what the operator wrote and `effective`
+// shows it isn't applied. The layering is computed server-side so this client
+// can't drift from what a run actually receives.
+export interface OntologyTerm {
+  name: string;
+  fields?: string[];
+  source: "base" | "tenant";
+}
+
+export interface OntologyResponse {
+  tenant: string;
+  path: string;
+  document_id?: string;
+  root_chunk_id?: string;
+  /** The root chunk's raw status — may be any string a document edit left there. */
+  status: string;
+  /** The decision derived from `status`. A typo'd status is not confirmed. */
+  confirmed: boolean;
+  /** False when the document doesn't exist and couldn't be created (no SQL Memory). */
+  provisioned: boolean;
+  /** This tenant's own types, reported whether or not they're in force. */
+  terms: OntologyTerm[];
+  /** What a run gets right now: the seed, plus the tenant layer if confirmed. */
+  effective: OntologyTerm[];
+}
+
+export function getOntology(tenant?: string): Promise<OntologyResponse> {
+  const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
+  return jsonFetch<OntologyResponse>(`/v1/_ontology${q}`);
+}
+
+/** Flip the tenant layer on or off. The API accepts only these two values. */
+export function setOntologyStatus(
+  status: "confirmed" | "draft",
+  tenant?: string,
+): Promise<OntologyResponse> {
+  const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
+  return postJSON<OntologyResponse>(
+    `/v1/_ontology${q}`,
+    JSON.stringify({ status }),
+  );
+}
+
 // --- RFC AR: secure credential store (POST /v1/_credentialdef) ---
 
 // CredentialScope buckets a stored secret. tenant = shared across the tenant;

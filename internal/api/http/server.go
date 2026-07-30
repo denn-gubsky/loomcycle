@@ -2716,6 +2716,13 @@ func (s *Server) Mux() http.Handler {
 	// live availability + the active-providers header. Scope-gated in
 	// requiredScopeFor.
 	mux.Handle("GET /v1/_routing", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRouting))))
+	// The tenant ontology's operator surface: GET reports the gate + the effective
+	// (base ⊕ tenant) types, POST flips draft↔confirmed. Tenant-scoped — a tenant
+	// operator confirms its OWN tenant's ontology; the GET provisions the document
+	// on first reference so it can be authored before any run needs it. Authoring
+	// itself stays in the Path/Document browser. Scope-gated in requiredScopeFor.
+	mux.Handle("GET /v1/_ontology", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntology))))
+	mux.Handle("POST /v1/_ontology", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologySetStatus))))
 	// RFC BK P3: resident interactive sub-agent visibility + operator control.
 	// GET lists (tenant-scoped); POST close/cancel act on one (tenant-gated).
 	// Per-replica (the resident registry is in-process). Scope-gated in

@@ -5,18 +5,21 @@ import {
   CredentialScope,
   HealthResponse,
   MemoryOrphanReport,
+  OntologyResponse,
   PresetUnit,
   RuntimeStateResponse,
   createCredential,
   deleteCredential,
   getEnvTemplate,
   getHealth,
+  getOntology,
   getRuntimeState,
   listCredentials,
   listPresets,
   pauseRuntime,
   repairTenantMemory,
   resumeRuntime,
+  setOntologyStatus,
   showPreset,
 } from "../api";
 import { usePrincipal } from "../components/Layout";
@@ -30,8 +33,9 @@ import TokenManager from "../components/TokenManager";
 // rendered for both in Layout); the tabs are filtered by scope:
 //   - tenant-visible (admin + substrate:tenant): credentials (enter your own
 //     provider API keys — RFC AR), limits (per-scope token budgets, RFC AW),
-//     routing (the resolved model cascade). Their data is tenant-scoped
-//     server-side — a tenant operator sees only its own tenant.
+//     routing (the resolved model cascade), ontology (the tenant entity types +
+//     the draft→confirmed gate). Their data is tenant-scoped server-side — a
+//     tenant operator sees only its own tenant.
 //   - admin-only: tokens (minting, RFC L), presets (RFC AQ), runtime
 //     (pause/resume), health.
 // The backend gates every surface too (defence in depth). Surfaces with their
@@ -40,6 +44,7 @@ type Section =
   | "credentials"
   | "limits"
   | "routing"
+  | "ontology"
   | "tokens"
   | "presets"
   | "runtime"
@@ -56,6 +61,11 @@ const SECTIONS: SectionDef[] = [
   { id: "credentials", label: "Credentials", admin: false },
   { id: "limits", label: "Limits", admin: false },
   { id: "routing", label: "Routing", admin: false },
+  // Tenant-visible: the ontology is per-tenant config, and the operator who owns
+  // the vocabulary is the one who should activate it. GET/POST /v1/_ontology are
+  // ScopeTenant and derive the tenant from the principal, so a tenant operator
+  // reaches only its own.
+  { id: "ontology", label: "Ontology", admin: false },
   { id: "tokens", label: "Tokens", admin: true },
   { id: "presets", label: "Presets", admin: true },
   { id: "runtime", label: "Runtime", admin: true },
@@ -97,6 +107,7 @@ export default function SettingsView() {
         {section === "credentials" && <CredentialsSection />}
         {section === "limits" && <LimitsView />}
         {section === "routing" && <RoutingView />}
+        {section === "ontology" && <OntologySection />}
         {section === "tokens" && <TokenManager />}
         {section === "presets" && <PresetsSection />}
         {section === "runtime" && <RuntimeSection />}
@@ -431,6 +442,173 @@ function PresetsSection() {
 // This lives in the UI because the deployments most likely to be affected are
 // appliance-style ones with no shell — the alternative is hand-writing a
 // collision-aware UPDATE against a live database.
+// ─── Ontology ────────────────────────────────────────────────────────────────
+
+// OntologySection is the operator control for the tenant's entity types.
+//
+// The failure this exists to prevent is not an error message: it is an operator
+// who edits the ontology document, never learns that editing alone changes
+// nothing, and concludes the feature is broken. So the panel leads with the state
+// of the gate, and shows the tenant's own types NEXT TO the types actually in
+// force — the gap between the two columns is the only visible evidence that a
+// draft is inert.
+//
+// Authoring stays in the Path browser (a Markdown document deserves the document
+// editor); the two things that cannot live there are the gate and the layered
+// result, so those are what this panel is.
+function OntologySection() {
+  const [state, setState] = useState<OntologyResponse | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setState(await getOntology());
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const flip = async (status: "confirmed" | "draft") => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      setState(await setOntologyStatus(status));
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const tenantTerms = state?.terms ?? [];
+  // A status that is neither of the two words the gate accepts — reachable by
+  // editing the document's status field by hand. Called out explicitly, because
+  // this is precisely the state that looks confirmed and behaves as draft.
+  const oddStatus =
+    !!state?.status && state.status !== "confirmed" && state.status !== "draft";
+
+  return (
+    <div className="settings-panel">
+      <h2>Ontology</h2>
+      <p className="settings-help">
+        The entity types agents extract against. Every tenant starts from a
+        standard set; types you define in{" "}
+        <Link to="/paths">{state?.path ?? "/memory/ontology"}</Link> (tenant
+        scope) are layered on top — but only once you confirm them. Until then
+        your edits are stored and inert, so you can draft an ontology without
+        changing what any running agent is told.
+      </p>
+
+      {err && <div className="settings-error">{err}</div>}
+
+      {state && !state.provisioned && (
+        <div className="settings-muted">
+          No ontology document — this deployment has no SQL Memory configured, so
+          agents run on the standard types alone.
+        </div>
+      )}
+
+      {state?.provisioned && (
+        <>
+          <div className="settings-row">
+            <span className={state.confirmed ? "settings-flash" : "settings-muted"}>
+              {state.confirmed
+                ? `Confirmed — your ${tenantTerms.length} type(s) are in force.`
+                : `Draft — your ${tenantTerms.length} type(s) are NOT in force.`}
+            </span>
+            {state.confirmed ? (
+              <button type="button" onClick={() => flip("draft")} disabled={busy}>
+                Revert to draft
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => flip("confirmed")}
+                disabled={busy}
+              >
+                Confirm
+              </button>
+            )}
+          </div>
+
+          {oddStatus && (
+            <p className="settings-help">
+              The document's status reads <code>{state.status}</code>, which is
+              neither <code>draft</code> nor <code>confirmed</code> — the tenant
+              layer is treated as draft. Use the button above rather than editing
+              the status by hand; only the exact word activates it.
+            </p>
+          )}
+
+          {state.confirmed && tenantTerms.length === 0 && (
+            <p className="settings-help">
+              Confirmed, but no types were found in the document. Each type needs
+              its own <code>## name</code> heading, with field names in backticks
+              on the bullets beneath it — anything else is skipped, so a
+              differently-formatted document confirms to nothing.
+            </p>
+          )}
+
+          <div className="settings-row">
+            <table className="settings-table">
+              <thead>
+                <tr>
+                  <th>this deployment defines</th>
+                  <th>in force now</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    {tenantTerms.length === 0 ? (
+                      <span className="settings-muted">none yet</span>
+                    ) : (
+                      tenantTerms.map((t) => (
+                        <div key={t.name}>
+                          <code>{t.name}</code>
+                          {t.fields && t.fields.length > 0 && (
+                            <span className="settings-muted">
+                              {" "}
+                              — {t.fields.join(", ")}
+                            </span>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </td>
+                  <td>
+                    {(state.effective ?? []).map((t) => (
+                      <div key={t.name}>
+                        <code>{t.name}</code>
+                        {t.source === "tenant" && (
+                          <span className="settings-flash"> yours</span>
+                        )}
+                        {t.fields && t.fields.length > 0 && (
+                          <span className="settings-muted">
+                            {" "}
+                            — {t.fields.join(", ")}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function MaintenanceSection() {
   // Deliberately NOT prefilled from the principal. A legacy/open-mode token
   // reports tenant "default", which holds none of the stranded rows — prefilling
