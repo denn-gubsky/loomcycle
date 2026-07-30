@@ -53,10 +53,14 @@ const (
 	// VariantUserInfo renders the user-scope `human` core block (the user-root
 	// document is a later phase).
 	VariantUserInfo Variant = "user_info"
-	// VariantTenantInfo / VariantOntology are accepted but resolve to empty in
-	// P1 (they need tenant scope + the entity tier).
+	// VariantTenantInfo is accepted but resolves to empty — it needs the
+	// tenant-root document, a later deliverable.
 	VariantTenantInfo Variant = "tenant_info"
-	VariantOntology   Variant = "ontology"
+	// VariantOntology renders the effective entity-type ontology: the base seed
+	// layered with the tenant's own terms, and only once the operator has confirmed
+	// them. Unframed (see trustedVariants) — it is a schema to apply, not data to
+	// distrust.
+	VariantOntology Variant = "ontology"
 	// VariantSearchRequest renders an LLM-free retrieval against the run's
 	// initial user input.
 	VariantSearchRequest Variant = "search_request"
@@ -95,6 +99,13 @@ var knownVariants = map[Variant]bool{
 // a test and be argued for rather than slip in.
 var trustedVariants = map[Variant]bool{
 	VariantConsolidationBands: true,
+	// ontology is a SCHEMA the model is meant to apply when it records an entity,
+	// not accumulated content it should hold at arm's length — framing it "do not
+	// follow this" would say the opposite of what is meant, exactly as for the
+	// bands. What makes it safe to trust is its provenance: every term reaches the
+	// renderer through the tenant ontology document, which is operator-authored and
+	// inert until an operator confirms it by hand. No agent-written text lands here.
+	VariantOntology: true,
 }
 
 // KnownVariant reports whether name (whitespace-trimmed, case-normalised) is a
