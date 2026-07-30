@@ -155,48 +155,188 @@ func (d *Document) updateChunkForUpsert(ctx context.Context, key sqlmem.ScopeKey
 	return nil
 }
 
-// writeChunkMeta upserts the sidecar row.
+// chunkMetaRow is a sidecar row as stored. Nullable columns are pointers so
+// "absent" survives a read/write round trip — writing 0 where NULL was is the
+// difference between "never retired" and "retired at the unix epoch".
+type chunkMetaRow struct {
+	ValidAt    *int64
+	InvalidAt  *int64
+	CreatedAt  *int64
+	ExpiredAt  *int64
+	Class      string
+	Origin     string
+	Confidence *float64
+	SessionID  string
+	RunID      string
+	EventSeq   *int64
+	NaturalKey string
+}
+
+// readChunkMeta returns the chunk's sidecar row, or found=false when it has none.
+func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (row chunkMetaRow, found bool, err error) {
+	res, err := d.query(ctx, key,
+		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key
+		   FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID)
+	if err != nil || len(res.Rows) == 0 {
+		return chunkMetaRow{}, false, err
+	}
+	r := res.Rows[0]
+	return chunkMetaRow{
+		ValidAt: asInt64Ptr(r[0]), InvalidAt: asInt64Ptr(r[1]),
+		CreatedAt: asInt64Ptr(r[2]), ExpiredAt: asInt64Ptr(r[3]),
+		Class: asStr(r[4]), Origin: asStr(r[5]), Confidence: asFloat64Ptr(r[6]),
+		SessionID: asStr(r[7]), RunID: asStr(r[8]), EventSeq: asInt64Ptr(r[9]),
+		NaturalKey: asStr(r[10]),
+	}, true, nil
+}
+
+// writeChunkMeta upserts the sidecar row, PRESERVING every field the caller did not
+// supply.
+//
+// The preservation is the whole point and it was missing. `upsertChunk` already
+// takes care not to blank a title an upsert never mentioned — then called this,
+// which rebuilt the sidecar from defaults. So the two halves of one operation had
+// opposite semantics, and a re-observation of an existing fact silently:
+//
+//   - dropped `class: evidential` back to `derived`, defeating the retention
+//     exemption that keeps source-of-truth material from being aged out;
+//   - reset `created_at`, so "when did we first believe this" became "when did we
+//     last write it" — the bi-temporal record erased by re-observation;
+//   - cleared `invalid_at` and `expired_at`, UN-RETIRING a superseded fact. The
+//     stale row came back as current beside the one that replaced it, while the
+//     `supersedes` edge still said it had been replaced. Two contradictory facts,
+//     both live, in a store other agents read as ground truth.
+//
+// That last one is the failure supersede-not-delete exists to prevent, and a
+// consolidator upserts by natural key on EVERY pass — so corrections were
+// impermanent by construction.
+//
+// Reviving a retired fact must therefore be explicit: pass `invalid_at` yourself.
+// It is not something a routine re-observation should do as a side effect.
 //
 // Delete-then-insert rather than ON CONFLICT, matching the two existing upserts in
 // this file — one portable statement beats a per-dialect split.
 //
-// `origin` and the provenance triple are SERVER-STAMPED and deliberately not
+// `origin` and the provenance triple stay SERVER-STAMPED and deliberately not
 // readable from the input. A forgeable origin would let any agent label its own
 // writes as machine-distilled, and the column has to stay a trustworthy filter for
-// the ones that really are — the same rule the consolidation queue's origin
-// follows.
+// the ones that really are — the same rule the consolidation queue's origin follows.
 func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunkID string, in docInput) error {
 	now := time.Now().UnixNano()
+	prev, hadPrev, err := d.readChunkMeta(ctx, key, chunkID)
+	if err != nil {
+		// Refuse rather than fall back to defaults. Falling back is exactly the bug
+		// above: a read fault would silently un-retire a fact and strip its class.
+		return err
+	}
+
+	// valid_at — caller, else what was already believed, else now.
 	validAt := now
+	if hadPrev && prev.ValidAt != nil {
+		validAt = *prev.ValidAt
+	}
 	if in.ValidAt != nil {
 		validAt = *in.ValidAt
 	}
-	var invalidAt any
+	// invalid_at — caller, else preserved. Preserving is what keeps a retirement
+	// retired across a re-observation.
+	invalidAt := int64Arg(prev.InvalidAt)
 	if in.InvalidAt != nil {
 		invalidAt = *in.InvalidAt
 	}
-	class := in.Class
+	// created_at / expired_at are SYSTEM time and never caller-settable: the first
+	// is when the store began believing this, the second when it stopped. Only a
+	// first write sets one and only supersede sets the other.
+	createdAt := now
+	if hadPrev && prev.CreatedAt != nil {
+		createdAt = *prev.CreatedAt
+	}
+	expiredAt := int64Arg(prev.ExpiredAt)
+
+	class := prev.Class
+	if in.Class != "" {
+		class = in.Class
+	}
 	if class == "" {
 		class = "derived"
 	}
-	var confidence any
+	confidence := float64Arg(prev.Confidence)
 	if in.Confidence != nil {
 		confidence = *in.Confidence
 	}
+	// The provenance triple is preserved when this write cannot supply it — an
+	// operator editing a fact an agent recorded should not erase which run recorded
+	// it. `origin` DOES re-stamp, because it describes whoever wrote the content
+	// that is there now.
+	runID := tools.RunID(ctx)
+	if runID == "" {
+		runID = prev.RunID
+	}
+	naturalKey := in.NaturalKey
+	if naturalKey == "" {
+		naturalKey = prev.NaturalKey
+	}
+
 	if err := d.exec(ctx, key, `DELETE FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID); err != nil {
 		return err
 	}
 	return d.exec(ctx, key,
 		`INSERT INTO chunk_memory_meta
 		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key)
-		 VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?)`,
-		chunkID, validAt, invalidAt, now, class,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		chunkID, validAt, invalidAt, createdAt, expiredAt, class,
 		originForEntityWrite(ctx), confidence,
-		// session_id stays NULL: it is not on the run ctx, only the run id is. The
-		// column is kept because the consolidation path can fill it when it relays a
-		// drained pending row, and a column that is sometimes populated is more useful
-		// than one removed because one writer cannot fill it.
-		nil, nullIfEmpty(tools.RunID(ctx)), nullIfEmpty(in.NaturalKey))
+		// session_id has no writer yet: it is not on the run ctx, only the run id is.
+		// Preserved rather than nulled so the consolidation path — which CAN fill it
+		// when it relays a drained pending row — does not lose it to the next upsert.
+		nullIfEmpty(prev.SessionID), nullIfEmpty(runID), int64Arg(prev.EventSeq),
+		nullIfEmpty(naturalKey))
+}
+
+// int64Arg / float64Arg turn a nullable read back into a bind arg that round-trips
+// NULL as NULL. A plain zero would assert an instant (the unix epoch) or a
+// confidence of 0 where the column said "unknown".
+func int64Arg(v *int64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func float64Arg(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// asInt64Ptr / asFloat64Ptr read a nullable numeric cell as a pointer, so a NULL
+// survives the round trip. asInt64Ptr reuses asInt64's presence/value split (see
+// its comment: NULL and a real 0 are different claims here).
+func asInt64Ptr(v any) *int64 {
+	if n, ok := asInt64(v); ok {
+		return &n
+	}
+	return nil
+}
+
+func asFloat64Ptr(v any) *float64 {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case float64:
+		return &t
+	case float32:
+		f := float64(t)
+		return &f
+	case int64:
+		f := float64(t)
+		return &f
+	case int:
+		f := float64(t)
+		return &f
+	}
+	return nil
 }
 
 // originForEntityWrite decides the provenance label from the RUN, never the input.
