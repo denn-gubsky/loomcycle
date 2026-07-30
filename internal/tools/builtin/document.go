@@ -147,8 +147,53 @@ var docSchemaDDL = []string{
 	`CREATE TABLE IF NOT EXISTS chunk_types (
 		document_id TEXT NOT NULL, name TEXT NOT NULL, fields TEXT NOT NULL,
 		created_at BIGINT NOT NULL, PRIMARY KEY (document_id, name))`,
+	// chunk_memory_meta — the bi-temporal + provenance sidecar for the entity tier.
+	// Created UNCONDITIONALLY: the tier is opt-in at the level of "does this scope
+	// have entities", not at the level of "does this scope have the table". Gating
+	// the DDL would let a scope exist in two shapes and force every later read to
+	// ask which one it got; one empty table per scope is the cheaper answer.
+	//
+	// TWO timelines, which is the whole point:
+	//   valid_at / invalid_at    — when the fact was true IN THE WORLD
+	//   created_at / expired_at  — when the SYSTEM learned and retired it
+	// Keeping them apart is what lets "as of June…" stay answerable after a
+	// correction: a contradicting fact closes the old row's invalid_at/expired_at
+	// and links `supersedes`, rather than deleting it.
+	//
+	// natural_key is the idempotency handle ({scope}:{type}:{canonical-name} for an
+	// entity, {subject}|{predicate}|{object} for a fact). It lives HERE, in SQL,
+	// rather than in the chunk's `fields` as the design first specified — `fields`
+	// is stored inside the chunkBody JSON blob in the Memory k/v plane, so
+	// "does this entity already exist?" would have meant reading every chunk body
+	// out of Memory and parsing it: O(n) on the one operation an entity graph does
+	// constantly.
+	//
+	// No foreign key, matching the rest of this schema — cascade is explicit in Go
+	// (see deleteChunk / delete_document) so it also cleans the Memory bodies and
+	// does not depend on per-backend FK enforcement.
+	`CREATE TABLE IF NOT EXISTS chunk_memory_meta (
+		chunk_id TEXT PRIMARY KEY,
+		valid_at BIGINT, invalid_at BIGINT,
+		created_at BIGINT, expired_at BIGINT,
+		class TEXT, origin TEXT, confidence REAL,
+		session_id TEXT, run_id TEXT, event_seq BIGINT,
+		natural_key TEXT)`,
+	// UNIQUE per SCOPE, not per document: each scope owns its own database (a
+	// sqlite file / a postgres schema), so a bare UNIQUE index on the column IS
+	// scope-wide — one entity per tenant regardless of which document holds it.
+	//
+	// The column is NULLABLE and almost every chunk leaves it unset. Both tiers
+	// treat NULLs as DISTINCT in a unique index, so ordinary chunks never collide;
+	// that portability assumption is asserted by a test rather than trusted.
+	`CREATE UNIQUE INDEX IF NOT EXISTS chunk_memory_meta_natural_key ON chunk_memory_meta(natural_key)`,
 	`CREATE INDEX IF NOT EXISTS chunks_doc_parent_pos ON chunks(document_id, parent_id, position)`,
 	`CREATE INDEX IF NOT EXISTS chunks_doc_type_status ON chunks(document_id, type, status)`,
+	// The REVERSE edge index. chunk_edges' primary key (from_id, to_id, kind)
+	// serves a forward walk only, so every reverse hop of a graph expansion would
+	// scan the scope's whole edge table. Absent this, retrieval degrades only once
+	// the graph is large enough to matter — the failure that shows up in
+	// production and not in a test.
+	`CREATE INDEX IF NOT EXISTS chunk_edges_to_kind ON chunk_edges(to_id, kind)`,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -944,6 +989,14 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_assets WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
+		// Same ordering constraint for the entity-tier sidecar, and the same reason
+		// it is done here rather than by a foreign key: an orphaned temporal row is
+		// invisible. No read filters it and no sweeper reaps it, so it would sit in
+		// the scope forever pointing at a chunk that no longer exists — the dead-link
+		// class this schema's explicit-cascade discipline exists to prevent.
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_memory_meta WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE document_id = ?`, docID); err != nil {
 			return err
 		}
@@ -1417,6 +1470,13 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				return err
 			}
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_assets WHERE chunk_id = ?`, cid); err != nil {
+				return err
+			}
+			// The sidecar's SECOND cascade site. Both are required: delete_document
+			// walks by document, this walks the descendant set of one chunk, and a
+			// sidecar row reachable only through the path that was missed is an orphan
+			// nothing can see.
+			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_memory_meta WHERE chunk_id = ?`, cid); err != nil {
 				return err
 			}
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE id = ?`, cid); err != nil {
