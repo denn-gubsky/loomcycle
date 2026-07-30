@@ -62,8 +62,10 @@ builder-sidecar                    ──►  per-session container
    Nested podman needs a capable host runtime — **Sysbox** (secure) is preferred;
    `privileged: true` is the fallback (e.g. on TrueNAS, which lacks Sysbox).
 
-4. **Enable the bundle:** `LOOMCYCLE_PRESETS=base,sandbox`. That registers the
-   `dev/sandbox` agent + skill and the `sandbox` MCP server:
+4. **Enable the bundles:** `LOOMCYCLE_PRESETS=base,sandbox,dev-exec`. `sandbox`
+   registers the `sandbox` MCP server + the `dev/sandbox-usage` delegation skill;
+   `dev-exec` registers the deterministic code-js **`dev/exec`** agent (needs
+   `LOOMCYCLE_CODE_AGENTS_ENABLED=1`):
 
    ```yaml
    mcp_servers:
@@ -77,9 +79,11 @@ builder-sidecar                    ──►  per-session container
    (Selecting the bundle supplies this block; re-declare `url` in your overlay if
    the sidecar isn't at `builder-sidecar:9000`.)
 
-5. **Run it.** Start the `dev/sandbox` agent (or grant `mcp__sandbox__*` to your
-   own agent) and ask it to compile/test something. It opens a session, writes
-   files, builds, tests, reads the artifact, and closes.
+5. **Run it.** Spawn the `dev/exec` agent with a JSON command envelope (or grant
+   `mcp__sandbox__*` to your own agent), e.g.
+   `{"commands":["git clone https://github.com/OWNER/REPO .","go build ./... && go test ./..."]}`.
+   It opens a session, writes any `files`, runs the `commands`, reads back any
+   `read` artifacts, and closes — returning structured `results` for you to act on.
 
 ## Tools
 
@@ -123,7 +127,7 @@ real dev — clone/push a **private** repo, use `gh` — inject a GitHub token:
 3. The `sandbox` bundle already forwards it: `mcp_servers.sandbox.headers` carries
    `X-Loom-Sandbox-Env-Gh-Token: "$cred:sandbox_github"`, which loomcycle resolves
    **server-side** (never in the model) and the sidecar maps to `GH_TOKEN` in the
-   session env. In-session, `dev/sandbox` runs `gh auth setup-git` so `git` over
+   session env. `dev/exec` runs `gh auth setup-git` at session open, so `git` over
    HTTPS uses it too.
 
 Unresolved (no such credential, or injection disabled) → the header is dropped →
@@ -147,16 +151,16 @@ sidecar — Chromium lives only in the sidecar, not in loomcycle.
    hardening (`read_only`, tmpfs, `cap_drop: ALL`, `no-new-privileges`).
 2. Use `denngubsky/loomcycle-browser:<version>` for the loomcycle runtime and give
    it the same `PINCHTAB_TOKEN` (the stdio child inherits loomcycle's env).
-3. Overlay the config (a file in `LOOMCYCLE_CONFIG_DIR`):
+3. Overlay the config (a file in `LOOMCYCLE_CONFIG_DIR`) to DECLARE the browser
+   server — the `dev/exec` agent already grants `mcp__browser__*` in its ceiling and
+   drives it via the envelope's optional `browser` steps, so no agent override is
+   needed:
    ```yaml
    mcp_servers:
      browser:
        transport: stdio
        command: /usr/local/bin/pinchtab
        args: ["--server", "http://pinchtab:9867", "mcp"]
-   agents:
-     dev/sandbox:
-       tools: [mcp__sandbox__*, mcp__browser__*, Interruption]
    ```
 
 Scope: reachable URLs (public sites / your deployment / preview URLs). PinchTab
@@ -166,18 +170,22 @@ example is in [`../cloud-deployment/`](../cloud-deployment/).
 ## Delegating from other agents
 
 An agent doesn't hold the `mcp__sandbox__*` tools directly (by design — tool ceilings
-are per operator-vetted agent, and skills can't widen them). To let a general agent run
-code, it **delegates to `dev/sandbox`** via the `Agent` tool — the sub-agent has the
-sandbox tools; the parent never does. The `sandbox` bundle ships a **`dev/sandbox-usage`
-skill** teaching exactly this, and the bundled **`chat/*` agents get the `Agent` tool**,
-so with `LOOMCYCLE_PRESETS=…,chat,sandbox` a chat agent can:
+are per operator-vetted agent, and skills can't widen them). To run code, it
+**delegates to `dev/exec`** via the `Agent` tool. `dev/exec` is a DETERMINISTIC
+code-js executor (no LLM): you send it a JSON **command envelope** and it runs the
+steps in an isolated container and returns STRUCTURED results — the judgment (read a
+failure, decide the fix, re-send) stays with the caller. The `sandbox` bundle ships a
+**`dev/sandbox-usage` skill** teaching exactly this, and the bundled **`chat/*` agents
+get the `Agent` tool**, so with `LOOMCYCLE_PRESETS=…,chat,sandbox,dev-exec` a chat
+agent can:
 
-- **one-shot:** `Agent {op:"spawn", name:"dev/sandbox", prompt:"clone X, build + test, report"}` — dev/sandbox opens a session, iterates, closes, returns; or
-- **multi-step:** open once telling it to keep the session open + report the `session_id`, then reuse that `session_id` on later spawns (same container, state preserved), and close it at the end.
+- **one-shot:** `Agent {op:"spawn", name:"dev/exec", prompt:"{\"commands\":[\"git clone https://github.com/OWNER/REPO .\",\"go build ./... && go test ./...\"]}"}` — read `results`, and if a command failed, spawn again with corrected `commands`/`files`; or
+- **multi-step:** first envelope with `"keep_open": true` → capture `session_id` → pass it back on later envelopes (same warm container) → finish with `"close": true`.
 
 To let your own agent delegate, grant it the `Agent` tool (and, optionally, put
 `dev/sandbox-usage` in its `skills:`). To let an agent run the sandbox *itself* rather
-than delegate, grant it the `mcp__sandbox__*` tools directly.
+than delegate, grant it the `mcp__sandbox__*` tools directly. (`dev/exec` needs the
+`dev-exec` bundle + `LOOMCYCLE_CODE_AGENTS_ENABLED=1`.)
 
 ## Sidecar configuration
 
