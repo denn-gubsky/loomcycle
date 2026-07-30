@@ -41,7 +41,15 @@ type retentionReportResponse struct {
 	// knobs (config only — tenant-readable).
 	MemMode     string `json:"mem_mode"`
 	MemMaxAgeMS int64  `json:"mem_max_age_ms"`
-	ExportDir   string `json:"export_dir,omitempty"`
+	// MemContentMode / MemContentMaxAgeMS are the retired-entity-content prune knobs
+	// — distinct from MemMode, which reclaims a retired AGENT's whole scope. This one
+	// prunes superseded content out of scopes that are still live, and exempts
+	// `evidential` content at any age. Reported so the report covers every configured
+	// family: an operator reading a report that omits a family it has enabled would
+	// reasonably conclude nothing is deleting their data.
+	MemContentMode     string `json:"mem_content_mode"`
+	MemContentMaxAgeMS int64  `json:"mem_content_max_age_ms"`
+	ExportDir          string `json:"export_dir,omitempty"`
 	// Purgeable is the per-def-type count of versions the CURRENT age + keep-last-N
 	// settings would purge right now, plus an aged-chat-session count under "chats"
 	// and a retired-agent memory-reclamation count under "mem" (all regardless of
@@ -95,6 +103,10 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	if memMode == "" {
 		memMode = "off"
 	}
+	memContentMode := s.cfg.Env.RetentionMemContentMode
+	if memContentMode == "" {
+		memContentMode = "off"
+	}
 	// 0 = inherit the global chat age (never "delete immediately"), resolved the
 	// same way retention.New resolves it.
 	chatsInternalMaxAge := s.cfg.Env.RetentionChatsInternalMaxAge
@@ -113,6 +125,8 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 		ChatsInternalMaxAgeMS: chatsInternalMaxAge.Milliseconds(),
 		MemMode:               memMode,
 		MemMaxAgeMS:           s.cfg.Env.RetentionMemMaxAge.Milliseconds(),
+		MemContentMode:        memContentMode,
+		MemContentMaxAgeMS:    s.cfg.Env.RetentionMemContentMaxAge.Milliseconds(),
 	}
 
 	if s.store == nil {
