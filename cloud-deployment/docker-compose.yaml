@@ -191,7 +191,7 @@ services:
       retries: 12
       start_period: 15s
 
-  # ── Headless browser (PinchTab) — internal MCP browser for the dev/sandbox agent.
+  # ── Headless browser (PinchTab) — internal MCP browser for the dev/exec agent.
   #    stdio-only MCP, so loomcycle spawns `pinchtab … mcp` (client baked into its
   #    derived image) against THIS server; Chromium lives here, not in loomcycle.
   #    Internal ONLY — no published port (pinchtab's control plane is not for public

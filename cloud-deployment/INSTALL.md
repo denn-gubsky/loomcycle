@@ -158,7 +158,7 @@ SANDBOX_AUTH_TOKEN=REPLACE_ME                # openssl rand -hex 32 (shared with
 TS_AUTHKEY=tskey-auth-REPLACE_ME             # Phase 3 (reusable, tagged)
 CLOUDFLARE_TUNNEL_TOKEN=REPLACE_ME           # Phase 4
 SEARXNG_SECRET=REPLACE_ME                    # openssl rand -hex 32
-PINCHTAB_TOKEN=REPLACE_ME                    # openssl rand -hex 32 (dev/sandbox headless browser)
+PINCHTAB_TOKEN=REPLACE_ME                    # openssl rand -hex 32 (dev/exec headless browser)
 # ── provider keys — at least one your tiers route to ──
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
@@ -172,9 +172,10 @@ Notes:
   NOT mint a dedicated `substrate:admin` token for it — that disables the
   `LOOMCYCLE_AUTH_TOKEN` login (no-lockout gate).
 - The DSN host is **`postgres`** (the compose service) — don't change it.
-- **Headless browser (dev/sandbox):** the `pinchtab` sidecar gives the dev agent
-  `mcp__browser__*` tools. PinchTab's MCP is stdio-only, so loomcycle uses a derived
-  image (`loomcycle.Dockerfile`) that bakes in the pinchtab MCP client — `make up`
+- **Headless browser (dev/exec):** the `pinchtab` sidecar gives the deterministic
+  `dev/exec` agent `mcp__browser__*` tools (driven via the envelope's optional
+  `browser` steps). PinchTab's MCP is stdio-only, so loomcycle uses a derived image
+  (`loomcycle.Dockerfile`) that bakes in the pinchtab MCP client — `make up`
   therefore BUILDS the loomcycle image (first run is slower; needs Docker Hub
   access). The sidecar is internal-only (no published port), and PinchTab keeps
   browsing **local-only** until you widen its domain allowlist (IDPI) — to test
@@ -214,8 +215,8 @@ make ps          # all services `running`/`healthy`; loomcycle-migrate `exited (
    lists the new token under its derived `t_…` tenant. (A `curl` to `/api/mint` WITHOUT an
    Access cookie must return `401`.)
 7. **Functional**: run a `chat/medium` agent that uses WebSearch (proves SearXNG),
-   a `dev/sandbox` run (proves the builder sidecar via `mcp__sandbox__*`), and a
-   Document op (proves SQL Memory + pgvector).
+   a `dev/exec` run (proves the builder sidecar via `mcp__sandbox__*` — e.g.
+   `{"commands":["uname -a"]}`), and a Document op (proves SQL Memory + pgvector).
 
 ---
 

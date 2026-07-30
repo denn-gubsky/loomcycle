@@ -175,10 +175,13 @@ warm. Full detail: [`README.md`](README.md#durable-workspaces-persistent-work).
 
 On the **loomcycle** service, two changes:
 
-1. Add the **`sandbox`** bundle to your presets — it registers the `dev/sandbox`
-   agent + skill and the `mcp_servers.sandbox` block that dials the sidecar:
+1. Add the **`sandbox`** bundle (the `mcp_servers.sandbox` wiring + the
+   `dev/sandbox-usage` delegation skill) and the **`dev-exec`** bundle (the
+   deterministic code-js `dev/exec` executor agent — needs
+   `LOOMCYCLE_CODE_AGENTS_ENABLED=1`):
    ```yaml
-   LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples,sandbox"
+   LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples,sandbox,dev-exec"
+   LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
    ```
 2. Ensure `SANDBOX_AUTH_TOKEN` is set (Phase 2 added it to
    `loomcycle.secrets.env`, which the loomcycle service already reads via `env_file`).
@@ -209,10 +212,11 @@ to the sidecar (lazy-retries if the sidecar starts a moment later — non-fatal)
    `loomcycle-builder <ver> listening on :9000 (... runtime="" ...)`.
 2. **Tools discovered:** the loomcycle logs show the `sandbox` MCP server connecting
    and registering `mcp__sandbox__*` (or check the Web UI → Integrations / Library).
-3. **End-to-end:** start the **`dev/sandbox`** agent (Web UI `/run`, or `POST /v1/runs`)
-   and ask it to *"open a sandbox, write a Go hello-world, build and run it, and show
-   the output."* It should `sandbox_open` → `sandbox_write` → `sandbox_exec "go run ."`
-   → return the output → `sandbox_close`.
+3. **End-to-end:** spawn the **`dev/exec`** agent (Web UI `/run`, or `POST /v1/runs`)
+   with a command envelope, e.g.
+   `{"files":[{"path":"main.go","content":"package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hi\")}"}],"commands":["go run ."]}`.
+   It runs `sandbox_open` → `sandbox_write` → `sandbox_exec "go run ."` → `sandbox_close`
+   and returns the `results` (with the `go run` output).
 4. **Isolation spot-check** (on the TrueNAS host shell, during a run):
    ```sh
    docker ps --filter label=loomcycle.managed=1     # a loom-sbx-… sibling appears
