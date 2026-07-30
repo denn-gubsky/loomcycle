@@ -49,6 +49,7 @@ agents:
       //   files       array   [{path, content, encoding?}] written before commands
       //   commands    array   ordered shell commands; stop at first failure unless continue_on_error
       //   continue_on_error bool  run every command even after a failure (default false)
+      //   output_cap  number  per-command/artifact tail-cap in final_text (default 4000)
       //   timeout_seconds, max_output_bytes  numbers  per-exec bounds (clamped)
       //   read        array   artifacts to read back: "path" or {path, encoding?}
       //   keep_open   bool    do not close the session (leave it for follow-ups)
@@ -57,7 +58,8 @@ agents:
       //                       (op: navigate|get_text|snapshot|screenshot|click|type|press|wait)
       //
       // Returns { final_text, ok, session_id, kept_open, files_written, results,
-      //           artifacts, browser }.
+      //           artifacts, browser }. final_text carries the per-command OUTPUT
+      //           (tail-capped), because a blocking caller only ever sees final_text.
 
       function run(input) {
         var env = parseEnvelope(input);
@@ -111,8 +113,12 @@ agents:
           try { mcp__sandbox__sandbox_close({ session_id: sid }); closed = true; } catch (e) {}
         }
 
+        // final_text carries each command's OUTPUT (tail-capped), not just a summary:
+        // a blocking spawn_run / Agent-delegation surfaces ONLY final_text, so the
+        // caller must be able to read what a command printed and why it failed.
+        var cap = (typeof env.output_cap === "number" && env.output_cap > 0) ? env.output_cap : 4000;
         return {
-          final_text: summarize(results, browser, sid, failed, !closed),
+          final_text: report(results, artifacts, browser, sid, failed, !closed, cap),
           ok: !failed, session_id: sid, kept_open: !closed,
           files_written: wrote, results: results, artifacts: artifacts, browser: browser
         };
@@ -178,21 +184,50 @@ agents:
         return m;
       }
 
-      function summarize(results, browser, sid, failed, kept) {
+      // report renders the full result INTO final_text: a summary header, then each
+      // command with its OUTPUT (tail-capped), then any read artifacts and browser
+      // results. The code-js provider surfaces ONLY final_text, so this is how a
+      // delegating caller sees what actually happened + why a step failed.
+      function report(results, artifacts, browser, sid, failed, kept, cap) {
         var ok = 0, bad = 0, skip = 0;
         for (var i = 0; i < results.length; i++) {
           if (results[i].skipped) skip++; else if (results[i].ok) ok++; else bad++;
         }
-        var s = "ran " + results.length + " command(s): " + ok + " ok, " + bad + " failed";
-        if (skip) s += ", " + skip + " skipped";
-        if (browser && browser.length) s += "; " + browser.length + " browser step(s)";
-        s += "; session " + sid + (kept ? " (kept open)" : " (closed)");
-        if (failed) {
-          for (var j = 0; j < results.length; j++) {
-            if (results[j].ok === false) { s += " :: first failure: " + results[j].command; break; }
+        var lines = ["ran " + results.length + " command(s): " + ok + " ok, " + bad + " failed" +
+          (skip ? (", " + skip + " skipped") : "") +
+          "; session " + sid + (kept ? " (kept open)" : " (closed)")];
+        for (var j = 0; j < results.length; j++) {
+          var r = results[j];
+          var tag = r.skipped ? "SKIPPED" : (r.ok ? "ok" : "FAILED");
+          lines.push("");
+          lines.push("$ " + r.command + "   [" + tag + "]");
+          if (!r.skipped) lines.push(tailCap(r.output, cap));
+        }
+        for (var a = 0; artifacts && a < artifacts.length; a++) {
+          var art = artifacts[a];
+          lines.push("");
+          if (art.ok) {
+            lines.push("# read " + art.path + " (" + String(art.content || "").length + " bytes)");
+            lines.push(tailCap(art.content, cap));
+          } else {
+            lines.push("# read " + art.path + "   [FAILED] " + (art.error || ""));
           }
         }
-        return s;
+        for (var b = 0; browser && b < browser.length; b++) {
+          var bs = browser[b];
+          lines.push("");
+          lines.push("[browser " + bs.op + "]   [" + (bs.ok ? "ok" : "FAILED") + "] " + (bs.ok ? "" : (bs.error || "")));
+          if (bs.ok && bs.result) lines.push(tailCap(bs.result, cap));
+        }
+        return lines.join("\n");
+      }
+
+      // tailCap keeps the LAST n chars of s (a failure's message is at the end),
+      // prefixed with a note when it clipped.
+      function tailCap(s, n) {
+        s = (s === undefined || s === null) ? "" : String(s);
+        if (s.length <= n) return s;
+        return "…[truncated: showing last " + n + " of " + s.length + " chars]\n" + s.substring(s.length - n);
       }
 
       function asText(x) {

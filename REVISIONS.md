@@ -4,6 +4,12 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.42.1
+
+**🖨️ `dev/exec` returned only a summary, so a delegating caller couldn't see what a command actually printed.** The code-js provider surfaces ONLY a run's `final_text`, and `dev/exec`'s `final_text` was the one-line summary ("ran N command(s): X ok, Y failed") — the per-command outputs sat in the `results` array, which a blocking `spawn_run` / `Agent`-spawn never hands back. So the whole "caller reads the results, decides the fix, re-sends" model was broken: the caller got "1 failed" with no error text to act on. Found while verifying v1.42.0 against the live server — the run itself was correct (deterministic, zero-token, every command ran), but the outputs never reached the caller. `final_text` now renders each command with its **output, tail-capped** (a failure's message is at the end, so the tail is the part worth keeping; default 4000 chars, override per-run with `output_cap`), plus any `read` artifacts and browser results — so a blocking caller sees exactly what ran and why anything failed. An execution test asserts the output actually appears in `final_text` and that an over-cap output is tail-truncated with a marker. **Streaming consumers were already fine** — the `/run` terminal, SSE, and gRPC see each command as a live `tool_result` event as it happens; this only fixes the blocking/delegated path.
+
+No migration, no schema/wire change; adapters unchanged. It is a code-js-body + test change embedded in the loomcycle binary, so rebuild/redeploy the loomcycle image to pick it up.
+
 ## What's in v1.42.0
 
 **🧠 The entity tier — bi-temporal facts, a graph-expanded recall, and a tenant vocabulary the operator turns on. Plus a reaper for what supersession leaves behind.** Completes the memory roadmap's fourth phase (RFC BL P4c + P4d). One main-store migration (**0064**, a data repair — see the last paragraph), additive per-scope DDL, additive Document ops on every transport.
