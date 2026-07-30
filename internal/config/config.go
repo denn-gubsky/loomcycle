@@ -2655,6 +2655,19 @@ type Env struct {
 	// latest def version was updated before now-this is eligible. 0 = no minimum
 	// age. Env: LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS.
 	RetentionMemMaxAge time.Duration
+	// RetentionMemContentMode is the RFC BL P4d class-aware memory-CONTENT prune
+	// mode: "off" (default), "prune", or "export+prune". Independent of every other
+	// retention family. Env: LOOMCYCLE_RETENTION_MEM_CONTENT_MODE.
+	//
+	// Prunes retired entity-tier content out of LIVE scopes, which is what
+	// supersede-not-delete makes necessary: a corrected fact is kept so questions
+	// about an earlier moment still have an answer, so retired rows accumulate
+	// forever unless something reaps them. `evidential` content is exempt at any age.
+	RetentionMemContentMode string
+	// RetentionMemContentMaxAge is the age cutoff for the content prune: content
+	// retired before Now()-this is eligible. Env:
+	// LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS.
+	RetentionMemContentMaxAge time.Duration
 	// ReplicasSweepInterval is the dead-replica reaper's tick rate.
 	// Default 60s. Tunable mostly for tests / crash-recovery load
 	// experiments — leave at default in production.
@@ -3658,6 +3671,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.RetentionMemMaxAge = time.Duration(n) * time.Millisecond
+		}
+	}
+	// RFC BL P4d class-aware memory-content prune (opt-in; default OFF).
+	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_CONTENT_MODE"); v != "" {
+		cfg.Env.RetentionMemContentMode = v
+	}
+	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.RetentionMemContentMaxAge = time.Duration(n) * time.Millisecond
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {
