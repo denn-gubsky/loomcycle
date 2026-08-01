@@ -102,6 +102,7 @@ func (d *Dispatcher) open(ctx context.Context, c caller, raw json.RawMessage) (s
 		MemMB     int64   `json:"mem_mb"`
 		Pids      int64   `json:"pids"`
 		Workspace string  `json:"workspace"`
+		Expose    string  `json:"expose"`
 	}
 	if err := unmarshalArgs(raw, &in); err != nil {
 		return "", false, err
@@ -142,6 +143,22 @@ func (d *Dispatcher) open(ctx context.Context, c caller, raw json.RawMessage) (s
 		o.WorkspaceHostDir = dir
 	}
 
+	// RFC BR — session EXPOSURE: attach the session to the operator's dedicated expose
+	// network with a stable --network-alias, so a dev server it runs is reachable by
+	// name (e.g. from the PinchTab browser sidecar) at http://<alias>:<port>. Refused
+	// unless the operator set SANDBOX_EXPOSE_NETWORK — exposure is never implicit,
+	// because it makes the session reachable inbound.
+	if in.Expose != "" {
+		if d.cfg.ExposeNetwork == "" {
+			return "session exposure is not enabled (the operator must set SANDBOX_EXPOSE_NETWORK to a dedicated network); omit `expose`", true, nil
+		}
+		if err := validateExposeAlias(in.Expose); err != nil {
+			return err.Error(), true, nil
+		}
+		o.ExposeNetwork = d.cfg.ExposeNetwork
+		o.ExposeAlias = in.Expose
+	}
+
 	id, err := newID()
 	if err != nil {
 		return "", false, err
@@ -163,6 +180,10 @@ func (d *Dispatcher) open(ctx context.Context, c caller, raw json.RawMessage) (s
 	if in.Workspace != "" {
 		respObj["workspace"] = in.Workspace
 		respObj["persistent"] = true // /work survives close/reap; reopen with the same workspace to resume
+	}
+	if o.ExposeAlias != "" {
+		respObj["exposed"] = true
+		respObj["exposed_host"] = o.ExposeAlias // reach a served port at http://<exposed_host>:<port>
 	}
 	resp, _ := json.Marshal(respObj)
 	return string(resp), false, nil
@@ -205,6 +226,28 @@ func (d *Dispatcher) resolveWorkspaceDir(principal, name string) (string, error)
 		_ = os.Chown(dirResolved, uid, gid)
 	}
 	return dirResolved, nil
+}
+
+// validateExposeAlias gates a caller-supplied network alias (RFC BR): a valid DNS
+// label — lowercase alnum + '-', starting and ending alnum, 1..63 chars — since it
+// becomes a --network-alias the browser resolves by name.
+func validateExposeAlias(a string) error {
+	if a == "" {
+		return fmt.Errorf("expose alias is required")
+	}
+	if len(a) > 63 {
+		return fmt.Errorf("expose alias too long (max 63)")
+	}
+	for i, r := range a {
+		alnum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if !alnum && r != '-' {
+			return fmt.Errorf("expose alias must be a DNS label [a-z0-9-] (got %q)", a)
+		}
+		if (i == 0 || i == len(a)-1) && r == '-' {
+			return fmt.Errorf("expose alias must start and end with a letter or digit")
+		}
+	}
+	return nil
 }
 
 // validateWorkspaceName gates a caller-supplied workspace name: lowercase alnum +
@@ -606,7 +649,8 @@ var (
 			"cpu": {"type": "number", "description": "CPU cores (clamped to the operator maximum)."},
 			"mem_mb": {"type": "integer", "description": "Memory limit in MiB (clamped to the operator maximum)."},
 			"pids": {"type": "integer", "description": "Max process count (clamped to the operator maximum)."},
-			"workspace": {"type": "string", "description": "Name of a PERSISTENT workspace (durable /work that survives close + restart, for iterative dev — reopen with the same name to resume with your checkout + build cache intact). Omit for an in-memory tmpfs /work. Requires the operator to have enabled durable workspaces; [a-z0-9_-], starts alnum."}
+			"workspace": {"type": "string", "description": "Name of a PERSISTENT workspace (durable /work that survives close + restart, for iterative dev — reopen with the same name to resume with your checkout + build cache intact). Omit for an in-memory tmpfs /work. Requires the operator to have enabled durable workspaces; [a-z0-9_-], starts alnum."},
+			"expose": {"type": "string", "description": "Reachable network ALIAS for this session (for in-browser testing): attaches it to the operator's dedicated dev network so a server it runs is reachable at http://<alias>:<port> from the browser sidecar. Requires the operator to have enabled session exposure; a DNS label [a-z0-9-]. The reachable host is returned as exposed_host."}
 		}
 	}`)
 	schemaExec = json.RawMessage(`{

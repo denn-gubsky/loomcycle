@@ -64,11 +64,18 @@ func NewEngine(cfg *Config, run Runner) *Engine { return &Engine{cfg: cfg, run: 
 // openOpts are the clamped, validated parameters for a new session.
 type openOpts struct {
 	Network string // "none" | "egress"
-	TmpfsMB int64
-	CPUs    float64
-	MemMB   int64
-	Pids    int64
-	Image   string
+	// ExposeNetwork + ExposeAlias (RFC BR): when both set, the session attaches to
+	// ExposeNetwork with `--network-alias ExposeAlias` instead of none/bridge, so a
+	// dev server it runs is reachable by that alias (e.g. from the browser sidecar)
+	// for in-browser testing. Set only when the operator enabled SANDBOX_EXPOSE_NETWORK
+	// AND the caller requested `expose` — it makes the session reachable inbound.
+	ExposeNetwork string
+	ExposeAlias   string
+	TmpfsMB       int64
+	CPUs          float64
+	MemMB         int64
+	Pids          int64
+	Image         string
 	// Env is operator-injected session environment (validated, non-reserved names
 	// mapped from X-Loom-Sandbox-Env-* headers — e.g. a GitHub token). Empty unless
 	// env injection is enabled. Emitted BEFORE sessionEnv so the toolchain/cache
@@ -93,11 +100,16 @@ func (e *Engine) runArgs(name string, o openOpts) []string {
 	if e.cfg.Runtime != "" {
 		a = append(a, "--runtime", e.cfg.Runtime)
 	}
-	// Network: off by default; a filtered bridge only when the operator opted
-	// in AND the caller asked for it.
-	if o.Network == "egress" && e.cfg.AllowEgress {
+	// Network. Exposure (RFC BR) wins when requested: the session joins the operator's
+	// dedicated expose network with a stable alias so its dev server is reachable by
+	// name (that network is a normal bridge, so it also has egress). Otherwise a
+	// bridge only when the operator opted into egress AND the caller asked; else none.
+	switch {
+	case o.ExposeAlias != "" && o.ExposeNetwork != "":
+		a = append(a, "--network", o.ExposeNetwork, "--network-alias", o.ExposeAlias)
+	case o.Network == "egress" && e.cfg.AllowEgress:
 		a = append(a, "--network", "bridge")
-	} else {
+	default:
 		a = append(a, "--network", "none")
 	}
 	// Hardening: read-only rootfs; the only writable surfaces are /work and /tmp;

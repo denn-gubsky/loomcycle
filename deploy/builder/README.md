@@ -122,6 +122,7 @@ secret — forwarding it would 401).
 | `SANDBOX_RUNTIME` | `""` | OCI runtime: `""`\|`runc`\|`crun`\|`runsc`\|`kata`. |
 | `SANDBOX_CONTAINER_USER` | `1000:1000` | In-container user (never root). |
 | `SANDBOX_ALLOW_EGRESS` | `0` | `1` permits `network:"egress"` sessions. |
+| `SANDBOX_EXPOSE_NETWORK` | (unset) | A **dedicated** Docker network name enabling **session exposure** — a session opened with `expose:<alias>` attaches to this network with a `--network-alias`, so a dev server it runs is reachable at `http://<alias>:<port>` (e.g. from the PinchTab browser sidecar) for in-browser testing. Unset = exposure refused. ⚠️ Must be a network that holds ONLY the browser + exposed sessions — never the app network (an exposed session may run untrusted code and must not reach loomcycle/Postgres/the sidecar). |
 | `SANDBOX_ALLOW_ENV_INJECTION` | `0` | `1` permits **env injection** — `X-Loom-Sandbox-Env-<Name>` request headers (value resolved by loomcycle from `$cred:`/`$ghapp:`, so a secret never reaches the model) are injected as `--env` into the session container, e.g. a GitHub token for authenticated `git`/`gh`. Off = the headers are ignored. |
 | `SANDBOX_MAX_ENV_VARS` / `SANDBOX_MAX_ENV_VALUE_BYTES` | `32` / `65536` | Caps on injected env: max var count per open + max value bytes. |
 | `SANDBOX_WORKSPACE_ROOT` | (unset) | Absolute host dir enabling **durable workspaces** — a session opened with `workspace:<name>` bind-mounts `<root>/<principal>/<name>` at `/work` instead of tmpfs (see below). Unset = tmpfs-only. |
