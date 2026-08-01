@@ -102,6 +102,16 @@ const (
 	ForbiddenAbsent ForbiddenKind = "absent"
 	// ForbiddenSecret is the credential-shaped token.
 	ForbiddenSecret ForbiddenKind = "secret"
+	// ForbiddenInventedEntity is not a marker in the text at all — it fires when a
+	// fact carries an entity pair the transcript does not support.
+	//
+	// It is the counterpart to the pair rate, and the more dangerous direction.
+	// The consolidator keys an entity node on <type>:<slug(subject)>, so an
+	// invented subject does not merely add noise: it MERGES the fact onto whatever
+	// node that slug resolves to, quietly attaching a statement to the wrong thing.
+	// Under-typing costs a retrieval path; over-typing corrupts identity, and the
+	// extractor prompt tells the model not to guess for exactly this reason.
+	ForbiddenInventedEntity ForbiddenKind = "invented_entity"
 )
 
 // Forbidden is one thing that must never appear in a memory row.

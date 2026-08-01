@@ -60,9 +60,26 @@ func ExtractionPrompt(text string) string {
 }
 
 // ExtractedFact is one entry of the extractor's reply.
+//
+// Type/Subject are the ENTITY pair. They were unreadable here until now, which
+// left the consolidator's whole entity graph unmeasured: it keys an upsert on
+// exactly this pair, so "the graph is empty" and "the extractor never typed
+// anything" were indistinguishable from the outside. Optional by design — a fact
+// naming no single thing carries neither.
 type ExtractedFact struct {
-	Text  string `json:"text"`
-	Class string `json:"class"`
+	Text    string `json:"text"`
+	Class   string `json:"class"`
+	Type    string `json:"type,omitempty"`
+	Subject string `json:"subject,omitempty"`
+}
+
+// HasEntity reports whether the fact carries a COMPLETE entity pair. Half a pair
+// is not a partial identity: a type with no subject names nothing and a subject
+// with no type cannot be placed in the ontology, and the consolidator clears
+// either alone for that reason. Counting a half as typed would overstate the
+// instrument.
+func (f ExtractedFact) HasEntity() bool {
+	return strings.TrimSpace(f.Type) != "" && strings.TrimSpace(f.Subject) != ""
 }
 
 // CaseResult is one case's outcome.
@@ -135,6 +152,29 @@ type AbilityScore struct {
 	Violations int `json:"violations"`
 	// CleanCases is how many of the ability's cases passed outright.
 	CleanCases int `json:"clean_cases"`
+	// TypedFacts / EmittedFacts are the ENTITY-PAIR rate: of the facts this
+	// ability's cases produced, how many carried a complete type+subject.
+	//
+	// Reported, never gating, and the distinction is deliberate. The consolidator
+	// writes an entity node only for a typed fact, so this is the one number that
+	// separates "the graph is empty because the model typed nothing" from "the
+	// graph is empty because the write path is broken" — two failures that look
+	// identical from the store and have opposite fixes. It is not a gate because
+	// there is no correct rate: a corpus of facts about named people should be near
+	// 1.0 and a corpus of team conventions near 0.0, so a threshold would encode
+	// the fixture set rather than the model.
+	TypedFacts   int `json:"typed_facts"`
+	EmittedFacts int `json:"emitted_facts"`
+}
+
+// TypedRate is the fraction of emitted facts carrying a complete entity pair, or
+// -1 when the ability emitted nothing — never 0.0, which would read as "the model
+// typed none of them" when the truth is "there was nothing to type".
+func (a AbilityScore) TypedRate() float64 {
+	if a.EmittedFacts == 0 {
+		return -1
+	}
+	return float64(a.TypedFacts) / float64(a.EmittedFacts)
 }
 
 // ExtractionReport is the whole run.
@@ -488,7 +528,19 @@ func ParseExtractorReply(raw string) ([]ExtractedFact, int, error) {
 			dropped++
 			continue
 		}
-		out = append(out, ExtractedFact{Text: text, Class: class})
+		// The entity pair, mirroring production's validateFacts exactly: both
+		// lowercased/trimmed, and CLEARED unless both are present. Half a pair is
+		// not a partial identity, and the harness must model the same rule the
+		// consolidator applies or it would score facts the pipeline will not treat
+		// as typed.
+		typ, _ := r["type"].(string)
+		subj, _ := r["subject"].(string)
+		typ = strings.ToLower(strings.TrimSpace(typ))
+		subj = strings.TrimSpace(subj)
+		if typ == "" || subj == "" {
+			typ, subj = "", ""
+		}
+		out = append(out, ExtractedFact{Text: text, Class: class, Type: typ, Subject: subj})
 	}
 	return out, dropped, nil
 }
@@ -510,6 +562,22 @@ func scoreCase(res *CaseResult, cs ExtractionCase, facts []ExtractedFact) {
 
 	// Forbidden material.
 	for _, f := range cs.Forbid {
+		// An invented entity pair is not a marker in the text, so it is matched on
+		// the PAIR rather than on the sentence. Any typed fact violates it: the
+		// fixture's claim is that this transcript supports no entity identity at
+		// all, and a subject invented to satisfy the schema is what merges a
+		// statement onto the wrong node.
+		if f.Kind == ForbiddenInventedEntity {
+			for _, fact := range facts {
+				if fact.HasEntity() {
+					res.Violations = append(res.Violations, fmt.Sprintf(
+						"%s fixture: %q typed as %s:%s — %s",
+						f.Kind, truncate(fact.Text, 60), fact.Type, fact.Subject, f.Why))
+					break
+				}
+			}
+			continue
+		}
 		for _, fact := range facts {
 			if forbiddenMatch(f, fact.Text) {
 				res.Violations = append(res.Violations, fmt.Sprintf(
@@ -610,6 +678,14 @@ func scoreAbilities(cases []CaseResult) []AbilityScore {
 			captured += r.Captured
 			wanted += r.Wanted
 			s.Violations += len(r.Violations)
+			// The pair rate counts only ANSWERED cases, for the same reason recall
+			// does: a case the model never saw says nothing about how it types.
+			for _, f := range r.Facts {
+				s.EmittedFacts++
+				if f.HasEntity() {
+					s.TypedFacts++
+				}
+			}
 			if r.Passed() {
 				s.CleanCases++
 			}
