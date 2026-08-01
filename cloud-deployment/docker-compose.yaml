@@ -63,7 +63,7 @@ services:
 
   # ── One-shot schema migration for the MAIN db (SQL Memory self-provisions at runtime) ──
   loomcycle-migrate:
-    image: denngubsky/loomcycle:1.38.0
+    image: denngubsky/loomcycle:1.43.0
     command: ["migrate", "up"]
     restart: "no"
     user: "65532:65532"
@@ -107,8 +107,13 @@ services:
     #   - "127.0.0.1:8787:8787"
 
   # ── Code-execution sandbox sidecar (host-Docker-socket model) ──
+  # The sidecar is a SEPARATE image from the runtime, lockstep-versioned with it and
+  # published MULTI-ARCH (amd64+arm64) by the `publish-sandbox-images` workflow on each
+  # release tag. Session exposure (SANDBOX_EXPOSE_NETWORK, below) needs the seam that
+  # shipped in 1.43.0 — keep this pin in step with the runtime tag, and never hand-push
+  # a single-arch build over the tag (a linux/amd64 host then can't pull it).
   builder-sidecar:
-    image: denngubsky/loomcycle-builder-docker:1.25.2
+    image: denngubsky/loomcycle-builder-docker:1.43.0
     restart: unless-stopped
     networks: [loomnet]
     environment:
@@ -144,7 +149,7 @@ services:
       context: .
       dockerfile: loomcycle.Dockerfile
       args:
-        LOOMCYCLE_TAG: "1.38.0"
+        LOOMCYCLE_TAG: "1.43.0"
         PINCHTAB_TAG: "0.15.0"
     restart: unless-stopped
     user: "65532:65532"
@@ -223,8 +228,15 @@ services:
     networks: [loomnet, loom-dev]
     environment:
       PINCHTAB_TOKEN: ${PINCHTAB_TOKEN}   # SAME secret loomcycle presents on the MCP bridge
+      # `pinchtab config set` persists to ./pinchtab-data (below), so the allowlist
+      # ALREADY survives restarts + reboots. To manage it DECLARATIVELY instead (one
+      # version-controlled file, no manual `config set`), uncomment PINCHTAB_CONFIG +
+      # the read-only mount below and edit pinchtab-config.json (see pinchtab-config.json.example).
+      # The token stays in the env var — the file carries only non-secret settings.
+      # PINCHTAB_CONFIG: /etc/pinchtab/config.json
     volumes:
       - ./pinchtab-data:/data             # HOME/config + Chrome profile (rootfs is read-only)
+      # - ./pinchtab-config.json:/etc/pinchtab/config.json:ro   # declarative allowlist (with PINCHTAB_CONFIG)
     shm_size: "2gb"                       # Chrome stability
     read_only: true
     tmpfs:
