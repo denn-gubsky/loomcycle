@@ -52,23 +52,34 @@ in [§ Alternative: nested podman](#alternative-nested-rootless-podman).
 
 ## Phase 1 — Build + push the two images
 
+The release CI (`publish-sandbox-images` workflow) already builds these **multi-arch**
+(amd64+arm64) on every `v*` tag, so normally you just pull the published tag. Build by
+hand only for a private namespace or an unreleased change — and when you do, **use
+`buildx --platform … --push`, not plain `docker build`**: a plain build bakes only your
+host arch, so an image built on Apple Silicon is arm64-only and a linux/amd64 host
+(e.g. TrueNAS) then fails with `no matching manifest for linux/amd64`. Never hand-push
+a single-arch build over a tag the CI publishes multi-arch.
+
 Two images are involved: the **sidecar** (runs the MCP server + drives the engine)
 and the **session** image (the toolchain each sandbox runs). From a checkout of
-this repo on your Docker box:
+this repo on your Docker box (`docker buildx create --use --bootstrap` once if you
+have no multi-arch builder):
 
 ```sh
-VER=1.23.1     # match your loomcycle version, or any tag you like
+VER=1.43.0     # match your loomcycle release tag
 
 # 1) the sidecar — host-Docker-socket variant (Dockerfile.docker)
-docker build -t denngubsky/loomcycle-builder-docker:$VER \
-  -f deploy/builder/Dockerfile.docker --build-arg VERSION=$VER deploy/builder
-docker push denngubsky/loomcycle-builder-docker:$VER
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t denngubsky/loomcycle-builder-docker:$VER \
+  -f deploy/builder/Dockerfile.docker --build-arg VERSION=$VER --push deploy/builder
 
 # 2) the session toolchain image (python/go/rust/c++/node, uid 1000)
-docker build -t denngubsky/loomcycle-sandbox-session:$VER deploy/builder/session
-docker push denngubsky/loomcycle-sandbox-session:$VER
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t denngubsky/loomcycle-sandbox-session:$VER --push deploy/builder/session
 ```
 
+- Multi-arch requires `--push` (buildx cannot `--load` a multi-platform image locally);
+  amd64 builds under QEMU emulation on an arm64 host, which is slower but works.
 - Replace `denngubsky/…` with your own registry namespace if not using Docker Hub.
 - The **session image is pulled by the host Docker** (it runs the siblings), so it
   must be reachable from TrueNAS. If your registry is private, `docker login` on the

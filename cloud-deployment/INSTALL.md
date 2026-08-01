@@ -184,9 +184,22 @@ Notes:
   dedicated `loom-dev` bridge network with pinchtab attached and
   `SANDBOX_EXPOSE_NETWORK=loom-dev` on the builder-sidecar. A `dev/exec` envelope
   with `expose:<alias>` then attaches its session there, reachable from the browser
-  at `http://<alias>:<port>`. Add each alias to PinchTab's IDPI allowlist first
+  at `http://<alias>:<port>`. This needs the **runtime AND sidecar at ≥ 1.43.0** (the
+  expose seam) — the images pin to `1.43.0` above; the sidecar is a separate,
+  multi-arch image (`docker pull` a `linux/amd64` tag on TrueNAS, not a hand-built
+  single-arch one). Add each alias to PinchTab's IDPI allowlist first
   (`pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,<alias>"`,
   then restart the sidecar) — see [`../docs/SANDBOX.md`](../docs/SANDBOX.md).
+- **PinchTab allowlist — persistence & declarative option:** `pinchtab config set`
+  writes to `/data/.config/pinchtab/config.json`, which is the `./pinchtab-data`
+  bind mount, so **the allowlist already survives restarts and reboots** (the "restart
+  to apply" only reloads the running server). To manage it declaratively instead —
+  version-controlled, no manual `config set` on a fresh volume — copy
+  `pinchtab-config.json.example` to `pinchtab-config.json`, then uncomment
+  `PINCHTAB_CONFIG` + the read-only config mount in the `pinchtab` service. There is
+  **no env var for `allowedDomains`** (pinchtab exposes only `PINCHTAB_CONFIG`,
+  `PINCHTAB_TOKEN`, `PINCHTAB_RATE_LIMIT_MAX`); the token stays in the env var while
+  the mounted file carries only the non-secret allowlist.
 
 ---
 
