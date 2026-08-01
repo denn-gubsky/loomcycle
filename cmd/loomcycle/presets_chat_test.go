@@ -88,3 +88,44 @@ func TestChatBundle_PromptsDoNotHandWriteAToolList(t *testing.T) {
 		}
 	}
 }
+
+// TestChatBundle_PromptsPointAtGraphRecall pins the guidance that makes the entity
+// graph reachable in practice.
+//
+// The tool grant is not what makes a capability usable. `Document` has been in
+// these agents' tools since the bundle shipped, and `graph_recall` has existed
+// since v1.42.0 — but nothing told a model when to prefer it over `Memory recall`,
+// so it went unused. That is the same "capability with no caller" shape as the
+// entity tier having no producer, one layer up: reachable in principle, invisible
+// in practice.
+//
+// The distinction the guidance has to carry is the load-bearing one: word matching
+// versus following relations. Two facts about Acme recorded in different words are
+// found by graph_recall and missed by recall, which is precisely when a model
+// should reach for it.
+func TestChatBundle_PromptsPointAtGraphRecall(t *testing.T) {
+	cfg := chatBundleConfig(t)
+	found := 0
+	for name, agent := range cfg.Agents {
+		if !strings.HasPrefix(name, "chat/") {
+			continue
+		}
+		found++
+		if !strings.Contains(agent.SystemPrompt, "graph_recall") {
+			t.Errorf("%s never mentions graph_recall — the entity graph is granted but unreachable in practice", name)
+			continue
+		}
+		// Naming the op is not enough; the prompt must say WHEN, or it reads as
+		// one more entry in a list the model already has from Context.tools.
+		if !strings.Contains(agent.SystemPrompt, "relation") {
+			t.Errorf("%s names graph_recall but not what distinguishes it (following relations vs matching words)", name)
+		}
+		// And the tool it needs must actually be granted.
+		if !hasToolPreset(agent.Tools, "Document") {
+			t.Errorf("%s is told to use graph_recall but does not grant Document; tools=%v", name, agent.Tools)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no chat/* agents found — the bundle was renamed and this test now checks nothing")
+	}
+}
