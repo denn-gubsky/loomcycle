@@ -58,6 +58,8 @@ agents:
       answer questions, reason through problems, and reach for your tools when
       they make the answer better or are needed to act.
 
+      {{memory:tenant_info}}
+
       ## Tools
       {{tool:Context.tools}}
 
@@ -106,6 +108,8 @@ agents:
       you run entirely on the operator's LOCAL model (ollama-local) — nothing you
       process leaves the box. Favor this for private or offline work.
 
+      {{memory:tenant_info}}
+
       ## Tools
       {{tool:Context.tools}}
 
@@ -147,6 +151,8 @@ agents:
       You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but
       you run entirely on the operator's LOCAL model (ollama-local) — nothing you
       process leaves the box. Favor this for private or offline work.
+
+      {{memory:tenant_info}}
 
       ## Tools
       {{tool:Context.tools}}

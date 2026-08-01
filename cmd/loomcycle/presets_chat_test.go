@@ -129,3 +129,39 @@ func TestChatBundle_PromptsPointAtGraphRecall(t *testing.T) {
 		t.Fatal("no chat/* agents found — the bundle was renamed and this test now checks nothing")
 	}
 }
+
+// TestChatBundle_PromptsInjectTenantContext pins the CONSUMER of
+// {{memory:tenant_info}}.
+//
+// The variant existed and validated for four phases while rendering nothing,
+// because the document behind it was never built — and once built it would have
+// been just as inert if no shipped prompt referenced it. That is the failure this
+// phase exists to fix and the reason the plan says: wire a placeholder in the same
+// PR that adds it, or do not ship it.
+//
+// The chat agents are the right consumer: they are the interactive surface, they
+// already read the per-user root, and deployment vocabulary is exactly the context
+// they lack. They stay `memory_scopes: [user]` — the read stamps the tenant grants
+// server-side, so consuming it costs no widening.
+func TestChatBundle_PromptsInjectTenantContext(t *testing.T) {
+	cfg := chatBundleConfig(t)
+	found := 0
+	for name, agent := range cfg.Agents {
+		if !strings.HasPrefix(name, "chat/") {
+			continue
+		}
+		found++
+		if !strings.Contains(agent.SystemPrompt, "{{memory:tenant_info}}") {
+			t.Errorf("%s does not inject {{memory:tenant_info}} — the deployment-context document would ship with no reader", name)
+		}
+		// Consuming it must NOT have required widening the agent to tenant scope.
+		for _, scope := range agent.MemoryScopes {
+			if scope == "tenant" {
+				t.Errorf("%s was widened to tenant memory scope; tenant_info is read with server-stamped grants and needs no such widening", name)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no chat/* agents found — the bundle was renamed and this test now checks nothing")
+	}
+}
