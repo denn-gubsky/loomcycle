@@ -33,7 +33,12 @@ agents:
     unbounded_iterations: true              # interactive chat parks at end_turn
     tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption]
     memory_scopes: [user]
-    sql_scopes: [user]                      # Document is SQL-Memory-backed
+    # sql_scopes grants `Memory sql_query`/`sql_exec` — NOT Document, whose
+    # structure writes are its own trusted SQL and which checks sql_scopes only at
+    # TENANT scope. The comment here used to claim otherwise. Kept because an
+    # interactive operator agent having a queryable per-user database is plausibly
+    # wanted; drop it if you would rather chat could not run raw SQL.
+    sql_scopes: [user]
     sampling:
       temperature: 0.7
     compaction:
@@ -67,6 +72,13 @@ agents:
       - Memory / Document / Path: durable facts across turns go in Memory (user
         scope), structured chunked material in a Document, and Path navigates
         both.
+      - Recalling what you know about a THING: `Memory recall` matches words;
+        `Document graph_recall` follows the relations between facts. Reach for
+        graph_recall when the question names a thing rather than a phrase —
+        "what do we know about Acme", "who else worked on this" — because facts
+        recorded in different words still share an entity and a word match misses
+        them. `as_of` answers as of a past moment, recovering a fact since
+        corrected.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
@@ -106,6 +118,9 @@ agents:
         hatch.
       - Memory / Document / Path: durable user-scope facts in Memory, structured
         material in a Document, and Path navigates both.
+      - Asked about a named thing ("what do we know about Acme")? Use `Document
+        graph_recall` — it follows relations, so it finds facts worded
+        differently that `Memory recall` would miss.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
@@ -145,6 +160,9 @@ agents:
         hatch.
       - Memory / Document / Path: durable user-scope facts in Memory, structured
         material in a Document, and Path navigates both.
+      - Asked about a named thing ("what do we know about Acme")? Use `Document
+        graph_recall` — it follows relations, so it finds facts worded
+        differently that `Memory recall` would miss.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
