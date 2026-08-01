@@ -39,6 +39,16 @@ type Config struct {
 	// network:"egress" only when the operator opts in.
 	AllowEgress bool // SANDBOX_ALLOW_EGRESS=1
 
+	// Session exposure (RFC BR). When set (a Docker network NAME), a session opened
+	// with `expose:<alias>` is attached to THIS network with a --network-alias, so a
+	// dev server it runs is reachable by name (e.g. from the PinchTab browser sidecar
+	// on the same network) for in-browser testing. Off by default: an exposed session
+	// is reachable inbound — a deliberate reduction of isolation — so it is opt-in AND
+	// per-call. It MUST be a DEDICATED network (never the app network): an exposed
+	// session may run untrusted code and must never reach loomcycle / Postgres / the
+	// sidecar / another tenant. SANDBOX_EXPOSE_NETWORK.
+	ExposeNetwork string
+
 	// Env injection. When enabled, X-Loom-Sandbox-Env-<Name> request headers
 	// loomcycle fills — the value substituted server-side from $cred:/$ghapp:, so a
 	// secret never touches the model — are injected as --env into the session
@@ -85,6 +95,7 @@ func LoadConfig() (*Config, error) {
 		CtrUser:           envStr("SANDBOX_CONTAINER_USER", "1000:1000"),
 		WorkspaceRoot:     os.Getenv("SANDBOX_WORKSPACE_ROOT"),
 		AllowEgress:       os.Getenv("SANDBOX_ALLOW_EGRESS") == "1",
+		ExposeNetwork:     os.Getenv("SANDBOX_EXPOSE_NETWORK"),
 		AllowEnvInjection: os.Getenv("SANDBOX_ALLOW_ENV_INJECTION") == "1",
 		MaxEnvVars:        int(envInt("SANDBOX_MAX_ENV_VARS", 32)),
 		MaxEnvValueBytes:  int(envInt("SANDBOX_MAX_ENV_VALUE_BYTES", 64<<10)),
