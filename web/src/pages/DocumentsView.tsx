@@ -29,7 +29,12 @@ const cookieFetch: typeof fetch = async (input, init) => {
 export default function DocumentsView() {
   const { documentId } = useParams();
   const [params] = useSearchParams();
-  const scope: DocScope = params.get("scope") === "agent" ? "agent" : "user";
+  // tenant is a real document scope since loomcycle v1.41.0. Reading it out of the
+  // URL rather than folding it to "user" is what lets a deep link to a
+  // tenant-scope document (the ontology, the deployment-context doc) actually open.
+  const rawScope = params.get("scope");
+  const scope: DocScope =
+    rawScope === "agent" || rawScope === "tenant" ? rawScope : "user";
   const principal = usePrincipal();
   const userId = useUserId();
   const focusTenant = useFocusTenant();

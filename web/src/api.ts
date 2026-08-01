@@ -810,11 +810,17 @@ async function postJSON<T>(path: string, body: string | undefined): Promise<T> {
 // (substrateAdminUserCtx) — the browser never sends them as authority; `scope`
 // is only the subtree SELECTOR (which of the principal's own trees). The
 // console defaults to `user` scope so its tree lines up with the principal's
-// own agent runs (user_id = principal.subject). `agent` scope is operator-
-// private off-run; Documents support agent|user only (tenant is refused).
+// own agent runs (user_id = principal.subject). `agent` scope is operator-private
+// off-run. Documents support agent|user|TENANT — tenant since loomcycle v1.41.0,
+// and this declaration is the fourth independent copy of that fact (the others
+// live in @loomcycle/client's DocumentToolInput, @loomcycle/explorer's DocScope,
+// and the runtime's own schema). Three of the four were stale, which is how a
+// tenant-scope document came to list in the Path tree and open with no chunks: the
+// viewer narrowed the browse scope against a type that had nowhere to put
+// "tenant", so it became "user" and the chunk query looked in the wrong store.
 
 export type PathScope = "agent" | "user" | "tenant";
-export type DocScope = "agent" | "user";
+export type DocScope = "agent" | "user" | "tenant";
 
 // BrowseScope is an optional override for the off-run Path/Document endpoints
 // (RFC AS): which subject's tree (scopeId → ?scope_id=) and, for an admin, which

@@ -10,7 +10,6 @@ import {
 import type {
   AssistantContext,
   BrowseScope,
-  DocScope,
   PathEntry,
   PathScope,
   Principal,
@@ -227,7 +226,7 @@ function PathExplorerBody({
     }
     let cancelled = false;
     data
-      .documentsSummary({ documentIds: ids }, scope as DocScope, browse)
+      .documentsSummary({ documentIds: ids }, scope, browse)
       .then((resp) => {
         if (cancelled) return;
         const m = new Map<string, DocSummary>();
@@ -286,7 +285,7 @@ function PathExplorerBody({
         if (!NAME_RE.test(name)) throw new Error("name may contain only [A-Za-z0-9._-]");
         const title = v.title.trim() || name;
         const p = joinPath(currentDir, name);
-        await data.documentCreate(title, p, scope as DocScope, browse);
+        await data.documentCreate(title, p, scope, browse);
         await refresh();
         setSelected(p);
       },
@@ -323,7 +322,7 @@ function PathExplorerBody({
         danger: true,
         onSubmit: async () => {
           if (!id) throw new Error("this document dirent has no document_id");
-          await data.documentDelete(id, scope as DocScope, browse);
+          await data.documentDelete(id, scope, browse);
           await refresh();
           setSelected(undefined);
         },
@@ -348,7 +347,7 @@ function PathExplorerBody({
       danger: true,
       onSubmit: async () => {
         for (const id of docIds) {
-          await data.documentDelete(id, scope as DocScope, browse);
+          await data.documentDelete(id, scope, browse);
         }
         await data.pathRm(selected.fullPath, scope, true, browse);
         await refresh();
@@ -445,7 +444,7 @@ function PathExplorerBody({
                   documentId={
                     (selected.resourceRef as { document_id?: string })?.document_id ?? ""
                   }
-                  scope={scope === "agent" ? "agent" : "user"}
+                  scope={scope}
                   titleHint={selected.name}
                   browse={browse}
                   principal={principal}
