@@ -2716,3 +2716,77 @@ func TestConsolidator_AGraphFailureNeverCostsAFact(t *testing.T) {
 		t.Errorf("a silent graph failure is the worst outcome — it must be reported; got %q", res.FinalText)
 	}
 }
+
+// TestConsolidator_NormalisesTheSubjectSoOneThingIsOneNode. Measured on a live pass
+// and in the eval: "user", "the user" and "The user" in the same corpus, which
+// slug()s to two different keys — so one person becomes two nodes and which one
+// depends on phrasing. upsert-by-natural-key's whole idempotency claim rests on this
+// key being stable across wordings.
+func TestConsolidator_NormalisesTheSubjectSoOneThingIsOneNode(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	// Three spellings of one person, which must collapse onto one subject node.
+	f.factsJSON = "```json\n" + `[
+		{"text":"Denn prefers Go for backend services.","class":"preference","type":"person","subject":"Denn"},
+		{"text":"Denn works in the Berlin office.","class":"fact","type":"person","subject":"the Denn"},
+		{"text":"Denn owns the ledger service.","class":"fact","type":"person","subject":"  DENN  "}
+	]` + "\n```"
+
+	res := runConsolidator(t, f)
+
+	subjects := 0
+	for k := range f.chunkTypes {
+		if !strings.HasPrefix(k, "memory/") {
+			subjects++
+		}
+	}
+	if subjects != 1 {
+		t.Errorf("got %d subject nodes, want 1 — three spellings of one person must normalise together; keys=%v", subjects, f.chunkTypes)
+	}
+	if _, ok := f.chunks["person:denn"]; !ok {
+		t.Errorf("expected the canonical key person:denn; keys=%v", f.chunks)
+	}
+	if !strings.Contains(res.FinalText, "across 1 subject(s)") {
+		t.Errorf("the report should show one subject; got %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_RefusesAStatementClassAsAnEntityType. Measured live: the
+// extractor typed "the user prefers statin alternatives" as `preference:user`.
+//
+// That is not a harmless odd label. EVERY preference about the user collapses onto
+// that one node, producing a hub that means nothing and buries the facts it should
+// organise. A merely invented type makes one strangely-labelled node; a statement
+// class as a type makes a magnet.
+func TestConsolidator_RefusesAStatementClassAsAnEntityType(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	f.factsJSON = "```json\n" + `[
+		{"text":"The user prefers statin alternatives.","class":"preference","type":"preference","subject":"user"},
+		{"text":"Acme runs on Postgres.","class":"fact","type":"fact","subject":"Acme"},
+		{"text":"Ada leads the platform team.","class":"fact","type":"person","subject":"Ada"}
+	]` + "\n```"
+
+	res := runConsolidator(t, f)
+
+	// All three facts still land in k/v — the refusal is about the GRAPH only.
+	if n := f.countOp("Memory.set"); n != 3 {
+		t.Errorf("k/v writes = %d, want 3; refusing an entity type must not cost a fact", n)
+	}
+	if _, bad := f.chunks["preference:user"]; bad {
+		t.Error("preference:user was created — every preference about the user would collapse onto it")
+	}
+	if _, bad := f.chunks["fact:acme"]; bad {
+		t.Error("fact:acme was created — `fact` is a statement class, not a thing")
+	}
+	if _, ok := f.chunks["person:ada"]; !ok {
+		t.Errorf("a real entity type must still be written; keys=%v", f.chunks)
+	}
+	// Counted, not silent: a pass that mirrored nothing because every type was
+	// rejected must not look like a pass with nothing to mirror.
+	if !strings.Contains(res.FinalText, "2 refused") {
+		t.Errorf("the refusals must be reported; got %q", res.FinalText)
+	}
+}

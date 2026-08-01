@@ -24,6 +24,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -149,10 +150,29 @@ func (d *Document) graphSeeds(ctx context.Context, key sqlmem.ScopeKey, in docIn
 			args = append(args, id)
 		}
 	} else {
-		// Case-insensitive contains. LOWER on both sides rather than ILIKE, which is
-		// postgres-only.
+		// Case-insensitive contains, as a COARSE PREFILTER only — the word-boundary
+		// check happens in Go below, because portable SQL has no word boundary and
+		// faking one with padded LIKE breaks on punctuation. LOWER on both sides
+		// rather than ILIKE, which is postgres-only.
 		where = append(where, "LOWER(c.title) LIKE ?")
 		args = append(args, "%"+strings.ToLower(strings.TrimSpace(in.Query))+"%")
+		// DISCOVERY IS RESTRICTED TO ENTITY CHUNKS: a row with no sidecar entry is
+		// an ordinary document chunk, not part of the graph.
+		//
+		// Without this the search covers every chunk in the scope, and the scope is
+		// where the document store lives. Measured on the reference deployment: 2
+		// entity chunks among 3,071 chunks across 150 documents — so a
+		// "what do we know about X" query returned documentation prose, and a query
+		// for "statin" matched a configuration paragraph containing the word
+		// "restating". Correct results drowned rather than absent, which is the one
+		// failure mode a fixture corpus can never show: every test corpus is a clean
+		// room, and signal-to-noise is a property of the corpus.
+		//
+		// Restricted for DISCOVERY only, never for explicit seed_ids — the same
+		// division the temporal filter draws below, and for the same reason: naming
+		// a chunk is an assertion about where to start, and the documented use of
+		// seed_ids is handing in results found some other way.
+		where = append(where, "m.chunk_id IS NOT NULL")
 	}
 	if in.DocumentID != "" {
 		where = append(where, "c.document_id = ?")
@@ -175,16 +195,82 @@ func (d *Document) graphSeeds(ctx context.Context, key sqlmem.ScopeKey, in docIn
 		}
 	}
 
+	// OVER-FETCH when discovering, because the word-boundary filter below rejects
+	// some of what the LIKE returned. Fetching exactly `limit` and then filtering
+	// would silently return fewer seeds than asked for, which reads as "the graph
+	// holds nothing else" rather than "the prefilter was noisy". Bounded by
+	// graphFrontierCap so a pathological query cannot pull the whole scope.
+	fetch := limit
+	if len(in.SeedIDs) == 0 {
+		if fetch = limit * seedPrefilterFactor; fetch > graphFrontierCap {
+			fetch = graphFrontierCap
+		}
+	}
 	stmt := `SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at
 	           FROM chunks c LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
 	          WHERE ` + strings.Join(where, " AND ") + `
 	          ORDER BY c.title LIMIT ?`
-	args = append(args, limit)
+	args = append(args, fetch)
 	res, err := d.query(ctx, key, stmt, args...)
 	if err != nil {
 		return nil, err
 	}
-	return scanGraphRows(res.Rows, 0, "", ""), nil
+	rows := scanGraphRows(res.Rows, 0, "", "")
+	if len(in.SeedIDs) > 0 {
+		return rows, nil
+	}
+	return filterWholeWord(rows, in.Query, limit), nil
+}
+
+// seedPrefilterFactor is how many LIKE candidates to consider per requested seed.
+// Small on purpose: the point is to survive an ordinary noisy prefilter, not to
+// scan the scope hoping for a match further down.
+const seedPrefilterFactor = 8
+
+// filterWholeWord keeps the rows whose title contains the query as a WHOLE WORD,
+// capped at limit.
+//
+// A substring LIKE is what let a query for "statin" match a configuration
+// paragraph containing "re-statin-g" on the reference deployment. The check lives
+// in Go rather than SQL because neither tier has a portable word boundary and the
+// padded-LIKE trick misfires on punctuation — a title ending in ":" or a
+// hyphenated term would stop matching.
+//
+// A query with no word character at either edge (say "(" or "--") falls back to
+// the substring behaviour instead of matching nothing:  would be undefined there,
+// and silently returning zero seeds for a legitimate-if-odd query is worse than
+// being imprecise about it.
+func filterWholeWord(rows []graphChunk, query string, limit int) []graphChunk {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil
+	}
+	re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(q) + `\b`)
+	if err != nil || !hasWordEdges(q) {
+		if len(rows) > limit {
+			return rows[:limit]
+		}
+		return rows
+	}
+	out := make([]graphChunk, 0, len(rows))
+	for _, r := range rows {
+		if re.MatchString(r.Title) {
+			out = append(out, r)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// hasWordEdges reports whether \b is meaningful at both ends of q.
+func hasWordEdges(q string) bool {
+	isWord := func(b byte) bool {
+		return b == '_' || (b >= '0' && b <= '9') ||
+			(b|0x20 >= 'a' && b|0x20 <= 'z')
+	}
+	return len(q) > 0 && isWord(q[0]) && isWord(q[len(q)-1])
 }
 
 // graphNeighbours returns the chunks one edge away from the frontier, in EITHER
