@@ -111,6 +111,16 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 			sections[meminject.VariantUserInfo] = body
 		}
 	}
+	// tenant_info: gated on an actual reference for the same reason as user_info
+	// and ontology — rendering it PROVISIONS the tenant's deployment-context
+	// document, and a prompt that never mentions it must not create one.
+	// suppressRoots covers it too: `memory_roots: suppress` means an agent wants no
+	// root documents injected, and the tenant root is one.
+	if !suppressRoots && meminject.ReferencesVariant(agentDef.SystemPrompt, meminject.VariantTenantInfo) {
+		if body := s.renderTenantInfo(ctx, mi); body != "" {
+			sections[meminject.VariantTenantInfo] = body
+		}
+	}
 	if body := s.renderSearchRequest(ctx, mi); body != "" {
 		sections[meminject.VariantSearchRequest] = body
 	}
@@ -133,8 +143,6 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 		relatedBand = s.cfg.Memory.Consolidation.EffectiveRelatedThreshold()
 	}
 	sections[meminject.VariantConsolidationBands] = meminject.ConsolidationBands(mergeBand, relatedBand)
-	// tenant_info is still an accepted-but-empty variant (it needs the tenant-root
-	// document, a later deliverable). ontology is live — see renderOntology.
 
 	out := agentDef
 	out.SystemPrompt = meminject.Expand(agentDef.SystemPrompt, meminject.ExpandInput{

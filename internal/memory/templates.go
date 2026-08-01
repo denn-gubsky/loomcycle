@@ -23,3 +23,25 @@ var userRootTemplate string
 // user-root Document on first reference. It is a compile-time constant, so
 // provisioning is deterministic (no random content).
 func UserRootTemplate() string { return userRootTemplate }
+
+// TenantRootPath is the canonical Path-tree location, in the TENANT scope, of the
+// operator-authored deployment-context Document that composes into
+// {{memory:tenant_info}}.
+//
+// Tenant scope, not user: this is what every agent in the tenant shares, and the
+// per-person half already exists at UserRootPath. The two are separate documents
+// rather than sections of one because they have different audiences and different
+// blast radius — anything here is read by every user of the tenant.
+const TenantRootPath = "/memory/tenant_root"
+
+// TenantRootTitle MUST match the template's first heading (import_md makes the
+// first heading the root chunk / document title).
+const TenantRootTitle = "Deployment Context"
+
+//go:embed templates/tenant_root.md
+var tenantRootTemplate string
+
+// TenantRootTemplate returns the import_md-shaped Markdown used to seed an empty
+// tenant-root Document on first reference. Compile-time constant, so provisioning
+// is deterministic.
+func TenantRootTemplate() string { return tenantRootTemplate }
