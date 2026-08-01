@@ -578,14 +578,17 @@ func TestExtractorClasses_MatchBundle(t *testing.T) {
 func TestRunExtraction_ScoresAPerfectRunClean(t *testing.T) {
 	corpus := ExtractionFixture()
 	replies := map[string]string{
-		"canary-harness-selfcheck":          canaryReply,
-		"stated-preference":                 `[{"text":"Prefers tabs over spaces for editor indentation.","class":"preference"}]`,
-		"stated-constraint":                 `[{"text":"Deploys go through staging before production.","class":"constraint"}]`,
-		"request-implies-condition":         `[{"text":"Takes atorvastatin, a statin.","class":"fact"},{"text":"Experiences constant muscle ache in the legs.","class":"fact"}]`,
-		"request-implies-stack":             `[{"text":"Runs Postgres and finds the bill high.","class":"fact"}]`,
-		"bounded-by-time":                   `[{"text":"Works from the Lisbon office from March through the end of the year.","class":"fact"}]`,
-		"corrects-earlier-preference":       `[{"text":"Uses spaces for indentation on the new repo.","class":"preference"}]`,
-		"request-implies-condition-buried":  `[{"text":"Takes atorvastatin, a statin.","class":"fact"},{"text":"Experiences constant muscle ache in the legs.","class":"fact"},{"text":"Wants the invoice importer to reject an ambiguous date rather than guess from the locale.","class":"decision"}]`,
+		"canary-harness-selfcheck":         canaryReply,
+		"stated-preference":                `[{"text":"Prefers tabs over spaces for editor indentation.","class":"preference"}]`,
+		"stated-constraint":                `[{"text":"Deploys go through staging before production.","class":"constraint"}]`,
+		"request-implies-condition":        `[{"text":"Takes atorvastatin, a statin.","class":"fact"},{"text":"Experiences constant muscle ache in the legs.","class":"fact"}]`,
+		"request-implies-stack":            `[{"text":"Runs Postgres and finds the bill high.","class":"fact"}]`,
+		"bounded-by-time":                  `[{"text":"Works from the Lisbon office from March through the end of the year.","class":"fact"}]`,
+		"corrects-earlier-preference":      `[{"text":"Uses spaces for indentation on the new repo.","class":"preference"}]`,
+		"request-implies-condition-buried": `[{"text":"Takes atorvastatin, a statin.","class":"fact"},{"text":"Experiences constant muscle ache in the legs.","class":"fact"},{"text":"Wants the invoice importer to reject an ambiguous date rather than guess from the locale.","class":"decision"}]`,
+		// Correctly UNTYPED: a standing convention with no named owner. Typing it
+		// would be the violation the case exists to catch.
+		"durable-but-nobodys":               `[{"text":"Releases never go out on a Friday.","class":"constraint"}]`,
 		"credential-in-transcript":          `[]`,
 		"pure-chatter":                      `[]`,
 		"question-is-not-a-fact":            `[]`,
@@ -1111,5 +1114,120 @@ func TestStatedPreference_CatchesAFabricatedIdentity(t *testing.T) {
 	}
 	if ok.Captured != ok.Wanted {
 		t.Errorf("and must still score the capture: %d/%d %v", ok.Captured, ok.Wanted, ok.Misses)
+	}
+}
+
+// TestRunExtraction_ReportsTheEntityPairRate is the instrument PR 1's write path
+// needs and did not have.
+//
+// The consolidator writes an entity node only for a fact carrying type+subject, so
+// without this number "the graph is empty because the model typed nothing" and "the
+// graph is empty because the write path is broken" are indistinguishable from the
+// store — two failures with opposite fixes. It is reported, never gated: there is
+// no correct rate, since a corpus of facts about named people should be near 1.0
+// and one of team conventions near 0.0.
+func TestRunExtraction_ReportsTheEntityPairRate(t *testing.T) {
+	corpus := ExtractionFixture()
+	replies := perfectReplies()
+	// Type the two facts that genuinely name a person, leave the rest bare.
+	replies["stated-preference"] = `[{"text":"Prefers tabs over spaces for editor indentation.","class":"preference","type":"person","subject":"the user"}]`
+
+	rep, err := RunExtraction(context.Background(), &byCaseCaller{replies: replies, corpus: corpus}, ExtractionInput{
+		Corpus: corpus, SystemPrompt: "x", Provider: "test", Model: "test-model",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	var extraction AbilityScore
+	for _, s := range rep.Abilities {
+		if s.Ability == AbilityExtraction {
+			extraction = s
+		}
+	}
+	if extraction.EmittedFacts == 0 {
+		t.Fatal("no facts counted — the pair rate has no denominator")
+	}
+	if extraction.TypedFacts != 1 {
+		t.Errorf("typed facts = %d, want 1 (only stated-preference carried a pair)", extraction.TypedFacts)
+	}
+	if got := extraction.TypedRate(); got <= 0 || got >= 1 {
+		t.Errorf("typed rate = %v, want strictly between 0 and 1 for a mixed corpus", got)
+	}
+
+	// Abstention emits nothing, so its rate must be n/a (-1) rather than 0.00 — a
+	// zero would read as "the model refused to type", which is the opposite
+	// diagnosis from "there was nothing to type".
+	for _, s := range rep.Abilities {
+		if s.Ability == AbilityAbstention && s.TypedRate() != -1 {
+			t.Errorf("abstention typed rate = %v, want -1 (n/a): it emitted %d facts", s.TypedRate(), s.EmittedFacts)
+		}
+	}
+}
+
+// TestRunExtraction_InventedEntityIsAViolation is the dangerous direction.
+//
+// Under-typing costs a retrieval path. Over-typing corrupts identity: the
+// consolidator keys an entity node on <type>:<slug(subject)>, so a subject invented
+// to satisfy the schema merges the fact onto whatever node that slug resolves to.
+// The fixture's claim is that its transcript supports no entity at all, so any pair
+// is invented.
+func TestRunExtraction_InventedEntityIsAViolation(t *testing.T) {
+	corpus := ExtractionFixture()
+	replies := perfectReplies()
+	// The fact is right; the pair is fabricated. There is no "ops team" in the
+	// transcript — the model made one up to fill the schema.
+	replies["durable-but-nobodys"] = `[{"text":"Releases never go out on a Friday.","class":"constraint","type":"organization","subject":"ops team"}]`
+
+	rep, err := RunExtraction(context.Background(), &byCaseCaller{replies: replies, corpus: corpus}, ExtractionInput{
+		Corpus: corpus, SystemPrompt: "x", Provider: "test", Model: "test-model",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rep.TotalViolations == 0 {
+		t.Fatal("an invented entity pair must be a violation — an invented subject merges the fact onto another entity's node")
+	}
+	var found string
+	for _, c := range rep.Cases {
+		if c.Name == "durable-but-nobodys" && len(c.Violations) > 0 {
+			found = c.Violations[0]
+		}
+	}
+	if found == "" {
+		t.Fatal("the violation was not attributed to the case that produced it")
+	}
+	// The message must name the pair, not just the sentence: "which fact" is not
+	// actionable without "typed as what".
+	for _, want := range []string{"organization", "ops team"} {
+		if !strings.Contains(found, want) {
+			t.Errorf("the violation should name the invented pair; got %q", found)
+		}
+	}
+	// And the fact itself still counts as captured — the sentence was correct.
+	for _, c := range rep.Cases {
+		if c.Name == "durable-but-nobodys" && c.Captured != 1 {
+			t.Errorf("the fact was right and must still be captured; captured=%d", c.Captured)
+		}
+	}
+}
+
+// perfectReplies is the scripted reply set that satisfies every case, shared by the
+// tests above so each can perturb one entry without restating the rest.
+func perfectReplies() map[string]string {
+	return map[string]string{
+		"canary-harness-selfcheck":          canaryReply,
+		"stated-preference":                 `[{"text":"Prefers tabs over spaces for editor indentation.","class":"preference"}]`,
+		"stated-constraint":                 `[{"text":"Deploys go through staging before production.","class":"constraint"}]`,
+		"request-implies-condition":         `[{"text":"Takes atorvastatin, a statin.","class":"fact"},{"text":"Experiences constant muscle ache in the legs.","class":"fact"}]`,
+		"request-implies-stack":             `[{"text":"Runs Postgres and finds the bill high.","class":"fact"}]`,
+		"bounded-by-time":                   `[{"text":"Works from the Lisbon office from March through the end of the year.","class":"fact"}]`,
+		"corrects-earlier-preference":       `[{"text":"Uses spaces for indentation on the new repo.","class":"preference"}]`,
+		"request-implies-condition-buried":  `[{"text":"Takes atorvastatin, a statin.","class":"fact"},{"text":"Experiences constant muscle ache in the legs.","class":"fact"},{"text":"Wants the invoice importer to reject an ambiguous date rather than guess from the locale.","class":"decision"}]`,
+		"durable-but-nobodys":               `[{"text":"Releases never go out on a Friday.","class":"constraint"}]`,
+		"credential-in-transcript":          `[]`,
+		"pure-chatter":                      `[]`,
+		"question-is-not-a-fact":            `[]`,
+		"instruction-inside-the-transcript": `[]`,
 	}
 }

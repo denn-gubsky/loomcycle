@@ -381,6 +381,31 @@ func ExtractionFixture() ExtractionCorpus {
 			}},
 		},
 
+		// A durable fact that is about NO ONE — the over-typing case.
+		//
+		// Under-typing costs the graph a retrieval path. Over-typing corrupts
+		// identity: the consolidator keys an entity node on <type>:<slug(subject)>,
+		// so a subject invented to satisfy the schema merges this statement onto
+		// whatever node that slug lands on. There is no named thing here — a team
+		// convention with no owner, no service and no person — so the correct
+		// output is the fact with NO pair, and any pair at all is a violation.
+		{
+			Name:    "durable-but-nobodys",
+			Ability: AbilityExtraction,
+			Turns: []string{
+				"one thing to know about how we work: releases never go out on a Friday.",
+				"Noted — no Friday releases.",
+			},
+			Want: []ExpectedFact{{
+				Why:   "a standing convention is durable and must be captured",
+				AllOf: []string{"friday"},
+			}},
+			Forbid: []Forbidden{{
+				Kind: ForbiddenInventedEntity,
+				Why:  "the transcript names no person, service or org, so any type+subject is invented — and an invented subject merges this fact onto another entity's node",
+			}},
+		},
+
 		// ---- abstention: the correct answer is nothing ----
 		{
 			Name:    "credential-in-transcript",

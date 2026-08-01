@@ -204,7 +204,8 @@ func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Base
 	}
 
 	fmt.Fprintf(w, "\nper-ability\n")
-	fmt.Fprintf(w, "  %-12s %6s %9s %11s %8s %7s\n", "ability", "cases", "recall", "violations", "clean", "errors")
+	fmt.Fprintf(w, "  %-12s %6s %9s %11s %8s %6s %7s\n",
+		"ability", "cases", "recall", "violations", "clean", "typed", "errors")
 	for _, s := range r.Abilities {
 		recall := "     n/a"
 		if s.Recall >= 0 {
@@ -218,9 +219,16 @@ func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Base
 		if base != nil {
 			delta = base.DeltaFor(r, s)
 		}
+		// typed = the entity-pair rate. "n/a" when nothing was emitted, never 0.00
+		// — a corpus with nothing to type would otherwise read as a model that
+		// refused to type, which is the opposite diagnosis.
+		typed := "   n/a"
+		if tr := s.TypedRate(); tr >= 0 {
+			typed = fmt.Sprintf("%6.2f", tr)
+		}
 		answered := s.Cases - s.Errors
-		fmt.Fprintf(w, "  %-12s %6d %9s %11d %5d/%d %s%s\n",
-			s.Ability, s.Cases, recall, s.Violations, s.CleanCases, answered, errs, delta)
+		fmt.Fprintf(w, "  %-12s %6d %9s %11d %5d/%d %s %s%s\n",
+			s.Ability, s.Cases, recall, s.Violations, s.CleanCases, answered, typed, errs, delta)
 	}
 	fmt.Fprintf(w, "\n  total violations     %d\n", r.TotalViolations)
 
@@ -264,7 +272,15 @@ func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Base
 			fmt.Fprintf(w, "  dropped    %d fact(s) production would discard\n", c.Dropped)
 		}
 		for _, f := range c.Facts {
-			fmt.Fprintf(w, "  emitted    [%s] %s\n", f.Class, f.Text)
+			// The entity pair is appended rather than always shown, so an untyped
+			// fact reads exactly as it did before and a typed one is unmistakable.
+			// Without this the pair was invisible here even once the struct carried
+			// it, which is how it went unmeasured in the first place.
+			entity := ""
+			if f.HasEntity() {
+				entity = fmt.Sprintf("  → %s:%s", f.Type, f.Subject)
+			}
+			fmt.Fprintf(w, "  emitted    [%s] %s%s\n", f.Class, f.Text, entity)
 		}
 	}
 
