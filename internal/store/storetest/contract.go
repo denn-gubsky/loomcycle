@@ -2824,12 +2824,47 @@ func testSweepStaleRuns(t *testing.T, s store.Store) {
 	terminalRun, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_terminal"})
 	_ = s.FinishRun(ctx, terminalRun.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
 
-	// Cutoff: between the stale row's last activity and the fresh
-	// row's. 100ms-back keeps the stale + noHB rows clearly past the
-	// cutoff (200ms ago) while the fresh row (just heartbeated)
-	// stays clearly after it. 100ms margin survives -race scheduling
-	// slowdown.
-	cutoff := time.Now().Add(-100 * time.Millisecond)
+	// Cutoff: derived from the rows' RECORDED timestamps, not from the wall
+	// clock.
+	//
+	// This is the third time this assertion has flaked (PR #224, PR #232, and a
+	// -race run on PR #897), and the first two answers were to widen the margin —
+	// 30ms, then 100ms. That treats the symptom. The cause is that a
+	// `time.Now()`-relative cutoff measures the gap between the fresh row's
+	// heartbeat and THE MOMENT THIS LINE RUNS, so any scheduling stall in between
+	// (creating and finishing the terminal row, under -race, on a loaded runner)
+	// ages the fresh row past the cutoff and it gets swept. No constant fixes
+	// that: a big enough stall beats any margin, and a bigger margin just makes
+	// the flake rarer and slower to diagnose.
+	//
+	// The gap the test actually needs is between the rows themselves, and both
+	// endpoints are already persisted. Reading them back and splitting the
+	// difference makes the cutoff exact whatever the scheduler did — the sleep
+	// above still creates the gap, but nothing after the fresh heartbeat can
+	// close it.
+	staleRow, err := s.GetRunByAgentID(ctx, "a_stale")
+	if err != nil {
+		t.Fatalf("read back the stale row: %v", err)
+	}
+	noHBRow, err := s.GetRunByAgentID(ctx, "a_no_hb")
+	if err != nil {
+		t.Fatalf("read back the no-heartbeat row: %v", err)
+	}
+	freshRow, err := s.GetRunByAgentID(ctx, "a_fresh")
+	if err != nil {
+		t.Fatalf("read back the fresh row: %v", err)
+	}
+	// The sweeper compares last_heartbeat_at when a row has one and started_at
+	// when it does not, so the cutoff must clear BOTH of the doomed rows' clocks.
+	doomed := staleRow.LastHeartbeatAt
+	if noHBRow.StartedAt.After(doomed) {
+		doomed = noHBRow.StartedAt
+	}
+	if !freshRow.LastHeartbeatAt.After(doomed) {
+		t.Fatalf("fixture: the fresh row (%v) must be strictly newer than the doomed rows (%v) — the sleep above did not create a gap",
+			freshRow.LastHeartbeatAt, doomed)
+	}
+	cutoff := doomed.Add(freshRow.LastHeartbeatAt.Sub(doomed) / 2)
 
 	swept, err := s.SweepStaleRuns(ctx, cutoff)
 	if err != nil {
