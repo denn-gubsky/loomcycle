@@ -22,11 +22,12 @@ import (
 // the code-js provider is in-process and the tools are local fakes.
 
 type fakeSandbox struct {
-	calls   []recordedCall
-	openN   int
-	openNet []string          // network arg of each sandbox_open
-	execErr map[string]bool   // commands whose exec should return IsError
-	execOut map[string]string // commands whose exec returns a scripted output
+	calls      []recordedCall
+	openN      int
+	openNet    []string          // network arg of each sandbox_open
+	openExpose []string          // expose arg of each sandbox_open
+	execErr    map[string]bool   // commands whose exec should return IsError
+	execOut    map[string]string // commands whose exec returns a scripted output
 }
 
 func newFakeSandbox() *fakeSandbox {
@@ -73,7 +74,16 @@ func (t *sbxTool) Execute(_ context.Context, raw json.RawMessage) (tools.Result,
 		t.s.openN++
 		net, _ := in["network"].(string)
 		t.s.openNet = append(t.s.openNet, net)
-		return okResult(map[string]any{"session_id": "s_test", "workspace_path": "/work", "network": net})
+		exp, _ := in["expose"].(string)
+		t.s.openExpose = append(t.s.openExpose, exp)
+		out := map[string]any{"session_id": "s_test", "workspace_path": "/work", "network": net}
+		if exp != "" {
+			// Mirror the real sidecar: an accepted expose attaches an alias network and
+			// returns the reachable host.
+			out["exposed"] = true
+			out["exposed_host"] = exp
+		}
+		return okResult(out)
 	case "mcp__sandbox__sandbox_exec":
 		cmd, _ := in["command"].(string)
 		if t.s.execErr[cmd] {
@@ -271,6 +281,21 @@ func TestDevExec_TailCapsLongOutput(t *testing.T) {
 	}
 	if strings.Contains(res.FinalText, "UNIQUEHEAD") {
 		t.Errorf("tail-cap must drop the output HEAD; got:\n%s", res.FinalText)
+	}
+}
+
+// TestDevExec_ExposePassesThroughToOpen: an `expose` field in the envelope reaches
+// sandbox_open, and the reachable host the sidecar returns is surfaced in final_text
+// so a blocking caller can point the browser tools at the serve-and-test session.
+func TestDevExec_ExposePassesThroughToOpen(t *testing.T) {
+	s := newFakeSandbox()
+	res := runDevExec(t, s, `{"expose":"devsrv","commands":["echo hi"]}`)
+
+	if len(s.openExpose) == 0 || s.openExpose[0] != "devsrv" {
+		t.Fatalf("expose must reach sandbox_open; openExpose=%v", s.openExpose)
+	}
+	if !strings.Contains(res.FinalText, "devsrv") {
+		t.Errorf("final_text must surface the reachable host; got:\n%s", res.FinalText)
 	}
 }
 

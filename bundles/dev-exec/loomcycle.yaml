@@ -43,6 +43,10 @@ agents:
       //   session_id  string  reuse an existing session (its lifecycle is the
       //                       caller's: not opened here, and not closed unless close=true)
       //   network     string  "egress" (default) | "none"
+      //   expose      string  reachable alias (DNS label) for a serve-and-test session;
+      //                       a dev server bound in the session is then reachable from
+      //                       the browser sidecar at http://<alias>:<port>. Needs the
+      //                       operator to enable exposure; returns exposed_host.
       //   workspace   string  durable /work name (needs SANDBOX_WORKSPACE_ROOT)
       //   cpu,mem_mb,pids,tmpfs_mb  numbers  resource requests (operator-clamped)
       //   git_setup   bool    run `gh auth setup-git` at open when GH_TOKEN present (default true)
@@ -57,18 +61,21 @@ agents:
       //   browser     array   optional [{op, args}] steps against mcp__browser__*
       //                       (op: navigate|get_text|snapshot|screenshot|click|type|press|wait)
       //
-      // Returns { final_text, ok, session_id, kept_open, files_written, results,
-      //           artifacts, browser }. final_text carries the per-command OUTPUT
-      //           (tail-capped), because a blocking caller only ever sees final_text.
+      // Returns { final_text, ok, session_id, kept_open, exposed_host, files_written,
+      //           results, artifacts, browser }. final_text carries the per-command
+      //           OUTPUT (tail-capped) plus the reachable host when exposed, because a
+      //           blocking caller only ever sees final_text.
 
       function run(input) {
         var env = parseEnvelope(input);
         if (env._error) return { final_text: env._error, ok: false };
 
         var reused = !!env.session_id;
-        var sid;
-        try { sid = reused ? env.session_id : openSession(env); }
-        catch (e) { return { final_text: "sandbox_open failed: " + errText(e), ok: false }; }
+        var sid, exposedHost = null;
+        try {
+          if (reused) { sid = env.session_id; }
+          else { var opened = openSession(env); sid = opened.session_id; exposedHost = opened.exposed_host || null; }
+        } catch (e) { return { final_text: "sandbox_open failed: " + errText(e), ok: false }; }
 
         // Best-effort: wire git-over-HTTPS to the injected GH_TOKEN (if any).
         if (!reused && env.git_setup !== false) {
@@ -118,8 +125,8 @@ agents:
         // caller must be able to read what a command printed and why it failed.
         var cap = (typeof env.output_cap === "number" && env.output_cap > 0) ? env.output_cap : 4000;
         return {
-          final_text: report(results, artifacts, browser, sid, failed, !closed, cap),
-          ok: !failed, session_id: sid, kept_open: !closed,
+          final_text: report(results, artifacts, browser, sid, exposedHost, failed, !closed, cap),
+          ok: !failed, session_id: sid, kept_open: !closed, exposed_host: exposedHost,
           files_written: wrote, results: results, artifacts: artifacts, browser: browser
         };
       }
@@ -140,6 +147,7 @@ agents:
 
       function openSession(env) {
         var o = { network: env.network || "egress" };
+        if (env.expose) o.expose = env.expose;
         if (env.workspace) o.workspace = env.workspace;
         if (env.tmpfs_mb) o.tmpfs_mb = env.tmpfs_mb;
         if (env.cpu) o.cpu = env.cpu;
@@ -147,7 +155,7 @@ agents:
         if (env.pids) o.pids = env.pids;
         var res = mcp__sandbox__sandbox_open(o);
         if (!res || !res.session_id) throw new Error("no session_id returned");
-        return res.session_id;
+        return res; // {session_id, exposed_host?, ...}
       }
 
       function tryExec(sid, cmd) {
@@ -188,7 +196,7 @@ agents:
       // command with its OUTPUT (tail-capped), then any read artifacts and browser
       // results. The code-js provider surfaces ONLY final_text, so this is how a
       // delegating caller sees what actually happened + why a step failed.
-      function report(results, artifacts, browser, sid, failed, kept, cap) {
+      function report(results, artifacts, browser, sid, exposedHost, failed, kept, cap) {
         var ok = 0, bad = 0, skip = 0;
         for (var i = 0; i < results.length; i++) {
           if (results[i].skipped) skip++; else if (results[i].ok) ok++; else bad++;
@@ -196,6 +204,8 @@ agents:
         var lines = ["ran " + results.length + " command(s): " + ok + " ok, " + bad + " failed" +
           (skip ? (", " + skip + " skipped") : "") +
           "; session " + sid + (kept ? " (kept open)" : " (closed)")];
+        // A serve-and-test session is reachable from the browser sidecar at this host.
+        if (exposedHost) lines.push("reachable at http://" + exposedHost + ":<port> (open with the browser tools)");
         for (var j = 0; j < results.length; j++) {
           var r = results[j];
           var tag = r.skipped ? "SKIPPED" : (r.ok ? "ok" : "FAILED");
