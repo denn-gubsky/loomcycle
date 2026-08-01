@@ -135,7 +135,8 @@ func TestUpsert_ExplicitFieldsStillWin(t *testing.T) {
 		t.Errorf("an explicit confidence must win: %v", got.Confidence)
 	}
 
-	// And an explicit revival: clearing a retirement is allowed, just not implicit.
+	// An explicit invalid_at wins over the preserved one — the caller can correct
+	// WHEN a fact stopped being true.
 	other := upsert(t, d, ctx, docID, "other", "other", "Replacement.", "")
 	supersede(t, d, ctx, other, id)
 	if metaOf(t, d, ctx, id).InvalidAt == nil {
@@ -146,10 +147,84 @@ func TestUpsert_ExplicitFieldsStillWin(t *testing.T) {
 		"natural_key": "thing", "invalid_at": 0,
 	}))
 	if err != nil || res.IsError {
-		t.Fatalf("revive: %v %s", err, res.Text)
+		t.Fatalf("set invalid_at: %v %s", err, res.Text)
 	}
 	if iv := metaOf(t, d, ctx, id).InvalidAt; iv == nil || *iv != 0 {
 		t.Errorf("an explicit invalid_at must win, got %d", deref(iv))
+	}
+}
+
+// TestUpsert_CannotReviveARetiredFact pins a limit that was documented BACKWARDS.
+//
+// Four places — a code comment, both plugin docs, and the published v1.42.1 release
+// notes — claimed "reviving a retired fact stays possible, just explicit: pass
+// invalid_at yourself". It is not possible, and nothing tested the claim.
+//
+// `invalid_at` is WORLD time and caller-settable; `expired_at` is SYSTEM time, is
+// never caller-settable, and the retired predicate keys on it. So moving invalid_at
+// into the future changes when the fact stopped being true and leaves it retired.
+//
+// That is the right shape for a bi-temporal store rather than a gap: system time is
+// append-only, "we stopped believing X at T" is itself a historical fact, and erasing
+// it would be rewriting history instead of recording a change of mind. The way to
+// retract a correction is to record another one — see the sibling test.
+func TestUpsert_CannotReviveARetiredFact(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	docID := newEntityDoc(t, d, ctx)
+
+	stale := upsert(t, d, ctx, docID, "fact", "fact", "The office is in Berlin.", "")
+	fresh := upsert(t, d, ctx, docID, "fact-v2", "fact v2", "The office moved to Hamburg.", "")
+	supersede(t, d, ctx, fresh, stale)
+
+	// Push world-time validity far into the future — the most plausible "revive" a
+	// caller would try, and the one the docs promised.
+	far := int64(4_102_444_800_000_000_000) // 2100
+	res, err := d.Execute(ctx, entityJSON(map[string]any{
+		"op": "upsert_chunk", "scope": "user", "document_id": docID,
+		"natural_key": "fact", "invalid_at": far,
+	}))
+	if err != nil || res.IsError {
+		t.Fatalf("upsert: %v %s", err, res.Text)
+	}
+
+	got := metaOf(t, d, ctx, stale)
+	if got.InvalidAt == nil || *got.InvalidAt != far {
+		t.Errorf("world-time invalid_at should be settable, got %d", deref(got.InvalidAt))
+	}
+	if got.ExpiredAt == nil {
+		t.Error("system-time expired_at must NOT be clearable by an upsert — the fact would silently return as current")
+	}
+}
+
+// TestSupersede_RetractionIsANewSupersession is the path that DOES work, and the one
+// the docs should have named: to undo a correction, record another correction.
+func TestSupersede_RetractionIsANewSupersession(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	docID := newEntityDoc(t, d, ctx)
+
+	berlin := upsert(t, d, ctx, docID, "loc", "loc", "The office is in Berlin.", "")
+	hamburg := upsert(t, d, ctx, docID, "loc-v2", "loc v2", "The office moved to Hamburg.", "")
+	supersede(t, d, ctx, hamburg, berlin)
+
+	// The move is cancelled. Not by reviving the old row — by recording the reversal.
+	again := upsert(t, d, ctx, docID, "loc-v3", "loc v3", "The move was cancelled; Berlin after all.", "")
+	supersede(t, d, ctx, again, hamburg)
+
+	// Exactly one row is current, and it is the newest.
+	for _, c := range []struct {
+		id      string
+		retired bool
+		what    string
+	}{
+		{berlin, true, "the original"},
+		{hamburg, true, "the correction that was itself retracted"},
+		{again, false, "the retraction"},
+	} {
+		m := metaOf(t, d, ctx, c.id)
+		isRetired := m.ExpiredAt != nil
+		if isRetired != c.retired {
+			t.Errorf("%s: retired=%v, want %v", c.what, isRetired, c.retired)
+		}
 	}
 }
 
