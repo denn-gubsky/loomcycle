@@ -2930,6 +2930,25 @@ type Env struct {
 	// Env: LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES.
 	MemoryMaxScopeBytes int
 
+	// DeadLinkGCInterval is how often the dead-link reconciliation runs — the layer
+	// that collects chunk references nothing can reach (a body whose chunk is gone,
+	// an edge to a chunk that does not exist).
+	//
+	// ON BY DEFAULT, unlike the retention sweeper, because everything it deletes is
+	// unreachable by definition: it restores an invariant rather than applying a
+	// policy. Hourly rather than every fifteen minutes because an orphan costs
+	// nothing while it sits there — the read-time guard already hides it — so this
+	// is about not accumulating forever, not about latency.
+	// Env: LOOMCYCLE_DEADLINK_GC_MS (0 disables).
+	DeadLinkGCInterval time.Duration
+
+	// DeadLinkGCDryRun makes the reconciliation COUNT without deleting, so an
+	// operator can see what it would collect before letting it. Reported at the same
+	// log level either way, which is the point: a dry run that logged nothing would
+	// be indistinguishable from a clean store.
+	// Env: LOOMCYCLE_DEADLINK_GC_DRY_RUN=1.
+	DeadLinkGCDryRun bool
+
 	// MemorySweepInterval is how often the TTL reaper goroutine
 	// runs MemorySweep on the store. Default 15 minutes. Set to 0
 	// to disable (operators with an external reaper, or tests that
@@ -3815,6 +3834,17 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			}
 		}
 	}
+	cfg.Env.DeadLinkGCInterval = time.Hour
+	if v := os.Getenv("LOOMCYCLE_DEADLINK_GC_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.DeadLinkGCInterval = 0
+			} else {
+				cfg.Env.DeadLinkGCInterval = time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+	cfg.Env.DeadLinkGCDryRun = os.Getenv("LOOMCYCLE_DEADLINK_GC_DRY_RUN") == "1"
 	cfg.Env.MemorySweepInterval = 15 * time.Minute
 	if v := os.Getenv("LOOMCYCLE_MEMORY_SWEEP_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

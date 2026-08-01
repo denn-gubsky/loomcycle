@@ -140,6 +140,20 @@ var (
 	// runs once per boot; the content-hash gate makes an unchanged corpus a
 	// zero-embed no-op even on the replica that wins the lock.
 	LockKeyHelpIndexReconcile int64
+	// LockKeyDeadLinkGC gates the dead-link reconciliation — the layer that
+	// collects chunk references nothing can reach any more (a body whose chunk is
+	// gone, an edge to a chunk that does not exist).
+	//
+	// ITS OWN KEY, deliberately, and this was a corrected design slip: the original
+	// note put it on LockKeyMemorySweeper, which already belongs to the SQL-Memory
+	// scope GC. Sharing a key does not serialise two subsystems politely — it makes
+	// each tick of one starve the other, silently, and the symptom would be
+	// "integrity ran less often than configured" with nothing to point at.
+	//
+	// Distinct from LockKeyRetentionSweeper for the same reason it is a distinct
+	// subsystem: retention deletes REACHABLE data because an operator asked, and is
+	// off by default; this deletes only the unreachable, and is always on.
+	LockKeyDeadLinkGC int64
 )
 
 // MemoryConsolidatorLockKey derives the RFC BL P2 consolidation fan-out's
@@ -174,6 +188,7 @@ func init() {
 	LockKeyUsageSweeper = fnvKey("usage_sweeper")
 	LockKeyRetentionSweeper = fnvKey("retention_sweeper")
 	LockKeyHelpIndexReconcile = fnvKey("help_index_reconcile")
+	LockKeyDeadLinkGC = fnvKey("deadlink_gc")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

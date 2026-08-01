@@ -2538,6 +2538,56 @@ func main() {
 		log.Printf("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
 	}
 
+	// Dead-link reconciliation: the only layer that actually COLLECTS chunk
+	// references nothing can reach.
+	//
+	// The other two layers are incomplete by construction. delete_chunk cleans every
+	// reference, but the body delete runs after the transaction commits because it
+	// is a different store — so a crash in that window leaves an orphan. And the
+	// read-time guard HIDES an orphan, which is right for a read and is exactly why
+	// nothing ever notices one is there. An out-of-band delete bypasses both.
+	//
+	// On by default, unlike retention, because everything it removes is unreachable:
+	// it restores an invariant rather than enacting a policy.
+	if cfg.Env.DeadLinkGCInterval > 0 && storeIface != nil && sqlMemMgr != nil {
+		docTool := &builtin.Document{Store: storeIface, SqlMem: sqlMemMgr}
+		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.DeadLinkGCInterval, advisoryLock, coord.LockKeyDeadLinkGC, "deadlink",
+			func(ctx context.Context) {
+				scopes, err := sqlMemMgr.ListScopes(ctx)
+				if err != nil {
+					log.Printf("deadlink gc: list scopes: %v", err)
+					return
+				}
+				for _, sk := range scopes {
+					// A run scope is dropped whole at run end, so reconciling it is
+					// work with no beneficiary — and it has no durable body partition
+					// to reconcile against.
+					ms, ok := deadLinkMemoryScope(sk.Scope)
+					if !ok {
+						continue
+					}
+					rep, err := docTool.ReconcileDeadLinks(ctx, sk, ms, cfg.Env.DeadLinkGCDryRun)
+					if err != nil {
+						// Per-scope: one unreadable scope must not stop the sweep.
+						log.Printf("deadlink gc: %s/%s/%s: %v", sk.Tenant, sk.Scope, sk.ScopeID, err)
+						continue
+					}
+					if !rep.Empty() {
+						verb := "collected"
+						if cfg.Env.DeadLinkGCDryRun {
+							verb = "would collect"
+						}
+						log.Printf("deadlink gc: %s %s", verb, rep)
+					}
+				}
+			})
+		log.Printf("deadlink gc: interval=%s dry_run=%v", cfg.Env.DeadLinkGCInterval, cfg.Env.DeadLinkGCDryRun)
+	} else if storeIface != nil && sqlMemMgr == nil {
+		log.Printf("deadlink gc: disabled (no SQL Memory — no chunk tables to reconcile)")
+	} else {
+		log.Printf("deadlink gc: disabled (LOOMCYCLE_DEADLINK_GC_MS=0 or no Store)")
+	}
+
 	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
 	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
 		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
@@ -3941,4 +3991,23 @@ func buildSearchProviders(cfg *config.Config) (*search.Registry, *search.Resolve
 		priority = ids
 	}
 	return reg, search.NewResolver(priority), hostKeys
+}
+
+// deadLinkMemoryScope maps a SQL-Memory scope onto the Memory scope its chunk
+// bodies live in, and reports whether the scope is worth reconciling at all.
+//
+// `run` is excluded: an ephemeral scope is dropped whole at run end, so collecting
+// its orphans is work with no beneficiary — and it has no durable body partition to
+// reconcile against, so guessing one risks deleting another scope's bodies. The same
+// exclusion the retention content-prune makes, for the same reason.
+func deadLinkMemoryScope(scope string) (store.MemoryScope, bool) {
+	switch scope {
+	case "agent":
+		return store.MemoryScopeAgent, true
+	case "user":
+		return store.MemoryScopeUser, true
+	case "tenant":
+		return store.MemoryScopeTenant, true
+	}
+	return "", false
 }
