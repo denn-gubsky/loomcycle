@@ -25,6 +25,27 @@
     {
       "provider": "ollama-local",
       "model": "qwen3.6:latest",
+      "effort": "low",
+      "system_prompt_sha256": "cf2736fd62c802912542686d00826e4145cd9e57db6ae1d3ddf17794a3baf204",
+      "corpus_sha256": "37f893a438c6c047b0eb2604a6ca5795479ab3a3c1c552069e052c8e0c0b3655",
+      "measured_at": "2026-08-01T09:57:35Z",
+      "recall": {
+        "extraction": 1,
+        "property": 1,
+        "temporal": 1,
+        "update": 1
+      },
+      "violations": {
+        "abstention": 0,
+        "extraction": 0,
+        "property": 0,
+        "temporal": 0,
+        "update": 0
+      }
+    },
+    {
+      "provider": "ollama-local",
+      "model": "qwen3.6:latest",
       "effort": "medium",
       "system_prompt_sha256": "7104816985db9c7ca6368b4adde74f140aa5255bd1176124b2fbd8e89dbf525b",
       "corpus_sha256": "37f893a438c6c047b0eb2604a6ca5795479ab3a3c1c552069e052c8e0c0b3655",
