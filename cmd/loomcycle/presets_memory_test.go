@@ -45,13 +45,20 @@ func TestConsolidatorBundle_Validates(t *testing.T) {
 			t.Errorf("memory/consolidator should grant %q; tools=%v", want, agent.Tools)
 		}
 	}
-	// Document / Skill / Path must NOT be granted. Nothing in the code body calls
-	// any of them, and an unused grant is not free: it is the capability an
-	// injected instruction reaches for. `Path op=rm recursive=true` in particular
-	// is a HARD delete sitting inside an agent whose one central safety rule is
-	// that consolidation never destroys history — it would bypass the soft
-	// archive (supersede) the whole pipeline is built around.
-	for _, denied := range []string{"Document", "Skill", "Path"} {
+	// Document IS granted now: the entity half mirrors each typed fact into a chunk
+	// graph, which is the whole of RFC BL P5 PR 1. Its ops are additive and
+	// supersede-not-delete like the rest of the pipeline — there is no Document op
+	// that hard-deletes a fact the way `Path op=rm` would.
+	if !hasToolPreset(agent.Tools, "Document") {
+		t.Errorf("memory/consolidator must grant Document — the entity graph is written through it; tools=%v", agent.Tools)
+	}
+	// Skill / Path must NOT be granted. Nothing in the code body calls either, and
+	// an unused grant is not free: it is the capability an injected instruction
+	// reaches for. `Path op=rm recursive=true` in particular is a HARD delete
+	// sitting inside an agent whose one central safety rule is that consolidation
+	// never destroys history — it would bypass the soft archive (supersede) the
+	// whole pipeline is built around.
+	for _, denied := range []string{"Skill", "Path"} {
 		if hasToolPreset(agent.Tools, denied) {
 			t.Errorf("memory/consolidator grants %q but the code body never calls it; tools=%v", denied, agent.Tools)
 		}
@@ -95,10 +102,12 @@ func TestConsolidatorBundle_Validates(t *testing.T) {
 	if !containsString(agent.HistoryScope, "user") {
 		t.Errorf("history_scope should include user (the narrowest scope that reads the target's chats); got %v", agent.HistoryScope)
 	}
-	// sql_scopes is now GONE. It was carried "pending verification" through the
-	// prompt rewrite because revoking a capability is wider than editing text —
-	// but the pipeline is code now, and the code demonstrably never issues a SQL
-	// op. There is nothing left to verify.
+	// sql_scopes stays GONE even though the entity half writes chunk structure into
+	// SQL Memory. The Document tool issues its own trusted SQL and checks
+	// `sql_scopes` only for TENANT scope — agent and user are ungated — so the
+	// grant would buy nothing while handing an injected instruction the raw
+	// `Memory sql_exec` surface. Its absence is also what makes a tenant-scope
+	// Document write impossible here, whatever a transcript asks for.
 	if len(agent.SqlScopes) != 0 {
 		t.Errorf("memory/consolidator still grants sql_scopes=%v — the code body issues no SQL op, and an unused grant is the capability an injection reaches for", agent.SqlScopes)
 	}
