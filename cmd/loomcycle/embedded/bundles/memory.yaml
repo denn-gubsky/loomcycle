@@ -175,7 +175,11 @@ agents:
     # calls them, and an unused grant is the capability an injected instruction
     # reaches for. `Path op=rm` in particular is a HARD delete inside an agent
     # whose central rule is that consolidation never destroys history.
-    tools: [Memory, History, Agent, Context]
+    # Document is here for the ENTITY half: the same facts written to k/v are also
+    # written as typed, linked chunks so a graph walk can reach them. It is added
+    # rather than swapped in — the k/v rows stay the recall path, and the entity
+    # graph is what k/v cannot express (relations between facts).
+    tools: [Memory, History, Agent, Context, Document]
     # Deny-all skills: the runtime auto-adds the Skill tool to every agent that
     # does not deny all skills, so dropping an allowlist alone leaves the tool in
     # place. A code agent has no use for it — it reads no prompt.
@@ -198,6 +202,12 @@ agents:
     # pointed at a differently-named agent would not exclude it at all.
     internal: true
     memory_scopes: [agent, user]  # user = the fan-out target; agent = its own bookkeeping
+    # NO sql_scopes, deliberately, even though the entity half writes chunk
+    # STRUCTURE into SQL Memory. The Document tool issues its own trusted SQL and
+    # checks `sql_scopes` only for TENANT scope — agent and user are ungated — so
+    # granting it here would buy nothing and hand an injected instruction the raw
+    # `Memory sql_exec` surface. The absence is what keeps the consolidator unable
+    # to write the tenant-shared store at all, whatever a transcript asks for.
     memory_consolidation: true    # the cursor / supersede / pending-queue control ops
     history_scope: [user]         # narrowest scope that can read the target user's chats
     # ⚠️ MUST STAY BELOW the LEASE_TTL_MS literal in the body below. A pass that
@@ -389,7 +399,13 @@ agents:
           merge_refused_subject: 0, // above the band, but about a different subject
           merge_refused_class: 0,   // above the band, but filed under another class
           supersede_queue: [],      // neighbour keys judged duplicates of a kept row
+          supersede_keeper: {},     // retired key -> the key that survived it (entity half)
           written_keys: {},         // never retire a row this pass just wrote
+          entities_doc: null,       // the /memory/entities document id, resolved once
+          entity_ids: {},           // natural_key -> chunk id, for this pass
+          entity_nodes: 0,          // distinct subjects given an entity chunk
+          entity_facts: 0,          // facts mirrored into the graph
+          entity_failed: 0,         // entity writes that failed (k/v still landed)
           watermark: null,          // the LAST scan row actually consolidated, by reference
           advanced: null,
           advance_blocked: false,
@@ -938,7 +954,13 @@ agents:
           // fired at all. The highest-scoring row is kept and rewritten; the rest
           // are queued, and retire() applies the pass-wide cap once. Superseding
           // them is what collapses the pile back to one canonical row.
-          for (var d = 1; d < dupes.length; d++) { st.supersede_queue.push(dupes[d].id); }
+          for (var d = 1; d < dupes.length; d++) {
+            st.supersede_queue.push(dupes[d].id);
+            // The entity half needs the SURVIVOR too: supersede_chunk records which
+            // chunk replaced which, so a retirement with no replacement cannot be
+            // expressed. dupes[0] is the row being kept and rewritten.
+            st.supersede_keeper[dupes[d].id] = dupes[0].id;
+          }
           if (!write(st, primary.id, fact, sourceID, pendingID)) { return false; }
           st.updated++;
           return true;
@@ -1072,7 +1094,153 @@ agents:
           return false;
         }
         st.written_keys[key] = true;
+        // The entity graph mirrors the fact AFTER the authoritative write lands, so
+        // a graph failure can never cost a fact.
+        mirrorEntity(st, key, fact);
         return true;
+      }
+
+      // ------------------------------------------------------- the entity half
+      //
+      // Every fact the extractor typed is ALSO written as a chunk graph: one node
+      // per distinct subject, one node per fact, an `about` edge between them. That
+      // shape is the point — a flat set of typed facts is just k/v with extra
+      // steps, and graph_recall would have nothing to walk. Facts about the same
+      // subject share an entity node, which is what makes "what else do we know
+      // about Denn" answerable from any one of them.
+      //
+      // BEST-EFFORT, ALWAYS. A failure here never fails the pass and never blocks
+      // the watermark: the k/v row is the authoritative memory and it has already
+      // landed by the time any of this runs. The graph is an index over facts, so
+      // a missing edge costs a retrieval path, not a fact. Failures are counted and
+      // reported rather than thrown.
+      //
+      // The natural key of a FACT chunk is the k/v key verbatim. One key space for
+      // both stores is what stops them drifting: the same merge decision that
+      // rewrites a k/v row in place updates its chunk in place, and there is no
+      // second dedupe mechanism to fall out of step with the first.
+
+      // entitiesDoc resolves (and on first use creates) the scope's canonical
+      // /memory/entities document. Provisioned here rather than server-side
+      // because nothing on the server has a reason to touch it — the consolidator
+      // is its only writer.
+      function entitiesDoc(st) {
+        if (st.entities_doc !== null) { return st.entities_doc; }
+        var path = "/memory/entities";
+        try {
+          var got = JSON.parse(Document({ op: "get_document", scope: CONFIG.scope, path: path }));
+          st.entities_doc = got.document_id || "";
+        } catch (e) {
+          try {
+            var made = JSON.parse(Document({
+              op: "create_document", scope: CONFIG.scope,
+              title: "Entities", path: path
+            }));
+            st.entities_doc = made.document_id || "";
+          } catch (e2) {
+            st.entities_doc = ""; // give up for this pass; k/v is unaffected
+          }
+        }
+        return st.entities_doc;
+      }
+
+      // entityKey is the natural key of a SUBJECT node: type plus a slug of the
+      // name. Two facts naming "Denn" and "denn " land on one node; two different
+      // people with the same name land on one node too, which is a known limit of
+      // name-as-identity and the reason the extractor is told not to guess.
+      function entityKey(type, subject) { return type + ":" + slug(subject); }
+
+      // upsertEntityChunk writes one chunk and returns its id, or "" on failure.
+      function upsertEntityChunk(st, docID, naturalKey, args) {
+        if (st.entity_ids[naturalKey]) { return st.entity_ids[naturalKey]; }
+        try {
+          args.op = "upsert_chunk";
+          args.scope = CONFIG.scope;
+          args.document_id = docID;
+          args.natural_key = naturalKey;
+          var res = JSON.parse(Document(args));
+          if (res && res.id) { st.entity_ids[naturalKey] = res.id; return res.id; }
+        } catch (e) {
+          st.entity_failed++;
+        }
+        return "";
+      }
+
+      // mirrorEntity writes the subject node, the fact node and the edge between
+      // them. Called after the k/v write has already succeeded.
+      function mirrorEntity(st, key, fact) {
+        if (!fact.type || !fact.subject) { return; } // untyped fact: k/v only (by design)
+        var docID = entitiesDoc(st);
+        if (!docID) { return; }
+
+        var subjKey = entityKey(fact.type, fact.subject);
+        var isNewSubject = !st.entity_ids[subjKey];
+        var subjID = upsertEntityChunk(st, docID, subjKey, {
+          title: fact.subject, type: fact.type
+        });
+        if (!subjID) { return; }
+        if (isNewSubject) { st.entity_nodes++; }
+
+        // The fact node carries the sentence; its title is the sentence too,
+        // trimmed, because a chunk with no title is unreadable in the Path browser.
+        var factID = upsertEntityChunk(st, docID, key, {
+          title: fact.text.length > 80 ? fact.text.slice(0, 77) + "..." : fact.text,
+          type: "fact", body: fact.text
+        });
+        if (!factID) { return; }
+        st.entity_facts++;
+
+        try {
+          Document({ op: "link_chunks", scope: CONFIG.scope,
+                     from_id: factID, to_id: subjID, kind: "about" });
+        } catch (e) {
+          st.entity_failed++; // the nodes exist; only the edge is missing
+        }
+      }
+
+      // retireEntity mirrors a k/v supersession onto the graph. supersede_chunk
+      // needs BOTH sides, so a retirement whose survivor is unknown is skipped
+      // rather than guessed — marking a fact retired with no replacement would
+      // assert that we stopped believing it for no recorded reason.
+      function retireEntity(st, retiredKey) {
+        var keeperKey = st.supersede_keeper[retiredKey];
+        if (!keeperKey) { return; }
+        var docID = entitiesDoc(st);
+        if (!docID) { return; }
+        var oldID = entityIDByKey(st, retiredKey), newID = entityIDByKey(st, keeperKey);
+        if (!oldID || !newID) { return; } // neither was ever mirrored — nothing to retire
+        try {
+          Document({ op: "supersede_chunk", scope: CONFIG.scope,
+                     id: newID, supersedes_id: oldID });
+        } catch (e) {
+          st.entity_failed++;
+        }
+      }
+
+      // entityIDByKey resolves a natural key to a chunk id, including one written
+      // by an EARLIER pass (this pass's cache only holds what it wrote itself).
+      //
+      // The key is interpolated rather than bound because query_chunks' sql escape
+      // hatch takes no parameters. That is safe HERE and only here: every natural
+      // key this file produces comes from slug() or entityKey(), whose output is
+      // [a-z0-9:-] by construction, so no quote can occur. Do not extend this to a
+      // key from anywhere else.
+      function entityIDByKey(st, naturalKey) {
+        if (st.entity_ids[naturalKey]) { return st.entity_ids[naturalKey]; }
+        if (!/^[a-z0-9:_/-]+$/.test(naturalKey)) { return ""; }
+        try {
+          var res = JSON.parse(Document({
+            op: "query_chunks", scope: CONFIG.scope,
+            sql: "SELECT chunk_id FROM chunk_memory_meta WHERE natural_key = '" + naturalKey + "'"
+          }));
+          if (res && res.rows && res.rows.length && res.rows[0].length) {
+            st.entity_ids[naturalKey] = String(res.rows[0][0]);
+            return st.entity_ids[naturalKey];
+          }
+        } catch (e) {
+          st.entity_failed++;
+        }
+        return "";
       }
 
       // retire applies the ONLY destructive-ish op in the pipeline, capped.
@@ -1093,6 +1261,7 @@ agents:
           try {
             Memory.supersede({ scope: CONFIG.scope, key: capped[j] });
             st.superseded++;
+            retireEntity(st, capped[j]);
           } catch (e) {
             block(st, "supersede failed for " + capped[j] + ": " + errText(e));
           }
@@ -1230,6 +1399,15 @@ agents:
         if (st.merge_refused_class > 0) {
           parts.push("merge refused on class " + st.merge_refused_class +
             " (a neighbour scored as a duplicate but is filed under a different class, or under a key this pass did not mint — written as a new row instead)");
+        }
+
+        // The entity half, reported even when zero: a pass that mirrored nothing
+        // because no fact was typed looks identical to one where every Document
+        // call failed, and those need different fixes.
+        if (st.entity_facts || st.entity_nodes || st.entity_failed) {
+          var ent = "entities " + st.entity_facts + " fact(s) across " + st.entity_nodes + " subject(s)";
+          if (st.entity_failed) { ent += ", " + st.entity_failed + " graph write(s) failed"; }
+          parts.push(ent);
         }
 
         if (st.advanced) {

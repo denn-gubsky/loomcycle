@@ -50,6 +50,14 @@ type recordedCall struct {
 type fakeToolset struct {
 	calls []recordedCall
 
+	// The entity half, filled by fakeDocument.
+	entitiesDocID    string
+	chunks           map[string]string // natural_key -> chunk id
+	chunkTypes       map[string]string // natural_key -> type
+	edges            []string          // "from-kind->to"
+	supersededChunks []string          // "old by new"
+	failEntityKeys   map[string]bool
+
 	leaseAcquired bool
 	sessions      []map[string]any
 	pending       []map[string]any
@@ -110,9 +118,12 @@ type fakeToolset struct {
 
 func newFakeToolset() *fakeToolset {
 	return &fakeToolset{
-		leaseAcquired: true,
-		bands:         map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
-		failSetKeys:   map[string]bool{},
+		leaseAcquired:  true,
+		bands:          map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
+		failSetKeys:    map[string]bool{},
+		chunks:         map[string]string{},
+		chunkTypes:     map[string]string{},
+		failEntityKeys: map[string]bool{},
 		// Source of truth for this format: formatSubAgentOutput in
 		// internal/api/http/resume.go. Nothing links them — grep that name.
 		subAgentHeader: "[sub-agent agent_id=a_test000000000000]\n",
@@ -195,6 +206,69 @@ func (m *fakeMemory) Execute(_ context.Context, raw json.RawMessage) (tools.Resu
 		return okResult(map[string]any{"ok": true})
 	}
 	return tools.Result{IsError: true, Text: fmt.Sprintf("unexpected Memory op %v", in["op"])}, nil
+}
+
+// --- Document (the entity half) ---------------------------------------------
+
+// fakeDocument is a minimal chunk store: enough to observe the graph the pass
+// builds — which natural keys became chunks, and which edges joined them —
+// without reimplementing the Document tool.
+type fakeDocument struct {
+	f *fakeToolset
+}
+
+func (d *fakeDocument) Name() string                 { return "Document" }
+func (d *fakeDocument) Description() string          { return "document (test double)" }
+func (d *fakeDocument) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+
+func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Result, error) {
+	in := d.f.record("Document", raw)
+	switch in["op"] {
+	case "get_document":
+		if d.f.entitiesDocID == "" {
+			return tools.Result{IsError: true, Text: "get_document: no such path"}, nil
+		}
+		return okResult(map[string]any{"document_id": d.f.entitiesDocID})
+	case "create_document":
+		d.f.entitiesDocID = "doc-entities"
+		return okResult(map[string]any{"document_id": d.f.entitiesDocID, "root_chunk_id": "root"})
+	case "upsert_chunk":
+		key, _ := in["natural_key"].(string)
+		if d.f.failEntityKeys[key] {
+			return tools.Result{IsError: true, Text: "upsert_chunk: write failed for " + key}, nil
+		}
+		id, existed := d.f.chunks[key]
+		if !existed {
+			id = fmt.Sprintf("chunk-%d", len(d.f.chunks)+1)
+			d.f.chunks[key] = id
+		}
+		if typ, ok := in["type"].(string); ok && typ != "" {
+			d.f.chunkTypes[key] = typ
+		}
+		return okResult(map[string]any{"id": id, "natural_key": key, "created": !existed})
+	case "link_chunks":
+		from, _ := in["from_id"].(string)
+		to, _ := in["to_id"].(string)
+		kind, _ := in["kind"].(string)
+		d.f.edges = append(d.f.edges, from+"-"+kind+"->"+to)
+		return okResult(map[string]any{"ok": true})
+	case "supersede_chunk":
+		id, _ := in["id"].(string)
+		old, _ := in["supersedes_id"].(string)
+		d.f.supersededChunks = append(d.f.supersededChunks, old+" by "+id)
+		return okResult(map[string]any{"ok": true})
+	case "query_chunks":
+		// Only the natural-key point lookup is used; answer from the same map
+		// upsert_chunk fills so a cross-pass resolve is observable.
+		sql, _ := in["sql"].(string)
+		for key, id := range d.f.chunks {
+			if strings.Contains(sql, "'"+key+"'") {
+				return okResult(map[string]any{"columns": []string{"chunk_id"}, "rows": [][]any{{id}}})
+			}
+		}
+		return okResult(map[string]any{"columns": []string{"chunk_id"}, "rows": [][]any{}})
+	}
+	return tools.Result{IsError: true, Text: fmt.Sprintf("unexpected Document op %v", in["op"])}, nil
 }
 
 // --- History ----------------------------------------------------------------
@@ -324,7 +398,7 @@ func runConsolidator(t *testing.T, f *fakeToolset) loop.RunResult {
 		t.Fatalf("memory/consolidator not registered (agents: %v)", agentNames(cfg))
 	}
 
-	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}}
+	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}, &fakeDocument{f: f}}
 	prov := codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: 30 * time.Second})
 
 	res, err := loop.Run(context.Background(), loop.RunOptions{
@@ -811,7 +885,7 @@ func TestConsolidator_ReleasesTheLeaseWhenThePipelineThrows(t *testing.T) {
 	// the t.Fatal-on-error helper.
 	cfg := memoryBundleConfig(t)
 	agent := cfg.Agents["memory/consolidator"]
-	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}}
+	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}, &fakeDocument{f: f}}
 	prov := codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: 30 * time.Second})
 	_, err := loop.Run(context.Background(), loop.RunOptions{
 		Provider:   prov,
@@ -2534,5 +2608,111 @@ func TestConsolidator_CarriesTheEntityPairOrNeither(t *testing.T) {
 	}
 	if strings.Contains(res.FinalText, "malformed") && !strings.Contains(res.FinalText, "malformed entries dropped 0") {
 		t.Errorf("a fact without the entity pair is not malformed; got %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_MirrorsTypedFactsIntoAGraph is the point of the entity half:
+// the pass must produce a GRAPH, not a second flat pile of facts.
+//
+// Two facts about one subject share an entity node, which is what makes "what else
+// do we know about Denn" answerable from either of them. A flat set of typed chunks
+// would be k/v with extra steps and graph_recall would have nothing to walk.
+func TestConsolidator_MirrorsTypedFactsIntoAGraph(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	f.factsJSON = "```json\n" + `[
+		{"text":"Denn prefers Go for backend services.","class":"preference","type":"person","subject":"Denn"},
+		{"text":"Denn works in the Berlin office.","class":"fact","type":"person","subject":"Denn"},
+		{"text":"Acme runs on Postgres.","class":"fact","type":"organization","subject":"Acme"}
+	]` + "\n```"
+
+	res := runConsolidator(t, f)
+
+	// Every fact still lands in k/v — the graph is additive.
+	if n := f.countOp("Memory.set"); n != 3 {
+		t.Errorf("k/v writes = %d, want 3; the graph must not replace the authoritative store", n)
+	}
+	// TWO subject nodes for three facts: Denn is one node, not two.
+	if got := f.chunkTypes["person:denn"]; got != "person" {
+		t.Errorf("no person:denn entity node (types=%v)", f.chunkTypes)
+	}
+	if got := f.chunkTypes["organization:acme"]; got != "organization" {
+		t.Errorf("no organization:acme entity node (types=%v)", f.chunkTypes)
+	}
+	subjects := 0
+	for k := range f.chunkTypes {
+		if !strings.HasPrefix(k, "memory/") {
+			subjects++
+		}
+	}
+	if subjects != 2 {
+		t.Errorf("got %d subject nodes, want 2 — two facts about Denn must share one node; keys=%v", subjects, f.chunkTypes)
+	}
+	// Three fact nodes, keyed by the SAME key as the k/v row so the two stores
+	// share one key space and cannot drift.
+	factNodes := 0
+	for k := range f.chunks {
+		if strings.HasPrefix(k, "memory/") {
+			factNodes++
+		}
+	}
+	if factNodes != 3 {
+		t.Errorf("got %d fact nodes, want 3 (natural_key must be the k/v key); keys=%v", factNodes, f.chunks)
+	}
+	// And the edges that make it a graph.
+	if len(f.edges) != 3 {
+		t.Errorf("got %d `about` edges, want 3 — without them graph_recall has nothing to walk; edges=%v", len(f.edges), f.edges)
+	}
+	if !strings.Contains(res.FinalText, "entities 3 fact(s) across 2 subject(s)") {
+		t.Errorf("the entity half must be reported; got %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_UntypedFactsStayKeyValueOnly: the entity pair is optional, and a
+// fact naming no single thing must not be forced into the graph. Inventing a subject
+// to make one fit is how two different things end up merged onto one node.
+func TestConsolidator_UntypedFactsStayKeyValueOnly(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	f.factsJSON = "```json\n" + `[
+		{"text":"The team ships on Tuesdays.","class":"decision"},
+		{"text":"Releases are never cut on a Friday.","class":"constraint"}
+	]` + "\n```"
+
+	runConsolidator(t, f)
+
+	if n := f.countOp("Memory.set"); n != 2 {
+		t.Errorf("k/v writes = %d, want 2 — an untyped fact is still a fact", n)
+	}
+	if n := f.countOp("Document.upsert_chunk"); n != 0 {
+		t.Errorf("wrote %d chunks for untyped facts, want 0; keys=%v", n, f.chunks)
+	}
+}
+
+// TestConsolidator_AGraphFailureNeverCostsAFact is the safety property. The k/v row
+// is the authoritative memory and the graph is an index over it, so a Document
+// failure must degrade to "no edge" and never to "no fact" — and must never block
+// the watermark, which would make the pass re-read the chat forever.
+func TestConsolidator_AGraphFailureNeverCostsAFact(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	f.factsJSON = "```json\n" + `[
+		{"text":"Denn prefers Go for backend services.","class":"preference","type":"person","subject":"Denn"}
+	]` + "\n```"
+	f.failEntityKeys = map[string]bool{"person:denn": true} // the subject node cannot be written
+
+	res := runConsolidator(t, f)
+
+	if n := f.countOp("Memory.set"); n != 1 {
+		t.Errorf("the fact must still be stored when the graph write fails; k/v writes=%d", n)
+	}
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("a graph failure must not block the watermark; sequence %v", f.ops())
+	}
+	if !strings.Contains(res.FinalText, "graph write(s) failed") {
+		t.Errorf("a silent graph failure is the worst outcome — it must be reported; got %q", res.FinalText)
 	}
 }
