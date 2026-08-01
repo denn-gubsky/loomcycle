@@ -167,6 +167,52 @@ Scope: reachable URLs (public sites / your deployment / preview URLs). PinchTab
 keeps browsing local-only until you widen its domain allowlist (IDPI). A full worked
 example is in [`../cloud-deployment/`](../cloud-deployment/).
 
+### Serve-and-test (run a dev server, then browse it)
+
+By default a session is `--network none` (or a NAT `bridge` for egress) — the browser
+sidecar cannot reach a server the session binds, so the two are isolated. To develop a
+feature IN the sandbox and then exercise it in the browser, opt into **session
+exposure**: the sidecar attaches the session to a dedicated network under a
+`--network-alias`, and the browser reaches it at `http://<alias>:<port>`.
+
+1. **Operator, once:** create a dedicated bridge network the browser sidecar also
+   joins, and point the builder-sidecar at it (never loomcycle's own app network —
+   this network is shared by the browser and every exposed session):
+   ```yaml
+   # docker-compose.yaml
+   networks:
+     loom-dev: { name: loom-dev, driver: bridge }   # egress-capable → deps still fetch
+   services:
+     builder-sidecar:
+       environment:
+         SANDBOX_EXPOSE_NETWORK: loom-dev            # gate: without it, `expose` is refused
+     pinchtab:
+       networks: [loomnet, loom-dev]                 # reach the alias; keep the MCP bridge on loomnet
+   ```
+   The alias must ALSO be in PinchTab's IDPI allowlist or the browse is blocked:
+   `pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,devsrv"`
+   (then restart the sidecar). Use a **unique alias per concurrent session** — a shared
+   alias round-robins in Docker DNS.
+
+2. **Caller:** add `expose:<alias>` to the envelope, start the server with `keep_open`,
+   then drive the browser against `http://<alias>:<port>` — all in one `dev/exec` run
+   (or across runs by reusing the `session_id`):
+   ```json
+   {
+     "expose": "devsrv",
+     "keep_open": true,
+     "files": [{ "path": "app.py", "content": "..." }],
+     "commands": ["nohup python app.py --port 8080 &", "sleep 1"],
+     "browser": [
+       { "op": "navigate", "args": { "url": "http://devsrv:8080/" } },
+       { "op": "get_text" }
+     ]
+   }
+   ```
+   `final_text` reports the reachable host (`reachable at http://devsrv:<port>`) and the
+   browser step's captured text. Close the session (`{"session_id":"…","close":true}`)
+   when done.
+
 ## Delegating from other agents
 
 An agent doesn't hold the `mcp__sandbox__*` tools directly (by design — tool ceilings

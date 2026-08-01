@@ -25,6 +25,20 @@ name: loomcycle
 networks:
   loomnet:
     driver: bridge
+  # Dedicated network for serve-and-test sessions. A sandbox_open with `expose:<alias>`
+  # attaches the (host-Docker-sibling) session container HERE under a --network-alias,
+  # so a dev server it binds is reachable from the pinchtab sidecar at
+  # http://<alias>:<port>. It is PINNED to `name: loom-dev` because the builder-sidecar
+  # launches sessions on the host Docker daemon (SANDBOX_PODMAN_BIN=docker) and passes
+  # this literal name to `docker run --network` — a compose project prefix would break
+  # that reference. A normal (egress-capable) bridge: an exposed session still fetches
+  # deps; expose therefore WINS over the separate egress bridge (see engine.go).
+  # SECURITY: this network is shared by the browser sidecar and every exposed session,
+  # so keep it OFF loomcycle's own loomnet, keep exposure opt-in (per-call + the
+  # SANDBOX_EXPOSE_NETWORK gate), and use a UNIQUE alias per concurrent session.
+  loom-dev:
+    name: loom-dev
+    driver: bridge
 
 services:
   # ── Postgres 18 + pgvector — main store (loomcycle) + SQL-Memory aux (loomcycle_sqlmem) ──
@@ -107,6 +121,8 @@ services:
       SANDBOX_MAX_MEM_MB: "2048"
       SANDBOX_ALLOW_EGRESS: "1"          # permit network:"egress" sessions (git clone / fetch deps)
       SANDBOX_ALLOW_ENV_INJECTION: "1"   # permit X-Loom-Sandbox-Env-* -> session env (git/gh token)
+      SANDBOX_EXPOSE_NETWORK: loom-dev   # permit sandbox_open expose:<alias> — attach a serve-and-test
+                                         # session to this network so the browser can reach it (see below)
       SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}   # SAME secret loomcycle presents
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -200,7 +216,11 @@ services:
   pinchtab:
     image: pinchtab/pinchtab:0.15.0
     restart: unless-stopped
-    networks: [loomnet]
+    # loomnet: loomcycle reaches this server's MCP over it. loom-dev: reach a
+    # serve-and-test session by its --network-alias (http://<alias>:<port>). The alias
+    # must ALSO be in pinchtab's IDPI allowlist (security.allowedDomains) or the browse
+    # is blocked — see INSTALL.md / docs/SANDBOX.md.
+    networks: [loomnet, loom-dev]
     environment:
       PINCHTAB_TOKEN: ${PINCHTAB_TOKEN}   # SAME secret loomcycle presents on the MCP bridge
     volumes:

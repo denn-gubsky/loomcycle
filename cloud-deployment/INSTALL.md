@@ -180,6 +180,13 @@ Notes:
   access). The sidecar is internal-only (no published port), and PinchTab keeps
   browsing **local-only** until you widen its domain allowlist (IDPI) — to test
   external sites or your own deployment, follow the pinchtab security guide.
+- **Serve-and-test (browse a server the session runs):** the compose ships a
+  dedicated `loom-dev` bridge network with pinchtab attached and
+  `SANDBOX_EXPOSE_NETWORK=loom-dev` on the builder-sidecar. A `dev/exec` envelope
+  with `expose:<alias>` then attaches its session there, reachable from the browser
+  at `http://<alias>:<port>`. Add each alias to PinchTab's IDPI allowlist first
+  (`pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,<alias>"`,
+  then restart the sidecar) — see [`../docs/SANDBOX.md`](../docs/SANDBOX.md).
 
 ---
 
