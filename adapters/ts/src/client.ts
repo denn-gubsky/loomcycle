@@ -1459,7 +1459,7 @@ export class LoomcycleClient {
   /** Build the URL of an image chunk's asset (RFC BO) — `GET
    *  /v1/_document/asset/{chunkId}`. Attach the bytes to a chunk with the
    *  `set_asset` op via {@link LoomcycleClient.document}, then read them here.
-   *  `scope` is "agent" | "user" (default "user"); `scopeId`/`tenant` are the
+   *  `scope` is "agent" | "user" | "tenant" (default "user"); `scopeId`/`tenant` are the
    *  RFC AS browse overrides. NOTE: the URL needs the bearer to fetch — use
    *  {@link LoomcycleClient.fetchDocumentAsset} for an authenticated GET (a bare
    *  <img src> can't carry the Authorization header). */

@@ -126,3 +126,45 @@ describe("dataLayerFromClient — @loomcycle/client → wire mapping", () => {
     );
   });
 });
+
+// Tenant scope must reach the wire on every document read the viewer makes.
+//
+// This is the regression that made every tenant-scope document open EMPTY. The
+// Path tree browses agent|user|tenant, but DocScope was "agent" | "user" — written
+// when Documents refused tenant — so PathExplorer narrowed the browse scope to hand
+// it to the viewer, "tenant" had nowhere to go, and it silently became "user". The
+// document listed in the tree and its chunk query then asked the wrong store, which
+// answers correctly with nothing.
+//
+// Nothing failed. No error, no empty-state distinction: a document with no chunks
+// and a document you are looking for in the wrong scope render identically. So this
+// asserts the scope on the wire rather than the absence of an exception.
+describe("tenant document scope reaches the wire", () => {
+  const reads: Array<[string, (dl: ReturnType<typeof dataLayerFromClient>) => Promise<unknown>]> = [
+    ["get_document", (dl) => dl.documentGet("d1", "tenant")],
+    ["query_chunks", (dl) => dl.documentQueryChunks("d1", "tenant")],
+    ["get_chunk", (dl) => dl.documentGetChunk("c1", "tenant")],
+    ["export_md", (dl) => dl.documentExportMd("d1", "tenant", false)],
+  ];
+
+  for (const [op, call] of reads) {
+    it(`${op} carries scope=tenant`, async () => {
+      const s = stubClient();
+      await call(dataLayerFromClient(s.client));
+      expect(s.document).toHaveBeenCalled();
+      const sent = s.document.mock.calls[0][0] as { op: string; scope?: string };
+      expect(sent.op).toBe(op);
+      // The assertion that matters: NOT "user". A silent fold to user scope is the
+      // bug, and it looks exactly like a document that has no chunks.
+      expect(sent.scope).toBe("tenant");
+    });
+  }
+
+  it("writes carry it too — a tenant document must be editable, not just readable", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await dl.documentUpdateChunk("c1", 3, { body: "x" }, "tenant");
+    const sent = s.document.mock.calls[0][0] as { scope?: string };
+    expect(sent.scope).toBe("tenant");
+  });
+});

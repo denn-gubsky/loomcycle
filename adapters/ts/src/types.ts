@@ -1091,8 +1091,16 @@ export type PathToolInput = {
 };
 
 /** Input for {@link LoomcycleClient.document} — the RFC AK chunked-graph
- *  Document tool (POST /v1/_document). Op-discriminated (16 ops); requires
- *  SQL Memory on the sidecar. Scope agent/user (tenant deferred). */
+ *  Document tool (POST /v1/_document). Op-discriminated; requires SQL Memory on
+ *  the sidecar.
+ *
+ *  Scope agent/user/**tenant**. Tenant was "deferred" here long after the runtime
+ *  gained it (v1.41.0), and the omission was not merely stale documentation: this
+ *  type is what the Web UI's document viewer narrows against, so `"tenant"` had
+ *  nowhere to go and collapsed to `"user"` — every tenant-scope document listed in
+ *  the Path tree and then opened with no chunks. A tenant document additionally
+ *  requires the operator to grant BOTH `memory_scopes` and `sql_scopes` with
+ *  `tenant`, since a document spans both planes. */
 export type DocumentToolInput = {
   // Op order mirrors the backend enum (internal/tools/builtin/document.go)
   // exactly so a reader can line the two up 1:1. set_path attaches/re-homes a
@@ -1115,7 +1123,7 @@ export type DocumentToolInput = {
     | "list_types"
     | "export_md"
     | "import_md";
-  scope?: "agent" | "user";
+  scope?: "agent" | "user" | "tenant";
   /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
   id?: string;
   /** create_document: name the doc in the Path tree; get/delete: address by path. */

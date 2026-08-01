@@ -7,10 +7,19 @@
 
 // PathScope selects WHICH dirent tree to browse. It is a subtree SELECTOR, not
 // an authority grant — the runtime resolves the caller's tenant + subject from
-// the authenticated principal and re-authorizes. Documents are agent|user only
-// (tenant is refused), hence the narrower DocScope.
+// the authenticated principal and re-authorizes.
+//
+// DocScope was `agent | user` because Documents once REFUSED tenant scope, and it
+// stayed that way after the runtime gained it (loomcycle v1.41.0). The cost was not
+// a type error: PathExplorer had to narrow PathScope down to DocScope to hand it to
+// the viewer, `"tenant"` had nowhere to go, and it collapsed to `"user"` — so every
+// tenant-scope document LISTED in the Path tree and then opened with no chunks,
+// because the viewer was asking the user scope for them. The two are the same set
+// now, and deliberately spelled out rather than aliased: they answer different
+// questions (which tree to browse vs which store a document lives in) and could
+// diverge again.
 export type PathScope = "agent" | "user" | "tenant";
-export type DocScope = "agent" | "user";
+export type DocScope = "agent" | "user" | "tenant";
 
 // BrowseScope is the RFC AS off-run browse-by-subject override: which subject's
 // tree (scopeId → ?scope_id=) and, for an admin, which tenant (tenant →

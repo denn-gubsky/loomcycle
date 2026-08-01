@@ -181,9 +181,16 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
       client.path({ op: "mv", path: from, to, scope }, browse),
     pathRm: (path, scope, recursive, browse) =>
       client.path({ op: "rm", path, scope, recursive }, browse),
+    // The `as unknown as DocumentToolInput` casts below are the same pinned-SDK
+    // workaround documentReorderChunk already uses, for a different reason: the
+    // published @loomcycle/client still types `scope` as "agent" | "user", from
+    // when Documents refused tenant scope. The runtime has accepted tenant since
+    // v1.41.0 and adapters/ts is fixed at source, so these casts come out on the
+    // next client publish — they are not papering over a wire mismatch, they are
+    // waiting for a version bump.
     documentCreate: (title, path, scope, browse) =>
       client.document(
-        { op: "create_document", title, path, scope },
+        { op: "create_document", title, path, scope } as unknown as DocumentToolInput,
         browse,
       ) as Promise<{
         document_id: string;
@@ -192,9 +199,9 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
         path?: string;
       }>,
     documentDelete: (id, scope, browse) =>
-      client.document({ op: "delete_document", id, scope }, browse),
+      client.document({ op: "delete_document", id, scope } as unknown as DocumentToolInput, browse),
     documentGet: (id, scope, browse) =>
-      client.document({ op: "get_document", id, scope }, browse) as Promise<DocumentMeta>,
+      client.document({ op: "get_document", id, scope } as unknown as DocumentToolInput, browse) as Promise<DocumentMeta>,
     documentsSummary: (opts, scope, browse) =>
       client.document(
         // documents_summary + document_ids are RFC BN wire additions the pinned
@@ -210,11 +217,11 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
       ) as Promise<{ documents: DocSummary[] }>,
     documentQueryChunks: (documentId, scope, browse) =>
       client.document(
-        { op: "query_chunks", document_id: documentId, scope, limit: 1000 },
+        { op: "query_chunks", document_id: documentId, scope, limit: 1000 } as unknown as DocumentToolInput,
         browse,
       ) as Promise<{ chunks: ChunkRow[] }>,
     documentGetChunk: (id, scope, browse) =>
-      client.document({ op: "get_chunk", id, scope }, browse) as Promise<ChunkDetail>,
+      client.document({ op: "get_chunk", id, scope } as unknown as DocumentToolInput, browse) as Promise<ChunkDetail>,
     documentCreateChunk: (documentId, parentId, patch, scope, browse, afterId) =>
       client.document(
         {
@@ -278,7 +285,7 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
           document_id: documentId,
           scope,
           include_metadata: includeMetadata,
-        },
+        } as unknown as DocumentToolInput,
         browse,
       ) as Promise<{ markdown: string; title: string; document_id: string }>,
     // Present only when an AssetFetch was supplied (the connection path); a bare
