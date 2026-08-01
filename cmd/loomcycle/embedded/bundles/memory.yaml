@@ -406,6 +406,7 @@ agents:
           entity_nodes: 0,          // distinct subjects given an entity chunk
           entity_facts: 0,          // facts mirrored into the graph
           entity_failed: 0,         // entity writes that failed (k/v still landed)
+          entity_type_refused: 0,   // typed facts whose type was a statement class
           watermark: null,          // the LAST scan row actually consolidated, by reference
           advanced: null,
           advance_blocked: false,
@@ -1144,11 +1145,42 @@ agents:
         return st.entities_doc;
       }
 
+      // ENTITY_TYPE_DENY are ontology terms that are STATEMENT CLASSES, not things a
+      // fact can be about. They belong to the extractor's `class` vocabulary and are
+      // in the ontology because the memory tier needs them as chunk types.
+      //
+      // Measured on a live pass: the extractor typed "the user prefers statin
+      // alternatives" as `preference:user`, which reads as "the entity of type
+      // preference named user". That is not a harmless odd label — EVERY preference
+      // about the user collapses onto that one node, producing a hub that means
+      // nothing and buries the facts it should organise. A merely invented type
+      // (`process`, `task`) makes one strangely-labelled node; a statement class as
+      // a type makes a magnet.
+      var ENTITY_TYPE_DENY = { preference: true, fact: true };
+
+      // normalizeSubject is what makes the natural key STABLE across wordings.
+      //
+      // One live pass produced "user"; the eval produced "the user", "user" and
+      // "The user" in a single run, which slug() turns into two different keys — so
+      // one person becomes two nodes and which one depends on phrasing. The whole
+      // idempotency claim of upsert-by-natural-key rests on this being stable.
+      //
+      // Deliberately shallow: case-fold, drop a leading article, collapse space.
+      // Anything cleverer (stemming, entity resolution) guesses at identity, and a
+      // wrong guess MERGES two different things — the failure that is worse than a
+      // duplicate, and the reason the extractor is told not to guess either.
+      function normalizeSubject(subject) {
+        var s = String(subject).toLowerCase().replace(/\s+/g, " ").trim();
+        s = s.replace(/^(the|a|an)\s+/, "");
+        return s;
+      }
+
       // entityKey is the natural key of a SUBJECT node: type plus a slug of the
-      // name. Two facts naming "Denn" and "denn " land on one node; two different
-      // people with the same name land on one node too, which is a known limit of
-      // name-as-identity and the reason the extractor is told not to guess.
-      function entityKey(type, subject) { return type + ":" + slug(subject); }
+      // normalised name. Two facts naming "Denn", "denn " and "The Denn" land on one
+      // node; two different people with the same name land on one node too, which is
+      // a known limit of name-as-identity and the reason the extractor is told not
+      // to guess.
+      function entityKey(type, subject) { return type + ":" + slug(normalizeSubject(subject)); }
 
       // upsertEntityChunk writes one chunk and returns its id, or "" on failure.
       function upsertEntityChunk(st, docID, naturalKey, args) {
@@ -1170,6 +1202,10 @@ agents:
       // them. Called after the k/v write has already succeeded.
       function mirrorEntity(st, key, fact) {
         if (!fact.type || !fact.subject) { return; } // untyped fact: k/v only (by design)
+        // A statement class is not an entity type. Counted rather than silently
+        // skipped: a pass that mirrored nothing because every type was rejected
+        // must not look like a pass with nothing to mirror.
+        if (ENTITY_TYPE_DENY[fact.type] === true) { st.entity_type_refused++; return; }
         var docID = entitiesDoc(st);
         if (!docID) { return; }
 
@@ -1404,9 +1440,12 @@ agents:
         // The entity half, reported even when zero: a pass that mirrored nothing
         // because no fact was typed looks identical to one where every Document
         // call failed, and those need different fixes.
-        if (st.entity_facts || st.entity_nodes || st.entity_failed) {
+        if (st.entity_facts || st.entity_nodes || st.entity_failed || st.entity_type_refused) {
           var ent = "entities " + st.entity_facts + " fact(s) across " + st.entity_nodes + " subject(s)";
           if (st.entity_failed) { ent += ", " + st.entity_failed + " graph write(s) failed"; }
+          if (st.entity_type_refused) {
+            ent += ", " + st.entity_type_refused + " refused (a statement class is not an entity type)";
+          }
           parts.push(ent);
         }
 
