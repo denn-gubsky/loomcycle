@@ -213,8 +213,8 @@ func (s *Server) renderCoreBlocks(ctx context.Context, mi memInject, blocks []co
 	}
 	var b strings.Builder
 	for _, blk := range blocks {
-		scopeID := coreBlockScopeID(blk.Scope, mi)
-		if scopeID == "" {
+		scopeID, ok := coreBlockScopeID(blk.Scope, mi)
+		if !ok {
 			continue
 		}
 		val, ok := s.readCoreBlock(ctx, mi.Tenant, blk.Scope, scopeID, blk.Label)
@@ -477,16 +477,34 @@ func (s *Server) readCoreBlock(ctx context.Context, tenant, scope, scopeID, labe
 	return renderMemoryValue(entry.Value), true
 }
 
-// coreBlockScopeID maps a block scope to its server-sourced scope_id. tenant
-// scope has no scope_id convention in P1 (the entity tier lands later) → "".
-func coreBlockScopeID(scope string, mi memInject) string {
+// coreBlockScopeID maps a block scope to its server-sourced scope_id, and reports
+// whether the block is RESOLVABLE at all.
+//
+// The second return is the whole point. An empty scope_id means two different
+// things depending on the scope, and collapsing them silently dropped every
+// tenant-scope block: for agent/user it means the identity is missing (no agent
+// name on the run, no user_id) and the block genuinely cannot be located; for
+// TENANT it is the correct value, because the k/v plane carries tenant identity in
+// the tenant_id COLUMN and leaves scope_id empty. SQL Memory is the opposite — it
+// refuses an empty scope id, since that string becomes half a schema name and a
+// database role — and that asymmetry is deliberate on both sides.
+//
+// So `tenant` was accepted by validCoreBlockScopes, mapped correctly here, and then
+// discarded by a caller that read "" as "unresolvable". The deliverable looked
+// unbuilt when it was one boolean away.
+func coreBlockScopeID(scope string, mi memInject) (string, bool) {
 	switch scope {
 	case "agent":
-		return mi.AgentName
+		return mi.AgentName, mi.AgentName != ""
 	case "user":
-		return mi.UserID
-	default: // tenant (P1) — not resolvable yet
-		return ""
+		return mi.UserID, mi.UserID != ""
+	case "tenant":
+		// Empty BY CONVENTION, and resolvable. Do not "fix" this to mi.Tenant:
+		// that is the SQL-Memory convention and would key these rows somewhere
+		// no reader looks.
+		return "", true
+	default:
+		return "", false
 	}
 }
 
