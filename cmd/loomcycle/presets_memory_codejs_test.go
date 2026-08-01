@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"math"
 	"sort"
 	"strings"
@@ -1799,11 +1800,33 @@ func TestExtractor_PromptKeepsTheExtractionSafetyRules(t *testing.T) {
 		t.Errorf("the required output shape appears before the rules; it must be the last thing before the transcript")
 	}
 	// It is deliberately the smallest model surface in the pipeline. The prompt
-	// that replaced it is 3,055 chars and never drove a pass; this one has one
-	// job and should stay far under that.
-	const maxChars = 1500
-	if n := len(prompt); n > maxChars {
-		t.Errorf("extractor prompt is %d chars, over the %d ceiling — its whole value is being the smallest possible model surface", n, maxChars)
+	// that replaced it is 3,055 chars and never drove a pass; this one has one job
+	// and should stay well under that.
+	//
+	// MEASURED AFTER PLACEHOLDER EXPANSION, which it was not before. The ceiling
+	// used to count the static YAML text, and `{{memory:ontology}}` is nineteen
+	// characters that become ~520 at run time — so a placeholder could smuggle half
+	// a kilobyte past a cap whose entire purpose is bounding what the model reads.
+	// The guard was measuring a number that is not what the extractor receives.
+	//
+	// The ceiling moved 1500 → 2600 when the ontology was injected deliberately
+	// (the extractor has to know the entity types to emit one). 2600 accommodates
+	// the base seed with headroom for a rule edit while staying clearly below the
+	// 3,055 that failed. It bounds what LOOMCYCLE SHIPS; a tenant that confirms
+	// fifty of its own types makes its own prompt bigger, which is the operator's
+	// choice and not something this test can or should bound.
+	const maxChars = 2600
+	effective := strings.ReplaceAll(prompt, "{{memory:ontology}}",
+		meminject.RenderOntology(meminject.EffectiveOntology(nil, false), false))
+	if n := len(effective); n > maxChars {
+		t.Errorf("extractor prompt is %d chars after expanding {{memory:…}} (static %d), over the %d ceiling — its whole value is being the smallest possible model surface",
+			n, len(prompt), maxChars)
+	}
+	// And the expansion must actually be happening: a typo'd variant renders to
+	// nothing, which would read as a comfortably small prompt AND an extractor that
+	// never learned the types.
+	if !strings.Contains(prompt, "{{memory:ontology}}") {
+		t.Error("the extractor no longer references {{memory:ontology}} — it cannot emit a `type` it was never told about")
 	}
 }
 
@@ -2478,5 +2501,38 @@ func TestConsolidator_MultiItemBatchIsNotFalselyAttributed(t *testing.T) {
 	set := lastCall(t, f, "Memory.set")
 	if got, present := set.Input["from_pending"]; present && got != "" {
 		t.Errorf("a multi-item batch attributed its fact to %v; with two items rendered into one call the source is genuinely unknown, and a wrong citation is worse than an absent one", got)
+	}
+}
+
+// TestConsolidator_CarriesTheEntityPairOrNeither covers the extractor's new
+// type/subject half.
+//
+// They are the entity identity PR 1 will key an `upsert_chunk` on, and they are
+// optional: a fact naming no single thing is still a fact worth keeping, so a
+// missing pair must not drop the row. What must NOT happen is half a pair
+// surviving — a type with no subject cannot name anything, and a subject with no
+// type cannot be placed in the ontology, so either alone is far more likely a
+// model slip than a partial truth. Half an identity is the shape that would let
+// two different things merge onto one natural key.
+func TestConsolidator_CarriesTheEntityPairOrNeither(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	f.factsJSON = "```json\n" + `[
+		{"text":"Denn prefers Go for backend services.","class":"preference","type":"person","subject":"Denn"},
+		{"text":"The team ships on Tuesdays.","class":"decision"},
+		{"text":"Acme runs on Postgres.","class":"fact","type":"organization"},
+		{"text":"The retro is on Fridays.","class":"fact","subject":"retro"}
+	]` + "\n```"
+
+	res := runConsolidator(t, f)
+
+	// All four are durable facts and all four are kept — the entity half is
+	// additive, never a filter.
+	if n := f.countOp("Memory.set"); n != 4 {
+		t.Errorf("wrote %d facts, want 4 — type/subject are optional and must not drop a row; sequence %v", n, f.ops())
+	}
+	if strings.Contains(res.FinalText, "malformed") && !strings.Contains(res.FinalText, "malformed entries dropped 0") {
+		t.Errorf("a fact without the entity pair is not malformed; got %q", res.FinalText)
 	}
 }
