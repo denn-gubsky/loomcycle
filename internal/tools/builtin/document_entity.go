@@ -211,8 +211,17 @@ func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunk
 // consolidator upserts by natural key on EVERY pass — so corrections were
 // impermanent by construction.
 //
-// Reviving a retired fact must therefore be explicit: pass `invalid_at` yourself.
-// It is not something a routine re-observation should do as a side effect.
+// A retired fact is NOT revivable through this op, and that is deliberate rather
+// than an omission. `invalid_at` (world time) is caller-settable, so an upsert can
+// move when the fact stopped being true; `expired_at` (system time) is not, and the
+// retired predicate keys on it. So pushing invalid_at into the future does not bring
+// a superseded fact back — measured, not assumed.
+//
+// That is the correct shape for a bi-temporal store: system time is append-only.
+// "We stopped believing X at T" is itself a historical fact, and erasing it would be
+// rewriting history rather than recording a change of mind. The way to retract a
+// correction is to record another one — write a new fact and supersede the
+// superseder, which leaves the whole chain and its timestamps intact.
 //
 // Delete-then-insert rather than ON CONFLICT, matching the two existing upserts in
 // this file — one portable statement beats a per-dialect split.
