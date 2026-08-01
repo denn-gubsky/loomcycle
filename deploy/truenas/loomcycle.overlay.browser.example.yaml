@@ -1,0 +1,35 @@
+# loomcycle TrueNAS overlay — BROWSER + SANDBOX variant (for docker-compose.browser.yaml).
+#
+# Copy to your config dataset as loomcycle.yaml (the compose mounts that dataset at
+# /config and selects it via LOOMCYCLE_CONFIG_DIR). Layered OVER the embedded presets
+# (RFC AQ): the presets — including `sandbox` + `dev-exec` selected in the compose —
+# supply the sandbox MCP server and the dev/exec agent; this file adds only what's
+# specific to this box: the agent Volumes and the PinchTab browser MCP server.
+#
+# Keep secrets OUT of this file — they're TrueNAS-managed env (the compose). This
+# overlay is non-secret config only.
+
+# Agent filesystem Volumes (RFC AH). Each `path` is the IN-CONTAINER mount point (the
+# right-hand side of the compose volume mount), which the bind mount creates.
+volumes:
+  work:
+    path: /mnt/work        # ← matches the compose mount: /mnt/tank/loomcycle/work:/mnt/work
+    mode: rw
+    default: true
+
+# ── Headless browser (PinchTab) for the dev/exec agent ────────────────────────
+# PinchTab's MCP is stdio-only, so loomcycle spawns the pinchtab client (present in the
+# loomcycle-browser image) as a stdio MCP bridge to the `pinchtab` server sidecar. The
+# child inherits PINCHTAB_TOKEN from loomcycle's env (from sandbox.secrets.env), so no
+# ${...} interpolation is needed here. The dev/exec agent (dev-exec bundle) already
+# grants mcp__browser__* in its tool ceiling and drives it via the envelope's optional
+# `browser` steps, so this overlay only needs to DECLARE the server — no agent override.
+#
+# The `sandbox` MCP server (the builder-sidecar) is declared by the `sandbox` preset at
+# http://builder-sidecar:9000/mcp — no restatement needed here, since the compose names
+# the sidecar `builder-sidecar` and sets the matching SANDBOX_AUTH_TOKEN.
+mcp_servers:
+  browser:
+    transport: stdio
+    command: /usr/local/bin/pinchtab
+    args: ["--server", "http://pinchtab:9867", "mcp"]

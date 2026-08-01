@@ -1,0 +1,204 @@
+# loomcycle on TrueNAS SCALE — BROWSER + SANDBOX variant (paste compose).
+#
+# This is the serve-and-test variant of ./docker-compose.yaml: the runtime runs the
+# DISTROLESS **loomcycle-browser** image (loomcycle + the PinchTab MCP client) and the
+# app ships two extra sidecars — a code-execution sandbox (`builder-sidecar`) and a
+# headless browser (`pinchtab`) — wired so an agent can build a feature in an isolated
+# sandbox session, SERVE it, and TEST it in the browser, all in one run.
+#
+# HOW SERVE-AND-TEST WORKS: the `dev/exec` agent opens a throwaway session in the
+# builder-sidecar. With `expose:<alias>` in its envelope the sidecar attaches that
+# session to the dedicated `loom-dev` network under a --network-alias, and pinchtab
+# (also on loom-dev) reaches the session's dev server at http://<alias>:<port>.
+#
+# ── DIFFERENCE FROM ./docker-compose.yaml ─────────────────────────────────────
+#   • Image: loomcycle-browser (distroless + pinchtab client), NOT loomcycle-toolbox.
+#     Distroless has NO shell/toolchain, so there is NO in-container Bash/Bashbox code
+#     execution here — code runs in ISOLATED sandbox sessions instead (stronger
+#     isolation; the sidecar is the one privileged component). See docs/SANDBOX.md.
+#   • Presets add `sandbox,dev-exec` (the sandbox MCP server + the deterministic
+#     dev/exec executor). CODE_AGENTS_ENABLED stays on (dev/exec is a code-js agent).
+#   • Two extra sidecars (builder-sidecar, pinchtab) + a dedicated `loom-dev` network.
+#   • The config overlay adds an mcp_servers.browser block — copy
+#     loomcycle.overlay.browser.example.yaml (NOT the plain overlay example).
+#
+# ── BEFORE YOU INSTALL (see INSTALL.md "Browser + sandbox variant") ───────────
+#   Replace `tank` with your pool throughout, then:
+#   1. Datasets (the distroless runtime is uid 65532; PINCHTAB runs as uid 1000):
+#        mkdir -p /mnt/tank/loomcycle/{data,config,work,pinchtab-data}
+#        chown -R 65532:65532 /mnt/tank/loomcycle
+#        chown -R 1000:1000  /mnt/tank/loomcycle/pinchtab-data   # ← pinchtab crash-loops without this
+#   2. Postgres ≥ 14 with a CREATEROLE login role (as in INSTALL.md Phase 1).
+#   3. The BROWSER overlay at /mnt/tank/loomcycle/config/loomcycle.yaml
+#        (copy loomcycle.overlay.browser.example.yaml — it declares mcp_servers.browser).
+#   4. TWO secret env files under /mnt/tank/loomcycle/config/ (absolute paths; TrueNAS
+#      "Install via YAML" cannot resolve ${VAR}, so env_file is the mechanism):
+#        • loomcycle.secrets.env  — LOOMCYCLE_AUTH_TOKEN, _OPERATOR_TOKEN_PEPPER,
+#          LOOMCYCLE_PG_DSN, LOOMCYCLE_SQLMEM_PG_DSN, provider keys. (INSTALL.md Phase 4.)
+#        • sandbox.secrets.env    — ONLY the two sandbox-stack tokens:
+#              SANDBOX_AUTH_TOKEN=<openssl rand -hex 32>
+#              PINCHTAB_TOKEN=<openssl rand -hex 32>
+#          Kept SEPARATE so the sidecar + the Chromium container never see the PG DSN
+#          or provider keys — they get only these two tokens. loomcycle reads BOTH
+#          files; the sidecar and pinchtab read only sandbox.secrets.env.
+#   5. Fill the placeholders (TRUENAS_HOST, OLLAMA_HOST, the pool) and paste.
+
+name: loomcycle
+
+networks:
+  loomnet:
+    driver: bridge
+  # Dedicated serve-and-test network. A session opened with expose:<alias> is attached
+  # HERE (by the sidecar, on the host Docker daemon) under a --network-alias, so a dev
+  # server it binds is reachable from the pinchtab sidecar at http://<alias>:<port>.
+  # PINNED to `name: loom-dev` because the sidecar launches sessions as host-Docker
+  # siblings and passes this literal name to `docker run --network` — a compose project
+  # prefix would break that. A normal egress-capable bridge (an exposed session still
+  # fetches deps). SECURITY: shared by the browser + every exposed (possibly untrusted)
+  # session, so it stays OFF loomnet; keep exposure opt-in and use a unique alias per
+  # concurrent session.
+  loom-dev:
+    name: loom-dev
+    driver: bridge
+
+services:
+  # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
+  # waits for it. The browser image carries the loomcycle binary, so it runs migrate too.
+  loomcycle-migrate:
+    image: denngubsky/loomcycle-browser:1.43.1   # keep in lockstep with the runtime
+    user: "65532:65532"
+    restart: "no"
+    command: ["migrate", "up"]
+    networks: [loomnet]
+    env_file:
+      # PG DSNs come from here (LOOMCYCLE_PG_DSN / LOOMCYCLE_SQLMEM_PG_DSN).
+      - /mnt/tank/loomcycle/config/loomcycle.secrets.env
+    environment:
+      LOOMCYCLE_STORAGE_BACKEND: postgres
+
+  loomcycle:
+    image: denngubsky/loomcycle-browser:1.43.1
+    user: "65532:65532"
+    restart: unless-stopped
+    networks: [loomnet]
+    depends_on:
+      loomcycle-migrate:
+        condition: service_completed_successfully
+      builder-sidecar:
+        condition: service_healthy
+    ports:
+      # App-network port. Front with your tunnel/proxy — no public bind here.
+      - "8787:8787"
+    env_file:
+      # Main secrets (tokens, PG DSNs, provider keys) + the sandbox-stack tokens.
+      # loomcycle needs BOTH SANDBOX_AUTH_TOKEN (to reach the sidecar) and
+      # PINCHTAB_TOKEN (the stdio pinchtab client inherits it). NEVER put a secret in
+      # `environment:` below (an inline key would also OVERRIDE the env-file value).
+      - /mnt/tank/loomcycle/config/loomcycle.secrets.env
+      - /mnt/tank/loomcycle/config/sandbox.secrets.env
+    environment:
+      # ── core ──────────────────────────────────────────────────────────────
+      LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
+      LOOMCYCLE_PUBLIC_URL: "http://TRUENAS_HOST:8787"
+      # Presets add `sandbox` (the sandbox MCP server + the dev/sandbox-usage skill)
+      # and `dev-exec` (the deterministic code-js executor the browser steps drive).
+      LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples,sandbox,dev-exec"
+      LOOMCYCLE_CONFIG_DIR: /config           # the BROWSER overlay (mcp_servers.browser)
+      LOOMCYCLE_DATA_DIR: /data
+
+      # ── storage — your external Postgres (DSNs live in the secrets env file) ──
+      LOOMCYCLE_STORAGE_BACKEND: postgres
+      LOOMCYCLE_PG_AUTOMIGRATE: "0"
+      LOOMCYCLE_SQLMEM_ENABLED: "1"
+      LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
+      LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
+
+      # ── operability ───────────────────────────────────────────────────────
+      LOOMCYCLE_SCHEDULER_ENABLED: "1"
+      LOOMCYCLE_WEBHOOKS_ENABLED: "1"
+      LOOMCYCLE_METRICS_ENABLED: "1"
+      LOOMCYCLE_METRICS_COLLECT_SYSTEM: "1"
+      LOOMCYCLE_METRICS_RETENTION_DAYS: "7"
+      LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log
+      # dev/exec is a code-js (pure-Go, in-process) agent — works on the distroless image.
+      LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
+
+      # ── local models (optional; point at your Ollama) ─────────────────────
+      OLLAMA_BASE_URL: "http://OLLAMA_HOST:11434"
+      LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX: "65535"
+      LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: "99"
+
+      # ── HTTP / WebFetch host policy ───────────────────────────────────────
+      # "*" allows any host — an SSRF surface, fine for a TRUSTED single-tenant box
+      # behind a private network/tunnel. NARROW it for multi-tenant. Private IPs stay
+      # hard-blocked either way.
+      LOOMCYCLE_HTTP_HOST_ALLOWLIST: "*"
+    volumes:
+      - /mnt/tank/loomcycle/data:/data
+      - /mnt/tank/loomcycle/config:/config:ro
+      # Shared agent-workspace dataset — the sidecar mounts the SAME host path so a
+      # durable named workspace (SANDBOX_WORKSPACE_ROOT) is visible to both.
+      - /mnt/tank/loomcycle/work:/mnt/work
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/loomcycle", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Code-execution sandbox sidecar (host-Docker-socket model) ─────────────────
+  # Spawns each session as a sibling container on the HOST Docker daemon (via the
+  # mounted socket). This is the one PRIVILEGED component — it can control host Docker,
+  # so keep it internal (no published port), bearer-authed, and on a trusted box.
+  # Lockstep-versioned with the runtime and published MULTI-ARCH by the
+  # `publish-sandbox-images` workflow — pull it, don't hand-build a single-arch image.
+  builder-sidecar:
+    image: denngubsky/loomcycle-builder-docker:1.43.1
+    restart: unless-stopped
+    networks: [loomnet]
+    env_file:
+      # ONLY SANDBOX_AUTH_TOKEN + PINCHTAB_TOKEN — never the PG DSN or provider keys.
+      - /mnt/tank/loomcycle/config/sandbox.secrets.env
+    environment:
+      SANDBOX_PODMAN_BIN: docker            # launch sessions as host-Docker siblings
+      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:1.43.1   # the per-session toolchain (host pulls it)
+      SANDBOX_WORKSPACE_ROOT: /mnt/work     # per-session /work is tmpfs; durable named
+                                            # workspaces need this HOST path (see below)
+      SANDBOX_MAX_CPUS: "2"
+      SANDBOX_MAX_MEM_MB: "2048"
+      SANDBOX_ALLOW_EGRESS: "1"             # permit network:"egress" sessions (git clone / deps)
+      SANDBOX_ALLOW_ENV_INJECTION: "1"      # permit X-Loom-Sandbox-Env-* -> session env (git/gh token)
+      SANDBOX_EXPOSE_NETWORK: loom-dev      # permit sandbox_open expose:<alias> onto loom-dev
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # PRIVILEGED — host Docker control
+      - /mnt/tank/loomcycle/work:/mnt/work
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # ── Headless browser (PinchTab) — internal MCP browser for the dev/exec agent. ──
+  # stdio-only MCP, so loomcycle spawns `pinchtab … mcp` (the client is baked into the
+  # loomcycle-browser image) against THIS server; Chromium lives here, not in loomcycle.
+  # Internal ONLY (no published port — its control plane is not for public exposure).
+  # On loom-dev so it can reach an exposed session's dev server; on loomnet so loomcycle
+  # reaches its MCP. Widen its browsing allowlist (IDPI) per your aliases — see INSTALL.md.
+  pinchtab:
+    image: pinchtab/pinchtab:0.15.0
+    restart: unless-stopped
+    networks: [loomnet, loom-dev]
+    env_file:
+      - /mnt/tank/loomcycle/config/sandbox.secrets.env   # PINCHTAB_TOKEN (same value loomcycle presents)
+    volumes:
+      - /mnt/tank/loomcycle/pinchtab-data:/data          # HOME/config + Chrome profile — CHOWN 1000:1000
+    shm_size: "2gb"                                       # Chrome stability
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+      - /run:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    mem_limit: 2g
