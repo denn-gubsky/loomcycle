@@ -262,11 +262,70 @@ Bump the image tag → new binary → refreshed embedded presets automatically; 
 + overlay persist. If the new version bumped the Postgres schema, the
 `loomcycle-migrate` step re-runs `migrate up` on redeploy.
 
+## Browser + sandbox variant (serve-and-test)
+
+The walkthrough above is the lean, single-tenant toolbox posture. To instead let an
+agent **build a feature in an isolated sandbox, serve it, and test it in a headless
+browser** — all in one run — paste
+[`docker-compose.browser.yaml`](docker-compose.browser.yaml) in Phase 5 instead of the
+inline compose. It runs the distroless **`loomcycle-browser`** image and adds two
+sidecars (a code-execution `builder-sidecar` + a `pinchtab` browser) plus a dedicated
+`loom-dev` network, so a `dev/exec` envelope with `expose:<alias>` reaches its dev
+server from the browser at `http://<alias>:<port>`. It's a **stronger** isolation
+posture than the toolbox image — code runs in throwaway sandbox sessions, not in
+loomcycle's own container — with the sidecar as the one privileged component (host
+Docker socket). Background: [`../../docs/SANDBOX.md`](../../docs/SANDBOX.md).
+
+The deltas from the base install:
+
+1. **Datasets (Phase 2)** — add `pinchtab-data`, owned by **uid 1000** (PinchTab is not
+   the 65532 distroless user, and crash-loops on a root-owned `/data`):
+   ```sh
+   mkdir -p /mnt/APPS2/loomcycle/pinchtab-data
+   chown -R 1000:1000 /mnt/APPS2/loomcycle/pinchtab-data
+   ```
+2. **Overlay (Phase 3)** — copy
+   [`loomcycle.overlay.browser.example.yaml`](loomcycle.overlay.browser.example.yaml)
+   (not the plain one) to `config/loomcycle.yaml`; it declares the `mcp_servers.browser`
+   stdio bridge. The `sandbox` MCP server comes from the preset — nothing to add.
+3. **A second secret file (Phase 4)** — the sidecar and the Chromium container must
+   **not** see the PG DSN or provider keys, so the two sandbox-stack tokens live in
+   their own file:
+   ```sh
+   cat > /mnt/APPS2/loomcycle/config/sandbox.secrets.env <<'EOF'
+   SANDBOX_AUTH_TOKEN=CHANGE_ME   # openssl rand -hex 32
+   PINCHTAB_TOKEN=CHANGE_ME       # openssl rand -hex 32
+   EOF
+   chmod 600 /mnt/APPS2/loomcycle/config/sandbox.secrets.env
+   ```
+   loomcycle reads both `loomcycle.secrets.env` and `sandbox.secrets.env`; the sidecar
+   and pinchtab read only `sandbox.secrets.env`.
+4. **Host Docker socket** — the sidecar spawns sessions as host-Docker siblings, so it
+   bind-mounts `/var/run/docker.sock` (a privileged grant; keep the box trusted). The
+   `loom-dev` network is created automatically when the app comes up. The session image
+   `denngubsky/loomcycle-sandbox-session:1.43.1` is pulled by the **host** Docker on
+   first session (public — no login needed).
+5. **PinchTab allowlist** — PinchTab browses **local-only** until you widen its IDPI
+   allowlist; add each expose alias, then restart the sidecar:
+   ```sh
+   docker exec <pinchtab-container> \
+     pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,devsrv"
+   docker restart <pinchtab-container>
+   ```
+   The value persists in `pinchtab-data` (it survives reboots); to manage it
+   declaratively see the reference `cloud-deployment/` compose.
+
+Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup python3 -m http.server 8080 &","sleep 1"],"browser":[{"op":"navigate","args":{"url":"http://devsrv:8080/"}},{"op":"get_text"}]}` — the reply should carry `reachable at http://devsrv:<port>` and the fetched page text.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | `no config found` at boot | Image predates RFC AQ — pin `denngubsky/loomcycle:1.6.0` or newer. |
+| (browser) pinchtab crash-loops `mkdir: can't create directory '/data/.config': Permission denied` | `pinchtab-data` dataset not owned by 1000 — `chown -R 1000:1000 /mnt/APPS2/loomcycle/pinchtab-data`. |
+| (browser) `dev/exec` expose → `network loom-dev not found` | The sidecar image predates 1.43.0 (no expose seam), or nothing created `loom-dev` — use `docker-compose.browser.yaml` (declares the network + a multi-arch sidecar). |
+| (browser) browser step → `navigation blocked by IDPI: Domain not in allowlist` | Add the alias to PinchTab's allowlist (step 5 above) and restart the sidecar. |
+| (browser) browser step → `could not resolve navigation host` | The session isn't on `loom-dev` (missing `reachable at …` line) — the sidecar isn't honoring expose (old image) or pinchtab isn't on `loom-dev`. |
 | `EACCES` / permission denied on `/data` | Datasets not owned by 65532 — `chown -R 65532:65532 /mnt/APPS2/loomcycle`. |
 | migrate `connection refused` | DSN host/port unreachable from the apps network, or the role/DB doesn't exist (Phase 1). |
 | App healthy but auth fails / no providers wired | The `env_file` didn't load — confirm the **absolute path** in `env_file:` is exact and the file is `chmod 600` (root-readable). Remember an `environment:` key overrides the same key in `env_file`, so don't re-add a secret inline. |

@@ -7,8 +7,10 @@ Compose app engine). **RFC AR.** Two routes — both documented in
 | File | Route | When |
 |---|---|---|
 | [`docker-compose.yaml`](docker-compose.yaml) | **Custom app** (Apps → Discover → ⋮ → *Install via YAML*, paste) | Fastest. Works today; you edit the compose directly. |
+| [`docker-compose.browser.yaml`](docker-compose.browser.yaml) | **Custom app** — the browser + sandbox variant | Serve-and-test: isolated code-exec + a headless browser for the `dev/exec` agent (see INSTALL.md "Browser + sandbox variant"). |
 | [`catalog/`](catalog/) | **Catalog app** (install wizard via `questions.yaml`) | Formal packaging — an install/edit form, published to a train. |
 | [`loomcycle.overlay.example.yaml`](loomcycle.overlay.example.yaml) | the thin overlay (agent `volumes:` block) both routes mount | Copy to your config dataset. |
+| [`loomcycle.overlay.browser.example.yaml`](loomcycle.overlay.browser.example.yaml) | the overlay for the browser variant (adds `mcp_servers.browser`) | Copy to your config dataset for `docker-compose.browser.yaml`. |
 
 Both routes share the same shape: the binary's **embedded presets** (RFC AQ)
 supply the provider/tier matrix (`LOOMCYCLE_PRESETS`); a thin overlay supplies the
