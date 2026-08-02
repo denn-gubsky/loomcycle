@@ -593,6 +593,13 @@ func requiredScopeFor(method, path string) string {
 	// counts is already listable by this principal through /v1/_usage,
 	// /v1/_credentialdef and the Path/Memory surfaces. It aggregates a view that
 	// is reachable today, rather than granting new reach.
+	//
+	// POST (the erasure itself) shares the gate for the same reason — executing a
+	// data-subject request is the same operator's job as answering one, and every
+	// plane it deletes is already deletable by this principal one call at a time.
+	// The protection against an accidental erasure is NOT the scope (an admin
+	// token would be no less able to do it): it is dry_run defaulting true via a
+	// *bool, and confirm having to equal subject on a live run.
 	case path == "/v1/_erasure":
 		return auth.ScopeTenant
 	// RFC BM: the data-retention view. Tenant-readable so a tenant operator's UI

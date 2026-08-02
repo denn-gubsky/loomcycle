@@ -149,6 +149,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryListScopeIDs", testMemoryListScopeIDs},
 		{"MemoryListTenantsForScope", testMemoryListTenantsForScope},
 		{"MemoryListBySourceSessions", testMemoryListBySourceSessions},
+		{"InterruptDeleteAllByUser", testInterruptDeleteAllByUser},
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
@@ -10813,5 +10814,70 @@ func testMemoryListBySourceSessions(t *testing.T, s store.Store) {
 		if r.SourceSessionID != "s_1" && r.SourceSessionID != "s_2" {
 			t.Errorf("row %s reports source %q, which was not requested", r.Key, r.SourceSessionID)
 		}
+	}
+}
+
+// testInterruptDeleteAllByUser pins the erasure delete: it must remove EVERY
+// interrupt for the subject regardless of status, and must not cross a tenant
+// boundary while doing it.
+//
+// The status dimension is the point. The lister's callers care about pending
+// work, so it is tempting to reuse their filtering here — but a resolved
+// interrupt still holds the question AND the user's free-text answer, which is
+// exactly the content an erasure exists to remove. Deleting only the pending
+// ones would report success having left the conversation behind.
+func testInterruptDeleteAllByUser(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const subject = "u_erase_me"
+
+	mk := func(tenant, user, status string) string {
+		t.Helper()
+		runID := makeRunForInterruptTenant(t, s, tenant, user, "a_erase", "batch")
+		id := store.MintInterruptID(time.Now())
+		if _, err := s.InterruptCreate(ctx, store.InterruptRow{
+			InterruptID: id, RunID: runID, UserID: user,
+			Question: "what is your address?", Priority: store.InterruptPriorityNormal,
+			CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("seed %s/%s: %v", tenant, user, err)
+		}
+		if status != "pending" {
+			if err := s.InterruptResolve(ctx, id, "12 Elm St", "u_erase_me", nil); err != nil {
+				t.Fatalf("resolve %s: %v", id, err)
+			}
+		}
+		return id
+	}
+
+	mk("acme", subject, "pending")
+	resolved := mk("acme", subject, "resolved") // the one a status filter would miss
+	otherTenant := mk("globex", subject, "pending")
+	otherUser := mk("acme", "u_keep", "pending")
+
+	n, err := s.InterruptDeleteAllByUser(ctx, subject, "acme")
+	if err != nil {
+		t.Fatalf("InterruptDeleteAllByUser: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("deleted %d, want 2 (pending AND resolved) — a resolved interrupt still "+
+			"holds the question and the user's answer", n)
+	}
+	if _, err := s.InterruptGet(ctx, resolved); err == nil {
+		t.Errorf("the RESOLVED interrupt survived; erasure must not filter by status")
+	}
+
+	// Tenant isolation: same subject id, different tenant, untouched.
+	if _, err := s.InterruptGet(ctx, otherTenant); err != nil {
+		t.Errorf("another tenant's interrupt for the same user id was deleted: %v", err)
+	}
+	// And another user in the SAME tenant is untouched.
+	if _, err := s.InterruptGet(ctx, otherUser); err != nil {
+		t.Errorf("another user's interrupt was deleted: %v", err)
+	}
+
+	// Idempotent: erasure is re-runnable, and a second pass must be a clean no-op
+	// rather than an error an operator has to interpret.
+	if n, err := s.InterruptDeleteAllByUser(ctx, subject, "acme"); err != nil || n != 0 {
+		t.Errorf("second pass: n=%d err=%v, want 0/nil", n, err)
 	}
 }
