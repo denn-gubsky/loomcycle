@@ -232,3 +232,29 @@ func TestErasureExecute_AlwaysReportsRetainedPlanes(t *testing.T) {
 			res.Retained)
 	}
 }
+
+// TestErasureExecute_ReportsEveryPlaneItConsidered mirrors the report's invariant
+// on the deletion side: a plane the operation examined must appear in `deleted`
+// even when it removed nothing.
+//
+// Observed on the live deployment before the fix — a dry run against a real
+// subject returned {"chats":2,"interrupts":0,"memory_rows":2}, with credentials,
+// token_limits and path_entries silently missing because they accumulate from an
+// absent key. An operator reading that cannot tell whether the subject had no
+// credentials or whether credentials were never touched.
+func TestErasureExecute_ReportsEveryPlaneItConsidered(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
+	// Deliberately a subject with NOTHING: the zero case is the one that regressed.
+	_, res := erasePost(t, srv, "acme", map[string]any{"subject": "nobody-at-all"})
+
+	for _, plane := range []string{
+		"chats", "memory_rows", "path_entries",
+		"credentials", "token_limits", "interrupts",
+	} {
+		if _, ok := res.Deleted[plane]; !ok {
+			t.Errorf("plane %q missing from deleted for an empty subject — "+
+				"'examined and found nothing' must not look like 'never examined'; deleted=%v",
+				plane, res.Deleted)
+		}
+	}
+}
