@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -179,4 +180,61 @@ func containsLowerBound(s string) bool {
 		}
 	}
 	return false
+}
+
+// TestErasureReport_EveryExaminedPlaneIsCountedEvenAtZero pins the invariant that
+// a key's PRESENCE means the plane was examined.
+//
+// The regression this guards: sql_memory_scopes was set only when a scope was
+// found, so its absence meant either "no scope" or "never looked". That is the
+// same ambiguity between failed and empty that `errors` exists to prevent,
+// reintroduced one field lower down — and it is worse in a compliance report than
+// anywhere else, because the reader's question is precisely "is this plane clear?"
+func TestErasureReport_EveryExaminedPlaneIsCountedEvenAtZero(t *testing.T) {
+	// ontologyFixture rather than makeServer: it wires a REAL sqlMem, and the
+	// regression being guarded lives entirely inside the `s.sqlMem != nil` branch.
+	// With a nil sqlMem the assertion below passes through the "declared
+	// unexamined" path and never executes the fixed code — a vacuous guard, which
+	// is how the first version of this test passed against the unfixed report.
+	srv, _ := ontologyFixture(t)
+	adminCtx := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "root", Scopes: []string{auth.ScopeAdmin},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/_erasure?tenant=acme&subject=nobody", nil).
+		WithContext(adminCtx)
+	srv.handleErasureReport(rec, req)
+	var rep erasureReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// A subject with nothing stored must still account for every plane examined.
+	for _, k := range []string{"chats", "memory_rows", "path_entries"} {
+		if _, ok := rep.Tier1.Counts[k]; !ok {
+			t.Errorf("tier1 %q absent for an empty subject — absence cannot be "+
+				"distinguished from 'never examined'; counts: %v", k, rep.Tier1.Counts)
+		}
+	}
+	for _, k := range []string{"credentials", "token_limits", "interrupts", "usage_ledger_calls"} {
+		if _, ok := rep.Tier2.Counts[k]; !ok {
+			t.Errorf("tier2 %q absent for an empty subject; counts: %v", k, rep.Tier2.Counts)
+		}
+	}
+
+	// SQL Memory is the conditional one: either it was examined and reported a
+	// count, or it does not exist here and the notes must SAY so. Silence is the
+	// one outcome that is not allowed.
+	_, counted := rep.Tier1.Counts["sql_memory_scopes"]
+	var declared bool
+	for _, n := range rep.Notes {
+		if strings.Contains(n, "SQL Memory is not configured") {
+			declared = true
+		}
+	}
+	if counted == declared {
+		t.Errorf("sql_memory must be either counted (%v) or declared unexamined (%v), "+
+			"exactly one; counts=%v notes=%v", counted, declared, rep.Tier1.Counts, rep.Notes)
+	}
 }

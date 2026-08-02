@@ -121,6 +121,24 @@ func (s *Server) handleErasureExecute(w http.ResponseWriter, r *http.Request) {
 		Deleted:  map[string]int{},
 		Retained: map[string]string{},
 	}
+	// Every plane this operation CONSIDERS is registered at zero up front, so a
+	// key's presence means "examined" and its value means "this many went".
+	//
+	// Without it the accumulating planes below (`++` from an absent key) simply
+	// vanish when they delete nothing, and a caller cannot distinguish "no
+	// credentials existed" from "credentials were never looked at" — which for the
+	// tier-2 entry that matters most is the difference between a clean erasure and
+	// one that left a subject's keys behind. sql_memory is registered only when the
+	// subsystem exists, because there it really is unexamined.
+	for _, plane := range []string{
+		"chats", "memory_rows", "path_entries",
+		"credentials", "token_limits", "interrupts",
+	} {
+		res.Deleted[plane] = 0
+	}
+	if s.sqlMem != nil {
+		res.Deleted["sql_memory_scopes"] = 0
+	}
 	fail := func(plane string, err error) {
 		res.Errors = append(res.Errors, plane+": "+err.Error())
 	}

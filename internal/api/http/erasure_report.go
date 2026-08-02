@@ -123,6 +123,11 @@ func (s *Server) handleErasureReport(w http.ResponseWriter, r *http.Request) {
 		rep.Errors = append(rep.Errors, plane+": "+err.Error())
 	}
 
+	// sqlMemUnexamined records that SQL Memory is unconfigured, so the plane was
+	// never looked at. Distinct from "looked and found nothing", and surfaced in
+	// the notes below.
+	var sqlMemUnexamined bool
+
 	// ---- tier 1: subject-keyed, and already deletable ----
 	sessions, err := s.subjectSessions(ctx, tenant, subject)
 	if err != nil {
@@ -141,13 +146,24 @@ func (s *Server) handleErasureReport(w http.ResponseWriter, r *http.Request) {
 		if scopes, err := s.sqlMem.ListScopes(ctx); err != nil {
 			fail("sql_memory", err)
 		} else {
+			// Counted into a local first and set UNCONDITIONALLY, including zero.
+			// Setting it only on a hit would make the key's absence mean either "no
+			// scope" or "never looked" — the same ambiguity between failed and empty
+			// that `errors` exists to prevent, reintroduced one field lower down.
+			var n int64
 			for _, sk := range scopes {
 				if sk.Scope == "user" && sk.ScopeID == subject {
-					rep.Tier1.set("sql_memory_scopes", 1)
+					n = 1
 					break
 				}
 			}
+			rep.Tier1.set("sql_memory_scopes", n)
 		}
+	} else {
+		// Deferred to a flag rather than appended here: rep.Notes is ASSIGNED (not
+		// appended to) further down, so a note written now would be silently
+		// discarded.
+		sqlMemUnexamined = true
 	}
 	if rows, err := s.store.DirentListUnder(ctx, tenant, "user", subject, "/"); err != nil {
 		fail("paths", err)
@@ -206,6 +222,11 @@ func (s *Server) handleErasureReport(w http.ResponseWriter, r *http.Request) {
 		"tier1 is deletable with existing primitives. tier2 is subject-keyed but nothing deletes it yet — the credential rows are the ones that matter.",
 		"tier3 is found through provenance, so it covers only facts that RECORDED the chat they came from. A fact written about this subject WITHOUT provenance is not reachable by any mechanism, and is not counted here.",
 		"counts are live rows: expired and superseded rows are excluded, because they are invisible to every read and counting them would overstate what is held.",
+	}
+	if sqlMemUnexamined {
+		rep.Notes = append(rep.Notes,
+			"SQL Memory is not configured on this deployment, so the sql_memory plane was NOT "+
+				"examined — its absence from the counts is not evidence that it is empty.")
 	}
 	if rep.Tier3.Truncated {
 		rep.Notes = append(rep.Notes,
