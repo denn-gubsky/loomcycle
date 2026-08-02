@@ -9356,3 +9356,33 @@ func newID(prefix string) string {
 	_, _ = rand.Read(b[:])
 	return prefix + hex.EncodeToString(b[:])
 }
+
+// InterruptDeleteAllByUser removes every interrupt raised for a user. See the
+// Store interface for why this deletes rather than anonymizes.
+func (s *Store) InterruptDeleteAllByUser(ctx context.Context, userID, tenantID string) (int, error) {
+	// Subquery rather than a JOIN: sqlite and postgres spell DELETE...JOIN
+	// differently, and `run_id IN (SELECT …)` is the form both accept unchanged —
+	// worth more here than a marginally better plan, because a delete that
+	// diverges between backends is a compliance answer that depends on which
+	// database the operator happens to run.
+	//
+	// The tenant predicate mirrors InterruptListByUser's JOIN exactly, so what the
+	// erasure REPORT counts and what this DELETES can never disagree. Both skip an
+	// interrupt whose owning run row is gone; that is a residue, but a CONSISTENT
+	// one, which is the property that matters.
+	q := `DELETE FROM interrupts WHERE user_id = ?`
+	args := []any{userID}
+	if tenantID != "" {
+		q += ` AND run_id IN (SELECT id FROM runs WHERE tenant_id = ?)`
+		args = append(args, tenantID)
+	}
+	res, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("interrupts: delete by user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("interrupts: delete by user rows: %w", err)
+	}
+	return int(n), nil
+}

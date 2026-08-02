@@ -2643,6 +2643,22 @@ type Store interface {
 	// Capped at 200 rows.
 	InterruptListByUser(ctx context.Context, userID, tenantID, statusFilter string) ([]InterruptRow, error)
 
+	// InterruptDeleteAllByUser removes every interrupt raised for a user,
+	// regardless of status, and returns how many rows went. Erasure (RFC BL P5):
+	// an interrupt row carries the model's QUESTION and the user's free-text
+	// ANSWER, which is some of the most directly personal content the runtime
+	// stores — a subject-keyed delete that skipped it would leave the transcript
+	// of a conversation behind while claiming the user's data was gone.
+	//
+	// Unlike the lister this is NOT capped: a partial delete would report success
+	// while leaving rows, which is the one outcome an erasure must never produce.
+	//
+	// tenantID scopes via the owning run exactly as InterruptListByUser does, so
+	// the delete can never reach across a tenant boundary; "" = all tenants
+	// (open mode). Deletes rather than anonymizes because, unlike the usage
+	// ledger, nothing downstream aggregates over interrupts.
+	InterruptDeleteAllByUser(ctx context.Context, userID, tenantID string) (int, error)
+
 	// InterruptCountPendingByRun returns the count of status=pending
 	// interrupts for the given run_id. Drives max_pending enforcement
 	// at the tool layer (the count check is a single round trip; the

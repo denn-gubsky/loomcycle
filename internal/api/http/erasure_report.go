@@ -211,6 +211,20 @@ func (s *Server) handleErasureReport(w http.ResponseWriter, r *http.Request) {
 		rep.Notes = append(rep.Notes,
 			"the provenance walk hit its row bound, so tier3 is a FLOOR rather than a total.")
 	}
+	// With no sessions there is nothing to trace from, so tier3's 0 means UNKNOWN,
+	// not NONE — and the difference is the whole value of the number.
+	//
+	// This is the state a subject is left in AFTER an erasure, which is exactly
+	// when someone is most likely to re-run the report and read 0 as confirmation
+	// that nothing remains. Facts derived from those chats can still be sitting in
+	// a shared agent's scope; deleting the chats destroyed the only index to them.
+	if rep.Tier3.SessionsExamined == 0 {
+		rep.Notes = append(rep.Notes,
+			"this subject has NO chats, so tier3 is UNDETERMINABLE rather than zero: derived "+
+				"facts are found only by tracing provenance from a chat. If the subject was "+
+				"previously erased, residue may exist that nothing can now locate — the erasure "+
+				"response is the only record of it.")
+	}
 	if len(rep.Errors) > 0 {
 		rep.Notes = append(rep.Notes,
 			"one or more planes could not be read (see errors) — every count here is a LOWER BOUND.")

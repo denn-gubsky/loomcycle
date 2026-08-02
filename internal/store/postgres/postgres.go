@@ -8107,3 +8107,20 @@ func newID(prefix string) string {
 	}
 	return prefix + hex.EncodeToString(b[:])
 }
+
+// InterruptDeleteAllByUser removes every interrupt raised for a user. See the
+// Store interface for why this deletes rather than anonymizes; see the sqlite
+// twin for why the tenant predicate is a subquery rather than a JOIN.
+func (s *Store) InterruptDeleteAllByUser(ctx context.Context, userID, tenantID string) (int, error) {
+	q := `DELETE FROM interrupts WHERE user_id = $1`
+	args := []any{userID}
+	if tenantID != "" {
+		q += ` AND run_id IN (SELECT id FROM runs WHERE tenant_id = $2)`
+		args = append(args, tenantID)
+	}
+	tag, err := s.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("interrupts: delete by user: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
