@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
@@ -145,4 +146,118 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// newSvcWithSQL builds a service with a real SQL Memory manager.
+func newSvcWithSQL(t *testing.T) *erasure.Service {
+	t.Helper()
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	return &erasure.Service{Store: st, SqlMem: mgr}
+}
+
+// TestService_DefaultTenantSQLScopeIsActuallyDropped is the regression for the
+// nastiest shape this subsystem produces: the same tenant spelled two ways.
+//
+// SQL Memory REJECTS an empty tenant and stores the default one as "default";
+// the k/v plane and the Path tree keep the RAW "". An erasure that built its
+// DropScope key from the raw tenant therefore matched nothing on a
+// single-tenant deployment — the most common install — and left the subject's
+// ENTIRE SQL Memory database (documents, entity graph) in place while reporting
+// success.
+//
+// The live deployment test could not catch this: its tenant was "test-mem",
+// where raw and canonical are identical. Only the default tenant diverges.
+func TestService_DefaultTenantSQLScopeIsActuallyDropped(t *testing.T) {
+	s := newSvcWithSQL(t)
+	ctx := context.Background()
+	const subject = "alice"
+	// The raw tenant is "" — SQL Memory stores it as "default".
+	key := sqlmem.ScopeKey{Tenant: "default", Scope: "user", ScopeID: subject}
+	if _, err := s.SqlMem.Exec(ctx, key, `CREATE TABLE notes (body TEXT)`, nil, 0); err != nil {
+		t.Fatalf("provision scope: %v", err)
+	}
+
+	rep, err := s.Report(ctx, "", subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Tier1.Counts["sql_memory_scopes"] != 1 {
+		t.Fatalf("report missed the default-tenant SQL scope: counts=%v", rep.Tier1.Counts)
+	}
+
+	res, err := s.Execute(ctx, erasure.ExecuteRequest{
+		Tenant: "", Subject: subject, DryRun: false, Confirm: subject,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted["sql_memory_scopes"] != 1 {
+		t.Errorf("deleted sql_memory_scopes = %d, want 1; deleted=%v errors=%v",
+			res.Deleted["sql_memory_scopes"], res.Deleted, res.Errors)
+	}
+	// Proven independently of the erasure's own account of itself.
+	scopes, err := s.SqlMem.ListScopes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sk := range scopes {
+		if sk.Tenant == "default" && sk.Scope == "user" && sk.ScopeID == subject {
+			t.Errorf("the subject's SQL Memory database SURVIVED the erasure (%+v) — "+
+				"documents and entity graph still readable", sk)
+		}
+	}
+}
+
+// TestService_SQLScopeLookupIsTenantScoped closes the cross-tenant oracle.
+//
+// ListScopes spans every tenant, so matching on scope+scope_id alone let tenant
+// A learn that tenant B has a user named X — and produced a dry run promising to
+// delete a database the live path could never reach.
+func TestService_SQLScopeLookupIsTenantScoped(t *testing.T) {
+	s := newSvcWithSQL(t)
+	ctx := context.Background()
+	const subject = "alice"
+	// alice exists ONLY in globex.
+	key := sqlmem.ScopeKey{Tenant: "globex", Scope: "user", ScopeID: subject}
+	if _, err := s.SqlMem.Exec(ctx, key, `CREATE TABLE notes (body TEXT)`, nil, 0); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	rep, err := s.Report(ctx, "acme", subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep.Tier1.Counts["sql_memory_scopes"]; got != 0 {
+		t.Errorf("acme's report saw globex's SQL scope for the same subject id (got %d) — "+
+			"a cross-tenant existence oracle, and a dry run the live path cannot honour", got)
+	}
+
+	// And the dry run agrees with the live path.
+	dry, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: subject, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.Deleted["sql_memory_scopes"] != 0 {
+		t.Errorf("dry run promised to delete another tenant's scope: %v", dry.Deleted)
+	}
+	// globex's database is untouched.
+	scopes, _ := s.SqlMem.ListScopes(ctx)
+	var still bool
+	for _, sk := range scopes {
+		if sk.Tenant == "globex" && sk.ScopeID == subject {
+			still = true
+		}
+	}
+	if !still {
+		t.Error("globex's SQL Memory scope was destroyed by acme's erasure")
+	}
 }

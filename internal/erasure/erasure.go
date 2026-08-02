@@ -122,6 +122,46 @@ const retainedUsageLedger = "retained by design: cost rows are accounting record
 	"linkage rather than destroy the totals, which is a row merge (usage_archive keys user_id " +
 	"in its primary key) and is not implemented yet."
 
+// sqlScopeTenant maps the raw principal tenant onto SQL Memory's spelling.
+//
+// The planes canonicalize differently and this catches out every caller that
+// touches both: SQL Memory REJECTS an empty tenant and stores the default one as
+// "default" (it sanitizes the value into a schema name and a LOGIN role), while
+// the k/v Memory plane and the Path tree key on the RAW tenant and leave it "".
+// Same rule as builtin.sqlScopeTenant, which is the source of truth.
+//
+// Getting this wrong is not cosmetic here: DropScope built from a raw "" tenant
+// silently matches nothing, so a single-tenant deployment's erasure would leave
+// the subject's ENTIRE SQL Memory database — documents, entity graph — in place
+// while reporting success.
+func sqlScopeTenant(tenant string) string {
+	if tenant != "" {
+		return tenant
+	}
+	return "default"
+}
+
+// userSQLScopeExists reports whether the subject owns a user-scope SQL Memory
+// database IN THIS TENANT.
+//
+// ListScopes spans every tenant, so the tenant comparison is load-bearing rather
+// than defensive: without it, tenant A asking about "alice" gets a hit when
+// tenant B has a user named "alice" — a cross-tenant existence oracle, and a dry
+// run that promises to delete something the live path then cannot find.
+func (s *Service) userSQLScopeExists(ctx context.Context, tenant, subject string) (bool, error) {
+	scopes, err := s.SqlMem.ListScopes(ctx)
+	if err != nil {
+		return false, err
+	}
+	want := sqlScopeTenant(tenant)
+	for _, sk := range scopes {
+		if sk.Tenant == want && sk.Scope == "user" && sk.ScopeID == subject {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Report enumerates one subject's footprint. Read-only.
 func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, error) {
 	subject = strings.TrimSpace(subject)
@@ -150,21 +190,15 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 
 	var sqlMemUnexamined bool
 	if s.SqlMem != nil {
-		if scopes, err := s.SqlMem.ListScopes(ctx); err != nil {
+		// Set UNCONDITIONALLY, including zero: setting only on a hit would make
+		// absence mean either "no scope" or "never looked" — the failed-vs-empty
+		// ambiguity `Errors` exists to prevent, reintroduced one field lower down.
+		if found, err := s.userSQLScopeExists(ctx, tenant, subject); err != nil {
 			fail("sql_memory", err)
+		} else if found {
+			rep.Tier1.set("sql_memory_scopes", 1)
 		} else {
-			// Counted into a local and set UNCONDITIONALLY, including zero: setting
-			// only on a hit would make absence mean either "no scope" or "never
-			// looked" — the failed-vs-empty ambiguity `Errors` exists to prevent,
-			// reintroduced one field lower down.
-			var n int64
-			for _, sk := range scopes {
-				if sk.Scope == "user" && sk.ScopeID == subject {
-					n = 1
-					break
-				}
-			}
-			rep.Tier1.set("sql_memory_scopes", n)
+			rep.Tier1.set("sql_memory_scopes", 0)
 		}
 	} else {
 		sqlMemUnexamined = true
@@ -346,17 +380,14 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 
 	if s.SqlMem != nil {
-		key := sqlmem.ScopeKey{Tenant: tenant, Scope: "user", ScopeID: subject}
+		// sqlScopeTenant, not the raw tenant: see the helper. A raw "" here would
+		// build a key that matches nothing and silently spare the whole database.
+		key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(tenant), Scope: "user", ScopeID: subject}
 		if req.DryRun {
-			if scopes, err := s.SqlMem.ListScopes(ctx); err != nil {
+			if found, err := s.userSQLScopeExists(ctx, tenant, subject); err != nil {
 				fail("sql_memory", err)
-			} else {
-				for _, sk := range scopes {
-					if sk.Scope == "user" && sk.ScopeID == subject {
-						res.Deleted["sql_memory_scopes"] = 1
-						break
-					}
-				}
+			} else if found {
+				res.Deleted["sql_memory_scopes"] = 1
 			}
 		} else if removed, err := s.SqlMem.DropScope(ctx, key); err != nil {
 			fail("sql_memory", err)
