@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/memory/eval"
@@ -64,6 +67,10 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	timeout := fs.Duration("timeout", 5*time.Minute, "wall clock PER CASE (not for the whole run)")
 	maxTokens := fs.Int("max-tokens", 0, "per-call max_tokens (0 = provider default)")
 	noGate := fs.Bool("no-gate", false, "report only; exit 0 even when the gate fails")
+	ontologyTerms := fs.String("ontology-terms", "",
+		"comma-separated tenant entity types to add to the base seed when expanding "+
+			"{{memory:ontology}} (a deployment with a CONFIRMED tenant ontology adds its own; "+
+			"empty = the base seed alone, which is what an unconfirmed deployment gets)")
 	showFacts := fs.Bool("show-facts", false, "print every case's emitted facts, including the ones that passed")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -95,6 +102,24 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 		*effort = agent.Effort
 	}
 
+	// EXPAND THE PLACEHOLDERS THE RUNTIME WOULD EXPAND, or the eval scores a prompt
+	// nobody runs — the exact failure the bundle drift-test was built to prevent,
+	// arriving by a route that test cannot see.
+	//
+	// The drift test compares this harness's copy against the bundle's, and both
+	// have been identical throughout. What differs is that the RUNTIME expands
+	// {{memory:ontology}} into ~520 characters of entity types before the model sees
+	// it, and this path sent the nineteen literal characters. So since the ontology
+	// landed in the extractor prompt, every score here was measured against a prompt
+	// telling the model to "use one of the types above" where above was a
+	// placeholder — which is a complete explanation for the eval's finding that half
+	// the emitted types were outside the ontology, and for why the live deployment,
+	// where expansion does happen, used its ontology's types correctly.
+	systemPrompt, err := expandEvalPlaceholders(agent.SystemPrompt, *ontologyTerms)
+	if err != nil {
+		return fail(stderr, "memory-eval-live: %v", err)
+	}
+
 	prov, err := providerbuild.Provider(cfg, *providerID)
 	if err != nil {
 		return fail(stderr, "memory-eval-live: %v", err)
@@ -108,7 +133,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	rep, err := eval.RunExtraction(context.Background(), prov, eval.ExtractionInput{
 		CaseTimeout:  *timeout,
 		Corpus:       eval.ExtractionFixture(),
-		SystemPrompt: agent.SystemPrompt,
+		SystemPrompt: systemPrompt,
 		Provider:     *providerID,
 		Model:        *model,
 		Effort:       *effort,
@@ -341,3 +366,43 @@ func splitWords(s string) []string {
 	}
 	return out
 }
+
+// expandEvalPlaceholders renders the {{memory:...}} placeholders the RUNTIME would
+// render, and refuses a prompt still carrying one.
+//
+// Only `ontology` is expandable here, and that is a real limit rather than an
+// oversight: the other variants read a live store (a user's core blocks, a tenant's
+// deployment-context document) that a CLI with no store cannot produce. A prompt
+// referencing one of those is therefore not scoreable — and it fails LOUDLY rather
+// than being sent with the literal text, which is what quietly happened to
+// `ontology` and cost a whole baseline's worth of meaning.
+//
+// tenantTerms lets a run reproduce a deployment whose operator has CONFIRMED an
+// ontology. Empty is the unconfirmed case — the base seed alone — and the two give
+// materially different results, which is the entire question the flag exists to ask.
+func expandEvalPlaceholders(prompt, tenantTerms string) (string, error) {
+	var extra []meminject.OntologyTerm
+	for _, name := range strings.Split(tenantTerms, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			extra = append(extra, meminject.OntologyTerm{Name: name})
+		}
+	}
+	// confirmed=true only when terms were supplied: EffectiveOntology discards a
+	// tenant layer that is not confirmed, so passing true with no terms would render
+	// the "this deployment has confirmed additions" wording over the bare seed.
+	body := meminject.RenderOntology(
+		meminject.EffectiveOntology(extra, len(extra) > 0), len(extra) > 0)
+	out := strings.ReplaceAll(prompt, "{{memory:"+string(meminject.VariantOntology)+"}}", body)
+
+	// Anything left is a variant this harness cannot render. Refusing is the point:
+	// sending it verbatim scores a prompt the runtime never produces, and the score
+	// looks entirely normal.
+	if m := unexpandedPlaceholder.FindString(out); m != "" {
+		return "", fmt.Errorf("the extractor prompt still contains %s, which this harness cannot render "+
+			"(it reads a live store). Scoring it would measure a prompt the runtime never sends", m)
+	}
+	return out, nil
+}
+
+// unexpandedPlaceholder matches any surviving {{...}} of either family.
+var unexpandedPlaceholder = regexp.MustCompile(`\{\{\s*(memory|tool)\s*:[^}]*\}\}`)
