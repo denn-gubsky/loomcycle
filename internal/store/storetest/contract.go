@@ -148,6 +148,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryScopeIsolation", testMemoryScopeIsolation},
 		{"MemoryListScopeIDs", testMemoryListScopeIDs},
 		{"MemoryListTenantsForScope", testMemoryListTenantsForScope},
+		{"MemoryListBySourceSessions", testMemoryListBySourceSessions},
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
@@ -10732,5 +10733,85 @@ func testMemoryScopeUsageExcludesNamespace(t *testing.T, s store.Store) {
 	}
 	if keys != 1 {
 		t.Errorf("keys = %d after superseding one of two, want 1 — a soft-archived row must not hold quota", keys)
+	}
+}
+
+// testMemoryListBySourceSessions pins the provenance lookup — the direction that
+// makes erasure enumerable.
+//
+// A fact ABOUT a subject written into an AGENT or TENANT scope is not keyed to that
+// subject, so no subject-keyed delete can reach it. Their chats are keyed to them,
+// and a consolidated fact records which chat it came from, which makes this the only
+// join that reaches the rest. It is asserted as a contract because both backends
+// must agree: an erasure that enumerated differently per tier would be a compliance
+// answer that depends on which database you happen to run.
+func testMemoryListBySourceSessions(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const tenant = "acme"
+	set := func(scope store.MemoryScope, scopeID, key, session string) {
+		t.Helper()
+		v, _ := json.Marshal("v")
+		if session == "" {
+			if err := s.MemorySet(ctx, tenant, scope, scopeID, key, v, 0); err != nil {
+				t.Fatalf("seed %s: %v", key, err)
+			}
+			return
+		}
+		if err := s.MemorySetProvenance(ctx, tenant, scope, scopeID, key, v, 0,
+			store.MemoryProvenance{SourceSessionID: session}); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+
+	// The subject's own scope, plus facts about them that a shared agent and the
+	// tenant recorded — the rows a subject-keyed delete cannot see.
+	set(store.MemoryScopeUser, "alice", "memory/fact/alice-likes-go", "s_1")
+	set(store.MemoryScopeAgent, "curator", "memory/fact/alice-leads-platform", "s_1")
+	set(store.MemoryScopeTenant, "", "memory/fact/alice-owns-ledger", "s_2")
+	// Someone else's chat, and a row with no provenance at all.
+	set(store.MemoryScopeUser, "bob", "memory/fact/bob-likes-rust", "s_9")
+	set(store.MemoryScopeUser, "alice", "memory/fact/unattributed", "")
+
+	got, err := s.MemoryListBySourceSessions(ctx, tenant, []string{"s_1", "s_2"}, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	keys := map[string]store.MemoryScope{}
+	for _, r := range got {
+		keys[r.Key] = r.Scope
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 rows across three scopes, got %d: %v", len(got), keys)
+	}
+	// The point of the whole mechanism: scopes the subject does not own.
+	if keys["memory/fact/alice-leads-platform"] != store.MemoryScopeAgent {
+		t.Error("a fact about the subject in an AGENT scope was not reached — this is what subject-keyed deletion misses")
+	}
+	if keys["memory/fact/alice-owns-ledger"] != store.MemoryScopeTenant {
+		t.Error("a fact about the subject in the TENANT scope was not reached")
+	}
+	if _, leaked := keys["memory/fact/bob-likes-rust"]; leaked {
+		t.Error("another subject's chat was included — an erasure report must not over-claim")
+	}
+	if _, leaked := keys["memory/fact/unattributed"]; leaked {
+		t.Error("a row with no provenance was included; it cannot be attributed to any chat")
+	}
+
+	// An empty request must return NOTHING, never everything. The caller is an
+	// erasure report, so a permissive default would attribute the whole store to a
+	// subject who happens to have no chats.
+	if rows, err := s.MemoryListBySourceSessions(ctx, tenant, nil, 0); err != nil || len(rows) != 0 {
+		t.Errorf("empty sessionIDs must match nothing, got %d rows (err %v)", len(rows), err)
+	}
+	// Tenant isolation: another tenant's identical session id must not match.
+	if rows, _ := s.MemoryListBySourceSessions(ctx, "other-tenant", []string{"s_1", "s_2"}, 0); len(rows) != 0 {
+		t.Errorf("cross-tenant leak: %d rows", len(rows))
+	}
+	// And the source chat is reported, so a caller can say WHICH conversation a
+	// fact came from rather than only that it came from one of several.
+	for _, r := range got {
+		if r.SourceSessionID != "s_1" && r.SourceSessionID != "s_2" {
+			t.Errorf("row %s reports source %q, which was not requested", r.Key, r.SourceSessionID)
+		}
 	}
 }

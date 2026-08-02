@@ -4026,6 +4026,47 @@ func (s *Store) MemoryListScopeIDs(ctx context.Context, tenantID string, scope s
 	return out, rows.Err()
 }
 
+// MemoryListBySourceSessions implements store.Store.
+//
+// The postgres twin uses = ANY($2) rather than an IN list built from the slice:
+// one bind parameter instead of N, so a subject with hundreds of chats cannot blow
+// the parameter limit on the one query an erasure report depends on.
+func (s *Store) MemoryListBySourceSessions(ctx context.Context, tenantID string, sessionIDs []string, limit int) ([]store.MemoryProvenanceRow, error) {
+	if len(sessionIDs) == 0 {
+		return nil, nil // never everything — see the sqlite twin
+	}
+	if limit <= 0 || limit > memoryProvenanceMaxRows {
+		limit = memoryProvenanceMaxRows
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, COALESCE(source_session_id, '')
+		   FROM memory
+		  WHERE COALESCE(tenant_id, '') = $1
+		    AND source_session_id = ANY($2)
+		    AND (expires_at IS NULL OR expires_at > now())
+		    AND superseded_at IS NULL
+		  ORDER BY scope, scope_id, key
+		  LIMIT $3`, tenantID, sessionIDs, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.MemoryProvenanceRow
+	for rows.Next() {
+		var r store.MemoryProvenanceRow
+		var scope string
+		if err := rows.Scan(&r.TenantID, &scope, &r.ScopeID, &r.Key, &r.SourceSessionID); err != nil {
+			return nil, err
+		}
+		r.Scope = store.MemoryScope(scope)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// memoryProvenanceMaxRows bounds one provenance read — see the sqlite twin.
+const memoryProvenanceMaxRows = 5000
+
 // MemoryListTenantsForScope implements store.Store (RFC BL). DISTINCT over every
 // row for (scope, scopeID) regardless of expiry — reclamation deletes expired
 // rows too, so an all-expired partition must still be enumerated.
