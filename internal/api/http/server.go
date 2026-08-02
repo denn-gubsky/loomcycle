@@ -2721,6 +2721,7 @@ func (s *Server) Mux() http.Handler {
 	// operator confirms its OWN tenant's ontology; the GET provisions the document
 	// on first reference so it can be authored before any run needs it. Authoring
 	// itself stays in the Path/Document browser. Scope-gated in requiredScopeFor.
+	mux.Handle("GET /v1/_erasure", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleErasureReport))))
 	mux.Handle("GET /v1/_ontology", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntology))))
 	mux.Handle("POST /v1/_ontology", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologySetStatus))))
 	// RFC BK P3: resident interactive sub-agent visibility + operator control.

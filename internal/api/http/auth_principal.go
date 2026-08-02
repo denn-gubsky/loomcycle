@@ -582,6 +582,19 @@ func requiredScopeFor(method, path string) string {
 	// ScopeAdmin also satisfies. Read-only GET.
 	case path == "/v1/_usage":
 		return auth.ScopeTenant
+	// The per-subject erasure report (GET). Tenant-readable, and deliberately so:
+	// answering "what do you hold about this person" is the tenant OPERATOR's job
+	// — they are the controller for their own tenant's subjects — and requiring
+	// operator-admin would put a routine data-subject request behind a token that
+	// can read every OTHER tenant too. principalTenantScope confines the walk to
+	// the caller's tenant; admin additionally gets the ?tenant= focus.
+	//
+	// Not narrower than ScopeTenant despite reading across scopes: everything it
+	// counts is already listable by this principal through /v1/_usage,
+	// /v1/_credentialdef and the Path/Memory surfaces. It aggregates a view that
+	// is reachable today, rather than granting new reach.
+	case path == "/v1/_erasure":
+		return auth.ScopeTenant
 	// RFC BM: the data-retention view. Tenant-readable so a tenant operator's UI
 	// can see whether retention is enabled + how it's tuned; the HANDLER strips
 	// the cross-tenant purgeable counts + the export dir for a non-admin caller
