@@ -1647,6 +1647,30 @@ type Store interface {
 	// no rows returns an empty slice, not an error.
 	MemoryListTenantsForScope(ctx context.Context, scope MemoryScope, scopeID string) ([]string, error)
 
+	// MemoryListBySourceSessions returns the live memory rows DERIVED FROM the
+	// given chats, across every scope in the tenant.
+	//
+	// This is the missing half of a decision the memory RFC locked as "provenance
+	// MANDATORY for user scope, so erasure is enumerable". The provenance was
+	// delivered — every consolidated fact records source_session_id and
+	// source_run_id, and a single-row read returns them — but nothing could ever
+	// search BY it. The column was written on every write and read back one row at
+	// a time, so the enumeration it existed for was impossible.
+	//
+	// It matters because subject-keyed deletion cannot reach a fact ABOUT someone
+	// that was written into an AGENT or TENANT scope: that row is not keyed to them.
+	// Their chats are, and a consolidated fact records which chat it came from — so
+	// walking sessions→facts is the only way to find it. A fact a model wrote
+	// without provenance stays unreachable, which no mechanism can fix and which the
+	// caller must therefore say out loud rather than imply completeness.
+	//
+	// Live rows only (unexpired, not superseded): a superseded row is already
+	// invisible to every read, and reporting it would overstate what is actually
+	// held. Ordered by scope then key so two calls agree. An empty sessionIDs
+	// returns no rows rather than every row — the dangerous default, given the one
+	// caller is an erasure report.
+	MemoryListBySourceSessions(ctx context.Context, tenantID string, sessionIDs []string, limit int) ([]MemoryProvenanceRow, error)
+
 	// MemoryOrphanScan reports memory rows stranded at the legacy "" tenant —
 	// rows a tenant-scoped session cannot reach. Read-only.
 	//
@@ -2772,6 +2796,19 @@ type MemoryEntry struct {
 	ExpiresAt time.Time       `json:"expires_at,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+// MemoryProvenanceRow is one memory row located by the chat it was derived from.
+// It carries the coordinate rather than the value: the caller is deciding what to
+// erase or report, not reading content, and a report that echoed the values would
+// reproduce the very data it exists to account for.
+type MemoryProvenanceRow struct {
+	TenantID string      `json:"tenant_id"`
+	Scope    MemoryScope `json:"scope"`
+	ScopeID  string      `json:"scope_id"`
+	Key      string      `json:"key"`
+	// SourceSessionID is which of the requested chats this row came from.
+	SourceSessionID string `json:"source_session_id"`
 }
 
 // MemoryScopeIDSummary is one row of MemoryListScopeIDs' output.

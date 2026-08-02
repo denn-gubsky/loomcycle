@@ -261,6 +261,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			superseded_at     INTEGER,
 			PRIMARY KEY (tenant_id, scope, scope_id, key)
 		)`,
+		// Provenance, searchable at last. Mirrors postgres migration 0065: partial,
+		// because source_session_id is NULL on every row not distilled from a chat
+		// and indexing those pays for the majority to serve a query that never asks
+		// about them. See MemoryListBySourceSessions for why the direction matters.
+		`CREATE INDEX IF NOT EXISTS memory_by_source_session ON memory(tenant_id, source_session_id) WHERE source_session_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS memory_by_expires_at ON memory(expires_at) WHERE expires_at IS NOT NULL`,
 		// RFC BL P2 — the durable consolidation substrate. Mirrors Postgres
 		// migration 0061. memory_pending is the enqueue queue an Add writes to
@@ -4493,6 +4498,66 @@ func (s *Store) MemoryListTenantsForScope(ctx context.Context, scope store.Memor
 	}
 	return out, rows.Err()
 }
+
+// MemoryListBySourceSessions implements store.Store.
+func (s *Store) MemoryListBySourceSessions(ctx context.Context, tenantID string, sessionIDs []string, limit int) ([]store.MemoryProvenanceRow, error) {
+	if len(sessionIDs) == 0 {
+		// An empty request returns nothing, never everything: the caller is an
+		// erasure report, and a permissive default would attribute the whole store to
+		// a subject who happens to have no chats.
+		//
+		// BOTH DIALECTS ALREADY DO THIS, and removing the guard passes every test —
+		// sqlite accepts `IN ()` as false, postgres matches nothing against an empty
+		// array. It stays because that agreement is a coincidence of two dialects
+		// rather than a guarantee: `IN ()` is a SQLite extension that standard SQL
+		// rejects outright, so the safe answer here would be a syntax error on a
+		// third tier, or on a driver that tightened. Making it explicit costs one
+		// branch and removes the need for anyone to know that.
+		return nil, nil
+	}
+	if limit <= 0 || limit > memoryProvenanceMaxRows {
+		limit = memoryProvenanceMaxRows
+	}
+	marks := make([]string, len(sessionIDs))
+	args := []any{tenantID}
+	for i, id := range sessionIDs {
+		marks[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, limit)
+	// Live rows only: an expired or superseded row is invisible to every read, so
+	// reporting it would overstate what is actually held.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, COALESCE(source_session_id, '')
+		   FROM memory
+		  WHERE COALESCE(tenant_id, '') = ?
+		    AND source_session_id IN (`+strings.Join(marks, ",")+`)
+		    AND (expires_at IS NULL OR expires_at > strftime('%s','now'))
+		    AND superseded_at IS NULL
+		  ORDER BY scope, scope_id, key
+		  LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.MemoryProvenanceRow
+	for rows.Next() {
+		var r store.MemoryProvenanceRow
+		var scope string
+		if err := rows.Scan(&r.TenantID, &scope, &r.ScopeID, &r.Key, &r.SourceSessionID); err != nil {
+			return nil, err
+		}
+		r.Scope = store.MemoryScope(scope)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// memoryProvenanceMaxRows bounds one provenance read. An erasure report wants a
+// COUNT and a sample far more than it wants every row, and an unbounded scan over a
+// busy tenant is a foot-gun on the one code path an operator reaches for under
+// time pressure.
+const memoryProvenanceMaxRows = 5000
 
 // memoryOrphanQuerier lets the scan run either standalone or inside the
 // repair's transaction, so the returned report describes the same snapshot the
