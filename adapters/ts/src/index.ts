@@ -147,6 +147,10 @@ export type {
   RunBatchResult,
   SpawnRunResult,
   CompactRunResult,
+  ErasureReport,
+  ErasureResidue,
+  ErasureResult,
+  ErasureTier,
   CancelTurnResult,
   // Transcript
   TranscriptEvent,

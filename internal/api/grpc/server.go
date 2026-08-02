@@ -36,6 +36,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
@@ -620,6 +621,15 @@ var grpcConsumerScopes = map[string]string{
 	// writes to the caller's own tenant (operator-global + cross-tenant stay
 	// admin-only), mirroring the HTTP /v1/_limits ScopeTenant gate.
 	"TokenLimit": auth.ScopeTenant,
+
+	// RFC BL P5 erasure. ScopeTenant, mirroring the HTTP gate: answering a
+	// data-subject request is the tenant operator's job, and both RPCs confine
+	// themselves to the caller's own tenant (there is no wire tenant field).
+	// The destructive half is guarded by dry_run defaulting true and confirm
+	// having to equal the subject — not by requiring a broader scope, which an
+	// admin token would satisfy anyway.
+	"ErasureReport":  auth.ScopeTenant,
+	"ErasureExecute": auth.ScopeTenant,
 	// RFC AF: the tenant-confined substrate plane — the 8 def families + hook
 	// management. ScopeTenant (substrate:admin still satisfies). substrateGRPCCtx
 	// stamps the principal's authoritative tenant on the def-tools, and the hook
@@ -1350,5 +1360,111 @@ func mapRunnerErr(err error) error {
 		return status.Error(codes.PermissionDenied, err.Error())
 	default:
 		return status.Errorf(codes.Internal, "runner: %v", err)
+	}
+}
+
+// --- RFC BL P5: subject erasure (gRPC twins of GET/POST /v1/_erasure) --------
+
+// erasureTenant resolves the tenant an erasure call may act in.
+//
+// Unlike UsageReport there is no wire tenant to honor, deliberately: a subject
+// id is only unique within one tenant, so accepting one would let a caller
+// enumerate — or erase — a subject belonging to somebody else. An admin
+// therefore acts in its OWN tenant here; the cross-tenant focus that HTTP offers
+// via ?tenant= is an explicit, auditable query parameter, and quietly inheriting
+// it from a gRPC principal would be a different thing entirely.
+func erasureTenant(ctx context.Context) string {
+	tenantID, _ := grpcTenantScope(ctx)
+	return tenantID
+}
+
+// ErasureReport is the gRPC twin of GET /v1/_erasure. Read-only.
+func (s *Server) ErasureReport(ctx context.Context, req *loomcyclepb.ErasureReportRequest) (*loomcyclepb.ErasureReportResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "ErasureReport requires a connector; this Server was constructed without one")
+	}
+	if req.GetSubject() == "" {
+		return nil, status.Error(codes.InvalidArgument, "subject is required")
+	}
+	rep, err := s.connector.ErasureReport(ctx, erasureTenant(ctx), req.GetSubject())
+	if err != nil {
+		return nil, erasureErrToStatus(err)
+	}
+	return &loomcyclepb.ErasureReportResponse{
+		Tenant:         rep.Tenant,
+		Subject:        rep.Subject,
+		Tier1Covered:   erasureTierToProto(rep.Tier1),
+		Tier2Uncovered: erasureTierToProto(rep.Tier2),
+		Tier3Residue:   erasureResidueToProto(rep.Tier3),
+		Notes:          rep.Notes,
+		Errors:         rep.Errors,
+	}, nil
+}
+
+// ErasureExecute is the gRPC twin of POST /v1/_erasure.
+//
+// dry_run is proto3 `optional`, so an UNSET field is distinguishable from an
+// explicit false — which is what lets the default be "do nothing". A plain bool
+// would make a zero-valued request destructive.
+func (s *Server) ErasureExecute(ctx context.Context, req *loomcyclepb.ErasureExecuteRequest) (*loomcyclepb.ErasureExecuteResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "ErasureExecute requires a connector; this Server was constructed without one")
+	}
+	if req.GetSubject() == "" {
+		return nil, status.Error(codes.InvalidArgument, "subject is required")
+	}
+	dryRun := true
+	if req.DryRun != nil {
+		dryRun = req.GetDryRun()
+	}
+	res, err := s.connector.ErasureExecute(ctx, erasure.ExecuteRequest{
+		Tenant:  erasureTenant(ctx),
+		Subject: req.GetSubject(),
+		DryRun:  dryRun,
+		Confirm: req.GetConfirm(),
+	})
+	if err != nil {
+		return nil, erasureErrToStatus(err)
+	}
+	deleted := make(map[string]int32, len(res.Deleted))
+	for k, v := range res.Deleted {
+		deleted[k] = int32(v)
+	}
+	return &loomcyclepb.ErasureExecuteResponse{
+		Tenant:   res.Tenant,
+		Subject:  res.Subject,
+		DryRun:   res.DryRun,
+		Deleted:  deleted,
+		Retained: res.Retained,
+		Residue:  erasureResidueToProto(res.Residue),
+		Errors:   res.Errors,
+		Notes:    res.Notes,
+	}, nil
+}
+
+// erasureErrToStatus maps the shared service's sentinels onto gRPC codes, so a
+// client sees the same refusal HTTP returns as a 400 rather than an opaque
+// Internal.
+func erasureErrToStatus(err error) error {
+	switch {
+	case errors.Is(err, erasure.ErrNoSubject):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, erasure.ErrConfirmMismatch):
+		return status.Error(codes.InvalidArgument, err.Error())
+	default:
+		return status.Error(codes.Internal, err.Error())
+	}
+}
+
+func erasureTierToProto(t erasure.Tier) *loomcyclepb.ErasureTier {
+	return &loomcyclepb.ErasureTier{Counts: t.Counts, Total: t.Total}
+}
+
+func erasureResidueToProto(r erasure.Residue) *loomcyclepb.ErasureResidue {
+	return &loomcyclepb.ErasureResidue{
+		Rows:             int32(r.Rows),
+		Scopes:           r.Scopes,
+		SessionsExamined: int32(r.SessionsExamined),
+		Truncated:        r.Truncated,
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -63,7 +64,7 @@ func TestErasureReport_CountsResidueOutsideTheSubjectsOwnScope(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	var rep erasureReport
+	var rep erasure.Report
 	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestErasureReport_UnreadablePlaneIsReportedNotSilentlyZero(t *testing.T) {
 		}))
 	srv.handleErasureReport(rec, req)
 
-	var rep erasureReport
+	var rep erasure.Report
 	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestErasureReport_EveryExaminedPlaneIsCountedEvenAtZero(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/_erasure?tenant=acme&subject=nobody", nil).
 		WithContext(adminCtx)
 	srv.handleErasureReport(rec, req)
-	var rep erasureReport
+	var rep erasure.Report
 	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

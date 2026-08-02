@@ -29,6 +29,13 @@ const mcpErrForbidden = -32001
 // authz that keeps it confined: a tenant session lists + may call only these
 // tools; the admin-only ones are filtered out + 403'd by principalMayCallTool.
 var tenantConfinableTools = map[string]bool{
+	// erasure: a data-subject report/erasure confined to the caller's own tenant.
+	// Tenant-confinable rather than admin-only because the handler takes the
+	// tenant from the PRINCIPAL and offers no wire field for it, so a tenant
+	// session physically cannot reach another tenant's subject — the same posture
+	// as credentialdef. The destructive half is guarded by dry_run defaulting true
+	// plus a confirm that must equal the subject, not by the scope.
+	"erasure": true,
 	// Run lifecycle — tenant flows via the run identity (applyPrincipal on
 	// the wire identity lands in RFC AG Phase 1).
 	"spawn_run":   true,

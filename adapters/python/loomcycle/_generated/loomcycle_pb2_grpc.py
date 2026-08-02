@@ -58,6 +58,16 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.CompactRunRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.CompactRunResult.FromString,
                 _registered_method=True)
+        self.ErasureReport = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ErasureReport',
+                request_serializer=loomcycle__pb2.ErasureReportRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ErasureReportResponse.FromString,
+                _registered_method=True)
+        self.ErasureExecute = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ErasureExecute',
+                request_serializer=loomcycle__pb2.ErasureExecuteRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ErasureExecuteResponse.FromString,
+                _registered_method=True)
         self.ReplaySession = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ReplaySession',
                 request_serializer=loomcycle__pb2.ReplaySessionRequest.SerializeToString,
@@ -349,6 +359,27 @@ class LoomcycleServicer(object):
         a mid-turn run returns FailedPrecondition. Keyed by run_id.
 
         Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ErasureReport(self, request, context):
+        """ErasureReport enumerates what this deployment holds about one subject, in
+        three tiers separated by what they guarantee. Read-only.
+
+        The tenant is taken from the caller's credentials and is NOT a field: a
+        subject id is only unique within one tenant, so a wire tenant would let a
+        caller enumerate another tenant's subject.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ErasureExecute(self, request, context):
+        """ErasureExecute removes tiers 1 and 2 and reports what it could not reach.
+        DEFAULTS TO A DRY RUN: dry_run is `optional` so an unset field means true,
+        matching HTTP — a client that forgets it deletes nothing.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -936,6 +967,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.CompactRunRequest.FromString,
                     response_serializer=loomcycle__pb2.CompactRunResult.SerializeToString,
             ),
+            'ErasureReport': grpc.unary_unary_rpc_method_handler(
+                    servicer.ErasureReport,
+                    request_deserializer=loomcycle__pb2.ErasureReportRequest.FromString,
+                    response_serializer=loomcycle__pb2.ErasureReportResponse.SerializeToString,
+            ),
+            'ErasureExecute': grpc.unary_unary_rpc_method_handler(
+                    servicer.ErasureExecute,
+                    request_deserializer=loomcycle__pb2.ErasureExecuteRequest.FromString,
+                    response_serializer=loomcycle__pb2.ErasureExecuteResponse.SerializeToString,
+            ),
             'ReplaySession': grpc.unary_unary_rpc_method_handler(
                     servicer.ReplaySession,
                     request_deserializer=loomcycle__pb2.ReplaySessionRequest.FromString,
@@ -1289,6 +1330,60 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/CompactRun',
             loomcycle__pb2.CompactRunRequest.SerializeToString,
             loomcycle__pb2.CompactRunResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ErasureReport(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ErasureReport',
+            loomcycle__pb2.ErasureReportRequest.SerializeToString,
+            loomcycle__pb2.ErasureReportResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ErasureExecute(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ErasureExecute',
+            loomcycle__pb2.ErasureExecuteRequest.SerializeToString,
+            loomcycle__pb2.ErasureExecuteResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -30,6 +30,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -76,6 +77,20 @@ type Connector interface {
 	// live run must be parked; a mid-turn run is refused. Cross-tenant is an
 	// opaque not-found.
 	CompactRun(ctx context.Context, runID string) (CompactResult, error)
+
+	// ErasureReport enumerates what this deployment holds about one subject, in
+	// three tiers separated by what they GUARANTEE — deletable / subject-keyed
+	// but undeletable / not subject-keyed at all. Read-only.
+	//
+	// tenant is AUTHORITATIVE and must already be resolved from the caller's
+	// principal by the transport; the shared service never guesses it, because a
+	// subject id is only unique within one tenant.
+	ErasureReport(ctx context.Context, tenant, subject string) (erasure.Report, error)
+
+	// ErasureExecute removes tiers 1 and 2 and reports what it could not reach.
+	// The confirm guard and the residue-is-one-shot semantics live in the shared
+	// service, so every transport inherits them rather than re-deriving them.
+	ErasureExecute(ctx context.Context, req erasure.ExecuteRequest) (erasure.Result, error)
 
 	// ReplaySession copies a SOURCE session's transcript into a NEW session bound
 	// to a (possibly different) target agent, so that agent continues from the

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -669,4 +670,12 @@ func TestHTTPTransport_SpawnRunOperatorTimeout(t *testing.T) {
 	if got.Status != "timeout" {
 		t.Fatalf("spawn_run status = %q; want \"timeout\" (operator default on HTTP transport)", got.Status)
 	}
+}
+
+func (m *httpMockConnector) ErasureReport(context.Context, string, string) (erasure.Report, error) {
+	return erasure.Report{}, nil
+}
+
+func (m *httpMockConnector) ErasureExecute(context.Context, erasure.ExecuteRequest) (erasure.Result, error) {
+	return erasure.Result{}, nil
 }

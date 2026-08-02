@@ -10,11 +10,12 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // erasePost drives POST /v1/_erasure and decodes the result.
-func erasePost(t *testing.T, srv *Server, tenant string, body map[string]any) (*httptest.ResponseRecorder, erasureResult) {
+func erasePost(t *testing.T, srv *Server, tenant string, body map[string]any) (*httptest.ResponseRecorder, erasure.Result) {
 	t.Helper()
 	b, _ := json.Marshal(body)
 	rec := httptest.NewRecorder()
@@ -23,7 +24,7 @@ func erasePost(t *testing.T, srv *Server, tenant string, body map[string]any) (*
 			TenantID: tenant, Subject: "root", Scopes: []string{auth.ScopeAdmin},
 		}))
 	srv.handleErasureExecute(rec, req)
-	var res erasureResult
+	var res erasure.Result
 	_ = json.Unmarshal(rec.Body.Bytes(), &res)
 	return rec, res
 }
@@ -191,7 +192,7 @@ func TestErasureExecute_ResidueBecomesUnfindableAfterwards(t *testing.T) {
 			TenantID: tenant, Subject: "root", Scopes: []string{auth.ScopeAdmin},
 		}))
 	srv.handleErasureReport(rec, req)
-	var rep erasureReport
+	var rep erasure.Report
 	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

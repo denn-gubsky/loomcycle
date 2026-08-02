@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -44,6 +45,7 @@ var handlersByName = map[string]toolHandler{
 	"cancel_run":  handleCancelRun,
 	"get_run":     handleGetRun,
 	"compact_run": handleCompactRun,
+	"erasure":     handleErasure,
 	"list_runs":   handleListRuns,
 
 	// Agent management
@@ -1044,4 +1046,60 @@ func handleAckChannel(ctx context.Context, env *handlerEnv, args json.RawMessage
 		return toolErr("ack_channel: " + err.Error()), nil
 	}
 	return toolResultJSON(res), nil
+}
+
+// handleErasure serves the `erasure` tool: op=report (read-only) and op=execute
+// (removes tiers 1+2), both delegating to the shared connector so this transport
+// cannot drift from HTTP or gRPC.
+//
+// THE TENANT COMES FROM THE PRINCIPAL, NEVER THE WIRE. A subject id is only
+// unique within one tenant, so accepting a tenant argument here would let any
+// session enumerate — or erase — a subject in someone else's tenant. There is
+// deliberately no tenant field in the arguments schema.
+//
+// Open mode (no principal) resolves to the shared "" tenant, matching every
+// other tenant-confined tool.
+func handleErasure(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	var p struct {
+		Op      string `json:"op"`
+		Subject string `json:"subject"`
+		DryRun  *bool  `json:"dry_run"`
+		Confirm string `json:"confirm"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolErr("invalid erasure arguments: " + err.Error()), nil
+	}
+	if p.Subject == "" {
+		return toolErr("erasure: subject is required"), nil
+	}
+	var tenant string
+	if pr, ok := auth.PrincipalFromContext(ctx); ok {
+		tenant = pr.TenantID
+	}
+
+	switch p.Op {
+	case "", "report":
+		rep, err := env.connector.ErasureReport(ctx, tenant, p.Subject)
+		if err != nil {
+			return toolErr("erasure report: " + err.Error()), nil
+		}
+		return toolResultJSON(rep), nil
+	case "execute":
+		// Defaulted here for the same reason HTTP defaults it: an omitted field
+		// must mean DO NOTHING. A model that emits {"op":"execute","subject":…}
+		// and forgets dry_run gets a dry run, not a deletion.
+		dryRun := true
+		if p.DryRun != nil {
+			dryRun = *p.DryRun
+		}
+		res, err := env.connector.ErasureExecute(ctx, erasure.ExecuteRequest{
+			Tenant: tenant, Subject: p.Subject, DryRun: dryRun, Confirm: p.Confirm,
+		})
+		if err != nil {
+			return toolErr("erasure execute: " + err.Error()), nil
+		}
+		return toolResultJSON(res), nil
+	default:
+		return toolErr(`erasure: unknown op "` + p.Op + `" (must be one of: report, execute)`), nil
+	}
 }
