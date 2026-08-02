@@ -139,6 +139,7 @@ memory-eval-live:
 	  --provider $(MEMEVAL_PROVIDER) --model $(MEMEVAL_MODEL) \
 	  --baseline $(MEMEVAL_BASELINE) \
 	  $(if $(MEMEVAL_EFFORT),--effort $(MEMEVAL_EFFORT),) \
+	  $(if $(MEMEVAL_ONTOLOGY_TERMS),--ontology-terms $(MEMEVAL_ONTOLOGY_TERMS),) \
 	  $(if $(MEMEVAL_SHOW_FACTS),--show-facts,) \
 	  $(if $(MEMEVAL_UPDATE),--update-baseline $(MEMEVAL_BASELINE),)
 
