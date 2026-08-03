@@ -319,3 +319,49 @@ func TestMergedMemoryBackendDef_DriftDetection_VsLookupSubstrate(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryBackendDefTool_RefusesUnsafeAPIKeyEnv applies this validator's own
+// stated policy to the field it had skipped.
+//
+// The file already validates base_url and tenancy at AUTHORING time on the
+// explicit reasoning that no shipped kind consumes them but a future external kind
+// would, so the persisted shape must never hold a dangerous value. api_key_env was
+// exempt — and it is the most dangerous of the three, because its value would be
+// sent to the def-supplied base_url.
+//
+// Unvalidated, a runtime author could name any env var. `api_key_env:
+// LOOMCYCLE_AUTH_TOKEN` paired with a base_url they also control is a one-request
+// exfiltration of the operator bearer. Nothing resolves it today; the point is
+// that the def can never be stored holding it.
+func TestMemoryBackendDefTool_RefusesUnsafeAPIKeyEnv(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		refuse    bool
+		why       string
+	}{
+		{"operator bearer", "LOOMCYCLE_AUTH_TOKEN", true,
+			"loomcycle's own admin credential — allowed by the LOOMCYCLE_ prefix, denied by the infra-secret set"},
+		{"postgres dsn", "LOOMCYCLE_PG_DSN", true, "loomcycle's own database credential"},
+		{"arbitrary host var", "AWS_SECRET_ACCESS_KEY", true, "not allowlisted"},
+		{"path", "PATH", true, "not allowlisted"},
+		{"loomcycle-scoped key", "LOOMCYCLE_MEMORY_KEY", false, "the intended shape"},
+		{"known third-party", "BRAVE_API_KEY", false, "explicitly allowlisted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, ctx, cleanup := memoryBackendDefFixture(t)
+			defer cleanup()
+			body := `{"op":"create","name":"b_` + tc.name[:3] + `","overlay":{"kind":"inprocess",` +
+				`"config":{"api_key_env":"` + tc.env + `"}}}`
+			res, _ := tool.Execute(ctx, json.RawMessage(body))
+			if tc.refuse && !res.IsError {
+				t.Fatalf("api_key_env=%s was accepted (%s); got %s", tc.env, tc.why, res.Text)
+			}
+			if !tc.refuse && res.IsError {
+				t.Fatalf("api_key_env=%s was refused (%s); got %s", tc.env, tc.why, res.Text)
+			}
+			if tc.refuse && !strings.Contains(res.Text, "api_key_env") {
+				t.Errorf("the refusal does not name the offending field: %s", res.Text)
+			}
+		})
+	}
+}
