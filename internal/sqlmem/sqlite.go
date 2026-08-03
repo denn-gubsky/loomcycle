@@ -118,6 +118,14 @@ func sanitize(s string) (string, error) {
 // or a real id). A run scope is NOT tenant-keyed — run ids are globally
 // unique — which is also what lets DropRunScope target a single subtree.
 func (k ScopeKey) keyPath(root string) (string, error) {
+	// Belt-and-braces alongside the postgres tier's check. sanitize() already makes
+	// two distinct ids land on distinct FILES (it appends a hash of the original), so
+	// this tier cannot collide the way pgScopeNames could — but validating here too
+	// means a future Manager entry point that forgets the door check still cannot
+	// derive storage from an ambiguous key.
+	if err := k.validate(); err != nil {
+		return "", err
+	}
 	id, err := sanitize(k.ScopeID)
 	if err != nil {
 		return "", err

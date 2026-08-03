@@ -80,6 +80,12 @@ func (m *Manager) ExportScope(ctx context.Context, key ScopeKey) (*ScopeDump, er
 	if key.Scope == runScope {
 		return nil, fmt.Errorf("sqlmem: the run scope is not exportable")
 	}
+	// A colliding key would dump ANOTHER scope's rows into this scope's archive,
+	// which is worse than a failed export: the wrong data ends up in a backup and
+	// is replayed on restore.
+	if err := key.validate(); err != nil {
+		return nil, err
+	}
 	return m.backend.exportScope(ctx, key)
 }
 
@@ -92,6 +98,11 @@ func (m *Manager) ExportScope(ctx context.Context, key ScopeKey) (*ScopeDump, er
 func (m *Manager) RestoreScope(ctx context.Context, key ScopeKey, dump *ScopeDump) error {
 	if dump == nil {
 		return nil
+	}
+	// Restore provisions the scope before replaying DDL, so a key that arrived in a
+	// snapshot is untrusted input to the same derivation Begin/Exec guard.
+	if err := key.validate(); err != nil {
+		return err
 	}
 	if key.Scope == runScope {
 		return fmt.Errorf("sqlmem: the run scope is not restorable")
