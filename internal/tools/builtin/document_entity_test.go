@@ -416,3 +416,85 @@ func TestGraphRecall_AFutureEndDateIsStillCurrent(t *testing.T) {
 			got, asOf)
 	}
 }
+
+// TestChunkParentage_RefusesAnUnreachableParent covers create_chunk and
+// move_chunk together, because they had the SAME hole and it produces the same
+// outcome: a chunk that exists and cannot be reached.
+//
+// Neither validated a directly-supplied parent. Both returned ok/success. And the
+// chunk then vanished from get_document and export_md, because every walk
+// descends from the root and nothing led to it — so a caller wrote content, was
+// told it worked, and never saw it again. That is worse than an error, and the
+// dead-link sweeper does not catch it: it looks for a chunk whose DOCUMENT is
+// missing, not one whose PARENT is.
+//
+// Cross-document parentage is the same corruption from the other side — the
+// chunk keeps its own document_id while its parent_id points into another tree.
+func TestChunkParentage_RefusesAnUnreachableParent(t *testing.T) {
+	d, ctx, docID, root := entityFixture(t)
+	const ghost = "deadbeefdeadbeefdeadbeefdeadbeef"
+
+	other, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"other doc"}`)
+	if r.IsError {
+		t.Fatalf("create other doc: %s", r.Text)
+	}
+	otherRoot := asStr(other["root_chunk_id"])
+
+	t.Run("create under a missing parent", func(t *testing.T) {
+		_, r := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+
+			`","parent_id":"`+ghost+`","title":"orphan-at-birth"}`)
+		if !r.IsError {
+			t.Fatal("accepted a non-existent parent_id — the chunk is written and " +
+				"immediately unreachable from the document root")
+		}
+	})
+	t.Run("create under another document", func(t *testing.T) {
+		_, r := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+
+			`","parent_id":"`+otherRoot+`","title":"cross-doc-child"}`)
+		if !r.IsError {
+			t.Fatal("accepted a parent in a different document")
+		}
+	})
+
+	// The document must be unchanged by the refusals.
+	md, _ := docExec(t, d, ctx, `{"op":"export_md","scope":"user","id":"`+docID+`"}`)
+	for _, ghostTitle := range []string{"orphan-at-birth", "cross-doc-child"} {
+		if strings.Contains(asStr(md), ghostTitle) {
+			t.Errorf("a refused create still wrote %q", ghostTitle)
+		}
+	}
+
+	victim, vr := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+
+		`","parent_id":"`+root+`","title":"movable"}`)
+	if vr.IsError {
+		t.Fatalf("create movable: %s", vr.Text)
+	}
+	vid := asStr(victim["id"])
+
+	t.Run("move under a missing parent", func(t *testing.T) {
+		_, r := docExec(t, d, ctx, `{"op":"move_chunk","scope":"user","id":"`+vid+
+			`","new_parent_id":"`+ghost+`"}`)
+		if !r.IsError {
+			t.Fatal("accepted a non-existent new_parent_id — the chunk is orphaned")
+		}
+	})
+	t.Run("move under another document", func(t *testing.T) {
+		_, r := docExec(t, d, ctx, `{"op":"move_chunk","scope":"user","id":"`+vid+
+			`","new_parent_id":"`+otherRoot+`"}`)
+		if !r.IsError {
+			t.Fatal("accepted a cross-document new_parent_id")
+		}
+	})
+
+	// The chunk survived both refusals AND is still reachable.
+	md2, _ := docExec(t, d, ctx, `{"op":"export_md","scope":"user","id":"`+docID+`"}`)
+	if !strings.Contains(asStr(md2), "movable") {
+		t.Errorf("the chunk is no longer reachable after the refused moves: %s", asStr(md2))
+	}
+
+	// And moving to the ROOT level is still allowed — the fix must not narrow that.
+	if _, r := docExec(t, d, ctx, `{"op":"move_chunk","scope":"user","id":"`+vid+
+		`","new_parent_id":""}`); r.IsError {
+		t.Errorf("moving to the root level was refused: %s", r.Text)
+	}
+}

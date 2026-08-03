@@ -1159,6 +1159,34 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// siblings by +1 (in one txn) so the new chunk lands at afterPos+1 with no
 	// tie. Overrides parent_id/position.
 	parentID := in.ParentID
+	// A directly-supplied parent_id gets the SAME validation after_id already had
+	// below — it must exist, and it must be in this document.
+	//
+	// Without it, create_chunk returned success (with a fresh id and revision) for
+	// a chunk nothing could ever reach: no walk descends to it from the root, so it
+	// was absent from get_document and export_md the instant it was written.
+	// Writing content, being told it worked, and never seeing it again is a worse
+	// outcome than an error, and it is invisible to the dead-link sweeper, which
+	// looks for a missing DOCUMENT rather than a missing PARENT.
+	//
+	// An empty parent_id still means "child of the root", so nothing legitimate is
+	// narrowed.
+	if in.ParentID != "" {
+		par, ok, perr := d.getChunkRow(ctx, key, in.ParentID)
+		if perr != nil {
+			return errResult("create_chunk: parent lookup: " + perr.Error()), nil
+		}
+		if !ok {
+			return errResult("create_chunk: no such parent_id: " + in.ParentID +
+				" (the chunk would be unreachable from the document root; omit parent_id " +
+				"to attach it to the root)"), nil
+		}
+		if par.DocumentID != in.DocumentID {
+			return errResult(fmt.Sprintf(
+				"create_chunk: parent_id %q belongs to document %q, not %q — a chunk cannot be "+
+					"parented across documents", in.ParentID, par.DocumentID, in.DocumentID)), nil
+		}
+	}
 	pos := 0
 	if in.AfterID != "" {
 		sib, ok, err := d.getChunkRow(ctx, key, in.AfterID)
@@ -1627,6 +1655,36 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if in.NewParentID != "" {
 		if in.NewParentID == in.ID {
 			return errResult("move_chunk: cannot move a chunk under itself"), nil
+		}
+		// The new parent must EXIST, and must live in the same document.
+		//
+		// Neither was checked, and both failures reported ok:true. A missing parent
+		// silently orphaned the chunk: the row survives but nothing walks to it from
+		// the root, so it vanishes from get_document and export_md while still
+		// occupying the scope — invisible loss, which is worse than an error. And the
+		// dead-link sweeper does not catch this class: it reports a chunk whose
+		// DOCUMENT is gone, not one whose PARENT is.
+		//
+		// A cross-document parent is the same corruption from the other side: the
+		// chunk keeps its own document_id while its parent_id points into another
+		// tree, so the two documents disagree about who owns it.
+		//
+		// Moving to the ROOT level is still expressed by an empty new_parent_id, so
+		// this narrows nothing a caller could legitimately want.
+		newParent, found, perr := d.getChunkRow(ctx, key, in.NewParentID)
+		if perr != nil {
+			return errResult("move_chunk: new parent lookup: " + perr.Error()), nil
+		}
+		if !found {
+			return errResult("move_chunk: no such new_parent_id: " + in.NewParentID +
+				" (moving under a parent that does not exist would orphan the chunk; " +
+				"pass an empty new_parent_id to move it to the root level)"), nil
+		}
+		if newParent.DocumentID != row.DocumentID {
+			return errResult(fmt.Sprintf(
+				"move_chunk: new_parent_id %q belongs to document %q, but this chunk is in %q — "+
+					"a chunk cannot be parented across documents",
+				in.NewParentID, newParent.DocumentID, row.DocumentID)), nil
 		}
 		cur := in.NewParentID
 		for i := 0; cur != "" && i <= maxChunkDepth; i++ {
