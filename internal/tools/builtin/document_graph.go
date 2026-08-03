@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -356,7 +357,18 @@ func graphTemporalClause(in docInput) (string, []any) {
 		return `(m.chunk_id IS NULL OR ((m.valid_at IS NULL OR m.valid_at <= ?) AND (m.invalid_at IS NULL OR m.invalid_at > ?)))`,
 			[]any{*in.AsOf, *in.AsOf}
 	}
-	return `(m.chunk_id IS NULL OR m.invalid_at IS NULL)`, nil
+	// invalid_at > now, not merely IS NULL. A fact may carry a KNOWN FUTURE end —
+	// "the contract runs until 2027" — and such a fact is true right now. Treating
+	// any end-date as "not current" made recording one an act of immediate
+	// deletion: the fact vanished from every default recall the moment it was
+	// written.
+	//
+	// The decisive argument is internal consistency rather than taste. The default
+	// IS "as_of now", so it must reduce to the as_of predicate above with the
+	// current time substituted. It did not: a caller passing as_of=<now> got a
+	// different answer than the same caller passing nothing.
+	return `(m.chunk_id IS NULL OR m.invalid_at IS NULL OR m.invalid_at > ?)`,
+		[]any{time.Now().UnixNano()}
 }
 
 func scanGraphRows(rows [][]any, hop int, viaKind, viaID string) []graphChunk {
@@ -385,7 +397,10 @@ func scanGraphRow(r []any) graphChunk {
 	if len(r) > 5 {
 		if v, ok := asInt64(r[5]); ok {
 			c.Invalid = &v
-			c.Retired = true
+			// HAS an end date != HAS ended. A fact valid until 2027 is current, and
+			// labelling it retired told the model the opposite of the truth about
+			// something it was simultaneously being shown as a result.
+			c.Retired = v <= time.Now().UnixNano()
 		}
 	}
 	return c

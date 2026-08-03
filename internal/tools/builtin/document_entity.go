@@ -394,6 +394,41 @@ func (d *Document) supersedeChunk(ctx context.Context, key sqlmem.ScopeKey, in d
 		}
 	}
 
+	// A chunk may be retired ONCE. Without this, two different replacements can
+	// each supersede the same fact — both succeed, both stay live, and a recall
+	// returns two contradictory "current" answers. That defeats the entire point of
+	// supersede-not-delete, which is that there is always exactly one current
+	// answer and the old ones remain queryable behind it.
+	//
+	// A correction chain is A -> B -> C: to correct B you supersede B, not A.
+	// Forking A twice is a caller error, so it is refused by NAMING the existing
+	// replacement — that is the id the caller almost certainly meant to pass.
+	//
+	// Re-superseding with the SAME replacement is different: it is genuinely
+	// idempotent, and must be a clean no-op rather than an error. These ops are
+	// driven by a background consolidator that retries after a partial failure, and
+	// a retry that reports failure for work already done is indistinguishable from
+	// one that could not do it. Previously this surfaced the raw PK violation
+	// ("UNIQUE constraint failed: chunk_edges.from_id, ..."), leaking schema
+	// internals into a model-visible result.
+	prior, err := d.query(ctx, key,
+		`SELECT from_id FROM chunk_edges WHERE to_id = ? AND kind = 'supersedes'`, in.SupersedesID)
+	if err != nil {
+		return errResult("supersede_chunk: supersession lookup: " + err.Error()), nil
+	}
+	for _, row := range prior.Rows {
+		existing := asStr(row[0])
+		if existing == in.ID {
+			return okJSON(map[string]any{
+				"id": in.ID, "supersedes": in.SupersedesID, "already": true,
+			})
+		}
+		return errResult(fmt.Sprintf(
+			"supersede_chunk: chunk %q is already superseded by %q. To correct that newer "+
+				"fact, supersede %q instead — superseding the same chunk twice would leave two "+
+				"contradictory current facts.", in.SupersedesID, existing, existing)), nil
+	}
+
 	now := time.Now().UnixNano()
 	txErr := d.withSqlTxn(ctx, key, func(txnID string) error {
 		// The retired row may have no sidecar yet (it predates the entity tier, or

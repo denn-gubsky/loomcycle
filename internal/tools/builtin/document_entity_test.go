@@ -2,8 +2,10 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -266,5 +268,151 @@ func TestEntity_TenantWritesRequireBothGrants(t *testing.T) {
 				t.Errorf("upsert_chunk at tenant scope with both grants: %s", r.Text)
 			}
 		})
+	}
+}
+
+// TestSupersedeChunk_RefusesAForkedCorrectionChain is the invariant the whole
+// supersede mechanism rests on: at any moment ONE fact is current.
+//
+// Nothing previously stopped two different replacements from each superseding the
+// same chunk. Both succeeded, both stayed live, and graph_recall returned both as
+// current — two contradictory answers to the same question, which is precisely
+// what supersede-not-delete exists to prevent. A correction chain is A -> B -> C;
+// to correct B you supersede B, not A.
+func TestSupersedeChunk_RefusesAForkedCorrectionChain(t *testing.T) {
+	d, ctx, docID, root := entityFixture(t)
+	mk := func(key, title string) string {
+		out, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+docID+
+			`","parent_id":"`+root+`","title":"`+title+`","natural_key":"`+key+`"}`)
+		if r.IsError {
+			t.Fatalf("upsert %s: %s", key, r.Text)
+		}
+		return asStr(out["id"])
+	}
+	old := mk("fact:indent|is|tabs", "prefers tabs")
+	b := mk("fact:indent|is|spaces", "prefers spaces")
+	c := mk("fact:indent|is|two", "prefers 2-space indent")
+
+	if _, r := docExec(t, d, ctx, `{"op":"supersede_chunk","scope":"user","id":"`+b+`","supersedes_id":"`+old+`"}`); r.IsError {
+		t.Fatalf("first supersede: %s", r.Text)
+	}
+	_, r := docExec(t, d, ctx, `{"op":"supersede_chunk","scope":"user","id":"`+c+`","supersedes_id":"`+old+`"}`)
+	if !r.IsError {
+		t.Fatalf("a SECOND replacement for the same chunk was accepted — the correction " +
+			"chain forked and two contradictory facts are now both current")
+	}
+	// The refusal must name the existing replacement: that is the id the caller
+	// almost certainly meant to supersede.
+	if !strings.Contains(r.Text, b) {
+		t.Errorf("the refusal does not name the existing replacement %q, so the caller "+
+			"cannot tell what to supersede instead: %s", b, r.Text)
+	}
+	// Exactly one chunk supersedes it.
+	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+		d.SqlMem.Rebind(`SELECT from_id FROM chunk_edges WHERE to_id = ? AND kind = 'supersedes'`), []any{old})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rows) != 1 {
+		t.Errorf("%d chunks supersede the retired fact, want 1", len(res.Rows))
+	}
+}
+
+// TestSupersedeChunk_SamePairIsIdempotent — these ops are driven by a background
+// consolidator that retries after a partial failure, so re-superseding with the
+// SAME replacement must be a clean no-op.
+//
+// It previously surfaced the raw engine error ("UNIQUE constraint failed:
+// chunk_edges.from_id, ...") from the edge insert, which both reads as a hard
+// failure to a retrying caller and leaks schema internals into a model-visible
+// tool result.
+func TestSupersedeChunk_SamePairIsIdempotent(t *testing.T) {
+	d, ctx, docID, root := entityFixture(t)
+	mk := func(key, title string) string {
+		out, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+docID+
+			`","parent_id":"`+root+`","title":"`+title+`","natural_key":"`+key+`"}`)
+		if r.IsError {
+			t.Fatalf("upsert: %s", r.Text)
+		}
+		return asStr(out["id"])
+	}
+	old := mk("fact:x", "old")
+	newer := mk("fact:y", "newer")
+
+	for i := 1; i <= 2; i++ {
+		out, r := docExec(t, d, ctx, `{"op":"supersede_chunk","scope":"user","id":"`+newer+`","supersedes_id":"`+old+`"}`)
+		if r.IsError {
+			t.Fatalf("supersede attempt %d failed: %s", i, r.Text)
+		}
+		if i == 2 && out["already"] != true {
+			t.Errorf("the repeat did not report already=true, so a retrying consolidator "+
+				"cannot distinguish 'done' from 'did it again': %v", out)
+		}
+	}
+}
+
+// TestGraphRecall_AFutureEndDateIsStillCurrent — "has an end date" is not "has
+// ended".
+//
+// A fact may carry a KNOWN FUTURE end ("the contract runs until 2027") and be
+// perfectly true right now. The default filter required invalid_at IS NULL, so
+// recording an end date acted as immediate deletion: the fact disappeared from
+// every default recall the moment it was written.
+//
+// The decisive check is the second half. The default IS "as_of now", so it must
+// agree with the as_of predicate given the current time — and it did not, which
+// is what makes this a bug rather than a judgement call.
+func TestGraphRecall_AFutureEndDateIsStillCurrent(t *testing.T) {
+	d, ctx, docID, root := entityFixture(t)
+	future := time.Now().Add(365 * 24 * time.Hour).UnixNano()
+	past := time.Now().Add(-365 * 24 * time.Hour).UnixNano()
+
+	mk := func(key, title string, invalid int64) {
+		t.Helper()
+		body := fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":"%s","parent_id":"%s",`+
+			`"title":"%s","natural_key":"%s","invalid_at":%d}`, docID, root, title, key, invalid)
+		if _, r := docExec(t, d, ctx, body); r.IsError {
+			t.Fatalf("upsert %s: %s", key, r.Text)
+		}
+	}
+	mk("fact:contract", "contract runs until 2027", future)
+	mk("fact:oldjob", "worked at Initech", past)
+
+	// Whole-word title matching means each fact needs its own query term.
+	recall := func(term, extra string) string {
+		t.Helper()
+		out, r := docExec(t, d, ctx,
+			`{"op":"graph_recall","scope":"user","query":"`+term+`"`+extra+`}`)
+		if r.IsError {
+			t.Fatalf("graph_recall(%s%s): %s", term, extra, r.Text)
+		}
+		return asStr(out)
+	}
+
+	got := recall("contract", "")
+	if !strings.Contains(got, "contract runs until 2027") {
+		t.Errorf("a fact with a FUTURE end date is missing from a default recall — "+
+			"recording an end date deleted it: %s", got)
+	}
+	// A genuinely-ended fact must still be hidden, or the fix has simply disabled
+	// the filter.
+	if ended := recall("worked", ""); strings.Contains(ended, "worked at Initech") {
+		t.Errorf("a fact whose end date has PASSED is being returned as current: %s", ended)
+	}
+	// The label must not contradict the result it decorates.
+	//
+	// Matched against the Go map rendering (retired:true, no quotes) that asStr
+	// produces — an earlier version of this assertion looked for the JSON form
+	// `"retired":true`, which cannot appear in this output and therefore could
+	// never fail.
+	if strings.Contains(got, "retired:true") {
+		t.Errorf("the current fact is labelled retired even though its end date is in "+
+			"the future — the label contradicts the result it decorates: %s", got)
+	}
+	// And the default must agree with as_of=<now>, since that is what it means.
+	asOf := recall("contract", fmt.Sprintf(`,"as_of":%d`, time.Now().UnixNano()))
+	if strings.Contains(asOf, "contract") != strings.Contains(got, "contract") {
+		t.Errorf("the default and as_of=now disagree about the same fact:\n default: %s\n as_of:   %s",
+			got, asOf)
 	}
 }
