@@ -249,6 +249,12 @@ func pgScopeNames(key ScopeKey) (schema, role string, err error) {
 		if key.Tenant == "" || key.Scope == "" || key.ScopeID == "" {
 			return "", "", fmt.Errorf("sqlmem: empty scope key component")
 		}
+		// Enforced, not assumed. A component carrying the separator makes this join
+		// ambiguous, so distinct scopes would derive the same schema and the same
+		// LOGIN role — see ScopeKey.validate for why the comment alone was not enough.
+		if err := key.validate(); err != nil {
+			return "", "", err
+		}
 		canon = key.Tenant + "\x1f" + key.Scope + "\x1f" + key.ScopeID
 	}
 	sum := sha256.Sum256([]byte(canon))

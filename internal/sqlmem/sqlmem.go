@@ -218,6 +218,40 @@ func newManager(d dialect, cfg Config, b backend) *Manager {
 // portable statement with `?`. It is a purely positional replacement and does
 // NOT skip a `?` inside a string literal — call it only on statements you
 // construct yourself (with bound values), never on raw model/user SQL.
+// scopeKeySep is the byte that joins a ScopeKey's components into the canonical
+// strings three subsystems derive identity from: the postgres schema/role names
+// (pgScopeNames), the GC debounce key (touchKey), and the transaction-registry
+// key (txn.go). A component containing it makes those joins ambiguous.
+const scopeKeySep = '\x1f'
+
+// validate rejects a ScopeKey whose components would produce an ambiguous
+// canonical form.
+//
+// THE TWO TIERS DISAGREED ABOUT THIS, which is what makes it worth enforcing
+// rather than documenting. The sqlite tier's sanitize() replaces unsafe
+// characters AND appends a hash of the original, so two distinct scope ids can
+// never land on one file. The postgres tier hashes a separator-joined triple and
+// only ASSERTED, in a comment, that components are separator-free — so
+// ("a\x1fb","c","d"), ("a","b\x1fc","d") and ("a","b","c\x1fd") all derived the
+// SAME schema and the SAME LOGIN role. Three scopes, one database.
+//
+// It is not reachable across a security boundary today, and only by luck: the
+// tenant is always principal-derived and comes FIRST, so a caller who controls
+// only the trailing scope_id (the erasure surface passes ?subject= straight
+// through) cannot forge another tenant's prefix. That safety is an accident of
+// field order, not a design, and a fourth component or a reordering would spend
+// it silently.
+func (k ScopeKey) validate() error {
+	for _, part := range []struct{ name, val string }{
+		{"tenant", k.Tenant}, {"scope", k.Scope}, {"scope_id", k.ScopeID},
+	} {
+		if strings.ContainsRune(part.val, scopeKeySep) {
+			return fmt.Errorf("sqlmem: %s contains the reserved separator (0x1f)", part.name)
+		}
+	}
+	return nil
+}
+
 func (m *Manager) Rebind(sql string) string {
 	if m.dialect != dialectPostgres {
 		return sql
@@ -245,6 +279,9 @@ func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, arg
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
+	if err := key.validate(); err != nil {
+		return nil, err
+	}
 	defer m.touch(key)
 	return m.backend.query(ctx, key, statement, args)
 }
@@ -254,6 +291,9 @@ func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, arg
 // enforces the quota + timeout.
 func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args []any, quotaOverride int) (*ExecResult, error) {
 	if err := validateStatementForDialect(statement, false, m.dialect); err != nil {
+		return nil, err
+	}
+	if err := key.validate(); err != nil {
 		return nil, err
 	}
 	defer m.touch(key)
@@ -279,6 +319,9 @@ func (m *Manager) DropScope(ctx context.Context, key ScopeKey) (removed bool, er
 	}
 	if key.Scope == "" || strings.TrimSpace(key.ScopeID) == "" {
 		return false, fmt.Errorf("sqlmem: DropScope requires a non-empty scope and scope_id")
+	}
+	if err := key.validate(); err != nil {
+		return false, err
 	}
 	return m.backend.dropScope(key)
 }
