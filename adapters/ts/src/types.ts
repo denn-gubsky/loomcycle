@@ -507,6 +507,58 @@ export interface RunBatchResult {
 /** Result of {@link LoomcycleClient.compactRun}. `applied` is "live" (pushed to
  *  the running loop), "marker" (persisted for a terminal run's next
  *  continuation), or "noop" (too short to compact). */
+/**
+ * One tier's per-plane counts in an erasure report.
+ *
+ * A key's PRESENCE means the plane was examined; its value is the row count.
+ * Absence means NOT examined — a different statement from zero, and the
+ * distinction the whole report turns on.
+ */
+export interface ErasureTier {
+  counts: Record<string, number>;
+  total: number;
+}
+
+/**
+ * What a subject-keyed delete cannot reach: facts ABOUT the subject living in
+ * scopes they do not own, found only by tracing provenance from their chats.
+ *
+ * `rows: 0` with `sessions_examined: 0` means UNDETERMINABLE, not none — there
+ * was nothing to trace from. That is the state a subject is left in after an
+ * erasure.
+ */
+export interface ErasureResidue {
+  rows: number;
+  scopes: string[];
+  sessions_examined: number;
+  truncated: boolean;
+}
+
+/** Result of {@link LoomcycleClient.erasureReport} (RFC BL P5). */
+export interface ErasureReport {
+  tenant: string;
+  subject: string;
+  tier1_covered: ErasureTier;
+  tier2_uncovered: ErasureTier;
+  tier3_residue: ErasureResidue;
+  notes: string[];
+  /** Planes that could not be READ. Non-empty means every count is a lower bound. */
+  errors?: string[];
+}
+
+/** Result of {@link LoomcycleClient.erasureExecute} (RFC BL P5). */
+export interface ErasureResult {
+  tenant: string;
+  subject: string;
+  dry_run: boolean;
+  deleted: Record<string, number>;
+  /** Plane -> why it was kept. Never empty. */
+  retained: Record<string, string>;
+  residue: ErasureResidue;
+  errors?: string[];
+  notes: string[];
+}
+
 export interface CompactRunResult {
   run_id: string;
   compacted: boolean;

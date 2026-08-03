@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 )
 
 // parityMock embeds the zero-returning mockConnector and overrides the two
@@ -417,4 +418,12 @@ func TestResolveInterrupt_BadIDIsInvalidArgument(t *testing.T) {
 	if mc.lastResolve.runID != "" {
 		t.Error("connector was called despite an invalid interrupt_id")
 	}
+}
+
+func (m *parityMock) ErasureReport(context.Context, string, string) (erasure.Report, error) {
+	return erasure.Report{}, nil
+}
+
+func (m *parityMock) ErasureExecute(context.Context, erasure.ExecuteRequest) (erasure.Result, error) {
+	return erasure.Result{}, nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -712,11 +713,17 @@ func startTestServerWithRunner(t *testing.T, r runner.Runner) (loomcyclepb.Loomc
 // return meaningful results — the rest return zero values, which is
 // fine because the test only calls CancelAgent.
 type mockConnector struct {
-	cancelCalls atomic.Int32
-	lastAgentID atomic.Value // string
-	lastReason  atomic.Value // string
-	cancelOK    atomic.Bool  // controls return value
-	cascade     atomic.Int32 // CascadeCount returned
+	erasureTenant  atomic.Value
+	erasureSubject atomic.Value
+	erasureDryRun  atomic.Value
+	erasureReport  erasure.Report
+	erasureResult  erasure.Result
+	erasureErr     error
+	cancelCalls    atomic.Int32
+	lastAgentID    atomic.Value // string
+	lastReason     atomic.Value // string
+	cancelOK       atomic.Bool  // controls return value
+	cascade        atomic.Int32 // CascadeCount returned
 }
 
 func (m *mockConnector) CancelRun(_ context.Context, agentID, reason string) (connector.CancelRunResult, error) {
@@ -747,6 +754,21 @@ func (m *mockConnector) GetRun(context.Context, string) (connector.Run, error) {
 }
 func (m *mockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
 	return connector.CompactResult{}, nil
+}
+
+// erasureFn lets a test drive the erasure ops; nil returns a zero report, which
+// is what the tools-list and authz tests need (they never call it).
+func (m *mockConnector) ErasureReport(_ context.Context, tenant, subject string) (erasure.Report, error) {
+	m.erasureTenant.Store(tenant)
+	m.erasureSubject.Store(subject)
+	return m.erasureReport, m.erasureErr
+}
+
+func (m *mockConnector) ErasureExecute(_ context.Context, req erasure.ExecuteRequest) (erasure.Result, error) {
+	m.erasureTenant.Store(req.Tenant)
+	m.erasureSubject.Store(req.Subject)
+	m.erasureDryRun.Store(req.DryRun)
+	return m.erasureResult, m.erasureErr
 }
 func (m *mockConnector) ReplaySession(context.Context, connector.ReplaySessionRequest) (connector.ReplaySessionResult, error) {
 	return connector.ReplaySessionResult{}, nil

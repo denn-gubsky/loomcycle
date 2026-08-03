@@ -835,6 +835,72 @@ class LoomcycleClient:
             "results": [_spawn_result_to_dict(r) for r in resp.results],
         }
 
+    async def erasure_report(self, subject: str) -> Mapping[str, Any]:
+        """Report what this deployment holds about one *subject*, in three
+        tiers separated by what they guarantee (RFC BL P5). Read-only.
+
+        Returns ``{tenant, subject, tier1_covered, tier2_uncovered,
+        tier3_residue, notes, errors}``. A key's PRESENCE in a tier's
+        ``counts`` means the plane was examined; its value is the row
+        count. Absence means NOT examined — a different statement from
+        zero.
+
+        ``tier3_residue`` is what a subject-keyed delete cannot reach:
+        facts *about* the subject in scopes they do not own. ``rows: 0``
+        with ``sessions_examined: 0`` means UNDETERMINABLE, not none.
+
+        The tenant comes from your credentials; there is no wire field
+        for it, because a subject id is only unique within one tenant."""
+        req = pb.ErasureReportRequest(subject=subject)
+        try:
+            resp = await self._stub.ErasureReport(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "subject": resp.subject,
+            "tier1_covered": _erasure_tier(resp.tier1_covered),
+            "tier2_uncovered": _erasure_tier(resp.tier2_uncovered),
+            "tier3_residue": _erasure_residue(resp.tier3_residue),
+            "notes": list(resp.notes),
+            "errors": list(resp.errors),
+        }
+
+    async def erasure_execute(
+        self, subject: str, *, dry_run: bool = True, confirm: str = ""
+    ) -> Mapping[str, Any]:
+        """Erase tiers 1 and 2 for a *subject*, reporting what could not
+        be reached (RFC BL P5).
+
+        DEFAULTS TO A DRY RUN. ``dry_run`` defaults to ``True``; a live
+        run additionally requires ``confirm`` to equal ``subject``.
+        Omitting either deletes nothing — a mismatch raises
+        :class:`InvalidArgumentError`.
+
+        IMPORTANT: tier-3 residue is traceable only through the
+        subject's chats, which a live run deletes — so a report
+        afterwards shows ``rows: 0`` while those facts remain. **The
+        returned mapping is the only durable record of what was not
+        reached; persist it.**
+
+        The usage/cost ledger is retained by design (accounting
+        records) and is reported under ``retained``."""
+        req = pb.ErasureExecuteRequest(subject=subject, dry_run=dry_run, confirm=confirm)
+        try:
+            resp = await self._stub.ErasureExecute(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "subject": resp.subject,
+            "dry_run": resp.dry_run,
+            "deleted": dict(resp.deleted),
+            "retained": dict(resp.retained),
+            "residue": _erasure_residue(resp.residue),
+            "errors": list(resp.errors),
+            "notes": list(resp.notes),
+        }
+
     async def compact_run(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
         """Summarize a parked run's context (mirror of the HTTP
         ``POST /v1/runs/{run_id}/compact`` + the ``compact_run`` MCP
@@ -1856,3 +1922,19 @@ def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
 # Help the linter / mypy understand asyncio is in use even when
 # imports are wrapped in TYPE_CHECKING.
 _ = asyncio
+
+
+def _erasure_tier(t: Any) -> Mapping[str, Any]:
+    """Flatten an ErasureTier. counts is returned whole — including its
+    zeros, which carry meaning here: a present key means the plane was
+    examined."""
+    return {"counts": dict(t.counts), "total": t.total}
+
+
+def _erasure_residue(r: Any) -> Mapping[str, Any]:
+    return {
+        "rows": r.rows,
+        "scopes": list(r.scopes),
+        "sessions_examined": r.sessions_examined,
+        "truncated": r.truncated,
+    }

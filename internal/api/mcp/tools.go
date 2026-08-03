@@ -122,6 +122,32 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
+			Name: "erasure",
+			Description: "Report or erase everything this deployment holds about one SUBJECT (a user id), " +
+				"scoped to your own tenant. op=report (default) is read-only and returns three tiers: " +
+				"tier1_covered (deletable with existing primitives), tier2_uncovered (subject-keyed but " +
+				"nothing deletes it — credentials are the ones that matter), and tier3_residue (facts ABOUT " +
+				"the subject living in scopes they do not own, found only by tracing provenance from their " +
+				"chats). op=execute removes tiers 1 and 2. " +
+				"IT DEFAULTS TO A DRY RUN: pass dry_run:false AND confirm equal to the subject to actually " +
+				"delete, which is irreversible. " +
+				"IMPORTANT: tier-3 residue is traceable only through the subject's chats, which execute " +
+				"deletes — so a report run AFTERWARDS shows residue 0 while those facts remain. The execute " +
+				"response is the only durable record of what was not reached; keep it. " +
+				"The usage/cost ledger is retained by design (accounting records). " +
+				"The tenant is taken from your credentials and cannot be passed.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["subject"],
+				"properties": {
+					"subject": {"type": "string", "description": "The user id whose footprint to report or erase."},
+					"op":      {"type": "string", "enum": ["report", "execute"], "description": "report (default, read-only) or execute."},
+					"dry_run": {"type": "boolean", "description": "execute only. Defaults TRUE — omitting it deletes nothing."},
+					"confirm": {"type": "string", "description": "execute only. Must equal subject when dry_run is false."}
+				}
+			}`),
+		},
+		{
 			Name:        "list_runs",
 			Description: "Enumerate runs. user_id filter is required in v0.8.15.",
 			InputSchema: rawJSON(`{

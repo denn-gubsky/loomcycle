@@ -42,6 +42,8 @@ import {
   type ConnectClientToolsOptions,
 } from "./client-tools.js";
 import type {
+  ErasureReport,
+  ErasureResult,
   Agent,
   AgentEvent,
   AgentStatus,
@@ -393,6 +395,55 @@ export class LoomcycleClient {
    * `applied` is "live", "marker", or "noop". Mirrors
    * POST /v1/runs/{run_id}/compact.
    */
+  /**
+   * Report what this deployment holds about one SUBJECT, in three tiers
+   * separated by what they guarantee (RFC BL P5). Read-only.
+   *
+   * `tenant` is optional and honored only for an admin token; a tenant-scoped
+   * principal is confined to its own tenant regardless. An admin MUST pass it —
+   * a subject id is only unique within one tenant, so the server refuses rather
+   * than guessing (pass `""` for the default tenant on a single-tenant install).
+   */
+  async erasureReport(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<ErasureReport> {
+    const q = new URLSearchParams({ subject });
+    if (opts?.tenant !== undefined) q.set("tenant", opts.tenant);
+    return jsonFetch<ErasureReport>(this.ctx, `/v1/_erasure?${q}`, opts);
+  }
+
+  /**
+   * Erase tiers 1 and 2 for a SUBJECT, reporting what could not be reached.
+   *
+   * DEFAULTS TO A DRY RUN. `dryRun` defaults to true and a live run additionally
+   * requires `confirm` to equal `subject`; omitting either deletes nothing.
+   *
+   * IMPORTANT: tier-3 residue is traceable only through the subject's chats,
+   * which a live run deletes — so a report afterwards shows `rows: 0` while
+   * those facts remain. The returned object is the ONLY durable record of what
+   * was not reached; persist it.
+   */
+  async erasureExecute(
+    subject: string,
+    opts?: {
+      dryRun?: boolean;
+      confirm?: string;
+      tenant?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<ErasureResult> {
+    const body: Record<string, unknown> = { subject };
+    // Sent explicitly rather than relying on the server default, so a caller
+    // reading this code sees which mode the request is in.
+    body.dry_run = opts?.dryRun ?? true;
+    if (opts?.confirm !== undefined) body.confirm = opts.confirm;
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return postJSON<ErasureResult>(this.ctx, `/v1/_erasure${q}`, body, opts);
+  }
+
   async compactRun(
     runId: string,
     opts?: { reason?: string; signal?: AbortSignal },

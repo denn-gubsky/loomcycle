@@ -16,6 +16,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -27,9 +28,15 @@ import (
 // the ones explicitly exercised. Lets tests focus on what they care
 // about without faking unrelated surfaces.
 type mockConnector struct {
-	spawnReq    atomic.Value // connector.SpawnRunRequest (last)
-	spawnResult connector.SpawnRunResult
-	spawnErr    error
+	erasureTenant  atomic.Value
+	erasureSubject atomic.Value
+	erasureDryRun  atomic.Value
+	erasureReport  erasure.Report
+	erasureResult  erasure.Result
+	erasureErr     error
+	spawnReq       atomic.Value // connector.SpawnRunRequest (last)
+	spawnResult    connector.SpawnRunResult
+	spawnErr       error
 	// spawnGate, when non-nil, makes SpawnRun block until the channel is
 	// closed (or ctx is cancelled) — lets a test hold a spawn_run "in
 	// flight" to exercise concurrent dispatch. spawnActive/spawnMaxSeen
@@ -101,6 +108,21 @@ func (m *mockConnector) GetRun(_ context.Context, _ string) (connector.Run, erro
 func (m *mockConnector) CompactRun(_ context.Context, runID string) (connector.CompactResult, error) {
 	m.compactRunID.Store(runID)
 	return m.compactResult, m.compactErr
+}
+
+// erasureFn lets a test drive the erasure ops; nil returns a zero report, which
+// is what the tools-list and authz tests need (they never call it).
+func (m *mockConnector) ErasureReport(_ context.Context, tenant, subject string) (erasure.Report, error) {
+	m.erasureTenant.Store(tenant)
+	m.erasureSubject.Store(subject)
+	return m.erasureReport, m.erasureErr
+}
+
+func (m *mockConnector) ErasureExecute(_ context.Context, req erasure.ExecuteRequest) (erasure.Result, error) {
+	m.erasureTenant.Store(req.Tenant)
+	m.erasureSubject.Store(req.Subject)
+	m.erasureDryRun.Store(req.DryRun)
+	return m.erasureResult, m.erasureErr
 }
 func (m *mockConnector) ReplaySession(context.Context, connector.ReplaySessionRequest) (connector.ReplaySessionResult, error) {
 	return connector.ReplaySessionResult{}, nil
@@ -412,8 +434,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 49 {
-		t.Errorf("got %d tools, want 49 (+history on top of the teamdef/credentialdef/path/document/volumedef list)", len(result.Tools))
+	if len(result.Tools) != 50 {
+		t.Errorf("got %d tools, want 50 (+erasure on top of the history/teamdef/credentialdef/path/document/volumedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
