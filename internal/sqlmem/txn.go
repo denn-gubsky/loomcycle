@@ -179,6 +179,11 @@ func (m *Manager) InTxn(txnID string) bool {
 // Errors if the process-wide MaxOpenTxns cap is reached (new txn) or the
 // per-txn MaxTxnDepth cap is reached (nested).
 func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key ScopeKey) (int, error) {
+	// beginTx PROVISIONS the scope (schema + LOGIN role on postgres), so this is a
+	// scope-creating entry point and validates like the others.
+	if err := key.validate(); err != nil {
+		return 0, err
+	}
 	m.txns.mu.Lock()
 	if existing, ok := m.txns.open[txnID]; ok {
 		if existing == nil {
