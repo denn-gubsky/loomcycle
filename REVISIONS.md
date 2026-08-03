@@ -4,6 +4,29 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.45.0
+
+**🧹 Subject erasure on every transport, and a nine-pass audit of the memory subsystem.** One new wire surface; the rest is fixes. Additive index only (0065, from v1.44.0); no schema or wire break.
+
+**Erasure is no longer HTTP-only.** v1.44.0 shipped it as the one substrate surface without transport parity; it now runs over MCP (an `erasure` tool, `op=report|execute`), gRPC (`ErasureReport` / `ErasureExecute`), the TS client (`erasureReport()` / `erasureExecute()`), and the Python client. The logic moved into a shared service so all four run the SAME code — an erasure that removed a different set of planes depending on which client asked would make "we erased them" a claim about a library rather than about the data. **The safety guards moved with it**: requiring `confirm` to equal the subject is a property of the erasure, not of HTTP, and leaving it to each caller would mean the newest transport is the one missing it. On MCP and gRPC the tenant comes from the principal with no wire field at all, so a session cannot reach another tenant's subject.
+
+**Then nine review passes over the memory subsystem, which found fourteen defects.** Every one sat in state reconstruction, tenant keying, or reachability — none in transport, dispatch or gating. The ones an operator should know about:
+
+- **A single-tenant deployment's erasure silently spared the subject's entire SQL Memory database** — every document they authored and their whole entity graph. SQL Memory rejects an empty tenant and stores the default one as `"default"`, while the k/v plane keeps the raw `""`; the drop key was built from the raw value and matched nothing. The live deployment test could not have caught it: its tenant was non-empty, where the two spellings coincide.
+- **The correction chain could fork.** Nothing stopped two chunks from each superseding the same fact — both stayed live and `graph_recall` returned both as current, which is exactly what supersede-not-delete exists to prevent.
+- **A known future end date deleted the fact.** "The contract runs until 2027" vanished from every default recall the moment the end date was written, because the filter required `invalid_at IS NULL`. The decisive argument is internal consistency: the default *is* "as_of now", so it must reduce to the `as_of` predicate with the current time substituted — and it did not.
+- **`import_md` read fenced code as document structure.** Any document containing a Markdown sample re-imported with more chunks than it had, its body truncated at the fence. That is most technical documentation, including this project's own RFCs.
+- **`create_chunk` / `move_chunk` accepted a parent that does not exist**, returning success for a chunk nothing could ever reach — absent from `get_document` and `export_md`, and invisible to the dead-link sweeper, which looks for a missing *document* rather than a missing *parent*.
+- **Vector search died instead of degrading in a mixed-dimension scope** — the state migration 0017 calls the typical steady state mid-migration. One row at another dimension aborted the whole query with a raw driver error, so recall was dead for that scope until every row was re-embedded.
+
+**Three hardening fixes where a guarantee held only by accident.** The postgres schema and LOGIN role for a SQL Memory scope are derived by hashing a separator-joined key, and the separator-free requirement was asserted in a comment rather than enforced — three distinct scopes could derive one schema and one role. It was unreachable only because the tenant component happens to come first. The SQL validator's comment-stripper was dialect-blind, so a legitimate `VALUES ($$x; y$$)` was refused while `$$--$$` hid a real statement separator — safe only because the driver's extended protocol rejects multi-statement strings, a dependency nobody had written down. And a `MemoryBackendDef` could name any env var as its credential source: `api_key_env: LOOMCYCLE_AUTH_TOKEN` beside a def-supplied `base_url` is a one-request exfiltration of the operator bearer, and the def persisted holding it.
+
+**⚠️ Two CI gaps, and the second explains several of the above.** The pgvector round-trip contract **never ran** — it is gated behind an opt-in flag the workflow never set, even though the store job's service image is already pgvector. A skipped suite is worse than a missing one: it reports green and reads as covered. It could not have run even with the flag, because the per-test schema excluded `public` and migration 0017's `vector` type is unqualified. Both are fixed, and the postgres-tier `-run` filter — which the workflow *asks in writing* to be maintained — is now enforced by a test rather than a comment.
+
+**🔬 One eval finding.** A change to the extractor's system prompt **un-gates every measured configuration**, invisibly: the baseline keys on the prompt hash, and no match is deliberately not a regression. `effort=medium` has been ungated since the prompt changed. The gate now says so instead of reporting a clean pass with nothing behind it.
+
+**Adapters:** `@loomcycle/client` **1.45.0** publishes on this tag with the erasure methods. The Python client's erasure methods ship on its own `python-v*` tag.
+
 ## What's in v1.44.1
 
 **🩹 Patch — the erasure report omitted planes it had examined.** Reporting accuracy only; nothing about what gets deleted changes.
@@ -64,29 +87,9 @@ This is the failure mode a fixture corpus cannot show. Every test corpus is a cl
 
 ⚠️ **No migration, no schema change, no wire change.** Adapters unchanged. The memory bundle remains opt-in with its schedule at `enabled: false`. If you have already run a pass, entity nodes typed `preference:` or `fact:` from before this release are still in the store — they are inert rather than harmful (nothing reads them as entities now) but worth deleting if you want a clean graph.
 
-## What's in v1.43.1
-
-**🩹 A tenant-scope document listed in the Path tree and then opened with no chunks.** UI + adapter types; no runtime change, no migration.
-
-Reported against v1.43.0: the ontology document showed nothing in the browser while Settings → Ontology said **Confirmed**. The document was fine — root plus three term chunks, the full template, status confirmed. The VIEWER was reading the wrong store.
-
-`PathExplorer` browses `agent|user|tenant` and handed the scope to the document viewer as `scope={scope === "agent" ? "agent" : "user"}`, because `DocScope` was `"agent" | "user"`. So `"tenant"` had nowhere to go and became `"user"`: the document listed in the tree (which does support tenant) and its chunk query then asked the user scope, which correctly answered with nothing.
-
-**Nothing failed anywhere.** A document with no chunks and a document you are looking for in the wrong scope render identically — no error, no distinguishable empty state — so it surfaced only because a human noticed two screens disagreeing.
-
-`DocScope` was written when Documents genuinely refused tenant scope and its comment said exactly that; the runtime gained it in v1.41.0 and the type never followed. **The same fact turned out to be declared in four places** — `@loomcycle/client`'s `DocumentToolInput`, `@loomcycle/explorer`'s `DocScope`, the Web UI's own `DocScope`, and the runtime's schema — and three of the four were stale. All three are widened, each carrying the reason so the next reader does not re-narrow it. Deep links to a tenant document (`?scope=tenant`) now open too, rather than folding to the user scope.
-
-Worth recording how the fix nearly shipped under-covered. Widening `DocScope` does **not** prevent the fold returning: `"agent" | "user"` is still assignable to the wider type, so the compiler stays silent, and a data-layer test passes because the fold happens a layer above it. Restoring the exact bad line left every check green. **Type systems catch widening errors, not narrowing ones** — discarding a case is legal everywhere — so the guard is a source assertion on the component, blunt and pinned to a literal on purpose.
-
-**📦 `@loomcycle/client` publishes at 1.43.1** (from 1.38.0), because the fix includes its `DocumentToolInput.scope` type and the Web UI's temporary `as unknown as` casts come out on the next published version. A tenant document additionally needs the operator to grant BOTH `memory_scopes` and `sql_scopes` with `tenant`, since a document spans both planes; the type comment says so now.
-
-Also corrects the adapter version stated in the v1.42.x and v1.43.0 notes: it was **1.38.0** at both tags, not 1.30.0 — a stale figure carried from memory into eight places. The runtime behaviour those notes describe is unaffected.
-
-⚠️ **The Web UI is embedded in the binary, so rebuild the image rather than restarting it** — a restart serves the old SPA and the symptom persists.
-
 ## Earlier releases
 
-Notes for **v1.43.0 back to v0.4.0** (181 releases) are not repeated here.
+Notes for **v1.43.1 back to v0.4.0** are not repeated here.
 
 They were dropped from this file deliberately rather than lost: every tag carries
 its own annotated message, and every release has a GitHub page with the same
