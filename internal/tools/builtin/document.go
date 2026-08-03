@@ -43,7 +43,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses), query_chunks (structured filters + a raw sql escape hatch), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -53,7 +53,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -88,7 +88,10 @@ const documentInputSchema = `{
 		"media_type":  {"type": "string", "description": "set_asset: the image MIME type (image/png, image/jpeg, image/gif, image/webp)."},
 		"data":        {"type": "string", "description": "set_asset: the image bytes as standard base64 (no data: prefix)."},
 		"filename":    {"type": "string", "description": "set_asset: an optional original filename (metadata only)."},
-		"under_path":  {"type": "string", "description": "query_chunks / documents_summary: restrict to documents at/under this Path-tree path."},
+		"under_path":  {"type": "string", "description": "query_chunks / query_documents / documents_summary: restrict to documents at/under this Path-tree path."},
+		"tags":        {"type": "array", "items": {"type": "string"}, "description": "The chunk's or document's tags. create_chunk/update_chunk/upsert_chunk/create_document replace-set the whole tag set (omit to leave unchanged; [] to clear). add_tags/remove_tags take the tags to add/remove incrementally. Nested tags use a slash: area/sub/topic."},
+		"tag":         {"type": "string", "description": "query_chunks / query_documents: return only chunks/documents carrying exactly this tag."},
+		"tag_prefix":  {"type": "string", "description": "query_chunks: return chunks whose tag equals this OR is nested under it (prefix + '/'), e.g. tag_prefix=area matches area and area/sub."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer"},
 		"name":        {"type": "string", "description": "define/list_types: the type name."},
@@ -124,6 +127,15 @@ type docInput struct {
 	FromID    string          `json:"from_id"`
 	ToID      string          `json:"to_id"`
 	Kind      string          `json:"kind"`
+
+	// Tag facet (RFC BS Phase 1). Tags is a plain slice so JSON presence is
+	// self-distinguishing: an omitted `tags` decodes to nil (leave existing tags
+	// untouched), a present `[]` decodes to a non-nil empty slice (clear all) — the
+	// unset-vs-empty distinction update_chunk relies on. Tag/TagPrefix are the
+	// query filters (exact / slash-prefix).
+	Tags      []string `json:"tags"`
+	Tag       string   `json:"tag"`
+	TagPrefix string   `json:"tag_prefix"`
 
 	// Entity-tier fields (RFC BL P4c). NaturalKey is the idempotency handle:
 	// upsert_chunk keys on it, and it is UNIQUE per scope.
@@ -239,6 +251,21 @@ var docSchemaDDL = []string{
 	// the graph is large enough to matter — the failure that shows up in
 	// production and not in a test.
 	`CREATE INDEX IF NOT EXISTS chunk_edges_to_kind ON chunk_edges(to_id, kind)`,
+	// chunk_tags / document_tags — the multi-valued tag facet (RFC BS Phase 1).
+	// Tags are a JOIN table (not a chunk `fields` key) precisely because they are a
+	// query axis: query_chunks / query_documents filter on them, and a `fields` key
+	// lives inside the chunkBody JSON blob in the Memory k/v plane where SQL cannot
+	// reach it. A document's tags are INDEPENDENT of its root chunk's tags — they
+	// live in a separate table. Nested tags (area/sub/topic) are stored as the full
+	// slash string; the hierarchy is a prefix query (query_chunks tag_prefix). No
+	// foreign key — cascade is explicit in Go (deleteChunk / deleteDocument),
+	// matching the rest of this schema.
+	`CREATE TABLE IF NOT EXISTS chunk_tags (
+		chunk_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (chunk_id, tag))`,
+	`CREATE INDEX IF NOT EXISTS chunk_tags_tag ON chunk_tags(tag)`,
+	`CREATE TABLE IF NOT EXISTS document_tags (
+		document_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (document_id, tag))`,
+	`CREATE INDEX IF NOT EXISTS document_tags_tag ON document_tags(tag)`,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -276,6 +303,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.getDocument(ctx, key, mscope, in)
 	case "documents_summary":
 		return d.documentsSummary(ctx, key, mscope, in)
+	case "query_documents":
+		return d.queryDocuments(ctx, key, in)
 	case "delete_document":
 		return d.deleteDocument(ctx, key, mscope, in)
 	case "set_path":
@@ -293,7 +322,7 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	case "reorder_chunk":
 		return d.reorderChunk(ctx, key, mscope, in)
 	case "upsert_chunk":
-		return d.upsertChunk(ctx, key, mscope, in)
+		return d.upsertChunkOp(ctx, key, mscope, in, raw)
 	case "supersede_chunk":
 		return d.supersedeChunk(ctx, key, in)
 	case "graph_recall":
@@ -306,6 +335,12 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.getEdges(ctx, key, in)
 	case "query_chunks":
 		return d.queryChunks(ctx, key, in)
+	case "add_tags":
+		return d.addTags(ctx, key, in)
+	case "remove_tags":
+		return d.removeTags(ctx, key, in)
+	case "list_tags":
+		return d.listTags(ctx, key, in)
 	case "define_type":
 		return d.defineType(ctx, key, in)
 	case "list_types":
@@ -430,7 +465,10 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if _, err := d.SqlMem.Exec(ctx, key, assetDDL, nil, 0); err != nil {
 		return err
 	}
-	return d.migrateConfidencePrecision(ctx, key)
+	if err := d.migrateConfidencePrecision(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateDocumentFacets(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -468,6 +506,66 @@ func (d *Document) migrateConfidencePrecision(ctx context.Context, key sqlmem.Sc
 	_, err = d.SqlMem.Exec(ctx, key,
 		`ALTER TABLE chunk_memory_meta ALTER COLUMN confidence TYPE DOUBLE PRECISION`, nil, 0)
 	return err
+}
+
+// migrateDocumentFacets adds the denormalized `type`/`status` columns to an
+// existing `documents` table (RFC BS Phase 1) and backfills them from each
+// document's root chunk. Like migrateConfidencePrecision it PROBES before it
+// alters, because ensureSchema is on every op's hot path: the fast case is a
+// single 0-row SELECT.
+//
+// Why ALTER rather than declaring the columns in docSchemaDDL's CREATE TABLE? A
+// `CREATE TABLE IF NOT EXISTS` leaves a table provisioned before this change
+// untouched, so an existing scope would keep the old 5-column shape forever. The
+// columns therefore arrive via ALTER on every scope, new and old alike — the one
+// path that reaches both.
+//
+// The column probe is a leading-SELECT (`SELECT <col> FROM documents WHERE 1=0`)
+// rather than a bare `PRAGMA table_info`: the SQL Memory validator denies a
+// leading PRAGMA (see internal/sqlmem/validate.go), and a WHERE-1=0 select is both
+// validator-safe AND tier-portable (no information_schema / pragma-function
+// split), erroring iff the column is absent.
+func (d *Document) migrateDocumentFacets(ctx context.Context, key sqlmem.ScopeKey) error {
+	// Fast path: both columns present → nothing to do (the common case).
+	if _, err := d.query(ctx, key, `SELECT type, status FROM documents WHERE 1=0`); err == nil {
+		return nil
+	}
+	// At least one column is missing — add whichever is absent. Per-column probes
+	// avoid a duplicate-column error when only one is missing (a crash between the
+	// two ALTERs on a prior run).
+	if !d.documentsHasColumn(ctx, key, "type") {
+		if err := d.exec(ctx, key, `ALTER TABLE documents ADD COLUMN type TEXT`); err != nil {
+			return err
+		}
+	}
+	if !d.documentsHasColumn(ctx, key, "status") {
+		if err := d.exec(ctx, key, `ALTER TABLE documents ADD COLUMN status TEXT`); err != nil {
+			return err
+		}
+	}
+	// The composite index only becomes creatable once the columns exist, so it
+	// lives here rather than in docSchemaDDL (which runs before this migration).
+	if err := d.exec(ctx, key, `CREATE INDEX IF NOT EXISTS documents_type_status ON documents(type, status)`); err != nil {
+		return err
+	}
+	// Backfill from each document's root chunk, per column and only where still
+	// NULL — cheap once populated, and crash-safe if a prior run added one column
+	// and backfilled it before adding the other.
+	if err := d.exec(ctx, key,
+		`UPDATE documents SET type = (SELECT type FROM chunks WHERE chunks.id = documents.root_chunk_id) WHERE type IS NULL`); err != nil {
+		return err
+	}
+	return d.exec(ctx, key,
+		`UPDATE documents SET status = (SELECT status FROM chunks WHERE chunks.id = documents.root_chunk_id) WHERE status IS NULL`)
+}
+
+// documentsHasColumn reports whether the documents table has `col` — a
+// validator-safe, tier-portable existence probe (a leading SELECT that errors iff
+// the column is absent). col is a hardcoded literal ("type" | "status"), never
+// caller input.
+func (d *Document) documentsHasColumn(ctx context.Context, key sqlmem.ScopeKey, col string) bool {
+	_, err := d.query(ctx, key, `SELECT `+col+` FROM documents WHERE 1=0`)
+	return err == nil
 }
 
 // --- chunk body (Memory) helpers ---
@@ -710,6 +808,12 @@ func (d *Document) SetChunkStatus(ctx context.Context, scope, chunkID, status st
 	if res.RowsAffected == 0 {
 		return fmt.Errorf("chunk %s: revision conflict setting status (changed by a concurrent write)", chunkID)
 	}
+	// If this board write lands on a document's root chunk, mirror the new status
+	// onto the documents row so get_document / query_documents (which read that
+	// row) stay consistent with the root chunk. A no-op for a non-root chunk.
+	if err := d.mirrorRootFacets(ctx, key, chunkID); err != nil {
+		return err
+	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", chunkID)
 	return nil
 }
@@ -723,17 +827,26 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	now := time.Now().UnixNano()
 	docID := newDocID()
 	rootID := newDocID()
-	if err := d.exec(ctx, key, `INSERT INTO documents (id, title, root_chunk_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		docID, in.Title, rootID, now, now); err != nil {
+	// type/status are set on the root chunk (the authoritative kind/state) AND
+	// mirrored to the documents row (the denormalized copy query_documents /
+	// get_document read). They start in sync here; update_chunk keeps them so.
+	if err := d.exec(ctx, key, `INSERT INTO documents (id, title, root_chunk_id, type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		docID, in.Title, rootID, nullIfEmpty(in.Type), nullIfEmpty(in.Status), now, now); err != nil {
 		return errResult("create_document: " + err.Error()), nil
 	}
 	// The root chunk anchors the hierarchy (parent_id NULL).
-	if err := d.exec(ctx, key, `INSERT INTO chunks (id, document_id, parent_id, position, type, status, title, created_at, updated_at, revision) VALUES (?, ?, NULL, 0, NULL, NULL, ?, ?, ?, 1)`,
-		rootID, docID, in.Title, now, now); err != nil {
+	if err := d.exec(ctx, key, `INSERT INTO chunks (id, document_id, parent_id, position, type, status, title, created_at, updated_at, revision) VALUES (?, ?, NULL, 0, ?, ?, ?, ?, ?, 1)`,
+		rootID, docID, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now); err != nil {
 		return errResult("create_document: root chunk: " + err.Error()), nil
 	}
 	if err := d.writeBody(ctx, mscope, key.ScopeID, rootID, "", nil); err != nil {
 		return errResult("create_document: root body: " + err.Error()), nil
+	}
+	// A document's tags are its own (independent of the root chunk's tags).
+	if len(in.Tags) > 0 {
+		if err := d.replaceDocumentTags(ctx, key, docID, in.Tags); err != nil {
+			return errResult("create_document: tags: " + err.Error()), nil
+		}
 	}
 	resp := map[string]any{"document_id": docID, "root_chunk_id": rootID, "title": in.Title}
 	// Path-tree name (RFC AK). An explicit `path` wins; otherwise default to
@@ -908,7 +1021,7 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if err != nil {
 		return errResult("get_document: " + err.Error()), nil
 	}
-	res, err := d.query(ctx, key, `SELECT id, title, root_chunk_id, created_at, updated_at FROM documents WHERE id = ? LIMIT 1`, docID)
+	res, err := d.query(ctx, key, `SELECT id, title, root_chunk_id, type, status, created_at, updated_at FROM documents WHERE id = ? LIMIT 1`, docID)
 	if err != nil {
 		return errResult("get_document: " + err.Error()), nil
 	}
@@ -924,18 +1037,24 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		"document_id": asStr(m["id"]), "title": asStr(m["title"]),
 		"root_chunk_id": rootID,
 	}
-	// Enrich with the ROOT chunk's type/status (the document's own kind/state)
-	// and its RFC BN color settings (persisted in the root chunk's fields) so the
-	// UI can render a document tile/tree row without a second get_chunk.
+	// type/status come from the documents row (the denormalized mirror of the root
+	// chunk, kept in sync by create_document + the update_chunk/upsert root mirror)
+	// — one read instead of a second get_chunk.
+	if t := asStr(m["type"]); t != "" {
+		resp["type"] = t
+	}
+	if s := asStr(m["status"]); s != "" {
+		resp["status"] = s
+	}
+	// The document's own tags (independent of the root chunk's tags).
+	tags, terr := d.listDocumentTags(ctx, key, docID)
+	if terr != nil {
+		return errResult("get_document: tags: " + terr.Error()), nil
+	}
+	if len(tags) > 0 {
+		resp["tags"] = tags
+	}
 	if rootID != "" {
-		if row, ok, rerr := d.getChunkRow(ctx, key, rootID); rerr == nil && ok {
-			if row.Type != "" {
-				resp["type"] = row.Type
-			}
-			if row.Status != "" {
-				resp["status"] = row.Status
-			}
-		}
 		// Colour is decoration, so a read fault degrades to "no scheme" rather
 		// than failing the whole get — matching the getChunkRow probe above.
 		// Content reads (get_chunk, export_md) propagate instead.
@@ -1102,6 +1221,14 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_assets WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
+		// Tag rows: chunk tags (resolved via the chunks subquery, so before the chunk
+		// rows go) + the document's own tags. RFC BS.
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_tags WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
+		if err := d.execTxn(ctx, txnID, `DELETE FROM document_tags WHERE document_id = ?`, docID); err != nil {
+			return err
+		}
 		// Same ordering constraint for the entity-tier sidecar, and the same reason
 		// it is done here rather than by a foreign key: an orphaned temporal row is
 		// invisible. No read filters it and no sweeper reaps it, so it would sit in
@@ -1251,6 +1378,15 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	if err := d.writeBody(ctx, mscope, key.ScopeID, id, in.Body, in.Fields); err != nil {
 		return errResult("create_chunk: body: " + err.Error()), nil
+	}
+	// Tags on a fresh chunk (also serves upsert_chunk's create path, which
+	// delegates here). replaceChunkTags is delete-then-insert; on a new id the
+	// delete matches nothing, so len>0 keeps an untagged create from a needless
+	// write.
+	if len(in.Tags) > 0 {
+		if err := d.replaceChunkTags(ctx, key, id, in.Tags); err != nil {
+			return errResult("create_chunk: tags: " + err.Error()), nil
+		}
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, in.DocumentID, "create_chunk", id)
 	return d.getChunk(ctx, key, mscope, docInput{ID: id})
@@ -1404,6 +1540,12 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, cb.Body, nf); err != nil {
 		return errResult("set_asset: fields: " + err.Error()), nil
 	}
+	// set_asset sets type='image' on the chunk; if that chunk is a document's root,
+	// mirror it onto the documents row so get_document/query_documents stay in sync
+	// (a no-op for a non-root chunk). RFC BS.
+	if err := d.mirrorRootFacets(ctx, key, in.ID); err != nil {
+		return errResult("set_asset: " + err.Error()), nil
+	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "set_asset", in.ID)
 	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
 }
@@ -1545,6 +1687,22 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return errResult("update_chunk: body: " + err.Error()), nil
 		}
 	}
+	// Replace-set the chunk's tags only when `tags` was supplied — a present `[]`
+	// clears, an absent key leaves them untouched (same presence rule as above).
+	if _, has := present["tags"]; has {
+		if err := d.replaceChunkTags(ctx, key, in.ID, in.Tags); err != nil {
+			return errResult("update_chunk: tags: " + err.Error()), nil
+		}
+	}
+	// If this chunk is a document's root and its type/status just changed, mirror
+	// the new facets onto the documents row (a no-op for a non-root chunk).
+	_, hasType := present["type"]
+	_, hasStatus := present["status"]
+	if hasType || hasStatus {
+		if err := d.mirrorRootFacets(ctx, key, in.ID); err != nil {
+			return errResult("update_chunk: " + err.Error()), nil
+		}
+	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", in.ID)
 	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
 }
@@ -1611,6 +1769,9 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				return err
 			}
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_assets WHERE chunk_id = ?`, cid); err != nil {
+				return err
+			}
+			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_tags WHERE chunk_id = ?`, cid); err != nil {
 				return err
 			}
 			// The sidecar's SECOND cascade site. Both are required: delete_document
@@ -1935,6 +2096,19 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 	if in.ParentID != "" {
 		where += " AND parent_id = ?"
 		args = append(args, in.ParentID)
+	}
+	// tag: exact membership. tag_prefix: the tag itself OR anything nested under it
+	// (tag_prefix + '/…'). NOTE the LIKE metacharacters '%' and '_' in a prefix are
+	// not escaped (matching the RFC's own SQL) — a false-positive for a prefix that
+	// literally contains one is tolerated for a Phase-1 query filter (no security
+	// impact; tags are normally plain slash-nested identifiers).
+	if in.Tag != "" {
+		where += " AND id IN (SELECT chunk_id FROM chunk_tags WHERE tag = ?)"
+		args = append(args, in.Tag)
+	}
+	if in.TagPrefix != "" {
+		where += " AND id IN (SELECT chunk_id FROM chunk_tags WHERE tag = ? OR tag LIKE ?)"
+		args = append(args, in.TagPrefix, in.TagPrefix+"/%")
 	}
 	args = append(args, limit)
 	res, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE `+where+` ORDER BY document_id, parent_id, position LIMIT ?`, args...)
@@ -2379,6 +2553,11 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			if err := d.exec(ctx, key, `UPDATE chunks SET type = ?, status = ? WHERE id = ?`, nullIfEmpty(first.typ), nullIfEmpty(first.status), rootID); err != nil {
 				return errResult("import_md: " + err.Error()), nil
 			}
+			// Keep the documents row's mirrored facets in step with the root chunk
+			// (createDocument set them from an empty type/status above).
+			if err := d.mirrorRootFacets(ctx, key, rootID); err != nil {
+				return errResult("import_md: " + err.Error()), nil
+			}
 		}
 		if first.assetData != "" {
 			d.importAsset(ctx, key, mscope, rootID, first)
@@ -2493,6 +2672,325 @@ func (d *Document) listTypes(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		types = append(types, map[string]any{"name": asStr(m["name"]), "document_id": asStr(m["document_id"]), "fields": fields})
 	}
 	return jsonResult(map[string]any{"types": types})
+}
+
+// --- ops: tags + document facets (RFC BS Phase 1) ---
+
+// upsertChunkOp runs upsert_chunk (whose create/update internals live in the
+// entity-tier file) and then applies the Phase-1 facets this change owns. On the
+// CREATE path there is nothing to add here: upsert delegates the insert to
+// createChunk, which already applies `tags`, and never makes a root chunk. On the
+// UPDATE path (updateChunkForUpsert, which does not touch tags) this replace-sets
+// the tags when supplied and mirrors the documents row if the upserted chunk is a
+// root and its type/status was set.
+func (d *Document) upsertChunkOp(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, raw json.RawMessage) (tools.Result, error) {
+	res, err := d.upsertChunk(ctx, key, mscope, in)
+	if err != nil || res.IsError {
+		return res, err
+	}
+	var meta struct {
+		ID      string `json:"id"`
+		Created bool   `json:"created"`
+	}
+	_ = json.Unmarshal([]byte(res.Text), &meta)
+	if meta.ID == "" || meta.Created {
+		return res, nil
+	}
+	if jsonHasField(raw, "tags") {
+		if terr := d.replaceChunkTags(ctx, key, meta.ID, in.Tags); terr != nil {
+			return errResult("upsert_chunk: tags: " + terr.Error()), nil
+		}
+	}
+	// Only worth a mirror when the upsert could have moved a root chunk's facets
+	// (updateChunkForUpsert sets type/status only when supplied); otherwise it is a
+	// guaranteed 0-row UPDATE on the entity tier's hot path.
+	if in.Type != "" || in.Status != "" {
+		if terr := d.mirrorRootFacets(ctx, key, meta.ID); terr != nil {
+			return errResult("upsert_chunk: " + terr.Error()), nil
+		}
+	}
+	return res, nil
+}
+
+// mirrorRootFacets keeps the documents row's denormalized type/status in step with
+// its root chunk. It is a no-op for a non-root chunk (the WHERE matches nothing),
+// so callers can invoke it unconditionally after a chunk's type/status changes.
+func (d *Document) mirrorRootFacets(ctx context.Context, key sqlmem.ScopeKey, chunkID string) error {
+	return d.exec(ctx, key,
+		`UPDATE documents SET type = (SELECT type FROM chunks WHERE id = ?),
+		                      status = (SELECT status FROM chunks WHERE id = ?),
+		                      updated_at = ?
+		 WHERE root_chunk_id = ?`,
+		chunkID, chunkID, time.Now().UnixNano(), chunkID)
+}
+
+// sanitizeTags trims, drops empties, and de-duplicates a tag list (order
+// preserved). The composite PRIMARY KEY(<owner>, tag) rejects a duplicate insert,
+// so the dedup is what lets a replace-set carry the caller's raw list safely. Tags
+// are stored verbatim otherwise — including any '/', which is the nesting
+// convention a prefix query walks.
+func sanitizeTags(tags []string) []string {
+	seen := make(map[string]bool, len(tags))
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+// replaceChunkTags makes a chunk's tag set exactly `tags` (delete-all then
+// insert). Not wrapped in a txn: chunk_tags rows are independent of the chunk row
+// and the common chunk-write path is itself non-transactional, so this matches the
+// surrounding write's atomicity.
+func (d *Document) replaceChunkTags(ctx context.Context, key sqlmem.ScopeKey, chunkID string, tags []string) error {
+	if err := d.exec(ctx, key, `DELETE FROM chunk_tags WHERE chunk_id = ?`, chunkID); err != nil {
+		return err
+	}
+	for _, t := range sanitizeTags(tags) {
+		if err := d.exec(ctx, key, `INSERT INTO chunk_tags (chunk_id, tag) VALUES (?, ?)`, chunkID, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// replaceDocumentTags makes a document's tag set exactly `tags` (delete-all then
+// insert), the document-level twin of replaceChunkTags.
+func (d *Document) replaceDocumentTags(ctx context.Context, key sqlmem.ScopeKey, docID string, tags []string) error {
+	if err := d.exec(ctx, key, `DELETE FROM document_tags WHERE document_id = ?`, docID); err != nil {
+		return err
+	}
+	for _, t := range sanitizeTags(tags) {
+		if err := d.exec(ctx, key, `INSERT INTO document_tags (document_id, tag) VALUES (?, ?)`, docID, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addTagRows inserts tags for a target idempotently (INSERT … WHERE NOT EXISTS —
+// portable, no ON CONFLICT dialect split, mirroring linkChunks' existence-check
+// style). table/keyCol are hardcoded literals ("chunk_tags"/"chunk_id" or
+// "document_tags"/"document_id"), never caller input.
+func (d *Document) addTagRows(ctx context.Context, key sqlmem.ScopeKey, table, keyCol, id string, tags []string) error {
+	for _, t := range sanitizeTags(tags) {
+		stmt := `INSERT INTO ` + table + ` (` + keyCol + `, tag) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM ` + table + ` WHERE ` + keyCol + ` = ? AND tag = ?)`
+		if err := d.exec(ctx, key, stmt, id, t, id, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeTagRows deletes the given tags from a target (see addTagRows for the
+// hardcoded-identifier note).
+func (d *Document) removeTagRows(ctx context.Context, key sqlmem.ScopeKey, table, keyCol, id string, tags []string) error {
+	for _, t := range sanitizeTags(tags) {
+		if err := d.exec(ctx, key, `DELETE FROM `+table+` WHERE `+keyCol+` = ? AND tag = ?`, id, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// listChunkTags / listDocumentTags return a target's tags, sorted.
+func (d *Document) listChunkTags(ctx context.Context, key sqlmem.ScopeKey, chunkID string) ([]string, error) {
+	return d.tagList(ctx, key, `SELECT tag FROM chunk_tags WHERE chunk_id = ? ORDER BY tag`, chunkID)
+}
+
+func (d *Document) listDocumentTags(ctx context.Context, key sqlmem.ScopeKey, docID string) ([]string, error) {
+	return d.tagList(ctx, key, `SELECT tag FROM document_tags WHERE document_id = ? ORDER BY tag`, docID)
+}
+
+func (d *Document) tagList(ctx context.Context, key sqlmem.ScopeKey, stmt, id string) ([]string, error) {
+	res, err := d.query(ctx, key, stmt, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		out = append(out, asStr(r[0]))
+	}
+	return out, nil
+}
+
+// documentExists reports whether a document row is present in this scope.
+func (d *Document) documentExists(ctx context.Context, key sqlmem.ScopeKey, docID string) (bool, error) {
+	res, err := d.query(ctx, key, `SELECT 1 FROM documents WHERE id = ? LIMIT 1`, docID)
+	if err != nil {
+		return false, err
+	}
+	return len(res.Rows) > 0, nil
+}
+
+// jsonHasField reports whether a raw JSON object literally contains key — the
+// presence test that distinguishes "field omitted" (leave as-is) from "field
+// present but empty" (e.g. tags:[] clears). Mirrors the `present` map update_chunk
+// builds, for a single-key check.
+func jsonHasField(raw json.RawMessage, key string) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	_, ok := m[key]
+	return ok
+}
+
+func (d *Document) addTags(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	return d.mutateTags(ctx, key, in, true)
+}
+
+func (d *Document) removeTags(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	return d.mutateTags(ctx, key, in, false)
+}
+
+// mutateTags is the shared body of add_tags / remove_tags: it targets a chunk
+// (id) or a document (document_id) — verifying the target exists in this scope
+// first so no phantom tag rows are ever written — and returns the target's
+// resulting tag set.
+func (d *Document) mutateTags(ctx context.Context, key sqlmem.ScopeKey, in docInput, add bool) (tools.Result, error) {
+	op := "remove_tags"
+	if add {
+		op = "add_tags"
+	}
+	if len(in.Tags) == 0 {
+		return errResult(op + ": missing required field: tags"), nil
+	}
+	apply := func(table, keyCol, id string) error {
+		if add {
+			return d.addTagRows(ctx, key, table, keyCol, id, in.Tags)
+		}
+		return d.removeTagRows(ctx, key, table, keyCol, id, in.Tags)
+	}
+	switch {
+	case in.ID != "":
+		if _, ok, err := d.getChunkRow(ctx, key, in.ID); err != nil {
+			return errResult(op + ": " + err.Error()), nil
+		} else if !ok {
+			return errResult(op + ": no such chunk: " + in.ID), nil
+		}
+		if err := apply("chunk_tags", "chunk_id", in.ID); err != nil {
+			return errResult(op + ": " + err.Error()), nil
+		}
+		tags, err := d.listChunkTags(ctx, key, in.ID)
+		if err != nil {
+			return errResult(op + ": " + err.Error()), nil
+		}
+		return jsonResult(map[string]any{"chunk_id": in.ID, "tags": tags})
+	case in.DocumentID != "":
+		if ok, err := d.documentExists(ctx, key, in.DocumentID); err != nil {
+			return errResult(op + ": " + err.Error()), nil
+		} else if !ok {
+			return errResult(op + ": no such document: " + in.DocumentID), nil
+		}
+		if err := apply("document_tags", "document_id", in.DocumentID); err != nil {
+			return errResult(op + ": " + err.Error()), nil
+		}
+		tags, err := d.listDocumentTags(ctx, key, in.DocumentID)
+		if err != nil {
+			return errResult(op + ": " + err.Error()), nil
+		}
+		return jsonResult(map[string]any{"document_id": in.DocumentID, "tags": tags})
+	default:
+		return errResult(op + ": target a chunk (id) or a document (document_id)"), nil
+	}
+}
+
+// listTags returns distinct tags with counts, sorted. Target is a chunk (id), a
+// document (document_id), or — with neither — the whole scope, where the count is
+// a tag's total usage across every chunk AND document in the scope.
+func (d *Document) listTags(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	var stmt string
+	var args []any
+	switch {
+	case in.ID != "":
+		stmt = `SELECT tag, COUNT(*) AS count FROM chunk_tags WHERE chunk_id = ? GROUP BY tag ORDER BY tag`
+		args = []any{in.ID}
+	case in.DocumentID != "":
+		stmt = `SELECT tag, COUNT(*) AS count FROM document_tags WHERE document_id = ? GROUP BY tag ORDER BY tag`
+		args = []any{in.DocumentID}
+	default:
+		stmt = `SELECT tag, COUNT(*) AS count FROM (SELECT tag FROM chunk_tags UNION ALL SELECT tag FROM document_tags) t GROUP BY tag ORDER BY tag`
+	}
+	res, err := d.query(ctx, key, stmt, args...)
+	if err != nil {
+		return errResult("list_tags: " + err.Error()), nil
+	}
+	tags := make([]map[string]any, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		tags = append(tags, map[string]any{"tag": asStr(r[0]), "count": asInt(r[1])})
+	}
+	return jsonResult(map[string]any{"tags": tags})
+}
+
+// queryDocuments filters the documents table by type / status / tag (via
+// document_tags) / under_path (the Path tree, exactly like query_chunks), and
+// returns the matching document rows.
+func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	limit := in.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	where := "1=1"
+	args := []any{}
+	if in.UnderPath != "" {
+		docIDs, err := d.documentsUnderPath(ctx, key, in.UnderPath)
+		if err != nil {
+			return errResult("query_documents: " + err.Error()), nil
+		}
+		if len(docIDs) == 0 {
+			return jsonResult(map[string]any{"documents": []any{}})
+		}
+		ph, pargs := inPlaceholders(docIDs)
+		where += " AND id IN (" + ph + ")"
+		args = append(args, pargs...)
+	}
+	if in.Type != "" {
+		where += " AND type = ?"
+		args = append(args, in.Type)
+	}
+	if in.Status != "" {
+		where += " AND status = ?"
+		args = append(args, in.Status)
+	}
+	if in.Tag != "" {
+		where += " AND id IN (SELECT document_id FROM document_tags WHERE tag = ?)"
+		args = append(args, in.Tag)
+	}
+	args = append(args, limit)
+	res, err := d.query(ctx, key, `SELECT id, title, type, status, root_chunk_id, created_at, updated_at FROM documents WHERE `+where+` ORDER BY title, id LIMIT ?`, args...)
+	if err != nil {
+		return errResult("query_documents: " + err.Error()), nil
+	}
+	docs := make([]map[string]any, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		m := map[string]any{}
+		for i, c := range res.Columns {
+			if i < len(r) {
+				m[c] = r[i]
+			}
+		}
+		entry := map[string]any{
+			"document_id":   asStr(m["id"]),
+			"title":         asStr(m["title"]),
+			"root_chunk_id": asStr(m["root_chunk_id"]),
+			"created_at":    asInt(m["created_at"]),
+			"updated_at":    asInt(m["updated_at"]),
+		}
+		if t := asStr(m["type"]); t != "" {
+			entry["type"] = t
+		}
+		if s := asStr(m["status"]); s != "" {
+			entry["status"] = s
+		}
+		docs = append(docs, entry)
+	}
+	return jsonResult(map[string]any{"documents": docs})
 }
 
 // --- change events ---
