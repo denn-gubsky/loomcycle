@@ -508,6 +508,58 @@ export interface RunBatchResult {
  *  the running loop), "marker" (persisted for a terminal run's next
  *  continuation), or "noop" (too short to compact). */
 /**
+ * One DERIVED user (RFC-free: a user is a GROUP BY over run activity, not a
+ * stored record — so there is no profile here and no way to create one).
+ */
+export interface DirectoryUser {
+  subject: string;
+  running_count: number;
+  total_count: number;
+  /** RFC3339 UTC; absent when the subject has never started a run. */
+  last_started_at?: string;
+}
+
+/**
+ * Token budget for a subject. Both bounds are OPTIONAL because absent and zero
+ * differ: absent is "no ceiling at this tier", zero would refuse every run.
+ */
+export interface DirectoryBudget {
+  soft_limit?: number;
+  hard_limit?: number;
+}
+
+/**
+ * One subject's aggregate view (loomcycle v1.46.0+) — the five surfaces an
+ * operator otherwise visits separately.
+ *
+ * `documents` is absent rather than 0 when SQL Memory is not configured: the
+ * plane was NOT examined, which is a different statement from empty. Likewise a
+ * non-empty `errors` means a plane could not be read, so every count is a LOWER
+ * BOUND — do not present the numbers as complete.
+ */
+export interface DirectoryInspection {
+  tenant: string;
+  subject: string;
+  activity: DirectoryUser;
+  chats: number;
+  /** Per scope, not one number: the subject's own rows and what a shared agent
+   * holds ABOUT them are different things. */
+  memory: Record<string, number>;
+  documents?: number;
+  budget?: DirectoryBudget;
+  usage: { calls: number; cost: number };
+  errors?: string[];
+  notes?: string[];
+}
+
+/** One tenant with derived counts. */
+export interface DirectoryTenant {
+  tenant: string;
+  users: number;
+  runs: number;
+}
+
+/**
  * One tier's per-plane counts in an erasure report.
  *
  * A key's PRESENCE means the plane was examined; its value is the row count.

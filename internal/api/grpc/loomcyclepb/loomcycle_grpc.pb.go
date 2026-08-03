@@ -42,6 +42,9 @@ const (
 	Loomcycle_Continue_FullMethodName            = "/loomcycle.v1.Loomcycle/Continue"
 	Loomcycle_SpawnRunBatch_FullMethodName       = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
 	Loomcycle_CompactRun_FullMethodName          = "/loomcycle.v1.Loomcycle/CompactRun"
+	Loomcycle_DirectoryUsers_FullMethodName      = "/loomcycle.v1.Loomcycle/DirectoryUsers"
+	Loomcycle_DirectoryInspect_FullMethodName    = "/loomcycle.v1.Loomcycle/DirectoryInspect"
+	Loomcycle_DirectoryTenants_FullMethodName    = "/loomcycle.v1.Loomcycle/DirectoryTenants"
 	Loomcycle_ErasureReport_FullMethodName       = "/loomcycle.v1.Loomcycle/ErasureReport"
 	Loomcycle_ErasureExecute_FullMethodName      = "/loomcycle.v1.Loomcycle/ErasureExecute"
 	Loomcycle_ReplaySession_FullMethodName       = "/loomcycle.v1.Loomcycle/ReplaySession"
@@ -131,6 +134,21 @@ type LoomcycleClient interface {
 	// The tenant is taken from the caller's credentials and is NOT a field: a
 	// subject id is only unique within one tenant, so a wire tenant would let a
 	// caller enumerate another tenant's subject.
+	// DirectoryUsers lists the subjects with activity in the caller's tenant, and
+	// DirectoryInspect aggregates one subject's activity, chats, memory, documents,
+	// budget and usage in a single call. READ-ONLY and derived — a "user" is a
+	// GROUP BY over runs.user_id, not a stored row, so there is no create or update
+	// here; removing a subject's footprint is ErasureExecute.
+	//
+	// No tenant field on either, deliberately: a subject id is only unique within
+	// one tenant, so accepting one would let a caller inspect somebody else's.
+	DirectoryUsers(ctx context.Context, in *DirectoryUsersRequest, opts ...grpc.CallOption) (*DirectoryUsersResponse, error)
+	DirectoryInspect(ctx context.Context, in *DirectoryInspectRequest, opts ...grpc.CallOption) (*DirectoryInspectResponse, error)
+	// DirectoryTenants enumerates tenants with derived counts. ADMIN ONLY: the
+	// counts are unremarkable, but the LIST is cross-tenant information a confined
+	// principal must not learn — so a non-admin is REFUSED rather than given a
+	// filtered list, which would still confirm its own tenant's existence.
+	DirectoryTenants(ctx context.Context, in *DirectoryTenantsRequest, opts ...grpc.CallOption) (*DirectoryTenantsResponse, error)
 	ErasureReport(ctx context.Context, in *ErasureReportRequest, opts ...grpc.CallOption) (*ErasureReportResponse, error)
 	// ErasureExecute removes tiers 1 and 2 and reports what it could not reach.
 	// DEFAULTS TO A DRY RUN: dry_run is `optional` so an unset field means true,
@@ -491,6 +509,36 @@ func (c *loomcycleClient) CompactRun(ctx context.Context, in *CompactRunRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CompactRunResult)
 	err := c.cc.Invoke(ctx, Loomcycle_CompactRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) DirectoryUsers(ctx context.Context, in *DirectoryUsersRequest, opts ...grpc.CallOption) (*DirectoryUsersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DirectoryUsersResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_DirectoryUsers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) DirectoryInspect(ctx context.Context, in *DirectoryInspectRequest, opts ...grpc.CallOption) (*DirectoryInspectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DirectoryInspectResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_DirectoryInspect_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) DirectoryTenants(ctx context.Context, in *DirectoryTenantsRequest, opts ...grpc.CallOption) (*DirectoryTenantsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DirectoryTenantsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_DirectoryTenants_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1052,6 +1100,21 @@ type LoomcycleServer interface {
 	// The tenant is taken from the caller's credentials and is NOT a field: a
 	// subject id is only unique within one tenant, so a wire tenant would let a
 	// caller enumerate another tenant's subject.
+	// DirectoryUsers lists the subjects with activity in the caller's tenant, and
+	// DirectoryInspect aggregates one subject's activity, chats, memory, documents,
+	// budget and usage in a single call. READ-ONLY and derived — a "user" is a
+	// GROUP BY over runs.user_id, not a stored row, so there is no create or update
+	// here; removing a subject's footprint is ErasureExecute.
+	//
+	// No tenant field on either, deliberately: a subject id is only unique within
+	// one tenant, so accepting one would let a caller inspect somebody else's.
+	DirectoryUsers(context.Context, *DirectoryUsersRequest) (*DirectoryUsersResponse, error)
+	DirectoryInspect(context.Context, *DirectoryInspectRequest) (*DirectoryInspectResponse, error)
+	// DirectoryTenants enumerates tenants with derived counts. ADMIN ONLY: the
+	// counts are unremarkable, but the LIST is cross-tenant information a confined
+	// principal must not learn — so a non-admin is REFUSED rather than given a
+	// filtered list, which would still confirm its own tenant's existence.
+	DirectoryTenants(context.Context, *DirectoryTenantsRequest) (*DirectoryTenantsResponse, error)
 	ErasureReport(context.Context, *ErasureReportRequest) (*ErasureReportResponse, error)
 	// ErasureExecute removes tiers 1 and 2 and reports what it could not reach.
 	// DEFAULTS TO A DRY RUN: dry_run is `optional` so an unset field means true,
@@ -1372,6 +1435,15 @@ func (UnimplementedLoomcycleServer) SpawnRunBatch(context.Context, *BatchSpawnRe
 func (UnimplementedLoomcycleServer) CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method CompactRun not implemented")
 }
+func (UnimplementedLoomcycleServer) DirectoryUsers(context.Context, *DirectoryUsersRequest) (*DirectoryUsersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DirectoryUsers not implemented")
+}
+func (UnimplementedLoomcycleServer) DirectoryInspect(context.Context, *DirectoryInspectRequest) (*DirectoryInspectResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DirectoryInspect not implemented")
+}
+func (UnimplementedLoomcycleServer) DirectoryTenants(context.Context, *DirectoryTenantsRequest) (*DirectoryTenantsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DirectoryTenants not implemented")
+}
 func (UnimplementedLoomcycleServer) ErasureReport(context.Context, *ErasureReportRequest) (*ErasureReportResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ErasureReport not implemented")
 }
@@ -1597,6 +1669,60 @@ func _Loomcycle_CompactRun_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).CompactRun(ctx, req.(*CompactRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_DirectoryUsers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DirectoryUsersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).DirectoryUsers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_DirectoryUsers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).DirectoryUsers(ctx, req.(*DirectoryUsersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_DirectoryInspect_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DirectoryInspectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).DirectoryInspect(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_DirectoryInspect_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).DirectoryInspect(ctx, req.(*DirectoryInspectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_DirectoryTenants_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DirectoryTenantsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).DirectoryTenants(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_DirectoryTenants_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).DirectoryTenants(ctx, req.(*DirectoryTenantsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2501,6 +2627,18 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CompactRun",
 			Handler:    _Loomcycle_CompactRun_Handler,
+		},
+		{
+			MethodName: "DirectoryUsers",
+			Handler:    _Loomcycle_DirectoryUsers_Handler,
+		},
+		{
+			MethodName: "DirectoryInspect",
+			Handler:    _Loomcycle_DirectoryInspect_Handler,
+		},
+		{
+			MethodName: "DirectoryTenants",
+			Handler:    _Loomcycle_DirectoryTenants_Handler,
 		},
 		{
 			MethodName: "ErasureReport",

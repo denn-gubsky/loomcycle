@@ -42,6 +42,9 @@ import {
   type ConnectClientToolsOptions,
 } from "./client-tools.js";
 import type {
+  DirectoryInspection,
+  DirectoryTenant,
+  DirectoryUser,
   ErasureReport,
   ErasureResult,
   Agent,
@@ -395,6 +398,62 @@ export class LoomcycleClient {
    * `applied` is "live", "marker", or "noop". Mirrors
    * POST /v1/runs/{run_id}/compact.
    */
+  /**
+   * List the subjects with activity in a tenant (loomcycle v1.46.0+).
+   *
+   * A "user" here is DERIVED from run activity, not a stored record — there is no
+   * create or update, and removing a subject's footprint is
+   * {@link erasureExecute}.
+   */
+  async directoryUsers(
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<{ users: DirectoryUser[] }> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return jsonFetch<{ users: DirectoryUser[] }>(this.ctx, `/v1/_users${q}`, opts);
+  }
+
+  /**
+   * Aggregate one subject's activity, chats, memory, documents, budget and usage
+   * in a single call (loomcycle v1.46.0+).
+   *
+   * An admin token MUST pass `tenant` — a subject id is only unique within one, so
+   * the server refuses rather than guessing (`""` selects the default tenant on a
+   * single-tenant install). A tenant-scoped principal is confined regardless.
+   */
+  async directoryInspect(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<DirectoryInspection> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return jsonFetch<DirectoryInspection>(
+      this.ctx,
+      `/v1/_users/${encodeURIComponent(subject)}${q}`,
+      opts,
+    );
+  }
+
+  /**
+   * Enumerate tenants with derived counts (loomcycle v1.46.0+). **Requires an
+   * operator-admin token** — the list of tenants is itself cross-tenant
+   * information, so a scoped token is refused rather than given a filtered list.
+   *
+   * Derived from runs: a tenant that has never started a run does not appear, so
+   * an empty list means no ACTIVITY, not no tenants.
+   */
+  async directoryTenants(
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ tenants: DirectoryTenant[]; notes?: string[] }> {
+    return jsonFetch<{ tenants: DirectoryTenant[]; notes?: string[] }>(
+      this.ctx,
+      "/v1/_tenants",
+      opts,
+    );
+  }
+
   /**
    * Report what this deployment holds about one SUBJECT, in three tiers
    * separated by what they guarantee (RFC BL P5). Read-only.

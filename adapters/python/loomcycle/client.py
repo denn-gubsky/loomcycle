@@ -835,6 +835,86 @@ class LoomcycleClient:
             "results": [_spawn_result_to_dict(r) for r in resp.results],
         }
 
+    async def directory_users(self) -> Mapping[str, Any]:
+        """List the subjects with activity in your tenant (RFC-free: a
+        "user" here is DERIVED from run activity, not a stored record —
+        so there is no create or update, and removing a subject's
+        footprint is :meth:`erasure_execute`).
+
+        Returns ``{tenant, users: [{subject, running_count,
+        total_count, last_started_at}]}``. The tenant comes from your
+        credentials; there is no wire field for it."""
+        req = pb.DirectoryUsersRequest()
+        try:
+            resp = await self._stub.DirectoryUsers(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "users": [_directory_user(u) for u in resp.users],
+        }
+
+    async def directory_inspect(self, subject: str) -> Mapping[str, Any]:
+        """Aggregate one *subject*'s activity, chats, memory, documents,
+        token budget and usage in a single call.
+
+        Returns ``{tenant, subject, activity, chats, memory, documents,
+        budget, usage, errors, notes}``.
+
+        Two absences are meaningful and must not be read as zero:
+        ``documents`` is ``None`` when SQL Memory is not configured, so
+        that plane was NOT examined; and a non-empty ``errors`` means a
+        plane could not be read, making every count a LOWER BOUND."""
+        req = pb.DirectoryInspectRequest(subject=subject)
+        try:
+            resp = await self._stub.DirectoryInspect(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        out: dict[str, Any] = {
+            "tenant": resp.tenant,
+            "subject": resp.subject,
+            "activity": _directory_user(resp.activity),
+            "chats": resp.chats,
+            "memory": dict(resp.memory),
+            "usage": {"calls": resp.usage.calls, "cost": resp.usage.cost},
+            "errors": list(resp.errors),
+            "notes": list(resp.notes),
+        }
+        # HasField, not truthiness: an explicit 0 documents is different from the
+        # field being unset (plane not examined).
+        out["documents"] = resp.documents if resp.HasField("documents") else None
+        if resp.HasField("budget"):
+            b = resp.budget
+            out["budget"] = {
+                "soft_limit": b.soft_limit if b.HasField("soft_limit") else None,
+                "hard_limit": b.hard_limit if b.HasField("hard_limit") else None,
+            }
+        else:
+            out["budget"] = None
+        return out
+
+    async def directory_tenants(self) -> Mapping[str, Any]:
+        """Enumerate tenants with derived counts. **Requires an
+        operator-admin token** — the list of tenants is itself
+        cross-tenant information, so a scoped token is refused rather
+        than handed a filtered list (which would still confirm its own
+        tenant's existence).
+
+        Derived from runs, so a tenant that has never started a run does
+        not appear: an empty list means no ACTIVITY, not no tenants."""
+        req = pb.DirectoryTenantsRequest()
+        try:
+            resp = await self._stub.DirectoryTenants(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenants": [
+                {"tenant": t.tenant, "users": t.users, "runs": t.runs}
+                for t in resp.tenants
+            ],
+            "notes": list(resp.notes),
+        }
+
     async def erasure_report(self, subject: str) -> Mapping[str, Any]:
         """Report what this deployment holds about one *subject*, in three
         tiers separated by what they guarantee (RFC BL P5). Read-only.
@@ -1938,3 +2018,16 @@ def _erasure_residue(r: Any) -> Mapping[str, Any]:
         "sessions_examined": r.sessions_examined,
         "truncated": r.truncated,
     }
+
+
+def _directory_user(u: Any) -> Mapping[str, Any]:
+    """Flatten a DirectoryUser. last_started_at is omitted rather than
+    sent as an empty string when the subject has never started a run."""
+    out: dict[str, Any] = {
+        "subject": u.subject,
+        "running_count": u.running_count,
+        "total_count": u.total_count,
+    }
+    if u.last_started_at:
+        out["last_started_at"] = u.last_started_at
+    return out
