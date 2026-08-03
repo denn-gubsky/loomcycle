@@ -185,6 +185,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryEmbedSearchTopK", testMemoryEmbedSearchTopK},
 		{"MemoryEmbedSearchScopeIsolation", testMemoryEmbedSearchScopeIsolation},
 		{"MemoryEmbedSearchDimensionMismatch", testMemoryEmbedSearchDimensionMismatch},
+		{"MemoryEmbedSearchMixedDimensions", testMemoryEmbedSearchMixedDimensions},
 		{"MemoryEmbedSearchEmptyScope", testMemoryEmbedSearchEmptyScope},
 		{"MemoryEmbedSearchReturnsVectors", testMemoryEmbedSearchReturnsVectors},
 		{"MemoryDeleteCascadesEmbedding", testMemoryDeleteCascadesEmbedding},
@@ -10879,5 +10880,64 @@ func testInterruptDeleteAllByUser(t *testing.T, s store.Store) {
 	// rather than an error an operator has to interpret.
 	if n, err := s.InterruptDeleteAllByUser(ctx, subject, "acme"); err != nil || n != 0 {
 		t.Errorf("second pass: n=%d err=%v, want 0/nil", n, err)
+	}
+}
+
+// testMemoryEmbedSearchMixedDimensions pins search behaviour in a scope holding
+// rows at MORE THAN ONE dimension — which migration 0017 calls the typical steady
+// state ("migrating from text-embedding-3-small to large; not everything
+// re-embedded yet").
+//
+// The dimension pre-check read ONE arbitrary row (LIMIT 1, no ORDER BY) and
+// compared it to the query, so this state was broken in both directions. If that
+// row matched, the check passed and the <=> operator then met a row of the other
+// dimension, aborting the whole statement with a raw `different vector dimensions
+// 8 and 4` (SQLSTATE 22000) — recall entirely dead for the scope, reported as a
+// driver error rather than the typed refusal. If it did not match, the search was
+// refused although searchable rows existed. Which one occurred depended on
+// physical row order, so the same call could succeed or fail run to run.
+func testMemoryEmbedSearchMixedDimensions(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	const sid = "mixdim"
+	seed := func(key string, dim int, vec []float32) {
+		t.Helper()
+		if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, sid, key, json.RawMessage(`"v"`), 0); err != nil {
+			t.Fatalf("MemorySet %s: %v", key, err)
+		}
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, sid, key, store.MemoryEmbedding{
+			Provider: "openai", Model: "m", Dimension: dim,
+			Vector: vec, EmbedText: key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("MemoryEmbedSet %s (dim %d): %v", key, dim, err)
+		}
+	}
+	seed("small", 4, floats32(1, 0, 0, 0))
+	seed("large", 8, floats32(1, 0, 0, 0, 0, 0, 0, 0))
+
+	// A dim-4 query must return the dim-4 row and SKIP the dim-8 one, rather than
+	// failing the statement. Repeated because the old bug was order-dependent: one
+	// pass could pass by luck.
+	for i := 1; i <= 4; i++ {
+		res, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, sid, "", floats32(1, 0, 0, 0), 10)
+		if err != nil {
+			t.Fatalf("attempt %d: mixed-dimension search failed instead of degrading: %v", i, err)
+		}
+		if len(res) != 1 {
+			t.Fatalf("attempt %d: got %d results, want 1 (only the dim-4 row is comparable)", i, len(res))
+		}
+		if res[0].Key != "small" {
+			t.Errorf("attempt %d: returned %q, want the dim-4 row", i, res[0].Key)
+		}
+	}
+
+	// And when NO row matches the query's dimension, the typed refusal still fires:
+	// returning empty would read as "this scope knows nothing" rather than "this
+	// scope needs re-embedding".
+	_, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, sid, "", floats32(1, 0), 10)
+	if !errors.Is(err, store.ErrDimensionMismatch) {
+		t.Errorf("no-matching-dimension search: got %v, want ErrDimensionMismatch", err)
 	}
 }

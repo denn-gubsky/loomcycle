@@ -86,7 +86,12 @@ func freshSchemaWithVectors(t *testing.T, dsn string, pgvectorEnabled bool) fres
 	// Step 2: open the Store's own pool with search_path set so every
 	// subsequent statement (including migrations) targets the per-test
 	// schema. AutoMigrate=true so the schema gets the v0001 init.
-	storeDSN := appendOption(dsn, "search_path", schema)
+	// public is kept on the path AFTER the per-test schema so an extension
+	// installed database-wide (pgvector lives in public) resolves, while every
+	// table this suite creates still lands in — and is read from — the temp
+	// schema because it comes first. Without public the pgvector contract cannot
+	// run at all: migration 0017's `vector` column type is unqualified.
+	storeDSN := appendOption(dsn, "search_path", schema+",public")
 	s, err := Open(context.Background(), Config{
 		DSN:             storeDSN,
 		MaxOpenConns:    8,
