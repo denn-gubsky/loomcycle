@@ -2188,6 +2188,43 @@ func classifyMediaBody(body string) (typ, mediaType, assetData, newBody string) 
 // right after a heading carries id/type/status/fields, and a trailing
 // `<!-- loom-edges: … -->` block carries the graph edges. Lines between
 // headings (minus the loom comment) are the chunk body.
+// mdFence describes an open fenced code block: which character opened it and how
+// long the run was. CommonMark closes a fence only with the SAME character and a
+// run at least as long as the opener, which is what lets a ```-fenced block
+// contain a shorter ``` run as literal text.
+type mdFence struct {
+	char byte
+	run  int
+}
+
+// mdFenceDelim reads a line as a fence delimiter, returning the character and run
+// length, or run 0 if the line is not one.
+//
+// Up to three leading spaces are allowed (four would make it an indented code
+// block, which is a different construct and needs no tracking here because it
+// cannot contain an ATX heading either).
+func mdFenceDelim(line string) (byte, int) {
+	i := 0
+	for i < len(line) && i < 3 && line[i] == ' ' {
+		i++
+	}
+	if i >= len(line) || (line[i] != '`' && line[i] != '~') {
+		return 0, 0
+	}
+	c := line[i]
+	run := 0
+	for i+run < len(line) && line[i+run] == c {
+		run++
+	}
+	if run < 3 {
+		return 0, 0
+	}
+	// A ``` opener may carry an info string, but a closer may not contain a
+	// backtick. Not enforced here: treating an info-bearing line as a delimiter is
+	// correct for openers, and for closers the run/char match below is what decides.
+	return c, run
+}
+
 func parseLoomMarkdown(md string) ([]mdChunk, []mdEdge) {
 	lines := strings.Split(strings.ReplaceAll(md, "\r\n", "\n"), "\n")
 	var chunks []mdChunk
@@ -2211,9 +2248,41 @@ func parseLoomMarkdown(md string) ([]mdChunk, []mdEdge) {
 		cur = nil
 		bodyLines = nil
 	}
+	// FENCED CODE BLOCKS ARE LITERAL, and tracking that is the whole reason this
+	// state exists. Without it a body containing a Markdown sample — which is most
+	// technical documentation, including this project's own RFCs — was re-parsed on
+	// import: its "## Example" lines became real chunks, the surrounding body was
+	// truncated at the fence, and the document came back with more chunks than it
+	// had. export_md was already correct (it emits the body verbatim); the asymmetry
+	// meant export -> import silently restructured the tree.
+	var fence mdFence
+
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
+
+		if c, run := mdFenceDelim(line); run > 0 {
+			switch {
+			case fence.run == 0:
+				fence = mdFence{char: c, run: run}
+			case c == fence.char && run >= fence.run:
+				fence = mdFence{}
+			}
+			if cur != nil {
+				bodyLines = append(bodyLines, line)
+			}
+			continue
+		}
+		// Inside a fence every line is content — headings, loom comments and the
+		// edges trailer alike. An unterminated fence therefore runs to the end of
+		// the document, which is also what CommonMark specifies.
+		if fence.run > 0 {
+			if cur != nil {
+				bodyLines = append(bodyLines, line)
+			}
+			continue
+		}
+
 		// Edges trailer — consume to its closing "-->".
 		if strings.HasPrefix(trimmed, "<!-- loom-edges:") {
 			for i++; i < len(lines) && !strings.Contains(lines[i], "-->"); i++ {
