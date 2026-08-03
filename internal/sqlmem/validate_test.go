@@ -133,8 +133,8 @@ func TestStripComments_LiteralAware(t *testing.T) {
 		`INSERT INTO t VALUES ('a;b')`: `INSERT INTO t VALUES ('a;b')`,
 	}
 	for in, want := range cases {
-		if got := stripComments(in); got != want {
-			t.Errorf("stripComments(%q) = %q, want %q", in, got, want)
+		if got := stripComments(in, false); got != want {
+			t.Errorf("stripComments(%q, false) = %q, want %q", in, got, want)
 		}
 	}
 	// A ';' inside a string literal is NOT a statement separator.

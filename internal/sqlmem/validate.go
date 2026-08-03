@@ -113,7 +113,13 @@ func validateStatement(raw string, readOnly bool) error {
 // load_extension anywhere → check the leading keyword against the deny-set and
 // the per-op allow-set → apply the dialect's extra denies.
 func validateStatementForDialect(raw string, readOnly bool, d dialect) error {
-	stripped := stripComments(raw)
+	// Dollar quoting is a POSTGRES string form, and the two scanners below must know
+	// about it on that tier: without it, a legitimate `VALUES ($$x; y$$)` was refused
+	// as multi-statement, and a `$$--$$` hid a real separator from the guard (safe
+	// today only because pgx's extended protocol rejects multi-statement strings —
+	// an implicit dependency this removes).
+	dollarQuotes := d == dialectPostgres
+	stripped := stripComments(raw, dollarQuotes)
 	trimmed := strings.TrimSpace(stripped)
 	if trimmed == "" {
 		return refuse("empty SQL statement")
@@ -128,7 +134,7 @@ func validateStatementForDialect(raw string, readOnly bool, d dialect) error {
 	// the deferred-payload-via-trigger escape (a trigger that ATTACHes on later
 	// fire). Anyone relaxing the multi-statement rule to support triggers MUST
 	// add a trigger-body scan first.
-	if idx := indexOfStatementSeparator(trimmed); idx >= 0 {
+	if idx := indexOfStatementSeparator(trimmed, dollarQuotes); idx >= 0 {
 		rest := strings.TrimSpace(trimmed[idx+1:])
 		if rest != "" {
 			return refuse("only one SQL statement per call is allowed (found a ';' separating multiple statements)")
@@ -189,7 +195,7 @@ func validateStatementForDialect(raw string, readOnly bool, d dialect) error {
 // inside '...' or "..." is data, not a comment). Conservative: when in doubt it
 // keeps text (the leading-keyword + deny checks still apply to whatever
 // remains).
-func stripComments(s string) string {
+func stripComments(s string, dollarQuotes bool) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	const (
@@ -206,6 +212,18 @@ func stripComments(s string) string {
 		c := s[i]
 		switch state {
 		case normal:
+			// A dollar-quoted body is data: copy it through verbatim so a `--` or a
+			// `/*` inside it is never mistaken for a comment. Postgres tier only.
+			if dollarQuotes && c == '$' {
+				if tag, ok := dollarTagAt(s, i); ok {
+					if end := strings.Index(s[i+len(tag):], tag); end >= 0 {
+						stop := i + len(tag) + end + len(tag)
+						b.WriteString(s[i:stop])
+						i = stop - 1
+						continue
+					}
+				}
+			}
 			switch {
 			case c == '-' && i+1 < len(s) && s[i+1] == '-':
 				state = inLine
@@ -294,7 +312,36 @@ func maskStringLiterals(s string) string {
 // indexOfStatementSeparator returns the index of the first ';' that is NOT
 // inside a string/identifier literal, or -1. Used to detect multi-statement
 // input. Mirrors stripComments' literal-awareness so a ';' inside '…' is data.
-func indexOfStatementSeparator(s string) int {
+// dollarTagAt reads a postgres dollar-quote delimiter starting at s[i] (which must
+// be '$'), returning the full delimiter (e.g. "$$" or "$tag$") and true.
+//
+// The tag rule is postgres's: $ then an optional identifier that does NOT start
+// with a digit, then $. That exclusion is what keeps a POSITIONAL PARAMETER ($1,
+// $2 — which the scope tier uses for every bind) from being mistaken for the start
+// of a quoted string, which would swallow the rest of the statement.
+func dollarTagAt(s string, i int) (string, bool) {
+	if i >= len(s) || s[i] != '$' {
+		return "", false
+	}
+	j := i + 1
+	for j < len(s) {
+		c := s[j]
+		switch {
+		case c == '$':
+			return s[i : j+1], true
+		case c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+			j++
+		case c >= '0' && c <= '9' && j > i+1:
+			// A digit is legal INSIDE a tag but not as its first character.
+			j++
+		default:
+			return "", false
+		}
+	}
+	return "", false
+}
+
+func indexOfStatementSeparator(s string, dollarQuotes bool) int {
 	const (
 		normal = iota
 		inSingle
@@ -307,6 +354,20 @@ func indexOfStatementSeparator(s string) int {
 		c := s[i]
 		switch state {
 		case normal:
+			// Postgres dollar quoting, on that tier only: sqlite has no $tag$ string
+			// form ($name is a bind parameter there), so scanning for it would
+			// mis-tokenize valid sqlite.
+			if dollarQuotes && c == '$' {
+				if tag, ok := dollarTagAt(s, i); ok {
+					if end := strings.Index(s[i+len(tag):], tag); end >= 0 {
+						i += len(tag) + end + len(tag) - 1
+						continue
+					}
+					// Unterminated: the engine will reject the statement, and treating
+					// the remainder as quoted would hide a real separator from this scan.
+					// Fall through and keep scanning.
+				}
+			}
 			switch c {
 			case ';':
 				return i
