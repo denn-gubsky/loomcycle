@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 )
 
@@ -426,4 +427,16 @@ func (m *parityMock) ErasureReport(context.Context, string, string) (erasure.Rep
 
 func (m *parityMock) ErasureExecute(context.Context, erasure.ExecuteRequest) (erasure.Result, error) {
 	return erasure.Result{}, nil
+}
+
+func (m *parityMock) DirectoryUsers(context.Context, string) ([]directory.UserRow, error) {
+	return nil, nil
+}
+
+func (m *parityMock) DirectoryInspect(context.Context, string, string) (directory.Inspection, error) {
+	return directory.Inspection{}, nil
+}
+
+func (m *parityMock) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
+	return nil, nil
 }

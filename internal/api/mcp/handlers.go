@@ -45,6 +45,7 @@ var handlersByName = map[string]toolHandler{
 	"cancel_run":  handleCancelRun,
 	"get_run":     handleGetRun,
 	"compact_run": handleCompactRun,
+	"directory":   handleDirectory,
 	"erasure":     handleErasure,
 	"list_runs":   handleListRuns,
 
@@ -1101,5 +1102,76 @@ func handleErasure(ctx context.Context, env *handlerEnv, args json.RawMessage) (
 		return toolResultJSON(res), nil
 	default:
 		return toolErr(`erasure: unknown op "` + p.Op + `" (must be one of: report, execute)`), nil
+	}
+}
+
+// handleDirectory serves the `directory` tool: op=users | inspect | tenants.
+//
+// READ-ONLY, and there is no create/update/delete because there is nothing to
+// write: a "user" is derived from runs.user_id, not stored. Deleting a subject's
+// footprint is the `erasure` tool, which is the only thing that does it coherently
+// across four planes.
+//
+// THE TENANT COMES FROM THE PRINCIPAL, NEVER THE WIRE — a subject id is only
+// unique within one tenant, so a tenant argument would let a session inspect
+// someone else's. There is deliberately no such field.
+//
+// op=tenants is ADMIN-ONLY and refused here rather than filtered: the counts are
+// unremarkable, but the LIST is cross-tenant information. Returning an empty list
+// to a tenant principal would be a lie; returning a filtered one would still
+// confirm its own tenant's existence in a shape the caller can't distinguish.
+func handleDirectory(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	var p struct {
+		Op      string `json:"op"`
+		Subject string `json:"subject"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolErr("invalid directory arguments: " + err.Error()), nil
+	}
+	var tenant string
+	isAdmin := false
+	if pr, ok := auth.PrincipalFromContext(ctx); ok {
+		tenant = pr.TenantID
+		isAdmin = auth.HasScope(pr.Scopes, auth.ScopeAdmin)
+	} else {
+		// Open mode: no principal, so no confinement to enforce and nothing to
+		// withhold.
+		isAdmin = true
+	}
+
+	switch p.Op {
+	case "", "users":
+		rows, err := env.connector.DirectoryUsers(ctx, tenant)
+		if err != nil {
+			return toolErr("directory users: " + err.Error()), nil
+		}
+		return toolResultJSON(map[string]any{"tenant": tenant, "users": rows}), nil
+	case "inspect":
+		if p.Subject == "" {
+			return toolErr("directory: op=inspect requires a subject"), nil
+		}
+		ins, err := env.connector.DirectoryInspect(ctx, tenant, p.Subject)
+		if err != nil {
+			return toolErr("directory inspect: " + err.Error()), nil
+		}
+		return toolResultJSON(ins), nil
+	case "tenants":
+		if !isAdmin {
+			return toolErr("directory: op=tenants requires an operator-admin token — " +
+				"the list of tenants is itself cross-tenant information"), nil
+		}
+		rows, err := env.connector.DirectoryTenants(ctx)
+		if err != nil {
+			return toolErr("directory tenants: " + err.Error()), nil
+		}
+		return toolResultJSON(map[string]any{
+			"tenants": rows,
+			"notes": []string{
+				"derived from runs, so a tenant that has never started a run does not " +
+					"appear — an empty list means no ACTIVITY, not no tenants.",
+			},
+		}), nil
+	default:
+		return toolErr(`directory: unknown op "` + p.Op + `" (must be one of: users, inspect, tenants)`), nil
 	}
 }

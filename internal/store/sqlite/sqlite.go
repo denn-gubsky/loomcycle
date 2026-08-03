@@ -9386,3 +9386,41 @@ func (s *Store) InterruptDeleteAllByUser(ctx context.Context, userID, tenantID s
 	}
 	return int(n), nil
 }
+
+// ListTenants enumerates tenants with derived activity counts. See the Store
+// interface for why there is no tenants table and why this is admin-only.
+func (s *Store) ListTenants(ctx context.Context) ([]store.TenantSummary, error) {
+	// COUNT(DISTINCT user_id) for the user tally: a tenant's user count is how many
+	// distinct subjects ran there, not how many rows exist.
+	const q = `
+		SELECT
+			tenant_id,
+			COUNT(DISTINCT CASE WHEN user_id IS NOT NULL AND user_id != '' THEN user_id END) AS user_count,
+			COUNT(CASE WHEN status = 'running' THEN 1 END) AS running_count,
+			COUNT(*) AS total_count,
+			MAX(started_at) AS last_started_at
+		FROM runs
+		GROUP BY tenant_id
+		ORDER BY last_started_at DESC
+		LIMIT 500`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list tenants: %w", err)
+	}
+	defer rows.Close()
+	out := []store.TenantSummary{}
+	for rows.Next() {
+		var t store.TenantSummary
+		// started_at is stored as unix NANOS on this tier, so MAX() comes back as an
+		// int64 — scanning it as a time fails. Same shape as ListUsers.
+		var lastNanos int64
+		if err := rows.Scan(&t.TenantID, &t.UserCount, &t.RunningCount, &t.TotalCount, &lastNanos); err != nil {
+			return nil, fmt.Errorf("list tenants scan: %w", err)
+		}
+		if lastNanos != 0 {
+			t.LastStartedAt = time.Unix(0, lastNanos).UTC()
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}

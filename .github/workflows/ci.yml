@@ -120,7 +120,26 @@ jobs:
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
           LOOMCYCLE_TEST_PG_VECTOR: "1"
-        run: go test -count=1 ./internal/store/...
+        # Explicit -timeout. This step had NONE, so it inherited Go's 600s default
+        # while the postgres contract already ran ~497s locally on an idle box —
+        # 83% of the budget, before pgvector was even enabled above. One added
+        # contract test pushed it past 600s, and the failure is maximally confusing:
+        # `FAIL ... 600.6s` with ZERO `--- FAIL` lines reads like a hung test rather
+        # than an exhausted deadline. Every case still passed given time.
+        #
+        # 1800s because this suite is inherently slow (a per-test schema, migrated
+        # from scratch, against a real database) and CI contention makes it slower
+        # still. A genuinely hung test fails, just later.
+        #
+        # A timeout here is also WORSE than a normal failure, which is the real
+        # argument for the headroom: the deadline kills tests mid-flight so their
+        # cleanups never drop their schemas, and the schema name is
+        # lct_<test-name-truncated-to-40>_<counter> where the counter restarts at 1
+        # in each process. So the next run against the same database regenerates the
+        # same names and dies on "schema already exists" — a timeout does not just
+        # fail, it poisons the database for the following run in a way that looks
+        # like an unrelated bug.
+        run: go test -count=1 -timeout 1800s ./internal/store/...
 
       # RFC AA SQL Memory postgres tier: provision a SEPARATE aux DB reached by a
       # NON-superuser CREATEROLE admin (exactly the production provisioning), so

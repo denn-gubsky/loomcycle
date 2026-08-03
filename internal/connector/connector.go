@@ -30,6 +30,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -77,6 +78,21 @@ type Connector interface {
 	// live run must be parked; a mid-turn run is refused. Cross-tenant is an
 	// opaque not-found.
 	CompactRun(ctx context.Context, runID string) (CompactResult, error)
+
+	// DirectoryUsers lists the subjects with activity in one tenant, and
+	// DirectoryInspect aggregates what one subject has across activity, chats,
+	// memory, documents, budget and usage. Both are READ-ONLY and derived — a
+	// "user" is a GROUP BY over runs.user_id, not a stored row, so there is no
+	// create or update. Deleting a subject's footprint is ErasureExecute.
+	//
+	// tenant is authoritative and already resolved by the transport.
+	DirectoryUsers(ctx context.Context, tenant string) ([]directory.UserRow, error)
+	DirectoryInspect(ctx context.Context, tenant, subject string) (directory.Inspection, error)
+
+	// DirectoryTenants enumerates tenants with derived counts. ADMIN ONLY at every
+	// transport: the counts are unremarkable, but the LIST is cross-tenant
+	// information a confined principal must not learn.
+	DirectoryTenants(ctx context.Context) ([]directory.TenantRow, error)
 
 	// ErasureReport enumerates what this deployment holds about one subject, in
 	// three tiers separated by what they GUARANTEE — deletable / subject-keyed
