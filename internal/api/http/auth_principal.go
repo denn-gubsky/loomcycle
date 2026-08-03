@@ -600,6 +600,17 @@ func requiredScopeFor(method, path string) string {
 	// The protection against an accidental erasure is NOT the scope (an admin
 	// token would be no less able to do it): it is dry_run defaulting true via a
 	// *bool, and confirm having to equal subject on a live run.
+	// The per-subject aggregate view. ScopeTenant like the /v1/_users list it drills
+	// into: everything it aggregates is already readable by this principal through
+	// /v1/_usage, /v1/_limits and the memory surfaces, so it saves five calls
+	// without granting new reach. principalTenantScope confines it.
+	case strings.HasPrefix(path, "/v1/_users/"):
+		return auth.ScopeTenant
+	// Tenant enumeration. ScopeAdmin, and the HANDLER re-checks: the counts are
+	// unremarkable but the LIST ITSELF is cross-tenant information, which is
+	// exactly what a tenant-confined principal must not learn.
+	case path == "/v1/_tenants":
+		return auth.ScopeAdmin
 	case path == "/v1/_erasure":
 		return auth.ScopeTenant
 	// RFC BM: the data-retention view. Tenant-readable so a tenant operator's UI

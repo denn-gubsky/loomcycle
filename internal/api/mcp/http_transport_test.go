@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -678,4 +679,16 @@ func (m *httpMockConnector) ErasureReport(context.Context, string, string) (eras
 
 func (m *httpMockConnector) ErasureExecute(context.Context, erasure.ExecuteRequest) (erasure.Result, error) {
 	return erasure.Result{}, nil
+}
+
+func (m *httpMockConnector) DirectoryUsers(context.Context, string) ([]directory.UserRow, error) {
+	return nil, nil
+}
+
+func (m *httpMockConnector) DirectoryInspect(context.Context, string, string) (directory.Inspection, error) {
+	return directory.Inspection{}, nil
+}
+
+func (m *httpMockConnector) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
+	return nil, nil
 }

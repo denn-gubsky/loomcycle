@@ -2721,6 +2721,8 @@ func (s *Server) Mux() http.Handler {
 	// operator confirms its OWN tenant's ontology; the GET provisions the document
 	// on first reference so it can be authored before any run needs it. Authoring
 	// itself stays in the Path/Document browser. Scope-gated in requiredScopeFor.
+	mux.Handle("GET /v1/_tenants", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTenants))))
+	mux.Handle("GET /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleInspectUser))))
 	mux.Handle("GET /v1/_erasure", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleErasureReport))))
 	mux.Handle("POST /v1/_erasure", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleErasureExecute))))
 	mux.Handle("GET /v1/_ontology", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntology))))

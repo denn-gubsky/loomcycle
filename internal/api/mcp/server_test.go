@@ -16,6 +16,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -28,6 +29,7 @@ import (
 // the ones explicitly exercised. Lets tests focus on what they care
 // about without faking unrelated surfaces.
 type mockConnector struct {
+	dirTenant      atomic.Value
 	erasureTenant  atomic.Value
 	erasureSubject atomic.Value
 	erasureDryRun  atomic.Value
@@ -434,8 +436,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 50 {
-		t.Errorf("got %d tools, want 50 (+erasure on top of the history/teamdef/credentialdef/path/document/volumedef list)", len(result.Tools))
+	if len(result.Tools) != 51 {
+		t.Errorf("got %d tools, want 51 (+directory on top of the erasure/history/teamdef/credentialdef/path/document/volumedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -1713,4 +1715,18 @@ func TestServer_SpawnRunNoTimeoutByDefault(t *testing.T) {
 	if got.Status != "completed" {
 		t.Fatalf("spawn_run status = %q; want \"completed\" (no timeout by default)", got.Status)
 	}
+}
+
+func (m *mockConnector) DirectoryUsers(_ context.Context, tenant string) ([]directory.UserRow, error) {
+	m.dirTenant.Store(tenant)
+	return nil, nil
+}
+
+func (m *mockConnector) DirectoryInspect(_ context.Context, tenant, _ string) (directory.Inspection, error) {
+	m.dirTenant.Store(tenant)
+	return directory.Inspection{}, nil
+}
+
+func (m *mockConnector) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
+	return nil, nil
 }

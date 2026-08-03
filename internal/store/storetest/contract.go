@@ -150,6 +150,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryListTenantsForScope", testMemoryListTenantsForScope},
 		{"MemoryListBySourceSessions", testMemoryListBySourceSessions},
 		{"InterruptDeleteAllByUser", testInterruptDeleteAllByUser},
+		{"ListTenants", testListTenants},
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
@@ -10939,5 +10940,58 @@ func testMemoryEmbedSearchMixedDimensions(t *testing.T, s store.Store) {
 	_, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, sid, "", floats32(1, 0), 10)
 	if !errors.Is(err, store.ErrDimensionMismatch) {
 		t.Errorf("no-matching-dimension search: got %v, want ErrDimensionMismatch", err)
+	}
+}
+
+// testListTenants pins the derived tenant enumeration.
+//
+// There is no tenants table — this is a GROUP BY over runs.tenant_id — so the
+// contract is about what DERIVATION means: a tenant appears once it has run
+// something, its user count is DISTINCT subjects rather than rows, and a tenant
+// with no activity is absent (an empty result means no activity, not no tenants).
+func testListTenants(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	mk := func(tenant, user string) {
+		t.Helper()
+		sess, err := s.CreateSession(ctx, tenant, "chat", user)
+		if err != nil {
+			t.Fatalf("CreateSession %s/%s: %v", tenant, user, err)
+		}
+		if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{
+			AgentID: "a_tn", UserID: user, TenantID: tenant,
+		}); err != nil {
+			t.Fatalf("CreateRun %s/%s: %v", tenant, user, err)
+		}
+	}
+	// acme: two runs for ONE subject + one for another => 2 distinct users, 3 runs.
+	mk("tn_acme", "u_a")
+	mk("tn_acme", "u_a")
+	mk("tn_acme", "u_b")
+	mk("tn_globex", "u_c")
+
+	rows, err := s.ListTenants(ctx)
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	got := map[string]store.TenantSummary{}
+	for _, r := range rows {
+		got[r.TenantID] = r
+	}
+	acme, ok := got["tn_acme"]
+	if !ok {
+		t.Fatalf("tn_acme absent from %d tenant(s): %+v", len(rows), rows)
+	}
+	if acme.UserCount != 2 {
+		t.Errorf("tn_acme user_count = %d, want 2 — DISTINCT subjects, not run rows", acme.UserCount)
+	}
+	if acme.TotalCount != 3 {
+		t.Errorf("tn_acme total_count = %d, want 3", acme.TotalCount)
+	}
+	if g, ok := got["tn_globex"]; !ok || g.UserCount != 1 {
+		t.Errorf("tn_globex = %+v, want 1 user", g)
+	}
+	// A tenant with no runs must NOT appear — the enumeration is derived.
+	if _, present := got["tn_never_ran"]; present {
+		t.Error("a tenant with no runs appeared; the list is derived from runs")
 	}
 }

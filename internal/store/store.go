@@ -966,6 +966,15 @@ type UserSummary struct {
 	LastStartedAt time.Time `json:"last_started_at"`
 }
 
+// TenantSummary is one tenant's derived activity, from ListTenants.
+type TenantSummary struct {
+	TenantID      string    `json:"tenant_id"`
+	UserCount     int       `json:"user_count"`
+	RunningCount  int       `json:"running_count"`
+	TotalCount    int       `json:"total_count"`
+	LastStartedAt time.Time `json:"last_started_at"`
+}
+
 // Store is the persistence backend. SQLite is the default; Postgres / Redis
 // adapters slot in behind this interface in v0.4.
 //
@@ -1275,6 +1284,20 @@ type Store interface {
 	// workspace + the super-admin tenant-focus), filtering on the
 	// denormalised runs.tenant_id; "" returns all tenants.
 	ListUsers(ctx context.Context, tenantID string) ([]UserSummary, error)
+
+	// ListTenants enumerates tenants that have RUN something, with derived
+	// per-tenant counts. A GROUP BY over runs.tenant_id, mirroring ListUsers —
+	// there is no tenants table, and this deliberately does not create one.
+	//
+	// Consequence stated rather than hidden: a tenant that exists (has a minted
+	// token, or defs) but has never started a run does NOT appear. An empty result
+	// means "no activity", not "no tenants".
+	//
+	// ADMIN-ONLY at every transport. Not because the counts are sensitive but
+	// because the LIST ITSELF is: which tenants exist is precisely what a
+	// tenant-confined principal must not learn, which is why every other
+	// cross-tenant read here is an opaque not-found rather than a filtered list.
+	ListTenants(ctx context.Context) ([]TenantSummary, error)
 
 	// UpdateHeartbeat sets last_heartbeat_at on a run to the current
 	// time. Called by the loop at each iteration. No-op if the run

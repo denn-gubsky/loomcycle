@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -1227,4 +1228,16 @@ func TestGrpc_ResolveProbe_UnavailableMapsToUnavailable(t *testing.T) {
 	if status.Code(err) != codes.Unavailable {
 		t.Errorf("status code = %v, want Unavailable", status.Code(err))
 	}
+}
+
+func (m *mockConnector) DirectoryUsers(context.Context, string) ([]directory.UserRow, error) {
+	return nil, nil
+}
+
+func (m *mockConnector) DirectoryInspect(context.Context, string, string) (directory.Inspection, error) {
+	return directory.Inspection{}, nil
+}
+
+func (m *mockConnector) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
+	return nil, nil
 }
