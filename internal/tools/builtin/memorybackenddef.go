@@ -521,6 +521,20 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 				return err
 			}
 		}
+		// api_key_env gets the SAME authoring-time treatment, and for the same
+		// stated reason: no shipped kind resolves it, but it is the field a future
+		// external kind WOULD resolve — and it is the most dangerous of the three,
+		// because its value would be sent to the def-supplied base_url above.
+		//
+		// Unvalidated, a runtime author could name any env var. Paired with a
+		// base_url they also control, `api_key_env: LOOMCYCLE_AUTH_TOKEN` is a
+		// one-request exfiltration of the operator bearer. The persisted shape must
+		// never hold that, whether or not anything reads it today.
+		if def.Config.APIKeyEnv != "" && !config.EnvNameCredentialSafe(def.Config.APIKeyEnv) {
+			return fmt.Errorf("config.api_key_env %q is not an allowed credential env var "+
+				"(must be LOOMCYCLE_-prefixed or a known third-party key, and must not be one "+
+				"of loomcycle's own infrastructure secrets)", def.Config.APIKeyEnv)
+		}
 	default:
 		return fmt.Errorf("unknown kind %q (must be one of: inprocess)", def.Kind)
 	}

@@ -4652,6 +4652,20 @@ func ExpandEnvAllowed(name string) bool {
 	return false
 }
 
+// EnvNameCredentialSafe reports whether an env-var NAME supplied by a runtime
+// author may be used to resolve a credential: allowlisted AND not one of
+// loomcycle's own infrastructure secrets.
+//
+// Both halves are required, and the denylist is why. ExpandEnvAllowed admits any
+// LOOMCYCLE_-prefixed name, which on its own would admit LOOMCYCLE_AUTH_TOKEN —
+// the operator bearer. A def naming that as its credential source, paired with a
+// def-supplied base_url, is a one-request exfiltration of the runtime's own admin
+// token. The inline pair at expandYAMLEnv already spells this out; exported here
+// so substrate validators enforce the same rule instead of re-deriving half of it.
+func EnvNameCredentialSafe(name string) bool {
+	return ExpandEnvAllowed(name) && !expandDenyNames[name]
+}
+
 // expandDenyNames is the authoritative set of loomcycle's OWN infrastructure /
 // admin secrets that must NEVER be interpolated into a YAML/MCP field, even
 // though the LOOMCYCLE_ prefix (or a bare third-party name) would otherwise
