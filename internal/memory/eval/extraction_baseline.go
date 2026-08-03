@@ -102,6 +102,34 @@ func (b Baseline) EntryFor(r ExtractionReport) (BaselineEntry, bool) {
 	return BaselineEntry{}, false
 }
 
+// StaleMatch reports a baseline entry recorded for this SAME provider/model/effort
+// but under a different system prompt or corpus, when there is no exact match.
+//
+// EntryFor requires all five fields, and a run with no exact match is deliberately
+// not a regression — an unmeasured model must not be blocked. But that policy hides
+// a second, very different situation: a configuration that WAS measured and whose
+// gate silently expired because the extractor prompt changed. Editing that prompt
+// un-gates every model/effort combination at once, invisibly, and the next run
+// reports a clean pass because there is nothing to compare against.
+//
+// Observed in the recorded baseline: effort=medium was measured under prompt
+// 7104816985db9c7c, the prompt then changed to cf2736fd62c80291, and a medium run
+// has been ungated since — reported as neither a regression nor a gap.
+//
+// This does not block. It exists so the difference between "never measured" and
+// "no longer gated" is visible at the point the gate would have spoken.
+func (b Baseline) StaleMatch(r ExtractionReport) (BaselineEntry, bool) {
+	if _, exact := b.EntryFor(r); exact {
+		return BaselineEntry{}, false
+	}
+	for _, e := range b.Entries {
+		if e.Provider == r.Provider && e.Model == r.Model && e.Effort == r.Effort {
+			return e, true
+		}
+	}
+	return BaselineEntry{}, false
+}
+
 // Regressions reports every ability that got WORSE than the baseline, beyond
 // tolerance. A run with no matching baseline entry reports nothing: an unmeasured
 // model is not a regression, and pretending otherwise would block the first run

@@ -547,7 +547,19 @@ func ParseExtractorReply(raw string) ([]ExtractedFact, int, error) {
 
 // scoreCase fills in captures, misses and violations.
 func scoreCase(res *CaseResult, cs ExtractionCase, facts []ExtractedFact) {
-	// Positive expectations: each must be satisfied by a SINGLE fact.
+	// Positive expectations: each must be satisfied by a SINGLE fact — but ONE FACT
+	// MAY SATISFY SEVERAL EXPECTATIONS, and that is deliberate rather than an
+	// accounting slip.
+	//
+	// A Want is an assertion about content that must appear, not a demand for a
+	// separate row. The request-implies-condition fixtures depend on it: the desired
+	// output there is one durable fact carrying BOTH the medication and the symptom
+	// it caused, because connecting them is the ability under test. Scoring that as
+	// 1/2 would mark the correct answer a miss — extraction_test.go asserts exactly
+	// this ("a faithful phrasing must not be a miss").
+	//
+	// Recorded because it reads like double-counting on first inspection. A review
+	// pass changed this to one-fact-one-want and the fixtures immediately refuted it.
 	for _, w := range cs.Want {
 		if idx := matchExpected(w, facts); idx >= 0 {
 			res.Captured++

@@ -174,6 +174,18 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	fails := eval.DefaultGate().Check(rep)
 	if base != nil {
 		fails = append(fails, base.Regressions(rep)...)
+		// Say when the baseline gate is NOT active for this configuration although
+		// it once was. A prompt or corpus change un-gates every measured
+		// model/effort at once, and Regressions is silent about it by design — so
+		// without this the run reports a clean pass with no comparison behind it.
+		if stale, had := base.StaleMatch(rep); had {
+			fmt.Fprintf(stderr,
+				"\nNOTE: no baseline for this exact configuration, so NOTHING was compared.\n"+
+					"      %s/%s effort=%q was measured on %s under a different prompt/corpus\n"+
+					"      (prompt %s… vs now %s…). Re-record with --update-baseline to gate it again.\n",
+				rep.Provider, rep.Model, rep.Effort, stale.MeasuredAt,
+				shortSHA(stale.SystemPromptSHA256), shortSHA(rep.SystemPromptSHA256))
+		}
 	}
 	if rep.HarnessFault != "" {
 		fmt.Fprintf(stderr, "\nHARNESS FAULT: %s\n", rep.HarnessFault)
