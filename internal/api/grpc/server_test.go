@@ -714,6 +714,7 @@ func startTestServerWithRunner(t *testing.T, r runner.Runner) (loomcyclepb.Loomc
 // return meaningful results — the rest return zero values, which is
 // fine because the test only calls CancelAgent.
 type mockConnector struct {
+	dirTenant      atomic.Value
 	erasureTenant  atomic.Value
 	erasureSubject atomic.Value
 	erasureDryRun  atomic.Value
@@ -1230,7 +1231,8 @@ func TestGrpc_ResolveProbe_UnavailableMapsToUnavailable(t *testing.T) {
 	}
 }
 
-func (m *mockConnector) DirectoryUsers(context.Context, string) ([]directory.UserRow, error) {
+func (m *mockConnector) DirectoryUsers(_ context.Context, tenant string) ([]directory.UserRow, error) {
+	m.dirTenant.Store(tenant)
 	return nil, nil
 }
 

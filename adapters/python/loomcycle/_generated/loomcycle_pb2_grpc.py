@@ -58,6 +58,21 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.CompactRunRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.CompactRunResult.FromString,
                 _registered_method=True)
+        self.DirectoryUsers = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DirectoryUsers',
+                request_serializer=loomcycle__pb2.DirectoryUsersRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DirectoryUsersResponse.FromString,
+                _registered_method=True)
+        self.DirectoryInspect = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DirectoryInspect',
+                request_serializer=loomcycle__pb2.DirectoryInspectRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DirectoryInspectResponse.FromString,
+                _registered_method=True)
+        self.DirectoryTenants = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DirectoryTenants',
+                request_serializer=loomcycle__pb2.DirectoryTenantsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DirectoryTenantsResponse.FromString,
+                _registered_method=True)
         self.ErasureReport = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ErasureReport',
                 request_serializer=loomcycle__pb2.ErasureReportRequest.SerializeToString,
@@ -364,14 +379,44 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def ErasureReport(self, request, context):
+    def DirectoryUsers(self, request, context):
         """ErasureReport enumerates what this deployment holds about one subject, in
         three tiers separated by what they guarantee. Read-only.
 
         The tenant is taken from the caller's credentials and is NOT a field: a
         subject id is only unique within one tenant, so a wire tenant would let a
         caller enumerate another tenant's subject.
+        DirectoryUsers lists the subjects with activity in the caller's tenant, and
+        DirectoryInspect aggregates one subject's activity, chats, memory, documents,
+        budget and usage in a single call. READ-ONLY and derived — a "user" is a
+        GROUP BY over runs.user_id, not a stored row, so there is no create or update
+        here; removing a subject's footprint is ErasureExecute.
+
+        No tenant field on either, deliberately: a subject id is only unique within
+        one tenant, so accepting one would let a caller inspect somebody else's.
         """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DirectoryInspect(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DirectoryTenants(self, request, context):
+        """DirectoryTenants enumerates tenants with derived counts. ADMIN ONLY: the
+        counts are unremarkable, but the LIST is cross-tenant information a confined
+        principal must not learn — so a non-admin is REFUSED rather than given a
+        filtered list, which would still confirm its own tenant's existence.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ErasureReport(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -967,6 +1012,21 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.CompactRunRequest.FromString,
                     response_serializer=loomcycle__pb2.CompactRunResult.SerializeToString,
             ),
+            'DirectoryUsers': grpc.unary_unary_rpc_method_handler(
+                    servicer.DirectoryUsers,
+                    request_deserializer=loomcycle__pb2.DirectoryUsersRequest.FromString,
+                    response_serializer=loomcycle__pb2.DirectoryUsersResponse.SerializeToString,
+            ),
+            'DirectoryInspect': grpc.unary_unary_rpc_method_handler(
+                    servicer.DirectoryInspect,
+                    request_deserializer=loomcycle__pb2.DirectoryInspectRequest.FromString,
+                    response_serializer=loomcycle__pb2.DirectoryInspectResponse.SerializeToString,
+            ),
+            'DirectoryTenants': grpc.unary_unary_rpc_method_handler(
+                    servicer.DirectoryTenants,
+                    request_deserializer=loomcycle__pb2.DirectoryTenantsRequest.FromString,
+                    response_serializer=loomcycle__pb2.DirectoryTenantsResponse.SerializeToString,
+            ),
             'ErasureReport': grpc.unary_unary_rpc_method_handler(
                     servicer.ErasureReport,
                     request_deserializer=loomcycle__pb2.ErasureReportRequest.FromString,
@@ -1330,6 +1390,87 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/CompactRun',
             loomcycle__pb2.CompactRunRequest.SerializeToString,
             loomcycle__pb2.CompactRunResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DirectoryUsers(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DirectoryUsers',
+            loomcycle__pb2.DirectoryUsersRequest.SerializeToString,
+            loomcycle__pb2.DirectoryUsersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DirectoryInspect(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DirectoryInspect',
+            loomcycle__pb2.DirectoryInspectRequest.SerializeToString,
+            loomcycle__pb2.DirectoryInspectResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DirectoryTenants(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DirectoryTenants',
+            loomcycle__pb2.DirectoryTenantsRequest.SerializeToString,
+            loomcycle__pb2.DirectoryTenantsResponse.FromString,
             options,
             channel_credentials,
             insecure,

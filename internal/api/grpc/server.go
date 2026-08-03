@@ -36,6 +36,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -628,6 +629,14 @@ var grpcConsumerScopes = map[string]string{
 	// The destructive half is guarded by dry_run defaulting true and confirm
 	// having to equal the subject — not by requiring a broader scope, which an
 	// admin token would satisfy anyway.
+	// Directory reads. users/inspect are ScopeTenant — everything they aggregate is
+	// already readable by this principal, and both take the tenant from the caller
+	// with no wire field. tenants is ScopeAdmin AND re-checked in the handler,
+	// because the LIST is cross-tenant information.
+	"DirectoryUsers":   auth.ScopeTenant,
+	"DirectoryInspect": auth.ScopeTenant,
+	"DirectoryTenants": auth.ScopeAdmin,
+
 	"ErasureReport":  auth.ScopeTenant,
 	"ErasureExecute": auth.ScopeTenant,
 	// RFC AF: the tenant-confined substrate plane — the 8 def families + hook
@@ -1466,5 +1475,104 @@ func erasureResidueToProto(r erasure.Residue) *loomcyclepb.ErasureResidue {
 		Scopes:           r.Scopes,
 		SessionsExamined: int32(r.SessionsExamined),
 		Truncated:        r.Truncated,
+	}
+}
+
+// --- directory: who is here, and what is held for them -----------------------
+
+// DirectoryUsers is the gRPC twin of GET /v1/_users. Tenant from the caller.
+func (s *Server) DirectoryUsers(ctx context.Context, _ *loomcyclepb.DirectoryUsersRequest) (*loomcyclepb.DirectoryUsersResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "DirectoryUsers requires a connector; this Server was constructed without one")
+	}
+	tenant := erasureTenant(ctx)
+	rows, err := s.connector.DirectoryUsers(ctx, tenant)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &loomcyclepb.DirectoryUsersResponse{Tenant: tenant}
+	for _, r := range rows {
+		out.Users = append(out.Users, directoryUserToProto(r))
+	}
+	return out, nil
+}
+
+// DirectoryInspect is the gRPC twin of GET /v1/_users/{subject}.
+func (s *Server) DirectoryInspect(ctx context.Context, req *loomcyclepb.DirectoryInspectRequest) (*loomcyclepb.DirectoryInspectResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "DirectoryInspect requires a connector; this Server was constructed without one")
+	}
+	if req.GetSubject() == "" {
+		return nil, status.Error(codes.InvalidArgument, "subject is required")
+	}
+	ins, err := s.connector.DirectoryInspect(ctx, erasureTenant(ctx), req.GetSubject())
+	if err != nil {
+		if errors.Is(err, directory.ErrNoSubject) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &loomcyclepb.DirectoryInspectResponse{
+		Tenant:   ins.Tenant,
+		Subject:  ins.Subject,
+		Activity: directoryUserToProto(ins.Activity),
+		Chats:    int32(ins.Chats),
+		Memory:   ins.Memory,
+		Usage:    &loomcyclepb.DirectoryUsage{Calls: ins.Usage.Calls, Cost: ins.Usage.Cost},
+		Errors:   ins.Errors,
+		Notes:    ins.Notes,
+	}
+	// Left UNSET when the plane was not examined, so a client can tell that apart
+	// from "examined, found none" — the same reason the HTTP shape omits it.
+	if ins.Documents != nil {
+		n := int32(*ins.Documents)
+		out.Documents = &n
+	}
+	if ins.Budget != nil {
+		out.Budget = &loomcyclepb.DirectoryBudget{
+			SoftLimit: ins.Budget.SoftLimit,
+			HardLimit: ins.Budget.HardLimit,
+		}
+	}
+	return out, nil
+}
+
+// DirectoryTenants is the gRPC twin of GET /v1/_tenants.
+//
+// The admin check is re-asserted HERE as well as in the per-RPC scope table,
+// mirroring the HTTP handler: the reason is easy to lose in a table, and the
+// consequence of losing it is a confined principal learning which tenants exist.
+func (s *Server) DirectoryTenants(ctx context.Context, _ *loomcyclepb.DirectoryTenantsRequest) (*loomcyclepb.DirectoryTenantsResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "DirectoryTenants requires a connector; this Server was constructed without one")
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok && !auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return nil, status.Error(codes.PermissionDenied,
+			"listing tenants requires an operator-admin token: the list of tenants is itself cross-tenant information")
+	}
+	rows, err := s.connector.DirectoryTenants(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &loomcyclepb.DirectoryTenantsResponse{
+		Notes: []string{
+			"derived from runs, so a tenant that has never started a run does not appear — " +
+				"an empty list means no ACTIVITY, not no tenants.",
+		},
+	}
+	for _, r := range rows {
+		out.Tenants = append(out.Tenants, &loomcyclepb.DirectoryTenant{
+			Tenant: r.Tenant, Users: int32(r.Users), Runs: int32(r.Runs),
+		})
+	}
+	return out, nil
+}
+
+func directoryUserToProto(r directory.UserRow) *loomcyclepb.DirectoryUser {
+	return &loomcyclepb.DirectoryUser{
+		Subject:       r.Subject,
+		RunningCount:  int32(r.RunningCount),
+		TotalCount:    int32(r.TotalCount),
+		LastStartedAt: r.LastStartedAt,
 	}
 }
