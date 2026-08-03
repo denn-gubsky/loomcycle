@@ -99,9 +99,27 @@ jobs:
           go-version: "1.26.x"
           cache: true
 
+      # The pgvector ROUND-TRIP contract (set + search + ordering + dimension
+      # handling + CASCADE) is opt-in behind LOOMCYCLE_TEST_PG_VECTOR, and it was
+      # never enabled here — so the whole vector suite, including the pre-existing
+      # dimension-mismatch test, skipped in CI even though the service image below
+      # is already pgvector/pgvector. A mixed-dimension search bug reached main
+      # because of that. The service image needs the extension CREATEd once; the
+      # per-test schemas keep `public` on their search_path so the unqualified
+      # `vector` type in migration 0017 resolves.
+      - name: Install psql client for the store job
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Enable pgvector for the store contract
+        env:
+          PGPASSWORD: loomcycle
+        run: |
+          psql -h 127.0.0.1 -U loomcycle -d loomcycle_test -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
       - name: Postgres store contract
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
+          LOOMCYCLE_TEST_PG_VECTOR: "1"
         run: go test -count=1 ./internal/store/...
 
       # RFC AA SQL Memory postgres tier: provision a SEPARATE aux DB reached by a

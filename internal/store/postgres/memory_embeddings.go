@@ -154,26 +154,47 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	// Dimension pre-check. Read one row's dimension under (scope,
 	// scope_id). If none exists, return empty results (the "empty
 	// scope" non-error path). If exists, compare against the query.
-	var storedDim int
+	// A scope may hold rows at MORE THAN ONE dimension — migration 0017 calls that
+	// the typical steady state ("migrating from text-embedding-3-small to large;
+	// not everything re-embedded yet") — so this asks two questions: does the scope
+	// have rows at all, and does it have any at the QUERY's dimension.
+	//
+	// Reading one arbitrary row's dimension (LIMIT 1, no ORDER BY) was wrong in both
+	// directions. If that row matched the query, the pre-check passed and the <=>
+	// operator then met a row of another dimension, so postgres aborted the whole
+	// statement with a raw `different vector dimensions 8 and 4` (SQLSTATE 22000) —
+	// recall entirely broken for the scope, surfaced as a driver error instead of
+	// the typed, actionable refusal. If it did not match, the search was refused
+	// even though searchable rows existed. Which happened depended on row order.
+	var total, atDim int
+	var otherDim *int
 	err := s.pool.QueryRow(ctx,
-		`SELECT dimension FROM memory_embeddings
-		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3
-		 LIMIT 1`,
-		tenantID, string(scope), scopeID,
-	).Scan(&storedDim)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+		`SELECT count(*),
+		        count(*) FILTER (WHERE dimension = $4),
+		        min(dimension) FILTER (WHERE dimension <> $4)
+		   FROM memory_embeddings
+		  WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
+		tenantID, string(scope), scopeID, len(query),
+	).Scan(&total, &atDim, &otherDim)
 	if err != nil {
 		return nil, fmt.Errorf("MemoryEmbedSearch dim probe: %w", err)
 	}
-	if storedDim != len(query) {
+	if total == 0 {
+		return nil, nil
+	}
+	if atDim == 0 {
+		// Rows exist but NONE are searchable at this dimension. Returning empty
+		// would read as "this scope knows nothing" rather than "this scope needs
+		// re-embedding", so this stays the typed refusal.
+		other := 0
+		if otherDim != nil {
+			other = *otherDim
+		}
 		return nil, &store.MemoryError{
 			Code: store.ErrDimensionMismatch.Code,
-			Msg:  fmt.Sprintf("memory: query embedding dimension %d does not match stored rows' dimension %d — run /v1/_memory/reembed to migrate", len(query), storedDim),
+			Msg:  fmt.Sprintf("memory: query embedding dimension %d does not match stored rows' dimension %d — run /v1/_memory/reembed to migrate", len(query), other),
 		}
 	}
-
 	queryText := encodePgvector(query)
 
 	// Filter expired base rows in the WHERE via a JOIN. The base
@@ -181,9 +202,13 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	// CASCADE handles deletes but not TTL-expired-not-yet-swept.
 	// We JOIN + filter so stale rows don't leak into search results.
 	prefixCondition := ""
-	args := []any{tenantID, string(scope), scopeID, queryText, topK}
+	// Restricting to the query's dimension is what makes a mid-migration scope
+	// DEGRADE instead of failing: rows that can be compared are compared, and the
+	// rest are skipped rather than aborting the statement. Without it, ONE row at
+	// another dimension breaks recall for the whole scope.
+	args := []any{tenantID, string(scope), scopeID, queryText, topK, len(query)}
 	if keyPrefix != "" {
-		prefixCondition = " AND me.key LIKE $6"
+		prefixCondition = " AND me.key LIKE $7"
 		args = append(args, keyPrefix+"%")
 	}
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
@@ -200,7 +225,8 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	           AND me.scope = $2
 	           AND me.scope_id = $3
 	           AND (m.expires_at IS NULL OR m.expires_at > now())
-	           AND m.superseded_at IS NULL` + prefixCondition + `
+	           AND m.superseded_at IS NULL
+			   AND me.dimension = $6` + prefixCondition + `
 	         ORDER BY me.embedding <=> $4::vector
 	         LIMIT $5`
 	rows, err := s.pool.Query(ctx, sql, args...)
