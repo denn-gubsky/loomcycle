@@ -1411,6 +1411,13 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return errResult("get_chunk: body: " + err.Error()), nil
 	}
 	resp := chunkResponse(row, cb)
+	// The chunk's tags (RFC BS) — the primary read surfaces them so a reader (and
+	// the editor's load) sees a chunk's tags without a separate list_tags call.
+	if tags, terr := d.listChunkTags(ctx, key, in.ID); terr != nil {
+		return errResult("get_chunk: tags: " + terr.Error()), nil
+	} else if len(tags) > 0 {
+		resp["tags"] = tags
+	}
 	// RFC BO: surface an image chunk's stored asset (metadata only — the bytes
 	// come from GET /v1/_document/asset/{id}) so a viewer knows to render an img.
 	if mt, sz, ok := d.assetMeta(ctx, key, in.ID); ok {

@@ -300,6 +300,39 @@ func TestDocumentTags_ReplaceSetPresence(t *testing.T) {
 	}
 }
 
+// TestDocumentTags_GetChunkReturnsTags pins that the primary chunk read surfaces
+// the chunk's tags (RFC BS) so a reader / the editor sees them without a separate
+// list_tags call. Fail-before: get_chunk omitted the tags key entirely.
+func TestDocumentTags_GetChunkReturnsTags(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D"}`)
+	doc, root := out["document_id"].(string), out["root_chunk_id"].(string)
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+doc+`","parent_id":"`+root+`","title":"c","tags":["b/two","a/one"]}`)
+	c := out["id"].(string)
+
+	g, r := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+c+`"}`)
+	if r.IsError {
+		t.Fatalf("get_chunk: %s", r.Text)
+	}
+	raw, ok := g["tags"].([]any)
+	if !ok {
+		t.Fatalf("get_chunk did not return tags: %v", g)
+	}
+	got := make([]string, 0, len(raw))
+	for _, e := range raw {
+		got = append(got, e.(string))
+	}
+	if !eqStrings(got, "a/one", "b/two") { // listChunkTags orders by tag
+		t.Errorf("get_chunk tags = %v, want [a/one b/two] sorted", got)
+	}
+	// An untagged chunk omits the key rather than returning an empty array.
+	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+doc+`","parent_id":"`+root+`","title":"untagged"}`)
+	g, _ = docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+out["id"].(string)+`"}`)
+	if _, has := g["tags"]; has {
+		t.Errorf("untagged chunk should omit tags; got %v", g)
+	}
+}
+
 // TestDocumentTags_RootFacetMirror pins the root-chunk → documents-row mirror:
 // editing a document's ROOT chunk's type/status propagates to the documents row
 // that get_document/query_documents read; editing a NON-root chunk does not.
