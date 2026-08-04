@@ -1033,6 +1033,177 @@
 }
 
 /* ============================================================
+   RFC BS — tag chips, connections panel, chunk history modal
+   ============================================================ */
+/* Read-only tag chips in the selected-chunk meta row (edit lives in the chunk
+   editor). Accent-tinted to distinguish them from the type/status badges. */
+.loomcycle-explorer .chunk-tag {
+  font-size: var(--lc-text-xs);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--accent);
+}
+
+/* Connections panel (backlinks / related / unlinked mentions) — sits under the
+   References panel, sharing the .doc-ref-* row/target styles for the endpoints. */
+.loomcycle-explorer .doc-conn {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.loomcycle-explorer .doc-conn-toggle {
+  background: none;
+  border: none;
+  color: var(--fg-soft);
+  cursor: pointer;
+  padding: 2px 0;
+  font: inherit;
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-explorer .doc-conn-toggle:hover {
+  color: var(--accent);
+}
+.loomcycle-explorer .doc-conn-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.loomcycle-explorer .doc-conn-group h5 {
+  margin: 0 0 4px 0;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.loomcycle-explorer .doc-conn-empty {
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+  margin: 0;
+}
+.loomcycle-explorer .doc-conn-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.loomcycle-explorer .doc-conn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-explorer .doc-conn-score {
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+}
+.loomcycle-explorer .doc-conn-auto {
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.loomcycle-explorer .doc-conn-more {
+  list-style: none;
+  color: var(--fg-muted);
+  font-size: var(--lc-text-xs);
+  font-style: italic;
+}
+
+/* Chunk history modal — revisions list + version/diff output. */
+.loomcycle-explorer .modal.history-modal {
+  max-width: 720px;
+  width: 92vw;
+}
+.loomcycle-explorer .doc-hist-revs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+  margin-bottom: 12px;
+}
+.loomcycle-explorer .doc-hist-rev {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  text-align: left;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.loomcycle-explorer .doc-hist-rev:hover {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .doc-hist-rev.active {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.loomcycle-explorer .doc-hist-rev-num {
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+  color: var(--accent);
+}
+.loomcycle-explorer .doc-hist-rev-time {
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .doc-hist-rev-actor {
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+  margin-left: auto;
+}
+.loomcycle-explorer .doc-hist-diffbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+  margin-bottom: 12px;
+}
+.loomcycle-explorer .doc-hist-diffbar button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.loomcycle-explorer .doc-hist-diffbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.loomcycle-explorer .doc-hist-output {
+  max-height: 40vh;
+  overflow: auto;
+}
+.loomcycle-explorer .doc-hist-version,
+.loomcycle-explorer .doc-hist-diff {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.loomcycle-explorer .doc-hist-diff .diff-add {
+  color: var(--accent);
+}
+.loomcycle-explorer .doc-hist-diff .diff-del {
+  color: var(--failed);
+}
+.loomcycle-explorer .doc-hist-diff .diff-hunk {
+  color: var(--fg-muted);
+}
+
+/* ============================================================
    RFC BO — image & diagram chunks
    ============================================================ */
 .loomcycle-explorer .chunk-type-icon {

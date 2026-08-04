@@ -168,3 +168,76 @@ describe("tenant document scope reaches the wire", () => {
     expect(sent.scope).toBe("tenant");
   });
 });
+
+// RFC BS document-viewer ops: connections (backlinks / related / unlinked
+// mentions), per-chunk history (history / get_version / diff), and the canvas
+// export. Locks the op name + arg mapping + browse passthrough, same as the ops
+// above — these route through the `as unknown as DocumentToolInput` passthrough,
+// so the wire shape is what the assertion guards.
+describe("RFC BS connections / history / canvas ops → wire mapping", () => {
+  it("documentBacklinks sends the chunk id", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentBacklinks("c1", "user", BROWSE);
+    expect(s.document).toHaveBeenCalledWith({ op: "backlinks", id: "c1", scope: "user" }, BROWSE);
+  });
+
+  it("documentRelated carries the limit when given", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentRelated("c1", "user", BROWSE, 8);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "related", id: "c1", scope: "user", limit: 8 },
+      BROWSE,
+    );
+  });
+
+  it("documentRelated omits the limit when unset", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentRelated("c1", "user");
+    expect(s.document).toHaveBeenCalledWith({ op: "related", id: "c1", scope: "user" }, undefined);
+  });
+
+  it("documentUnlinkedMentions carries id + limit", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentUnlinkedMentions("c1", "tenant", BROWSE, 20);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "unlinked_mentions", id: "c1", scope: "tenant", limit: 20 },
+      BROWSE,
+    );
+  });
+
+  it("documentHistory carries id + limit", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentHistory("c1", "user", BROWSE, 50);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "history", id: "c1", scope: "user", limit: 50 },
+      BROWSE,
+    );
+  });
+
+  it("documentGetVersion carries the revision", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentGetVersion("c1", 3, "user", BROWSE);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "get_version", id: "c1", revision: 3, scope: "user" },
+      BROWSE,
+    );
+  });
+
+  it("documentDiff carries from_revision + to_revision", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentDiff("c1", 2, 5, "user", BROWSE);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "diff", id: "c1", from_revision: 2, to_revision: 5, scope: "user" },
+      BROWSE,
+    );
+  });
+
+  it("documentExportCanvas carries the document_id", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentExportCanvas("d1", "user", BROWSE);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "export_canvas", document_id: "d1", scope: "user" },
+      BROWSE,
+    );
+  });
+});

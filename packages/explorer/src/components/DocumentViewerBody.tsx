@@ -23,7 +23,9 @@ import DocumentChunkTree, {
 } from "./DocumentChunkTree";
 import ChunkEditorModal from "./ChunkEditorModal";
 import ColorSchemeEditor from "./ColorSchemeEditor";
+import Connections from "./Connections";
 import CrossReferences from "./CrossReferences";
+import HistoryModal from "./HistoryModal";
 import Markdown from "./Markdown";
 import MermaidDiagram from "./Mermaid";
 
@@ -98,6 +100,7 @@ export default function DocumentViewerBody({
   const [imageErr, setImageErr] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null); // hidden upload input (RFC BO)
   const [editing, setEditing] = useState<ChunkDetail | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false); // RFC BS chunk history modal
   const [confirmDelete, setConfirmDelete] = useState(false); // RFC BP delete confirm
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -319,6 +322,26 @@ export default function DocumentViewerBody({
     }
   }, [data, documentId, scope, browse]);
 
+  // RFC BS — download the whole document as a `.canvas` (JSON) node/edge graph,
+  // mirroring the .md download above. The canvas shape is backend-owned; the
+  // viewer only serializes it.
+  const downloadCanvas = useCallback(async () => {
+    try {
+      const r = await data.documentExportCanvas(documentId, scope, browse);
+      const blob = new Blob([JSON.stringify(r.canvas, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (rootTitle || "document").replace(/[^\w.-]+/g, "_") + ".canvas";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [data, documentId, scope, browse, rootTitle]);
+
   // RFC BO authoring — create a media chunk under the selected chunk (or the
   // root). The runtime marks type=image via set_asset; a diagram is a plain
   // type=mermaid chunk whose body is the source.
@@ -509,6 +532,13 @@ export default function DocumentViewerBody({
           <button type="button" onClick={() => void download()} title="Download the whole document as Markdown (.md)">
             ↓ .md
           </button>
+          <button
+            type="button"
+            onClick={() => void downloadCanvas()}
+            title="Download the whole document as a node/edge canvas graph (.canvas)"
+          >
+            ↓ .canvas
+          </button>
           {renderAssistant && (
             <button
               type="button"
@@ -553,6 +583,13 @@ export default function DocumentViewerBody({
                     <span className="chunk-badge chunk-status">{selectedDetail.status}</span>
                   )}
                   <span className="chunk-rev">rev {selectedDetail.revision}</span>
+                  {/* RFC BS — read-only tag chips (editing lives in ChunkEditorModal).
+                      Nested tags (area/sub) are shown verbatim. */}
+                  {selectedDetail.tags?.map((t) => (
+                    <span className="chunk-tag" key={t}>
+                      {t}
+                    </span>
+                  ))}
                 </div>
                 <div className="doc-content-controls">
                   {/* The chunk/markdown switch is per-selected-chunk: markdown
@@ -582,6 +619,14 @@ export default function DocumentViewerBody({
                   </div>
                   <button type="button" onClick={() => setEditing(selectedDetail)}>
                     edit
+                  </button>
+                  {/* RFC BS — read-only edit history (revisions + version view + diff). */}
+                  <button
+                    type="button"
+                    onClick={() => setHistoryOpen(true)}
+                    title="View this chunk's edit history + diffs"
+                  >
+                    history
                   </button>
                   {/* RFC BP — reorder within the level + delete (not for the root). */}
                   {!selectedIsRoot && (
@@ -661,6 +706,15 @@ export default function DocumentViewerBody({
                 selectedId={selectedId}
                 onSelectChunk={setSelectedId}
               />
+              {/* RFC BS — backlinks / related / unlinked mentions for the selected
+                  chunk, lazily fetched when its section is expanded. */}
+              <Connections
+                documentId={documentId}
+                selectedId={selectedId}
+                scope={scope}
+                browse={browse}
+                onSelectChunk={setSelectedId}
+              />
             </>
           ) : (
             <div className="empty">
@@ -688,6 +742,15 @@ export default function DocumentViewerBody({
           browse={browse}
           onClose={() => setEditing(null)}
           onSaved={refresh}
+        />
+      )}
+      {historyOpen && selectedDetail && (
+        <HistoryModal
+          chunkId={selectedDetail.id}
+          chunkTitle={selectedDetail.title}
+          scope={scope}
+          browse={browse}
+          onClose={() => setHistoryOpen(false)}
         />
       )}
       {colorsOpen && rootChunkId && (
