@@ -36,6 +36,14 @@ import MemoryEntryEditModal from "./MemoryEntryEditModal";
 // live without hammering the store.
 const REFRESH_MS = 5_000;
 
+// The tenant scope addresses ONE keyspace per tenant — its store scope_id is
+// EMPTY (the tenant_id column partitions it), so there is no scope_id to pick.
+// We auto-select this placeholder when tenant is chosen so entries load directly;
+// the backend drops it (adminMemoryStoreScopeID → "") and the scope_id pane shows
+// a static "tenant-wide" note instead of a picker. Any non-empty value works (the
+// server ignores it for tenant); Go's router just needs a non-empty {scope_id}.
+const TENANT_SCOPE_ID = "-";
+
 export default function MemoryConsole() {
   const data = useMemoryData();
   const [scopes, setScopes] = useState<MemoryScopeKind[]>([]);
@@ -106,9 +114,14 @@ export default function MemoryConsole() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll scope_ids under the selected scope.
+  // Poll scope_ids under the selected scope. The tenant scope has no scope_id
+  // dimension (one tenant-wide keyspace), so we skip the fetch and leave the pane
+  // to render its static "tenant-wide" note.
   useEffect(() => {
-    if (!scope) return;
+    if (!scope || scope === "tenant") {
+      setScopeIDs([]);
+      return;
+    }
     let cancelled = false;
     const fetchOnce = async () => {
       try {
@@ -156,10 +169,11 @@ export default function MemoryConsole() {
     };
   }, [scope, data]);
 
-  // When the scope changes, blow away the scope_id selection so the user always
-  // picks fresh under the new scope.
+  // When the scope changes, reset the scope_id selection so the user picks fresh
+  // under the new scope. The tenant scope has no scope_id to pick, so auto-select
+  // the placeholder — entries then load directly against the tenant-wide keyspace.
   useEffect(() => {
-    setScopeID("");
+    setScopeID(scope === "tenant" ? TENANT_SCOPE_ID : "");
     setSelectedKey("");
     setEntries([]);
     setPrefix("");
@@ -265,28 +279,39 @@ export default function MemoryConsole() {
             </button>
           ))}
         </div>
-        <div className="pane-header sub">{scope || "—"} ids</div>
-        <ul className="scope-id-list">
-          {scopeIDs.length === 0 && (
-            <li className="empty-row">no rows under {scope}</li>
-          )}
-          {scopeIDs.map((row) => (
-            <li
-              key={row.scope_id}
-              className={row.scope_id === scopeID ? "on" : ""}
-              onClick={() => {
-                setScopeID(row.scope_id);
-                setSelectedKey("");
-                setReembedBanner(null);
-              }}
-            >
-              <code>{row.scope_id}</code>
-              <span className="meta">
-                {row.key_count} key{row.key_count === 1 ? "" : "s"} · {formatBytes(row.bytes)}
-              </span>
+        <div className="pane-header sub">{scope === "tenant" ? "tenant keyspace" : `${scope || "—"} ids`}</div>
+        {scope === "tenant" ? (
+          // No scope_id dimension — one keyspace per tenant. A static, always-on
+          // row so the pane isn't empty and the middle keys pane loads directly.
+          <ul className="scope-id-list">
+            <li className="on tenant-wide">
+              <code>tenant-wide</code>
+              <span className="meta">one keyspace, shared across the tenant</span>
             </li>
-          ))}
-        </ul>
+          </ul>
+        ) : (
+          <ul className="scope-id-list">
+            {scopeIDs.length === 0 && (
+              <li className="empty-row">no rows under {scope}</li>
+            )}
+            {scopeIDs.map((row) => (
+              <li
+                key={row.scope_id}
+                className={row.scope_id === scopeID ? "on" : ""}
+                onClick={() => {
+                  setScopeID(row.scope_id);
+                  setSelectedKey("");
+                  setReembedBanner(null);
+                }}
+              >
+                <code>{row.scope_id}</code>
+                <span className="meta">
+                  {row.key_count} key{row.key_count === 1 ? "" : "s"} · {formatBytes(row.bytes)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       <Splitter
         className="memory-view-inner"

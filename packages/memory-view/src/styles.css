@@ -407,6 +407,11 @@
   border-left: 3px solid var(--accent);
   padding-left: 9px;
 }
+/* The tenant scope's single "tenant-wide" row is static (no scope_id to pick),
+   so it must not read as clickable. */
+.loomcycle-memory-view .scope-id-list li.tenant-wide {
+  cursor: default;
+}
 .loomcycle-memory-view .scope-id-list li .meta {
   color: var(--fg-soft);
   font-size: 11px;

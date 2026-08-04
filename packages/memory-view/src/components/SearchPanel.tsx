@@ -34,14 +34,21 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
   const [unavailable, setUnavailable] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // The tenant scope has no scope_id (one tenant-wide keyspace), so it does not
+  // require one; every other scope does.
+  const needsScopeId = scope !== "tenant";
   const runSearch = async () => {
-    if (!query.trim() || !scopeId.trim()) return;
+    if (!query.trim() || (needsScopeId && !scopeId.trim())) return;
     setLoading(true);
     setErr(null);
     setUnavailable(false);
     setSelected("");
     try {
-      const resp = await data.search({ query: query.trim(), scope, scopeId: scopeId.trim() });
+      const resp = await data.search({
+        query: query.trim(),
+        scope,
+        scopeId: needsScopeId ? scopeId.trim() : "",
+      });
       setResults(resp.entries ?? []);
     } catch (e) {
       // The embedder-unavailable refusal is a deployment STATE, not a failure —
@@ -70,12 +77,14 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
         <select value={scope} onChange={(e) => setScope(e.target.value)}>
           <option value="user">user</option>
           <option value="agent">agent</option>
+          <option value="tenant">tenant</option>
         </select>
         <input
           type="text"
           className="search-scopeid-input"
-          placeholder="scope_id (e.g. alice)…"
-          value={scopeId}
+          placeholder={needsScopeId ? "scope_id (e.g. alice)…" : "tenant-wide (no scope_id)"}
+          value={needsScopeId ? scopeId : ""}
+          disabled={!needsScopeId}
           onChange={(e) => setScopeId(e.target.value)}
         />
         <input
@@ -85,7 +94,7 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <button type="submit" className="search-submit-btn" disabled={loading || !query.trim() || !scopeId.trim()}>
+        <button type="submit" className="search-submit-btn" disabled={loading || !query.trim() || (needsScopeId && !scopeId.trim())}>
           {loading ? "searching…" : "search"}
         </button>
       </form>
