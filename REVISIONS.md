@@ -6,7 +6,7 @@ For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool,
 
 ## What's in v1.47.0
 
-**🔎 A human-facing memory view, and the last of the RFC BU sweep fixes.** Minor rather than a patch because RFC BV Phase 1 adds new surface: one HTTP endpoint and two Document ops. No schema change, no wire/proto change, no adapter change.
+**🔎 A human-facing memory view, the memory surfaces opened to tenant operators, and the last of the RFC BU sweep fixes.** Minor rather than a patch because RFC BV Phase 1 adds new surface — one HTTP endpoint and two Document ops — and the `/v1/_memory/*` family changes who can reach it. No schema change, no wire/proto change, no adapter change.
 
 **RFC BV Phase 1 — reading the memory plane like a human would.** The entity tier stores a fact as a chunk plus a `chunk_memory_meta` sidecar (bi-temporal timelines + provenance), but nothing could *read* that sidecar in a typed way: `get_chunk` returned a chunk with no way to tell a fact from a plain section, and nothing enumerated facts for a browse surface.
 
@@ -15,6 +15,10 @@ For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool,
 - **`POST /v1/_memory/search`** is an off-run semantic search with an empty key prefix, so one query spans both plain k/v entries and document-chunk bodies — what answers "where did I record this" across the whole stack. Each hit is tagged `kind=memory` or `kind=document` (+`chunk_id`) so a document hit can be followed to `get_chunk`.
 
   Security-critical detail: the in-process backend resolves the tenant from the *run* identity, and off-run there is none — so the handler stamps the authenticated principal's tenant before searching. Without it the search would run at the shared `""` tenant and could read another tenant's rows. `TestMemorySearch_TenantIsolation` fails if the stamp is removed.
+
+**The `/v1/_memory/*` family is reachable by tenant operators.** It was pinned to `substrate:admin` by the `/v1/_*` catch-all, so a `substrate:tenant` operator 403'd at the gate — even though memory rows carry a `tenant_id` and every handler already sources the tenant from the authenticated principal rather than the wire. The same gap the Library had in v1.6.3: the handler confines, but the route never lets a tenant token reach it. The routes now grant `ScopeTenant` and the handlers still confine a non-admin to its own tenant, with `TestHandleMemory_TenantOperatorConfined` proving a `?tenant=` naming another tenant is ignored — the invariant the re-gate rests on.
+
+**`repair-tenant` deliberately stays operator-admin**: it rewrites rows across every scope in one statement to re-stamp the legacy `""` partition, and a cross-tenant bulk rewrite is not a tenant operator's authority. The Web UI's memory nav item moves from admin to tenant with it; **channels stays admin**, because it still has no tenant column — the reason memory used to be admin too.
 
 **An uncaptioned image could never be embedded.** Found by verifying the v1.46.1 deploy rather than trusting its output: the describe pass reported `described=2 failed=0` with two accurate descriptions persisted, and the images stayed unsearchable while the backfill's candidate count never moved.
 
