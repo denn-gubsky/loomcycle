@@ -63,6 +63,27 @@
         "temporal": 0,
         "update": 0
       }
+    },
+    {
+      "provider": "ollama-local",
+      "model": "qwen3.6:latest",
+      "effort": "medium",
+      "system_prompt_sha256": "a83db4c1298b52b9bee50e35c3f521d17943b0383e27d1fbaf001a655a149a63",
+      "corpus_sha256": "41e21b803e0b40a27ebd328135e780a7b6f774ef3b823384372f4a4c9938310e",
+      "measured_at": "2026-08-03T18:33:20Z",
+      "recall": {
+        "extraction": 1,
+        "property": 1,
+        "temporal": 1,
+        "update": 1
+      },
+      "violations": {
+        "abstention": 0,
+        "extraction": 0,
+        "property": 0,
+        "temporal": 0,
+        "update": 0
+      }
     }
   ]
 }
