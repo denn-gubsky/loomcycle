@@ -145,6 +145,44 @@ func TestHandleMemory_TenantOperatorConfined(t *testing.T) {
 	}
 }
 
+// TestHandleMemory_TenantScope: the tenant scope addresses a single tenant-wide
+// keyspace whose store scope_id is EMPTY (the tenant_id column partitions it, per
+// the Memory tool's resolveScope). The admin handlers therefore accept
+// scope=tenant with a placeholder scope_id (Go's router needs a non-empty
+// {scope_id} segment) and map it to "" for the store — so a row written by an
+// agent at (tenant, tenant, "") is browsable here. Fails on the pre-change code
+// where validAdminMemoryScope rejected "tenant" (400 invalid_scope).
+func TestHandleMemory_TenantScope(t *testing.T) {
+	s := memoryAdminFixture(t)
+	// A tenant-wide row, written the way the Memory tool writes the tenant scope:
+	// store scope_id "" under the tenant partition.
+	if err := s.store.MemorySet(t.Context(), "acme", store.MemoryScopeTenant, "", "policy", []byte(`"tenant-wide"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	admin := func(r *http.Request) *http.Request {
+		return r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{
+			TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeAdmin},
+		}))
+	}
+	// Browse via a placeholder scope_id — the handler drops it and reads "".
+	req := httptest.NewRequest("GET", "/v1/_memory/scopes/tenant/-/keys", nil)
+	req.SetPathValue("scope", "tenant")
+	req.SetPathValue("scope_id", "-")
+	rec := httptest.NewRecorder()
+	s.handleListMemoryEntries(rec, admin(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "tenant-wide") {
+		t.Errorf("tenant-wide row not returned under scope=tenant: %s", body)
+	}
+	// The response echoes the RESOLVED store scope_id "" (not the placeholder).
+	if !strings.Contains(body, `"scope_id":""`) {
+		t.Errorf("response should echo the resolved empty scope_id, got: %s", body)
+	}
+}
+
 func TestHandleListMemoryScopes_ReturnsConstantSet(t *testing.T) {
 	s := memoryAdminFixture(t)
 	rec := httptest.NewRecorder()
@@ -156,8 +194,8 @@ func TestHandleListMemoryScopes_ReturnsConstantSet(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Scopes) != 2 {
-		t.Errorf("scopes len = %d, want 2", len(resp.Scopes))
+	if len(resp.Scopes) != 3 {
+		t.Errorf("scopes len = %d, want 3 (agent, user, tenant)", len(resp.Scopes))
 	}
 	got := map[string]bool{}
 	for _, sc := range resp.Scopes {
@@ -166,7 +204,7 @@ func TestHandleListMemoryScopes_ReturnsConstantSet(t *testing.T) {
 			t.Errorf("scope %q missing description", sc.Name)
 		}
 	}
-	if !got["agent"] || !got["user"] {
+	if !got["agent"] || !got["user"] || !got["tenant"] {
 		t.Errorf("missing scopes in response: %v", resp.Scopes)
 	}
 }
@@ -201,8 +239,10 @@ func TestHandleListMemoryScopeIDs_FiltersByScope(t *testing.T) {
 
 func TestHandleListMemoryScopeIDs_RejectsUnknownScope(t *testing.T) {
 	s := memoryAdminFixture(t)
-	req := httptest.NewRequest("GET", "/v1/_memory/scopes/tenant", nil)
-	req.SetPathValue("scope", "tenant")
+	// "bogus" is not one of the admin-browse scopes (agent/user/tenant). ("tenant"
+	// used to be the rejection example here, before it became a valid admin scope.)
+	req := httptest.NewRequest("GET", "/v1/_memory/scopes/bogus", nil)
+	req.SetPathValue("scope", "bogus")
 	rec := httptest.NewRecorder()
 	s.handleListMemoryScopeIDs(rec, req)
 	if rec.Code != http.StatusBadRequest {

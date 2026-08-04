@@ -259,7 +259,7 @@ func TestEmbedStats_NoVectorSupportReturns503(t *testing.T) {
 
 func TestEmbedStats_InvalidScopeReturns400(t *testing.T) {
 	srv, _, _ := vectorAdminFixture(t, true)
-	req := httptest.NewRequest("GET", "/v1/_memory/embed_stats?scope=tenant", nil)
+	req := httptest.NewRequest("GET", "/v1/_memory/embed_stats?scope=bogus", nil)
 	rec := httptest.NewRecorder()
 	srv.handleMemoryEmbedStats(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -450,7 +450,7 @@ func TestReembed_MissingScopeIDReturns400(t *testing.T) {
 
 func TestReembed_InvalidScopeReturns400(t *testing.T) {
 	srv, _, _ := vectorAdminFixture(t, true)
-	req := httptest.NewRequest("POST", "/v1/_memory/reembed?scope=tenant&scope_id=x", nil)
+	req := httptest.NewRequest("POST", "/v1/_memory/reembed?scope=bogus&scope_id=x", nil)
 	rec := httptest.NewRecorder()
 	srv.handleMemoryReembed(rec, req)
 	if rec.Code != http.StatusBadRequest {
