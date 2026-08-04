@@ -12,6 +12,34 @@ no longer require a special external backend.
 | "what notes are *close* to X?" | `search` (`embed: true` on `set`) | an embedder + a vector-capable store |
 | "remember this conversation; recall what you learned" | `add` / `recall` | `add`: any backend · `recall`: the vector stack |
 
+## Calling them (the exact shape)
+
+Both ops take a `scope`, and `recall` also requires a `query`. Omitting either
+is the most common way an agent stalls here, so:
+
+```
+Memory op=recall scope=user query="which medicine does the user take"
+Memory op=add    scope=user messages=[{"role":"user","content":"..."}]
+```
+
+`recall` is the ONLY semantic search over remembered facts. Two things it is
+often confused with:
+
+- **`Document graph_recall` is not a substitute.** It walks *relations* out from
+  facts that already carry entity metadata, so on a store without those it
+  returns `seeds: 0` and tells you nothing — which reads like "there is nothing
+  remembered" when there is. Use it *after* `recall` hands you a fact worth
+  expanding.
+- **Document TEXT is a different surface.** Chunk bodies live in the same
+  keyspace under a reserved `doc.chunk:` prefix, and the way to search them on
+  purpose is `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
+  Because they share the keyspace, `recall` currently *can* surface a chunk body
+  alongside consolidated facts — a `doc.chunk:` id in a recall result is document
+  prose, not something the user told you, so weigh it accordingly.
+
+If you are unsure of any tool's arguments, `Context op=doc name=Memory` prints
+the schema rather than making you guess from an error message.
+
 ## What the memory-layer paradigm is
 
 A key/value store is faithful: you `set` a key, you `get` exactly that

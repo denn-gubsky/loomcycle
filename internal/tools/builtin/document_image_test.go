@@ -248,7 +248,7 @@ func TestEmbedBody_UncaptionedImageStillEmbedsItsDescription(t *testing.T) {
 // deployment: of 20 sampled bodyless chunks, 18 had meaningful titles and the
 // shortest were "Active RFCs" (11) and "Configuration" (13) — a length filter would
 // discard exactly what someone searching a document would type.
-func TestTitleEmbedText_KeepsHeadingsDropsNonLanguage(t *testing.T) {
+func TestIndexableText_KeepsHeadingsDropsNonLanguage(t *testing.T) {
 	for _, keep := range []string{
 		"Active RFCs",
 		"Configuration",
@@ -256,8 +256,8 @@ func TestTitleEmbedText_KeepsHeadingsDropsNonLanguage(t *testing.T) {
 		"RFC BE — History Tool (browse / search / rename / annotate past chats)",
 		`"replica_id": "replica-a",`, // a fragment used as a heading — weak, but language
 	} {
-		if got := titleEmbedText(keep); got == "" {
-			t.Errorf("titleEmbedText(%q) dropped a title that carries language", keep)
+		if got := indexableText(keep); got == "" {
+			t.Errorf("indexableText(%q) dropped a title that carries language", keep)
 		}
 	}
 	for _, drop := range []string{
@@ -267,13 +267,13 @@ func TestTitleEmbedText_KeepsHeadingsDropsNonLanguage(t *testing.T) {
 		"...",   // punctuation
 		"1.2.3", // a version fragment
 	} {
-		if got := titleEmbedText(drop); got != "" {
-			t.Errorf("titleEmbedText(%q) = %q, want \"\" — no letters means no language, "+
+		if got := indexableText(drop); got != "" {
+			t.Errorf("indexableText(%q) = %q, want \"\" — no letters means no language, "+
 				"and a vector built from it can only produce false matches", drop, got)
 		}
 	}
 	// Trimmed, not reformatted: the title is the author's text.
-	if got := titleEmbedText("  Active RFCs  "); got != "Active RFCs" {
+	if got := indexableText("  Active RFCs  "); got != "Active RFCs" {
 		t.Errorf("got %q, want the trimmed title verbatim", got)
 	}
 }
@@ -356,5 +356,87 @@ func TestChunkIDFromBodyKey_OnlyMatchesChunkBodies(t *testing.T) {
 		if got := ChunkIDFromBodyKey(notAChunk); got != "" {
 			t.Errorf("ChunkIDFromBodyKey(%q) = %q, want \"\"", notAChunk, got)
 		}
+	}
+}
+
+// TestProseEmbedText_DropsScaffoldOnlyBodies is measured, not hypothetical. On the
+// reference deployment a user asking "which medicine do I take" got these ranked
+// ABOVE the fact naming their medication (0.434):
+//
+//	"---"      0.477
+//	"```sh"    0.452
+//	"#"        0.451
+//
+// A short syntax token embeds near the centroid of everything, so it ranks mid-high
+// for every query. A heading-split import creates these by turning a fence line into
+// its own chunk.
+func TestIndexableText_DropsScaffoldOnlyText(t *testing.T) {
+	for _, drop := range []string{
+		"```sh", "```bash", "```", "```go",
+		"~~~", "~~~python",
+		"---", "----", "***", "___",
+		"#", "##", "######",
+		"  ```sh  ", "\n---\n", "",
+	} {
+		if got := indexableText(drop); got != "" {
+			t.Errorf("indexableText(%q) = %q, want \"\" — scaffolding outranks real "+
+				"answers because a short syntax token sits near every query", drop, got)
+		}
+	}
+	// The two rejections are independent, and this is why BOTH are needed: a letter
+	// test alone would accept "```sh" (it contains "sh"), and a scaffold test alone
+	// would accept "42". Neither subsumes the other.
+	if strings.ContainsAny("```sh", "abcdefghijklmnopqrstuvwxyz") == false {
+		t.Fatal("precondition: \"```sh\" is expected to contain letters")
+	}
+	if mdScaffoldOnlyRe.MatchString("42") {
+		t.Error("precondition: \"42\" is not scaffolding, so only the letter rule can " +
+			"reject it — if the scaffold rule matches it, this test no longer shows why " +
+			"both rejections exist")
+	}
+}
+
+// TestProseEmbedText_KeepsRealProseIncludingFencedContent — the predicate is anchored
+// and whole-string, so a body that merely CONTAINS or BEGINS with a fence is real
+// content and must survive. Getting this wrong would silently delete every code
+// example from the index.
+func TestIndexableText_KeepsRealProseIncludingFencedContent(t *testing.T) {
+	for _, keep := range []string{
+		"```sh\nmake build-all\n```",
+		"---\ntitle: front matter\n---",
+		"# A real heading with text",
+		"SAVEPOINT nesting is LIFO",
+		"## Setup\n\nRun the installer.",
+		"-- a SQL comment",
+		"#tag",
+	} {
+		if got := indexableText(keep); got == "" {
+			t.Errorf("indexableText(%q) dropped real content", keep)
+		}
+	}
+	// Trimmed, not rewritten.
+	if got := indexableText("  real body  "); got != "real body" {
+		t.Errorf("got %q, want the trimmed body", got)
+	}
+}
+
+// TestEmbedBody_ScaffoldOnlyBodyEmbedsNothing wires the predicate to the write path,
+// and pins that it does NOT then fall through to the title: a chunk whose body is a
+// fence line usually has a scaffold-ish title too, and embedding one to replace the
+// other just moves the noise.
+func TestEmbedBody_ScaffoldOnlyBodyEmbedsNothing(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "sh", "bash", "code")
+
+	res, _ := d.Execute(ctx, json.RawMessage(`{"op":"create_document","title":"Doc"}`))
+	docID := resultField(res, "document_id")
+	body, _ := json.Marshal(map[string]any{
+		"op": "create_chunk", "document_id": docID, "title": "```sh", "body": "```sh",
+	})
+	res, err := d.Execute(ctx, body)
+	if err != nil || res.IsError {
+		t.Fatalf("create_chunk: %v %s", err, res.Text)
+	}
+	if got := embeddedTextFor(t, vs, resultField(res, "id")); got != "" {
+		t.Errorf("a scaffolding-only chunk embedded %q", got)
 	}
 }

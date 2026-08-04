@@ -74,13 +74,20 @@ agents:
       - Memory / Document / Path: durable facts across turns go in Memory (user
         scope), structured chunked material in a Document, and Path navigates
         both.
-      - Recalling what you know about a THING: `Memory recall` matches words;
-        `Document graph_recall` follows the relations between facts. Reach for
-        graph_recall when the question names a thing rather than a phrase —
-        "what do we know about Acme", "who else worked on this" — because facts
-        recorded in different words still share an entity and a word match misses
-        them. `as_of` answers as of a past moment, recovering a fact since
-        corrected.
+      - Recalling what you know about the user or a THING starts with ONE call:
+        `Memory op=recall scope=user query="<the question in your own words>"`.
+        Both `scope` and `query` are required, and recall is the only semantic
+        search over remembered facts. Every tool here takes an `op`; when unsure
+        of a tool's arguments, `Context op=doc name=<Tool>` prints its schema
+        instead of making you learn it from errors.
+      - `Document graph_recall` is the SECOND step, not the first. It follows the
+        relations between facts, so it finds facts recorded in different words
+        that share an entity — but it walks out from facts carrying entity
+        metadata, so on a store without those it returns `seeds: 0` and tells you
+        nothing. Use it to expand a fact recall already found, not to go looking.
+        `as_of` answers as of a past moment, recovering a fact since corrected.
+      - Searching document TEXT rather than facts is
+        `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
@@ -122,9 +129,18 @@ agents:
         hatch.
       - Memory / Document / Path: durable user-scope facts in Memory, structured
         material in a Document, and Path navigates both.
-      - Asked about a named thing ("what do we know about Acme")? Use `Document
-        graph_recall` — it follows relations, so it finds facts worded
-        differently that `Memory recall` would miss.
+      - "What do I know about the user / what did they tell me?" — that is a
+        SEMANTIC MEMORY SEARCH, and it is one call:
+        `Memory op=recall scope=user query="<the question in your own words>"`.
+        Both `scope` and `query` are required; recall is the ONLY semantic search
+        over remembered facts. Do not guess at argument names — every tool here
+        takes an `op`, and `Context op=doc name=<Tool>` prints its exact schema.
+      - `Document graph_recall` is NOT the entry point for that. It walks
+        RELATIONS out from facts that already carry entity metadata, so on a
+        store without those it returns `seeds: 0` and tells you nothing. Reach
+        for it only after `Memory op=recall` gave you a fact worth expanding.
+      - Searching document TEXT (not facts) is
+        `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
@@ -166,9 +182,18 @@ agents:
         hatch.
       - Memory / Document / Path: durable user-scope facts in Memory, structured
         material in a Document, and Path navigates both.
-      - Asked about a named thing ("what do we know about Acme")? Use `Document
-        graph_recall` — it follows relations, so it finds facts worded
-        differently that `Memory recall` would miss.
+      - "What do I know about the user / what did they tell me?" — that is a
+        SEMANTIC MEMORY SEARCH, and it is one call:
+        `Memory op=recall scope=user query="<the question in your own words>"`.
+        Both `scope` and `query` are required; recall is the ONLY semantic search
+        over remembered facts. Do not guess at argument names — every tool here
+        takes an `op`, and `Context op=doc name=<Tool>` prints its exact schema.
+      - `Document graph_recall` is NOT the entry point for that. It walks
+        RELATIONS out from facts that already carry entity metadata, so on a
+        store without those it returns `seeds: 0` and tells you nothing. Reach
+        for it only after `Memory op=recall` gave you a fact worth expanding.
+      - Searching document TEXT (not facts) is
+        `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.

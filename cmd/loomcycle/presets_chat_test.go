@@ -89,21 +89,27 @@ func TestChatBundle_PromptsDoNotHandWriteAToolList(t *testing.T) {
 	}
 }
 
-// TestChatBundle_PromptsPointAtGraphRecall pins the guidance that makes the entity
-// graph reachable in practice.
+// TestChatBundle_PromptsTeachMemoryRecall pins the guidance that makes remembered
+// facts reachable in practice.
 //
-// The tool grant is not what makes a capability usable. `Document` has been in
-// these agents' tools since the bundle shipped, and `graph_recall` has existed
-// since v1.42.0 — but nothing told a model when to prefer it over `Memory recall`,
-// so it went unused. That is the same "capability with no caller" shape as the
-// entity tier having no producer, one layer up: reachable in principle, invisible
-// in practice.
+// The tool grant is not what makes a capability usable — `Memory` and `Document`
+// have been in these agents' tools since the bundle shipped. What decides whether a
+// model can answer "which medicine do I take" is whether the prompt names the OP and
+// its required arguments.
 //
-// The distinction the guidance has to carry is the load-bearing one: word matching
-// versus following relations. Two facts about Acme recorded in different words are
-// found by graph_recall and missed by recall, which is precisely when a model
-// should reach for it.
-func TestChatBundle_PromptsPointAtGraphRecall(t *testing.T) {
+// THIS TEST PREVIOUSLY ASSERTED THE OPPOSITE EMPHASIS, and a live transcript
+// disproved it. It required the prompt to point at `Document graph_recall` for
+// "what do we know about X", on the reasoning that following relations beats matching
+// words. In practice graph_recall walks out from facts carrying entity metadata, so
+// on a store without those it returns `seeds: 0` — and an agent sent there first
+// concluded there was nothing remembered, then spent four calls guessing argument
+// names ("missing required field: op", "missing required field: scope", "missing
+// required field: query") before stumbling onto `Memory op=recall`. The relation
+// advantage is real but it is a SECOND step, not the entry point.
+//
+// So the invariants are now: teach `Memory op=recall` with scope AND query, and keep
+// graph_recall explained but positioned after it.
+func TestChatBundle_PromptsTeachMemoryRecall(t *testing.T) {
 	cfg := chatBundleConfig(t)
 	found := 0
 	for name, agent := range cfg.Agents {
@@ -111,18 +117,36 @@ func TestChatBundle_PromptsPointAtGraphRecall(t *testing.T) {
 			continue
 		}
 		found++
-		if !strings.Contains(agent.SystemPrompt, "graph_recall") {
-			t.Errorf("%s never mentions graph_recall — the entity graph is granted but unreachable in practice", name)
+		prompt := agent.SystemPrompt
+		low := strings.ToLower(prompt)
+
+		// The entry point, named as an invocation rather than a capability. An agent
+		// that has to discover `op`/`scope`/`query` from error messages burns its turn
+		// budget before it retrieves anything.
+		if !strings.Contains(prompt, "op=recall") {
+			t.Errorf("%s never names `Memory op=recall` — the only semantic search over "+
+				"remembered facts, and the op an agent otherwise has to guess", name)
+		}
+		for _, arg := range []string{"scope", "query"} {
+			if !strings.Contains(low, arg) {
+				t.Errorf("%s does not mention recall's required %q argument", name, arg)
+			}
+		}
+
+		// graph_recall stays explained — the relation advantage is real — but must not
+		// be the first thing reached for.
+		if !strings.Contains(prompt, "graph_recall") {
+			t.Errorf("%s never mentions graph_recall — the entity graph is granted but "+
+				"unreachable in practice", name)
 			continue
 		}
-		// Naming the op is not enough; the prompt must say WHEN, or it reads as
-		// one more entry in a list the model already has from Context.tools.
-		if !strings.Contains(agent.SystemPrompt, "relation") {
-			t.Errorf("%s names graph_recall but not what distinguishes it (following relations vs matching words)", name)
+		if !strings.Contains(low, "relation") {
+			t.Errorf("%s names graph_recall but not what distinguishes it (following "+
+				"relations rather than matching words)", name)
 		}
-		// And the tool it needs must actually be granted.
 		if !hasToolPreset(agent.Tools, "Document") {
-			t.Errorf("%s is told to use graph_recall but does not grant Document; tools=%v", name, agent.Tools)
+			t.Errorf("%s is told about graph_recall but does not grant Document; tools=%v",
+				name, agent.Tools)
 		}
 	}
 	if found == 0 {
@@ -130,19 +154,6 @@ func TestChatBundle_PromptsPointAtGraphRecall(t *testing.T) {
 	}
 }
 
-// TestChatBundle_PromptsInjectTenantContext pins the CONSUMER of
-// {{memory:tenant_info}}.
-//
-// The variant existed and validated for four phases while rendering nothing,
-// because the document behind it was never built — and once built it would have
-// been just as inert if no shipped prompt referenced it. That is the failure this
-// phase exists to fix and the reason the plan says: wire a placeholder in the same
-// PR that adds it, or do not ship it.
-//
-// The chat agents are the right consumer: they are the interactive surface, they
-// already read the per-user root, and deployment vocabulary is exactly the context
-// they lack. They stay `memory_scopes: [user]` — the read stamps the tenant grants
-// server-side, so consuming it costs no widening.
 func TestChatBundle_PromptsInjectTenantContext(t *testing.T) {
 	cfg := chatBundleConfig(t)
 	found := 0

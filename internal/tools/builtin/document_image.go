@@ -29,6 +29,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -80,6 +81,48 @@ func (d *Document) setAssetDescription(ctx context.Context, key sqlmem.ScopeKey,
 	return d.exec(ctx, key,
 		`UPDATE chunk_assets SET description = ?, described_at = ? WHERE chunk_id = ?`,
 		strings.TrimSpace(description), time.Now().UnixNano(), chunkID)
+}
+
+// mdScaffoldOnlyRe matches text that is ENTIRELY Markdown scaffolding: a fence
+// opener/closer with an optional language tag, a horizontal rule, or bare heading
+// hashes. Anchored and whole-string, so text that merely BEGINS with a fence — a real
+// code example — is untouched.
+var mdScaffoldOnlyRe = regexp.MustCompile("(?s)\\A\\s*(?:`{3,}[A-Za-z0-9_+-]*|~{3,}[A-Za-z0-9_+-]*|-{3,}|\\*{3,}|_{3,}|#{1,6})\\s*\\z")
+
+// indexableText is the ONE test for whether a string is worth embedding, applied to a
+// chunk body and to a title fallback alike. Returns the trimmed text, or "" when
+// there is nothing a query could meaningfully match.
+//
+// TWO REJECTIONS, both learned from real data rather than reasoned into:
+//
+//  1. Markdown scaffolding. A heading-split import turns a fence line into its own
+//     chunk, so corpora contain chunks whose whole body is "```sh", "---" or "#".
+//     Measured on the reference deployment, a user asking "which medicine do I take"
+//     got "---" (0.477), "```sh" (0.452) and "#" (0.451) ranked ABOVE the fact naming
+//     their medication (0.434). A short token embeds near the centroid of everything,
+//     so it ranks mid-high for EVERY query — it does not merely waste a row, it
+//     outranks real answers.
+//  2. No letters — "42", "1.2.3", "..." carry no language.
+//
+// Neither rejection subsumes the other, which is why both are here: "```sh" HAS
+// letters, so the letter test alone lets it through; "42" is not scaffolding, so the
+// scaffold test alone lets it through.
+//
+// ONE function on purpose. When a body is rejected the caller falls back to the
+// TITLE, and a chunk whose body is a fence line usually has a scaffold-ish title too
+// — applying a weaker rule there would just move the noise from one field to the
+// other, which is exactly what a first attempt here did.
+func indexableText(s string) string {
+	t := strings.TrimSpace(s)
+	if t == "" || mdScaffoldOnlyRe.MatchString(t) {
+		return ""
+	}
+	if !strings.ContainsFunc(t, func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+	}) {
+		return ""
+	}
+	return t
 }
 
 // UndescribedAsset is one image awaiting a description: enough to make the vision
