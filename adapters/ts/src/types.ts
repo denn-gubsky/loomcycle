@@ -886,6 +886,95 @@ export interface MemoryEntryResponse {
   entry: MemoryEntry;
 }
 
+// ---- RFC BV memory-view: off-run unified search + embed-admin reads ----
+
+/** Input for {@link LoomcycleClient.memorySearch}. camelCase here; the
+ *  client maps to the snake_case wire body (scopeId→scope_id,
+ *  topK→top_k). `rank` / `dedup` are opaque ranking-config objects
+ *  passed through to the server as-is. */
+export interface MemorySearchInput {
+  query: string;
+  scope: string;
+  scopeId: string;
+  topK?: number;
+  rank?: Record<string, unknown>;
+  dedup?: Record<string, unknown>;
+}
+
+/** One hit in a {@link MemorySearchResponse}. `kind` distinguishes a
+ *  plain k/v memory entry ("memory") from a document-chunk body
+ *  ("document"); a document hit also carries `chunk_id` so the viewer
+ *  can fetch its entity block via document({ op: "get_chunk" }).
+ *  Field casing mirrors the wire JSON (snake_case). */
+export interface MemorySearchEntry {
+  key: string;
+  value: unknown;
+  /** raw cosine similarity */
+  score: number;
+  /** hybrid rank the row was ordered by */
+  rank_score: number;
+  embedded_with: { provider: string; model: string };
+  kind: "memory" | "document";
+  chunk_id?: string;
+}
+
+export interface MemorySearchResponse {
+  scope: string;
+  scope_id: string;
+  entries: MemorySearchEntry[];
+  query_embedding_dim: number;
+  truncated: boolean;
+}
+
+/** One row in {@link MemoryEmbedStatsResponse}.models — the wire shape
+ *  of store.MemoryEmbedModelStats. */
+export interface MemoryEmbedModelStats {
+  provider: string;
+  model: string;
+  dimension: number;
+  row_count: number;
+}
+
+export interface MemoryEmbedStatsResponse {
+  scope: string;
+  models: MemoryEmbedModelStats[];
+  total_embedding_bytes: number;
+}
+
+/** The configured embedder a reembed call reports back
+ *  (current_embedder). */
+export interface MemoryReembedConfigured {
+  provider: string;
+  model: string;
+  dimension: number;
+}
+
+/** Response to {@link LoomcycleClient.reembedMemory}. A discriminated
+ *  union on `dry_run` (mirrors the two server response shapes): a dry
+ *  run reports the planned migration WITHOUT writing; a real run
+ *  reports what was written. Narrow on `dry_run` before reading the
+ *  arm-specific fields. */
+export type MemoryReembedResponse =
+  | {
+      scope: string;
+      scope_id: string;
+      dry_run: true;
+      rows_total: number;
+      rows_to_reembed: number;
+      current_embedder: MemoryReembedConfigured;
+      sample_keys: string[];
+      sample_keys_capped: boolean;
+    }
+  | {
+      scope: string;
+      scope_id: string;
+      dry_run: false;
+      rows_reembedded: number;
+      rows_failed: number;
+      current_embedder: MemoryReembedConfigured;
+      failed_keys?: string[];
+    };
+
 // ---- Interruption ----
 
 export type InterruptStatus = "pending" | "answered" | "cancelled" | "expired";
