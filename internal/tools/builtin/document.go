@@ -2170,6 +2170,50 @@ func (d *Document) resolveLinkTarget(ctx context.Context, key sqlmem.ScopeKey, t
 	return "", false
 }
 
+// resolveEmbedTarget maps a `![[target]]` embed's inner string to the chunk id
+// whose body is transcluded, CONFINED to the writer's own scope/tenant. It is a
+// superset of resolveLinkTarget (the Phase-2a link resolver): an embed also
+// accepts an exact chunk id and a `/path#Section` anchor, so a document can
+// transclude ONE named chunk — not only a whole document's root. RFC BS Phase 2b.
+//
+// Resolution order:
+//   - an exact chunk id (`![[<chunk-uuid>]]` embeds that chunk directly);
+//   - a `/path#Section` anchor → resolve /path to a document, then its chunk
+//     titled `Section` (lowest position wins on a title tie). An anchor that
+//     names no such chunk stays UNRESOLVED — it does not fall back to the
+//     document root, because the author asked for a specific section;
+//   - otherwise resolveLinkTarget (path→root chunk, or an exact title).
+//
+// ok=false → the caller leaves the `![[…]]` literal.
+func (d *Document) resolveEmbedTarget(ctx context.Context, key sqlmem.ScopeKey, target string) (string, bool) {
+	// An exact chunk id embeds that one chunk directly. Checked first so a
+	// uuid-shaped target is never mistaken for a title.
+	if res, err := d.query(ctx, key, `SELECT id FROM chunks WHERE id = ? LIMIT 1`, target); err == nil && len(res.Rows) > 0 {
+		if id := asStr(res.Rows[0][0]); id != "" {
+			return id, true
+		}
+	}
+	// A `/path#Section` anchor → the named chunk within the path's document.
+	if strings.HasPrefix(target, "/") {
+		if i := strings.IndexByte(target, '#'); i >= 0 {
+			pathPart, anchor := target[:i], strings.TrimSpace(target[i+1:])
+			if anchor != "" {
+				docID, err := d.docIDFromInput(ctx, key, docInput{Path: pathPart})
+				if err == nil && docID != "" {
+					if res, err := d.query(ctx, key, `SELECT id FROM chunks WHERE document_id = ? AND title = ? ORDER BY position LIMIT 1`, docID, anchor); err == nil && len(res.Rows) > 0 {
+						if id := asStr(res.Rows[0][0]); id != "" {
+							return id, true
+						}
+					}
+				}
+				// A `#Section` that matched nothing stays literal (no root fallback).
+				return "", false
+			}
+		}
+	}
+	return d.resolveLinkTarget(ctx, key, target)
+}
+
 // reconcileNameLinks re-derives fromChunkID's inline `[[name]]` link edges from
 // its body on every body write (create_chunk / a body-bearing update_chunk):
 // each resolvable target becomes a `references` edge tagged auto=1. This is the
@@ -2341,6 +2385,71 @@ func (d *Document) documentsUnderPath(ctx context.Context, key sqlmem.ScopeKey, 
 // headingReplacer collapses newlines so a chunk title stays on one heading line.
 var headingReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 
+// embedRe matches a transclusion `![[target]]` — the leading `!` is what
+// distinguishes an EMBED (expanded inline at clean-export time) from a
+// `[[link]]` (Phase-2a: a graph edge, never expanded). The inner target holds
+// no brackets. RFC BS Phase 2b.
+var embedRe = regexp.MustCompile(`!\[\[([^\[\]]+)\]\]`)
+
+// maxEmbedDepth bounds how deep transclusion recurses (a chain of embeds each
+// pulling in another). A cycle is already caught by the chain guard; this cap
+// additionally bounds a very long ACYCLIC chain so export can't run away.
+const maxEmbedDepth = 4
+
+// expandTransclusions returns body with each resolvable `![[target]]` replaced
+// by the target chunk's own (recursively expanded) body. RFC BS Phase 2b.
+//
+// chain holds the chunk ids on the current expansion path (seeded with the
+// chunk being rendered) so a self- or mutual-embed leaves a literal instead of
+// looping; depth caps a long acyclic chain. An unresolved target, a cycle, the
+// depth cap, or a body-read fault all degrade to the LITERAL `![[target]]` —
+// transclusion is a rendering nicety, never a correctness gate, so it must not
+// abort the export walk.
+//
+// Iterates FindAllStringSubmatchIndex rather than ReplaceAllStringFunc because
+// each match needs its own resolve + cycle/depth decision, and the gaps between
+// matches are copied verbatim.
+func (d *Document) expandTransclusions(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, body string, chain []string, depth int) string {
+	matches := embedRe.FindAllStringSubmatchIndex(body, -1)
+	if len(matches) == 0 {
+		return body
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		// m = [matchStart, matchEnd, groupStart, groupEnd].
+		b.WriteString(body[last:m[0]]) // the gap before this embed, verbatim
+		last = m[1]
+		token := body[m[0]:m[1]] // the literal `![[target]]`
+		target := strings.TrimSpace(body[m[2]:m[3]])
+		targetID, ok := d.resolveEmbedTarget(ctx, key, target)
+		switch {
+		case !ok, inChain(chain, targetID), depth >= maxEmbedDepth:
+			// Unresolved, would loop, or too deep → leave the embed literal.
+			b.WriteString(token)
+		default:
+			cb, err := d.readBody(ctx, mscope, key.ScopeID, targetID)
+			if err != nil {
+				b.WriteString(token) // a store fault degrades gracefully
+				continue
+			}
+			b.WriteString(d.expandTransclusions(ctx, key, mscope, cb.Body, append(chain, targetID), depth+1))
+		}
+	}
+	b.WriteString(body[last:]) // the tail after the last embed
+	return b.String()
+}
+
+// inChain reports whether id is already on the expansion path (the cycle guard).
+func inChain(chain []string, id string) bool {
+	for _, c := range chain {
+		if c == id {
+			return true
+		}
+	}
+	return false
+}
+
 // exportMD renders a document to Markdown (RFC AK §4.5 / RFC AM Phase 2).
 // Walks the chunk hierarchy from the root(s) depth-first in position order:
 // each chunk is a heading (level = depth+1, capped at 6) followed by its
@@ -2441,7 +2550,16 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			}
 		default:
 			if cb.Body != "" {
-				b.WriteString("\n" + cb.Body + "\n")
+				body := cb.Body
+				// RFC BS Phase 2b — expand `![[…]]` embeds ONLY in clean mode.
+				// In metadata/round-trip mode the body stays verbatim, or an
+				// export(include_metadata=true)→import_md would bake the expanded
+				// copy in and lose the embed. The chain seeds with THIS chunk's id
+				// so a chunk embedding itself is caught as a cycle.
+				if !includeMeta {
+					body = d.expandTransclusions(ctx, key, mscope, cb.Body, []string{row.ID}, 0)
+				}
+				b.WriteString("\n" + body + "\n")
 			}
 		}
 		b.WriteString("\n")
