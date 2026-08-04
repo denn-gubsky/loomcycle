@@ -1928,6 +1928,25 @@ type Store interface {
 	// Returns ErrVectorUnsupported on backends without vector ops.
 	MemoryEmbedListByModel(ctx context.Context, tenantID string, scope MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]MemoryEntry, error)
 
+	// MemoryEmbedListMissing returns live memory rows that have NO embedding at
+	// all, optionally restricted to a key prefix.
+	//
+	// Distinct from MemoryEmbedListByModel, which cannot serve this: that query
+	// starts FROM memory_embeddings and INNER JOINs memory, so it finds rows whose
+	// embedder differs — a row with no embedding row is invisible to it. Backfill
+	// needs the opposite direction, a LEFT JOIN with the embedding absent.
+	//
+	// The prefix is what makes a targeted backfill possible: "doc.chunk:" embeds
+	// document bodies without touching a scope's ordinary key/value rows, which an
+	// operator may deliberately have left unembedded.
+	//
+	// RESUMABILITY IS INHERENT rather than bookkept. Every embedded row drops out
+	// of this candidate set, so a sweep that dies at row 2,000 simply finds 1,114
+	// remaining on the next call — there is no cursor to persist and no way for a
+	// crash to double-embed or skip. Callers page by re-calling until the count is
+	// zero.
+	MemoryEmbedListMissing(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix string, limit int) ([]MemoryEntry, error)
+
 	// MemoryEmbedStats returns per-(provider, model) row counts and
 	// total embedding bytes for the given scope. Drives the v0.9.0
 	// PR 4 admin endpoint `/v1/_memory/embed_stats`. ErrVectorUnsupported

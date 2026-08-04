@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,6 +153,7 @@ func Run(t *testing.T, factory Factory) {
 		{"InterruptDeleteAllByUser", testInterruptDeleteAllByUser},
 		{"ListTenants", testListTenants},
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
+		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
@@ -11056,5 +11058,83 @@ func testMemoryEmbedCascadesOnDelete(t *testing.T, s store.Store) {
 	if _, err := s.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, sid, key); err == nil {
 		t.Error("the embedding survived a scope-wide delete — an erasure would leave " +
 			"the subject's vectors behind")
+	}
+}
+
+// testMemoryEmbedListMissing pins the backfill candidate query (RFC BU phase 2).
+//
+// MemoryEmbedListByModel cannot serve a backfill: it starts FROM
+// memory_embeddings and INNER JOINs memory, so a row with NO embedding is
+// invisible to it. This is the inverse direction, and the test asserts the three
+// properties the backfill depends on: it finds unembedded rows, it EXCLUDES
+// already-embedded ones (which is what makes re-running safe), and the prefix
+// targets document bodies without touching a scope's ordinary key/value rows an
+// operator may have deliberately left unembedded.
+func testMemoryEmbedListMissing(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	const sid = "backfill"
+	v, _ := json.Marshal("prose")
+	set := func(key string, embed bool) {
+		t.Helper()
+		if err := s.MemorySet(ctx, "", store.MemoryScopeUser, sid, key, v, 0); err != nil {
+			t.Fatalf("MemorySet %s: %v", key, err)
+		}
+		if !embed {
+			return
+		}
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, key, store.MemoryEmbedding{
+			Provider: "test", Model: "m", Dimension: 4,
+			Vector: floats32(1, 0, 0, 0), EmbedText: key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("MemoryEmbedSet %s: %v", key, err)
+		}
+	}
+	set("doc.chunk:a", false)   // needs backfill
+	set("doc.chunk:b", false)   // needs backfill
+	set("doc.chunk:c", true)    // already embedded
+	set("memory/fact/x", false) // an ordinary row — must NOT be swept by a prefixed run
+
+	keysOf := func(rows []store.MemoryEntry) []string {
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.Key)
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	got, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", 100)
+	if err != nil {
+		t.Fatalf("MemoryEmbedListMissing: %v", err)
+	}
+	want := []string{"doc.chunk:a", "doc.chunk:b"}
+	if !reflect.DeepEqual(keysOf(got), want) {
+		t.Errorf("prefixed candidates = %v, want %v (c is embedded; the fact row is "+
+			"outside the prefix)", keysOf(got), want)
+	}
+
+	// Embedding one candidate must REMOVE it from the set — this is the whole
+	// resumability story: no cursor, the candidate set shrinks as work completes,
+	// so a sweep that dies mid-way resumes by simply asking again.
+	set("doc.chunk:a", true)
+	got2, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(keysOf(got2), []string{"doc.chunk:b"}) {
+		t.Errorf("after embedding one, candidates = %v, want just doc.chunk:b — an "+
+			"embedded row that stays a candidate would be re-embedded forever", keysOf(got2))
+	}
+
+	// No prefix sweeps the whole scope, including the ordinary row.
+	all, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(keysOf(all), []string{"doc.chunk:b", "memory/fact/x"}) {
+		t.Errorf("unprefixed candidates = %v, want both remaining rows", keysOf(all))
 	}
 }
