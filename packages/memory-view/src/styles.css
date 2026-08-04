@@ -676,3 +676,412 @@
   border-color: var(--danger);
   color: var(--danger);
 }
+
+/* ============================================================
+   P4b — tab bar + Facts viewer + unified Search panel
+   ============================================================ */
+
+/* Tab bar — Entries / Facts / Search. A minimal underline-active row; the active
+   panel fills the rest of the themed root. */
+.loomcycle-memory-view .memory-view-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.loomcycle-memory-view .memory-view-tabs button {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+  padding: 8px 12px;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.loomcycle-memory-view .memory-view-tabs button:hover {
+  color: var(--fg);
+}
+.loomcycle-memory-view .memory-view-tabs button.on {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.loomcycle-memory-view .memory-view-tabpanel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Facts viewer ---- */
+.loomcycle-memory-view .fact-view-wrapper,
+.loomcycle-memory-view .search-view-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 8px;
+}
+.loomcycle-memory-view .fact-filters,
+.loomcycle-memory-view .search-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.loomcycle-memory-view .fact-type-input {
+  flex: 1;
+  min-width: 120px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.loomcycle-memory-view .fact-retired-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-soft);
+  white-space: nowrap;
+}
+.loomcycle-memory-view .fact-view,
+.loomcycle-memory-view .search-view {
+  flex: 1;
+  min-height: 0;
+}
+.loomcycle-memory-view .fact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.loomcycle-memory-view .fact-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.loomcycle-memory-view .fact-list li:hover {
+  background: var(--bg-soft-2);
+}
+.loomcycle-memory-view .fact-list li.on {
+  background: var(--bg-soft-2);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+.loomcycle-memory-view .fact-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.loomcycle-memory-view .fact-row-badges {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Badges — one shared pill language, tinted per meaning. */
+.loomcycle-memory-view .fact-type-badge,
+.loomcycle-memory-view .fact-status-badge,
+.loomcycle-memory-view .fact-class-badge,
+.loomcycle-memory-view .fact-retired-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+  white-space: nowrap;
+}
+.loomcycle-memory-view .fact-class-source {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.loomcycle-memory-view .fact-retired-badge {
+  border-color: var(--running);
+  color: var(--running);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---- Fact / chunk detail (shared ChunkDetailPanel) ---- */
+.loomcycle-memory-view .fact-detail {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.loomcycle-memory-view .fact-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.loomcycle-memory-view .fact-detail-head h4 {
+  margin: 0;
+  font-size: 15px;
+  word-break: break-word;
+}
+.loomcycle-memory-view .fact-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+/* Two time axes, visually distinct so world vs belief time aren't conflated. */
+.loomcycle-memory-view .fact-axes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+.loomcycle-memory-view .fact-axis {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.loomcycle-memory-view .fact-axis-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  color: var(--fg-soft);
+  min-width: 84px;
+  flex-shrink: 0;
+}
+.loomcycle-memory-view .fact-axis-range {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+}
+.loomcycle-memory-view .fact-axis-range em {
+  color: var(--fg-soft);
+  font-style: italic;
+}
+.loomcycle-memory-view .fact-axis-arrow {
+  color: var(--fg-muted);
+}
+
+.loomcycle-memory-view .fact-provenance {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+.loomcycle-memory-view .fact-provenance dt {
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  align-self: center;
+}
+.loomcycle-memory-view .fact-provenance dd {
+  margin: 0;
+  word-break: break-all;
+}
+.loomcycle-memory-view .fact-provenance dd code {
+  font-size: 11px;
+}
+
+.loomcycle-memory-view .fact-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.loomcycle-memory-view .fact-chain-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  color: var(--fg-soft);
+}
+.loomcycle-memory-view .fact-edge-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.loomcycle-memory-view .fact-edge-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.loomcycle-memory-view .fact-edge-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.loomcycle-memory-view .fact-edge-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.loomcycle-memory-view .fact-edge-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.loomcycle-memory-view .fact-edge-btn:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+.loomcycle-memory-view .fact-edge-kind {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+.loomcycle-memory-view .fact-edge-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.loomcycle-memory-view .fact-edge-type {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-soft);
+  flex-shrink: 0;
+}
+.loomcycle-memory-view .fact-body-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  color: var(--fg-soft);
+}
+.loomcycle-memory-view .fact-body {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- Search panel ---- */
+.loomcycle-memory-view .search-query-input {
+  flex: 1;
+  min-width: 160px;
+}
+.loomcycle-memory-view .search-scopeid-input {
+  width: 160px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.loomcycle-memory-view .search-submit-btn {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: white;
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.loomcycle-memory-view .search-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.loomcycle-memory-view .search-unavailable {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-size: 12px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+}
+.loomcycle-memory-view .search-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.loomcycle-memory-view .search-result-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.loomcycle-memory-view .search-result-list li:hover {
+  background: var(--bg-soft-2);
+}
+.loomcycle-memory-view .search-result-list li.on {
+  background: var(--bg-soft-2);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+.loomcycle-memory-view .search-hit-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.loomcycle-memory-view .search-kind-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.loomcycle-memory-view .search-kind-doc {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.loomcycle-memory-view .search-kind-mem {
+  color: var(--fg-soft);
+}
+.loomcycle-memory-view .search-hit-key {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.loomcycle-memory-view .search-hit-scores {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.loomcycle-memory-view .search-hit-value {
+  font-size: 11px;
+  color: var(--fg-soft);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
