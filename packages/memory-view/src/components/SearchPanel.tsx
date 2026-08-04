@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { MemorySearchEntry, MemoryScope } from "../types";
 import { useMemoryData } from "../lib/dataLayer";
 import Splitter from "./Splitter";
@@ -15,11 +15,13 @@ import ChunkDetailPanel from "./ChunkDetailPanel";
 // muted "not configured" note rather than an error banner — mirroring how the
 // MemoryConsole treats the embed_stats 503.
 export interface SearchPanelProps {
-  /** Search scope (agent | user). Default "user". */
+  /** Search scope (agent | user | tenant). Default "user". */
   scope?: MemoryScope;
-  /** Default scope_id target (search requires one). */
+  /** Default scope_id target. Required for agent/user; ignored for tenant (one
+   *  tenant-wide keyspace). */
   scopeId?: string;
-  /** A memory hit was clicked — deep-link it in the host (e.g. the k/v console). */
+  /** The "open in Entries" action on a memory hit's detail — deep-link it in the
+   *  host (e.g. the k/v console). Unwired = the action isn't offered. */
   onSelectEntry?: (scope: MemoryScope, scopeId: string, key: string) => void;
 }
 
@@ -29,39 +31,49 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
   const [scope, setScope] = useState<MemoryScope>(scopeProp);
   const [scopeId, setScopeId] = useState(scopeIdProp);
   const [results, setResults] = useState<MemorySearchEntry[] | null>(null);
+  // The (scope, scope_id) the current `results` were fetched under — snapshotted
+  // at search time so the detail panel + deep-link use the scope the hits came
+  // from, NOT whatever the inputs say now (a hit's chunk_id is scope-partitioned,
+  // so inspecting it under a since-changed scope would dead-end on "no chunk").
+  const [searched, setSearched] = useState<{ scope: MemoryScope; scopeId: string } | null>(null);
   const [selected, setSelected] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Monotonic request token: only the LATEST in-flight search may write results,
+  // so a slow earlier search can't overwrite a faster later one.
+  const reqRef = useRef(0);
 
   // The tenant scope has no scope_id (one tenant-wide keyspace), so it does not
   // require one; every other scope does.
   const needsScopeId = scope !== "tenant";
   const runSearch = async () => {
     if (!query.trim() || (needsScopeId && !scopeId.trim())) return;
+    const token = ++reqRef.current;
+    const target = { scope, scopeId: needsScopeId ? scopeId.trim() : "" };
     setLoading(true);
     setErr(null);
     setUnavailable(false);
     setSelected("");
     try {
-      const resp = await data.search({
-        query: query.trim(),
-        scope,
-        scopeId: needsScopeId ? scopeId.trim() : "",
-      });
+      const resp = await data.search({ query: query.trim(), scope: target.scope, scopeId: target.scopeId });
+      if (token !== reqRef.current) return; // a newer search superseded this one
       setResults(resp.entries ?? []);
+      setSearched(target);
     } catch (e) {
+      if (token !== reqRef.current) return;
       // The embedder-unavailable refusal is a deployment STATE, not a failure —
       // surface it as a muted hint (like the console's embed_stats 503), and let
       // every other error keep the red banner.
       if (isSearchUnavailable(e)) {
         setUnavailable(true);
         setResults(null);
+        setSearched(null);
       } else {
         setErr(e instanceof Error ? e.message : String(e));
       }
     } finally {
-      setLoading(false);
+      if (token === reqRef.current) setLoading(false);
     }
   };
 
@@ -128,13 +140,7 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
                   <li
                     key={rowKey}
                     className={rowKey === selected ? "on" : ""}
-                    onClick={() => {
-                      if (isDoc && hit.chunk_id) {
-                        setSelected(rowKey);
-                      } else {
-                        onSelectEntry?.(scope, scopeId.trim(), hit.key);
-                      }
-                    }}
+                    onClick={() => setSelected(rowKey)}
                   >
                     <div className="search-hit-head">
                       <span className={"search-kind-badge " + (isDoc ? "search-kind-doc" : "search-kind-mem")}>
@@ -154,18 +160,42 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
             </ul>
           </div>
           <div className="memory-pane search-detail-pane">
-            <div className="pane-header">chunk</div>
-            {!selected && <div className="empty">click a document hit to inspect its chunk.</div>}
+            <div className="pane-header">detail</div>
+            {!selected && <div className="empty">click a hit to inspect it.</div>}
             {selected &&
+              searched &&
               (() => {
                 const hit = results.find((h) => h.kind + ":" + h.key === selected);
-                if (!hit || !hit.chunk_id) return null;
+                if (!hit) return null;
+                if (hit.kind === "document" && hit.chunk_id) {
+                  // Inspect under the scope the SEARCH ran (searched), not the live
+                  // inputs — the chunk_id is scope-partitioned.
+                  return (
+                    <ChunkDetailPanel
+                      scope={searched.scope}
+                      scopeId={searched.scopeId || undefined}
+                      chunkId={hit.chunk_id}
+                    />
+                  );
+                }
+                // A k/v memory hit — no chunk to inspect; show its key + full value,
+                // and offer to jump to it in the console when the host wired the hook.
                 return (
-                  <ChunkDetailPanel
-                    scope={scope}
-                    scopeId={scopeId.trim() || undefined}
-                    chunkId={hit.chunk_id}
-                  />
+                  <div className="search-mem-detail">
+                    <div className="search-mem-key">
+                      <code>{hit.key}</code>
+                      {onSelectEntry && (
+                        <button
+                          type="button"
+                          className="search-mem-open-btn"
+                          onClick={() => onSelectEntry(searched.scope, searched.scopeId, hit.key)}
+                        >
+                          open in Entries
+                        </button>
+                      )}
+                    </div>
+                    <pre className="search-mem-value">{fmtFullValue(hit.value)}</pre>
+                  </div>
                 );
               })()}
           </div>
@@ -206,4 +236,15 @@ function fmtValue(v: unknown): string {
 
 function truncate(s: string): string {
   return s.length > 240 ? s.slice(0, 240) + "…" : s;
+}
+
+// fmtFullValue renders a value in FULL (no truncation) for the detail pane —
+// pretty-printed JSON for objects, the raw string for strings.
+function fmtFullValue(v: unknown): string {
+  if (typeof v === "string") return v;
+  try {
+    return JSON.stringify(v, null, 2) ?? String(v);
+  } catch {
+    return String(v);
+  }
 }

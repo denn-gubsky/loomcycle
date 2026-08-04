@@ -1090,3 +1090,32 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Detail for a selected k/v memory hit (a document hit renders ChunkDetailPanel). */
+.loomcycle-memory-view .search-mem-detail {
+  padding: 12px;
+  overflow: auto;
+}
+.loomcycle-memory-view .search-mem-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.loomcycle-memory-view .search-mem-key code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.loomcycle-memory-view .search-mem-open-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.loomcycle-memory-view .search-mem-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  color: var(--fg);
+}

@@ -67,8 +67,10 @@ export interface MemoryEntriesResponse extends ClientMemoryEntriesResponse {
 
 // FactEntity is the bi-temporal + provenance sidecar block (chunk_memory_meta,
 // rendered by the backend's chunkMetaToJSON) present on a chunk that is a FACT.
-// Timestamps are raw unix-NANOS int64s (lossless on the wire; the viewer formats
-// them). `retired` is ALWAYS present (the backend never omits it, so a reader
+// Timestamps are raw unix-NANOS. They are exact as JSON text, but a 2020s nanos
+// value (~1.7e18) exceeds Number.MAX_SAFE_INTEGER (~9e15), so JSON.parse rounds
+// to the nearest ~512 ns — harmless for the ms-granularity date the viewer shows.
+// `retired` is ALWAYS present (the backend never omits it, so a reader
 // need not infer it from an absent key); every other field is omitted when
 // empty. Two time axes: valid_at/invalid_at are WORLD time (when the fact was /
 // stopped being true), created_at/expired_at are BELIEF/SYSTEM time (when the

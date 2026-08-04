@@ -67,8 +67,11 @@ export default function MemoryEntryEditModal({
     const body: SetMemoryEntryOptions = { value: parsed, embed };
     const ttl = parseInt(ttlSeconds, 10);
     if (Number.isFinite(ttl) && ttl > 0) body.ttl_seconds = ttl;
+    // The tenant scope has no scope_id; send a non-empty placeholder the backend
+    // drops (an empty path segment wouldn't route). Every other scope sends its own.
+    const effectiveScopeID = scope === "tenant" ? "-" : scopeID;
     try {
-      const resp = await data.setEntry(scope, scopeID, key, body);
+      const resp = await data.setEntry(scope, effectiveScopeID, key, body);
       if (embed && resp.embed_warning) {
         setWarning(`Saved, but embedding failed: ${resp.embed_warning}`);
         // Don't auto-close on a warning — operator should see it.
@@ -87,7 +90,9 @@ export default function MemoryEntryEditModal({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal library-modal" onClick={(e) => e.stopPropagation()}>
         <h3>
-          {mode === "create" ? "Set memory entry" : `Edit ${scope}/${scopeID}/${existing?.key}`}
+          {mode === "create"
+            ? "Set memory entry"
+            : `Edit ${scope === "tenant" ? "tenant-wide" : `${scope}/${scopeID}`}/${existing?.key}`}
         </h3>
 
         <div className="library-modal-fields">
@@ -101,6 +106,7 @@ export default function MemoryEntryEditModal({
               >
                 <option value="agent">agent</option>
                 <option value="user">user</option>
+                <option value="tenant">tenant</option>
               </select>
             </label>
 
@@ -108,10 +114,19 @@ export default function MemoryEntryEditModal({
               <span>Scope ID</span>
               <input
                 type="text"
-                value={scopeID}
+                // The tenant scope has one keyspace and no scope_id — disable the
+                // field and clear it so a stale value can't be written to the wrong
+                // scope if the operator switches the select.
+                value={scope === "tenant" ? "" : scopeID}
                 onChange={(e) => setScopeID(e.target.value)}
-                disabled={mode === "edit"}
-                placeholder={scope === "user" ? "alice" : "researcher-agent"}
+                disabled={mode === "edit" || scope === "tenant"}
+                placeholder={
+                  scope === "tenant"
+                    ? "tenant-wide (no scope_id)"
+                    : scope === "user"
+                      ? "alice"
+                      : "researcher-agent"
+                }
               />
             </label>
           </div>

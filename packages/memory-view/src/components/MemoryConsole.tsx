@@ -79,9 +79,14 @@ export default function MemoryConsole() {
 
   const triggerReload = () => setReloadTick((n) => n + 1);
 
+  // Human label for the current (scope, scope_id) target. The tenant scope's
+  // scope_id is the internal "-" placeholder, so show "tenant-wide" rather than
+  // leak "-" into headers / confirmation dialogs.
+  const scopeLabel = scope === "tenant" ? "tenant-wide" : `${scope}/${scopeID}`;
+
   const handleDelete = async (entry: MemoryEntry) => {
     if (!scope || !scopeID) return;
-    if (!window.confirm(`Delete ${scope}/${scopeID}/${entry.key}? This also removes any embedding.`)) {
+    if (!window.confirm(`Delete ${scopeLabel}/${entry.key}? This also removes any embedding.`)) {
       return;
     }
     setMutationErr(null);
@@ -241,7 +246,7 @@ export default function MemoryConsole() {
 
   const handleReembedCommit = async () => {
     if (!scope || !scopeID) return;
-    if (!window.confirm(`Re-embed all rows under ${scope}/${scopeID} using the current embedder? This calls the provider API and may incur cost.`)) {
+    if (!window.confirm(`Re-embed all rows under ${scopeLabel} using the current embedder? This calls the provider API and may incur cost.`)) {
       return;
     }
     setReembedBusy(true);
@@ -322,7 +327,7 @@ export default function MemoryConsole() {
       >
       <div className="memory-pane keys-pane">
         <div className="pane-header memory-keys-header">
-          <span>keys {scopeID && <code>{scope}/{scopeID}</code>}</span>
+          <span>keys {scopeID && <code>{scopeLabel}</code>}</span>
           <button
             type="button"
             className="memory-new-entry-btn"
