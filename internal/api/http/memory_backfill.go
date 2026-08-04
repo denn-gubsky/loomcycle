@@ -86,7 +86,7 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 			"scope must be one of: agent, user, tenant")
 		return
 	}
-	if scopeID == "" {
+	if adminMemoryScopeIDRequired(scope) && scopeID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_scope_id", "scope_id is required")
 		return
 	}
@@ -117,8 +117,11 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// tenant scope backfills the single tenant-wide keyspace (store scope_id "");
+	// the placeholder is dropped. Reused across the paging reads + the write-back.
+	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
 	rows, err := s.store.MemoryEmbedListMissing(r.Context(), tenant,
-		store.MemoryScope(scope), scopeID, prefix, "", limit)
+		store.MemoryScope(scope), storeScopeID, prefix, "", limit)
 	if err != nil {
 		// ErrVectorUnsupported / the vec-tier pending error are the honest answers
 		// on a tier without this capability — surface them rather than reporting
@@ -128,7 +131,7 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 	}
 
 	resp := memoryBackfillResponse{
-		Scope: scope, ScopeID: scopeID, Prefix: prefix, DryRun: dryRun,
+		Scope: scope, ScopeID: storeScopeID, Prefix: prefix, DryRun: dryRun,
 		Candidates: len(rows),
 		CurrentEmbedder: memoryReembedConfigured{
 			Provider:  s.embedder.Provider(),
@@ -173,7 +176,7 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 			markFailed()
 			return
 		}
-		if err := s.store.MemoryEmbedSet(r.Context(), tenant, store.MemoryScope(scope), scopeID, row.Key,
+		if err := s.store.MemoryEmbedSet(r.Context(), tenant, store.MemoryScope(scope), storeScopeID, row.Key,
 			store.MemoryEmbedding{
 				Provider:  s.embedder.Provider(),
 				Model:     s.embedder.Model(),
@@ -229,7 +232,7 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 		}
 		var perr error
 		page, perr = s.store.MemoryEmbedListMissing(r.Context(), tenant,
-			store.MemoryScope(scope), scopeID, prefix, lastKey, limit)
+			store.MemoryScope(scope), storeScopeID, prefix, lastKey, limit)
 		if perr != nil {
 			resp.Notes = append(resp.Notes, "paging stopped early: "+perr.Error())
 			resp.More = true

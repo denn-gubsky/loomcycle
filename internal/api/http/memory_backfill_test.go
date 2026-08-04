@@ -150,6 +150,41 @@ func TestBackfillEmbeddings_ValidatesScope(t *testing.T) {
 	}
 }
 
+// TestBackfillEmbeddings_TenantScopeNoScopeID: the tenant scope has no scope_id
+// (its store scope_id is "" — the tenant_id column partitions it), so backfill
+// must ACCEPT scope=tenant without one and target the tenant-wide keyspace,
+// mirroring reembed/search. Fails on the pre-fix code, which shared
+// validAdminMemoryScope (so accepted "tenant") but kept the raw `if scopeID==""`
+// gate → 400 missing_scope_id, making a tenant backfill impossible.
+func TestBackfillEmbeddings_TenantScopeNoScopeID(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
+	srv.embedder = &backfillEmbedder{}
+	rec := httptest.NewRecorder()
+	// ?tenant=acme so the admin's principal names a tenant (the "admin must name a
+	// tenant" refusal is a separate concern); NO scope_id.
+	req := httptest.NewRequest(http.MethodPost,
+		"/v1/_memory/backfill_embeddings?scope=tenant&tenant=acme", nil).
+		WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
+			Subject: "root", Scopes: []string{auth.ScopeAdmin},
+		}))
+	srv.handleMemoryBackfillEmbeddings(rec, req)
+	// The scope_id gate is passed either way: 200 on a vector tier, 503 on a
+	// no-vector tier. A 400 means the empty scope_id was wrongly rejected.
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("scope=tenant with no scope_id was rejected: %s", rec.Body.String())
+	}
+	if rec.Code == http.StatusOK {
+		var resp memoryBackfillResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		// The response echoes the RESOLVED store scope_id "" (not a placeholder).
+		if resp.ScopeID != "" {
+			t.Errorf("tenant backfill echoed scope_id %q, want empty", resp.ScopeID)
+		}
+	}
+}
+
 // TestEmbedTextForRow_UnwrapsAChunkBody — a chunk body is a JSON envelope, and
 // /v1/_memory/reembed embeds row.Value verbatim. Doing that here would index the
 // literal tokens `body` and `fields`, which for a short chunk could outweigh the
