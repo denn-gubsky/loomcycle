@@ -250,27 +250,6 @@ func TestEmbedBody_MermaidChunkEmbedsLabelsNotSource(t *testing.T) {
 	}
 }
 
-// TestEmbedBody_ImageChunkNotEmbedded — an image body is a caption or a data URL;
-// until phase 4 generates a description there is no text worth indexing, and
-// embedding base64 would match nothing while consuming the scope's vector quota.
-func TestEmbedBody_ImageChunkNotEmbedded(t *testing.T) {
-	d, vs, ctx := mermaidDocFixture(t, "diagram", "screenshot")
-
-	res, _ := d.Execute(ctx, json.RawMessage(`{"op":"create_document","title":"Shots"}`))
-	docID := resultField(res, "document_id")
-	body, _ := json.Marshal(map[string]any{
-		"op": "create_chunk", "document_id": docID, "title": "Shot",
-		"type": "image", "body": "a screenshot of the diagram",
-	})
-	res, err := d.Execute(ctx, body)
-	if err != nil || res.IsError {
-		t.Fatalf("create_chunk: %v %s", err, res.Text)
-	}
-	if got := embeddedTextFor(t, vs, resultField(res, "id")); got != "" {
-		t.Errorf("image chunk was embedded (%q); phase 4 owns image text", got)
-	}
-}
-
 // TestEmbedBody_TypeChangeToMermaidReembedsAsLabels — turning a prose chunk into a
 // diagram in the same update that sets its body must use the NEW type. Reading the
 // pre-update row's type would embed diagram source as prose.

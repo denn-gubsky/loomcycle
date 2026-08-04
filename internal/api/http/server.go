@@ -3005,6 +3005,12 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_memory/embed_stats", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryEmbedStats))))
 	mux.Handle("POST /v1/_memory/reembed", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryReembed))))
 	mux.Handle("POST /v1/_memory/backfill_embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryBackfillEmbeddings))))
+	// RFC BU phase 4b — generate vision descriptions for image chunks that have
+	// none, then re-embed so they become searchable. Left on the /v1/_* catch-all
+	// (substrate:admin) DELIBERATELY, like backfill_embeddings above: both spend the
+	// operator's model budget per row, so triggering one is an operator decision even
+	// though the data belongs to a tenant.
+	mux.Handle("POST /v1/_document/describe_images", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDescribeImages))))
 	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
 	// as /v1/_resolver. The full runtime-state JSON envelope; see
 	// internal/snapshot/snapshot.go for the wire shape.
