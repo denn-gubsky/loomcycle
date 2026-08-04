@@ -38,6 +38,17 @@ type memoryBackfillResponse struct {
 	// Embedded / Failed describe a live run.
 	Embedded int `json:"embedded,omitempty"`
 	Failed   int `json:"failed,omitempty"`
+	// SkippedEmpty counts rows with NO text to embed — a document root or a
+	// section heading legitimately has an empty body. They are neither embedded
+	// nor failed, and they PERMANENTLY remain candidates, which is why they have
+	// to be reported: without this the operator sees `candidates` stop falling
+	// with `embedded` at 0 and no stated reason.
+	SkippedEmpty int `json:"skipped_empty,omitempty"`
+	// More reports that the caller's limit was reached with candidates still
+	// outstanding, so another call has work to do. It is the honest replacement for
+	// "re-invoke until candidates reaches 0", which unembeddable rows make
+	// unreachable.
+	More bool `json:"more,omitempty"`
 	// FailedKeys is capped — a systematic failure (embedder down) would otherwise
 	// return one line per row.
 	FailedKeys []string `json:"failed_keys,omitempty"`
@@ -92,10 +103,22 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 		}
 	}
 	prefix := r.URL.Query().Get("prefix")
-	tenant, _ := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	tenant, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	// Same refusal as the erasure, directory and orphan-repair surfaces, for the same
+	// reason: an admin naming no tenant resolves to the DEFAULT tenant, and memory
+	// rows are keyed on the raw tenant — so the sweep would report a truthful-looking
+	// "candidates: 0" against a tenant the operator never meant and leave the intended
+	// one untouched. Verified live on a three-tenant deployment.
+	if all && !r.URL.Query().Has("tenant") {
+		writeJSONError(w, http.StatusBadRequest, "tenant_required",
+			"an admin token must name the tenant: memory rows are keyed on it, so omitting "+
+				"it silently targets the default tenant and reports 0 candidates. "+
+				"Pass ?tenant=<id>, or ?tenant= for the default tenant.")
+		return
+	}
 
 	rows, err := s.store.MemoryEmbedListMissing(r.Context(), tenant,
-		store.MemoryScope(scope), scopeID, prefix, limit)
+		store.MemoryScope(scope), scopeID, prefix, "", limit)
 	if err != nil {
 		// ErrVectorUnsupported / the vec-tier pending error are the honest answers
 		// on a tier without this capability — surface them rather than reporting
@@ -114,9 +137,14 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 		},
 	}
 	resp.Notes = []string{
-		"candidates is bounded by limit — a non-zero count after a live run means " +
-			"MORE remain; re-invoke until it reaches 0. Every embedded row leaves the " +
-			"candidate set, so re-invoking is safe and resumes rather than restarts.",
+		"candidates is bounded by limit — a non-zero count after a live run means MORE " +
+			"remain. Every embedded row leaves the candidate set, so re-invoking is safe " +
+			"and resumes rather than restarts.",
+		"RE-INVOKE WHILE `more` IS TRUE. Do not wait for candidates to reach 0: a row " +
+			"with no text to embed (a document root, a section heading) never gains an " +
+			"embedding, so it stays a candidate permanently and candidates converges to " +
+			"skipped_empty instead. `limit` bounds how many rows are EMBEDDED, not how " +
+			"many are examined — the sweep pages past what it cannot embed.",
 	}
 
 	if dryRun {
@@ -131,20 +159,19 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	for _, row := range rows {
-		// Embed the row's VALUE text. A document chunk body is a JSON envelope, so
-		// embedText unwraps it — embedding the raw JSON would index the field names.
-		text := embedTextForRow(row)
-		if text == "" {
-			continue
-		}
-		vecs, err := s.embedder.Embed(r.Context(), []string{text})
-		if err != nil || len(vecs) == 0 {
+	// embedOne does the per-row work. A closure so the paging loop below stays about
+	// paging.
+	embedOne := func(row store.MemoryEntry, text string) {
+		markFailed := func() {
 			resp.Failed++
 			if len(resp.FailedKeys) < backfillFailedKeyCap {
 				resp.FailedKeys = append(resp.FailedKeys, row.Key)
 			}
-			continue
+		}
+		vecs, err := s.embedder.Embed(r.Context(), []string{text})
+		if err != nil || len(vecs) == 0 {
+			markFailed()
+			return
 		}
 		if err := s.store.MemoryEmbedSet(r.Context(), tenant, store.MemoryScope(scope), scopeID, row.Key,
 			store.MemoryEmbedding{
@@ -155,18 +182,73 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 				EmbedText: text,
 				CreatedAt: time.Now().UTC(),
 			}); err != nil {
-			resp.Failed++
-			if len(resp.FailedKeys) < backfillFailedKeyCap {
-				resp.FailedKeys = append(resp.FailedKeys, row.Key)
-			}
-			continue
+			markFailed()
+			return
 		}
 		resp.Embedded++
 	}
+
+	// PAGE PAST WHAT WE CANNOT EMBED. `limit` bounds how many rows get EMBEDDED, not
+	// how many are looked at, and that difference is what makes the sweep finish.
+	//
+	// A row with no body text never gains an embedding, so it stays a candidate
+	// forever. With a single fixed window those rows accumulate at the front of the
+	// key order until they fill it, and throughput reaches ZERO with work still
+	// outstanding — the residue obeys R' = R + p·(limit − R), whose fixed point is
+	// R = limit. Measured live on a 3,143-chunk scope before this loop existed:
+	// 189 / 179 / 169 / 160 / 147 embedded per 200-row window, heading for 0. The
+	// keyset cursor steps over them.
+	page := rows
+	lastKey := ""
+	for {
+		for _, row := range page {
+			// Advance the cursor for EVERY row seen, embedded or not — that is the
+			// whole point.
+			lastKey = row.Key
+			// A document chunk body is a JSON envelope, so embedTextForRow unwraps it;
+			// embedding the raw JSON would index the field names.
+			text := embedTextForRow(row)
+			if text == "" {
+				// Nothing to embed, ever. Counted rather than silently passed over.
+				resp.SkippedEmpty++
+				continue
+			}
+			embedOne(row, text)
+			if resp.Embedded+resp.Failed >= limit {
+				break
+			}
+		}
+		if resp.Embedded+resp.Failed >= limit {
+			// Hit the caller's budget. There may be more, so say so.
+			resp.More = true
+			break
+		}
+		if len(page) < limit {
+			// A short page means the candidate set is exhausted — nothing to step to.
+			break
+		}
+		var perr error
+		page, perr = s.store.MemoryEmbedListMissing(r.Context(), tenant,
+			store.MemoryScope(scope), scopeID, prefix, lastKey, limit)
+		if perr != nil {
+			resp.Notes = append(resp.Notes, "paging stopped early: "+perr.Error())
+			resp.More = true
+			break
+		}
+		if len(page) == 0 {
+			break
+		}
+	}
+
 	if resp.Failed > 0 {
 		resp.Notes = append(resp.Notes,
 			"some rows failed (see failed_keys, capped). They remain candidates, so a "+
 				"re-invocation retries exactly those — nothing is lost by a partial failure.")
+	}
+	if resp.SkippedEmpty > 0 {
+		resp.Notes = append(resp.Notes,
+			"skipped_empty rows have no text to embed (a document root, a section heading). "+
+				"They stay candidates permanently — that is expected, not a failure.")
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

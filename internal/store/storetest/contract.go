@@ -11106,7 +11106,7 @@ func testMemoryEmbedListMissing(t *testing.T, s store.Store) {
 		return out
 	}
 
-	got, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", 100)
+	got, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", "", 100)
 	if err != nil {
 		t.Fatalf("MemoryEmbedListMissing: %v", err)
 	}
@@ -11120,7 +11120,7 @@ func testMemoryEmbedListMissing(t *testing.T, s store.Store) {
 	// resumability story: no cursor, the candidate set shrinks as work completes,
 	// so a sweep that dies mid-way resumes by simply asking again.
 	set("doc.chunk:a", true)
-	got2, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", 100)
+	got2, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", "", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -11129,8 +11129,45 @@ func testMemoryEmbedListMissing(t *testing.T, s store.Store) {
 			"embedded row that stays a candidate would be re-embedded forever", keysOf(got2))
 	}
 
+	// The afterKey CURSOR is what lets a sweep step past a row it cannot embed.
+	// Without it, an unembeddable row (no body text) stays at the front of the key
+	// order, accumulates, and eventually fills the whole limit window — the sweep
+	// then makes no progress with rows still unembedded. Observed live before the
+	// cursor existed: throughput decayed 189/179/169/160/147 per 200-row window.
+	set("doc.chunk:a", false) // put it back so both are candidates again
+	bothAgain, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(keysOf(bothAgain), []string{"doc.chunk:a", "doc.chunk:b"}) {
+		t.Fatalf("cursor precondition: %v", keysOf(bothAgain))
+	}
+	after, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", "doc.chunk:a", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(keysOf(after), []string{"doc.chunk:b"}) {
+		t.Errorf("afterKey=doc.chunk:a returned %v, want just doc.chunk:b — the cursor is "+
+			"EXCLUSIVE, so a caller that skipped a row can advance past it", keysOf(after))
+	}
+	// Past the end is empty, not an error: that is how a caller detects exhaustion.
+	if past, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", "doc.chunk:z", 100); err != nil {
+		t.Fatal(err)
+	} else if len(past) != 0 {
+		t.Errorf("afterKey past the last row returned %v, want empty", keysOf(past))
+	}
+	// A limit ABOVE the backend cap must clamp, never reset to a smaller default:
+	// a caller widening the window to escape starvation must not get less.
+	if wide, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:", "", 5000); err != nil {
+		t.Fatal(err)
+	} else if len(wide) != 2 {
+		t.Errorf("limit=5000 returned %d rows, want 2 — a limit over the cap must clamp "+
+			"to the cap, not fall back to the default page size", len(wide))
+	}
+	set("doc.chunk:a", true) // restore the state the assertions below assume
+
 	// No prefix sweeps the whole scope, including the ordinary row.
-	all, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "", 100)
+	all, err := s.MemoryEmbedListMissing(ctx, "", store.MemoryScopeUser, sid, "", "", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
