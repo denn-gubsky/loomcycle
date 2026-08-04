@@ -58,7 +58,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -68,7 +68,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","history","get_version","diff","backlinks","related","unlinked_mentions"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","related","unlinked_mentions"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -113,7 +113,8 @@ const documentInputSchema = `{
 		"limit":       {"type": "integer"},
 		"name":        {"type": "string", "description": "define/list_types: the type name."},
 		"include_metadata": {"type": "boolean", "description": "export_md: embed round-trippable chunk metadata + edges as HTML comments (default true). false = clean human-facing Markdown."},
-		"markdown":    {"type": "string", "description": "import_md: an export_md-shaped Markdown document (headings = hierarchy; <!-- loom: ... --> metadata; <!-- loom-edges: ... --> trailer). Omit document_id to create a new document; pass document_id (+ optional parent_id) to import under an existing chunk."}
+		"markdown":    {"type": "string", "description": "import_md: an export_md-shaped Markdown document (headings = hierarchy; <!-- loom: ... --> metadata; <!-- loom-edges: ... --> trailer). Omit document_id to create a new document; pass document_id (+ optional parent_id) to import under an existing chunk."},
+		"canvas":      {"type": "object", "description": "import_canvas: a JSON Canvas v1.0 object ({\"nodes\":[...],\"edges\":[...]}) — e.g. the contents of an Obsidian .canvas file. Each node becomes a chunk (positioned via its x/y/width/height); each edge becomes a link. Pass title/path to name the new document."}
 	},
 	"required": ["op"]
 }`
@@ -198,6 +199,11 @@ type docInput struct {
 	IncludeMetadata *bool `json:"include_metadata"`
 	// Markdown is the import_md source (an export_md-shaped document).
 	Markdown string `json:"markdown"`
+	// Canvas is the import_canvas source: a JSON Canvas v1.0 object
+	// ({"nodes":[...],"edges":[...]}). Kept as RawMessage so a caller can hand in
+	// an object verbatim (e.g. the contents of an Obsidian .canvas file) and it is
+	// decoded into the canvas struct in import_canvas.
+	Canvas json.RawMessage `json:"canvas"`
 }
 
 // docSchemaDDL is portable across SQL Memory's sqlite + postgres tiers: BIGINT
@@ -303,6 +309,18 @@ var docSchemaDDL = []string{
 		chunk_id TEXT NOT NULL, revision INTEGER NOT NULL, created_at BIGINT NOT NULL,
 		actor TEXT, body TEXT NOT NULL, PRIMARY KEY (chunk_id, revision))`,
 	`CREATE INDEX IF NOT EXISTS chunk_revisions_chunk ON chunk_revisions(chunk_id)`,
+	// chunk_layout — a chunk's spatial coordinates for the JSON Canvas view
+	// (export_canvas / import_canvas). This is VIEW metadata (where a node sits on
+	// a canvas), NOT a query axis, so it is its own thin table rather than a
+	// chunks column: a chunk without a layout row is the normal case (export
+	// falls back to a deterministic auto-grid), and only a chunk placed on a
+	// canvas ever gets a row. x/y/width/height are integers per the JSON Canvas
+	// spec; color is a nullable preset id ("1".."6") or hex ("#RRGGBB"). No
+	// foreign key — cascade is explicit in Go (deleteChunk / deleteDocument),
+	// matching the rest of this schema.
+	`CREATE TABLE IF NOT EXISTS chunk_layout (
+		chunk_id TEXT PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL,
+		width INTEGER NOT NULL, height INTEGER NOT NULL, color TEXT)`,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -390,6 +408,10 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.exportMD(ctx, key, mscope, in)
 	case "import_md":
 		return d.importMD(ctx, key, mscope, in)
+	case "export_canvas":
+		return d.exportCanvas(ctx, key, mscope, in)
+	case "import_canvas":
+		return d.importCanvas(ctx, key, mscope, in)
 	case "history":
 		return d.chunkHistory(ctx, key, in)
 	case "get_version":
@@ -1416,6 +1438,13 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_revisions WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
+		// Canvas layout rows for every chunk in the document — resolved via the
+		// chunks subquery so they go before the chunk rows. An orphaned layout row
+		// is invisible dead data nothing reaps, the same class the explicit-cascade
+		// discipline exists to prevent.
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_layout WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE document_id = ?`, docID); err != nil {
 			return err
 		}
@@ -2004,6 +2033,11 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// row goes, like the other per-chunk cascades — an orphaned revision row
 			// is invisible dead data nothing reaps.
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_revisions WHERE chunk_id = ?`, cid); err != nil {
+				return err
+			}
+			// The canvas layout row for this chunk — the descendant-walk cascade site
+			// (delete_document walks by document; this walks one chunk's subtree).
+			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_layout WHERE chunk_id = ?`, cid); err != nil {
 				return err
 			}
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE id = ?`, cid); err != nil {
@@ -3483,6 +3517,276 @@ func titleOrUntitled(s string) string {
 		return "Untitled"
 	}
 	return s
+}
+
+// --- ops: JSON Canvas import/export ---
+//
+// JSON Canvas is the open, spatial-graph interchange format Obsidian Canvas
+// reads/writes (a top-level {"nodes":[...],"edges":[...]}). export_canvas renders
+// a document's CONTENT chunks as canvas nodes + their cross-reference edges;
+// import_canvas builds a new document from a canvas. The two are a round-trip:
+// export→import→export lands the same node texts, layouts, and edges.
+
+// canvasNode is one JSON Canvas v1.0 node. x/y/width/height are integers per the
+// spec and always emitted (0,0 is a valid position, so no omitempty). The
+// type-specific fields (text/file/url/label) carry omitempty so a text node
+// doesn't emit an empty "file", etc. This tool only ever WRITES "text" nodes on
+// export, but the full field set lets import accept a real Obsidian canvas.
+type canvasNode struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	Color  string `json:"color,omitempty"`
+	Text   string `json:"text,omitempty"`
+	File   string `json:"file,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Label  string `json:"label,omitempty"`
+}
+
+// canvasEdge is one JSON Canvas v1.0 edge. Only fromNode/toNode are mandatory;
+// the side/end/color/label fields are optional and omitted when empty. export
+// sets toEnd="arrow" (the spec default, made explicit) and label=the edge kind.
+type canvasEdge struct {
+	ID       string `json:"id"`
+	FromNode string `json:"fromNode"`
+	ToNode   string `json:"toNode"`
+	FromSide string `json:"fromSide,omitempty"`
+	ToSide   string `json:"toSide,omitempty"`
+	FromEnd  string `json:"fromEnd,omitempty"`
+	ToEnd    string `json:"toEnd,omitempty"`
+	Color    string `json:"color,omitempty"`
+	Label    string `json:"label,omitempty"`
+}
+
+// canvasDoc is the top-level JSON Canvas object.
+type canvasDoc struct {
+	Nodes []canvasNode `json:"nodes"`
+	Edges []canvasEdge `json:"edges"`
+}
+
+// Auto-grid defaults for a content chunk with no stored layout: a deterministic
+// row-major grid so an un-placed document still exports to a readable canvas and
+// re-exports to the SAME coordinates (the round-trip relies on this).
+const (
+	canvasGridCols = 4
+	canvasNodeW    = 400
+	canvasNodeH    = 200
+	canvasNodeGap  = 50
+	// canvasTitleMax caps a node-derived chunk title (rune-safe) so a long node
+	// body doesn't become an unwieldy title.
+	canvasTitleMax = 120
+)
+
+// canvasLayout is a stored spatial position for a chunk (a chunk_layout row).
+type canvasLayout struct {
+	x, y, w, h int
+	color      string
+}
+
+// canvasNodeTitle derives a chunk title from a node's primary text: the first
+// non-empty line, trimmed and rune-capped, else "node <id>" — createChunk
+// requires a non-empty title, so this must never return "".
+func canvasNodeTitle(text, id string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if r := []rune(line); len(r) > canvasTitleMax {
+			line = string(r[:canvasTitleMax])
+		}
+		return line
+	}
+	return "node " + id
+}
+
+// exportCanvas renders a document as a JSON Canvas v1.0 graph.
+//
+// Nodes are the document's NON-ROOT (content) chunks — the root container chunk
+// holds the doc title/type, not canvas content, so skipping it keeps a
+// round-trip from accreting an empty node. Each content chunk becomes a "text"
+// node whose text is its body (or its title when the body is empty), positioned
+// from its stored chunk_layout row or, absent one, a deterministic auto-grid by
+// export order. Edges are the within-document chunk_edges whose BOTH endpoints
+// are content nodes (so an edge to the root, or a cross-document endpoint, is
+// dropped).
+func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	docID := in.DocumentID
+	if docID == "" {
+		var err error
+		docID, err = d.docIDFromInput(ctx, key, in)
+		if err != nil {
+			return errResult("export_canvas: " + err.Error()), nil
+		}
+	}
+	dres, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID)
+	if err != nil {
+		return errResult("export_canvas: " + err.Error()), nil
+	}
+	if len(dres.Rows) == 0 {
+		return errResult("export_canvas: no such document: " + docID), nil
+	}
+	rootID := asStr(dres.Rows[0][0])
+
+	// Content chunks in the SAME deterministic order export_md walks
+	// (parent_id, position, id) so the auto-grid index is stable across exports.
+	cres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE document_id = ? ORDER BY parent_id, position, id`, docID)
+	if err != nil {
+		return errResult("export_canvas: " + err.Error()), nil
+	}
+
+	// Stored layouts for this document's chunks in one query.
+	layouts := map[string]canvasLayout{}
+	lres, err := d.query(ctx, key, `SELECT chunk_id, x, y, width, height, color FROM chunk_layout WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID)
+	if err != nil {
+		return errResult("export_canvas: layout: " + err.Error()), nil
+	}
+	for _, r := range lres.Rows {
+		layouts[asStr(r[0])] = canvasLayout{x: asInt(r[1]), y: asInt(r[2]), w: asInt(r[3]), h: asInt(r[4]), color: asStr(r[5])}
+	}
+
+	nodes := []canvasNode{}
+	nodeSet := map[string]bool{}
+	i := 0
+	for _, r := range cres.Rows {
+		row := scanChunkRow(cres.Columns, r)
+		if row.ID == rootID {
+			continue // the root container is not canvas content
+		}
+		cb, rerr := d.readBody(ctx, mscope, key.ScopeID, row.ID)
+		if rerr != nil {
+			return errResult("export_canvas: body: " + rerr.Error()), nil
+		}
+		text := cb.Body
+		if strings.TrimSpace(text) == "" {
+			text = row.Title
+		}
+		n := canvasNode{ID: row.ID, Type: "text", Text: text}
+		if lay, ok := layouts[row.ID]; ok {
+			n.X, n.Y, n.Width, n.Height, n.Color = lay.x, lay.y, lay.w, lay.h, lay.color
+		} else {
+			n.X = (i % canvasGridCols) * (canvasNodeW + canvasNodeGap)
+			n.Y = (i / canvasGridCols) * (canvasNodeH + canvasNodeGap)
+			n.Width = canvasNodeW
+			n.Height = canvasNodeH
+		}
+		nodes = append(nodes, n)
+		nodeSet[row.ID] = true
+		i++
+	}
+
+	// Within-document edges whose BOTH endpoints are content nodes. The SQL
+	// restricts to this document; the nodeSet check then drops any edge touching
+	// the root (the one in-document chunk that is not a node).
+	eres, err := d.query(ctx, key, `SELECT from_id, to_id, kind FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND to_id IN (SELECT id FROM chunks WHERE document_id = ?) ORDER BY from_id, to_id, kind`, docID, docID)
+	if err != nil {
+		return errResult("export_canvas: edges: " + err.Error()), nil
+	}
+	edges := []canvasEdge{}
+	for _, r := range eres.Rows {
+		from, to, kind := asStr(r[0]), asStr(r[1]), asStr(r[2])
+		if !nodeSet[from] || !nodeSet[to] {
+			continue
+		}
+		edges = append(edges, canvasEdge{
+			ID: from + "-" + to + "-" + kind, FromNode: from, ToNode: to,
+			Label: kind, ToEnd: "arrow",
+		})
+	}
+
+	return jsonResult(map[string]any{"canvas": canvasDoc{Nodes: nodes, Edges: edges}, "document_id": docID})
+}
+
+// importCanvas builds a NEW document from a JSON Canvas graph.
+//
+// Each node becomes a child chunk of the new document's root, its coordinates
+// recorded in chunk_layout, and each edge becomes a manual chunk_edge (auto=0 —
+// an imported explicit edge is authored, not parser-derived). Node→chunk id
+// mapping remaps the edges; an edge whose endpoint node is absent is skipped
+// (defensive). Node bodies are ordinary data — the normal createChunk path runs,
+// so an imported [[name]] in a body reconciles into edges exactly as a typed one
+// would.
+func (d *Document) importCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if len(in.Canvas) == 0 {
+		return errResult("import_canvas: missing required field: canvas"), nil
+	}
+	var cv canvasDoc
+	if err := json.Unmarshal(in.Canvas, &cv); err != nil {
+		return errResult("import_canvas: invalid canvas JSON: " + err.Error()), nil
+	}
+	title := in.Title
+	if strings.TrimSpace(title) == "" {
+		title = "Imported canvas"
+	}
+	cd, _ := d.createDocument(ctx, key, mscope, docInput{Title: title, Path: in.Path})
+	if cd.IsError {
+		return cd, nil
+	}
+	docID := resultField(cd, "document_id")
+	rootID := resultField(cd, "root_chunk_id")
+
+	nodeToChunk := map[string]string{}
+	created := 0
+	for _, n := range cv.Nodes {
+		var body, chunkTitle string
+		switch n.Type {
+		case "file":
+			body = "[file: " + n.File + "]"
+			chunkTitle = canvasNodeTitle(n.File, n.ID)
+		case "link":
+			body = n.URL
+			chunkTitle = canvasNodeTitle(n.URL, n.ID)
+		case "group":
+			chunkTitle = strings.TrimSpace(n.Label)
+			if chunkTitle == "" {
+				chunkTitle = "group"
+			}
+		default:
+			// "text" and any forward-compat/unknown node type: keep the node (so its
+			// edges still resolve) with its text as the body.
+			body = n.Text
+			chunkTitle = canvasNodeTitle(n.Text, n.ID)
+		}
+		cc, _ := d.createChunk(ctx, key, mscope, docInput{
+			DocumentID: docID, ParentID: rootID, Title: chunkTitle, Body: body,
+		})
+		if cc.IsError {
+			return cc, nil
+		}
+		newID := resultField(cc, "id")
+		nodeToChunk[n.ID] = newID
+		if err := d.exec(ctx, key, `INSERT INTO chunk_layout (chunk_id, x, y, width, height, color) VALUES (?, ?, ?, ?, ?, ?)`,
+			newID, n.X, n.Y, n.Width, n.Height, nullIfEmpty(n.Color)); err != nil {
+			return errResult("import_canvas: layout: " + err.Error()), nil
+		}
+		created++
+	}
+
+	edgesCreated := 0
+	for _, e := range cv.Edges {
+		from, ok1 := nodeToChunk[e.FromNode]
+		to, ok2 := nodeToChunk[e.ToNode]
+		if !ok1 || !ok2 {
+			continue
+		}
+		kind := strings.TrimSpace(e.Label)
+		if kind == "" {
+			kind = "references"
+		}
+		lr, _ := d.linkChunks(ctx, key, docInput{FromID: from, ToID: to, Kind: kind})
+		if lr.IsError {
+			return lr, nil
+		}
+		edgesCreated++
+	}
+
+	return jsonResult(map[string]any{
+		"document_id": docID, "root_chunk_id": rootID,
+		"chunks_created": created, "edges_created": edgesCreated,
+	})
 }
 
 // --- ops: type definitions ---
