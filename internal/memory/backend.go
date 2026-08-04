@@ -108,6 +108,63 @@ type SearchQuery struct {
 	QueryText string
 	Prefix    string
 	TopK      int
+
+	// Sources names WHICH KINDS of remembered thing may be returned (RFC BW). Empty
+	// means "no restriction" — every existing caller therefore behaves exactly as
+	// before.
+	//
+	// It exists because the memory keyspace is shared: Document chunk bodies live in
+	// the same (tenant, scope, scope_id) partition under a reserved prefix, and once
+	// RFC BU embedded them they became indistinguishable from an agent's own facts in
+	// a vector search. Measured on the reference deployment, a medication question
+	// returned seven document chunks in ten hits, with a horizontal rule outranking
+	// the fact that held the answer.
+	//
+	// A NAMED SELECTOR rather than a prefix the caller supplies: the failure this
+	// answers is an agent not knowing a reserved string, so requiring it to know one
+	// would answer the symptom. Prefix remains for callers that genuinely want to
+	// narrow by key.
+	Sources []Source
+}
+
+// Source is one kind of remembered thing a search may return.
+type Source string
+
+const (
+	// SourceFacts is the agent's own memory: consolidated facts and notes it wrote.
+	SourceFacts Source = "facts"
+	// SourceDocuments is Document chunk bodies — prose written down in a document,
+	// which is NOT the same claim as something the user said.
+	SourceDocuments Source = "documents"
+)
+
+// Filter renders the requested sources as the store-level predicate.
+//
+// Only the exclusive combinations are expressible today: facts-only excludes the
+// document namespace, documents-only restricts to it, and both (or neither) constrain
+// nothing. Splitting facts from notes is RFC BW phase 2 and needs the provenance
+// columns, so "facts" here still means "everything that is not a document".
+func (q SearchQuery) Filter() store.MemorySearchFilter {
+	f := store.MemorySearchFilter{KeyPrefix: q.Prefix}
+	wantFacts, wantDocs := false, false
+	for _, s := range q.Sources {
+		switch s {
+		case SourceFacts:
+			wantFacts = true
+		case SourceDocuments:
+			wantDocs = true
+		}
+	}
+	switch {
+	case wantFacts && !wantDocs:
+		f.ExcludeKeyPrefix = DocumentChunkKeyPrefix
+	case wantDocs && !wantFacts:
+		// An explicit prefix wins if the caller set one; otherwise scope to documents.
+		if f.KeyPrefix == "" {
+			f.KeyPrefix = DocumentChunkKeyPrefix
+		}
+	}
+	return f
 }
 
 // SearchResult is the ranked output of Backend.Search. Entries are

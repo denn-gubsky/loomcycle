@@ -132,7 +132,18 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store
 //
 // Empty (scope, scope_id) returns ([], nil) — explicit non-error so
 // "no rows yet" doesn't pollute the agent's error path.
-func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+// likePrefixPattern turns a literal key prefix into a LIKE pattern.
+//
+// ESCAPED, because a prefix is caller-supplied and LIKE treats % and _ as wildcards:
+// an unescaped "a_b" would also match "axb". Today's callers pass literals without
+// them (DocumentChunkKeyPrefix is "doc.chunk:"), so this changes no current result —
+// it stops the next caller's prefix from silently matching more than it named.
+func likePrefixPattern(prefix string) string {
+	r := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+	return r.Replace(prefix) + "%"
+}
+
+func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	if !s.pgvectorEnabled {
 		return nil, store.ErrVectorUnsupported
 	}
@@ -207,9 +218,17 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	// rest are skipped rather than aborting the statement. Without it, ONE row at
 	// another dimension breaks recall for the whole scope.
 	args := []any{tenantID, string(scope), scopeID, queryText, topK, len(query)}
-	if keyPrefix != "" {
-		prefixCondition = " AND me.key LIKE $7"
-		args = append(args, keyPrefix+"%")
+	if filter.KeyPrefix != "" {
+		args = append(args, likePrefixPattern(filter.KeyPrefix))
+		prefixCondition += " AND me.key LIKE $" + strconv.Itoa(len(args))
+	}
+	// RFC BW: the exclusion is what keeps document bodies out of fact recall. It is
+	// applied HERE rather than by the caller because the LIMIT below must see the
+	// filtered set — the pool is capped at 51, and on a scope that is mostly
+	// documents a post-filter would leave a caller asking for ten facts with two.
+	if filter.ExcludeKeyPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeKeyPrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
 	               1.0 - (me.embedding <=> $4::vector) AS score,
@@ -293,7 +312,7 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 // doesn't exist, so we degrade to (nil, nil) rather than erroring; the
 // caller then runs pure-vector, which is itself unavailable without
 // pgvector, so this path is effectively Postgres+pgvector only.
-func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, queryText string, topK int) ([]store.MemorySearchEntry, error) {
+func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, queryText string, topK int) ([]store.MemorySearchEntry, error) {
 	if !s.pgvectorEnabled {
 		return nil, nil
 	}
@@ -308,9 +327,15 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 
 	prefixCondition := ""
 	args := []any{tenantID, string(scope), scopeID, queryText, topK}
-	if keyPrefix != "" {
-		prefixCondition = " AND me.key LIKE $6"
-		args = append(args, keyPrefix+"%")
+	if filter.KeyPrefix != "" {
+		args = append(args, likePrefixPattern(filter.KeyPrefix))
+		prefixCondition += " AND me.key LIKE $" + strconv.Itoa(len(args))
+	}
+	// The lexical leg has to apply the SAME exclusion as the vector leg: the two are
+	// fused by RRF, so a document row admitted by either one reaches the caller.
+	if filter.ExcludeKeyPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeKeyPrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
 	// plainto_tsquery normalises arbitrary user text into a safe tsquery
 	// (never errors on input, no injection surface), returning the empty

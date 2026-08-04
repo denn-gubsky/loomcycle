@@ -2717,7 +2717,8 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	}
 	// topK+1: a chunk is its own nearest neighbour, so the search ranks self first;
 	// ask for one extra to leave room to drop it and still return topK others.
-	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID, "doc.chunk:", vec[0], topK+1)
+	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
+		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], topK+1)
 	if err != nil {
 		return errResult("related: search: " + err.Error()), nil
 	}

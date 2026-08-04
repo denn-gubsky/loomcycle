@@ -132,7 +132,7 @@ func (v *vectorStore) MemoryEmbedSet(_ context.Context, _ string, scope store.Me
 	return nil
 }
 
-func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, id, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, id string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if topK > 51 {
@@ -150,7 +150,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 			continue
 		}
 		key := strings.TrimPrefix(k, prefix)
-		if keyPrefix != "" && !strings.HasPrefix(key, keyPrefix) {
+		if filter.KeyPrefix != "" && !strings.HasPrefix(key, filter.KeyPrefix) {
 			continue
 		}
 		rows = append(rows, scored{key: key, s: cosine(query, e.Vector), emb: e})

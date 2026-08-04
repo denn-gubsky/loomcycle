@@ -215,6 +215,7 @@ const memoryInputSchema = `{
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
     "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to write ops; 0 means no expiry (or keep existing on update)."},
     "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
+    "sources":    {"type": "array", "items": {"type": "string", "enum": ["facts","documents"]}, "description": "search / recall: which kinds of remembered thing to return. \"facts\" = your own memory; \"documents\" = Document chunk bodies, which share the memory keyspace. recall defaults to facts only (document prose is not something you were told); search defaults to both. Use this instead of guessing key prefixes."},
     "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1). cursor_scan: max chats returned in one page (default 10, max 50)."},
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
@@ -249,16 +250,21 @@ type memoryInput struct {
 	// tree. On `set`, a memory_entry dirent is registered at this path; on
 	// `get`, the path resolves to the entry's key (an alternative to `key`).
 	// Same (scope, scope_id) as the entry; tenant from the run identity.
-	Path      string          `json:"path,omitempty"`
-	Value     json.RawMessage `json:"value,omitempty"`
-	Delta     *int64          `json:"delta,omitempty"`
-	TTL       int64           `json:"ttl,omitempty"`
-	Prefix    string          `json:"prefix,omitempty"`
-	Limit     int             `json:"limit,omitempty"`
-	Embed     bool            `json:"embed,omitempty"`      // v0.9.0
-	EmbedText string          `json:"embed_text,omitempty"` // v0.9.0
-	Query     string          `json:"query,omitempty"`      // v0.9.0
-	TopK      int             `json:"top_k,omitempty"`      // v0.9.0
+	Path   string          `json:"path,omitempty"`
+	Value  json.RawMessage `json:"value,omitempty"`
+	Delta  *int64          `json:"delta,omitempty"`
+	TTL    int64           `json:"ttl,omitempty"`
+	Prefix string          `json:"prefix,omitempty"`
+	// Sources selects WHICH KINDS of remembered thing search/recall may return
+	// (RFC BW): "facts" (the agent's own memory) and/or "documents" (Document chunk
+	// bodies, which share the memory keyspace). It is the named alternative to making
+	// a caller know the reserved doc.chunk: prefix.
+	Sources   []string `json:"sources,omitempty"`
+	Limit     int      `json:"limit,omitempty"`
+	Embed     bool     `json:"embed,omitempty"`      // v0.9.0
+	EmbedText string   `json:"embed_text,omitempty"` // v0.9.0
+	Query     string   `json:"query,omitempty"`      // v0.9.0
+	TopK      int      `json:"top_k,omitempty"`      // v0.9.0
 	// Rank is the RFC I hybrid-ranking weight block for `search`. Nil =
 	// pure semantic (today's behavior). See memrank.RankConfig.
 	Rank *memrank.RankConfig `json:"rank,omitempty"`
@@ -1021,6 +1027,29 @@ func (m *Memory) originAvailable(ctx context.Context, tenant string, prov store.
 	return false
 }
 
+// parseSources maps the wire strings onto the typed selector (RFC BW).
+//
+// UNKNOWN VALUES ARE DROPPED rather than rejected. The selector narrows what comes
+// back, so the failure mode of a typo is a caller believing it filtered when it did
+// not — but rejecting the whole call would make a future value name break an older
+// runtime, and each op's default already covers the empty result. The enum in the
+// input schema is where a caller learns the spelling.
+func parseSources(in []string) []memrank.Source {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]memrank.Source, 0, len(in))
+	for _, s := range in {
+		switch memrank.Source(strings.ToLower(strings.TrimSpace(s))) {
+		case memrank.SourceFacts:
+			out = append(out, memrank.SourceFacts)
+		case memrank.SourceDocuments:
+			out = append(out, memrank.SourceDocuments)
+		}
+	}
+	return out
+}
+
 // coreBlockKeyPrefix is the reserved KV namespace for RFC BL P1 core memory
 // blocks (single source of truth in the memrank package, shared with the HTTP
 // injection reader): a block labeled <label> is stored at `core/<label>`.
@@ -1265,6 +1294,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
 		QueryText: in.Query,
 		Prefix:    in.Prefix,
+		Sources:   parseSources(in.Sources),
 		TopK:      topK,
 	}, rankCfg, dedupCfg)
 	if err != nil {
@@ -1405,6 +1435,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		Query:     in.Query,
 		TopK:      topK,
 		Threshold: in.Threshold,
+		Sources:   parseSources(in.Sources),
 	})
 	if err != nil {
 		return errResult(fmt.Sprintf("recall: %s", err)), nil

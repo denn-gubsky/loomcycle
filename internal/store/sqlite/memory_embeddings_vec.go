@@ -77,7 +77,7 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store
 	return store.MemoryEmbedding{}, errVecImplPending
 }
 
-func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	return nil, errVecImplPending
 }
 

@@ -260,7 +260,7 @@ func TestConsolidationEval_HybridRetrievalSurfacesPlantedFact(t *testing.T) {
 
 	// Premise check: the keyword leg must actually reach the planted fact and
 	// nothing else, or the fusion assertion would pass for the wrong reason.
-	lex, err := fts.MemoryFullTextSearch(ctx, "", scope, evalUser, "", queryText, 10)
+	lex, err := fts.MemoryFullTextSearch(ctx, "", scope, evalUser, store.MemorySearchFilter{}, queryText, 10)
 	if err != nil {
 		t.Fatalf("keyword leg: %v", err)
 	}

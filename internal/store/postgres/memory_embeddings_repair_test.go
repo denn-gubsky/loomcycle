@@ -104,7 +104,7 @@ func assertVectorOpsRefuse(t *testing.T, s store.Store) {
 	if _, err := s.MemoryEmbedGet(ctx, tenant, scope, scopeID, key); !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedGet: want ErrVectorUnsupported, got %v", err)
 	}
-	if _, err := s.MemoryEmbedSearch(ctx, tenant, scope, scopeID, "", []float32{1, 2, 3}, 5); !errors.Is(err, store.ErrVectorUnsupported) {
+	if _, err := s.MemoryEmbedSearch(ctx, tenant, scope, scopeID, store.MemorySearchFilter{}, []float32{1, 2, 3}, 5); !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedSearch: want ErrVectorUnsupported, got %v", err)
 	}
 	if _, err := s.MemoryEmbedListByModel(ctx, tenant, scope, scopeID, "p", "m", 10); !errors.Is(err, store.ErrVectorUnsupported) {
@@ -115,7 +115,7 @@ func assertVectorOpsRefuse(t *testing.T, s store.Store) {
 	}
 	// The full-text leg degrades to (nil, nil) by contract — the hybrid
 	// ranker treats "no full-text rows" as a missing leg, not a failure.
-	rows, err := s.MemoryFullTextSearch(ctx, tenant, scope, scopeID, "", "hello", 5)
+	rows, err := s.MemoryFullTextSearch(ctx, tenant, scope, scopeID, store.MemorySearchFilter{}, "hello", 5)
 	if err != nil {
 		t.Errorf("MemoryFullTextSearch: want nil error, got %v", err)
 	}

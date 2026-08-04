@@ -229,14 +229,14 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// Leg 1: vector (cosine-ordered). Errors pass through unwrapped —
 		// ErrDimensionMismatch / ErrVectorUnsupported are user-actionable and
 		// the tool's errors.Is checks match the backend-constructed *MemoryError.
-		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Prefix, queryVec, fetch)
+		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Filter(), queryVec, fetch)
 		if verr != nil {
 			lcotel.SetSpanError(span, verr)
 			return memory.SearchResult{}, verr
 		}
 		// Leg 2: full-text (keyword, ts_rank-ordered). (nil,nil) on a store
 		// without a full-text index, so the fusion collapses to pure-vector.
-		fres, ferr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, q.Prefix, q.QueryText, fetch)
+		fres, ferr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, q.Filter(), q.QueryText, fetch)
 		if ferr != nil {
 			lcotel.SetSpanError(span, ferr)
 			return memory.SearchResult{}, ferr
@@ -254,7 +254,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		if fetch > 51 {
 			fetch = 51
 		}
-		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Prefix, queryVec, fetch)
+		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Filter(), queryVec, fetch)
 		if verr != nil {
 			lcotel.SetSpanError(span, verr)
 			return memory.SearchResult{}, verr
@@ -469,8 +469,24 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 	if topK <= 0 {
 		topK = 10
 	}
+	// RECALL DEFAULTS TO THE AGENT'S OWN MEMORY, NOT DOCUMENTS (RFC BW §4a).
+	//
+	// RFC BU §6 already promised this — "recall deliberately does NOT reach documents"
+	// — and it was true only because chunk bodies had no embeddings. RFC BU phases 1-2
+	// embedded ~2,900 of them into the same per-scope vector plane, so the guarantee
+	// became false without a line of this function changing. Measured afterwards: a
+	// medication question returned seven document chunks in ten hits, with a
+	// horizontal rule (0.477) outranking the fact holding the answer (0.434).
+	//
+	// A caller that genuinely wants both asks for both; `search` still spans
+	// everything by default, because /v1/_memory/search exists to answer "where did I
+	// record this" across both planes.
+	sources := q.Sources
+	if len(sources) == 0 {
+		sources = []memory.Source{memory.SourceFacts}
+	}
 	res, err := b.Search(ctx, scope, scopeID,
-		memory.SearchQuery{QueryText: q.Query, TopK: topK},
+		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources},
 		memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		return memory.RecallResult{}, err

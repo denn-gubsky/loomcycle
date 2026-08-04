@@ -162,7 +162,7 @@ func (s *helpFakeStore) MemoryDelete(_ context.Context, _ string, _ store.Memory
 	return ok, nil
 }
 
-func (s *helpFakeStore) MemoryEmbedSearch(_ context.Context, _ string, _ store.MemoryScope, _, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (s *helpFakeStore) MemoryEmbedSearch(_ context.Context, _ string, _ store.MemoryScope, _ string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.embedSearchErr != nil {
@@ -175,7 +175,7 @@ func (s *helpFakeStore) MemoryEmbedSearch(_ context.Context, _ string, _ store.M
 	}
 	var rows []scored
 	for k, r := range s.rows {
-		if keyPrefix != "" && !strings.HasPrefix(k, keyPrefix) {
+		if filter.KeyPrefix != "" && !strings.HasPrefix(k, filter.KeyPrefix) {
 			continue
 		}
 		rows = append(rows, scored{key: k, r: r, s: helpCosine(query, r.vector)})
@@ -194,7 +194,7 @@ func (s *helpFakeStore) MemoryEmbedSearch(_ context.Context, _ string, _ store.M
 	return out, nil
 }
 
-func (s *helpFakeStore) MemoryFullTextSearch(_ context.Context, _ string, _ store.MemoryScope, _, keyPrefix, queryText string, topK int) ([]store.MemorySearchEntry, error) {
+func (s *helpFakeStore) MemoryFullTextSearch(_ context.Context, _ string, _ store.MemoryScope, _ string, filter store.MemorySearchFilter, queryText string, topK int) ([]store.MemorySearchEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.fullText {
@@ -208,7 +208,7 @@ func (s *helpFakeStore) MemoryFullTextSearch(_ context.Context, _ string, _ stor
 	}
 	var rows []scored
 	for k, r := range s.rows {
-		if keyPrefix != "" && !strings.HasPrefix(k, keyPrefix) {
+		if filter.KeyPrefix != "" && !strings.HasPrefix(k, filter.KeyPrefix) {
 			continue
 		}
 		lower := strings.ToLower(r.embedText)
