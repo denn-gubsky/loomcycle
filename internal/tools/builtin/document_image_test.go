@@ -171,3 +171,64 @@ func TestAssetDescription_MissingRowIsEmptyNotAnError(t *testing.T) {
 		t.Errorf("want \"\" for a chunk with no asset, got %q", got)
 	}
 }
+
+// TestEmbedBody_UncaptionedImageStillEmbedsItsDescription is the regression test for
+// a bug found on the live deployment, after the describe pass reported success.
+//
+// embedBody guarded on the RAW body — `if strings.TrimSpace(body) == "" { return }`
+// — BEFORE the per-type switch. An image's body is its caption, so an UNCAPTIONED
+// image returned early and its generated description was never consulted. The
+// describe pass then persisted a description, reported described=2, and the images
+// stayed unsearchable: `get_asset` showed a description, the sweep showed success,
+// and the candidate count never moved. Correct-looking from every surface.
+//
+// Both pre-existing image tests used a CAPTIONED chunk, which is why the case went
+// uncovered — and an uncaptioned image is the common one for an uploaded asset.
+//
+// FAIL-BEFORE: restoring the raw-body guard ahead of the switch makes this embed
+// nothing at all.
+func TestEmbedBody_UncaptionedImageStillEmbedsItsDescription(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "image", "five", "round", "characters", "circuit", "board")
+
+	res, _ := d.Execute(ctx, json.RawMessage(`{"op":"create_document","title":"Logos"}`))
+	docID := resultField(res, "document_id")
+	// NO caption — exactly the shape of an uploaded asset.
+	body, _ := json.Marshal(map[string]any{
+		"op": "create_chunk", "document_id": docID, "title": "Logo",
+		"type": "image", "body": "",
+	})
+	res, err := d.Execute(ctx, body)
+	if err != nil || res.IsError {
+		t.Fatalf("create_chunk: %v %s", err, res.Text)
+	}
+	chunkID := resultField(res, "id")
+
+	png, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==")
+	sa, _ := json.Marshal(map[string]any{
+		"op": "set_asset", "id": chunkID,
+		"media_type": "image/png", "data": base64.StdEncoding.EncodeToString(png),
+	})
+	if r, err := d.Execute(ctx, sa); err != nil || r.IsError {
+		t.Fatalf("set_asset: %v %s", err, r.Text)
+	}
+
+	// Precondition: with neither caption nor description there is nothing to index.
+	if got := embeddedTextFor(t, vs, chunkID); got != "" {
+		t.Fatalf("precondition: an image with no caption and no description embedded %q", got)
+	}
+
+	// The describe pass persists a description and re-embeds.
+	if err := d.SetAssetDescription(ctx, "user", chunkID, "five round characters on a circuit board"); err != nil {
+		t.Fatalf("SetAssetDescription: %v", err)
+	}
+	got := embeddedTextFor(t, vs, chunkID)
+	if got == "" {
+		t.Fatal("an uncaptioned image was NOT embedded after a description was persisted — " +
+			"the description sits in the database while the image stays unsearchable, and " +
+			"every surface an operator checks reports success")
+	}
+	if !strings.Contains(got, "five round characters") {
+		t.Errorf("embed text does not carry the description: %q", got)
+	}
+}

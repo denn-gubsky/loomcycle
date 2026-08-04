@@ -753,16 +753,18 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 	if d.Embedder == nil {
 		return
 	}
-	text := strings.TrimSpace(body)
-	if text == "" {
-		return
-	}
+	// DERIVE THE TEXT FIRST, THEN CHECK IT — never guard on the raw body. An earlier
+	// version returned early on an empty body before this switch ran, which made an
+	// UNCAPTIONED image permanently unsearchable: its body is empty by definition, so
+	// the generated description was never consulted no matter how many times a
+	// describe pass wrote one. The body is only one of the sources here; for an image
+	// it may not be a source at all.
+	var text string
 	switch chunkType {
 	case "image":
-		// The body IS the caption (export renders it as the alt text). The
-		// generated description is added by the describe pass, which re-embeds —
-		// it is not available here, and waiting for it would leave every image
-		// unsearchable until an operator sweeps.
+		// The body is the CAPTION (export renders it as the alt text) and the
+		// description comes from the asset row, so an image with neither is what
+		// yields "" — not an image with no caption.
 		text = imageEmbedText(body, d.assetDescription(ctx, key, chunkID))
 	case "mermaid":
 		text = mermaidEmbedText(body)
@@ -775,10 +777,14 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 				return
 			}
 			text = mermaidEmbedText(src)
+		} else {
+			text = strings.TrimSpace(body)
 		}
 	}
-	// A diagram with no extractable label embeds nothing rather than embedding
-	// punctuation: a vector built from syntax can only produce false matches.
+	// Nothing to index: an empty prose body, a diagram with no extractable label, or
+	// an image with neither caption nor description. Embedding punctuation — or a
+	// placeholder — is worse than embedding nothing, because a row that exists ranks
+	// against every query.
 	if text == "" {
 		return
 	}
