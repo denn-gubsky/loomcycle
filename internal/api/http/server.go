@@ -3004,6 +3004,10 @@ func (s *Server) Mux() http.Handler {
 	// support OR no embedder is configured.
 	mux.Handle("GET /v1/_memory/embed_stats", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryEmbedStats))))
 	mux.Handle("POST /v1/_memory/reembed", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryReembed))))
+	// RFC BV phase 1 — off-run unified semantic search over a scope's k/v entries
+	// AND document-chunk bodies. Admin-only via the /v1/_* catch-all (a later
+	// phase re-gates the /v1/_memory/* family to the tenant axis).
+	mux.Handle("POST /v1/_memory/search", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemorySearch))))
 	mux.Handle("POST /v1/_memory/backfill_embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryBackfillEmbeddings))))
 	// RFC BU phase 4b — generate vision descriptions for image chunks that have
 	// none, then re-embed so they become searchable. Left on the /v1/_* catch-all
