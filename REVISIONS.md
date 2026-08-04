@@ -4,6 +4,24 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.48.0
+
+**🔖 Heading chunks became searchable, and `@loomcycle/client` ships the memory-view SDK.** Minor: one embedding-policy change and three additive adapter methods. No schema change, no wire/proto change.
+
+**A bodyless chunk now embeds its TITLE.** Every embedding policy derived text from the *body*, so a chunk whose body yielded none was excluded from semantic search altogether — which silently removed the most navigable part of a document from retrieval. On the reference deployment **186 of ~3,000 chunks are heading-only**, with titles like `RFC BE — History Tool (browse / search / rename / annotate past chats)` and `Phase 2 — name-links + transclusion`.
+
+The rule applies uniformly after the per-type switch: when the derived text is empty, fall back to the title. It is a **fallback, never an addition** — appending it would double-weight whatever the author put in the heading on every chunk in the corpus, and for prose the body usually restates the heading anyway. Being uniform, it also covers a diagram whose labels were all syntax and an image with neither caption nor description, which would have made the deployment's two images findable before any vision call.
+
+The only quality test is **"contains a letter"**, not a length. Measured before building: of 20 sampled bodyless chunks 18 had meaningful titles, and the shortest were `Active RFCs` (11 characters) and `Configuration` (13) — a length filter would discard exactly what someone searching a document would type. `---`, `42`, `1.2.3` carry no language and are dropped, so no vector is stored for them.
+
+The admin backfill applies the same fallback, or existing documents would stay permanently less searchable than ones authored after this landed — and a bodyless chunk is unreachable any other way, since the sweep sees memory *rows* while a title lives in SQL Memory. Both surfaces route through one judgement so they cannot disagree.
+
+**`@loomcycle/client` 1.48.0** adds three HTTP-only methods backing the memory view: `memorySearch()` (the off-run unified search over k/v entries and document-chunk bodies from v1.47.0, each hit tagged `kind: memory|document`), `memoryEmbedStats()`, and `reembedMemory()` — whose `dryRun` stays a safe dry run when omitted, since the server defaults it true. Fact reads (`list_facts`, `get_chunk`'s `entity` block) ride the existing `document()` passthrough rather than gaining bespoke methods. Additive: existing callers are unchanged.
+
+**Why npm skips 1.47.0.** The adapter's version was bumped to 1.47.0 in the same window that tag was cut, and a publish only fires when the package version equals the tag — so `@loomcycle/client@1.47.0` never existed on npm. It is realigned to 1.48.0 here, and npm goes 1.46.0 → 1.48.0. Nothing is missing; there was never a 1.47.0 package.
+
+`loomcycle` (PyPI) stays 1.46.0 and `@loomcycle/explorer` 0.6.0 — neither was touched; the SDK methods are TS-only because the endpoints they wrap have no gRPC twin.
+
 ## What's in v1.47.0
 
 **🔎 A human-facing memory view, the memory surfaces opened to tenant operators, and the last of the RFC BU sweep fixes.** Minor rather than a patch because RFC BV Phase 1 adds new surface — one HTTP endpoint and two Document ops — and the `/v1/_memory/*` family changes who can reach it. No schema change, no wire/proto change, no adapter change.
