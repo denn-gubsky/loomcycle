@@ -3,8 +3,12 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -42,7 +46,7 @@ func TestBackfillEmbeddings_UnsupportedTierSaysSoRatherThanReportingZero(t *test
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
-		"/v1/_memory/backfill_embeddings?scope=user&scope_id=alice&prefix=doc.chunk:&dry_run=false", nil).
+		"/v1/_memory/backfill_embeddings?scope=user&scope_id=alice&tenant=&prefix=doc.chunk:&dry_run=false", nil).
 		WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
 			Subject: "root", Scopes: []string{auth.ScopeAdmin},
 		}))
@@ -78,7 +82,10 @@ func TestBackfillEmbeddings_DefaultsToDryRun(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
-		"/v1/_memory/backfill_embeddings?scope=user&scope_id=alice&prefix=doc.chunk:", nil).
+		// ?tenant= is EXPLICIT: an admin naming no tenant at all is refused as
+		// ambiguous (see TestBackfillEmbeddings_AdminMustNameATenant), and this test
+		// is about the dry-run default rather than about tenant resolution.
+		"/v1/_memory/backfill_embeddings?scope=user&scope_id=alice&tenant=&prefix=doc.chunk:", nil).
 		WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
 			Subject: "root", Scopes: []string{auth.ScopeAdmin},
 		}))
@@ -157,5 +164,163 @@ func TestEmbedTextForRow_UnwrapsAChunkBody(t *testing.T) {
 	plain := embedTextForRow(store.MemoryEntry{Key: "memory/fact/x", Value: json.RawMessage(`"a fact"`)})
 	if plain != `"a fact"` {
 		t.Errorf("ordinary row = %q, want the raw value (unchanged behaviour)", plain)
+	}
+}
+
+// pagingStore is a store whose vector half is real enough to exercise the sweep:
+// it honours the afterKey cursor and records what was embedded. Everything else
+// delegates to the embedded store.
+//
+// Needed because the sqlite test tier has no vector support, so the live embedding
+// path — where the starvation bug lived — is unreachable on it.
+type pagingStore struct {
+	store.Store
+	keys     []string // sorted; the scope's memory keys
+	bodies   map[string]string
+	embedded map[string]bool
+}
+
+func newPagingStore(base store.Store, bodies map[string]string) *pagingStore {
+	p := &pagingStore{Store: base, bodies: bodies, embedded: map[string]bool{}}
+	for k := range bodies {
+		p.keys = append(p.keys, k)
+	}
+	sort.Strings(p.keys)
+	return p
+}
+
+func (p *pagingStore) MemoryEmbedListMissing(_ context.Context, _ string, _ store.MemoryScope,
+	_, keyPrefix, afterKey string, limit int) ([]store.MemoryEntry, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000 // clamp, never reset to a smaller default
+	}
+	var out []store.MemoryEntry
+	for _, k := range p.keys {
+		if p.embedded[k] || !strings.HasPrefix(k, keyPrefix) || k <= afterKey {
+			continue
+		}
+		out = append(out, store.MemoryEntry{
+			Key:   k,
+			Value: json.RawMessage(`{"body":` + strconv.Quote(p.bodies[k]) + `}`),
+		})
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (p *pagingStore) MemoryEmbedSet(_ context.Context, _ string, _ store.MemoryScope,
+	_, key string, _ store.MemoryEmbedding) error {
+	p.embedded[key] = true
+	return nil
+}
+
+// TestBackfillEmbeddings_PagesPastRowsItCannotEmbed is the regression test for a
+// bug found by running the sweep on a live 3,143-chunk scope.
+//
+// A row with no body text never gains an embedding, so it stays a candidate
+// forever. When `limit` bounded how many rows were LOOKED AT, those rows piled up
+// at the front of the key order until they filled the whole window and throughput
+// reached zero with thousands of rows still unembedded — the residue obeys
+// R' = R + p·(limit − R), whose fixed point is R = limit. Observed decay per
+// 200-row window: 189 / 179 / 169 / 160 / 147.
+//
+// FAIL-BEFORE: make the handler read only the first page (drop the paging loop) and
+// this reports embedded=0 with 5 embeddable rows sitting just past the empties.
+func TestBackfillEmbeddings_PagesPastRowsItCannotEmbed(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
+	emb := &backfillEmbedder{}
+	srv.embedder = emb
+
+	// The first `limit` rows by key are ALL unembeddable; the real work sits behind
+	// them. This is the shape a document scope actually has (roots and headings sort
+	// among the bodies), concentrated so a small limit reproduces it.
+	bodies := map[string]string{}
+	for i := 0; i < 4; i++ {
+		bodies[fmt.Sprintf("doc.chunk:a%02d", i)] = "" // no text to embed, ever
+	}
+	for i := 0; i < 5; i++ {
+		bodies[fmt.Sprintf("doc.chunk:b%02d", i)] = fmt.Sprintf("body number %d", i)
+	}
+	ps := newPagingStore(srv.store, bodies)
+	srv.store = ps
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/v1/_memory/backfill_embeddings?scope=user&scope_id=alice&tenant=&prefix=doc.chunk:&limit=4&dry_run=false", nil).
+		WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
+			Subject: "root", Scopes: []string{auth.ScopeAdmin},
+		}))
+	srv.handleMemoryBackfillEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+
+	// limit=4 bounds how many are EMBEDDED. All four unembeddable rows come first, so
+	// a single-window implementation embeds nothing at all.
+	if n, _ := got["embedded"].(float64); n != 4 {
+		t.Errorf("embedded = %v, want 4 — the sweep must page PAST the %d rows it "+
+			"cannot embed, or it starves; full body: %s", got["embedded"], 4, rec.Body.String())
+	}
+	if n, _ := got["skipped_empty"].(float64); n != 4 {
+		t.Errorf("skipped_empty = %v, want 4 — rows with no text must be reported, not "+
+			"silently passed over", got["skipped_empty"])
+	}
+	// One embeddable row is left over, so the caller must be told to come back.
+	if got["more"] != true {
+		t.Errorf("more = %v, want true with a 5th embeddable row outstanding", got["more"])
+	}
+	if emb.calls != 4 {
+		t.Errorf("embedder called %d times, want 4 — an empty body must not reach the "+
+			"embedder", emb.calls)
+	}
+}
+
+// TestBackfillEmbeddings_AdminMustNameATenant — memory rows are keyed on the
+// tenant, so an admin token that names none resolves to the DEFAULT tenant and the
+// sweep reports a truthful-looking "candidates: 0" against a tenant the operator
+// never meant, leaving the intended one untouched. Verified live on a three-tenant
+// deployment before this refusal existed. Mirrors the erasure, directory and
+// orphan-repair surfaces.
+func TestBackfillEmbeddings_AdminMustNameATenant(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
+	srv.embedder = &backfillEmbedder{}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/v1/_memory/backfill_embeddings?scope=user&scope_id=alice&prefix=doc.chunk:", nil).
+		WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
+			Subject: "root", Scopes: []string{auth.ScopeAdmin},
+		}))
+	srv.handleMemoryBackfillEmbeddings(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 when an admin names no tenant; body: %s",
+			rec.Code, rec.Body.String())
+	}
+	var e map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &e)
+	if e["code"] != "tenant_required" {
+		t.Errorf("code = %v, want tenant_required", e["code"])
+	}
+	// An EXPLICIT empty tenant is a legitimate target (the default partition), so it
+	// must NOT be refused — otherwise the default tenant becomes unreachable.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost,
+		"/v1/_memory/backfill_embeddings?scope=user&scope_id=alice&tenant=&prefix=doc.chunk:", nil).
+		WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
+			Subject: "root", Scopes: []string{auth.ScopeAdmin},
+		}))
+	srv.handleMemoryBackfillEmbeddings(rec2, req2)
+	if rec2.Code == http.StatusBadRequest && strings.Contains(rec2.Body.String(), "tenant_required") {
+		t.Error("an explicit ?tenant= (the default partition) was refused; that makes the " +
+			"default tenant unsweepable")
 	}
 }

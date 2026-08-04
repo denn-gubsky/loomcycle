@@ -45,10 +45,21 @@ import (
 // and a local model at middle keeps the pass free.
 const describeImagesDefaultTier = "middle"
 
-// describeMaxTokens bounds the description. A search index wants a couple of
-// sentences; an essay dilutes the embedding, because a vector is an average and
-// every extra clause pulls it toward the generic.
-const describeMaxTokens = 300
+// describeMaxTokens bounds the description.
+//
+// It is a CEILING, not a target: a model stops when it has answered, so a generous
+// value costs nothing on a normal call. It is generous because of a failure measured
+// on the reference deployment — a thinking-capable vision model (qwen3.6) emits its
+// reasoning trace FIRST, and at 300 tokens the trace consumed the entire budget:
+// done_reason=length, eval_count=300, and ZERO characters of description. With
+// thinking off the same request answers in 84 tokens, so 300 looked ample and was
+// not.
+//
+// A budget rather than forcing `effort: low` (which the Ollama driver maps to
+// think:false) DELIBERATELY: that flag errors on a model which cannot reason, so
+// forcing it would break a non-thinking vision model such as llava to accommodate a
+// thinking one. A ceiling is model-agnostic.
+const describeMaxTokens = 1500
 
 // describeCallTimeout bounds ONE vision call, not the sweep. A cold local vision
 // model can take tens of seconds on its first request, so it is generous. The
@@ -340,12 +351,17 @@ func (s *Server) describeOneImage(ctx context.Context, providerID string, prov p
 	}
 	var b strings.Builder
 	var callErr error
+	stopReason := ""
 	// Drain to completion even after an error: abandoning the channel leaves the
 	// driver's goroutine blocked on a send.
 	for ev := range ch {
 		switch ev.Type {
 		case providers.EventText:
 			b.WriteString(ev.Text)
+		case providers.EventDone:
+			if ev.StopReason != "" {
+				stopReason = ev.StopReason
+			}
 		case providers.EventError:
 			if callErr == nil {
 				callErr = errors.New(ev.Error)
@@ -355,5 +371,19 @@ func (s *Server) describeOneImage(ctx context.Context, providerID string, prov p
 	if callErr != nil {
 		return "", callErr
 	}
-	return strings.TrimSpace(b.String()), nil
+	out := strings.TrimSpace(b.String())
+	// EMPTY BECAUSE TRUNCATED IS A FAILURE, NOT AN EMPTY ANSWER, and the distinction
+	// decides whether the image is ever looked at again: an empty answer is stamped
+	// examined and never retried. A run that hit the token ceiling produced nothing
+	// because it ran out of room — on a thinking model the reasoning trace comes
+	// first and can consume the whole budget — which is a configuration problem the
+	// operator can fix, so it must stay retryable. Recording it as "the model had
+	// nothing to say" is how a code bug becomes a permanent fact about the data.
+	if out == "" && stopReason == "max_tokens" {
+		return "", fmt.Errorf("the model hit the %d-token ceiling before producing any "+
+			"description (on a thinking model the reasoning trace is emitted first and can "+
+			"consume the whole budget); not marked examined, so it will be retried",
+			describeMaxTokens)
+	}
+	return out, nil
 }

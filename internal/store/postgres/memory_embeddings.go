@@ -555,12 +555,19 @@ func decodePgvector(s string) ([]float32, error) {
 // key prefix. See the Store interface for why MemoryEmbedListByModel cannot serve
 // this (it INNER JOINs the table these rows are absent from) and why paging by
 // re-calling is resumable without a cursor.
-func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, limit int) ([]store.MemoryEntry, error) {
+func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEntry, error) {
 	if !s.pgvectorEnabled {
 		return nil, store.ErrVectorUnsupported
 	}
-	if limit <= 0 || limit > 1000 {
+	// CLAMP, do not reset. This used to send limit>1000 back to the 200 default, so
+	// asking for a bigger page silently returned a SMALLER one — a caller widening
+	// the window to escape the starvation described on the interface got the
+	// opposite of what it asked for.
+	if limit <= 0 {
 		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
 	}
 	// LEFT JOIN + IS NULL, the inverse of MemoryEmbedListByModel's inner join.
 	// Ordered by key so successive pages are stable while rows are being embedded
@@ -578,8 +585,12 @@ func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, sco
 	           AND m.superseded_at IS NULL`
 	args := []any{tenantID, string(scope), scopeID}
 	if keyPrefix != "" {
-		sql += ` AND m.key LIKE $4`
 		args = append(args, keyPrefix+"%")
+		sql += ` AND m.key LIKE $` + strconv.Itoa(len(args))
+	}
+	if afterKey != "" {
+		args = append(args, afterKey)
+		sql += ` AND m.key > $` + strconv.Itoa(len(args))
 	}
 	sql += ` ORDER BY m.key LIMIT ` + strconv.Itoa(limit)
 

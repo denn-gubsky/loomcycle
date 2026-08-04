@@ -54,6 +54,6 @@ func (s *Store) MemoryEmbedStats(ctx context.Context, tenantID string, scope sto
 
 // MemoryEmbedListMissing — the non-vec sqlite tier has no embeddings at all, so
 // there is nothing to backfill.
-func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, limit int) ([]store.MemoryEntry, error) {
+func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEntry, error) {
 	return nil, store.ErrVectorUnsupported
 }

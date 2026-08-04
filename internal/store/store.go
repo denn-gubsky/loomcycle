@@ -1940,12 +1940,18 @@ type Store interface {
 	// document bodies without touching a scope's ordinary key/value rows, which an
 	// operator may deliberately have left unembedded.
 	//
-	// RESUMABILITY IS INHERENT rather than bookkept. Every embedded row drops out
-	// of this candidate set, so a sweep that dies at row 2,000 simply finds 1,114
-	// remaining on the next call — there is no cursor to persist and no way for a
-	// crash to double-embed or skip. Callers page by re-calling until the count is
-	// zero.
-	MemoryEmbedListMissing(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix string, limit int) ([]MemoryEntry, error)
+	// afterKey is a KEYSET cursor: only rows with key > afterKey are returned ("" =
+	// from the start). It exists because "every embedded row drops out of this set"
+	// is not enough on its own — a row the caller CANNOT embed (a document root or a
+	// section heading has no body text) never drops out, accumulates at the front of
+	// the key order, and eventually fills the whole limit window, at which point the
+	// sweep makes no progress with thousands of rows still unembedded. Observed live:
+	// throughput decayed 189/179/169/160/147 per 200-row window before stalling. The
+	// cursor lets a caller step past what it skipped.
+	//
+	// Ordered by key so successive pages are stable while rows are embedded out from
+	// under the query, and so the cursor is meaningful.
+	MemoryEmbedListMissing(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEntry, error)
 
 	// MemoryEmbedStats returns per-(provider, model) row counts and
 	// total embedding bytes for the given scope. Drives the v0.9.0

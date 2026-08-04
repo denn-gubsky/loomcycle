@@ -92,6 +92,6 @@ func (s *Store) MemoryEmbedStats(ctx context.Context, tenantID string, scope sto
 // MemoryEmbedListMissing — pending on the vec tier, matching the rest of the
 // reembed-listing family (MemoryEmbedListByModel, MemoryEmbedStats). The backfill
 // admin surface is postgres-only until that lands.
-func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, limit int) ([]store.MemoryEntry, error) {
+func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEntry, error) {
 	return nil, errVecImplPending
 }
