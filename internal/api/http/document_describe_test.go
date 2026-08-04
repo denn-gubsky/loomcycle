@@ -30,6 +30,9 @@ type visionProvider struct {
 	reply   string
 	canSee  bool
 	failErr string
+	// stopReason overrides the terminal EventDone reason, so a test can reproduce a
+	// turn that ran out of token budget before saying anything.
+	stopReason string
 }
 
 func (v *visionProvider) ID() string                    { return "vis" }
@@ -50,7 +53,11 @@ func (v *visionProvider) Call(_ context.Context, req providers.Request) (<-chan 
 	} else {
 		ch <- providers.Event{Type: providers.EventText, Text: v.reply}
 	}
-	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn"}
+	stop := v.stopReason
+	if stop == "" {
+		stop = "end_turn"
+	}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: stop}
 	close(ch)
 	return ch, nil
 }
@@ -355,4 +362,53 @@ func (r *recordingHTTPEmbedder) seen() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.texts...)
+}
+
+// TestDescribeImages_TruncatedAnswerIsRetryableNotEmpty is the regression test for a
+// bug found by running the pass against a live deployment.
+//
+// describeMaxTokens was 300 and qwen3.6 is a thinking model: it emits its reasoning
+// trace FIRST, which consumed the entire budget (done_reason=length, eval_count=300)
+// and produced ZERO characters of description. The pass recorded that as an
+// answered-empty image and stamped described_at — so a CODE bug became a permanent
+// fact about the data, and no re-run would ever revisit it.
+//
+// An empty answer that stopped at the ceiling is a configuration problem the operator
+// can fix, so it must be reported as a FAILURE and left retryable.
+func TestDescribeImages_TruncatedAnswerIsRetryableNotEmpty(t *testing.T) {
+	prov := &visionProvider{reply: "", canSee: true, stopReason: "max_tokens"}
+	srv, _, _, _ := describeFixture(t, prov)
+
+	_, out := postDescribe(t, srv, "&dry_run=false")
+	if n, _ := out["empty"].(float64); n != 0 {
+		t.Errorf("empty = %v, want 0 — a truncated turn is not an answered-empty image, "+
+			"and marking it examined retires it forever", out["empty"])
+	}
+	if n, _ := out["failed"].(float64); n != 1 {
+		t.Fatalf("failed = %v, want 1: %v", out["failed"], out)
+	}
+	if ff, _ := out["first_failure"].(string); !strings.Contains(ff, "ceiling") {
+		t.Errorf("first_failure should explain the token ceiling, got %q", ff)
+	}
+	// Still a candidate: the next pass retries it.
+	prov.stopReason, prov.reply = "", "a described image"
+	_, out2 := postDescribe(t, srv, "&dry_run=false")
+	if n, _ := out2["candidates"].(float64); n != 1 {
+		t.Fatalf("a TRUNCATED image was retired from the candidate set (candidates=%v)",
+			out2["candidates"])
+	}
+	if n, _ := out2["described"].(float64); n != 1 {
+		t.Errorf("the retry did not describe it: %v", out2)
+	}
+}
+
+// TestDescribeImages_BudgetLeavesRoomForAThinkingTrace pins the ceiling itself. A
+// thinking model's trace measured ~1281 characters (~320 tokens) BEFORE any content,
+// so a budget near that is the bug this constant exists to avoid.
+func TestDescribeImages_BudgetLeavesRoomForAThinkingTrace(t *testing.T) {
+	if describeMaxTokens < 1000 {
+		t.Errorf("describeMaxTokens = %d — a thinking model emits its reasoning trace "+
+			"first (~320 tokens measured) and will consume the whole budget before "+
+			"producing any description", describeMaxTokens)
+	}
 }
