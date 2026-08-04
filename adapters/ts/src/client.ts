@@ -97,10 +97,14 @@ import type {
   LLMEmbeddingsResponse,
   MCPServerDefRowResponse,
   MCPServerDefVerifyResult,
+  MemoryEmbedStatsResponse,
   MemoryEntriesResponse,
   MemoryEntryResponse,
+  MemoryReembedResponse,
   MemoryScopeIDsResponse,
   MemoryScopesResponse,
+  MemorySearchInput,
+  MemorySearchResponse,
   PauseResult,
   PersistentVolumesResponse,
   EphemeralVolumesResponse,
@@ -968,6 +972,77 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
       opts,
+    );
+  }
+
+  // ---- RFC BV memory-view: off-run search + embed-admin reads ----
+
+  /** Off-run unified semantic search over one scope's memory
+   *  (POST /v1/_memory/search). Spans BOTH plain k/v entries AND
+   *  document-chunk bodies in one ranked list — each hit is tagged
+   *  `kind: "memory" | "document"`, and a document hit carries
+   *  `chunk_id` so the caller can fetch its entity block via
+   *  document({ op: "get_chunk" }). The in-band Memory tool's `search`
+   *  op is prefix-scoped + run-bound; this is its off-run twin for the
+   *  admin/operator surface. HTTP-only (no gRPC RPC). `rank` / `dedup`
+   *  are opaque ranking-config objects passed through as-is. */
+  async memorySearch(
+    input: MemorySearchInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<MemorySearchResponse> {
+    const body: Record<string, unknown> = {
+      query: input.query,
+      scope: input.scope,
+      scope_id: input.scopeId,
+    };
+    // Only send top_k when set — the server defaults + caps it (1..50).
+    if (input.topK !== undefined) body.top_k = input.topK;
+    if (input.rank !== undefined) body.rank = input.rank;
+    if (input.dedup !== undefined) body.dedup = input.dedup;
+    return postJSON<MemorySearchResponse>(this.ctx, "/v1/_memory/search", body, {
+      signal: opts?.signal,
+    });
+  }
+
+  /** Per-(provider, model, dimension) row counts + total embedding
+   *  bytes for one scope (GET /v1/_memory/embed_stats). The memory-view
+   *  console shows this to spot a multi-embedder scope BEFORE a reembed
+   *  migration. */
+  async memoryEmbedStats(
+    scope: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<MemoryEmbedStatsResponse> {
+    return jsonFetch<MemoryEmbedStatsResponse>(
+      this.ctx,
+      `/v1/_memory/embed_stats?scope=${encodeURIComponent(scope)}`,
+      opts,
+    );
+  }
+
+  /** Re-embed a scope's rows whose stored embedder differs from the
+   *  configured one (POST /v1/_memory/reembed). `dry_run` defaults TRUE
+   *  server-side, so an omitted `dryRun` returns the planned migration
+   *  WITHOUT writing; pass `dryRun: false` to commit. `limit` caps the
+   *  rows processed per call (server default 1000). The response is a
+   *  discriminated union on `dry_run` — narrow before reading its
+   *  arm-specific fields. */
+  async reembedMemory(
+    scope: string,
+    scopeId: string,
+    opts?: { dryRun?: boolean; limit?: number; signal?: AbortSignal },
+  ): Promise<MemoryReembedResponse> {
+    const query: Record<string, string> = { scope, scope_id: scopeId };
+    // Only send dry_run=false to commit; an omitted flag leaves the
+    // server-side default (true) so a caller can't accidentally reembed.
+    if (opts?.dryRun === false) query.dry_run = "false";
+    if (opts?.limit !== undefined && opts.limit > 0) {
+      query.limit = String(opts.limit);
+    }
+    return postJSON<MemoryReembedResponse>(
+      this.ctx,
+      "/v1/_memory/reembed",
+      undefined,
+      { query, signal: opts?.signal },
     );
   }
 

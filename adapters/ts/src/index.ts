@@ -39,6 +39,11 @@
  *     listMemoryEntries(scope, scopeID, opts?): Promise<MemoryEntriesResponse>
  *     getMemoryEntry(scope, scopeID, key): Promise<MemoryEntryResponse>
  *
+ *     // Memory view — off-run search + embed admin (v1.47.0 — RFC BV; HTTP-only)
+ *     memorySearch(input): Promise<MemorySearchResponse>          // unified k/v + document-chunk search
+ *     memoryEmbedStats(scope): Promise<MemoryEmbedStatsResponse>
+ *     reembedMemory(scope, scopeId, opts?): Promise<MemoryReembedResponse>  // dry_run defaults true
+ *
  *     // Interruption (v0.8.16; decline RFC BH)
  *     listUserInterrupts(userId, opts?): Promise<InterruptListResponse>
  *     listRunInterrupts(runId, opts?): Promise<InterruptListResponse>
@@ -189,6 +194,14 @@ export type {
   MemoryScopeIDSummary,
   MemoryScopeKind,
   MemoryScopesResponse,
+  // Memory view (RFC BV): off-run search + embed admin
+  MemorySearchInput,
+  MemorySearchEntry,
+  MemorySearchResponse,
+  MemoryEmbedModelStats,
+  MemoryEmbedStatsResponse,
+  MemoryReembedConfigured,
+  MemoryReembedResponse,
   // Interruption
   InterruptListResponse,
   InterruptRow,
