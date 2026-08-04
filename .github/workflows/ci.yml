@@ -245,6 +245,12 @@ jobs:
       - name: Install @loomcycle/explorer deps
         working-directory: packages/explorer
         run: npm ci
+      # @loomcycle/memory-view (RFC BV) is consumed from SOURCE via a Vite alias
+      # the same way — install its deps before the web steps
+      # (packages/memory-view/node_modules is gitignored → absent on checkout).
+      - name: Install @loomcycle/memory-view deps
+        working-directory: packages/memory-view
+        run: npm ci
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test
