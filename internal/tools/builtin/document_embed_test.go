@@ -73,31 +73,25 @@ func TestEmbedBody_ProseIsEmbeddedWithItsBodyText(t *testing.T) {
 	}
 }
 
-// TestEmbedBody_MediaBodiesAreSkipped — an image body is a rendered media form (a
-// data URI) and a mermaid body is diagram source. Embedding either indexes noise:
-// base64 matches nothing, and `graph TD` / `-->` / `[` carry no meaning while
-// dominating the tokens. Both get their own policy in later phases (a generated
-// description; deterministic label extraction), so phase 1 must SKIP them rather
-// than index garbage and call documents searchable.
-func TestEmbedBody_MediaBodiesAreSkipped(t *testing.T) {
-	for _, tc := range []struct{ name, body string }{
-		{"mermaid", "```mermaid\ngraph TD; A[User] -->|reads| B[(Memory)]\n```"},
-		{"image", "![diagram](data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==)"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			d, ctx, docID, root := entityFixture(t)
-			emb := &recordingEmbedder{}
-			d.Embedder = emb
-			bj, _ := json.Marshal(tc.body)
-			if _, r := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+
-				`","parent_id":"`+root+`","title":"media","body":`+string(bj)+`}`); r.IsError {
-				t.Fatalf("create_chunk: %s", r.Text)
-			}
-			if seen := emb.seen(); len(seen) != 0 {
-				t.Errorf("a %s body was embedded: %q — media needs its own policy, "+
-					"not the raw form", tc.name, seen)
-			}
-		})
+// TestEmbedBody_ImageBodiesAreSkipped — an image body is a rendered media form (a
+// data URI): embedding it indexes base64, which matches nothing while consuming the
+// scope's vector quota. The searchable text for an image is a generated description,
+// which phase 4 owns, so it is skipped rather than indexed as garbage.
+//
+// Mermaid was skipped here too until phase 3 gave it deterministic label extraction
+// — see document_mermaid_test.go, which now asserts the opposite for diagrams.
+func TestEmbedBody_ImageBodiesAreSkipped(t *testing.T) {
+	d, ctx, docID, root := entityFixture(t)
+	emb := &recordingEmbedder{}
+	d.Embedder = emb
+	bj, _ := json.Marshal("![diagram](data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==)")
+	if _, r := docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+
+		`","parent_id":"`+root+`","title":"media","body":`+string(bj)+`}`); r.IsError {
+		t.Fatalf("create_chunk: %s", r.Text)
+	}
+	if seen := emb.seen(); len(seen) != 0 {
+		t.Errorf("an image body was embedded: %q — the searchable text for an image is "+
+			"a generated description, not the data URI", seen)
 	}
 }
 
