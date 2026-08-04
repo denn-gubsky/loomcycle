@@ -73,11 +73,12 @@ func TestEmbedBody_ImageCaptionIsEmbeddedWithoutAModel(t *testing.T) {
 	}
 }
 
-// TestEmbedBody_ImageWithNoCaptionEmbedsNothing — an uncaptioned image has no text
-// until a describe pass runs. Storing a vector anyway would put a row that means
-// nothing into the index, where it can only produce false matches.
-func TestEmbedBody_ImageWithNoCaptionEmbedsNothing(t *testing.T) {
-	d, vs, ctx := mermaidDocFixture(t, "image")
+// TestEmbedBody_ImageDataURIBodyIsNeverIndexedAsBase64 — a data URI is not a
+// caption. The chunk still becomes searchable, but via its TITLE (the fallback), and
+// the base64 must never reach the embedder: it would match nothing while consuming
+// the scope's vector quota.
+func TestEmbedBody_ImageDataURIBodyIsNeverIndexedAsBase64(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "image", "raw")
 
 	res, _ := d.Execute(ctx, json.RawMessage(`{"op":"create_document","title":"Shots"}`))
 	docID := resultField(res, "document_id")
@@ -91,8 +92,13 @@ func TestEmbedBody_ImageWithNoCaptionEmbedsNothing(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("create_chunk: %v %s", err, res.Text)
 	}
-	if got := embeddedTextFor(t, vs, resultField(res, "id")); got != "" {
-		t.Errorf("an uncaptioned image was embedded: %q", got)
+	got := embeddedTextFor(t, vs, resultField(res, "id"))
+	if strings.Contains(got, "iVBOR") || strings.Contains(got, "base64") {
+		t.Errorf("base64 reached the embedder: %q", got)
+	}
+	// The title carries it instead — the data URI contributed nothing.
+	if got != "Raw" {
+		t.Errorf("embed text = %q, want the chunk title \"Raw\"", got)
 	}
 }
 
@@ -185,8 +191,8 @@ func TestAssetDescription_MissingRowIsEmptyNotAnError(t *testing.T) {
 // Both pre-existing image tests used a CAPTIONED chunk, which is why the case went
 // uncovered — and an uncaptioned image is the common one for an uploaded asset.
 //
-// FAIL-BEFORE: restoring the raw-body guard ahead of the switch makes this embed
-// nothing at all.
+// FAIL-BEFORE: restoring the raw-body guard ahead of the switch makes this fall
+// through to the title alone, never reaching the description.
 func TestEmbedBody_UncaptionedImageStillEmbedsItsDescription(t *testing.T) {
 	d, vs, ctx := mermaidDocFixture(t, "image", "five", "round", "characters", "circuit", "board")
 
@@ -213,9 +219,10 @@ func TestEmbedBody_UncaptionedImageStillEmbedsItsDescription(t *testing.T) {
 		t.Fatalf("set_asset: %v %s", err, r.Text)
 	}
 
-	// Precondition: with neither caption nor description there is nothing to index.
-	if got := embeddedTextFor(t, vs, chunkID); got != "" {
-		t.Fatalf("precondition: an image with no caption and no description embedded %q", got)
+	// Precondition: with no caption and no description yet, the chunk is searchable by
+	// its TITLE (the fallback) — and notably NOT by anything describing the picture.
+	if got := embeddedTextFor(t, vs, chunkID); got != "Logo" {
+		t.Fatalf("precondition: want the title-only fallback %q, got %q", "Logo", got)
 	}
 
 	// The describe pass persists a description and re-embeds.
@@ -230,5 +237,124 @@ func TestEmbedBody_UncaptionedImageStillEmbedsItsDescription(t *testing.T) {
 	}
 	if !strings.Contains(got, "five round characters") {
 		t.Errorf("embed text does not carry the description: %q", got)
+	}
+}
+
+// TestTitleEmbedText_KeepsHeadingsDropsNonLanguage pins the one judgement the title
+// fallback makes. Both surfaces (the write path and the admin backfill) route through
+// this, so they cannot disagree about what a usable title is.
+//
+// The threshold is "contains a letter", NOT a length. Measured on the reference
+// deployment: of 20 sampled bodyless chunks, 18 had meaningful titles and the
+// shortest were "Active RFCs" (11) and "Configuration" (13) — a length filter would
+// discard exactly what someone searching a document would type.
+func TestTitleEmbedText_KeepsHeadingsDropsNonLanguage(t *testing.T) {
+	for _, keep := range []string{
+		"Active RFCs",
+		"Configuration",
+		"2. Backend additions (loomcycle core)",
+		"RFC BE — History Tool (browse / search / rename / annotate past chats)",
+		`"replica_id": "replica-a",`, // a fragment used as a heading — weak, but language
+	} {
+		if got := titleEmbedText(keep); got == "" {
+			t.Errorf("titleEmbedText(%q) dropped a title that carries language", keep)
+		}
+	}
+	for _, drop := range []string{
+		"", "   ", "\n\t",
+		"---",   // a rule used as a heading
+		"42",    // a bare number
+		"...",   // punctuation
+		"1.2.3", // a version fragment
+	} {
+		if got := titleEmbedText(drop); got != "" {
+			t.Errorf("titleEmbedText(%q) = %q, want \"\" — no letters means no language, "+
+				"and a vector built from it can only produce false matches", drop, got)
+		}
+	}
+	// Trimmed, not reformatted: the title is the author's text.
+	if got := titleEmbedText("  Active RFCs  "); got != "Active RFCs" {
+		t.Errorf("got %q, want the trimmed title verbatim", got)
+	}
+}
+
+// TestEmbedBody_BodylessChunkFallsBackToItsTitle is the feature: a heading chunk is
+// the most navigable part of a document and was the one part retrieval could not see,
+// because only bodies were embedded.
+//
+// FAIL-BEFORE: removing the fallback makes this embed nothing.
+func TestEmbedBody_BodylessChunkFallsBackToItsTitle(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "phase", "name-links", "transclusion", "backend", "additions")
+
+	res, _ := d.Execute(ctx, json.RawMessage(`{"op":"create_document","title":"Plan"}`))
+	docID := resultField(res, "document_id")
+	body, _ := json.Marshal(map[string]any{
+		"op": "create_chunk", "document_id": docID,
+		"title": "Phase 2 — name-links + transclusion", "body": "",
+	})
+	res, err := d.Execute(ctx, body)
+	if err != nil || res.IsError {
+		t.Fatalf("create_chunk: %v %s", err, res.Text)
+	}
+	got := embeddedTextFor(t, vs, resultField(res, "id"))
+	if got != "Phase 2 — name-links + transclusion" {
+		t.Errorf("a bodyless heading embedded %q, want its title — a heading organises "+
+			"the document and is exactly what a searcher types", got)
+	}
+}
+
+// TestEmbedBody_BodyWinsOverTitle — the title is a FALLBACK, never an addition.
+// Appending it would double-weight whatever the author happened to put in the
+// heading, on every chunk in the corpus.
+func TestEmbedBody_BodyWinsOverTitle(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "savepoint", "nesting", "heading", "words")
+
+	res, _ := d.Execute(ctx, json.RawMessage(`{"op":"create_document","title":"Doc"}`))
+	docID := resultField(res, "document_id")
+	body, _ := json.Marshal(map[string]any{
+		"op": "create_chunk", "document_id": docID,
+		"title": "heading words", "body": "SAVEPOINT nesting is LIFO",
+	})
+	res, err := d.Execute(ctx, body)
+	if err != nil || res.IsError {
+		t.Fatalf("create_chunk: %v %s", err, res.Text)
+	}
+	got := embeddedTextFor(t, vs, resultField(res, "id"))
+	if got != "SAVEPOINT nesting is LIFO" {
+		t.Errorf("embed text = %q, want the body alone; the title must not be appended", got)
+	}
+}
+
+// TestEmbedBody_TitlelessBodylessChunkEmbedsNothing — the floor. A chunk with no body
+// and no usable title must store NO vector, because a row that exists ranks against
+// every query.
+func TestEmbedBody_TitlelessBodylessChunkEmbedsNothing(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "anything")
+
+	res, _ := d.Execute(ctx, json.RawMessage(`{"op":"create_document","title":"Doc"}`))
+	docID := resultField(res, "document_id")
+	body, _ := json.Marshal(map[string]any{
+		"op": "create_chunk", "document_id": docID, "title": "---", "body": "",
+	})
+	res, err := d.Execute(ctx, body)
+	if err != nil || res.IsError {
+		t.Fatalf("create_chunk: %v %s", err, res.Text)
+	}
+	if got := embeddedTextFor(t, vs, resultField(res, "id")); got != "" {
+		t.Errorf("a chunk with no body and a letterless title embedded %q", got)
+	}
+}
+
+// TestChunkIDFromBodyKey_OnlyMatchesChunkBodies guards the exported key parser the
+// backfill relies on: an ordinary memory row must not be mistaken for a chunk and
+// sent looking for a title.
+func TestChunkIDFromBodyKey_OnlyMatchesChunkBodies(t *testing.T) {
+	if got := ChunkIDFromBodyKey("doc.chunk:abc123"); got != "abc123" {
+		t.Errorf("got %q, want abc123", got)
+	}
+	for _, notAChunk := range []string{"", "memory/fact/x", "doc.chunkabc", "chunk:abc"} {
+		if got := ChunkIDFromBodyKey(notAChunk); got != "" {
+			t.Errorf("ChunkIDFromBodyKey(%q) = %q, want \"\"", notAChunk, got)
+		}
 	}
 }
