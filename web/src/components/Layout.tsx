@@ -45,11 +45,13 @@ const SIDEBAR_KEY = "loomcycle.sidebar.collapsed";
 // library (#575/#577), integrations + schedules (the *def/names + scheduledef
 // def plane, #576 / isTenantConfinedDefPath), volumes (/v1/_volumes), paths
 // (/v1/_path), interrupts (/v1/users/{id}/interrupts — runs:read, tenantImplied).
-// channels (/v1/_channels) and memory (/v1/_memory/*) DELIBERATELY stay "admin":
-// their store rows carry no tenant column, so the routes are pinned to ScopeAdmin
-// (the /v1/_* catch-all) — a tenant token would 403. This narrows RFC AS §4's
-// channels+memory="tenant" to match the shipped backend; revisit if those
-// primitives gain a tenant axis (a schema migration, its own RFC).
+// memory (/v1/_memory/*) is "tenant": RFC BL gave memory rows a tenant_id, every
+// handler sources the tenant from the principal (a tenant operator sees only its
+// own tenant's memory), and RFC BV re-gated the routes to ScopeTenant — so the
+// item lights up for a tenant operator. channels (/v1/_channels) DELIBERATELY
+// stays "admin": its store rows still carry no tenant column, so the routes are
+// pinned to ScopeAdmin (the /v1/_* catch-all) and a tenant token would 403.
+// Revisit channels when it gains a tenant axis (a schema migration, its own RFC).
 type Visibility = "all" | "tenant" | "admin";
 interface NavItem {
   to: string;
@@ -68,7 +70,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/schedules", label: "schedules", Icon: CalendarClock, vis: "tenant" },
   { to: "/teams", label: "teams", Icon: Workflow, vis: "tenant" },
   { to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },
-  { to: "/memory", label: "memory", Icon: Brain, vis: "admin" },
+  { to: "/memory", label: "memory", Icon: Brain, vis: "tenant" },
   { to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },
   // audit is tenant-visible (RFC AS): handleListEvents tenant-scopes the result
   // via the event's owning session, so a tenant sees only its own events.
