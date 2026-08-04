@@ -1213,18 +1213,30 @@ export type DocumentToolInput = {
   op:
     | "create_document"
     | "get_document"
+    | "documents_summary"
+    | "query_documents"
     | "delete_document"
     | "set_path"
     | "create_chunk"
+    | "upsert_chunk"
     | "get_chunk"
     | "update_chunk"
     | "delete_chunk"
+    | "supersede_chunk"
+    | "graph_recall"
     | "move_chunk"
+    | "reorder_chunk"
     | "link_chunks"
     | "unlink_chunks"
+    | "get_edges"
     | "query_chunks"
+    | "add_tags"
+    | "remove_tags"
+    | "list_tags"
     | "define_type"
     | "list_types"
+    | "set_asset"
+    | "get_asset"
     | "export_md"
     | "import_md";
   scope?: "agent" | "user" | "tenant";
@@ -1240,6 +1252,14 @@ export type DocumentToolInput = {
   body?: string;
   fields?: Record<string, unknown>;
   status?: string;
+  /** The chunk's or document's tags (RFC BS). create/update/upsert_chunk +
+   *  create_document replace-set the whole set (omit = unchanged, [] = clear);
+   *  add_tags/remove_tags take the tags to change. Nested tags use a slash. */
+  tags?: string[];
+  /** query_chunks / query_documents: return only items carrying exactly this tag. */
+  tag?: string;
+  /** query_chunks: match this tag OR anything nested under it (prefix + '/'). */
+  tag_prefix?: string;
   position?: number;
   /** update_chunk: the chunk's current revision (optimistic concurrency). */
   revision?: number;
