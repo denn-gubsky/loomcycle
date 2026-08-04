@@ -58,7 +58,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -68,7 +68,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","history","get_version","diff","backlinks"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","history","get_version","diff","backlinks","related","unlinked_mentions"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -398,6 +398,10 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.diffVersions(ctx, key, in)
 	case "backlinks":
 		return d.backlinks(ctx, key, in)
+	case "related":
+		return d.related(ctx, key, mscope, in)
+	case "unlinked_mentions":
+		return d.unlinkedMentions(ctx, key, mscope, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
@@ -2392,6 +2396,229 @@ ORDER BY e.kind, e.created_at`, in.ID)
 		links = append(links, bl)
 	}
 	return jsonResult(map[string]any{"backlinks": links})
+}
+
+// --- discovery: related (semantic) + unlinked_mentions (textual) ---
+
+// chunkMeta is the small display tuple related/unlinked_mentions enrich a bare
+// chunk id with, so a caller renders a hit without a per-id get_chunk.
+type chunkMeta struct {
+	title      string
+	typ        string
+	documentID string
+}
+
+// chunkMetaByIDs fetches title/type/document_id for a set of chunk ids in ONE
+// IN(...) query, keyed by id. Ids the query does not return are simply absent
+// from the map (a hit whose structure row vanished still lists its id). An empty
+// input is a no-op. Portable `?` placeholders → the postgres tier Rebinds them.
+func (d *Document) chunkMetaByIDs(ctx context.Context, key sqlmem.ScopeKey, ids []string) (map[string]chunkMeta, error) {
+	out := map[string]chunkMeta{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	res, err := d.query(ctx, key,
+		"SELECT id, title, type, document_id FROM chunks WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range res.Rows {
+		out[asStr(r[0])] = chunkMeta{title: asStr(r[1]), typ: asStr(r[2]), documentID: asStr(r[3])}
+	}
+	return out, nil
+}
+
+// related returns the chunks whose bodies embed CLOSEST to a chunk's — its
+// semantic neighbours, ranked by cosine score (RFC BS Phase 3b). It reuses the
+// per-chunk-body embeddings writeBody already indexes on write (keyed
+// "doc.chunk:<id>" in the k/v Memory plane, under the chunk's scope + the raw
+// direntTenant), so nothing about the write path changes. Scope-confined: the
+// vector search is bounded to the caller's own tenant/scope/scope_id.
+func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("related: missing required field: id"), nil
+	}
+	// Semantic neighbours need both a vector index and something to turn the query
+	// body into a vector. No embedder → there is no vector plane to search.
+	if d.Embedder == nil {
+		return errResult("related: requires a configured embedder / vector memory"), nil
+	}
+	topK := 10
+	if in.Limit > 0 {
+		topK = in.Limit
+	}
+	if topK > 50 {
+		topK = 50
+	}
+	// The query text is the chunk's own body. An empty or media body has nothing
+	// to embed — the same predicate embedBody skips on write — so it has no
+	// neighbours; return an empty set rather than an error (a section/parent chunk
+	// legitimately has no body).
+	cb, err := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	if err != nil {
+		return errResult("related: body: " + err.Error()), nil
+	}
+	body := strings.TrimSpace(cb.Body)
+	if body == "" {
+		return jsonResult(map[string]any{"related": []map[string]any{}})
+	}
+	if typ, _, _, _ := classifyMediaBody(cb.Body); typ != "" {
+		return jsonResult(map[string]any{"related": []map[string]any{}})
+	}
+	vec, err := d.Embedder.Embed(ctx, []string{body})
+	if err != nil {
+		return errResult("related: embed: " + err.Error()), nil
+	}
+	if len(vec) == 0 {
+		return errResult("related: embed: embedder returned no vector"), nil
+	}
+	// topK+1: a chunk is its own nearest neighbour, so the search ranks self first;
+	// ask for one extra to leave room to drop it and still return topK others.
+	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID, "doc.chunk:", vec[0], topK+1)
+	if err != nil {
+		return errResult("related: search: " + err.Error()), nil
+	}
+	type hit struct {
+		id    string
+		score float64
+	}
+	hits := make([]hit, 0, len(entries))
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		cid := strings.TrimPrefix(e.Key, "doc.chunk:")
+		if cid == in.ID {
+			continue // the query chunk itself is never its own neighbour
+		}
+		hits = append(hits, hit{id: cid, score: e.Score})
+		ids = append(ids, cid)
+		if len(hits) >= topK {
+			break
+		}
+	}
+	meta, err := d.chunkMetaByIDs(ctx, key, ids)
+	if err != nil {
+		return errResult("related: enrich: " + err.Error()), nil
+	}
+	out := make([]map[string]any, 0, len(hits))
+	for _, h := range hits {
+		m := map[string]any{"chunk_id": h.id, "score": h.score}
+		if md, ok := meta[h.id]; ok {
+			if md.title != "" {
+				m["title"] = md.title
+			}
+			if md.typ != "" {
+				m["type"] = md.typ
+			}
+			if md.documentID != "" {
+				m["document_id"] = md.documentID
+			}
+		}
+		out = append(out, m)
+	}
+	return jsonResult(map[string]any{"related": out})
+}
+
+// unlinkedMentionScanCap bounds the body scan unlinked_mentions performs. The op
+// is an O(scope-chunk-count) scan of every chunk body in the scope (it reads text
+// SQL cannot reach), so the cap keeps one very large scope from turning a single
+// call into an unbounded read. A document- or path-bounded variant is a follow-up.
+const unlinkedMentionScanCap = 5000
+
+// unlinkedMentions finds the chunks whose body text MENTIONS a target chunk's
+// title but do NOT already link to it (RFC BS Phase 3b) — the "you wrote the name
+// but never made it a link" surface. Both a manual link_chunks edge and an inline
+// [[name]] parser edge count as "already linked" (they both land in chunk_edges),
+// and the target's own body mentioning its own title is excluded. Scope-confined.
+func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("unlinked_mentions: missing required field: id"), nil
+	}
+	limit := 50
+	if in.Limit > 0 {
+		limit = in.Limit
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	// Resolve the target's title — the text to look for in other bodies.
+	tres, err := d.query(ctx, key, `SELECT title FROM chunks WHERE id = ? LIMIT 1`, in.ID)
+	if err != nil {
+		return errResult("unlinked_mentions: " + err.Error()), nil
+	}
+	if len(tres.Rows) == 0 {
+		return errResult("unlinked_mentions: no such chunk: " + in.ID), nil
+	}
+	title := strings.TrimSpace(asStr(tres.Rows[0][0]))
+	if title == "" {
+		return errResult("unlinked_mentions: target chunk has no title to match on"), nil
+	}
+	// The already-linked set: every chunk that already references the target
+	// (manual OR [[name]] edge — both live in chunk_edges as from→to). A mention
+	// from a chunk that already links is not "unlinked".
+	linked := map[string]bool{}
+	lres, err := d.query(ctx, key, `SELECT from_id FROM chunk_edges WHERE to_id = ?`, in.ID)
+	if err != nil {
+		return errResult("unlinked_mentions: edges: " + err.Error()), nil
+	}
+	for _, r := range lres.Rows {
+		linked[asStr(r[0])] = true
+	}
+	// Scan chunk bodies from the k/v Memory plane, keyed on the SAME
+	// tenant/scope/scope_id writeBody wrote them under (direntTenant + mscope +
+	// key.ScopeID) — reading a different plane would silently return zero hits.
+	entries, listTruncated, err := d.Store.MemoryList(ctx, direntTenant(ctx), mscope, key.ScopeID, "doc.chunk:", unlinkedMentionScanCap)
+	if err != nil {
+		return errResult("unlinked_mentions: scan: " + err.Error()), nil
+	}
+	needle := strings.ToLower(title)
+	matchIDs := make([]string, 0, limit)
+	hitCap := false
+	for _, e := range entries {
+		cid := strings.TrimPrefix(e.Key, "doc.chunk:")
+		if cid == in.ID || linked[cid] {
+			continue // self / already-linked
+		}
+		var cb chunkBody
+		if json.Unmarshal(e.Value, &cb) != nil {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(cb.Body), needle) {
+			continue
+		}
+		matchIDs = append(matchIDs, cid)
+		if len(matchIDs) >= limit {
+			hitCap = true
+			break
+		}
+	}
+	meta, err := d.chunkMetaByIDs(ctx, key, matchIDs)
+	if err != nil {
+		return errResult("unlinked_mentions: enrich: " + err.Error()), nil
+	}
+	out := make([]map[string]any, 0, len(matchIDs))
+	for _, cid := range matchIDs {
+		m := map[string]any{"chunk_id": cid}
+		if md, ok := meta[cid]; ok {
+			if md.title != "" {
+				m["title"] = md.title
+			}
+			if md.documentID != "" {
+				m["document_id"] = md.documentID
+			}
+		}
+		out = append(out, m)
+	}
+	// Never silently under-report the scan's completeness: it is bounded three
+	// ways — the store had more bodies than the cap (listTruncated), we filled the
+	// result limit and stopped early (hitCap), or the scan itself hit its own cap.
+	truncated := listTruncated || hitCap || len(entries) >= unlinkedMentionScanCap
+	return jsonResult(map[string]any{"unlinked_mentions": out, "truncated": truncated})
 }
 
 // --- inline [[name]] links → typed edges (RFC BS Phase 2a) ---
