@@ -1,0 +1,678 @@
+/* @loomcycle/memory-view styles. Everything is scoped under the component's
+   `.loomcycle-memory-view` root so it can't leak into — or be clobbered by — the
+   host app. The palette lives on the root as CSS variables; light mode activates
+   when the root (via the `theme` prop) OR any ancestor carries
+   data-theme="light", so an app that themes <html> gets themed memory-view for
+   free. Override any --var on `.loomcycle-memory-view` to restyle.
+
+   Unlike @loomcycle/explorer + @loomcycle/library (which emit web's global class
+   names, so the Web UI does NOT import their sheets), the memory console's
+   classes are scoped here, so a host that embeds <MemoryView> MUST
+   `import "@loomcycle/memory-view/styles.css"` for it to render.
+
+   The rules below use the loomcycle Web UI's alias token names
+   (--bg/--fg/--accent/… + the --lc-text-*/--lc-font-mono design tokens); those
+   are defined on the root here (dark default + light override) so the package is
+   self-contained — no external tokens.css. */
+
+.loomcycle-memory-view {
+  /* dark palette (default) — resolved from the loomcycle --lc-* design tokens */
+  --bg: #0f1115;
+  --bg-soft: #161922;
+  --bg-soft-2: #1d2230;
+  --bg-input: #0f1115;
+
+  --fg: #e6e6e6;
+  --fg-soft: #9aa0ad;
+  --fg-muted: #888888;
+
+  --border: #2a2e3a;
+  --accent: #56c596;
+  --running: #f0a040;
+  --failed: #ff5d68;
+  --danger: #cc3333;
+  --success-soft: #123524;
+  --err: #ff5d68;
+
+  --lc-font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+    "SF Mono", Menlo, Consolas, monospace;
+  --mono: var(--lc-font-mono);
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+
+  --lc-text-xs: 12px;
+  --lc-text-sm: 13px;
+  --lc-text-base: 14px;
+
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--lc-text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+  /* fill the host's slot; the host controls the surrounding layout. height:100%
+     is inert against an indefinite-height parent (percentage height resolves to
+     auto), so it can't regress a host that doesn't bound this box. */
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Light mode: the component root opts in via the `theme` prop, or inherits a
+   light ancestor (e.g. an app that sets data-theme on <html>). */
+.loomcycle-memory-view[data-theme="light"],
+[data-theme="light"] .loomcycle-memory-view {
+  --bg: #f5f6f8;
+  --bg-soft: #ffffff;
+  --bg-soft-2: #eef0f4;
+  --bg-input: #ffffff;
+
+  --fg: #1a1d24;
+  --fg-soft: #5a6270;
+  --fg-muted: #8a909c;
+
+  --border: #d7dbe2;
+  --accent: #2f9e6f;
+  --running: #b9740f;
+  --failed: #d23f4a;
+  --danger: #c0392b;
+  --success-soft: #e3f3ea;
+  --err: #d23f4a;
+
+  color-scheme: light;
+}
+
+/* ---- scoped base / utilities ---- */
+.loomcycle-memory-view,
+.loomcycle-memory-view *,
+.loomcycle-memory-view *::before,
+.loomcycle-memory-view *::after {
+  box-sizing: border-box;
+}
+.loomcycle-memory-view button {
+  font: inherit;
+}
+.loomcycle-memory-view code,
+.loomcycle-memory-view pre {
+  font-family: var(--mono);
+  font-size: var(--lc-text-sm);
+}
+/* Text-like form controls get the themed look. */
+.loomcycle-memory-view
+  input:where(
+    :not([type="checkbox"]):not([type="radio"]):not([type="file"]):not(
+        [type="range"]
+      ):not([type="color"])
+  ),
+.loomcycle-memory-view textarea,
+.loomcycle-memory-view select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: var(--lc-text-sm);
+}
+
+/* ---- empty / error / meta ---- */
+.loomcycle-memory-view .empty {
+  color: var(--fg-soft);
+  padding: 32px 16px;
+  text-align: center;
+}
+.loomcycle-memory-view .error-banner {
+  background: rgba(255, 93, 104, 0.1);
+  border: 1px solid var(--failed);
+  color: var(--failed);
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin: 8px 0;
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-memory-view .err {
+  background: rgba(255, 93, 104, 0.1);
+  border: 1px solid var(--failed);
+  color: var(--failed);
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-memory-view .warning-banner {
+  padding: 8px 12px;
+  background: rgba(255, 196, 0, 0.1);
+  border: 1px solid rgba(255, 196, 0, 0.4);
+  color: #d4a017;
+  border-radius: 4px;
+  margin: 8px 0;
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-memory-view .meta {
+  color: var(--fg-soft);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+/* ============================================================
+   Splitter
+   ============================================================ */
+.loomcycle-memory-view .splitter {
+  display: grid;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+}
+.loomcycle-memory-view .splitter.dragging {
+  /* Suppress text-select highlighting during a drag. */
+  user-select: none;
+  cursor: col-resize;
+}
+.loomcycle-memory-view .splitter > .splitter-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.loomcycle-memory-view .splitter > .splitter-handle {
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+}
+.loomcycle-memory-view .splitter > .splitter-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: var(--border);
+  transition: background 80ms ease;
+}
+.loomcycle-memory-view .splitter > .splitter-handle:hover::before,
+.loomcycle-memory-view .splitter.dragging > .splitter-handle::before {
+  background: var(--accent);
+}
+
+/* ============================================================
+   Modal base (MemoryEntryEditModal)
+   ============================================================ */
+.loomcycle-memory-view .modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.loomcycle-memory-view .modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: auto;
+}
+.loomcycle-memory-view .modal h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+}
+.loomcycle-memory-view .modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.loomcycle-memory-view .modal-buttons button {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.loomcycle-memory-view .modal-buttons button.primary {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+  border-radius: 4px;
+  padding: 8px 16px;
+}
+.loomcycle-memory-view .modal-buttons button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+/* library-modal layout — the slimmer structured-field form the edit modal uses. */
+.loomcycle-memory-view .modal.library-modal {
+  max-width: 720px;
+  width: 92vw;
+}
+.loomcycle-memory-view .library-modal-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.loomcycle-memory-view .library-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.loomcycle-memory-view .library-modal-field > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.loomcycle-memory-view .library-modal-field input,
+.loomcycle-memory-view .library-modal-field select,
+.loomcycle-memory-view .library-modal-field textarea {
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg);
+}
+.loomcycle-memory-view .library-modal-field input:disabled,
+.loomcycle-memory-view .library-modal-field select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.loomcycle-memory-view .library-modal-field-row {
+  display: flex;
+  gap: 12px;
+}
+.loomcycle-memory-view .memory-modal-checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.loomcycle-memory-view .memory-modal-checkbox-field > span {
+  order: 2;
+}
+.loomcycle-memory-view .memory-modal-checkbox-field > input {
+  flex: 0 0 auto;
+}
+
+/* ============================================================
+   Memory console — three-pane browser + Vector Memory badges
+   ============================================================ */
+.loomcycle-memory-view .memory-view-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 12px;
+  gap: 8px;
+}
+.loomcycle-memory-view .memory-view-wrapper > .err {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+.loomcycle-memory-view .memory-view {
+  /* Layout owned by .splitter (display:grid). Pane styling still applies. */
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+}
+.loomcycle-memory-view .memory-view-inner {
+  height: 100%;
+  min-height: 0;
+}
+.loomcycle-memory-view .memory-pane {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.loomcycle-memory-view .memory-pane .pane-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-soft);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.loomcycle-memory-view .memory-pane .pane-header.sub {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft-2);
+}
+.loomcycle-memory-view .memory-pane .pane-header code {
+  color: var(--fg);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.loomcycle-memory-view .scope-tabs {
+  display: flex;
+  padding: 8px;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-memory-view .scope-tabs button {
+  flex: 1;
+  background: var(--bg);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.loomcycle-memory-view .scope-tabs button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.loomcycle-memory-view .scope-id-list,
+.loomcycle-memory-view .key-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.loomcycle-memory-view .scope-id-list li,
+.loomcycle-memory-view .key-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+.loomcycle-memory-view .scope-id-list li:hover,
+.loomcycle-memory-view .key-list li:hover {
+  background: var(--bg-soft-2);
+}
+.loomcycle-memory-view .scope-id-list li.on,
+.loomcycle-memory-view .key-list li.on {
+  background: var(--bg-soft-2);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+.loomcycle-memory-view .scope-id-list li .meta {
+  color: var(--fg-soft);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.loomcycle-memory-view .scope-id-list li code,
+.loomcycle-memory-view .key-list li code {
+  font-size: 12px;
+  word-break: break-all;
+}
+.loomcycle-memory-view .empty-row {
+  color: var(--fg-soft);
+  padding: 16px 12px !important;
+  cursor: default !important;
+  font-style: italic;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-memory-view .empty-row:hover {
+  background: transparent !important;
+}
+.loomcycle-memory-view .prefix-input {
+  margin: 8px 12px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.loomcycle-memory-view .ttl-flag {
+  background: var(--running);
+  color: white;
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: 2px;
+  letter-spacing: 0.04em;
+}
+
+/* Vector Memory — model-distribution badge + reembed banner. */
+.loomcycle-memory-view .embed-badge-row {
+  margin: 8px 12px 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.loomcycle-memory-view .embed-badge-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.loomcycle-memory-view .embed-badge {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+}
+.loomcycle-memory-view .embed-badge-count {
+  margin-left: 6px;
+  color: var(--fg-soft);
+}
+.loomcycle-memory-view .embed-badge-disabled .embed-badge-label {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.loomcycle-memory-view .embed-reembed-btn {
+  margin-left: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.loomcycle-memory-view .embed-reembed-btn:hover:not(:disabled) {
+  background: var(--bg-soft);
+}
+.loomcycle-memory-view .embed-reembed-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.loomcycle-memory-view .embed-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+/* Per-key embedding indicator — same pill language as .embed-badge, scaled down
+   for an inline row affordance. */
+.loomcycle-memory-view .embed-key-badge {
+  margin-left: 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-soft);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.loomcycle-memory-view .reembed-banner {
+  margin: 6px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.loomcycle-memory-view .reembed-dryrun {
+  background: var(--bg-soft);
+}
+.loomcycle-memory-view .reembed-realrun {
+  background: var(--success-soft);
+}
+.loomcycle-memory-view .reembed-summary code {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.loomcycle-memory-view .reembed-samples {
+  font-size: 11px;
+  color: var(--fg-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.loomcycle-memory-view .reembed-samples code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+.loomcycle-memory-view .reembed-actions {
+  display: flex;
+  gap: 8px;
+}
+.loomcycle-memory-view .reembed-commit-btn,
+.loomcycle-memory-view .reembed-dismiss-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.loomcycle-memory-view .reembed-commit-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+.loomcycle-memory-view .reembed-commit-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.loomcycle-memory-view .meta-failed {
+  color: var(--err);
+}
+
+/* Detail pane — entry value inspector. */
+.loomcycle-memory-view .entry-detail {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.loomcycle-memory-view .entry-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+.loomcycle-memory-view .entry-meta div {
+  display: contents;
+}
+.loomcycle-memory-view .entry-meta div span {
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  align-self: center;
+}
+.loomcycle-memory-view .entry-meta div code {
+  font-size: 12px;
+  word-break: break-all;
+}
+.loomcycle-memory-view .entry-value {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+}
+.loomcycle-memory-view .detail-pane .empty {
+  padding: 24px;
+  color: var(--fg-soft);
+  font-style: italic;
+}
+/* An inline mutation error inside the keys pane (not the fixed toast the Web UI
+   used — the package renders it inline in the standalone layout). */
+.loomcycle-memory-view .memory-err {
+  max-width: 400px;
+}
+
+/* Keys header CTA + per-row edit/delete actions. */
+.loomcycle-memory-view .memory-keys-header {
+  justify-content: space-between;
+}
+.loomcycle-memory-view .memory-new-entry-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.loomcycle-memory-view .memory-new-entry-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+.loomcycle-memory-view .memory-key-actions {
+  display: none;
+  margin-left: auto;
+  gap: 4px;
+}
+.loomcycle-memory-view .key-list li:hover .memory-key-actions {
+  display: inline-flex;
+}
+.loomcycle-memory-view .memory-key-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.loomcycle-memory-view .memory-key-action:hover {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+.loomcycle-memory-view .memory-key-action-danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
