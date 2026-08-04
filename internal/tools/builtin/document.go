@@ -468,7 +468,10 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if err := d.migrateConfidencePrecision(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateDocumentFacets(ctx, key)
+	if err := d.migrateDocumentFacets(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateEdgeAuto(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -566,6 +569,25 @@ func (d *Document) migrateDocumentFacets(ctx context.Context, key sqlmem.ScopeKe
 func (d *Document) documentsHasColumn(ctx context.Context, key sqlmem.ScopeKey, col string) bool {
 	_, err := d.query(ctx, key, `SELECT `+col+` FROM documents WHERE 1=0`)
 	return err == nil
+}
+
+// migrateEdgeAuto adds the `auto` flag to chunk_edges (RFC BS Phase 2a): 1 marks
+// a parser-generated inline-`[[name]]`-link edge (reconcileNameLinks owns it and
+// re-derives it on every body write); 0 marks a manual link_chunks edge (never
+// touched by the parser). It PROBES before it alters, like migrateDocumentFacets,
+// because ensureSchema is on every op's hot path — the fast case is a single
+// 0-row SELECT. The column arrives via ALTER on every scope (new and old alike),
+// since a `CREATE TABLE IF NOT EXISTS` leaves an existing chunk_edges untouched.
+//
+// The probe is a leading-SELECT (validator-safe; a leading PRAGMA is denied) and
+// tier-portable; `ADD COLUMN … NOT NULL DEFAULT 0` fills existing rows on both
+// tiers, so every edge predating this migration reads back as manual (auto=0),
+// which is what it is.
+func (d *Document) migrateEdgeAuto(ctx context.Context, key sqlmem.ScopeKey) error {
+	if _, err := d.query(ctx, key, `SELECT auto FROM chunk_edges WHERE 1=0`); err == nil {
+		return nil
+	}
+	return d.exec(ctx, key, `ALTER TABLE chunk_edges ADD COLUMN auto INTEGER NOT NULL DEFAULT 0`)
 }
 
 // --- chunk body (Memory) helpers ---
@@ -1379,6 +1401,11 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if err := d.writeBody(ctx, mscope, key.ScopeID, id, in.Body, in.Fields); err != nil {
 		return errResult("create_chunk: body: " + err.Error()), nil
 	}
+	// Derive this chunk's inline [[name]] link edges from its body (RFC BS Phase
+	// 2a). A body with no resolvable name-links materializes no edges.
+	if err := d.reconcileNameLinks(ctx, key, id, in.Body); err != nil {
+		return errResult("create_chunk: name links: " + err.Error()), nil
+	}
 	// Tags on a fresh chunk (also serves upsert_chunk's create path, which
 	// delegates here). replaceChunkTags is delete-then-insert; on a new id the
 	// delete matches nothing, so len>0 keeps an untagged create from a needless
@@ -1692,6 +1719,15 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, cb.Body, cb.Fields); err != nil {
 			return errResult("update_chunk: body: " + err.Error()), nil
+		}
+		// Re-derive [[name]] link edges only when the BODY actually changed (RFC BS
+		// Phase 2a). A fields-only update preserves the body verbatim, so its links
+		// are unchanged — reconciling then would needlessly churn (and, if a linked
+		// target's dirent had since moved, wrongly drop a still-valid edge).
+		if hasBody {
+			if err := d.reconcileNameLinks(ctx, key, in.ID, cb.Body); err != nil {
+				return errResult("update_chunk: name links: " + err.Error()), nil
+			}
 		}
 	}
 	// Replace-set the chunk's tags only when `tags` was supplied — a present `[]`
@@ -2013,11 +2049,13 @@ var edgeEndpointFields = []string{
 // endpoints' title/type/status/document_id. Powers the viewer's References list +
 // the RFC BN relationship graph in ONE call, replacing the raw-SQL escape hatch.
 // LEFT JOINs so a (defensively) dangling endpoint still lists with empty fields.
+// Each edge also carries `auto` (true = a parser-generated [[name]]-link edge,
+// false = a manual link_chunks edge — RFC BS Phase 2a).
 func (d *Document) getEdges(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.DocumentID == "" {
 		return errResult("get_edges: missing required field: document_id"), nil
 	}
-	res, err := d.query(ctx, key, `SELECT e.from_id AS from_id, e.to_id AS to_id, e.kind AS kind,
+	res, err := d.query(ctx, key, `SELECT e.from_id AS from_id, e.to_id AS to_id, e.kind AS kind, e.auto AS auto,
        cf.title AS from_title, cf.type AS from_type, cf.status AS from_status, cf.document_id AS from_document_id,
        ct.title AS to_title, ct.type AS to_type, ct.status AS to_status, ct.document_id AS to_document_id
 FROM chunk_edges e
@@ -2037,7 +2075,9 @@ ORDER BY e.kind, e.created_at`, in.DocumentID, in.DocumentID)
 				m[c] = r[i]
 			}
 		}
-		e := map[string]any{"from_id": asStr(m["from_id"]), "to_id": asStr(m["to_id"]), "kind": asStr(m["kind"])}
+		// auto=1 distinguishes a parser-generated [[name]]-link edge (RFC BS Phase
+		// 2a) from a manual link_chunks edge, so a consumer can tell them apart.
+		e := map[string]any{"from_id": asStr(m["from_id"]), "to_id": asStr(m["to_id"]), "kind": asStr(m["kind"]), "auto": asInt(m["auto"]) == 1}
 		for _, f := range edgeEndpointFields {
 			if v := asStr(m[f]); v != "" {
 				e[f] = v
@@ -2046,6 +2086,133 @@ ORDER BY e.kind, e.created_at`, in.DocumentID, in.DocumentID)
 		edges = append(edges, e)
 	}
 	return jsonResult(map[string]any{"edges": edges})
+}
+
+// --- inline [[name]] links → typed edges (RFC BS Phase 2a) ---
+
+// nameLinkRe matches a wiki-style name-link `[[target]]`; the inner target holds
+// no brackets. Compiled once at package scope. Go's regexp has no lookbehind, so
+// an `![[…]]` EMBED (a transclusion — a SEPARATE later step, NOT handled here) is
+// rejected by inspecting the byte before the match, not in the pattern.
+var nameLinkRe = regexp.MustCompile(`\[\[([^\[\]]+)\]\]`)
+
+// parseNameLinks returns the distinct inner targets of every `[[target]]` in the
+// body, skipping `![[…]]` embeds. A `|display` alias suffix is dropped
+// (`[[target|shown text]]` links to `target`). Order is first-seen; deduped.
+func parseNameLinks(body string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range nameLinkRe.FindAllStringSubmatchIndex(body, -1) {
+		// m = [matchStart, matchEnd, groupStart, groupEnd].
+		if m[0] > 0 && body[m[0]-1] == '!' {
+			continue // `![[…]]` is an embed, not a link
+		}
+		target := body[m[2]:m[3]]
+		if i := strings.IndexByte(target, '|'); i >= 0 {
+			target = target[:i] // drop the |display alias
+		}
+		target = strings.TrimSpace(target)
+		if target == "" || seen[target] {
+			continue
+		}
+		seen[target] = true
+		out = append(out, target)
+	}
+	return out
+}
+
+// resolveLinkTarget maps a `[[target]]` inner string to a chunk id, CONFINED to
+// the writer's own scope/tenant (a name-link never resolves across scopes).
+//
+//   - A leading '/' is a Path: resolve the dirent to a document and return its
+//     ROOT chunk. A `#anchor` chunk-anchor suffix is out of scope for this step —
+//     the path part resolves to the document root; any `#…` is ignored.
+//   - Otherwise it is a title: an exact-match document title (→ its root chunk),
+//     else an exact-match chunk title. Oldest wins on a tie (ORDER BY created_at)
+//     so resolution is stable.
+//
+// ok=false (nothing matched) → the caller writes NO edge and the `[[…]]` stays
+// literal text. NOTE: a link to a not-yet-created target is not re-resolved when
+// that target is later created — a documented follow-up for a later step.
+func (d *Document) resolveLinkTarget(ctx context.Context, key sqlmem.ScopeKey, target string) (string, bool) {
+	if strings.HasPrefix(target, "/") {
+		pathPart := target
+		if i := strings.IndexByte(pathPart, '#'); i >= 0 {
+			pathPart = pathPart[:i] // a chunk anchor is out of scope; resolve the path
+		}
+		// docIDFromInput does the normalize + dirent lookup in this scope; any
+		// error (bad path, no such dirent, not a document) means unresolved.
+		docID, err := d.docIDFromInput(ctx, key, docInput{Path: pathPart})
+		if err != nil || docID == "" {
+			return "", false
+		}
+		res, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID)
+		if err != nil || len(res.Rows) == 0 {
+			return "", false
+		}
+		if rc := asStr(res.Rows[0][0]); rc != "" {
+			return rc, true
+		}
+		return "", false
+	}
+	// Title: prefer a document with this exact title (→ its root chunk).
+	if res, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE title = ? ORDER BY created_at LIMIT 1`, target); err == nil && len(res.Rows) > 0 {
+		if rc := asStr(res.Rows[0][0]); rc != "" {
+			return rc, true
+		}
+	}
+	// Else a chunk with this exact title.
+	if res, err := d.query(ctx, key, `SELECT id FROM chunks WHERE title = ? ORDER BY created_at LIMIT 1`, target); err == nil && len(res.Rows) > 0 {
+		if id := asStr(res.Rows[0][0]); id != "" {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// reconcileNameLinks re-derives fromChunkID's inline `[[name]]` link edges from
+// its body on every body write (create_chunk / a body-bearing update_chunk):
+// each resolvable target becomes a `references` edge tagged auto=1. This is the
+// bridge from prose to graph — the Path dirent tree supplies the names, the
+// existing chunk_edges table holds the edges.
+//
+// Idempotent by construction: it DELETEs this chunk's prior auto=1 edges then
+// re-inserts the current set, so removing a `[[…]]` from the body drops its edge
+// on the next write. A MANUAL edge (auto=0, from link_chunks) is never touched —
+// not deleted here, and the guarded insert will not duplicate or overwrite a
+// pre-existing manual `references` edge. Unresolved links and a self-link are
+// dropped. Edges bind to the RESOLVED chunk id (stable), so moving/renaming the
+// target's Path dirent later does not break an already-materialized edge.
+//
+// Non-transactional delete-then-insert, mirroring replaceChunkTags: name-links
+// are an advisory derived facet, not a correctness gate.
+func (d *Document) reconcileNameLinks(ctx context.Context, key sqlmem.ScopeKey, fromChunkID, body string) error {
+	targets := make([]string, 0, 4)
+	seen := map[string]bool{}
+	for _, name := range parseNameLinks(body) {
+		to, ok := d.resolveLinkTarget(ctx, key, name)
+		if !ok || to == fromChunkID || seen[to] {
+			continue // unresolved, self-link, or already collected
+		}
+		seen[to] = true
+		targets = append(targets, to)
+	}
+	// Clear this chunk's prior parser edges (auto=1 only — manual edges survive).
+	if err := d.exec(ctx, key, `DELETE FROM chunk_edges WHERE from_id = ? AND auto = 1`, fromChunkID); err != nil {
+		return err
+	}
+	now := time.Now().UnixNano()
+	for _, to := range targets {
+		// Guarded so a pre-existing MANUAL references edge (auto=0) is neither
+		// duplicated nor overwritten (the portable existence-check from addTagRows).
+		stmt := `INSERT INTO chunk_edges (from_id, to_id, kind, created_at, auto)
+			SELECT ?, ?, 'references', ?, 1
+			WHERE NOT EXISTS (SELECT 1 FROM chunk_edges WHERE from_id = ? AND to_id = ? AND kind = 'references')`
+		if err := d.exec(ctx, key, stmt, fromChunkID, to, now, fromChunkID, to); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // --- ops: query ---
