@@ -57,6 +57,9 @@ export interface ChunkRow {
 export interface ChunkDetail extends ChunkRow {
   body: string;
   fields?: unknown;
+  // tags (RFC BS) — the chunk's tag set, returned by get_chunk (omitted when the
+  // chunk has none). Nested tags use a slash (area/sub/topic).
+  tags?: string[];
   // asset (RFC BO) is present on an image chunk — metadata only; the bytes are
   // fetched from GET /v1/_document/asset/{id} via documentAssetObjectUrl.
   asset?: { media_type: string; size: number };

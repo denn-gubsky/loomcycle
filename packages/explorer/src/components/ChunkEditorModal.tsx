@@ -29,6 +29,9 @@ export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSave
   const [fieldsText, setFieldsText] = useState(
     chunk.fields ? JSON.stringify(chunk.fields, null, 2) : "",
   );
+  // Tags (RFC BS) edit as a comma-separated list; the editor is authoritative, so
+  // save always replace-sets to this value (empty clears). Nested tags use a slash.
+  const [tagsText, setTagsText] = useState((chunk.tags ?? []).join(", "));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -68,11 +71,14 @@ export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSave
     e.preventDefault();
     setErr(null);
     setConflict(false);
-    const patch: { body: string; title: string; type: string; status: string; fields?: unknown } = {
+    const patch: { body: string; title: string; type: string; status: string; tags: string[]; fields?: unknown } = {
       body,
       title,
       type,
       status,
+      // Parse the comma-separated list; replace-set is intentional (the box shows
+      // the chunk's tags, so saving makes it exactly what's in the box).
+      tags: tagsText.split(",").map((t) => t.trim()).filter((t) => t !== ""),
     };
     // Send fields only when non-empty + valid JSON (a blank box leaves fields
     // untouched rather than clobbering them).
@@ -143,6 +149,15 @@ export default function ChunkEditorModal({ chunk, scope, browse, onClose, onSave
             />
           </label>
         </div>
+        <label className="path-field">
+          <span>Tags</span>
+          <input
+            className="path-modal-input"
+            value={tagsText}
+            placeholder="comma-separated, nest with a slash: area/sub, priority/high"
+            onChange={(e) => setTagsText(e.target.value)}
+          />
+        </label>
         {isImage && (
           <label className="path-field">
             <span>Replace image</span>

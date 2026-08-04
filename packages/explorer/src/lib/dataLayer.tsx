@@ -21,6 +21,9 @@ export interface ChunkPatch {
   title?: string;
   status?: string;
   type?: string;
+  // tags (RFC BS) replace-set the chunk's whole tag set when present ([] clears);
+  // the editor always sends the parsed set, so it is authoritative for what shows.
+  tags?: string[];
 }
 
 // ExplorerDataLayer is the narrow data contract the Path / Document components
