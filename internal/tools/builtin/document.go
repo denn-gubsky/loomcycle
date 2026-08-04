@@ -783,8 +783,26 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 			text = strings.TrimSpace(body)
 		}
 	}
-	// Nothing to index: an empty prose body, a diagram with no extractable label, or
-	// an image with neither caption nor description. Embedding punctuation — or a
+	// FALL BACK TO THE TITLE. A chunk whose body yields no text is usually a heading
+	// that organises the document — "RFC BE — History Tool (browse / search / rename
+	// / annotate past chats)", "Phase 2 — name-links + transclusion". That is real
+	// language and a real answer to a search; excluding it means the most navigable
+	// part of a document is the one part retrieval cannot see.
+	//
+	// Measured on the reference deployment before adding this: of 20 sampled bodyless
+	// chunks, 18 had meaningful titles. The two that did not were fragments used as
+	// headings (a JSON line). No content heuristic beyond requiring a letter — see
+	// titleEmbedText — because a filter guessing at "meaningful" would drop real
+	// headings to avoid an occasional weak vector, and 18-for-2 is the wrong trade to
+	// optimise against.
+	//
+	// The title is read HERE rather than passed in: it costs a query only on this
+	// path (the body was empty), and embedBody already reads SQL for an image's
+	// description, so the seam exists.
+	if text == "" {
+		text = titleEmbedText(d.chunkTitle(ctx, key, chunkID))
+	}
+	// Still nothing: no body text AND no usable title. Embedding punctuation — or a
 	// placeholder — is worse than embedding nothing, because a row that exists ranks
 	// against every query.
 	if text == "" {
@@ -837,7 +855,80 @@ func (d *Document) readBody(ctx context.Context, mscope store.MemoryScope, scope
 
 // chunkBodyKey namespaces chunk bodies in the Memory keyspace so they don't
 // collide with an agent's own k/v keys.
-func chunkBodyKey(chunkID string) string { return "doc.chunk:" + chunkID }
+// chunkBodyKeyPrefix is the k/v namespace for chunk bodies. One definition, because
+// both the Document tool and the admin backfill parse keys out of it.
+const chunkBodyKeyPrefix = "doc.chunk:"
+
+func chunkBodyKey(chunkID string) string { return chunkBodyKeyPrefix + chunkID }
+
+// ChunkIDFromBodyKey returns the chunk id a body key addresses, or "" when the key
+// is not a chunk body. Exported so the admin backfill can recognise document rows
+// without restating the prefix.
+func ChunkIDFromBodyKey(memKey string) string {
+	if !strings.HasPrefix(memKey, chunkBodyKeyPrefix) {
+		return ""
+	}
+	return strings.TrimPrefix(memKey, chunkBodyKeyPrefix)
+}
+
+// chunkTitle reads one chunk's title, or "" on any fault. Best-effort like the rest
+// of the embed path: a title that cannot be read costs searchability, never a write.
+func (d *Document) chunkTitle(ctx context.Context, key sqlmem.ScopeKey, chunkID string) string {
+	if d.SqlMem == nil {
+		return ""
+	}
+	res, err := d.query(ctx, key, `SELECT title FROM chunks WHERE id = ? LIMIT 1`, chunkID)
+	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
+		return ""
+	}
+	return asStr(res.Rows[0][0])
+}
+
+// titleEmbedText decides whether a title is worth embedding, and is the ONE place
+// that judgement lives so the write path and the backfill cannot disagree.
+//
+// The only requirement is a letter. A title with no letters carries no language —
+// "---", "```sh", "42" — and a vector built from it can only produce false matches,
+// which is the same reasoning the mermaid extractor applies to a label-less diagram.
+// Everything else is kept: a heading is short by nature, so a length threshold would
+// discard "Active RFCs" and "Configuration", both of which are exactly what someone
+// searching a document would type.
+func titleEmbedText(title string) string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return ""
+	}
+	if !strings.ContainsFunc(t, func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+	}) {
+		return ""
+	}
+	return t
+}
+
+// TitleFallbackForBodyKey resolves the title-derived embed text for a bodyless
+// document chunk, given only its k/v key.
+//
+// Exported for the admin embedding backfill, which sees memory rows rather than
+// chunks and therefore cannot reach a title on its own. It lives here so the
+// ""→"default" SQL-tenant rule and the title-quality judgement stay in one package —
+// duplicating either at the call site is how the tenant axis drifts (chunk bodies
+// key on the RAW tenant while SQL Memory canonicalises it, a seam that has produced
+// silent cross-tenant bugs before).
+//
+// Returns "" for a non-chunk key, a missing chunk, an unusable title, or no SQL
+// Memory — every case the caller should treat as "nothing to embed".
+func TitleFallbackForBodyKey(ctx context.Context, mgr *sqlmem.Manager, tenant string,
+	mscope store.MemoryScope, scopeID, memKey string) string {
+
+	chunkID := ChunkIDFromBodyKey(memKey)
+	if chunkID == "" || mgr == nil {
+		return ""
+	}
+	d := &Document{SqlMem: mgr}
+	key := sqlmem.ScopeKey{Tenant: sqlScopeTenantValue(tenant), Scope: string(mscope), ScopeID: scopeID}
+	return titleEmbedText(d.chunkTitle(ctx, key, chunkID))
+}
 
 // recordRevision appends a body snapshot to the chunk_revisions log (RFC BS
 // Phase 3a). It is a BODY-CHANGE log: called only where a chunk's body is

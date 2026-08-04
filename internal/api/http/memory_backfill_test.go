@@ -324,3 +324,53 @@ func TestBackfillEmbeddings_AdminMustNameATenant(t *testing.T) {
 			"default tenant unsweepable")
 	}
 }
+
+// TestBackfillEmbeddings_BodylessChunkFallsBackToItsTitle — the sweep must apply the
+// same title fallback the write path does, or existing documents stay permanently
+// less searchable than ones authored after the feature landed.
+//
+// A bodyless chunk cannot be reached any other way: the backfill sees memory ROWS,
+// and a title lives in SQL Memory, so without this the 186 heading chunks measured on
+// the reference deployment would need 186 manual body rewrites.
+//
+// The resolution is delegated to builtin.TitleFallbackForBodyKey so the ""→"default"
+// SQL-tenant rule and the title-quality judgement are not restated here.
+func TestBackfillEmbeddings_BodylessChunkFallsBackToItsTitle(t *testing.T) {
+	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
+	emb := &backfillEmbedder{}
+	srv.embedder = emb
+
+	// sqlMem is nil in this fixture, so the fallback resolves to "" — which is exactly
+	// the contract under test on this path: a scope with no SQL Memory must be counted
+	// as skipped rather than crash or embed a placeholder.
+	bodies := map[string]string{"doc.chunk:h01": "", "doc.chunk:b01": "real body text"}
+	ps := newPagingStore(srv.store, bodies)
+	srv.store = ps
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/v1/_memory/backfill_embeddings?scope=user&scope_id=alice&tenant=&prefix=doc.chunk:&limit=10&dry_run=false", nil).
+		WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
+			Subject: "root", Scopes: []string{auth.ScopeAdmin},
+		}))
+	srv.handleMemoryBackfillEmbeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if n, _ := got["embedded"].(float64); n != 1 {
+		t.Errorf("embedded = %v, want 1 (the row with a body)", got["embedded"])
+	}
+	if n, _ := got["skipped_empty"].(float64); n != 1 {
+		t.Errorf("skipped_empty = %v, want 1 — with no SQL Memory the title cannot be "+
+			"resolved, and that must count as skipped, not crash", got["skipped_empty"])
+	}
+	// The notes must SAY that a title fallback exists, or an operator reading
+	// skipped_empty will assume those rows are unreachable by design.
+	body := rec.Body.String()
+	if !strings.Contains(body, "falls back to its TITLE") {
+		t.Error("the response notes do not mention the title fallback")
+	}
+}

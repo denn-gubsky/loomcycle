@@ -711,8 +711,17 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 // across both). A real (non-empty) tenant is used verbatim; the run scope is not
 // tenant-keyed, so this is a no-op there.
 func sqlScopeTenant(ctx context.Context) string {
-	if t := tools.RunIdentity(ctx).TenantID; t != "" {
-		return t
+	return sqlScopeTenantValue(tools.RunIdentity(ctx).TenantID)
+}
+
+// sqlScopeTenantValue is the same rule for a tenant already in hand. SQL Memory
+// rejects an empty tenant (it sanitizes the value into a path/identifier), so the
+// default partition is stored as "default" while the k/v and dirent planes keep the
+// raw "". Both forms must go through here — a restated ""→"default" at a call site
+// is how the tenant axis drifts.
+func sqlScopeTenantValue(tenant string) string {
+	if tenant != "" {
+		return tenant
 	}
 	return "default"
 }

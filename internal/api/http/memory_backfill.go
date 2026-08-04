@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 type memoryBackfillResponse struct {
@@ -141,10 +142,12 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 			"remain. Every embedded row leaves the candidate set, so re-invoking is safe " +
 			"and resumes rather than restarts.",
 		"RE-INVOKE WHILE `more` IS TRUE. Do not wait for candidates to reach 0: a row " +
-			"with no text to embed (a document root, a section heading) never gains an " +
+			"with nothing to embed — no body text AND no usable title — never gains an " +
 			"embedding, so it stays a candidate permanently and candidates converges to " +
 			"skipped_empty instead. `limit` bounds how many rows are EMBEDDED, not how " +
 			"many are examined — the sweep pages past what it cannot embed.",
+		"A document chunk with an empty body falls back to its TITLE, matching the " +
+			"write path: a heading is real language and a real answer to a search.",
 	}
 
 	if dryRun {
@@ -209,7 +212,21 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 			// embedding the raw JSON would index the field names.
 			text := embedTextForRow(row)
 			if text == "" {
-				// Nothing to embed, ever. Counted rather than silently passed over.
+				// A document chunk with no body is usually a HEADING, and a heading is
+				// real language ("RFC BE — History Tool", "Phase 2 — name-links").
+				// The write path embeds the title in that case, so the sweep must too,
+				// or existing documents stay permanently less searchable than new ones.
+				//
+				// The resolution lives in the builtin package: it needs the chunk
+				// title (a SQL Memory read this handler has no view of) AND the
+				// ""→"default" SQL-tenant rule, and restating that rule here is how
+				// the tenant axis drifts.
+				text = builtin.TitleFallbackForBodyKey(r.Context(), s.sqlMem, tenant,
+					store.MemoryScope(scope), scopeID, row.Key)
+			}
+			if text == "" {
+				// Nothing to embed, ever — no body and no usable title. Counted rather
+				// than silently passed over.
 				resp.SkippedEmpty++
 				continue
 			}
@@ -247,8 +264,9 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 	}
 	if resp.SkippedEmpty > 0 {
 		resp.Notes = append(resp.Notes,
-			"skipped_empty rows have no text to embed (a document root, a section heading). "+
-				"They stay candidates permanently — that is expected, not a failure.")
+			"skipped_empty rows have neither body text nor a usable title (a title with no "+
+				"letters carries no language). They stay candidates permanently — that is "+
+				"expected, not a failure.")
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
