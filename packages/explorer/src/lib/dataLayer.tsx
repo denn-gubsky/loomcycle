@@ -1,13 +1,18 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { LoomcycleClient, DocumentToolInput } from "@loomcycle/client";
 import type {
+  Backlink,
   BrowseScope,
+  CanvasDoc,
   ChunkDetail,
+  ChunkRevision,
   ChunkRow,
   DocEdge,
   DocScope,
   PathEntry,
   PathScope,
+  RelatedChunk,
+  UnlinkedMention,
 } from "../types";
 import type { DocSummary, DocumentMeta } from "./colorScheme";
 import type { AssetFetch } from "./createClient";
@@ -160,6 +165,68 @@ export interface ExplorerDataLayer {
     includeMetadata: boolean,
     browse?: BrowseScope,
   ): Promise<{ markdown: string; title: string; document_id: string }>;
+  // documentBacklinks returns the chunks that link TO this chunk (RFC BS) — the
+  // "what links here" list, each enriched with the source's title/type/status +
+  // whether the edge was auto-derived from a [[name]] wikilink.
+  documentBacklinks(
+    id: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ backlinks: Backlink[] }>;
+  // documentRelated returns semantic neighbours of a chunk (RFC BS, vector
+  // similarity). It REFUSES when no embedder is configured — the caller catches
+  // the error and shows a "semantic search not configured" note. limit caps the
+  // result count (server default when omitted).
+  documentRelated(
+    id: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+    limit?: number,
+  ): Promise<{ related: RelatedChunk[] }>;
+  // documentUnlinkedMentions returns chunks that mention this chunk's title but
+  // don't link to it (RFC BS) — candidate links. `truncated` flags an elided tail.
+  documentUnlinkedMentions(
+    id: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+    limit?: number,
+  ): Promise<{ unlinked_mentions: UnlinkedMention[]; truncated: boolean }>;
+  // documentHistory returns a chunk's edit history (RFC BS) — revision numbers +
+  // timestamps + actors, newest-relevant first as the server orders them.
+  documentHistory(
+    id: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+    limit?: number,
+  ): Promise<{ chunk_id: string; revisions: ChunkRevision[] }>;
+  // documentGetVersion returns one historical revision's body verbatim (RFC BS).
+  documentGetVersion(
+    id: string,
+    revision: number,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ chunk_id: string; revision: number; body: string }>;
+  // documentDiff returns a unified-diff text between two revisions of a chunk
+  // (RFC BS) — from_revision → to_revision.
+  documentDiff(
+    id: string,
+    fromRevision: number,
+    toRevision: number,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{
+    chunk_id: string;
+    from_revision: number;
+    to_revision: number;
+    diff: string;
+  }>;
+  // documentExportCanvas returns the whole document as a node/edge canvas graph
+  // (RFC BS), downloaded as a `.canvas` (JSON) file by the viewer.
+  documentExportCanvas(
+    documentId: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ canvas: CanvasDoc; document_id: string }>;
 }
 
 // dataLayerFromClient maps a @loomcycle/client instance onto the
@@ -291,6 +358,72 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
         } as unknown as DocumentToolInput,
         browse,
       ) as Promise<{ markdown: string; title: string; document_id: string }>,
+    // RFC BS document-connections + history + canvas ops. Same `as unknown as
+    // DocumentToolInput` passthrough as documentGetEdges — new wire ops the pinned
+    // SDK type doesn't enumerate; the /v1/_document passthrough accepts them
+    // verbatim (adapters/ts is fixed at source, so the casts come out on the next
+    // client publish).
+    documentBacklinks: (id, scope, browse) =>
+      client.document(
+        { op: "backlinks", id, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ backlinks: Backlink[] }>,
+    documentRelated: (id, scope, browse, limit) =>
+      client.document(
+        {
+          op: "related",
+          id,
+          scope,
+          ...(limit ? { limit } : {}),
+        } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ related: RelatedChunk[] }>,
+    documentUnlinkedMentions: (id, scope, browse, limit) =>
+      client.document(
+        {
+          op: "unlinked_mentions",
+          id,
+          scope,
+          ...(limit ? { limit } : {}),
+        } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ unlinked_mentions: UnlinkedMention[]; truncated: boolean }>,
+    documentHistory: (id, scope, browse, limit) =>
+      client.document(
+        {
+          op: "history",
+          id,
+          scope,
+          ...(limit ? { limit } : {}),
+        } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ chunk_id: string; revisions: ChunkRevision[] }>,
+    documentGetVersion: (id, revision, scope, browse) =>
+      client.document(
+        { op: "get_version", id, revision, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ chunk_id: string; revision: number; body: string }>,
+    documentDiff: (id, fromRevision, toRevision, scope, browse) =>
+      client.document(
+        {
+          op: "diff",
+          id,
+          from_revision: fromRevision,
+          to_revision: toRevision,
+          scope,
+        } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{
+        chunk_id: string;
+        from_revision: number;
+        to_revision: number;
+        diff: string;
+      }>,
+    documentExportCanvas: (documentId, scope, browse) =>
+      client.document(
+        { op: "export_canvas", document_id: documentId, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ canvas: CanvasDoc; document_id: string }>,
     // Present only when an AssetFetch was supplied (the connection path); a bare
     // client can't do the raw binary GET, so the op is omitted and the viewer
     // shows a placeholder.

@@ -1238,7 +1238,21 @@ export type DocumentToolInput = {
     | "set_asset"
     | "get_asset"
     | "export_md"
-    | "import_md";
+    | "import_md"
+    // RFC BS — document connections (backlinks / vector-related / unlinked
+    // mentions), per-chunk edit history (history / get_version / diff), and the
+    // node-edge canvas graph (export_canvas / import_canvas). Appended (not
+    // interleaved) because these were added to the backend enum after the ops
+    // above; the union order is only for type-completeness — the wire passthrough
+    // carries any `op` verbatim.
+    | "backlinks"
+    | "related"
+    | "unlinked_mentions"
+    | "history"
+    | "get_version"
+    | "diff"
+    | "export_canvas"
+    | "import_canvas";
   scope?: "agent" | "user" | "tenant";
   /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
   id?: string;
@@ -1261,8 +1275,16 @@ export type DocumentToolInput = {
   /** query_chunks: match this tag OR anything nested under it (prefix + '/'). */
   tag_prefix?: string;
   position?: number;
-  /** update_chunk: the chunk's current revision (optimistic concurrency). */
+  /** update_chunk: the chunk's current revision (optimistic concurrency).
+   *  get_version: the historical revision to fetch. */
   revision?: number;
+  /** diff (RFC BS): the two chunk revisions to compare (from_revision →
+   *  to_revision), producing a unified-diff text. */
+  from_revision?: number;
+  to_revision?: number;
+  /** import_canvas (RFC BS): a node/edge canvas graph to build a document from
+   *  (the shape export_canvas emits). Opaque here; the backend owns the schema. */
+  canvas?: unknown;
   from_id?: string;
   to_id?: string;
   kind?: string;

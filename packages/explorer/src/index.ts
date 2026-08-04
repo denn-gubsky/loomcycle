@@ -20,6 +20,11 @@ export type {
   ChunkRow,
   ChunkDetail,
   DocEdge,
+  Backlink,
+  RelatedChunk,
+  UnlinkedMention,
+  ChunkRevision,
+  CanvasDoc,
   Principal,
   AssistantContext,
 } from "./types";

@@ -85,6 +85,62 @@ export interface DocEdge {
   to_document_id?: string;
 }
 
+// Backlink is one incoming link to the selected chunk, from `backlinks` (RFC BS):
+// the linking (source) chunk enriched with its title/type/status/document_id, the
+// edge `kind`, and `auto` — true when the link came from a `[[name]]` wikilink in
+// the source body (vs a manually-authored edge). from_document_id ≠ the current
+// document marks a cross-document backlink (labeled, not navigable in this
+// single-document viewer). Endpoint fields are omitted when empty.
+export interface Backlink {
+  from_id: string;
+  kind: string;
+  auto: boolean;
+  from_title?: string;
+  from_type?: string;
+  from_status?: string;
+  from_document_id?: string;
+}
+
+// RelatedChunk is one semantic-neighbour of the selected chunk, from `related`
+// (RFC BS) — a vector-similarity match. `score` is the similarity (higher = closer).
+// The `related` op REFUSES when the deployment has no embedder configured; the
+// viewer surfaces that as a muted note rather than an error.
+export interface RelatedChunk {
+  chunk_id: string;
+  score: number;
+  title?: string;
+  type?: string;
+  document_id?: string;
+}
+
+// UnlinkedMention is a chunk whose body mentions the selected chunk's title but
+// carries no explicit link to it, from `unlinked_mentions` (RFC BS) — a candidate
+// link the author might want to formalize. The list is capped; the response's
+// `truncated` flag (not on the row) signals more were elided.
+export interface UnlinkedMention {
+  chunk_id: string;
+  title?: string;
+  document_id?: string;
+}
+
+// ChunkRevision is one entry in a chunk's edit history, from `history` (RFC BS):
+// the monotonic `revision` number, `created_at` (Unix nanoseconds — divide by 1e6
+// for a JS Date), and the `actor` who wrote it. Fetch a revision's body with
+// documentGetVersion, or a unified diff between two with documentDiff.
+export interface ChunkRevision {
+  revision: number;
+  created_at: number;
+  actor: string;
+}
+
+// CanvasDoc is the whole-document node/edge graph from `export_canvas` (RFC BS),
+// downloadable as a `.canvas` (JSON) file. The node/edge shapes are backend-owned
+// and opaque to the viewer (it only serializes them), so they stay `unknown[]`.
+export interface CanvasDoc {
+  nodes: unknown[];
+  edges: unknown[];
+}
+
 // Principal is the authenticated identity behind the session (resolved by the
 // host, e.g. via GET /v1/_me). The explorer only reads `subject` — it is passed
 // into the renderAssistant slot's context so a host-provided Document Assistant
