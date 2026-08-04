@@ -263,6 +263,27 @@ func TestRequiredScopeFor(t *testing.T) {
 		// Configured model aliases — tenant-readable so a tenant operator's UI
 		// can offer aliases in a model picker (non-secret global config).
 		{"GET", "/v1/_models", auth.ScopeTenant},
+		// RFC BV: the memory browse/search/embed-admin family is tenant-confined
+		// (memory rows carry a tenant_id; every handler sources the tenant from the
+		// principal). The def family /v1/_memorybackenddef is ScopeTenant via a
+		// DIFFERENT path (isTenantConfinedDefPath) and must not be swept up here.
+		{"GET", "/v1/_memory/scopes", auth.ScopeTenant},
+		{"GET", "/v1/_memory/scopes/user", auth.ScopeTenant},
+		{"GET", "/v1/_memory/scopes/user/alice/keys", auth.ScopeTenant},
+		{"GET", "/v1/_memory/scopes/user/alice/keys/voice", auth.ScopeTenant},
+		{"PUT", "/v1/_memory/scopes/user/alice/keys/voice", auth.ScopeTenant},
+		{"DELETE", "/v1/_memory/scopes/user/alice/keys/voice", auth.ScopeTenant},
+		{"GET", "/v1/_memory/embed_stats", auth.ScopeTenant},
+		{"POST", "/v1/_memory/reembed", auth.ScopeTenant},
+		{"POST", "/v1/_memory/backfill_embeddings", auth.ScopeTenant},
+		{"POST", "/v1/_memory/search", auth.ScopeTenant},
+		// repair-tenant is a cross-tenant bulk rewrite — STAYS operator-admin even
+		// though it matches the /v1/_memory/ prefix (it is excluded first).
+		{"POST", "/v1/_memory/repair-tenant", auth.ScopeAdmin},
+		// The MemoryBackendDef def family stays tenant via isTenantConfinedDefPath,
+		// NOT via the /v1/_memory/ prefix (no slash after "memory").
+		{"POST", "/v1/_memorybackenddef", auth.ScopeTenant},
+		{"GET", "/v1/_memorybackenddef/names", auth.ScopeTenant},
 		// RFC AF: hooks are tenant-confined now that the registry is
 		// tenant-isolated (stamp on register, tenant-filtered Match, scoped
 		// List/Delete). substrate:admin still satisfies.

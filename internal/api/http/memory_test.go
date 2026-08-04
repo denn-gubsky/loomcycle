@@ -101,6 +101,50 @@ func TestHandleMemory_TenantIsolation(t *testing.T) {
 	}
 }
 
+// TestHandleMemory_TenantOperatorConfined proves the RFC BV route re-gate is
+// safe: a NON-admin substrate:tenant operator — the principal the re-gate newly
+// admits — reaching a memory route sees ONLY its own tenant's rows, and a
+// ?tenant= naming another tenant is IGNORED (the handlers source the tenant from
+// the principal via tenantFromCtx, never the wire). This is the invariant the
+// re-gate rests on: opening the gate to ScopeTenant did not open cross-tenant
+// reads. The prior TenantIsolation test used ADMIN principals; this covers the
+// tenant-operator path the re-gate actually enables.
+func TestHandleMemory_TenantOperatorConfined(t *testing.T) {
+	s := memoryAdminFixture(t)
+	ctx := t.Context()
+	// The same (scope, scope_id, key) under two tenants — the strongest case: a
+	// leak would surface the other tenant's value at an identical address.
+	if err := s.store.MemorySet(ctx, "acme", store.MemoryScopeUser, "carol", "voice", []byte(`"acme-voice"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.MemorySet(ctx, "other", store.MemoryScopeUser, "carol", "voice", []byte(`"other-voice"`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// A tenant operator: ScopeTenant, NOT ScopeAdmin, confined to "acme".
+	op := func(r *http.Request) *http.Request {
+		return r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{
+			TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant},
+		}))
+	}
+	// List carol's keys AND try to escape confinement via ?tenant=other.
+	req := httptest.NewRequest("GET", "/v1/_memory/scopes/user/carol/keys?tenant=other", nil)
+	req.SetPathValue("scope", "user")
+	req.SetPathValue("scope_id", "carol")
+	rec := httptest.NewRecorder()
+	s.handleListMemoryEntries(rec, op(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "acme-voice") {
+		t.Errorf("operator did not see its own tenant's row: %s", body)
+	}
+	if strings.Contains(body, "other-voice") {
+		t.Errorf("tenant operator escaped confinement via ?tenant=other — saw another tenant's row: %s", body)
+	}
+}
+
 func TestHandleListMemoryScopes_ReturnsConstantSet(t *testing.T) {
 	s := memoryAdminFixture(t)
 	rec := httptest.NewRecorder()
