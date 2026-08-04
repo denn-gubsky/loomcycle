@@ -151,6 +151,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryListBySourceSessions", testMemoryListBySourceSessions},
 		{"InterruptDeleteAllByUser", testInterruptDeleteAllByUser},
 		{"ListTenants", testListTenants},
+		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
@@ -10993,5 +10994,67 @@ func testListTenants(t *testing.T, s store.Store) {
 	// A tenant with no runs must NOT appear — the enumeration is derived.
 	if _, present := got["tn_never_ran"]; present {
 		t.Error("a tenant with no runs appeared; the list is derived from runs")
+	}
+}
+
+// testMemoryEmbedCascadesOnDelete proves the claim RFC BU relies on rather than
+// assuming it: deleting an embedded memory row leaves no embedding behind.
+//
+// memory_embeddings has ON DELETE CASCADE to memory on postgres, and the
+// vec-enabled sqlite driver sets _foreign_keys=on in its DSN — so the cascade is
+// enforced wherever an embedding can exist. That makes embedding CLEANUP free for
+// document chunk bodies: delete_chunk, delete_document, the retention prune and
+// the dead-link GC all delete the body, and the vector goes with it.
+//
+// Free, but untested — and a documented invariant with no test is precisely how
+// the scope-key separator rule and the postgres-tier -run filter both drifted in
+// this codebase. If this ever fails it is a latent orphan-vector bug, not a
+// documentation problem.
+func testMemoryEmbedCascadesOnDelete(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	const sid, key = "cascade", "doc.chunk:abc123"
+	v, _ := json.Marshal(map[string]string{"body": "prose"})
+	if err := s.MemorySet(ctx, "", store.MemoryScopeUser, sid, key, v, 0); err != nil {
+		t.Fatalf("MemorySet: %v", err)
+	}
+	if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, key, store.MemoryEmbedding{
+		Provider: "test", Model: "m", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "prose", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("MemoryEmbedSet: %v", err)
+	}
+	// Precondition: the embedding is really there, so a later absence means the
+	// cascade fired rather than the write having silently no-opped.
+	if _, err := s.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, sid, key); err != nil {
+		t.Fatalf("precondition: embedding not readable after set: %v", err)
+	}
+
+	if _, err := s.MemoryDelete(ctx, "", store.MemoryScopeUser, sid, key); err != nil {
+		t.Fatalf("MemoryDelete: %v", err)
+	}
+	if _, err := s.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, sid, key); err == nil {
+		t.Error("the embedding SURVIVED its memory row — every document body delete " +
+			"would leave an orphan vector, searchable and pointing at nothing")
+	}
+
+	// And the scope-wide delete path, which is what an erasure uses.
+	if err := s.MemorySet(ctx, "", store.MemoryScopeUser, sid, key, v, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, key, store.MemoryEmbedding{
+		Provider: "test", Model: "m", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "prose", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MemoryDeleteScope(ctx, "", store.MemoryScopeUser, sid); err != nil {
+		t.Fatalf("MemoryDeleteScope: %v", err)
+	}
+	if _, err := s.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, sid, key); err == nil {
+		t.Error("the embedding survived a scope-wide delete — an erasure would leave " +
+			"the subject's vectors behind")
 	}
 }

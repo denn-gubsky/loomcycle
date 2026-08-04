@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -38,6 +40,17 @@ type Document struct {
 	// conservative built-in default. The wire (base64) payload is bounded
 	// separately by the /v1/_document request-body cap. RFC BO.
 	MaxAssetBytes int
+	// Embedder makes chunk BODIES semantically searchable: a prose chunk's body
+	// is embedded on write, so `memory op=search` with prefix "doc.chunk:" finds
+	// it. Before this, the searchable half of a document (the SQL chunks table)
+	// held no body text while the half holding the text (the k/v plane) had no
+	// index — so document prose was unreachable by any agent-visible search.
+	//
+	// OPTIONAL, and deliberately so. Nil means bodies are written exactly as
+	// before: unsearchable, never lost. Several internal construction sites
+	// (ontology provisioning, the tenant-root probe) neither need nor have an
+	// embedder, and a required field would force them to fabricate one.
+	Embedder providers.Embedder
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -602,7 +615,64 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scop
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
 	// structure never drift across the tenant axis.
-	return d.Store.MemorySet(ctx, direntTenant(ctx), mscope, scopeID, chunkBodyKey(chunkID), v, 0)
+	tenant := direntTenant(ctx)
+	key := chunkBodyKey(chunkID)
+	if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, key, v, 0); err != nil {
+		return err
+	}
+	// The body is durable at this point. Embedding is a SEPARATE, best-effort
+	// step and its failure is never returned: an unembedded chunk is
+	// unsearchable, but a chunk whose write was rejected because an embedder was
+	// cold is lost work the author has to redo. Authoring must not become
+	// embedder-dependent.
+	d.embedBody(ctx, tenant, mscope, scopeID, key, chunkID, body)
+	return nil
+}
+
+// embedBody indexes a chunk body for semantic search, best-effort.
+//
+// WHAT text gets embedded is per chunk type, and phase 1 handles prose only:
+//
+//   - prose  → the body verbatim
+//   - image  → SKIPPED. The body is a rendered media form (a data URI or an
+//     asset reference); embedding it would index base64, which matches nothing
+//     and costs a vector row. A generated description is the planned input.
+//   - mermaid → SKIPPED. Diagram source tokenises to `graph TD`, `-->`, `[`,
+//     which carry no meaning. Deterministic label extraction is the planned
+//     input, and it needs no model — mermaid is text pretending to be a picture.
+//
+// Skipping is not a silent no-op waiting to be forgotten: classifyMediaBody is
+// the same predicate export/import uses to recognise these forms, so a media
+// chunk that becomes embeddable later changes in one place.
+func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.MemoryScope, scopeID, key, chunkID, body string) {
+	if d.Embedder == nil {
+		return
+	}
+	text := strings.TrimSpace(body)
+	if text == "" {
+		return
+	}
+	if typ, _, _, _ := classifyMediaBody(body); typ != "" {
+		return
+	}
+	vec, err := d.Embedder.Embed(ctx, []string{text})
+	if err != nil || len(vec) == 0 {
+		// One log line, not a returned error — see writeBody. The admin re-embed
+		// surface is how an operator recovers a scope that was written while the
+		// embedder was down.
+		log.Printf("document: embed body failed for chunk %s: %v", chunkID, err)
+		return
+	}
+	if err := d.Store.MemoryEmbedSet(ctx, tenant, mscope, scopeID, key, store.MemoryEmbedding{
+		Provider:  d.Embedder.Provider(),
+		Model:     d.Embedder.Model(),
+		Dimension: len(vec[0]),
+		Vector:    vec[0],
+		EmbedText: text,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		log.Printf("document: store embedding failed for chunk %s: %v", chunkID, err)
+	}
 }
 
 // readBody loads a chunk's body + fields from Memory.
