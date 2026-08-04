@@ -68,7 +68,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","related","unlinked_mentions"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","related","unlinked_mentions"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -79,19 +79,19 @@ const documentInputSchema = `{
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
 		"direction":   {"type": "string", "enum": ["up","down"], "description": "reorder_chunk: move the chunk up or down within its current level."},
-		"type":        {"type": "string", "description": "Optional supertag-like chunk type."},
+		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type."},
 		"body":        {"type": "string", "description": "Markdown body."},
 		"seed_ids":  {"type": "array", "items": {"type": "string"}, "description": "graph_recall: chunk ids to start from. Use this to hand in results you already found some other way (a Memory search, a previous recall) and follow the graph out from them."},
 		"query":     {"type": "string", "description": "graph_recall: find starting chunks whose title matches this text. Use seed_ids instead when you already know where to start."},
 		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. 0 = the starting chunks only, 1 = their neighbours (default), 2 = the maximum."},
-		"as_of":     {"type": "integer", "description": "graph_recall: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
-		"include_retired": {"type": "boolean", "description": "graph_recall: also return facts that have been superseded. Off by default, so you get only what is currently true."},
+		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
+		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
 		"limit":     {"type": "integer", "description": "graph_recall: maximum chunks returned (default 50)."},
 		"natural_key": {"type": "string", "description": "upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
 		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Defaults to now. Distinct from when it was recorded."},
 		"invalid_at": {"type": "integer", "description": "When the fact STOPPED being true in the world (unix nanos). Leave unset for something still true."},
-		"class":      {"type": "string", "enum": ["derived","evidential"], "description": "derived = distilled from something else (the default). evidential = source material, exempt from age-based pruning."},
+		"class":      {"type": "string", "enum": ["derived","evidential"], "description": "derived = distilled from something else (the default). evidential = source material, exempt from age-based pruning. list_facts: filter to facts of this class."},
 		"confidence": {"type": "number", "description": "0..1, how sure you are of this fact."},
 		"fields":      {"type": "object", "description": "Type-specific structured fields."},
 		"status":      {"type": "string"},
@@ -382,6 +382,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.supersedeChunk(ctx, key, in)
 	case "graph_recall":
 		return d.graphRecall(ctx, key, in)
+	case "list_facts":
+		return d.listFacts(ctx, key, in)
 	case "link_chunks":
 		return d.linkChunks(ctx, key, in)
 	case "unlink_chunks":
@@ -1689,6 +1691,14 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// come from GET /v1/_document/asset/{id}) so a viewer knows to render an img.
 	if mt, sz, ok := d.assetMeta(ctx, key, in.ID); ok {
 		resp["asset"] = map[string]any{"media_type": mt, "size": sz}
+	}
+	// RFC BV: when the chunk is a fact (has a chunk_memory_meta sidecar), surface
+	// the bi-temporal / provenance block so the memory view reads it typed —
+	// without it, a fact and a plain chunk are indistinguishable on read.
+	if meta, ok, merr := d.readChunkMeta(ctx, key, in.ID); merr != nil {
+		return errResult("get_chunk: entity: " + merr.Error()), nil
+	} else if ok {
+		resp["entity"] = chunkMetaToJSON(meta)
 	}
 	return jsonResult(resp)
 }

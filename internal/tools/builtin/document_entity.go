@@ -190,6 +190,150 @@ func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunk
 	}, true, nil
 }
 
+// chunkMetaToJSON renders a fact's sidecar row as the get_chunk / list_facts
+// `entity` block. Timestamps stay raw unix-nanos int64 (lossless — the UI
+// formats them), matching graph_recall's valid_at/invalid_at output. Nil/empty
+// fields are omitted (as graphChunk omits nil timestamps), EXCEPT `retired`,
+// which is always present so a reader never has to infer it from an absent key.
+//
+// `retired` keys on expired_at (SYSTEM time), not invalid_at: the supersede path
+// closes expired_at and the retired predicate keys on it (see writeChunkMeta). A
+// future world-time invalid_at is a still-current fact with a known end, so
+// keying `retired` on invalid_at would report such a fact as retired.
+func chunkMetaToJSON(m chunkMetaRow) map[string]any {
+	out := map[string]any{"retired": m.ExpiredAt != nil}
+	if m.ValidAt != nil {
+		out["valid_at"] = *m.ValidAt
+	}
+	if m.InvalidAt != nil {
+		out["invalid_at"] = *m.InvalidAt
+	}
+	if m.CreatedAt != nil {
+		out["created_at"] = *m.CreatedAt
+	}
+	if m.ExpiredAt != nil {
+		out["expired_at"] = *m.ExpiredAt
+	}
+	if m.Class != "" {
+		out["class"] = m.Class
+	}
+	if m.Origin != "" {
+		out["origin"] = m.Origin
+	}
+	if m.NaturalKey != "" {
+		out["natural_key"] = m.NaturalKey
+	}
+	if m.Confidence != nil {
+		out["confidence"] = *m.Confidence
+	}
+	if m.SessionID != "" {
+		out["session_id"] = m.SessionID
+	}
+	if m.RunID != "" {
+		out["run_id"] = m.RunID
+	}
+	if m.EventSeq != nil {
+		out["event_seq"] = *m.EventSeq
+	}
+	return out
+}
+
+// listFacts returns the scope's facts — chunks that HAVE a chunk_memory_meta
+// sidecar — as metadata only, no bodies. It is the browse surface behind the
+// human-facing memory view: a viewer fetches a fact's body via get_chunk on
+// click, exactly as graph_recall returns no body. The INNER JOIN is what makes
+// "fact" mean "has a sidecar" rather than "any chunk".
+func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.Class != "" && !entityClasses[in.Class] {
+		return errResult("list_facts: class must be one of: derived, evidential"), nil
+	}
+	// Same default/cap as graph_recall — a fact list is a browse surface, so the
+	// bound is a page size, not a correctness limit.
+	limit := graphDefaultLimit
+	if in.Limit > 0 {
+		limit = in.Limit
+	}
+	if limit > graphMaxLimit {
+		limit = graphMaxLimit
+	}
+
+	where := []string{}
+	args := []any{}
+	if in.Type != "" {
+		where = append(where, "c.type = ?")
+		args = append(args, in.Type)
+	}
+	if in.Class != "" {
+		where = append(where, "m.class = ?")
+		args = append(args, in.Class)
+	}
+	if in.DocumentID != "" {
+		where = append(where, "c.document_id = ?")
+		args = append(args, in.DocumentID)
+	}
+	// Reuse graph_recall's temporal filter so "currently true" means the same
+	// thing on both surfaces. The INNER JOIN makes m.chunk_id non-null, so the
+	// clause's `m.chunk_id IS NULL OR ...` disjunct is inert here (which is
+	// correct: a JOINed row always has a sidecar). Empty when include_retired.
+	if temporal, targs := graphTemporalClause(in); temporal != "" {
+		where = append(where, temporal)
+		args = append(args, targs...)
+	}
+
+	stmt := `SELECT c.id, c.document_id, c.parent_id, c.position, c.title, c.type, c.status, c.revision,
+	                m.valid_at, m.invalid_at, m.created_at, m.expired_at, m.class, m.origin, m.confidence,
+	                m.session_id, m.run_id, m.event_seq, m.natural_key
+	           FROM chunks c JOIN chunk_memory_meta m ON m.chunk_id = c.id`
+	if len(where) > 0 {
+		stmt += " WHERE " + strings.Join(where, " AND ")
+	}
+	// Over-fetch by one to detect truncation without a second COUNT round trip.
+	stmt += " ORDER BY m.created_at DESC LIMIT ?"
+	args = append(args, limit+1)
+
+	res, err := d.query(ctx, key, stmt, args...)
+	if err != nil {
+		return errResult("list_facts: " + err.Error()), nil
+	}
+	truncated := len(res.Rows) > limit
+	rows := res.Rows
+	if truncated {
+		rows = rows[:limit]
+	}
+
+	facts := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		// Scan the m.* columns back into a chunkMetaRow so the per-fact `entity`
+		// block is byte-identical to get_chunk's — one formatter, no drift.
+		meta := chunkMetaRow{
+			ValidAt: asInt64Ptr(r[8]), InvalidAt: asInt64Ptr(r[9]),
+			CreatedAt: asInt64Ptr(r[10]), ExpiredAt: asInt64Ptr(r[11]),
+			Class: asStr(r[12]), Origin: asStr(r[13]), Confidence: asFloat64Ptr(r[14]),
+			SessionID: asStr(r[15]), RunID: asStr(r[16]), EventSeq: asInt64Ptr(r[17]),
+			NaturalKey: asStr(r[18]),
+		}
+		fact := map[string]any{
+			"id":          asStr(r[0]),
+			"document_id": asStr(r[1]),
+			"position":    asInt(r[3]),
+			"title":       asStr(r[4]),
+			"revision":    asInt(r[7]),
+			"entity":      chunkMetaToJSON(meta),
+		}
+		if pid := asStr(r[2]); pid != "" {
+			fact["parent_id"] = pid
+		}
+		if typ := asStr(r[5]); typ != "" {
+			fact["type"] = typ
+		}
+		if status := asStr(r[6]); status != "" {
+			fact["status"] = status
+		}
+		facts = append(facts, fact)
+	}
+	return okJSON(map[string]any{"facts": facts, "count": len(facts), "truncated": truncated})
+}
+
 // writeChunkMeta upserts the sidecar row, PRESERVING every field the caller did not
 // supply.
 //
