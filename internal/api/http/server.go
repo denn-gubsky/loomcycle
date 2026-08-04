@@ -3004,6 +3004,7 @@ func (s *Server) Mux() http.Handler {
 	// support OR no embedder is configured.
 	mux.Handle("GET /v1/_memory/embed_stats", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryEmbedStats))))
 	mux.Handle("POST /v1/_memory/reembed", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryReembed))))
+	mux.Handle("POST /v1/_memory/backfill_embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryBackfillEmbeddings))))
 	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
 	// as /v1/_resolver. The full runtime-state JSON envelope; see
 	// internal/snapshot/snapshot.go for the wire shape.

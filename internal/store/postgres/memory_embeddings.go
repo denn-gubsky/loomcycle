@@ -550,3 +550,61 @@ func decodePgvector(s string) ([]float32, error) {
 	}
 	return out, nil
 }
+
+// MemoryEmbedListMissing returns live rows with NO embedding, optionally under a
+// key prefix. See the Store interface for why MemoryEmbedListByModel cannot serve
+// this (it INNER JOINs the table these rows are absent from) and why paging by
+// re-calling is resumable without a cursor.
+func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, limit int) ([]store.MemoryEntry, error) {
+	if !s.pgvectorEnabled {
+		return nil, store.ErrVectorUnsupported
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	// LEFT JOIN + IS NULL, the inverse of MemoryEmbedListByModel's inner join.
+	// Ordered by key so successive pages are stable while rows are being embedded
+	// out from under the query — an unordered scan could revisit or skip.
+	sql := `SELECT m.key, m.value, m.expires_at, m.created_at, m.updated_at
+	          FROM memory m
+	          LEFT JOIN memory_embeddings me
+	            ON me.tenant_id = m.tenant_id
+	           AND me.scope     = m.scope
+	           AND me.scope_id  = m.scope_id
+	           AND me.key       = m.key
+	         WHERE m.tenant_id = $1 AND m.scope = $2 AND m.scope_id = $3
+	           AND me.key IS NULL
+	           AND (m.expires_at IS NULL OR m.expires_at > now())
+	           AND m.superseded_at IS NULL`
+	args := []any{tenantID, string(scope), scopeID}
+	if keyPrefix != "" {
+		sql += ` AND m.key LIKE $4`
+		args = append(args, keyPrefix+"%")
+	}
+	sql += ` ORDER BY m.key LIMIT ` + strconv.Itoa(limit)
+
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("MemoryEmbedListMissing query: %w", err)
+	}
+	defer rows.Close()
+	out := []store.MemoryEntry{}
+	for rows.Next() {
+		var (
+			e         store.MemoryEntry
+			valueByte []byte
+			expiresAt *time.Time
+		)
+		if err := rows.Scan(&e.Key, &valueByte, &expiresAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("MemoryEmbedListMissing scan: %w", err)
+		}
+		e.Value = valueByte
+		// ExpiresAt is a plain time.Time; NULL stays the zero value, which is how
+		// the rest of this tier represents "no expiry".
+		if expiresAt != nil {
+			e.ExpiresAt = *expiresAt
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
