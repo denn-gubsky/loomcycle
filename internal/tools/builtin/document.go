@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pmezard/go-difflib/difflib"
+
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -43,7 +45,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -53,7 +55,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","history","get_version","diff","backlinks"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -81,7 +83,9 @@ const documentInputSchema = `{
 		"fields":      {"type": "object", "description": "Type-specific structured fields."},
 		"status":      {"type": "string"},
 		"position":    {"type": "integer"},
-		"revision":    {"type": "integer", "description": "update_chunk: the chunk's current revision (optimistic concurrency)."},
+		"revision":    {"type": "integer", "description": "update_chunk: the chunk's current revision (optimistic concurrency). get_version: which body-change revision to read."},
+		"from_revision": {"type": "integer", "description": "diff: the earlier revision to compare (from history)."},
+		"to_revision":   {"type": "integer", "description": "diff: the later revision to compare (from history)."},
 		"from_id":     {"type": "string"},
 		"to_id":       {"type": "string"},
 		"kind":        {"type": "string", "description": "link/unlink_chunks: edge kind (promotes/targets/...)."},
@@ -124,9 +128,15 @@ type docInput struct {
 	Status    string          `json:"status"`
 	Position  *int            `json:"position"`
 	Revision  *int            `json:"revision"`
-	FromID    string          `json:"from_id"`
-	ToID      string          `json:"to_id"`
-	Kind      string          `json:"kind"`
+	// FromRevision / ToRevision select the two body-change revisions to diff (RFC
+	// BS Phase 3a). Pointers so an omitted bound is distinguishable from a value
+	// (the log is 1-based, so 0 is never a real revision, but the pointer keeps the
+	// parse honest and the missing-field error precise).
+	FromRevision *int   `json:"from_revision"`
+	ToRevision   *int   `json:"to_revision"`
+	FromID       string `json:"from_id"`
+	ToID         string `json:"to_id"`
+	Kind         string `json:"kind"`
 
 	// Tag facet (RFC BS Phase 1). Tags is a plain slice so JSON presence is
 	// self-distinguishing: an omitted `tags` decodes to nil (leave existing tags
@@ -266,6 +276,20 @@ var docSchemaDDL = []string{
 	`CREATE TABLE IF NOT EXISTS document_tags (
 		document_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (document_id, tag))`,
 	`CREATE INDEX IF NOT EXISTS document_tags_tag ON document_tags(tag)`,
+	// chunk_revisions — the append-only body-change log (RFC BS Phase 3a). The
+	// store's Memory API is OVERWRITE-only: MemorySet upserts and there is no
+	// version-history read, so a chunk's prior BODIES have nowhere to live unless
+	// they are kept here. One row per body WRITE: create_chunk seeds revision 1 and
+	// each body-bearing update_chunk appends the post-bump revision. A metadata-only
+	// update writes no row (its body is unchanged from the last snapshot), so this
+	// table lists exactly the revisions at which the BODY changed. No foreign key —
+	// cascade is explicit in Go (deleteChunk / deleteDocument), matching the rest of
+	// this schema; the (chunk_id, revision) primary key makes a re-run's snapshot
+	// idempotent (recordRevision's guarded INSERT relies on it).
+	`CREATE TABLE IF NOT EXISTS chunk_revisions (
+		chunk_id TEXT NOT NULL, revision INTEGER NOT NULL, created_at BIGINT NOT NULL,
+		actor TEXT, body TEXT NOT NULL, PRIMARY KEY (chunk_id, revision))`,
+	`CREATE INDEX IF NOT EXISTS chunk_revisions_chunk ON chunk_revisions(chunk_id)`,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -353,6 +377,14 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.exportMD(ctx, key, mscope, in)
 	case "import_md":
 		return d.importMD(ctx, key, mscope, in)
+	case "history":
+		return d.chunkHistory(ctx, key, in)
+	case "get_version":
+		return d.getVersion(ctx, key, in)
+	case "diff":
+		return d.diffVersions(ctx, key, in)
+	case "backlinks":
+		return d.backlinks(ctx, key, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
@@ -633,6 +665,32 @@ func (d *Document) readBody(ctx context.Context, mscope store.MemoryScope, scope
 // chunkBodyKey namespaces chunk bodies in the Memory keyspace so they don't
 // collide with an agent's own k/v keys.
 func chunkBodyKey(chunkID string) string { return "doc.chunk:" + chunkID }
+
+// recordRevision appends a body snapshot to the chunk_revisions log (RFC BS
+// Phase 3a). It is a BODY-CHANGE log: called only where a chunk's body is
+// actually (re)written — create_chunk (revision 1) and a body-bearing
+// update_chunk (the post-bump revision). A metadata-only update_chunk does NOT
+// call this: its body is unchanged from the last snapshot, so history lists
+// exactly the revisions at which the BODY changed.
+//
+// The INSERT is guarded (SELECT … WHERE NOT EXISTS) so a re-run cannot violate
+// the (chunk_id, revision) primary key — the same portable idempotence pattern
+// addTagRows uses. actor is the acting principal (RunIdentity.UserID), matching
+// publishChange's actor field.
+//
+// Deliberately NOT snapshotting yet (follow-ups): update_chunk-via-upsert_chunk
+// (updateChunkForUpsert writes the body directly), import_md's in-place body
+// writes, set_asset, and createDocument's empty root body do not append a
+// revision. Any body write that flows through create_chunk (incl. upsert_chunk's
+// create path and import_md's child chunks) does seed revision 1 naturally.
+func (d *Document) recordRevision(ctx context.Context, key sqlmem.ScopeKey, chunkID string, revision int, body string) error {
+	actor := tools.RunIdentity(ctx).UserID
+	now := time.Now().UnixNano()
+	stmt := `INSERT INTO chunk_revisions (chunk_id, revision, created_at, actor, body)
+	         SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (
+	             SELECT 1 FROM chunk_revisions WHERE chunk_id = ? AND revision = ?)`
+	return d.exec(ctx, key, stmt, chunkID, revision, now, actor, body, chunkID, revision)
+}
 
 // --- SQL helpers ---
 
@@ -1259,6 +1317,11 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_memory_meta WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
+		// The body-change log for every chunk in the document (RFC BS Phase 3a),
+		// resolved via the chunks subquery so it runs before the chunk rows go.
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_revisions WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE document_id = ?`, docID); err != nil {
 			return err
 		}
@@ -1400,6 +1463,11 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	if err := d.writeBody(ctx, mscope, key.ScopeID, id, in.Body, in.Fields); err != nil {
 		return errResult("create_chunk: body: " + err.Error()), nil
+	}
+	// Seed the body-change log at revision 1 (RFC BS Phase 3a) — the chunk's body
+	// exists as of now, so it is the first snapshot even when in.Body is empty.
+	if err := d.recordRevision(ctx, key, id, 1, in.Body); err != nil {
+		return errResult("create_chunk: history: " + err.Error()), nil
 	}
 	// Derive this chunk's inline [[name]] link edges from its body (RFC BS Phase
 	// 2a). A body with no resolvable name-links materializes no edges.
@@ -1725,6 +1793,13 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		// are unchanged — reconciling then would needlessly churn (and, if a linked
 		// target's dirent had since moved, wrongly drop a still-valid edge).
 		if hasBody {
+			// Snapshot the new body at the POST-bump revision (RFC BS Phase 3a).
+			// The guarded UPDATE above advanced revision from *in.Revision to
+			// *in.Revision+1, so that is the revision this body now carries. A
+			// fields-only update skips this branch (its body did not change).
+			if err := d.recordRevision(ctx, key, in.ID, *in.Revision+1, cb.Body); err != nil {
+				return errResult("update_chunk: history: " + err.Error()), nil
+			}
 			if err := d.reconcileNameLinks(ctx, key, in.ID, cb.Body); err != nil {
 				return errResult("update_chunk: name links: " + err.Error()), nil
 			}
@@ -1822,6 +1897,12 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// sidecar row reachable only through the path that was missed is an orphan
 			// nothing can see.
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_memory_meta WHERE chunk_id = ?`, cid); err != nil {
+				return err
+			}
+			// The body-change log for this chunk (RFC BS Phase 3a). Before the chunk
+			// row goes, like the other per-chunk cascades — an orphaned revision row
+			// is invisible dead data nothing reaps.
+			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_revisions WHERE chunk_id = ?`, cid); err != nil {
 				return err
 			}
 			if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE id = ?`, cid); err != nil {
@@ -2086,6 +2167,161 @@ ORDER BY e.kind, e.created_at`, in.DocumentID, in.DocumentID)
 		edges = append(edges, e)
 	}
 	return jsonResult(map[string]any{"edges": edges})
+}
+
+// --- chunk history + backlinks (RFC BS Phase 3a) ---
+
+// backlinkEndpointFields are the FROM-endpoint columns backlinks surfaces
+// (present only when non-empty) — the linking chunk's title/type/status/document_id,
+// so "what links here" renders without a follow-up get_chunk per source. The
+// mirror of getEdges' edgeEndpointFields, restricted to the from side (backlinks
+// fixes the to side to the queried chunk).
+var backlinkEndpointFields = []string{"from_title", "from_type", "from_status", "from_document_id"}
+
+// chunkHistory lists the revisions at which a chunk's BODY changed, newest
+// first — metadata only (revision / created_at / actor), not the bodies. The
+// body of any listed revision is fetched with get_version.
+func (d *Document) chunkHistory(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("history: missing required field: id"), nil
+	}
+	limit := 100
+	if in.Limit > 0 {
+		limit = in.Limit
+	}
+	res, err := d.query(ctx, key,
+		`SELECT revision, created_at, actor FROM chunk_revisions WHERE chunk_id = ? ORDER BY revision DESC LIMIT ?`,
+		in.ID, limit)
+	if err != nil {
+		return errResult("history: " + err.Error()), nil
+	}
+	// Positional read: the SELECT fixes the column order (revision, created_at,
+	// actor). created_at is a NOT-NULL unix-nanos BIGINT → asInt64 keeps its full
+	// width; the presence bool is irrelevant (the column is never NULL here).
+	revs := make([]map[string]any, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		createdAt, _ := asInt64(r[1])
+		revs = append(revs, map[string]any{
+			"revision":   asInt(r[0]),
+			"created_at": createdAt,
+			"actor":      asStr(r[2]),
+		})
+	}
+	return jsonResult(map[string]any{"chunk_id": in.ID, "revisions": revs})
+}
+
+// revisionBody reads one revision's stored body. ok=false means that
+// (chunk_id, revision) pair was never recorded.
+func (d *Document) revisionBody(ctx context.Context, key sqlmem.ScopeKey, chunkID string, revision int) (string, bool, error) {
+	res, err := d.query(ctx, key, `SELECT body FROM chunk_revisions WHERE chunk_id = ? AND revision = ?`, chunkID, revision)
+	if err != nil {
+		return "", false, err
+	}
+	if len(res.Rows) == 0 {
+		return "", false, nil
+	}
+	return asStr(res.Rows[0][0]), true, nil
+}
+
+// getVersion returns a single revision's exact body.
+func (d *Document) getVersion(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("get_version: missing required field: id"), nil
+	}
+	if in.Revision == nil {
+		return errResult("get_version: missing required field: revision"), nil
+	}
+	body, ok, err := d.revisionBody(ctx, key, in.ID, *in.Revision)
+	if err != nil {
+		return errResult("get_version: " + err.Error()), nil
+	}
+	if !ok {
+		return errResult(fmt.Sprintf("get_version: no such revision %d for chunk %s", *in.Revision, in.ID)), nil
+	}
+	return jsonResult(map[string]any{"chunk_id": in.ID, "revision": *in.Revision, "body": body})
+}
+
+// diffVersions returns a unified diff between two revisions' bodies. Either
+// missing revision is a clear error rather than a diff against "".
+func (d *Document) diffVersions(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("diff: missing required field: id"), nil
+	}
+	if in.FromRevision == nil || in.ToRevision == nil {
+		return errResult("diff: from_revision and to_revision are required"), nil
+	}
+	fromBody, ok, err := d.revisionBody(ctx, key, in.ID, *in.FromRevision)
+	if err != nil {
+		return errResult("diff: " + err.Error()), nil
+	}
+	if !ok {
+		return errResult(fmt.Sprintf("diff: no such revision %d for chunk %s", *in.FromRevision, in.ID)), nil
+	}
+	toBody, ok, err := d.revisionBody(ctx, key, in.ID, *in.ToRevision)
+	if err != nil {
+		return errResult("diff: " + err.Error()), nil
+	}
+	if !ok {
+		return errResult(fmt.Sprintf("diff: no such revision %d for chunk %s", *in.ToRevision, in.ID)), nil
+	}
+	// go-difflib produces a correct, standard unified diff (LCS-aligned hunks with
+	// context). It is preferred over a hand-rolled line differ because a correct
+	// unified diff needs LCS alignment + hunk grouping — more code and more bug
+	// surface than a battle-tested library that is already in the build (a
+	// transitive dep of testify, promoted here to a direct require).
+	text, derr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        difflib.SplitLines(fromBody),
+		B:        difflib.SplitLines(toBody),
+		FromFile: fmt.Sprintf("rev %d", *in.FromRevision),
+		ToFile:   fmt.Sprintf("rev %d", *in.ToRevision),
+		Context:  3,
+	})
+	if derr != nil {
+		return errResult("diff: " + derr.Error()), nil
+	}
+	return jsonResult(map[string]any{
+		"chunk_id":      in.ID,
+		"from_revision": *in.FromRevision,
+		"to_revision":   *in.ToRevision,
+		"diff":          text,
+	})
+}
+
+// backlinks returns "what links here": every edge pointing TO the given chunk,
+// each enriched with its FROM endpoint's title/type/status/document_id and the
+// auto flag (true = a parser-generated [[name]]-link edge, false = a manual
+// link_chunks edge). The reverse direction of get_edges, keyed on a single chunk
+// (get_edges is per-document). Served by the chunk_edges_to_kind reverse index.
+func (d *Document) backlinks(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errResult("backlinks: missing required field: id"), nil
+	}
+	res, err := d.query(ctx, key, `SELECT e.from_id AS from_id, e.kind AS kind, e.auto AS auto,
+       cf.title AS from_title, cf.type AS from_type, cf.status AS from_status, cf.document_id AS from_document_id
+FROM chunk_edges e
+LEFT JOIN chunks cf ON cf.id = e.from_id
+WHERE e.to_id = ?
+ORDER BY e.kind, e.created_at`, in.ID)
+	if err != nil {
+		return errResult("backlinks: " + err.Error()), nil
+	}
+	links := make([]map[string]any, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		m := map[string]any{}
+		for i, c := range res.Columns {
+			if i < len(r) {
+				m[c] = r[i]
+			}
+		}
+		bl := map[string]any{"from_id": asStr(m["from_id"]), "kind": asStr(m["kind"]), "auto": asInt(m["auto"]) == 1}
+		for _, f := range backlinkEndpointFields {
+			if v := asStr(m[f]); v != "" {
+				bl[f] = v
+			}
+		}
+		links = append(links, bl)
+	}
+	return jsonResult(map[string]any{"backlinks": links})
 }
 
 // --- inline [[name]] links → typed edges (RFC BS Phase 2a) ---
