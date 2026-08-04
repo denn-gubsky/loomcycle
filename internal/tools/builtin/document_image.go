@@ -28,6 +28,7 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -79,6 +80,104 @@ func (d *Document) setAssetDescription(ctx context.Context, key sqlmem.ScopeKey,
 	return d.exec(ctx, key,
 		`UPDATE chunk_assets SET description = ?, described_at = ? WHERE chunk_id = ?`,
 		strings.TrimSpace(description), time.Now().UnixNano(), chunkID)
+}
+
+// UndescribedAsset is one image awaiting a description: enough to make the vision
+// call and to know whether it is worth making.
+type UndescribedAsset struct {
+	ChunkID    string `json:"chunk_id"`
+	DocumentID string `json:"document_id"`
+	MediaType  string `json:"media_type"`
+	Size       int    `json:"size"`
+	// Caption is the author's alt text, already embedded. Passed to the describe
+	// pass so the prompt can avoid restating what the author said.
+	Caption string `json:"caption,omitempty"`
+}
+
+// ListUndescribedAssets returns image assets no describe pass has examined.
+//
+// RESUMABLE WITHOUT STATE, like the phase-2 backfill: every described asset gets a
+// described_at and drops out of this set, so a pass that dies half-way leaves the
+// rest still listed. There is no cursor to persist and therefore no way for a crash
+// to double-describe an image or skip one.
+//
+// Ordered by chunk_id rather than by size or recency, so repeated calls walk the
+// same sequence — an operator re-invoking after a failure sees progress rather than
+// a reshuffled queue.
+func (d *Document) ListUndescribedAssets(ctx context.Context, scope string, limit int) ([]UndescribedAsset, error) {
+	if d.Store == nil || d.SqlMem == nil {
+		return nil, fmt.Errorf("Document assets: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+	}
+	key, mscope, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.ensureSchema(ctx, key); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	res, err := d.query(ctx, key,
+		`SELECT a.chunk_id, c.document_id, a.media_type, a.size FROM chunk_assets a
+		 JOIN chunks c ON c.id = a.chunk_id
+		 WHERE a.described_at IS NULL ORDER BY a.chunk_id LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UndescribedAsset, 0, len(res.Rows))
+	for _, row := range res.Rows {
+		if len(row) < 4 {
+			continue
+		}
+		a := UndescribedAsset{
+			ChunkID:    asStr(row[0]),
+			DocumentID: asStr(row[1]),
+			MediaType:  asStr(row[2]),
+			Size:       asInt(row[3]),
+		}
+		// Best-effort: a caption that cannot be read only costs the prompt some
+		// context, so it must not drop the asset from the pass.
+		if cb, err := d.readBody(ctx, mscope, key.ScopeID, a.ChunkID); err == nil {
+			if typ, _, _, _ := classifyMediaBody(cb.Body); typ == "" {
+				a.Caption = strings.TrimSpace(cb.Body)
+			}
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// SetAssetDescription persists a description and RE-EMBEDS the chunk so the new
+// text actually reaches the index.
+//
+// The re-embed is the whole point and is easy to omit: without it the description
+// sits in the database, get_asset reports the image as described, and it is still
+// unsearchable — a state that looks correct from every surface an operator would
+// check.
+func (d *Document) SetAssetDescription(ctx context.Context, scope, chunkID, description string) error {
+	if d.Store == nil || d.SqlMem == nil {
+		return fmt.Errorf("Document assets: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+	}
+	key, mscope, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		return err
+	}
+	if err := d.ensureSchema(ctx, key); err != nil {
+		return err
+	}
+	if err := d.setAssetDescription(ctx, key, chunkID, description); err != nil {
+		return err
+	}
+	// Re-embed from the STORED body, not from a caller-supplied caption: the body is
+	// the authority on what the caption currently is, and a describe pass must not
+	// be able to rewrite it.
+	cb, err := d.readBody(ctx, mscope, key.ScopeID, chunkID)
+	if err != nil {
+		return err
+	}
+	d.embedBody(ctx, direntTenant(ctx), mscope, key, chunkBodyKey(chunkID), chunkID, "image", cb.Body)
+	return nil
 }
 
 // imageEmbedText composes the searchable text for an image chunk.
