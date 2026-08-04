@@ -21,6 +21,11 @@ function stubClient() {
     .fn()
     .mockResolvedValue({ scope: "user", models: [], total_embedding_bytes: 0 });
   const reembedMemory = vi.fn().mockResolvedValue({ scope: "user", scope_id: "alice", dry_run: true });
+  // P4b — the unified search + Document (list_facts / get_chunk / get_edges) legs.
+  const memorySearch = vi
+    .fn()
+    .mockResolvedValue({ scope: "user", scope_id: "alice", entries: [], query_embedding_dim: 0, truncated: false });
+  const document = vi.fn().mockResolvedValue({ facts: [], count: 0, truncated: false });
   const client = {
     listMemoryScopes,
     listMemoryScopeIDs,
@@ -30,6 +35,8 @@ function stubClient() {
     deleteMemoryEntry,
     memoryEmbedStats,
     reembedMemory,
+    memorySearch,
+    document,
   } as unknown as LoomcycleClient;
   return {
     client,
@@ -41,6 +48,8 @@ function stubClient() {
     deleteMemoryEntry,
     memoryEmbedStats,
     reembedMemory,
+    memorySearch,
+    document,
   };
 }
 
@@ -110,5 +119,70 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
     const s = stubClient();
     await dataLayerFromClient(s.client).reembed("user", "alice", { dryRun: false, limit: 500 });
     expect(s.reembedMemory).toHaveBeenCalledWith("user", "alice", { dryRun: false, limit: 500 });
+  });
+
+  // ---- P4b: unified search + entity/fact tier ----
+
+  it("search forwards the MemorySearchInput to client.memorySearch unchanged", async () => {
+    const s = stubClient();
+    const input = { query: "rate limits", scope: "user", scopeId: "alice", topK: 5 };
+    await dataLayerFromClient(s.client).search(input);
+    expect(s.memorySearch).toHaveBeenCalledWith(input);
+  });
+
+  it("listFacts maps every filter to list_facts snake_case + threads the scopeId override", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).listFacts("user", {
+      type: "person",
+      class: "evidential",
+      documentId: "doc-1",
+      includeRetired: true,
+      asOf: 1700000000000000000,
+      limit: 20,
+      scopeId: "bob",
+    });
+    expect(s.document).toHaveBeenCalledWith(
+      {
+        op: "list_facts",
+        scope: "user",
+        type: "person",
+        class: "evidential",
+        document_id: "doc-1",
+        include_retired: true,
+        as_of: 1700000000000000000,
+        limit: 20,
+      },
+      { scopeId: "bob" },
+    );
+  });
+
+  it("listFacts omits include_retired when falsy + sends no browse opts without a scopeId", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).listFacts("agent");
+    expect(s.document).toHaveBeenCalledWith({ op: "list_facts", scope: "agent" }, undefined);
+  });
+
+  it("getChunk addresses the chunk by id + threads the scopeId override", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).getChunk("user", "chunk-1", { scopeId: "bob" });
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "get_chunk", scope: "user", id: "chunk-1" },
+      { scopeId: "bob" },
+    );
+  });
+
+  it("getChunk sends no browse opts when no scopeId is given", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).getChunk("agent", "chunk-1");
+    expect(s.document).toHaveBeenCalledWith({ op: "get_chunk", scope: "agent", id: "chunk-1" }, undefined);
+  });
+
+  it("getEdges is DOCUMENT-scoped — it sends document_id, not a chunk id", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).getEdges("user", "doc-1", { scopeId: "bob" });
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "get_edges", scope: "user", document_id: "doc-1" },
+      { scopeId: "bob" },
+    );
   });
 });

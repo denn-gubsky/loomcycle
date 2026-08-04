@@ -23,6 +23,10 @@ export type {
   MemoryReembedResponse,
   SetMemoryEntryOptions,
   SetMemoryEntryResponse,
+  // P4b — the off-run unified semantic search shapes (POST /v1/_memory/search).
+  MemorySearchInput,
+  MemorySearchEntry,
+  MemorySearchResponse,
 } from "@loomcycle/client";
 
 // MemoryScope selects WHICH scope's rows to browse (agent / user — or whatever
@@ -52,4 +56,106 @@ export interface MemoryEmbeddingMeta {
 // assignable to this, so the default data layer maps straight through.
 export interface MemoryEntriesResponse extends ClientMemoryEntriesResponse {
   embedding_metadata?: Record<string, MemoryEmbeddingMeta>;
+}
+
+// ---- P4b: the entity/fact tier (RFC BL P4c + RFC BV) ------------------------
+//
+// These shapes are the Document tool's list_facts / get_chunk / get_edges wire
+// output. @loomcycle/client models a Document response as `DocumentToolResponse =
+// unknown` (it varies per op), so the fact-viewer's narrowed shapes are OWNED
+// here — the data layer casts the op's `unknown` result onto them.
+
+// FactEntity is the bi-temporal + provenance sidecar block (chunk_memory_meta,
+// rendered by the backend's chunkMetaToJSON) present on a chunk that is a FACT.
+// Timestamps are raw unix-NANOS int64s (lossless on the wire; the viewer formats
+// them). `retired` is ALWAYS present (the backend never omits it, so a reader
+// need not infer it from an absent key); every other field is omitted when
+// empty. Two time axes: valid_at/invalid_at are WORLD time (when the fact was /
+// stopped being true), created_at/expired_at are BELIEF/SYSTEM time (when the
+// store began / stopped believing it) — `retired` keys on expired_at.
+export interface FactEntity {
+  /** Always present. true once the fact has been superseded (expired_at set). */
+  retired: boolean;
+  /** WORLD time — when the fact became / stopped being true (unix-nanos). */
+  valid_at?: number;
+  invalid_at?: number;
+  /** BELIEF/SYSTEM time — when the store began / stopped believing it (unix-nanos). */
+  created_at?: number;
+  expired_at?: number;
+  /** "derived" (machine-distilled) | "evidential" (a pinned source, retention-exempt). */
+  class?: string;
+  /** Server-stamped provenance — "operator" (off-run) | "agent_explicit" (in a run). */
+  origin?: string;
+  /** The idempotency handle the entity is keyed by within its scope. */
+  natural_key?: string;
+  confidence?: number;
+  session_id?: string;
+  run_id?: string;
+  event_seq?: number;
+}
+
+// FactRow is one row from Document `list_facts` — a fact's METADATA only (no
+// body; the viewer fetches the body via get_chunk on click, as the backend's
+// list surface returns none). Ordered newest-first (created_at DESC).
+export interface FactRow {
+  id: string;
+  document_id: string;
+  parent_id?: string;
+  position: number;
+  title: string;
+  type?: string;
+  status?: string;
+  revision: number;
+  entity: FactEntity;
+}
+
+// FactListResponse is the `list_facts` envelope. `truncated` signals the page
+// (limit) clipped the tail.
+export interface FactListResponse {
+  facts: FactRow[];
+  count: number;
+  truncated: boolean;
+}
+
+// ChunkDetail is one chunk from Document `get_chunk` — the full body + (when the
+// chunk is a fact) its `entity` block. `entity` is absent for a plain document
+// chunk, which is how a fact and a plain chunk are told apart on read.
+export interface ChunkDetail {
+  id: string;
+  document_id: string;
+  title: string;
+  body: string;
+  type?: string;
+  status?: string;
+  revision: number;
+  fields?: Record<string, unknown>;
+  tags?: string[];
+  entity?: FactEntity;
+}
+
+// DocEdge is one cross-reference edge from Document `get_edges`. `kind` is the
+// edge label ("supersedes" for a supersession chain; any other for a plain
+// relation). The endpoint enrichment fields (title/type/status/document_id, per
+// side) are present only when non-empty — the backend omits blanks. `auto`
+// marks a parser-generated [[name]] link vs a manual one.
+export interface DocEdge {
+  from_id: string;
+  to_id: string;
+  kind: string;
+  auto: boolean;
+  from_title?: string;
+  from_type?: string;
+  from_status?: string;
+  from_document_id?: string;
+  to_title?: string;
+  to_type?: string;
+  to_status?: string;
+  to_document_id?: string;
+}
+
+// DocEdgesResponse is the `get_edges` envelope — every edge with an endpoint in
+// the addressed DOCUMENT (both directions). The viewer filters to the edges that
+// touch the fact it is showing.
+export interface DocEdgesResponse {
+  edges: DocEdge[];
 }
