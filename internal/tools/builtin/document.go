@@ -642,7 +642,7 @@ type chunkBody struct {
 	Fields json.RawMessage `json:"fields,omitempty"`
 }
 
-func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scopeID, chunkID, body string, fields json.RawMessage) error {
+func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scopeID, chunkID, chunkType, body string, fields json.RawMessage) error {
 	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
@@ -657,26 +657,28 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scop
 	// unsearchable, but a chunk whose write was rejected because an embedder was
 	// cold is lost work the author has to redo. Authoring must not become
 	// embedder-dependent.
-	d.embedBody(ctx, tenant, mscope, scopeID, key, chunkID, body)
+	d.embedBody(ctx, tenant, mscope, scopeID, key, chunkID, chunkType, body)
 	return nil
 }
 
 // embedBody indexes a chunk body for semantic search, best-effort.
 //
-// WHAT text gets embedded is per chunk type, and phase 1 handles prose only:
+// WHAT text gets embedded is per chunk type:
 //
-//   - prose  → the body verbatim
-//   - image  → SKIPPED. The body is a rendered media form (a data URI or an
-//     asset reference); embedding it would index base64, which matches nothing
-//     and costs a vector row. A generated description is the planned input.
-//   - mermaid → SKIPPED. Diagram source tokenises to `graph TD`, `-->`, `[`,
-//     which carry no meaning. Deterministic label extraction is the planned
-//     input, and it needs no model — mermaid is text pretending to be a picture.
+//   - prose   → the body verbatim
+//   - mermaid → extracted labels + diagram kind (see document_mermaid.go).
+//     Diagram SOURCE tokenises to `graph TD`, `-->`, `[`, which carry no meaning.
+//   - image   → SKIPPED until phase 4. The body is a caption or a rendered media
+//     form; the searchable text is a generated description that does not exist yet.
 //
-// Skipping is not a silent no-op waiting to be forgotten: classifyMediaBody is
-// the same predicate export/import uses to recognise these forms, so a media
-// chunk that becomes embeddable later changes in one place.
-func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.MemoryScope, scopeID, key, chunkID, body string) {
+// THE TYPE IS PASSED IN, NOT SNIFFED FROM THE BODY. An earlier version classified
+// with classifyMediaBody, which recognises only the ```mermaid FENCED form — but a
+// mermaid chunk STORES its bare source (export re-adds the fence), so a natively
+// created diagram was embedded as raw source while an imported one was skipped.
+// Sniffing cannot be repaired either: `mermaidKindRe` on a first line would match a
+// prose chunk that happens to open with the word "pie". The chunk type is the only
+// authoritative answer, so callers supply it.
+func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.MemoryScope, scopeID, key, chunkID, chunkType, body string) {
 	if d.Embedder == nil {
 		return
 	}
@@ -684,7 +686,25 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 	if text == "" {
 		return
 	}
-	if typ, _, _, _ := classifyMediaBody(body); typ != "" {
+	switch chunkType {
+	case "image":
+		return
+	case "mermaid":
+		text = mermaidEmbedText(body)
+	default:
+		// A body that is ENTIRELY a fenced diagram or a data-URL image, on a chunk
+		// whose type was not set: the same predicate export/import uses, so the two
+		// paths cannot disagree about what a media body is.
+		if typ, _, _, src := classifyMediaBody(body); typ != "" {
+			if typ != "mermaid" {
+				return
+			}
+			text = mermaidEmbedText(src)
+		}
+	}
+	// A diagram with no extractable label embeds nothing rather than embedding
+	// punctuation: a vector built from syntax can only produce false matches.
+	if text == "" {
 		return
 	}
 	vec, err := d.Embedder.Embed(ctx, []string{text})
@@ -989,7 +1009,7 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		rootID, docID, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now); err != nil {
 		return errResult("create_document: root chunk: " + err.Error()), nil
 	}
-	if err := d.writeBody(ctx, mscope, key.ScopeID, rootID, "", nil); err != nil {
+	if err := d.writeBody(ctx, mscope, key.ScopeID, rootID, "", "", nil); err != nil {
 		return errResult("create_document: root body: " + err.Error()), nil
 	}
 	// A document's tags are its own (independent of the root chunk's tags).
@@ -1531,7 +1551,7 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if insErr != nil {
 		return errResult("create_chunk: " + insErr.Error()), nil
 	}
-	if err := d.writeBody(ctx, mscope, key.ScopeID, id, in.Body, in.Fields); err != nil {
+	if err := d.writeBody(ctx, mscope, key.ScopeID, id, in.Type, in.Body, in.Fields); err != nil {
 		return errResult("create_chunk: body: " + err.Error()), nil
 	}
 	// Seed the body-change log at revision 1 (RFC BS Phase 3a) — the chunk's body
@@ -1709,7 +1729,7 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		fields["filename"] = in.Filename
 	}
 	nf, _ := json.Marshal(fields)
-	if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, cb.Body, nf); err != nil {
+	if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, "image", cb.Body, nf); err != nil {
 		return errResult("set_asset: fields: " + err.Error()), nil
 	}
 	// set_asset sets type='image' on the chunk; if that chunk is a document's root,
@@ -1833,6 +1853,13 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	_, hasBody := present["body"]
 	_, hasFields := present["fields"]
 	if hasBody || hasFields {
+		// The type that will be in force AFTER this update decides the embedding
+		// policy — a chunk being turned into a mermaid diagram in the same call
+		// that sets its body must embed as a diagram, not as prose.
+		effType := row.Type
+		if _, has := present["type"]; has {
+			effType = in.Type
+		}
 		var cb chunkBody
 		if !hasBody || !hasFields {
 			// Only one half was supplied, so the other must be preserved from
@@ -1855,7 +1882,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		if hasFields {
 			cb.Fields = in.Fields
 		}
-		if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, cb.Body, cb.Fields); err != nil {
+		if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, effType, cb.Body, cb.Fields); err != nil {
 			return errResult("update_chunk: body: " + err.Error()), nil
 		}
 		// Re-derive [[name]] link edges only when the BODY actually changed (RFC BS
@@ -3144,7 +3171,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 		docID = resultField(cd, "document_id")
 		rootID = resultField(cd, "root_chunk_id")
-		if err := d.writeBody(ctx, mscope, key.ScopeID, rootID, first.body, first.fields); err != nil {
+		if err := d.writeBody(ctx, mscope, key.ScopeID, rootID, first.typ, first.body, first.fields); err != nil {
 			return errResult("import_md: root body: " + err.Error()), nil
 		}
 		if first.typ != "" || first.status != "" {
