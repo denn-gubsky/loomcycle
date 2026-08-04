@@ -647,6 +647,26 @@ func requiredScopeFor(method, path string) string {
 	// can see + reap its own runs' resident children; ScopeAdmin also satisfies.
 	case path == "/v1/_resident" || strings.HasPrefix(path, "/v1/_resident/"):
 		return auth.ScopeTenant
+	// repair-tenant rewrites memory rows across EVERY scope in one statement to
+	// re-stamp the legacy "" partition — a cross-tenant bulk rewrite that is not a
+	// tenant operator's authority even over its own tenant. It STAYS operator-admin.
+	// MUST precede the memory-family case below, which it would otherwise match on
+	// the /v1/_memory/ prefix.
+	case path == "/v1/_memory/repair-tenant":
+		return auth.ScopeAdmin
+	// The memory browse / search / embed-admin family (RFC BV). memory rows carry a
+	// tenant_id (RFC BL added the tenant axis), and every handler already sources
+	// the tenant from the authenticated principal (tenantFromCtx /
+	// principalTenantScope), never the wire — so a substrate:tenant operator is
+	// confined to its own tenant's memory and admin keeps its view. The routes were
+	// pinned to ScopeAdmin by the /v1/_* catch-all below, so a tenant token 403'd
+	// before the tenant-scoped handler ran (the same gap #575/#577 fixed for the
+	// Library). Grant ScopeTenant so the reads/writes are reachable; the handlers
+	// still confine. ScopeAdmin also satisfies. Note /v1/_memorybackenddef (a def
+	// family, already ScopeTenant via isTenantConfinedDefPath) does NOT match this
+	// prefix — it has no slash after "memory".
+	case strings.HasPrefix(path, "/v1/_memory/"):
+		return auth.ScopeTenant
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, cross-tenant user focus.
