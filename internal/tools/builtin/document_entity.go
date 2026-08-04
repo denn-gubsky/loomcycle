@@ -150,7 +150,7 @@ func (d *Document) updateChunkForUpsert(ctx context.Context, key sqlmem.ScopeKey
 				fields = cur.Fields
 			}
 		}
-		return d.writeBody(ctx, mscope, key.ScopeID, chunkID, "", body, fields)
+		return d.writeBody(ctx, mscope, key, chunkID, "", body, fields)
 	}
 	return nil
 }

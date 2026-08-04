@@ -520,6 +520,9 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if err := d.migrateDocumentFacets(ctx, key); err != nil {
 		return err
 	}
+	if err := d.migrateAssetDescription(ctx, key); err != nil {
+		return err
+	}
 	return d.migrateEdgeAuto(ctx, key)
 }
 
@@ -611,12 +614,52 @@ func (d *Document) migrateDocumentFacets(ctx context.Context, key sqlmem.ScopeKe
 		`UPDATE documents SET status = (SELECT status FROM chunks WHERE chunks.id = documents.root_chunk_id) WHERE status IS NULL`)
 }
 
+// migrateAssetDescription adds chunk_assets.description + described_at (RFC BU
+// phase 4) to a scope provisioned before image descriptions existed.
+//
+// A CREATE TABLE IF NOT EXISTS silently leaves an existing table alone, so without
+// this every scope created before phase 4 would keep the old three-column shape
+// forever — the same trap migrateConfidencePrecision exists for.
+//
+// described_at is separate from `description IS NOT NULL` on purpose: it records
+// that a describe pass RAN. A model that looked at an image and produced nothing
+// useful is a different state from one that was never asked, and without the
+// timestamp a sweep cannot tell them apart — it would re-describe the same
+// unproductive image on every run.
+func (d *Document) migrateAssetDescription(ctx context.Context, key sqlmem.ScopeKey) error {
+	// Fast path: both columns present → nothing to do (the common case).
+	if _, err := d.query(ctx, key, `SELECT description, described_at FROM chunk_assets WHERE 1=0`); err == nil {
+		return nil
+	}
+	// Per-column probes, so a crash between the two ALTERs on a prior run does not
+	// turn into a duplicate-column error on the next.
+	if !d.tableHasColumn(ctx, key, "chunk_assets", "description") {
+		if err := d.exec(ctx, key, `ALTER TABLE chunk_assets ADD COLUMN description TEXT`); err != nil {
+			return err
+		}
+	}
+	if !d.tableHasColumn(ctx, key, "chunk_assets", "described_at") {
+		if err := d.exec(ctx, key, `ALTER TABLE chunk_assets ADD COLUMN described_at BIGINT`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // documentsHasColumn reports whether the documents table has `col` — a
 // validator-safe, tier-portable existence probe (a leading SELECT that errors iff
 // the column is absent). col is a hardcoded literal ("type" | "status"), never
 // caller input.
 func (d *Document) documentsHasColumn(ctx context.Context, key sqlmem.ScopeKey, col string) bool {
 	_, err := d.query(ctx, key, `SELECT `+col+` FROM documents WHERE 1=0`)
+	return err == nil
+}
+
+// tableHasColumn is documentsHasColumn for any table. Both interpolate their
+// arguments, which is safe ONLY because every caller passes a literal — a probe
+// built from caller-supplied text would be an injection. Keep it that way.
+func (d *Document) tableHasColumn(ctx context.Context, key sqlmem.ScopeKey, table, col string) bool {
+	_, err := d.query(ctx, key, `SELECT `+col+` FROM `+table+` WHERE 1=0`)
 	return err == nil
 }
 
@@ -646,14 +689,15 @@ type chunkBody struct {
 	Fields json.RawMessage `json:"fields,omitempty"`
 }
 
-func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scopeID, chunkID, chunkType, body string, fields json.RawMessage) error {
+func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage) error {
+	scopeID := key.ScopeID
 	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
 	// structure never drift across the tenant axis.
 	tenant := direntTenant(ctx)
-	key := chunkBodyKey(chunkID)
-	if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, key, v, 0); err != nil {
+	bodyKey := chunkBodyKey(chunkID)
+	if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, bodyKey, v, 0); err != nil {
 		return err
 	}
 	// The body is durable at this point. Embedding is a SEPARATE, best-effort
@@ -661,7 +705,7 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scop
 	// unsearchable, but a chunk whose write was rejected because an embedder was
 	// cold is lost work the author has to redo. Authoring must not become
 	// embedder-dependent.
-	d.embedBody(ctx, tenant, mscope, scopeID, key, chunkID, chunkType, body)
+	d.embedBody(ctx, tenant, mscope, key, bodyKey, chunkID, chunkType, body)
 	return nil
 }
 
@@ -682,7 +726,8 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, scop
 // Sniffing cannot be repaired either: `mermaidKindRe` on a first line would match a
 // prose chunk that happens to open with the word "pie". The chunk type is the only
 // authoritative answer, so callers supply it.
-func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.MemoryScope, scopeID, key, chunkID, chunkType, body string) {
+func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.MemoryScope, key sqlmem.ScopeKey, bodyKey, chunkID, chunkType, body string) {
+	scopeID := key.ScopeID
 	if d.Embedder == nil {
 		return
 	}
@@ -692,7 +737,11 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 	}
 	switch chunkType {
 	case "image":
-		return
+		// The body IS the caption (export renders it as the alt text). The
+		// generated description is added by the describe pass, which re-embeds —
+		// it is not available here, and waiting for it would leave every image
+		// unsearchable until an operator sweeps.
+		text = imageEmbedText(body, d.assetDescription(ctx, key, chunkID))
 	case "mermaid":
 		text = mermaidEmbedText(body)
 	default:
@@ -719,7 +768,7 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 		log.Printf("document: embed body failed for chunk %s: %v", chunkID, err)
 		return
 	}
-	if err := d.Store.MemoryEmbedSet(ctx, tenant, mscope, scopeID, key, store.MemoryEmbedding{
+	if err := d.Store.MemoryEmbedSet(ctx, tenant, mscope, scopeID, bodyKey, store.MemoryEmbedding{
 		Provider:  d.Embedder.Provider(),
 		Model:     d.Embedder.Model(),
 		Dimension: len(vec[0]),
@@ -1013,7 +1062,7 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		rootID, docID, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now); err != nil {
 		return errResult("create_document: root chunk: " + err.Error()), nil
 	}
-	if err := d.writeBody(ctx, mscope, key.ScopeID, rootID, "", "", nil); err != nil {
+	if err := d.writeBody(ctx, mscope, key, rootID, "", "", nil); err != nil {
 		return errResult("create_document: root body: " + err.Error()), nil
 	}
 	// A document's tags are its own (independent of the root chunk's tags).
@@ -1555,7 +1604,7 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if insErr != nil {
 		return errResult("create_chunk: " + insErr.Error()), nil
 	}
-	if err := d.writeBody(ctx, mscope, key.ScopeID, id, in.Type, in.Body, in.Fields); err != nil {
+	if err := d.writeBody(ctx, mscope, key, id, in.Type, in.Body, in.Fields); err != nil {
 		return errResult("create_chunk: body: " + err.Error()), nil
 	}
 	// Seed the body-change log at revision 1 (RFC BS Phase 3a) — the chunk's body
@@ -1733,7 +1782,7 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		fields["filename"] = in.Filename
 	}
 	nf, _ := json.Marshal(fields)
-	if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, "image", cb.Body, nf); err != nil {
+	if err := d.writeBody(ctx, mscope, key, in.ID, "image", cb.Body, nf); err != nil {
 		return errResult("set_asset: fields: " + err.Error()), nil
 	}
 	// set_asset sets type='image' on the chunk; if that chunk is a document's root,
@@ -1756,7 +1805,27 @@ func (d *Document) getAsset(ctx context.Context, key sqlmem.ScopeKey, in docInpu
 	if !ok {
 		return errResult("get_asset: no asset on chunk: " + in.ID), nil
 	}
-	return jsonResult(map[string]any{"chunk_id": in.ID, "media_type": mt, "size": sz})
+	out := map[string]any{"chunk_id": in.ID, "media_type": mt, "size": sz}
+	// RFC BU phase 4 — report the description state, because "unsearchable" must be
+	// VISIBLE rather than silent. Three distinguishable states, which is why
+	// described_at is a column of its own: never examined (no described_at), examined
+	// and described, examined and produced nothing useful.
+	desc, at := d.assetDescriptionState(ctx, key, in.ID)
+	out["described"] = at > 0
+	if desc != "" {
+		out["description"] = desc
+	}
+	if at > 0 {
+		out["described_at"] = at
+		if desc == "" {
+			out["note"] = "a describe pass ran and produced no usable description; " +
+				"this image is searchable only by its caption"
+		}
+	} else {
+		out["note"] = "no describe pass has run for this image yet; it is searchable " +
+			"only by its caption until one does"
+	}
+	return jsonResult(out)
 }
 
 // assetMeta reads an asset's media_type + size (no bytes). ok=false when the
@@ -1886,7 +1955,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		if hasFields {
 			cb.Fields = in.Fields
 		}
-		if err := d.writeBody(ctx, mscope, key.ScopeID, in.ID, effType, cb.Body, cb.Fields); err != nil {
+		if err := d.writeBody(ctx, mscope, key, in.ID, effType, cb.Body, cb.Fields); err != nil {
 			return errResult("update_chunk: body: " + err.Error()), nil
 		}
 		// Re-derive [[name]] link edges only when the BODY actually changed (RFC BS
@@ -3398,7 +3467,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 		docID = resultField(cd, "document_id")
 		rootID = resultField(cd, "root_chunk_id")
-		if err := d.writeBody(ctx, mscope, key.ScopeID, rootID, first.typ, first.body, first.fields); err != nil {
+		if err := d.writeBody(ctx, mscope, key, rootID, first.typ, first.body, first.fields); err != nil {
 			return errResult("import_md: root body: " + err.Error()), nil
 		}
 		if first.typ != "" || first.status != "" {
