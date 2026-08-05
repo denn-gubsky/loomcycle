@@ -38,6 +38,7 @@ export type {
   MemorySearchInput,
   MemorySearchEntry,
   MemorySearchResponse,
+  MemorySource,
   FactEntity,
   FactRow,
   FactListResponse,
