@@ -999,6 +999,9 @@ export class LoomcycleClient {
     if (input.topK !== undefined) body.top_k = input.topK;
     if (input.rank !== undefined) body.rank = input.rank;
     if (input.dedup !== undefined) body.dedup = input.dedup;
+    // Sent only when set, so an omitted selector keeps the endpoint's
+    // span-everything default rather than encoding one here (RFC BW).
+    if (input.sources !== undefined) body.sources = input.sources;
     return postJSON<MemorySearchResponse>(this.ctx, "/v1/_memory/search", body, {
       signal: opts?.signal,
     });

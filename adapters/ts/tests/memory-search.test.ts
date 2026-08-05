@@ -14,7 +14,7 @@ import type {
 } from "../src/index.js";
 
 describe("memorySearch", () => {
-  it("POSTs snake_case body (scopeId→scope_id, topK→top_k) and parses both kinds", async () => {
+  it("POSTs snake_case body (scopeId→scope_id, topK→top_k) and parses every kind", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({
         scope: "user",
@@ -35,7 +35,9 @@ describe("memorySearch", () => {
             score: 0.77,
             rank_score: 0.72,
             embedded_with: { provider: "openai", model: "text-embedding-3-small" },
-            kind: "memory",
+            // RFC BW refined this union: "memory" became "fact" | "note". A k/v row
+            // with no server-stamped provenance is a note.
+            kind: "note",
           },
         ],
         query_embedding_dim: 1536,
@@ -56,7 +58,7 @@ describe("memorySearch", () => {
     expect(resp.entries).toHaveLength(2);
     expect(resp.entries[0]!.kind).toBe("document");
     expect(resp.entries[0]!.chunk_id).toBe("c123");
-    expect(resp.entries[1]!.kind).toBe("memory");
+    expect(resp.entries[1]!.kind).toBe("note");
     expect(resp.entries[1]!.chunk_id).toBeUndefined();
     expect(resp.query_embedding_dim).toBe(1536);
     expect(resp.truncated).toBe(false);
@@ -185,5 +187,84 @@ describe("reembedMemory", () => {
     const url = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(url.searchParams.get("dry_run")).toBe("false");
     expect(url.searchParams.get("limit")).toBe("500");
+  });
+});
+
+describe("memorySearch sources (RFC BW)", () => {
+  it("sends sources only when set, so an omitted selector keeps the span-everything default", async () => {
+    const empty = () =>
+      jsonResponse({
+        scope: "user",
+        scope_id: "u1",
+        entries: [],
+        query_embedding_dim: 3,
+        truncated: false,
+      } satisfies MemorySearchResponse);
+    const { client, fetchMock } = makeClient([empty(), empty(), empty()]);
+
+    await client.memorySearch({ query: "q", scope: "user", scopeId: "u1" });
+    const first = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect("sources" in first).toBe(false);
+
+    await client.memorySearch({ query: "q", scope: "user", scopeId: "u1", sources: ["facts"] });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).sources).toEqual(["facts"]);
+
+    await client.memorySearch({
+      query: "q",
+      scope: "user",
+      scopeId: "u1",
+      sources: ["facts", "notes", "documents"],
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body)).sources).toEqual([
+      "facts",
+      "notes",
+      "documents",
+    ]);
+  });
+
+  it("round-trips the refined kind taxonomy", async () => {
+    // RFC BW §7 changed `kind` from "memory" | "document" to
+    // "fact" | "note" | "document". Code switching on "document" is unaffected;
+    // this pins that the finer values survive the parse, and that only a document
+    // hit carries chunk_id — which is what makes it followable to get_chunk.
+    const { client } = makeClient([
+      jsonResponse({
+        scope: "user",
+        scope_id: "u1",
+        query_embedding_dim: 3,
+        truncated: false,
+        entries: [
+          {
+            key: "memory/fact/x",
+            value: "distilled",
+            score: 0.9,
+            rank_score: 0.9,
+            embedded_with: { provider: "p", model: "m" },
+            kind: "fact",
+          },
+          {
+            key: "scratch/y",
+            value: "jotted",
+            score: 0.8,
+            rank_score: 0.8,
+            embedded_with: { provider: "p", model: "m" },
+            kind: "note",
+          },
+          {
+            key: "doc.chunk:z",
+            value: "prose",
+            score: 0.7,
+            rank_score: 0.7,
+            embedded_with: { provider: "p", model: "m" },
+            kind: "document",
+            chunk_id: "z",
+          },
+        ],
+      } satisfies MemorySearchResponse),
+    ]);
+    const res = await client.memorySearch({ query: "q", scope: "user", scopeId: "u1" });
+    expect(res.entries.map((e) => e.kind)).toEqual(["fact", "note", "document"]);
+    expect(res.entries[2].chunk_id).toBe("z");
+    expect(res.entries[0].chunk_id).toBeUndefined();
   });
 });

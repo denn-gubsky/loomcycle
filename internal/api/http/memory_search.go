@@ -24,6 +24,28 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// parseMemorySources maps the wire strings onto the typed selector. Unknown values are
+// dropped rather than rejected, matching the in-band tool: the enum is documented, and
+// rejecting an unrecognised value would make a future source name break an older
+// runtime.
+func parseMemorySources(in []string) []memrank.Source {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]memrank.Source, 0, len(in))
+	for _, v := range in {
+		switch memrank.Source(strings.ToLower(strings.TrimSpace(v))) {
+		case memrank.SourceFacts:
+			out = append(out, memrank.SourceFacts)
+		case memrank.SourceNotes:
+			out = append(out, memrank.SourceNotes)
+		case memrank.SourceDocuments:
+			out = append(out, memrank.SourceDocuments)
+		}
+	}
+	return out
+}
+
 // docChunkKeyPrefix is the Memory keyspace namespace the Document tool writes
 // chunk bodies under (builtin.chunkBodyKey). A hit on such a key is a document
 // chunk, not a plain memory entry — kept as a literal here to avoid importing
@@ -37,6 +59,10 @@ type memorySearchRequest struct {
 	TopK    int                  `json:"top_k"`
 	Rank    *memrank.RankConfig  `json:"rank"`
 	Dedup   *memrank.DedupConfig `json:"dedup"`
+	// Sources narrows which kinds of remembered thing come back (RFC BW). Empty
+	// keeps this endpoint's purpose: it exists to answer "where did I record this"
+	// across BOTH planes, so unlike the in-band recall it does not default to facts.
+	Sources []string `json:"sources"`
 }
 
 type memorySearchEmbeddedWith struct {
@@ -50,9 +76,15 @@ type memorySearchResultEntry struct {
 	Score        float64                  `json:"score"`      // raw cosine similarity
 	RankScore    float64                  `json:"rank_score"` // hybrid rank the row was ordered by
 	EmbeddedWith memorySearchEmbeddedWith `json:"embedded_with"`
-	// Kind distinguishes a plain memory entry ("memory") from a document chunk
-	// body ("document"); a document hit also carries chunk_id so the viewer can
-	// fetch its entity block via the Document tool's get_chunk.
+	// Kind is the row's class: "fact" (a consolidator distilled it), "note" (an agent
+	// wrote it directly) or "document" (a Document chunk body). A document hit also
+	// carries chunk_id so the viewer can fetch its entity block via get_chunk.
+	//
+	// WIRE CHANGE (RFC BW §7): this used to be "memory" | "document". A reader that
+	// switches on "document" is unaffected; one asserting kind == "memory" must move to
+	// fact/note. The refinement is the point — "the user told me this" and "an agent
+	// jotted this down" are different claims, and collapsing them is what let document
+	// prose read as remembered fact.
 	Kind    string `json:"kind"`
 	ChunkID string `json:"chunk_id,omitempty"`
 }
@@ -121,14 +153,22 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	// authoritative — never a request-body field.
 	ctx := tools.WithRunIdentity(r.Context(), tools.RunIdentityValue{TenantID: tenantFromCtx(r.Context())})
 
-	// Empty Prefix so the search spans both k/v entries and doc.chunk bodies.
+	// Empty Prefix so the search spans both k/v entries and doc.chunk bodies unless the
+	// caller narrows it with sources.
 	backend := inprocess.New(s.store, s.embedder)
 	res, err := backend.Search(ctx, store.MemoryScope(body.Scope), storeScopeID,
-		memrank.SearchQuery{QueryText: body.Query, Prefix: "", TopK: topK}, rankCfg, dedupCfg)
+		memrank.SearchQuery{
+			QueryText: body.Query, Prefix: "", TopK: topK,
+			Sources: parseMemorySources(body.Sources),
+		}, rankCfg, dedupCfg)
 	if err != nil {
 		// The three typed refusals are operator-actionable (no embedder / no
 		// vector index / a model swap left the stored dimension stale), so surface
 		// them verbatim as a 400 rather than a blind 500.
+		if errors.Is(err, memrank.ErrSourcesNotExpressible) {
+			writeJSONError(w, http.StatusBadRequest, "invalid_sources", err.Error())
+			return
+		}
 		if errors.Is(err, store.ErrDimensionMismatch) ||
 			errors.Is(err, store.ErrVectorUnsupported) ||
 			errors.Is(err, store.ErrEmbedderNotConfigured) {
@@ -151,14 +191,15 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 				Provider: e.EmbeddedWith.Provider,
 				Model:    e.EmbeddedWith.Model,
 			},
-			Kind: "memory",
+			// Classified by the SAME function the in-band tool and the filter use, so
+			// the label cannot disagree with what the selector selected.
+			Kind: string(memrank.Class(e)),
 		}
 		// A doc.chunk hit may be an entity fact OR a plain document chunk; the
 		// viewer calls get_chunk to see its entity block. No per-hit sidecar
 		// lookup here — the sidecar lives in SQL Memory, a different plane; this
 		// handler stays store-only.
-		if strings.HasPrefix(e.Key, docChunkKeyPrefix) {
-			entry.Kind = "document"
+		if entry.Kind == string(store.MemoryRowDocument) {
 			entry.ChunkID = strings.TrimPrefix(e.Key, docChunkKeyPrefix)
 		}
 		entries = append(entries, entry)

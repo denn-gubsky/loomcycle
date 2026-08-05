@@ -132,6 +132,20 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store
 //
 // Empty (scope, scope_id) returns ([], nil) — explicit non-error so
 // "no rows yet" doesn't pollute the agent's error path.
+// provenanceCondition renders the RFC BW phase-2 provenance constraint.
+//
+// coalesce, because `origin` is nullable: legacy rows predate the column and a bare
+// `origin <> ”` would silently drop every one of them from a facts-only search.
+func provenanceCondition(c store.MemoryProvenanceConstraint) string {
+	switch c {
+	case store.ProvenanceRequired:
+		return " AND coalesce(m.origin, '') <> ''"
+	case store.ProvenanceAbsent:
+		return " AND coalesce(m.origin, '') = ''"
+	}
+	return ""
+}
+
 // likePrefixPattern turns a literal key prefix into a LIKE pattern.
 //
 // ESCAPED, because a prefix is caller-supplied and LIKE treats % and _ as wildcards:
@@ -230,10 +244,11 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		args = append(args, likePrefixPattern(filter.ExcludeKeyPrefix))
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
+	prefixCondition += provenanceCondition(filter.Provenance)
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
 	               1.0 - (me.embedding <=> $4::vector) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text,
-	               m.access_count
+	               m.access_count, coalesce(m.origin, '') AS origin
 	         FROM memory_embeddings me
 	         JOIN memory m
 	            ON me.tenant_id = m.tenant_id
@@ -266,8 +281,9 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 			provider, modelStr string
 			embeddingText      string
 			accessCount        int64
+			origin             string
 		)
-		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText, &accessCount); err != nil {
+		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText, &accessCount, &origin); err != nil {
 			return nil, fmt.Errorf("MemoryEmbedSearch scan: %w", err)
 		}
 		entry := store.MemorySearchEntry{
@@ -279,6 +295,7 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 			},
 			Score:       score,
 			AccessCount: accessCount,
+			Origin:      origin,
 		}
 		if expiresAt != nil {
 			entry.ExpiresAt = *expiresAt
@@ -337,13 +354,14 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 		args = append(args, likePrefixPattern(filter.ExcludeKeyPrefix))
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
+	prefixCondition += provenanceCondition(filter.Provenance)
 	// plainto_tsquery normalises arbitrary user text into a safe tsquery
 	// (never errors on input, no injection surface), returning the empty
 	// query — which matches nothing — when the text yields no lexemes.
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
 	               ts_rank(me.embed_text_tsv, plainto_tsquery('english', $4)) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text,
-	               m.access_count
+	               m.access_count, coalesce(m.origin, '') AS origin
 	         FROM memory_embeddings me
 	         JOIN memory m
 	            ON me.tenant_id = m.tenant_id
@@ -376,8 +394,9 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 			provider, modelStr string
 			embeddingText      string
 			accessCount        int64
+			origin             string
 		)
-		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText, &accessCount); err != nil {
+		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText, &accessCount, &origin); err != nil {
 			return nil, fmt.Errorf("MemoryFullTextSearch scan: %w", err)
 		}
 		entry := store.MemorySearchEntry{
@@ -389,6 +408,7 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 			},
 			Score:       score,
 			AccessCount: accessCount,
+			Origin:      origin,
 		}
 		if expiresAt != nil {
 			entry.ExpiresAt = *expiresAt

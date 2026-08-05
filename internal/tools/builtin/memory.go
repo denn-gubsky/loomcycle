@@ -215,7 +215,7 @@ const memoryInputSchema = `{
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
     "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to write ops; 0 means no expiry (or keep existing on update)."},
     "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
-    "sources":    {"type": "array", "items": {"type": "string", "enum": ["facts","documents"]}, "description": "search / recall: which kinds of remembered thing to return. \"facts\" = your own memory; \"documents\" = Document chunk bodies, which share the memory keyspace. recall defaults to facts only (document prose is not something you were told); search defaults to both. Use this instead of guessing key prefixes."},
+    "sources":    {"type": "array", "items": {"type": "string", "enum": ["facts","notes","documents"]}, "description": "search / recall: which kinds of remembered thing to return. \"facts\" = memory a consolidator distilled; \"notes\" = memory an agent wrote directly; \"documents\" = Document chunk bodies, which share the memory keyspace. recall defaults to facts+notes (document prose is not something you were told); search defaults to everything. Each result carries a matching \"kind\". Mixing documents with only ONE of facts/notes is refused — use [facts], [notes], [facts,notes], [documents], or all three. Use this instead of guessing key prefixes."},
     "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1). cursor_scan: max chats returned in one page (default 10, max 50)."},
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
@@ -1308,13 +1308,20 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 			errors.Is(err, store.ErrEmbedderNotConfigured) {
 			return errResult(err.Error()), nil
 		}
+		if errors.Is(err, memrank.ErrSourcesNotExpressible) {
+			return errResult(err.Error()), nil
+		}
 		return errResult(fmt.Sprintf("search: %s", err)), nil
 	}
 
 	entries := make([]map[string]any, 0, len(res.Entries))
 	for i, r := range res.Entries {
 		entries = append(entries, map[string]any{
-			"key":        r.Key,
+			"key": r.Key,
+			// kind tells a caller WHAT it got: a document hit is prose written down
+			// somewhere, not something the user said, and weighing them alike is how
+			// a fence marker outranks a medication (RFC BW §4b).
+			"kind":       string(memrank.Class(r)),
 			"value":      r.Value,
 			"score":      r.Score,           // raw cosine similarity — NEVER touched by hybrid fusion or ranking (stable across searches)
 			"rank_score": res.RankScores[i], // computed rank the result was ordered by: fused-semantic (RRF) + recency + frequency
@@ -1329,6 +1336,14 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		"entries":             entries,
 		"query_embedding_dim": res.QueryEmbeddingDim,
 		"truncated":           res.Truncated,
+	}
+	// Only when a selector was actually requested: a caller that passed none has
+	// nothing to be warned about, and an always-present key would change the response
+	// shape for every existing search (RFC BW §6).
+	if len(in.Sources) > 0 && !res.SourcesApplied {
+		out["sources_applied"] = false
+		out["note"] = "this memory backend did not apply the source selector, so these " +
+			"results are NOT restricted to the kinds you asked for"
 	}
 	// Surface dedup_dropped ONLY when the caller opted into dedup. A search
 	// with no `dedup` block keeps the pre-MR-5 response shape byte-for-byte
@@ -1452,7 +1467,18 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		}
 		facts = append(facts, fact)
 	}
-	return okJSON(map[string]any{"facts": facts})
+	out := map[string]any{"facts": facts}
+	// A BACKEND THAT IGNORED THE SELECTOR MUST NOT LOOK LIKE ONE THAT HONOURED IT
+	// (RFC BW §6). Recall's default EXCLUDES document prose, so a backend that dropped
+	// the selector returns exactly what the default exists to keep out — and the caller
+	// would read it as remembered fact. Say so rather than refuse: refusing would make
+	// a backend swap break working agents.
+	if !res.SourcesApplied {
+		out["sources_applied"] = false
+		out["note"] = "this memory backend did not apply the source selector, so these " +
+			"results may include document prose rather than only remembered facts"
+	}
+	return okJSON(out)
 }
 
 // --- RFC BL P2 consolidation control ops ---

@@ -2876,6 +2876,57 @@ type MemorySearchFilter struct {
 	//
 	// Composes with KeyPrefix as an AND. Both being set is unusual but well-defined.
 	ExcludeKeyPrefix string
+
+	// Provenance splits an agent's own memory into consolidated FACTS and plain
+	// NOTES (RFC BW phase 2). Zero value constrains nothing, so every existing
+	// caller is unaffected.
+	Provenance MemoryProvenanceConstraint
+}
+
+// MemoryProvenanceConstraint selects rows by whether they carry provenance.
+//
+// The discriminator is `origin`, NOT `class` (RFC BW §9 Q1). Both are provenance
+// columns, but origin is stamped by the server from the writer's identity while class
+// is model-supplied on `op=set` — so keying "is this a consolidated fact" off class
+// would let an agent promote its own note to a fact by labelling it. class remains
+// useful as a filter dimension; it is not the class boundary.
+type MemoryProvenanceConstraint uint8
+
+const (
+	// ProvenanceAny is the zero value: no constraint.
+	ProvenanceAny MemoryProvenanceConstraint = iota
+	// ProvenanceRequired matches rows with a non-empty origin — distilled by a
+	// known writer (the consolidator).
+	ProvenanceRequired
+	// ProvenanceAbsent matches rows with no origin — written directly by an agent.
+	ProvenanceAbsent
+)
+
+// MemoryRowClass labels what kind of remembered thing a row is, so a caller can tell
+// "the user told me this" from "this is written down in a document" (RFC BW §4b).
+type MemoryRowClass string
+
+const (
+	MemoryRowFact     MemoryRowClass = "fact"
+	MemoryRowNote     MemoryRowClass = "note"
+	MemoryRowDocument MemoryRowClass = "document"
+)
+
+// ClassifyMemoryRow derives a row's class. ONE definition, because the filter that
+// selects a class and the label that reports it must agree — a search that returned
+// rows labelled `note` when the caller asked for `facts` would make the label a lie
+// rather than a refinement.
+//
+// documentKeyPrefix is passed rather than hardcoded: the namespace belongs to the
+// Document tool, and storage should not know its spelling.
+func ClassifyMemoryRow(key, origin, documentKeyPrefix string) MemoryRowClass {
+	if documentKeyPrefix != "" && strings.HasPrefix(key, documentKeyPrefix) {
+		return MemoryRowDocument
+	}
+	if strings.TrimSpace(origin) != "" {
+		return MemoryRowFact
+	}
+	return MemoryRowNote
 }
 
 // IsZero reports whether the filter constrains nothing — the signal that a backend
@@ -3003,6 +3054,10 @@ type MemorySearchEntry struct {
 	// Producers (the fusion step, the pure-vector fast path, a remote backend)
 	// set it explicitly; json:"-": it feeds ranking, not the agent-facing row.
 	SemanticScore float64 `json:"-"`
+	// Origin is the base row's provenance writer (RFC BL), carried so a result can be
+	// CLASSIFIED as a consolidated fact rather than an agent note. json:"-": callers
+	// render the derived `kind`, not the raw column, so the taxonomy stays one thing.
+	Origin string `json:"-"`
 	// AccessCount is the base row's access_count (RFC BL). Populated by the
 	// search legs so the hybrid ranker's frequency_weight term can reward
 	// frequently-recalled entries. Zero when the backend doesn't track it
