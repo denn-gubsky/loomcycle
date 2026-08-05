@@ -11154,6 +11154,54 @@ func testMemorySearchFilterExcludesPrefix(t *testing.T, s store.Store) {
 			"fields must compose as an AND rather than one silently winning", keysOf(none))
 	}
 
+	// RFC BW phase 2: the provenance split. `origin` is the discriminator because it is
+	// server-stamped (§9 Q1) — keying off the model-supplied `class` would let an agent
+	// promote its own note to a fact by labelling it.
+	if err := s.MemorySetProvenance(ctx, "", store.MemoryScopeUser, sid, "memory/fact/distilled", v, 0,
+		store.MemoryProvenance{Origin: "consolidator", Class: "preference"}); err != nil {
+		t.Fatalf("MemorySetProvenance: %v", err)
+	}
+	if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, "memory/fact/distilled", store.MemoryEmbedding{
+		Provider: "test", Model: "m", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "distilled", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("MemoryEmbedSet: %v", err)
+	}
+
+	onlyFacts, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid,
+		store.MemorySearchFilter{
+			ExcludeKeyPrefix: "doc.chunk:",
+			Provenance:       store.ProvenanceRequired,
+		}, q, 10)
+	if err != nil {
+		t.Fatalf("facts only: %v", err)
+	}
+	if !reflect.DeepEqual(keysOf(onlyFacts), []string{"memory/fact/distilled"}) {
+		t.Errorf("ProvenanceRequired returned %v, want only the consolidated row", keysOf(onlyFacts))
+	}
+	// The row must also CARRY its origin, or a result cannot be labelled `fact` and the
+	// selector and the label would disagree.
+	for _, r := range onlyFacts {
+		if r.Origin == "" {
+			t.Errorf("%s came back with no Origin — the label `kind` is derived from it, so "+
+				"without it a caller cannot tell a distilled fact from a note", r.Key)
+		}
+	}
+
+	onlyNotes, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid,
+		store.MemorySearchFilter{
+			ExcludeKeyPrefix: "doc.chunk:",
+			Provenance:       store.ProvenanceAbsent,
+		}, q, 10)
+	if err != nil {
+		t.Fatalf("notes only: %v", err)
+	}
+	if !reflect.DeepEqual(keysOf(onlyNotes), []string{"memory/fact/a"}) {
+		t.Errorf("ProvenanceAbsent returned %v, want only the un-stamped row — a LEGACY row "+
+			"predating the origin column must count as a note rather than vanishing from "+
+			"both halves of the split", keysOf(onlyNotes))
+	}
+
 	// The LEXICAL leg must apply the same exclusion: the backend fuses both by RRF, so
 	// a document row admitted by either one still reaches the caller.
 	if s.SupportsFullText() {

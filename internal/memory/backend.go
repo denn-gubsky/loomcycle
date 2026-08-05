@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -133,38 +134,78 @@ type Source string
 const (
 	// SourceFacts is the agent's own memory: consolidated facts and notes it wrote.
 	SourceFacts Source = "facts"
+	// SourceNotes is memory an agent wrote directly with `set` — no provenance, so no
+	// server-known writer distilled it.
+	SourceNotes Source = "notes"
 	// SourceDocuments is Document chunk bodies — prose written down in a document,
 	// which is NOT the same claim as something the user said.
 	SourceDocuments Source = "documents"
 )
 
+// ErrSourcesNotExpressible is returned for a source set that cannot be rendered as a
+// single conjunctive predicate — see SearchQuery.Filter.
+var ErrSourcesNotExpressible = errors.New(
+	"memory: this combination of sources cannot be filtered in one query. " +
+		"The document namespace and the provenance split are independent dimensions, so " +
+		"mixing documents with only ONE of facts/notes would need a disjunction the store " +
+		"does not build. Use [facts], [notes], [facts,notes], [documents], or all three")
+
 // Filter renders the requested sources as the store-level predicate.
 //
-// Only the exclusive combinations are expressible today: facts-only excludes the
-// document namespace, documents-only restricts to it, and both (or neither) constrain
-// nothing. Splitting facts from notes is RFC BW phase 2 and needs the provenance
-// columns, so "facts" here still means "everything that is not a document".
-func (q SearchQuery) Filter() store.MemorySearchFilter {
+// The two dimensions are INDEPENDENT: whether a row is in the document namespace (a
+// key prefix) and whether it carries provenance (a column). Every combination this
+// returns is therefore a conjunction, which is what a single indexed query can apply
+// with the LIMIT after the predicate.
+//
+// TWO COMBINATIONS ARE REFUSED rather than approximated: documents together with only
+// ONE of facts/notes needs `(key LIKE doc) OR (key NOT LIKE doc AND provenance…)` — a
+// disjunction across both dimensions. It could be built, and it is deliberately not,
+// because the honest alternatives were worse: silently widening to "everything" would
+// hand back rows the caller excluded while it believed the filter applied, which is
+// the failure RFC BW §6 exists to prevent. Refusing names the supported sets instead.
+// Both refused combinations are also odd requests ("my facts and my documents but not
+// my notes"); if one turns out to be real, the disjunction is the fix.
+func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 	f := store.MemorySearchFilter{KeyPrefix: q.Prefix}
-	wantFacts, wantDocs := false, false
+	var facts, notes, docs bool
 	for _, s := range q.Sources {
 		switch s {
 		case SourceFacts:
-			wantFacts = true
+			facts = true
+		case SourceNotes:
+			notes = true
 		case SourceDocuments:
-			wantDocs = true
+			docs = true
 		}
 	}
+	if !facts && !notes && !docs {
+		return f, nil // no selector: constrain nothing
+	}
+	memory := facts || notes
+	if docs && memory && !(facts && notes) {
+		return store.MemorySearchFilter{}, ErrSourcesNotExpressible
+	}
 	switch {
-	case wantFacts && !wantDocs:
-		f.ExcludeKeyPrefix = DocumentChunkKeyPrefix
-	case wantDocs && !wantFacts:
+	case docs && !memory:
 		// An explicit prefix wins if the caller set one; otherwise scope to documents.
 		if f.KeyPrefix == "" {
 			f.KeyPrefix = DocumentChunkKeyPrefix
 		}
+	case memory && !docs:
+		f.ExcludeKeyPrefix = DocumentChunkKeyPrefix
+		if facts && !notes {
+			f.Provenance = store.ProvenanceRequired
+		} else if notes && !facts {
+			f.Provenance = store.ProvenanceAbsent
+		}
 	}
-	return f
+	// docs && facts && notes → everything; the zero filter already says that.
+	return f, nil
+}
+
+// Class labels a result row so a caller can tell what it got (RFC BW §4b).
+func Class(e store.MemorySearchEntry) store.MemoryRowClass {
+	return store.ClassifyMemoryRow(e.Key, e.Origin, DocumentChunkKeyPrefix)
 }
 
 // SearchResult is the ranked output of Backend.Search. Entries are
@@ -185,5 +226,16 @@ type SearchResult struct {
 	QueryEmbeddingDim int
 	Truncated         bool
 	RankNote          string
-	DedupDropped      int
+
+	// SourcesApplied reports that the backend actually honoured SearchQuery.Sources
+	// (RFC BW phase 3).
+	//
+	// FALSE IS THE ZERO VALUE ON PURPOSE. A backend that ignores the selector — an
+	// external memory-layer service with its own namespaces — must not be able to do
+	// so silently, because the caller would then trust a label the result does not
+	// deserve: it asked for facts and is reading document prose. Defaulting to false
+	// means the honest answer is what you get for free, and honouring the selector is
+	// the thing you have to declare.
+	SourcesApplied bool
+	DedupDropped   int
 }

@@ -167,4 +167,10 @@ type RecallFact struct {
 // the backend.
 type RecallResult struct {
 	Facts []RecallFact
+
+	// SourcesApplied mirrors SearchResult.SourcesApplied — false unless the backend
+	// declares it honoured the source selector (RFC BW phase 3). Recall is where this
+	// matters most: its default EXCLUDES documents, so a backend that ignored the
+	// selector would return exactly the prose the default exists to keep out.
+	SourcesApplied bool
 }

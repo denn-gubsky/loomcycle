@@ -214,6 +214,15 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	// vector-capable store that lacks a full-text index (e.g. a future
 	// sqlite-vec build) — SupportsFullText is the precise capability.
 	// TODO(RFC BL): per-call/opsconfig hybrid opt-out if operators want it.
+	// Resolve the source selector BEFORE either leg: an unsupported combination must
+	// refuse without having run a query, and both legs must be given the SAME
+	// predicate — RRF fuses them, so filtering one filters nothing.
+	filter, ferr := q.Filter()
+	if ferr != nil {
+		lcotel.SetSpanError(span, ferr)
+		return memory.SearchResult{}, ferr
+	}
+
 	hybrid := b.store.SupportsFullText() || !rank.IsPureSemantic() || dedup.Enabled
 
 	var pool []store.MemorySearchEntry
@@ -229,14 +238,14 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// Leg 1: vector (cosine-ordered). Errors pass through unwrapped —
 		// ErrDimensionMismatch / ErrVectorUnsupported are user-actionable and
 		// the tool's errors.Is checks match the backend-constructed *MemoryError.
-		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Filter(), queryVec, fetch)
+		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, filter, queryVec, fetch)
 		if verr != nil {
 			lcotel.SetSpanError(span, verr)
 			return memory.SearchResult{}, verr
 		}
 		// Leg 2: full-text (keyword, ts_rank-ordered). (nil,nil) on a store
 		// without a full-text index, so the fusion collapses to pure-vector.
-		fres, ferr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, q.Filter(), q.QueryText, fetch)
+		fres, ferr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, filter, q.QueryText, fetch)
 		if ferr != nil {
 			lcotel.SetSpanError(span, ferr)
 			return memory.SearchResult{}, ferr
@@ -254,7 +263,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		if fetch > 51 {
 			fetch = 51
 		}
-		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, q.Filter(), queryVec, fetch)
+		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, filter, queryVec, fetch)
 		if verr != nil {
 			lcotel.SetSpanError(span, verr)
 			return memory.SearchResult{}, verr
@@ -311,6 +320,10 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		QueryEmbeddingDim: len(queryVec),
 		Truncated:         truncated,
 		DedupDropped:      dropped,
+		// This backend renders the selector into SQL (see SearchQuery.Filter), so it
+		// can declare that it was honoured. A backend that cannot must leave this
+		// false rather than let a caller trust a label it did not earn.
+		SourcesApplied: true,
 	}
 	if rank.SourceReserved() {
 		out.RankNote = "source_weight is reserved and contributes 0 until source-score tracking ships"
@@ -505,7 +518,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 	if len(facts) > topK {
 		facts = facts[:topK]
 	}
-	return memory.RecallResult{Facts: facts}, nil
+	return memory.RecallResult{Facts: facts, SourcesApplied: true}, nil
 }
 
 // recallText renders a stored value as human text: a JSON string round-trips to
