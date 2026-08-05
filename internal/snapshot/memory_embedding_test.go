@@ -133,7 +133,7 @@ func (v *vectorSnapshotStore) MemoryEmbedGet(ctx context.Context, _ string, scop
 	return e, nil
 }
 
-func (v *vectorSnapshotStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorSnapshotStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	return nil, errors.New("MemoryEmbedSearch not used by snapshot tests")
 }
 

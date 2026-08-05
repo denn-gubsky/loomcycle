@@ -42,7 +42,7 @@ func (v *searchVectorStore) MemoryEmbedSet(_ context.Context, tenantID string, s
 	return nil
 }
 
-func (v *searchVectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, _ []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *searchVectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, _ []float32, topK int) ([]store.MemorySearchEntry, error) {
 	v.mu.Lock()
 	prefix := tenantID + "|" + string(scope) + "|" + scopeID + "|"
 	keys := []string{}
@@ -52,7 +52,7 @@ func (v *searchVectorStore) MemoryEmbedSearch(ctx context.Context, tenantID stri
 			continue
 		}
 		key := strings.TrimPrefix(k, prefix)
-		if keyPrefix != "" && !strings.HasPrefix(key, keyPrefix) {
+		if filter.KeyPrefix != "" && !strings.HasPrefix(key, filter.KeyPrefix) {
 			continue
 		}
 		keys = append(keys, key)

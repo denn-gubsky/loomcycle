@@ -97,8 +97,8 @@ type IndexStore interface {
 	MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
 	MemoryEmbedSet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error
 	MemoryDelete(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (bool, error)
-	MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error)
-	MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, queryText string, topK int) ([]store.MemorySearchEntry, error)
+	MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error)
+	MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, queryText string, topK int) ([]store.MemorySearchEntry, error)
 }
 
 // indexValue is the JSON stored in each reserved-namespace memory row. Hash is
@@ -464,13 +464,13 @@ func hybridQuery(ctx context.Context, set *Set, st IndexStore, emb providers.Emb
 	if fetch > 51 {
 		fetch = 51 // the store's defensive per-search cap
 	}
-	vres, err := st.MemoryEmbedSearch(ctx, helpTenant, helpScope, HelpNamespaceScopeID, "", vecs[0], fetch)
+	vres, err := st.MemoryEmbedSearch(ctx, helpTenant, helpScope, HelpNamespaceScopeID, store.MemorySearchFilter{}, vecs[0], fetch)
 	if err != nil {
 		return nil, 0, fmt.Errorf("help query: vector leg: %w", err)
 	}
 	// (nil, nil) when the store has no full-text index — the fusion then
 	// collapses to pure-vector.
-	fres, err := st.MemoryFullTextSearch(ctx, helpTenant, helpScope, HelpNamespaceScopeID, "", query, fetch)
+	fres, err := st.MemoryFullTextSearch(ctx, helpTenant, helpScope, HelpNamespaceScopeID, store.MemorySearchFilter{}, query, fetch)
 	if err != nil {
 		return nil, 0, fmt.Errorf("help query: full-text leg: %w", err)
 	}

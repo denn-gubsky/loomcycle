@@ -144,6 +144,13 @@ type RecallQuery struct {
 	Query     string
 	TopK      int
 	Threshold float64 // 0..1 relevance floor; 0 = backend default
+
+	// Sources narrows which kinds of remembered thing may be recalled (RFC BW).
+	// EMPTY MEANS FACTS ONLY, which is the one place in this package where empty is
+	// not "unrestricted": recall answers "what have I learned", and Document prose
+	// sharing the memory keyspace is not something the agent learned. A caller that
+	// wants both passes both explicitly.
+	Sources []Source
 }
 
 // RecallFact is one extracted fact returned by Recall. ID is server-assigned

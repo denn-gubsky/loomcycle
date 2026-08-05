@@ -73,11 +73,11 @@ func (f *fullTextStore) SupportsFullText() bool { return true }
 // are omitted entirely: an empty result must mean "no lexical match", because
 // FuseRRF would otherwise hand every row a spurious rank contribution and the
 // fusion assertion would pass for the wrong reason.
-func (f *fullTextStore) MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, queryText string, topK int) ([]store.MemorySearchEntry, error) {
+func (f *fullTextStore) MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, queryText string, topK int) ([]store.MemorySearchEntry, error) {
 	if strings.TrimSpace(queryText) == "" || topK <= 0 {
 		return nil, nil
 	}
-	entries, _, err := f.Store.MemoryList(ctx, tenantID, scope, scopeID, keyPrefix, fullTextKeywordCap)
+	entries, _, err := f.Store.MemoryList(ctx, tenantID, scope, scopeID, filter.KeyPrefix, fullTextKeywordCap)
 	if err != nil {
 		return nil, err
 	}

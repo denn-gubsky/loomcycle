@@ -100,7 +100,7 @@ func sqrt(x float64) float64 {
 	return z
 }
 
-func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	if !v.enabled {
 		return nil, store.ErrVectorUnsupported
 	}
@@ -144,7 +144,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 			continue
 		}
 		key := strings.TrimPrefix(k, prefix)
-		if keyPrefix != "" && !strings.HasPrefix(key, keyPrefix) {
+		if filter.KeyPrefix != "" && !strings.HasPrefix(key, filter.KeyPrefix) {
 			continue
 		}
 		// Filter expired base rows.

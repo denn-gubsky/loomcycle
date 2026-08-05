@@ -450,7 +450,7 @@ func (s *Server) renderSearchRequest(ctx context.Context, mi memInject) string {
 		return ""
 	}
 	const topK = 5
-	entries, err := s.store.MemoryFullTextSearch(ctx, mi.Tenant, store.MemoryScopeUser, mi.UserID, "", mi.InitialInput, topK)
+	entries, err := s.store.MemoryFullTextSearch(ctx, mi.Tenant, store.MemoryScopeUser, mi.UserID, store.MemorySearchFilter{}, mi.InitialInput, topK)
 	if err != nil || len(entries) == 0 {
 		return ""
 	}

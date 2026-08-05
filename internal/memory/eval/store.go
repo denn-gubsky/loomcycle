@@ -51,7 +51,7 @@ func (v *vectorStore) MemoryEmbedSet(_ context.Context, _ string, scope store.Me
 // returning each row's stored vector on the entry (so the in-process
 // backend's MR-5 dedup pass has vectors to compare — same contract as the
 // real sqlite/pgvector stores after the MR-5 change).
-func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, id, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, id string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if topK > 51 {
@@ -69,7 +69,13 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 			continue
 		}
 		key := strings.TrimPrefix(k, prefix)
-		if keyPrefix != "" && !strings.HasPrefix(key, keyPrefix) {
+		if filter.KeyPrefix != "" && !strings.HasPrefix(key, filter.KeyPrefix) {
+			continue
+		}
+		// The eval fake honours the RFC BW exclusion too: a fake that ignored it would
+		// make an eval pass on a filter the real store applies, which is worse than
+		// not having the fake.
+		if filter.ExcludeKeyPrefix != "" && strings.HasPrefix(key, filter.ExcludeKeyPrefix) {
 			continue
 		}
 		rows = append(rows, scored{key: key, s: cosine(query, e.Vector), emb: e})

@@ -91,7 +91,7 @@ func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, _ string,
 	return out, nil
 }
 
-func (v *vectorAdminStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorAdminStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	return nil, errors.New("MemoryEmbedSearch not implemented in admin fake")
 }
 

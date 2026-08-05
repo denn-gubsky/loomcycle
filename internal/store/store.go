@@ -1899,7 +1899,7 @@ type Store interface {
 	//
 	// Backends MUST honour the base table's expires_at filter — a
 	// matching vector for an expired row MUST NOT appear in results.
-	MemoryEmbedSearch(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]MemorySearchEntry, error)
+	MemoryEmbedSearch(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, filter MemorySearchFilter, query []float32, topK int) ([]MemorySearchEntry, error)
 
 	// MemoryFullTextSearch runs the keyword (lexical) retrieval leg of RFC
 	// BL hybrid retrieval: a Top-K full-text match over the same embedded
@@ -1917,7 +1917,7 @@ type Store interface {
 	// so the caller cleanly falls back to pure-vector retrieval rather than
 	// failing the whole search. Backends MUST populate MemorySearchEntry.Vector
 	// (for the shared dedup pass) and AccessCount when they can.
-	MemoryFullTextSearch(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, queryText string, topK int) ([]MemorySearchEntry, error)
+	MemoryFullTextSearch(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, filter MemorySearchFilter, queryText string, topK int) ([]MemorySearchEntry, error)
 
 	// MemoryEmbedListByModel returns entries whose stored embedding
 	// was produced by a DIFFERENT (provider, model) than the supplied
@@ -2849,6 +2849,40 @@ const (
 	// CHECK constraint, and the tenant axis arrived with migration 0059.
 	MemoryScopeTenant MemoryScope = "tenant"
 )
+
+// MemorySearchFilter narrows which memory rows a vector or full-text search may
+// return. It replaces the bare keyPrefix argument both search methods used to take
+// (RFC BW).
+//
+// A STRUCT, NOT MORE POSITIONAL ARGUMENTS: the parameter list was already six long,
+// and RFC BW phase 2 adds provenance dimensions (facts vs notes) to the same seam. One
+// struct is also one thing to thread through both backends, the refusal stubs, and the
+// contract test.
+//
+// WHY THE FILTER IS IN THE QUERY RATHER THAN APPLIED AFTERWARDS. The in-process
+// backend caps its candidate pool at 51 rows. On a scope holding ~2,900 document
+// chunks and ~42 facts — the measured reference deployment — a 51-row pool drawn
+// before filtering may contain almost no facts, so a caller asking for ten would get
+// two. The LIMIT has to apply AFTER the predicate, which only SQL can do.
+type MemorySearchFilter struct {
+	// KeyPrefix keeps the previous argument's exact semantics: "" matches every key.
+	KeyPrefix string
+
+	// ExcludeKeyPrefix drops rows whose key starts with it. This is how "search my
+	// memory, not the documents that happen to share its keyspace" is expressed —
+	// Document chunk bodies live at DocumentChunkKeyPrefix in the same
+	// (tenant, scope, scope_id) partition, so before this they were indistinguishable
+	// from an agent's own facts once RFC BU embedded them.
+	//
+	// Composes with KeyPrefix as an AND. Both being set is unusual but well-defined.
+	ExcludeKeyPrefix string
+}
+
+// IsZero reports whether the filter constrains nothing — the signal that a backend
+// may take a query path with no predicate at all.
+func (f MemorySearchFilter) IsZero() bool {
+	return f.KeyPrefix == "" && f.ExcludeKeyPrefix == ""
+}
 
 // MemoryEntry is one row in the memory table. ExpiresAt is zero when
 // the row has no expiry. CreatedAt and UpdatedAt are the row's

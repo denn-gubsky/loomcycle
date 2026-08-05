@@ -154,6 +154,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ListTenants", testListTenants},
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
+		{"MemorySearchFilterExcludesPrefix", testMemorySearchFilterExcludesPrefix},
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
@@ -4767,7 +4768,7 @@ func vectorRefusalCheck(t *testing.T, s store.Store) bool {
 	if !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedGet on backend without vectors: got %v, want ErrVectorUnsupported", err)
 	}
-	_, err = s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0), 5)
+	_, err = s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 5)
 	if !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Errorf("MemoryEmbedSearch on backend without vectors: got %v, want ErrVectorUnsupported", err)
 	}
@@ -4844,7 +4845,7 @@ func testMemoryEmbedSearchTopK(t *testing.T, s store.Store) {
 			t.Fatal(err)
 		}
 	}
-	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0), 3)
+	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4873,7 +4874,7 @@ func testMemoryEmbedSearchScopeIsolation(t *testing.T, s store.Store) {
 		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
 	})
 	// Search the same key from user scope — must return empty.
-	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, "qa", "", floats32(1, 0, 0, 0), 10)
+	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, "qa", store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4893,7 +4894,7 @@ func testMemoryEmbedSearchDimensionMismatch(t *testing.T, s store.Store) {
 		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
 	})
 	// Query with dimension 8 against stored dimension 4.
-	_, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0, 1, 0, 0, 0), 5)
+	_, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "qa", store.MemorySearchFilter{}, floats32(1, 0, 0, 0, 1, 0, 0, 0), 5)
 	if !errors.Is(err, store.ErrDimensionMismatch) {
 		t.Errorf("dim mismatch: got %v, want ErrDimensionMismatch", err)
 	}
@@ -4904,7 +4905,7 @@ func testMemoryEmbedSearchEmptyScope(t *testing.T, s store.Store) {
 		return
 	}
 	ctx := context.Background()
-	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "empty", "", floats32(1, 0, 0, 0), 10)
+	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "empty", store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 10)
 	if err != nil {
 		t.Errorf("empty scope search: %v", err)
 	}
@@ -4942,7 +4943,7 @@ func testMemoryEmbedSearchReturnsVectors(t *testing.T, s store.Store) {
 			t.Fatal(err)
 		}
 	}
-	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "vecret", "", floats32(1, 0, 0, 0), 5)
+	results, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, "vecret", store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -10925,7 +10926,7 @@ func testMemoryEmbedSearchMixedDimensions(t *testing.T, s store.Store) {
 	// failing the statement. Repeated because the old bug was order-dependent: one
 	// pass could pass by luck.
 	for i := 1; i <= 4; i++ {
-		res, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, sid, "", floats32(1, 0, 0, 0), 10)
+		res, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, sid, store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 10)
 		if err != nil {
 			t.Fatalf("attempt %d: mixed-dimension search failed instead of degrading: %v", i, err)
 		}
@@ -10940,7 +10941,7 @@ func testMemoryEmbedSearchMixedDimensions(t *testing.T, s store.Store) {
 	// And when NO row matches the query's dimension, the typed refusal still fires:
 	// returning empty would read as "this scope knows nothing" rather than "this
 	// scope needs re-embedding".
-	_, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, sid, "", floats32(1, 0), 10)
+	_, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeAgent, sid, store.MemorySearchFilter{}, floats32(1, 0), 10)
 	if !errors.Is(err, store.ErrDimensionMismatch) {
 		t.Errorf("no-matching-dimension search: got %v, want ErrDimensionMismatch", err)
 	}
@@ -11070,6 +11071,106 @@ func testMemoryEmbedCascadesOnDelete(t *testing.T, s store.Store) {
 // already-embedded ones (which is what makes re-running safe), and the prefix
 // targets document bodies without touching a scope's ordinary key/value rows an
 // operator may have deliberately left unembedded.
+// testMemorySearchFilterExcludesPrefix pins RFC BW's core mechanism ON THE REAL
+// TIERS: the exclusion has to be in the SQL, because the caller cannot fix this
+// afterwards.
+//
+// The in-process backend caps its candidate pool at 51 rows. On a scope holding ~2,900
+// document chunks and ~42 facts — the measured reference deployment — a pool drawn
+// before filtering may contain almost no facts, so a caller asking for ten would get
+// two. That is why this is a store contract and not a backend unit test: the LIMIT has
+// to apply AFTER the predicate.
+func testMemorySearchFilterExcludesPrefix(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	const sid = "bwfilter"
+	v, _ := json.Marshal("shared text about the same topic")
+	write := func(key string) {
+		t.Helper()
+		if err := s.MemorySet(ctx, "", store.MemoryScopeUser, sid, key, v, 0); err != nil {
+			t.Fatalf("MemorySet %s: %v", key, err)
+		}
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, key, store.MemoryEmbedding{
+			Provider: "test", Model: "m", Dimension: 4,
+			Vector: floats32(1, 0, 0, 0), EmbedText: key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("MemoryEmbedSet %s: %v", key, err)
+		}
+	}
+	// Identical vectors, so ONLY the filter can decide what comes back — a ranking
+	// difference cannot mask a filter that does nothing.
+	write("memory/fact/a")
+	write("doc.chunk:zzz1")
+	write("doc.chunk:zzz2")
+
+	keysOf := func(rows []store.MemorySearchEntry) []string {
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.Key)
+		}
+		sort.Strings(out)
+		return out
+	}
+	q := floats32(1, 0, 0, 0)
+
+	all, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid, store.MemorySearchFilter{}, q, 10)
+	if err != nil {
+		t.Fatalf("unfiltered: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("precondition: unfiltered search returned %v, want all 3", keysOf(all))
+	}
+
+	facts, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid,
+		store.MemorySearchFilter{ExcludeKeyPrefix: "doc.chunk:"}, q, 10)
+	if err != nil {
+		t.Fatalf("excluded: %v", err)
+	}
+	if !reflect.DeepEqual(keysOf(facts), []string{"memory/fact/a"}) {
+		t.Errorf("ExcludeKeyPrefix returned %v, want only the fact — document bodies share "+
+			"the memory keyspace, so without this they outrank real facts in recall",
+			keysOf(facts))
+	}
+
+	docs, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid,
+		store.MemorySearchFilter{KeyPrefix: "doc.chunk:"}, q, 10)
+	if err != nil {
+		t.Fatalf("prefixed: %v", err)
+	}
+	if !reflect.DeepEqual(keysOf(docs), []string{"doc.chunk:zzz1", "doc.chunk:zzz2"}) {
+		t.Errorf("KeyPrefix returned %v, want both document rows", keysOf(docs))
+	}
+
+	// Composition: both set is an AND, and here selects nothing.
+	none, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid,
+		store.MemorySearchFilter{KeyPrefix: "doc.chunk:", ExcludeKeyPrefix: "doc.chunk:"}, q, 10)
+	if err != nil {
+		t.Fatalf("contradictory: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("require AND exclude the same prefix returned %v, want none — the two "+
+			"fields must compose as an AND rather than one silently winning", keysOf(none))
+	}
+
+	// The LEXICAL leg must apply the same exclusion: the backend fuses both by RRF, so
+	// a document row admitted by either one still reaches the caller.
+	if s.SupportsFullText() {
+		lex, err := s.MemoryFullTextSearch(ctx, "", store.MemoryScopeUser, sid,
+			store.MemorySearchFilter{ExcludeKeyPrefix: "doc.chunk:"}, "shared topic", 10)
+		if err != nil {
+			t.Fatalf("fulltext excluded: %v", err)
+		}
+		for _, r := range lex {
+			if strings.HasPrefix(r.Key, "doc.chunk:") {
+				t.Errorf("the full-text leg ignored ExcludeKeyPrefix and returned %s — RRF "+
+					"fuses both legs, so filtering only the vector leg filters nothing", r.Key)
+			}
+		}
+	}
+}
+
 func testMemoryEmbedListMissing(t *testing.T, s store.Store) {
 	if !vectorRefusalCheck(t, s) {
 		return

@@ -4729,7 +4729,7 @@ func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope sto
 // documented degrade posture this returns (nil, nil) rather than erroring —
 // the in-process backend then falls back to pure-vector fusion. We do NOT add
 // full-text infra to SQLite.
-func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, queryText string, topK int) ([]store.MemorySearchEntry, error) {
+func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, queryText string, topK int) ([]store.MemorySearchEntry, error) {
 	return nil, nil
 }
 
