@@ -36,6 +36,10 @@ func (s *Store) MemoryEmbedSet(ctx context.Context, tenantID string, scope store
 	return store.ErrVectorUnsupported
 }
 
+func (s *Store) MemoryEmbedDelete(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) error {
+	return store.ErrVectorUnsupported
+}
+
 func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
 	return store.MemoryEmbedding{}, store.ErrVectorUnsupported
 }

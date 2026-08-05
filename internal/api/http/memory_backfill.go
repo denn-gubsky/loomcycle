@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -281,14 +280,20 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 // index the literal tokens `body` and `fields` alongside the prose, and for a
 // chunk with a short body the envelope could outweigh the content.
 //
-// Ordinary rows keep the existing behaviour: their whole value is the text. So
-// this narrows nothing and only improves the case the prefix targets.
+// Ordinary rows keep the existing behaviour: their whole value is the text. So this
+// narrows nothing and only improves the case the prefix targets.
+//
+// AND IT ROUTES THROUGH builtin.IndexableText, the same predicate the write path
+// applies. Without that this sweep would happily CREATE the markdown-scaffolding
+// embeddings ("```sh", "---") that embedBody rejects — the writer and the sweep
+// disagreeing about what is worth indexing, which also left the purge unable to
+// recognise them. One function, three callers.
 func embedTextForRow(row store.MemoryEntry) string {
 	var env struct {
 		Body *string `json:"body"`
 	}
 	if err := json.Unmarshal(row.Value, &env); err == nil && env.Body != nil {
-		return strings.TrimSpace(*env.Body)
+		return builtin.IndexableText(*env.Body)
 	}
-	return strings.TrimSpace(string(row.Value))
+	return builtin.IndexableText(string(row.Value))
 }

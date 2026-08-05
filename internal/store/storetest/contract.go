@@ -155,6 +155,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
 		{"MemorySearchFilterExcludesPrefix", testMemorySearchFilterExcludesPrefix},
+		{"MemoryEmbedDelete", testMemoryEmbedDelete},
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
 		{"MemorySupersedeIsIdempotent", testMemorySupersedeIsIdempotent},
@@ -11080,6 +11081,69 @@ func testMemoryEmbedCascadesOnDelete(t *testing.T, s store.Store) {
 // before filtering may contain almost no facts, so a caller asking for ten would get
 // two. That is why this is a store contract and not a backend unit test: the LIMIT has
 // to apply AFTER the predicate.
+// testMemoryEmbedDelete pins the operation that had no equivalent: un-indexing a row
+// without deleting it.
+//
+// The row must SURVIVE. That is the whole distinction from a cascade — a chunk whose
+// body is markdown scaffolding is legitimate document structure that simply should not
+// be a search result, so removing the document to fix the index would be the wrong
+// trade.
+func testMemoryEmbedDelete(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	const sid = "embdel"
+	v, _ := json.Marshal("a body worth keeping")
+	if err := s.MemorySet(ctx, "", store.MemoryScopeUser, sid, "k1", v, 0); err != nil {
+		t.Fatalf("MemorySet: %v", err)
+	}
+	if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, "k1", store.MemoryEmbedding{
+		Provider: "test", Model: "m", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "k1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("MemoryEmbedSet: %v", err)
+	}
+	if _, err := s.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, sid, "k1"); err != nil {
+		t.Fatalf("precondition: the embedding should exist: %v", err)
+	}
+
+	if err := s.MemoryEmbedDelete(ctx, "", store.MemoryScopeUser, sid, "k1"); err != nil {
+		t.Fatalf("MemoryEmbedDelete: %v", err)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.MemoryEmbedGet(ctx, "", store.MemoryScopeUser, sid, "k1"); !errors.As(err, &nf) {
+		t.Errorf("the embedding survived the delete (err=%v)", err)
+	}
+	// THE ROW SURVIVES — the point of having this at all.
+	if got, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, sid, "k1"); err != nil {
+		t.Errorf("the base row was removed too: %v — a caller wanting that already has "+
+			"MemoryDelete and its cascade", err)
+	} else if len(got.Value) == 0 {
+		t.Error("the base row came back empty")
+	}
+	// Searchable no more: the row exists but cannot be retrieved semantically.
+	if rows, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid,
+		store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 10); err != nil {
+		t.Fatalf("search after delete: %v", err)
+	} else {
+		for _, r := range rows {
+			if r.Key == "k1" {
+				t.Error("the purged row is still returned by vector search")
+			}
+		}
+	}
+
+	// IDEMPOTENT: a purge sweep walks rows without knowing which carry an embedding, so
+	// deleting an absent one must be a no-op rather than an error it has to special-case.
+	if err := s.MemoryEmbedDelete(ctx, "", store.MemoryScopeUser, sid, "k1"); err != nil {
+		t.Errorf("second delete errored: %v — a sweep would have to probe first", err)
+	}
+	if err := s.MemoryEmbedDelete(ctx, "", store.MemoryScopeUser, sid, "never-existed"); err != nil {
+		t.Errorf("deleting an unknown key errored: %v", err)
+	}
+}
+
 func testMemorySearchFilterExcludesPrefix(t *testing.T, s store.Store) {
 	if !vectorRefusalCheck(t, s) {
 		return

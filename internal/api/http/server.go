@@ -3014,6 +3014,10 @@ func (s *Server) Mux() http.Handler {
 	// (substrate:admin) DELIBERATELY, like backfill_embeddings above: both spend the
 	// operator's model budget per row, so triggering one is an operator decision even
 	// though the data belongs to a tenant.
+	// Purge the embeddings of rows that carry no indexable text (markdown scaffolding
+	// embedded before the write path rejected it). Admin, like its sibling sweeps —
+	// and unlike them it DELETES, so its dry_run default is load-bearing.
+	mux.Handle("POST /v1/_memory/purge_stale_embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryPurgeStaleEmbeddings))))
 	mux.Handle("POST /v1/_document/describe_images", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDescribeImages))))
 	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
 	// as /v1/_resolver. The full runtime-state JSON envelope; see

@@ -125,6 +125,15 @@ func indexableText(s string) string {
 	return t
 }
 
+// IndexableText is the exported form, for the admin sweeps.
+//
+// EXPORTED BECAUSE THE JUDGEMENT MUST BE SHARED, and it was not: the write path applied
+// this rule while the embedding backfill derived its text by trimming alone, so the
+// sweep could still CREATE the scaffolding embeddings the writer rejects — and the purge
+// that removes them would then not recognise them either. Three places deciding
+// "indexable" independently is how they drift; one function is the fix.
+func IndexableText(s string) string { return indexableText(s) }
+
 // UndescribedAsset is one image awaiting a description: enough to make the vision
 // call and to know whether it is worth making.
 type UndescribedAsset struct {

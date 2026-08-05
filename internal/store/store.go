@@ -1883,6 +1883,25 @@ type Store interface {
 	// ErrVectorUnsupported on backends without a vector index.
 	MemoryEmbedGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) (MemoryEmbedding, error)
 
+	// MemoryEmbedDelete removes a row's embedding while LEAVING the row itself.
+	//
+	// The gap it fills: nothing could un-index a row. Deleting the memory row cascades
+	// the embedding away, and re-embedding overwrites one — but a row that should no
+	// longer be searchable AT ALL had no path. That is not hypothetical: markdown
+	// scaffolding ("```sh", "---") was embedded before the write path learned to reject
+	// it, and those vectors sit near the centroid of everything, so they rank mid-high
+	// for EVERY query. Stopping new ones does not remove the old, and re-embedding
+	// faithfully reproduces the same junk text.
+	//
+	// IDEMPOTENT: deleting an absent embedding is a no-op, not an error. A purge sweep
+	// walks rows without knowing which carry one, and making the common case an error
+	// would force every caller to probe first.
+	//
+	// ErrVectorUnsupported on a backend with no vector plane — the same refusal shape
+	// as its Set/Get siblings, so an operator sees one story rather than a silent
+	// success on a store that never had an embedding to remove.
+	MemoryEmbedDelete(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) error
+
 	// MemoryEmbedSearch runs a Top-K cosine-similarity search over
 	// rows in (scope, scopeID). keyPrefix is optional — empty string
 	// matches every key. The returned MemorySearchEntry slice is
