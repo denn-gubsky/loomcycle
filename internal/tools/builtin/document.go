@@ -780,7 +780,11 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 			}
 			text = mermaidEmbedText(src)
 		} else {
-			text = strings.TrimSpace(body)
+			// indexableText drops a body that is nothing but Markdown scaffolding
+			// ("```sh", "---", "#"), which a heading-split import turns into its own
+			// chunk. Such a body ranks mid-high for EVERY query, so it does not just
+			// waste a row — it outranks real answers.
+			text = indexableText(body)
 		}
 	}
 	// FALL BACK TO THE TITLE. A chunk whose body yields no text is usually a heading
@@ -792,7 +796,7 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 	// Measured on the reference deployment before adding this: of 20 sampled bodyless
 	// chunks, 18 had meaningful titles. The two that did not were fragments used as
 	// headings (a JSON line). No content heuristic beyond requiring a letter — see
-	// titleEmbedText — because a filter guessing at "meaningful" would drop real
+	// indexableText — because a filter guessing at "meaningful" would drop real
 	// headings to avoid an occasional weak vector, and 18-for-2 is the wrong trade to
 	// optimise against.
 	//
@@ -800,7 +804,7 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 	// path (the body was empty), and embedBody already reads SQL for an image's
 	// description, so the seam exists.
 	if text == "" {
-		text = titleEmbedText(d.chunkTitle(ctx, key, chunkID))
+		text = indexableText(d.chunkTitle(ctx, key, chunkID))
 	}
 	// Still nothing: no body text AND no usable title. Embedding punctuation — or a
 	// placeholder — is worse than embedding nothing, because a row that exists ranks
@@ -884,28 +888,6 @@ func (d *Document) chunkTitle(ctx context.Context, key sqlmem.ScopeKey, chunkID 
 	return asStr(res.Rows[0][0])
 }
 
-// titleEmbedText decides whether a title is worth embedding, and is the ONE place
-// that judgement lives so the write path and the backfill cannot disagree.
-//
-// The only requirement is a letter. A title with no letters carries no language —
-// "---", "```sh", "42" — and a vector built from it can only produce false matches,
-// which is the same reasoning the mermaid extractor applies to a label-less diagram.
-// Everything else is kept: a heading is short by nature, so a length threshold would
-// discard "Active RFCs" and "Configuration", both of which are exactly what someone
-// searching a document would type.
-func titleEmbedText(title string) string {
-	t := strings.TrimSpace(title)
-	if t == "" {
-		return ""
-	}
-	if !strings.ContainsFunc(t, func(r rune) bool {
-		return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-	}) {
-		return ""
-	}
-	return t
-}
-
 // TitleFallbackForBodyKey resolves the title-derived embed text for a bodyless
 // document chunk, given only its k/v key.
 //
@@ -927,7 +909,7 @@ func TitleFallbackForBodyKey(ctx context.Context, mgr *sqlmem.Manager, tenant st
 	}
 	d := &Document{SqlMem: mgr}
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenantValue(tenant), Scope: string(mscope), ScopeID: scopeID}
-	return titleEmbedText(d.chunkTitle(ctx, key, chunkID))
+	return indexableText(d.chunkTitle(ctx, key, chunkID))
 }
 
 // recordRevision appends a body snapshot to the chunk_revisions log (RFC BS
