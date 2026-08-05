@@ -1,14 +1,16 @@
 import { useRef, useState } from "react";
-import type { MemorySearchEntry, MemoryScope } from "../types";
+import type { MemorySearchEntry, MemoryScope, MemorySource } from "../types";
 import { useMemoryData } from "../lib/dataLayer";
 import Splitter from "./Splitter";
 import ChunkDetailPanel from "./ChunkDetailPanel";
 
 // SearchPanel — the off-run UNIFIED semantic search (POST /v1/_memory/search). One
-// ranked list spanning both plain k/v entries (kind:"memory") and document-chunk
-// bodies (kind:"document"). A document hit opens the shared ChunkDetailPanel (its
-// entity block via get_chunk); a memory hit deep-links back to the k/v console
-// through the onSelectEntry callback.
+// ranked list; each hit is labelled by kind (RFC BW): "fact" (a consolidator
+// distilled it), "note" (an agent wrote it directly), or "document" (a Document
+// chunk body). A document hit opens the shared ChunkDetailPanel (its entity block
+// via get_chunk); a fact/note hit shows its key + value and can deep-link back to
+// the k/v console via onSelectEntry. The `source` field narrows which kinds come
+// back (facts / notes / documents; empty = all planes).
 //
 // Search needs an embedder + a vector store. When the deployment has neither (or
 // a stale dimension) the server returns 400 `search_unavailable`; we render a
@@ -30,6 +32,11 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<MemoryScope>(scopeProp);
   const [scopeId, setScopeId] = useState(scopeIdProp);
+  // RFC BW `sources` selector (facts | notes | documents). Empty = every plane.
+  // A single-value field never hits the invalid_sources 400 (which only rejects
+  // mixing "documents" with just ONE of facts/notes). Free text is accepted — the
+  // datalist suggests the valid values and the server drops anything unknown.
+  const [source, setSource] = useState("");
   const [results, setResults] = useState<MemorySearchEntry[] | null>(null);
   // The (scope, scope_id) the current `results` were fetched under — snapshotted
   // at search time so the detail panel + deep-link use the scope the hits came
@@ -56,7 +63,14 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
     setUnavailable(false);
     setSelected("");
     try {
-      const resp = await data.search({ query: query.trim(), scope: target.scope, scopeId: target.scopeId });
+      const resp = await data.search({
+        query: query.trim(),
+        scope: target.scope,
+        scopeId: target.scopeId,
+        // A free-typed unknown source is dropped server-side (→ all planes), so
+        // the cast is safe: the datalist offers the valid values, the server validates.
+        sources: source.trim() ? [source.trim() as MemorySource] : undefined,
+      });
       if (token !== reqRef.current) return; // a newer search superseded this one
       setResults(resp.entries ?? []);
       setSearched(target);
@@ -99,6 +113,22 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
           disabled={!needsScopeId}
           onChange={(e) => setScopeId(e.target.value)}
         />
+        {/* Source: an editable combobox (dropdown of the known kinds + free text).
+            Empty by default → every plane. */}
+        <input
+          type="text"
+          className="search-source-input"
+          list="memory-source-options"
+          placeholder="source (all)…"
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+          title="Narrow to a source — facts, notes, or documents. Empty searches every plane."
+        />
+        <datalist id="memory-source-options">
+          <option value="facts" />
+          <option value="notes" />
+          <option value="documents" />
+        </datalist>
         <input
           type="text"
           className="search-query-input"
@@ -143,7 +173,7 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
                     onClick={() => setSelected(rowKey)}
                   >
                     <div className="search-hit-head">
-                      <span className={"search-kind-badge " + (isDoc ? "search-kind-doc" : "search-kind-mem")}>
+                      <span className={`search-kind-badge search-kind-${hit.kind}`}>
                         {hit.kind}
                       </span>
                       <span className="search-hit-key">

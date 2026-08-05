@@ -24,9 +24,12 @@ export type {
   SetMemoryEntryOptions,
   SetMemoryEntryResponse,
   // P4b — the off-run unified semantic search shapes (POST /v1/_memory/search).
+  // MemorySource (RFC BW) is the `sources` selector value: "facts" | "notes" |
+  // "documents". MemorySearchEntry.kind is the labelled result class.
   MemorySearchInput,
   MemorySearchEntry,
   MemorySearchResponse,
+  MemorySource,
 } from "@loomcycle/client";
 
 // MemoryScope selects WHICH scope's rows to browse (agent / user — or whatever

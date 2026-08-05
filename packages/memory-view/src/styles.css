@@ -1000,6 +1000,11 @@
   font-family: var(--mono);
   font-size: 12px;
 }
+.loomcycle-memory-view .search-source-input {
+  width: 120px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
 .loomcycle-memory-view .search-submit-btn {
   background: var(--accent);
   border: 1px solid var(--accent);
@@ -1060,11 +1065,17 @@
   letter-spacing: 0.04em;
   flex-shrink: 0;
 }
-.loomcycle-memory-view .search-kind-doc {
+/* Per-kind result badges (RFC BW): a document is prose written down, a fact was
+   distilled by the consolidator, a note is an agent's own jotting. */
+.loomcycle-memory-view .search-kind-document {
   border-color: var(--accent);
   color: var(--accent);
 }
-.loomcycle-memory-view .search-kind-mem {
+.loomcycle-memory-view .search-kind-fact {
+  border-color: var(--success, var(--accent));
+  color: var(--success, var(--accent));
+}
+.loomcycle-memory-view .search-kind-note {
   color: var(--fg-soft);
 }
 .loomcycle-memory-view .search-hit-key {

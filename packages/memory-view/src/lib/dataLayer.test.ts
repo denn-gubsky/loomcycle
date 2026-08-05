@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { LoomcycleClient } from "@loomcycle/client";
+import type { LoomcycleClient, MemorySearchInput } from "@loomcycle/client";
 import { dataLayerFromClient } from "./dataLayer";
 
 // A recording stub for the eight off-run memory admin methods the data layer
@@ -123,9 +123,9 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
 
   // ---- P4b: unified search + entity/fact tier ----
 
-  it("search forwards the MemorySearchInput to client.memorySearch unchanged", async () => {
+  it("search forwards the MemorySearchInput (incl. the RFC BW sources selector) unchanged", async () => {
     const s = stubClient();
-    const input = { query: "rate limits", scope: "user", scopeId: "alice", topK: 5 };
+    const input: MemorySearchInput = { query: "rate limits", scope: "user", scopeId: "alice", topK: 5, sources: ["facts"] };
     await dataLayerFromClient(s.client).search(input);
     expect(s.memorySearch).toHaveBeenCalledWith(input);
   });
