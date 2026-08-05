@@ -85,6 +85,7 @@ func (s *Server) handleListMemoryScopes(w http.ResponseWriter, _ *http.Request) 
 		Scopes: []memoryScopeKind{
 			{Name: "agent", Description: "Per-yaml-agent keyspace, shared across users"},
 			{Name: "user", Description: "Per-user keyspace, shared across agents"},
+			{Name: "tenant", Description: "Tenant-wide keyspace, shared by every user and agent in the tenant"},
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -101,7 +102,7 @@ func (s *Server) handleListMemoryScopeIDs(w http.ResponseWriter, r *http.Request
 	scope := r.PathValue("scope")
 	if !validAdminMemoryScope(scope) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
-			"scope must be one of: agent, user")
+			"scope must be one of: agent, user, tenant")
 		return
 	}
 	// RFC BL: scope the admin browse to the authenticated principal's tenant
@@ -133,10 +134,10 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	scopeID := r.PathValue("scope_id")
 	if !validAdminMemoryScope(scope) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
-			"scope must be one of: agent, user")
+			"scope must be one of: agent, user, tenant")
 		return
 	}
-	if strings.TrimSpace(scopeID) == "" {
+	if adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_scope_id", "scope_id is required")
 		return
 	}
@@ -153,7 +154,10 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	// RFC BL: tenant from the authenticated principal (server-sourced), one
 	// lookup reused by the entries list + the per-key embedding-metadata probe.
 	tenantID := tenantFromCtx(r.Context())
-	entries, truncated, err := s.store.MemoryList(r.Context(), tenantID, store.MemoryScope(scope), scopeID, prefix, limit)
+	// tenant scope reads the single tenant-wide keyspace (store scope_id ""); the
+	// path placeholder is dropped. agent/user keep their scope_id.
+	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
+	entries, truncated, err := s.store.MemoryList(r.Context(), tenantID, store.MemoryScope(scope), storeScopeID, prefix, limit)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -163,7 +167,7 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	}
 	resp := memoryEntriesResponse{
 		Scope:     scope,
-		ScopeID:   scopeID,
+		ScopeID:   storeScopeID,
 		Entries:   entries,
 		Truncated: truncated,
 	}
@@ -175,7 +179,7 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	if r.URL.Query().Get("include_embedding_metadata") == "true" && s.store.SupportsVectors() {
 		meta := make(map[string]memoryEmbedMeta)
 		for _, e := range entries {
-			emb, err := s.store.MemoryEmbedGet(r.Context(), tenantID, store.MemoryScope(scope), scopeID, e.Key)
+			emb, err := s.store.MemoryEmbedGet(r.Context(), tenantID, store.MemoryScope(scope), storeScopeID, e.Key)
 			if err != nil || emb.Dimension == 0 {
 				continue // no embedding for this key (or a transient error) → omit
 			}
@@ -204,15 +208,15 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if !validAdminMemoryScope(scope) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
-			"scope must be one of: agent, user")
+			"scope must be one of: agent, user, tenant")
 		return
 	}
-	if strings.TrimSpace(scopeID) == "" || strings.TrimSpace(key) == "" {
+	if (adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "") || strings.TrimSpace(key) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_path",
 			"scope_id and key are required")
 		return
 	}
-	entry, err := s.store.MemoryGet(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), scopeID, key)
+	entry, err := s.store.MemoryGet(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -226,7 +230,7 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(memoryEntryResponse{
 		Scope:   scope,
-		ScopeID: scopeID,
+		ScopeID: adminMemoryStoreScopeID(scope, scopeID),
 		Entry:   entry,
 	})
 }
@@ -237,10 +241,34 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 // poke a never-shipped scope into the store.
 func validAdminMemoryScope(s string) bool {
 	switch s {
-	case "agent", "user":
+	case "agent", "user", "tenant":
 		return true
 	}
 	return false
+}
+
+// adminMemoryStoreScopeID resolves the store scope_id for an admin memory op.
+// The tenant scope has ONE keyspace per tenant — the tenant_id column carries
+// the partition, so its store scope_id is ALWAYS "" (mirrors the Memory tool's
+// resolveScope in internal/tools/builtin/memory.go, which returns "" for the
+// tenant scope on purpose). The URL/body scope_id for the tenant scope is a
+// non-empty placeholder the console sends only so the {scope_id} path segment
+// routes (Go's ServeMux won't match an empty segment); it carries no meaning and
+// is dropped here. agent/user keep their caller-supplied scope_id.
+func adminMemoryStoreScopeID(scope, scopeID string) string {
+	if scope == string(store.MemoryScopeTenant) {
+		return ""
+	}
+	return scopeID
+}
+
+// adminMemoryScopeIDRequired reports whether a non-empty scope_id must be
+// supplied for the given scope. The tenant scope is exempt: it addresses a
+// single tenant-wide keyspace with an empty store scope_id, so a caller may omit
+// it (or send a placeholder that adminMemoryStoreScopeID drops). agent/user
+// still require one — a missing user_id / agent name is a genuine error there.
+func adminMemoryScopeIDRequired(scope string) bool {
+	return scope != string(store.MemoryScopeTenant)
 }
 
 // memoryEntryPutBody is the wire shape for PUT
@@ -280,10 +308,10 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if !validAdminMemoryScope(scope) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
-			"scope must be one of: agent, user")
+			"scope must be one of: agent, user, tenant")
 		return
 	}
-	if strings.TrimSpace(scopeID) == "" || strings.TrimSpace(key) == "" {
+	if (adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "") || strings.TrimSpace(key) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_path",
 			"scope_id and key are required")
 		return
@@ -322,7 +350,11 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	if body.TTLSeconds > 0 {
 		ttl = time.Duration(body.TTLSeconds) * time.Second
 	}
-	if err := s.store.MemorySet(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), scopeID, key, body.Value, ttl); err != nil {
+	// tenant scope writes the single tenant-wide keyspace (store scope_id ""); the
+	// path placeholder is dropped. Reused by the embed step below so the embedding
+	// lands under the same (tenant, scope, scope_id) as the k/v row.
+	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
+	if err := s.store.MemorySet(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), storeScopeID, key, body.Value, ttl); err != nil {
 		if errors.Is(err, store.ErrMemoryQuotaExceeded) {
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "memory_quota_exceeded", err.Error())
 			return
@@ -334,12 +366,12 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	resp := memoryEntryPutResponse{Scope: scope, ScopeID: scopeID, Key: key}
+	resp := memoryEntryPutResponse{Scope: scope, ScopeID: storeScopeID, Key: key}
 	if embed {
 		// Best-effort: same surface as v0.9.0's Memory.set embed —
 		// transient failures surface as embedded:false + warning, the
 		// k/v row stays.
-		if err := s.embedMemoryEntry(r.Context(), store.MemoryScope(scope), scopeID, key, body.Value); err != nil {
+		if err := s.embedMemoryEntry(r.Context(), store.MemoryScope(scope), storeScopeID, key, body.Value); err != nil {
 			resp.EmbedWarning = err.Error()
 		} else {
 			resp.Embedded = true
@@ -364,15 +396,15 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 	key := r.PathValue("key")
 	if !validAdminMemoryScope(scope) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
-			"scope must be one of: agent, user")
+			"scope must be one of: agent, user, tenant")
 		return
 	}
-	if strings.TrimSpace(scopeID) == "" || strings.TrimSpace(key) == "" {
+	if (adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "") || strings.TrimSpace(key) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_path",
 			"scope_id and key are required")
 		return
 	}
-	if _, err := s.store.MemoryDelete(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), scopeID, key); err != nil {
+	if _, err := s.store.MemoryDelete(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

@@ -68,6 +68,10 @@ build-ui:
 	# @loomcycle/explorer (RFC AZ) is consumed from SOURCE the same way — install
 	# its deps (packages/explorer/node_modules is gitignored) before the web build.
 	cd packages/explorer && npm ci --silent
+	# @loomcycle/memory-view (RFC BV) is consumed from SOURCE the same way —
+	# install its deps (packages/memory-view/node_modules is gitignored) before
+	# the web build.
+	cd packages/memory-view && npm ci --silent
 	cd web && npm ci --silent && npm run build
 	touch internal/webui/dist/.gitkeep
 

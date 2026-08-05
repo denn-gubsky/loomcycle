@@ -78,7 +78,7 @@ func (s *Server) handleMemoryEmbedStats(w http.ResponseWriter, r *http.Request) 
 	scope := r.URL.Query().Get("scope")
 	if !validAdminMemoryScope(scope) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
-			"scope must be one of: agent, user")
+			"scope must be one of: agent, user, tenant")
 		return
 	}
 	// RFC BL: tenant from the authenticated principal (server-sourced).
@@ -141,10 +141,10 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 	scopeID := r.URL.Query().Get("scope_id")
 	if !validAdminMemoryScope(scope) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
-			"scope must be one of: agent, user")
+			"scope must be one of: agent, user, tenant")
 		return
 	}
-	if strings.TrimSpace(scopeID) == "" {
+	if adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_scope_id",
 			"scope_id is required")
 		return
@@ -174,8 +174,11 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 	// RFC BL: tenant from the authenticated principal, reused for the read +
 	// the write-back below so the reembed stays within one tenant partition.
 	tenantID := tenantFromCtx(r.Context())
+	// tenant scope reembeds the single tenant-wide keyspace (store scope_id "");
+	// the placeholder is dropped. Reused for the read + write-back below.
+	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
 	rows, err := s.store.MemoryEmbedListByModel(r.Context(), tenantID,
-		store.MemoryScope(scope), scopeID,
+		store.MemoryScope(scope), storeScopeID,
 		currentEmbedder.Provider, currentEmbedder.Model, limit)
 	if err != nil {
 		if errors.Is(err, store.ErrVectorUnsupported) {
@@ -201,7 +204,7 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(memoryReembedDryRunResponse{
 			Scope:            scope,
-			ScopeID:          scopeID,
+			ScopeID:          storeScopeID,
 			DryRun:           true,
 			RowsTotal:        len(rows), // we already filtered to needs-reembed; not the total in scope
 			RowsToReembed:    len(rows),
@@ -240,7 +243,7 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: time.Now().UTC(),
 		}
 		if err := s.store.MemoryEmbedSet(r.Context(), tenantID,
-			store.MemoryScope(scope), scopeID, row.Key, emb); err != nil {
+			store.MemoryScope(scope), storeScopeID, row.Key, emb); err != nil {
 			failed++
 			failedKeys = append(failedKeys, row.Key)
 			continue
@@ -250,7 +253,7 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(memoryReembedRealResponse{
 		Scope:           scope,
-		ScopeID:         scopeID,
+		ScopeID:         storeScopeID,
 		DryRun:          false,
 		RowsReembedded:  reembedded,
 		RowsFailed:      failed,

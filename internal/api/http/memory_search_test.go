@@ -210,7 +210,10 @@ func TestMemorySearch_MissingQuery(t *testing.T) {
 // TestMemorySearch_InvalidScope: only the closed admin scope set is accepted.
 func TestMemorySearch_InvalidScope(t *testing.T) {
 	s, _ := memorySearchServer(t)
-	rec := postMemorySearch(s, "A", `{"query":"x","scope":"tenant","scope_id":"alice"}`)
+	// "run" is a real Memory-tool scope but NOT an admin-browse scope (the admin
+	// surface exposes agent/user/tenant), so it is rejected. (This case used
+	// "tenant" before it became a valid admin scope.)
+	rec := postMemorySearch(s, "A", `{"query":"x","scope":"run","scope_id":"alice"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
 	}

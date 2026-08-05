@@ -9,7 +9,9 @@
     "paths": {
       "@loomcycle/library": ["../packages/library/src/index.ts"],
       "@loomcycle/explorer": ["../packages/explorer/src/index.ts"],
-      "@loomcycle/explorer/styles.css": ["../packages/explorer/src/styles.css"]
+      "@loomcycle/explorer/styles.css": ["../packages/explorer/src/styles.css"],
+      "@loomcycle/memory-view": ["../packages/memory-view/src/index.ts"],
+      "@loomcycle/memory-view/styles.css": ["../packages/memory-view/src/styles.css"]
     },
     "strict": true,
     "noUnusedLocals": true,

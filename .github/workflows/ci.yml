@@ -245,6 +245,19 @@ jobs:
       - name: Install @loomcycle/explorer deps
         working-directory: packages/explorer
         run: npm ci
+      # @loomcycle/memory-view (RFC BV) is consumed from SOURCE via a Vite alias
+      # the same way — install its deps before the web steps
+      # (packages/memory-view/node_modules is gitignored → absent on checkout).
+      - name: Install @loomcycle/memory-view deps
+        working-directory: packages/memory-view
+        run: npm ci
+      # Run the package's OWN typecheck + wire-mapping unit tests on every PR.
+      # The web typecheck below compiles the aliased source (catching type
+      # regressions), but not the package's dataLayer.test.ts — a broken
+      # snake_case arg mapping in dataLayerFromClient would otherwise stay green.
+      - name: Test @loomcycle/memory-view
+        working-directory: packages/memory-view
+        run: npm run typecheck && npm test
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test

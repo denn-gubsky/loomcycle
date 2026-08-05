@@ -86,13 +86,16 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validAdminMemoryScope(body.Scope) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user")
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user, tenant")
 		return
 	}
-	if strings.TrimSpace(body.ScopeID) == "" {
+	if adminMemoryScopeIDRequired(body.Scope) && strings.TrimSpace(body.ScopeID) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_scope_id", "scope_id is required")
 		return
 	}
+	// tenant scope searches the single tenant-wide keyspace (store scope_id "");
+	// any scope_id the caller sent is a placeholder and is dropped.
+	storeScopeID := adminMemoryStoreScopeID(body.Scope, body.ScopeID)
 
 	topK := body.TopK
 	if topK <= 0 {
@@ -120,7 +123,7 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 
 	// Empty Prefix so the search spans both k/v entries and doc.chunk bodies.
 	backend := inprocess.New(s.store, s.embedder)
-	res, err := backend.Search(ctx, store.MemoryScope(body.Scope), body.ScopeID,
+	res, err := backend.Search(ctx, store.MemoryScope(body.Scope), storeScopeID,
 		memrank.SearchQuery{QueryText: body.Query, Prefix: "", TopK: topK}, rankCfg, dedupCfg)
 	if err != nil {
 		// The three typed refusals are operator-actionable (no embedder / no
@@ -163,7 +166,7 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, memorySearchResponse{
 		Scope:             body.Scope,
-		ScopeID:           body.ScopeID,
+		ScopeID:           storeScopeID,
 		Entries:           entries,
 		QueryEmbeddingDim: res.QueryEmbeddingDim,
 		Truncated:         res.Truncated,

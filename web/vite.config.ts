@@ -19,6 +19,13 @@ const libStyles = path.resolve(webRoot, "../packages/library/src/styles.css");
 // @loomcycle/library. Same styles-key-first ordering rationale as above.
 const explorerSrc = path.resolve(webRoot, "../packages/explorer/src/index.ts");
 const explorerStyles = path.resolve(webRoot, "../packages/explorer/src/styles.css");
+// @loomcycle/memory-view (RFC BV) — consumed from SOURCE the same way. UNLIKE
+// library/explorer, its classes are scoped under `.loomcycle-memory-view`, so the
+// web wrapper DOES import the package's styles.css (see MemoryView.tsx). Same
+// styles-key-first ordering rationale as above — the "/styles.css" key MUST
+// precede the bare-package key.
+const memoryViewSrc = path.resolve(webRoot, "../packages/memory-view/src/index.ts");
+const memoryViewStyles = path.resolve(webRoot, "../packages/memory-view/src/styles.css");
 
 // loomcycle UI build configuration.
 //
@@ -42,6 +49,8 @@ export default defineConfig({
       "@loomcycle/library": libSrc,
       "@loomcycle/explorer/styles.css": explorerStyles,
       "@loomcycle/explorer": explorerSrc,
+      "@loomcycle/memory-view/styles.css": memoryViewStyles,
+      "@loomcycle/memory-view": memoryViewSrc,
     },
     // We consume @loomcycle/library from SOURCE, which imports `react` /
     // `react-dom` (and the JSX runtime). Because the package has its OWN
