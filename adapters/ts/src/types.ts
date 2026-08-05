@@ -899,12 +899,37 @@ export interface MemorySearchInput {
   topK?: number;
   rank?: Record<string, unknown>;
   dedup?: Record<string, unknown>;
+  /** Which kinds of remembered thing to return (RFC BW). Omit to span every
+   *  plane — this endpoint exists to answer "where did I record this", so
+   *  unlike the in-band `recall` it does not default to facts.
+   *
+   *  Mixing `"documents"` with only ONE of `"facts"`/`"notes"` is rejected
+   *  (400 `invalid_sources`): the namespace and the provenance split are
+   *  independent dimensions, so that combination would need a disjunction the
+   *  store does not build. Use `["facts"]`, `["notes"]`,
+   *  `["facts","notes"]`, `["documents"]`, or all three. */
+  sources?: MemorySource[];
 }
 
-/** One hit in a {@link MemorySearchResponse}. `kind` distinguishes a
- *  plain k/v memory entry ("memory") from a document-chunk body
- *  ("document"); a document hit also carries `chunk_id` so the viewer
- *  can fetch its entity block via document({ op: "get_chunk" }).
+/** A kind of remembered thing (RFC BW).
+ *
+ *  - `facts` — memory a consolidator distilled; provenance is server-stamped.
+ *  - `notes` — memory an agent wrote directly with `set`.
+ *  - `documents` — Document chunk bodies, which share the memory keyspace. */
+export type MemorySource = "facts" | "notes" | "documents";
+
+/** One hit in a {@link MemorySearchResponse}.
+ *
+ *  `kind` is the row's class: `"fact"` (a consolidator distilled it),
+ *  `"note"` (an agent wrote it directly) or `"document"` (a Document chunk
+ *  body). A document hit also carries `chunk_id` so the viewer can fetch its
+ *  entity block via document({ op: "get_chunk" }).
+ *
+ *  **Changed in 1.49.0 (RFC BW):** this was `"memory" | "document"`. Code
+ *  switching on `"document"` is unaffected; code comparing against
+ *  `"memory"` must move to `"fact" | "note"`. The split is the point — "the
+ *  user told me this" and "an agent jotted this down" are different claims.
+ *
  *  Field casing mirrors the wire JSON (snake_case). */
 export interface MemorySearchEntry {
   key: string;
@@ -914,7 +939,7 @@ export interface MemorySearchEntry {
   /** hybrid rank the row was ordered by */
   rank_score: number;
   embedded_with: { provider: string; model: string };
-  kind: "memory" | "document";
+  kind: "fact" | "note" | "document";
   chunk_id?: string;
 }
 

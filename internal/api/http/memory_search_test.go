@@ -137,7 +137,12 @@ func TestMemorySearch_UnifiedKvAndDocChunk(t *testing.T) {
 	var docChunkID string
 	for _, e := range resp.Entries {
 		switch e.Kind {
-		case "memory":
+		// RFC BW §7 REFINED THIS WIRE FIELD: "memory" became "fact" | "note". The
+		// distinction is the point — a consolidator distilling something is a
+		// different claim from an agent jotting it down, and collapsing them is what
+		// let document prose read as remembered fact. This fixture's k/v row carries
+		// no provenance, so it is a note.
+		case "fact", "note":
 			gotMemory = true
 			if e.ChunkID != "" {
 				t.Errorf("a memory hit must not carry chunk_id: %+v", e)
@@ -150,7 +155,7 @@ func TestMemorySearch_UnifiedKvAndDocChunk(t *testing.T) {
 		}
 	}
 	if !gotMemory {
-		t.Errorf("no kind=memory hit for the k/v entry: %+v", resp.Entries)
+		t.Errorf("no fact/note hit for the k/v entry: %+v", resp.Entries)
 	}
 	if !gotDocument {
 		t.Errorf("no kind=document hit for the doc.chunk body: %+v", resp.Entries)
