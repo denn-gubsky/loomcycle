@@ -4,6 +4,50 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.49.0
+
+**🎯 Targeted memory search: ask for facts, notes, or documents by name.** RFC BW, all three phases, plus the `@loomcycle/memory-view` console package. One wire field changes value set — see the note below.
+
+**The bug it fixes, measured.** A user asked their chat agent *"remind me which medicine do I use"*. Seven of ten `recall` hits were document chunks, and the fact naming their medication ranked **fifth** — below a horizontal rule (`"---"`, 0.477), a shell fence (`` "```sh" ``, 0.452) and a bare `#` (0.451).
+
+Two independent causes, both ours. Markdown scaffolding was being embedded: a heading-split import turns a fence line into its own chunk, and a short syntax token embeds near the centroid of everything, so it ranks mid-high for *every* query — it does not waste a row, it buries answers. Those are now rejected, by one predicate covering both a chunk's body and its title fallback (a first attempt rejected the body and then fell through to an equally scaffold-ish title, moving the noise rather than removing it).
+
+The structural cause was worse. **RFC BU §6 promised that `recall` does not reach documents** — and that held only because chunk bodies had no embeddings. RFC BU phases 1–2 embedded ~2,900 of them into the same per-scope vector plane `recall` searches, so the guarantee went false without a line of `recall` changing. The RFC that declared the invariant is the one that broke it, which is the argument for putting the boundary in the API rather than leaving it emergent from whatever happens to be indexed.
+
+**A named selector, not another reserved string.** The reported failure was an agent not knowing that document bodies live under `doc.chunk:`, so answering it with a second magic string would have answered the symptom:
+
+```
+Memory op=recall scope=user query="which medicine"          → facts + notes (new default)
+Memory op=search scope=user query="…" sources=[documents]    → document text
+Memory op=search scope=user query="…" sources=[facts]        → distilled facts only
+```
+
+`prefix` survives as the escape hatch and composes as an AND. **`recall` now defaults to memory rather than everything** — that is the fix, not a side effect; an operator wanting the old behaviour passes all three sources explicitly. `search` still spans every plane by default, because `/v1/_memory/search` exists to answer "where did I record this" and narrowing it would break what v1.47.0 shipped.
+
+**Facts vs notes is decided by `origin`, not `class`.** Both are provenance columns, but `origin` is stamped by the server from the writer's identity while `class` is model-supplied — so keying "is this a consolidated fact" off `class` would let an agent promote its own note to a fact by labelling it. Legacy rows predating the column count as **notes** rather than vanishing from both halves of the split.
+
+**Two source combinations are refused rather than approximated.** `documents` together with only one of facts/notes needs a disjunction across two independent dimensions. It could be built and deliberately is not, because the alternative that matters is what happens instead: silently widening to "everything" hands back rows the caller excluded *while it believes the filter applied*. The error names the supported sets.
+
+**A backend that ignores the selector must say so.** `sources_applied: false` is surfaced with a note, and false is the zero value on purpose — an external memory-layer service that drops the selector must not be able to do so silently, because the caller would then trust a label the result does not deserve. Recall is where it matters most: its default excludes documents, so a backend that ignored it returns exactly what the default exists to keep out.
+
+**The filter runs in SQL, and that was forced.** The candidate pool is capped at 51 rows, so on a scope with ~2,900 chunks against ~42 facts a post-filter would leave a caller asking for ten facts with two.
+
+**Measured before shipping**, because the RFC made it a gate: excluding documents on a 2,942-row scope is **~31× faster**, not slower — 30 ms against 928 ms. The reason matters more than the number: migration 0017 deliberately creates no ANN index, so there is nothing to degrade and a predicate cutting 2,942 candidates to 42 cuts the work proportionally. The risk returns if an operator opts into HNSW, which 0017 invites, so the regression assertion stays.
+
+**Also: the Memory tool now teaches itself.** All three `chat/*` agents pointed at `Document graph_recall` for "what do we know about X" — which walks out from facts carrying entity metadata and returns `seeds: 0` on a store without them, reading as "nothing is remembered". Nothing named `Memory op=recall` or its required `scope`+`query`, so an agent guessed its way there through three missing-field errors. The prompts and the `memory-layer` help topic now name the invocation first and position `graph_recall` as the second step.
+
+**New package: `@loomcycle/memory-view`** — the operator Memory console as a reusable React component (scope/scope_id/key browser, entry editor, fact viewer, unified search panel, reembed flow), scoped under `.loomcycle-memory-view`. The Web UI consumes it from source. Published on its own `memory-view-v*` tag; **0.1.0 is not published yet.**
+
+### ⚠️ Wire change
+
+`kind` on `POST /v1/_memory/search` was `"memory" | "document"` and is now **`"fact" | "note" | "document"`**. A reader switching on `"document"` is unaffected; one asserting `kind == "memory"` must move to `fact`/`note`. The refinement is the point — "the user told me this" and "an agent jotted this down" are different claims, and collapsing them is what let document prose read back as remembered fact. `@loomcycle/client` **1.49.0** moves in lockstep.
+
+### Upgrade note
+
+Existing deployments benefit immediately for new writes. Scaffolding rows already embedded stay in the index until re-swept; `POST /v1/_memory/backfill_embeddings` does not remove an existing embedding, so clearing them means deleting those chunks or re-embedding the scope.
+
+`loomcycle` (PyPI) stays 1.46.0 and `@loomcycle/explorer` 0.6.0 — neither was touched.
+
 ## What's in v1.48.0
 
 **🔖 Heading chunks became searchable, and `@loomcycle/client` ships the memory-view SDK.** Minor: one embedding-policy change and three additive adapter methods. No schema change, no wire/proto change.
