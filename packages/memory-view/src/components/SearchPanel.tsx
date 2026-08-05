@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MemorySearchEntry, MemoryScope, MemorySource } from "../types";
 import { useMemoryData } from "../lib/dataLayer";
 import Splitter from "./Splitter";
@@ -113,22 +113,9 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
           disabled={!needsScopeId}
           onChange={(e) => setScopeId(e.target.value)}
         />
-        {/* Source: an editable combobox (dropdown of the known kinds + free text).
-            Empty by default → every plane. */}
-        <input
-          type="text"
-          className="search-source-input"
-          list="memory-source-options"
-          placeholder="source (all)…"
-          value={source}
-          onChange={(e) => setSource(e.target.value)}
-          title="Narrow to a source — facts, notes, or documents. Empty searches every plane."
-        />
-        <datalist id="memory-source-options">
-          <option value="facts" />
-          <option value="notes" />
-          <option value="documents" />
-        </datalist>
+        {/* Source: a combobox (visible dropdown of the known kinds + free text).
+            Empty = every plane. */}
+        <SourceCombobox value={source} onChange={setSource} />
         <input
           type="text"
           className="search-query-input"
@@ -230,6 +217,79 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
               })()}
           </div>
         </Splitter>
+      )}
+    </div>
+  );
+}
+
+// The RFC BW source kinds, plus an explicit "all" (empty selector = every plane).
+const SOURCE_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "all sources" },
+  { value: "facts", label: "facts" },
+  { value: "notes", label: "notes" },
+  { value: "documents", label: "documents" },
+];
+
+// SourceCombobox — a VISIBLE dropdown of the RFC BW source kinds that is also
+// free-text editable. A bare <datalist> reads as an empty text box (its choices
+// only surface on focus, browser-dependent), so this is an explicit combobox:
+// a text input + a chevron that opens the list on click, with outside-click /
+// Escape to close. Typing passes straight through — an unknown value is dropped
+// server-side, so free text is safe.
+function SourceCombobox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div className="search-source" ref={wrapRef}>
+      <input
+        type="text"
+        className="search-source-input"
+        placeholder="source: all"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
+        aria-label="source filter"
+      />
+      <button
+        type="button"
+        className="search-source-toggle"
+        aria-label="choose a source"
+        tabIndex={-1}
+        onClick={() => setOpen((o) => !o)}
+      >
+        ▾
+      </button>
+      {open && (
+        <ul className="search-source-menu" role="listbox">
+          {SOURCE_OPTIONS.map((o) => (
+            <li
+              key={o.value || "all"}
+              role="option"
+              aria-selected={value === o.value}
+              className={value === o.value ? "on" : ""}
+              // onMouseDown + preventDefault so the pick registers before the
+              // input's blur would close the menu.
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(o.value);
+                setOpen(false);
+              }}
+            >
+              {o.label}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
