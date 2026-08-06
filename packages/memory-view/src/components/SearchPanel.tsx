@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MemorySearchEntry, MemoryScope, MemorySource } from "../types";
 import { useMemoryData } from "../lib/dataLayer";
 import Splitter from "./Splitter";
@@ -51,9 +51,55 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
   // so a slow earlier search can't overwrite a faster later one.
   const reqRef = useRef(0);
 
+  // scope_id suggestions (optional data-layer methods; absent → free-text only).
+  // identity pre-fills the field + floats "you" to the top of the user list.
+  const [identity, setIdentity] = useState<{ subject: string; tenant: string } | null>(null);
+  const [users, setUsers] = useState<string[]>([]);
+  const [agents, setAgents] = useState<string[]>([]);
+
+  // Fetch the suggestion sources once. Each is optional + best-effort — a failure
+  // (or an unimplemented method) just leaves that scope's field as free text.
+  useEffect(() => {
+    let cancelled = false;
+    data.whoami?.().then((w) => !cancelled && setIdentity(w)).catch(() => {});
+    data.listUserIds?.().then((u) => !cancelled && setUsers(u)).catch(() => {});
+    data.listAgentNames?.().then((a) => !cancelled && setAgents(a)).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [data]);
+
   // The tenant scope has no scope_id (one tenant-wide keyspace), so it does not
   // require one; every other scope does.
   const needsScopeId = scope !== "tenant";
+
+  // Pre-fill scope_id when the scope changes (or when the data seeding its default
+  // first loads): tenant → the tenant name (shown read-only), user → your own
+  // subject. Split from the agent effect below so an agent-list load never
+  // clobbers a user/tenant value (and vice-versa); once loaded the deps are
+  // stable, so it stops firing and a typed value survives.
+  useEffect(() => {
+    if (scope === "tenant") setScopeId(identity?.tenant ?? "");
+    else if (scope === "user") setScopeId(identity?.subject ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, identity]);
+  useEffect(() => {
+    if (scope === "agent") setScopeId(agents[0] ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, agents]);
+
+  // The scope_id combobox suggestions: users (yourself first) for user scope,
+  // active agents for agent scope, none for tenant (its field is read-only).
+  const scopeIdOptions = useMemo(() => {
+    if (scope === "user") {
+      const me = identity?.subject;
+      const rest = users.filter((u) => u !== me);
+      const ordered = me ? [me, ...rest] : users;
+      return ordered.map((u) => ({ value: u, label: u === me ? `${u} (you)` : u }));
+    }
+    if (scope === "agent") return agents.map((a) => ({ value: a, label: a }));
+    return [];
+  }, [scope, identity, users, agents]);
   const runSearch = async () => {
     if (!query.trim() || (needsScopeId && !scopeId.trim())) return;
     const token = ++reqRef.current;
@@ -105,17 +151,26 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
           <option value="agent">agent</option>
           <option value="tenant">tenant</option>
         </select>
-        <input
-          type="text"
-          className="search-scopeid-input"
-          placeholder={needsScopeId ? "scope_id (e.g. alice)…" : "tenant-wide (no scope_id)"}
-          value={needsScopeId ? scopeId : ""}
+        {/* scope_id: a combobox pre-filled per scope with suggestions — users
+            (you first) for user, active agents for agent; read-only tenant name
+            for tenant. Still free-text editable for user/agent. */}
+        <Combobox
+          value={scopeId}
+          onChange={setScopeId}
+          options={scopeIdOptions}
+          placeholder={needsScopeId ? "scope_id (e.g. alice)…" : "tenant-wide"}
           disabled={!needsScopeId}
-          onChange={(e) => setScopeId(e.target.value)}
+          ariaLabel="scope id"
         />
         {/* Source: a combobox (visible dropdown of the known kinds + free text).
             Empty = every plane. */}
-        <SourceCombobox value={source} onChange={setSource} />
+        <Combobox
+          value={source}
+          onChange={setSource}
+          options={SOURCE_OPTIONS}
+          placeholder="source: all"
+          ariaLabel="source filter"
+        />
         <input
           type="text"
           className="search-query-input"
@@ -230,15 +285,32 @@ const SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "documents", label: "documents" },
 ];
 
-// SourceCombobox — a VISIBLE dropdown of the RFC BW source kinds that is also
-// free-text editable. A bare <datalist> reads as an empty text box (its choices
-// only surface on focus, browser-dependent), so this is an explicit combobox:
-// a text input + a chevron that opens the list on click, with outside-click /
-// Escape to close. Typing passes straight through — an unknown value is dropped
-// server-side, so free text is safe.
-function SourceCombobox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+// Combobox — a VISIBLE dropdown of suggested values that is also free-text
+// editable. A bare <datalist> reads as an empty text box (its choices only
+// surface on focus, browser-dependent), so this is an explicit combobox: a text
+// input + a chevron that opens the list on click, with outside-click / Escape to
+// close. Typing passes straight through — the server validates/ignores unknowns.
+// Reused by the source filter and the scope_id field. When `disabled` (tenant
+// scope_id) it's a plain read-only input; with no `options` it's a free-text box
+// with no chevron.
+function Combobox({
+  value,
+  onChange,
+  options,
+  placeholder,
+  disabled,
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  placeholder?: string;
+  disabled?: boolean;
+  ariaLabel?: string;
+}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const canOpen = !disabled && options.length > 0;
 
   useEffect(() => {
     if (!open) return;
@@ -250,31 +322,34 @@ function SourceCombobox({ value, onChange }: { value: string; onChange: (v: stri
   }, [open]);
 
   return (
-    <div className="search-source" ref={wrapRef}>
+    <div className="mv-combobox" ref={wrapRef}>
       <input
         type="text"
-        className="search-source-input"
-        placeholder="source: all"
+        className="mv-combobox-input"
+        placeholder={placeholder}
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        onFocus={() => setOpen(true)}
+        onFocus={() => canOpen && setOpen(true)}
         onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
-        aria-label="source filter"
+        aria-label={ariaLabel}
       />
-      <button
-        type="button"
-        className="search-source-toggle"
-        aria-label="choose a source"
-        tabIndex={-1}
-        onClick={() => setOpen((o) => !o)}
-      >
-        ▾
-      </button>
-      {open && (
-        <ul className="search-source-menu" role="listbox">
-          {SOURCE_OPTIONS.map((o) => (
+      {canOpen && (
+        <button
+          type="button"
+          className="mv-combobox-toggle"
+          aria-label="show suggestions"
+          tabIndex={-1}
+          onClick={() => setOpen((o) => !o)}
+        >
+          ▾
+        </button>
+      )}
+      {open && canOpen && (
+        <ul className="mv-combobox-menu" role="listbox">
+          {options.map((o) => (
             <li
-              key={o.value || "all"}
+              key={o.value || "__default__"}
               role="option"
               aria-selected={value === o.value}
               className={value === o.value ? "on" : ""}

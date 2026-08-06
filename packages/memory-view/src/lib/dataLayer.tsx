@@ -119,6 +119,21 @@ export interface MemoryDataLayer {
   // document_id, from getChunk, then filters to the edges touching the fact).
   // Carries the supersession chain (kind:"supersedes") + any plain relations.
   getEdges(scope: MemoryScope, documentId: string, opts?: { scopeId?: string }): Promise<DocEdgesResponse>;
+
+  // ---- Scope-id suggestions (OPTIONAL) ---------------------------------
+  // Populate the search panel's scope_id combobox. Optional so a data layer that
+  // only knows memory need not implement them — the field then degrades to a
+  // free-text input. dataLayerFromClient wires them to whoami / the users list /
+  // the Library. None reaches beyond the caller's tenant (server-side scoped).
+
+  /** The current principal — pre-fills scope_id (the tenant name for tenant
+   *  scope, the caller's own subject for user scope) and floats "you" to the top
+   *  of the user suggestions. */
+  whoami?(): Promise<{ subject: string; tenant: string }>;
+  /** The user ids (subjects) whose per-user memory can be browsed. */
+  listUserIds?(): Promise<string[]>;
+  /** The names of ACTIVE, non-retired agents. */
+  listAgentNames?(): Promise<string[]>;
 }
 
 // dataLayerFromClient maps a @loomcycle/client instance onto the MemoryDataLayer.
@@ -169,6 +184,19 @@ export function dataLayerFromClient(client: LoomcycleClient): MemoryDataLayer {
           docOpts(opts?.scopeId),
         )
         .then((r) => r as DocEdgesResponse),
+
+    // ---- Scope-id suggestions ------------------------------------------
+    whoami: () => client.whoami().then((w) => ({ subject: w.subject, tenant: w.tenant_id })),
+    listUserIds: () => client.listUsers().then((r) => (r.users ?? []).map((u) => u.user_id)),
+    listAgentNames: () =>
+      client.listLibraryAgents().then((r) =>
+        (r.entries ?? [])
+          // "active, non-retired": a static agent (statics are never retired) OR
+          // a dynamic agent that still has an active version — retiring the last
+          // version clears active_def_id (v1.6.4 soft-reclaim).
+          .filter((e) => e.in_static || Boolean(e.active_def_id))
+          .map((e) => e.name),
+      ),
   };
 }
 
