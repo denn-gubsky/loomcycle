@@ -90,6 +90,24 @@ func (s *Store) MemoryEmbedSet(ctx context.Context, tenantID string, scope store
 
 // MemoryEmbedGet returns the stored embedding, decoding the
 // pgvector text representation back to float32.
+// MemoryEmbedDelete removes one row's embedding, leaving the base memory row. See
+// the Store interface for why this exists and why it is idempotent.
+func (s *Store) MemoryEmbedDelete(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) error {
+	if !s.pgvectorEnabled {
+		return store.ErrVectorUnsupported
+	}
+	// No rows-affected check: an absent embedding is a successful no-op, so a purge
+	// sweep can walk every row without probing first.
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM memory_embeddings
+		  WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4`,
+		tenantID, string(scope), scopeID, key,
+	); err != nil {
+		return fmt.Errorf("MemoryEmbedDelete: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
 	if !s.pgvectorEnabled {
 		return store.MemoryEmbedding{}, store.ErrVectorUnsupported

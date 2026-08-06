@@ -73,6 +73,10 @@ func (s *Store) MemoryEmbedSet(ctx context.Context, tenantID string, scope store
 	return errVecImplPending
 }
 
+func (s *Store) MemoryEmbedDelete(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) error {
+	return errVecImplPending
+}
+
 func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
 	return store.MemoryEmbedding{}, errVecImplPending
 }
