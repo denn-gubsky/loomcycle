@@ -11,35 +11,62 @@ import (
 // directly, including the ones whose absence would be invisible in an integration
 // test: the empty result that must stay empty, and the data-URI-is-not-a-caption
 // case.
-func TestImageEmbedText_ComposesCaptionAndDescription(t *testing.T) {
+func TestImageEmbedText_ComposesTitleCaptionAndDescription(t *testing.T) {
 	const dataURI = "![alt](data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==)"
 	for _, tc := range []struct {
-		name, caption, description, want string
+		name, title, caption, description, want string
 	}{
-		{"caption only", "the login screen", "", "image: the login screen"},
-		{"description only", "", "a form with two fields", "image: a form with two fields"},
+		{"caption only", "", "the login screen", "", "image: the login screen"},
+		{"description only", "", "", "a form with two fields", "image: a form with two fields"},
 		{
-			"both are kept", "login screen", "a form with two fields",
+			"caption and description are both kept", "", "login screen", "a form with two fields",
 			"image: login screen a form with two fields",
 		},
 		{
 			// Identical text twice would double-weight it in the vector.
-			"identical halves collapse", "a login form", "A LOGIN FORM",
+			"identical halves collapse", "", "a login form", "A LOGIN FORM",
 			"image: a login form",
 		},
 		// Nothing to index must be "" so the caller stores NO vector. A row that
 		// exists ranks against every query, so a placeholder is worse than absence.
-		{"neither", "", "", ""},
-		{"whitespace only", "   ", "\n\t", ""},
+		{"nothing at all", "", "", "", ""},
+		{"whitespace only", "  ", "   ", "\n\t", ""},
 		// A data URI is not a caption: an image chunk can transiently hold the
 		// rendered markdown form as its body, and base64 indexes nothing.
-		{"data uri is not a caption", dataURI, "", ""},
-		{"data uri body with a description", dataURI, "a red square", "image: a red square"},
+		{"data uri is not a caption", "", dataURI, "", ""},
+		{"data uri body with a description", "", dataURI, "a red square", "image: a red square"},
+
+		// The TITLE as a third source. This is the case the deferred refinement was
+		// about: the description cannot know WHOSE logo it is, so without the title the
+		// brand has no searchable mention anywhere.
+		{
+			"title carries what the model cannot know",
+			"Loomcycle Logo 1280x640", "", "five round characters around a spool",
+			"image: Loomcycle Logo 1280x640 five round characters around a spool",
+		},
+		{
+			"all three, in title-caption-description order",
+			"Logo", "the mark", "a spool",
+			"image: Logo the mark a spool",
+		},
+		{
+			// The dedupe spans all three, not just caption vs description.
+			"a title equal to the caption is not repeated",
+			"login screen", "Login Screen", "a form",
+			"image: login screen a form",
+		},
+		{
+			// A scaffold-only or letterless title is no more useful here than anywhere.
+			"a scaffolding title is dropped", "---", "", "a red square",
+			"image: a red square",
+		},
+		{"title alone is enough", "Loomcycle Logo", "", "", "image: Loomcycle Logo"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := imageEmbedText(tc.caption, tc.description); got != tc.want {
-				t.Errorf("imageEmbedText(%q, %q)\n want %q\n  got %q",
-					tc.caption, tc.description, tc.want, got)
+			got := imageEmbedText(tc.title, tc.caption, tc.description)
+			if got != tc.want {
+				t.Errorf("imageEmbedText(%q, %q, %q)\n want %q\n  got %q",
+					tc.title, tc.caption, tc.description, tc.want, got)
 			}
 		})
 	}
@@ -67,9 +94,11 @@ func TestEmbedBody_ImageCaptionIsEmbeddedWithoutAModel(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("create_chunk: %v %s", err, res.Text)
 	}
+	// Title AND caption: an image's title is a third source rather than a fallback
+	// (see imageEmbedText), because an image has no body to restate its heading.
 	got := embeddedTextFor(t, vs, resultField(res, "id"))
-	if got != "image: the login screen" {
-		t.Errorf("caption was not embedded on write: %q", got)
+	if got != "image: Login the login screen" {
+		t.Errorf("caption was not embedded on write with its title: %q", got)
 	}
 }
 
@@ -96,9 +125,11 @@ func TestEmbedBody_ImageDataURIBodyIsNeverIndexedAsBase64(t *testing.T) {
 	if strings.Contains(got, "iVBOR") || strings.Contains(got, "base64") {
 		t.Errorf("base64 reached the embedder: %q", got)
 	}
-	// The title carries it instead — the data URI contributed nothing.
-	if got != "Raw" {
-		t.Errorf("embed text = %q, want the chunk title \"Raw\"", got)
+	// The title carries it instead — the data URI contributed nothing. It arrives
+	// through imageEmbedText now rather than the generic title fallback, so it is
+	// labelled like every other image row.
+	if got != "image: Raw" {
+		t.Errorf("embed text = %q, want the labelled chunk title \"image: Raw\"", got)
 	}
 }
 
@@ -221,8 +252,8 @@ func TestEmbedBody_UncaptionedImageStillEmbedsItsDescription(t *testing.T) {
 
 	// Precondition: with no caption and no description yet, the chunk is searchable by
 	// its TITLE (the fallback) — and notably NOT by anything describing the picture.
-	if got := embeddedTextFor(t, vs, chunkID); got != "Logo" {
-		t.Fatalf("precondition: want the title-only fallback %q, got %q", "Logo", got)
+	if got := embeddedTextFor(t, vs, chunkID); got != "image: Logo" {
+		t.Fatalf("precondition: want the title-only text %q, got %q", "image: Logo", got)
 	}
 
 	// The describe pass persists a description and re-embeds.

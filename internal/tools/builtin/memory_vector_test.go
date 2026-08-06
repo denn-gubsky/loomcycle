@@ -100,7 +100,7 @@ func sqrt(x float64) float64 {
 	return z
 }
 
-func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	if !v.enabled {
 		return nil, store.ErrVectorUnsupported
 	}
@@ -148,7 +148,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 			continue
 		}
 		// Filter expired base rows.
-		entry, err := v.Store.MemoryGet(ctx, "", scope, scopeID, key)
+		entry, err := v.Store.MemoryGet(ctx, tenantID, scope, scopeID, key)
 		if err != nil {
 			continue
 		}
@@ -161,7 +161,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 	}
 	out := make([]store.MemorySearchEntry, 0, len(rows))
 	for _, r := range rows {
-		entry, err := v.Store.MemoryGet(ctx, "", scope, scopeID, r.key)
+		entry, err := v.Store.MemoryGet(ctx, tenantID, scope, scopeID, r.key)
 		if err != nil {
 			continue
 		}
