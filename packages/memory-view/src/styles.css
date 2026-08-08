@@ -995,27 +995,27 @@
   flex: 1;
   min-width: 160px;
 }
-.loomcycle-memory-view .search-scopeid-input {
-  width: 160px;
-  font-family: var(--mono);
-  font-size: 12px;
-}
-/* Source combobox: a text input with a chevron that opens a visible option list
-   (SourceCombobox), instead of a bare <datalist> that reads as an empty box. */
-.loomcycle-memory-view .search-source {
+/* Combobox: a text input with a chevron that opens a visible option list,
+   instead of a bare <datalist> that reads as an empty box. Shared by the search
+   scope_id field and the source filter. */
+.loomcycle-memory-view .mv-combobox {
   position: relative;
   display: inline-block;
-  width: 132px;
+  width: 150px;
   flex-shrink: 0;
 }
-.loomcycle-memory-view .search-source-input {
+.loomcycle-memory-view .mv-combobox-input {
   width: 100%;
   box-sizing: border-box;
   padding-right: 20px;
   font-family: var(--mono);
   font-size: 12px;
 }
-.loomcycle-memory-view .search-source-toggle {
+.loomcycle-memory-view .mv-combobox-input:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+.loomcycle-memory-view .mv-combobox-toggle {
   position: absolute;
   top: 0;
   right: 0;
@@ -1031,7 +1031,7 @@
   font-size: 10px;
   padding: 0;
 }
-.loomcycle-memory-view .search-source-menu {
+.loomcycle-memory-view .mv-combobox-menu {
   position: absolute;
   top: calc(100% + 2px);
   left: 0;
@@ -1040,22 +1040,27 @@
   margin: 0;
   padding: 4px 0;
   list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 4px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
-.loomcycle-memory-view .search-source-menu li {
+.loomcycle-memory-view .mv-combobox-menu li {
   padding: 4px 10px;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--fg);
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.loomcycle-memory-view .search-source-menu li:hover {
+.loomcycle-memory-view .mv-combobox-menu li:hover {
   background: var(--bg-soft-2);
 }
-.loomcycle-memory-view .search-source-menu li.on {
+.loomcycle-memory-view .mv-combobox-menu li.on {
   color: var(--accent);
 }
 .loomcycle-memory-view .search-submit-btn {

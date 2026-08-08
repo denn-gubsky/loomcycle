@@ -26,6 +26,18 @@ function stubClient() {
     .fn()
     .mockResolvedValue({ scope: "user", scope_id: "alice", entries: [], query_embedding_dim: 0, truncated: false });
   const document = vi.fn().mockResolvedValue({ facts: [], count: 0, truncated: false });
+  // Scope-id suggestion sources.
+  const whoami = vi
+    .fn()
+    .mockResolvedValue({ subject: "me", tenant_id: "acme", scopes: [], is_admin: true, legacy: false });
+  const listUsers = vi.fn().mockResolvedValue({ users: [{ user_id: "alice" }, { user_id: "bob" }] });
+  const listLibraryAgents = vi.fn().mockResolvedValue({
+    entries: [
+      { name: "static-agent", in_static: true },
+      { name: "dynamic-active", in_static: false, active_def_id: "d2" },
+      { name: "dynamic-retired", in_static: false },
+    ],
+  });
   const client = {
     listMemoryScopes,
     listMemoryScopeIDs,
@@ -37,6 +49,9 @@ function stubClient() {
     reembedMemory,
     memorySearch,
     document,
+    whoami,
+    listUsers,
+    listLibraryAgents,
   } as unknown as LoomcycleClient;
   return {
     client,
@@ -50,6 +65,9 @@ function stubClient() {
     reembedMemory,
     memorySearch,
     document,
+    whoami,
+    listUsers,
+    listLibraryAgents,
   };
 }
 
@@ -184,5 +202,26 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
       { op: "get_edges", scope: "user", document_id: "doc-1" },
       { scopeId: "bob" },
     );
+  });
+
+  // ---- scope-id suggestions (RFC BW UI) ----
+  it("whoami maps the client's tenant_id → tenant (and passes subject through)", async () => {
+    const s = stubClient();
+    const who = await dataLayerFromClient(s.client).whoami!();
+    expect(who).toEqual({ subject: "me", tenant: "acme" });
+  });
+
+  it("listUserIds maps users[].user_id", async () => {
+    const s = stubClient();
+    const ids = await dataLayerFromClient(s.client).listUserIds!();
+    expect(ids).toEqual(["alice", "bob"]);
+  });
+
+  it("listAgentNames returns ONLY active agents (in_static || active_def_id), by name", async () => {
+    const s = stubClient();
+    const names = await dataLayerFromClient(s.client).listAgentNames!();
+    // static-agent (in_static) + dynamic-active (has active_def_id) survive;
+    // dynamic-retired (neither) is dropped.
+    expect(names).toEqual(["static-agent", "dynamic-active"]);
   });
 });
