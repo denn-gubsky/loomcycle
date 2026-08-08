@@ -35,6 +35,10 @@ func channelCRUDFixture(t *testing.T) (*Server, store.Store, func()) {
 			"inbox":        {Scope: "user", Semantic: "broadcast", MaxMessages: 100},
 		},
 		Env: config.Env{
+			// Authed requests below run as the legacy LOOMCYCLE_AUTH_TOKEN
+			// principal, whose tenant is "default" (auth_principal.go). RFC N:
+			// the wire publish path stamps that tenant, so direct-store
+			// readbacks in these tests read under tenant "default".
 			AuthToken:             "test-token",
 			ChannelsMaxValueBytes: 64 * 1024,
 			ChannelsLongPollCapMS: 1000,
@@ -102,7 +106,7 @@ func TestChannelPurge_AllowedOnYamlChannel(t *testing.T) {
 	}
 
 	// The channel is now empty but still declared (peek works, returns 0).
-	rows, err := s.ChannelPeek(t.Context(), "team-updates", store.MemoryScopeGlobal, "", "", 10)
+	rows, err := s.ChannelPeek(t.Context(), "default", "team-updates", store.MemoryScopeGlobal, "", "", 10)
 	if err != nil {
 		t.Fatalf("ChannelPeek after purge: %v", err)
 	}
@@ -152,7 +156,7 @@ func TestAdminChannelPublish_HappyPath(t *testing.T) {
 	}
 
 	// Verify the row landed at scope=global, scope_id="".
-	rows, err := s.ChannelPeek(t.Context(), "team-updates", store.MemoryScopeGlobal, "", "", 10)
+	rows, err := s.ChannelPeek(t.Context(), "default", "team-updates", store.MemoryScopeGlobal, "", "", 10)
 	if err != nil {
 		t.Fatalf("ChannelPeek: %v", err)
 	}
@@ -187,8 +191,11 @@ func TestAdminChannelPublish_AllowedOnRuntimeChannel(t *testing.T) {
 	srv, s, cleanup := channelCRUDFixture(t)
 	defer cleanup()
 
+	// Create under tenant "default" — the tenant the authed publish resolves
+	// under (legacy LOOMCYCLE_AUTH_TOKEN principal), so requireChannelDeclared
+	// finds it (RFC N).
 	if err := s.ChannelsCreate(t.Context(), store.ChannelRow{
-		Name: "runtime-ch", Scope: "global", Semantic: "broadcast", MaxMessages: 50,
+		Name: "runtime-ch", TenantID: "default", Scope: "global", Semantic: "broadcast", MaxMessages: 50,
 	}); err != nil {
 		t.Fatalf("ChannelsCreate: %v", err)
 	}
@@ -201,7 +208,7 @@ func TestAdminChannelPublish_AllowedOnRuntimeChannel(t *testing.T) {
 		t.Fatalf("publish to runtime channel: status %d, want 200 (F29); body=%s", rec.Code, rec.Body.String())
 	}
 
-	rows, err := s.ChannelPeek(t.Context(), "runtime-ch", store.MemoryScopeGlobal, "", "", 10)
+	rows, err := s.ChannelPeek(t.Context(), "default", "runtime-ch", store.MemoryScopeGlobal, "", "", 10)
 	if err != nil {
 		t.Fatalf("ChannelPeek: %v", err)
 	}
@@ -341,7 +348,7 @@ func TestUserChannelPublish_ScopesByPath(t *testing.T) {
 	}
 
 	// Check scope=user, scope_id="alice".
-	rows, err := s.ChannelPeek(t.Context(), "inbox", store.MemoryScopeUser, "alice", "", 10)
+	rows, err := s.ChannelPeek(t.Context(), "default", "inbox", store.MemoryScopeUser, "alice", "", 10)
 	if err != nil {
 		t.Fatalf("ChannelPeek scope=user alice: %v", err)
 	}
@@ -350,7 +357,7 @@ func TestUserChannelPublish_ScopesByPath(t *testing.T) {
 	}
 
 	// And the global scope row should NOT have this message.
-	rowsG, _ := s.ChannelPeek(t.Context(), "inbox", store.MemoryScopeGlobal, "", "", 10)
+	rowsG, _ := s.ChannelPeek(t.Context(), "default", "inbox", store.MemoryScopeGlobal, "", "", 10)
 	if len(rowsG) != 0 {
 		t.Errorf("scope=global rows = %d, want 0 (per-user routes must scope by URL path)", len(rowsG))
 	}

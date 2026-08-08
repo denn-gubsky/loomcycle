@@ -19,7 +19,7 @@ type channelGetErrStore struct {
 	err error
 }
 
-func (s channelGetErrStore) ChannelGet(context.Context, string) (store.ChannelRow, error) {
+func (s channelGetErrStore) ChannelGet(context.Context, string, string) (store.ChannelRow, error) {
 	return store.ChannelRow{}, s.err
 }
 

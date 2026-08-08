@@ -105,8 +105,10 @@ func TestSystemChannelPublish_HappyPath(t *testing.T) {
 		t.Errorf("response msg_id = %v, want msg_ prefix", resp["msg_id"])
 	}
 
-	// Verify the message landed in storage with the admin sentinel.
-	msgs, _, err := s.ChannelSubscribe(context.Background(),
+	// Verify the message landed in storage with the admin sentinel. The
+	// authed publish runs as the legacy LOOMCYCLE_AUTH_TOKEN principal, whose
+	// tenant is "default" (auth_principal.go), so read back under that tenant.
+	msgs, _, err := s.ChannelSubscribe(context.Background(), "default",
 		"_system/alarms/critical", store.MemoryScopeGlobal, "", "", 10)
 	if err != nil || len(msgs) != 1 {
 		t.Fatalf("readback: msgs=%d err=%v", len(msgs), err)

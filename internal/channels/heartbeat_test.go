@@ -32,7 +32,7 @@ func TestHeartbeatRunner_EmitsAtCadence(t *testing.T) {
 	time.Sleep(350 * time.Millisecond)
 	runner.Stop()
 
-	msgs, _, err := s.ChannelSubscribe(context.Background(),
+	msgs, _, err := s.ChannelSubscribe(context.Background(), "",
 		"_system/heartbeat-test", store.MemoryScopeGlobal, "", "cur_0", 100)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)

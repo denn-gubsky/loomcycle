@@ -48,10 +48,11 @@ const SIDEBAR_KEY = "loomcycle.sidebar.collapsed";
 // memory (/v1/_memory/*) is "tenant": RFC BL gave memory rows a tenant_id, every
 // handler sources the tenant from the principal (a tenant operator sees only its
 // own tenant's memory), and RFC BV re-gated the routes to ScopeTenant — so the
-// item lights up for a tenant operator. channels (/v1/_channels) DELIBERATELY
-// stays "admin": its store rows still carry no tenant column, so the routes are
-// pinned to ScopeAdmin (the /v1/_* catch-all) and a tenant token would 403.
-// Revisit channels when it gains a tenant axis (a schema migration, its own RFC).
+// item lights up for a tenant operator. channels (/v1/_channels) is now "tenant"
+// too: migration 0066 gave channel_messages/_cursors/channels a tenant_id, the
+// handlers source the tenant from the principal (list filters by tenant; the
+// cross-tenant `global` scope stays admin-only to create), and the routes were
+// re-gated to ScopeTenant — closing the earlier admin-only carve-out.
 type Visibility = "all" | "tenant" | "admin";
 interface NavItem {
   to: string;
@@ -66,7 +67,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/integrations/webhooks", label: "integrations", Icon: Plug, vis: "tenant" },
   { to: "/volumes/persistent", label: "volumes", Icon: HardDrive, vis: "tenant" },
   { to: "/paths", label: "paths", Icon: FolderTree, vis: "tenant" },
-  { to: "/channels", label: "channels", Icon: Radio, vis: "admin" },
+  { to: "/channels", label: "channels", Icon: Radio, vis: "tenant" },
   { to: "/schedules", label: "schedules", Icon: CalendarClock, vis: "tenant" },
   { to: "/teams", label: "teams", Icon: Workflow, vis: "tenant" },
   { to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },

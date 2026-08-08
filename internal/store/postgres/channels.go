@@ -22,10 +22,10 @@ import (
 // name. Empty slice when no runtime channels exist (vs nil on error).
 func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT name, description, scope, semantic,
+		SELECT name, tenant_id, description, scope, semantic,
 		       default_ttl, max_messages, publisher, period, created_at
 		FROM channels
-		ORDER BY name
+		ORDER BY tenant_id, name
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("channels list: %w", err)
@@ -36,7 +36,7 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 		var r store.ChannelRow
 		var createdAt time.Time
 		if err := rows.Scan(
-			&r.Name, &r.Description, &r.Scope, &r.Semantic,
+			&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 			&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
 			&createdAt,
 		); err != nil {
@@ -53,16 +53,16 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 // (exp7 I5: a point lookup for the hot declared-check, so a real query
 // fault surfaces as an error instead of an empty scan masquerading as
 // "not declared").
-func (s *Store) ChannelGet(ctx context.Context, name string) (store.ChannelRow, error) {
+func (s *Store) ChannelGet(ctx context.Context, tenantID, name string) (store.ChannelRow, error) {
 	var r store.ChannelRow
 	var createdAt time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT name, description, scope, semantic,
+		SELECT name, tenant_id, description, scope, semantic,
 		       default_ttl, max_messages, publisher, period, created_at
 		FROM channels
-		WHERE name = $1
-	`, name).Scan(
-		&r.Name, &r.Description, &r.Scope, &r.Semantic,
+		WHERE tenant_id = $1 AND name = $2
+	`, tenantID, name).Scan(
+		&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 		&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
 		&createdAt,
 	)
@@ -87,11 +87,11 @@ func (s *Store) ChannelsCreate(ctx context.Context, row store.ChannelRow) error 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO channels (
 			name, description, scope, semantic,
-			default_ttl, max_messages, publisher, period, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			default_ttl, max_messages, publisher, period, created_at, tenant_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`,
 		row.Name, row.Description, row.Scope, row.Semantic,
-		row.DefaultTTL, row.MaxMessages, row.Publisher, row.Period, createdAt,
+		row.DefaultTTL, row.MaxMessages, row.Publisher, row.Period, createdAt, row.TenantID,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -107,7 +107,7 @@ func (s *Store) ChannelsCreate(ctx context.Context, row store.ChannelRow) error 
 // pointers in `patch` leave the corresponding field unchanged.
 // Returns *store.ErrNotFound{Kind:"channel"} when the name isn't in
 // the runtime table.
-func (s *Store) ChannelsUpdate(ctx context.Context, name string, patch store.ChannelPatch) error {
+func (s *Store) ChannelsUpdate(ctx context.Context, tenantID, name string, patch store.ChannelPatch) error {
 	sets := []string{}
 	args := []any{}
 	idx := 1
@@ -134,7 +134,7 @@ func (s *Store) ChannelsUpdate(ctx context.Context, name string, patch store.Cha
 	if len(sets) == 0 {
 		// Nothing to update — verify existence and return.
 		var one int
-		if err := s.pool.QueryRow(ctx, `SELECT 1 FROM channels WHERE name = $1`, name).Scan(&one); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT 1 FROM channels WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&one); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return &store.ErrNotFound{Kind: "channel", ID: name}
 			}
@@ -142,9 +142,9 @@ func (s *Store) ChannelsUpdate(ctx context.Context, name string, patch store.Cha
 		}
 		return nil
 	}
-	args = append(args, name)
+	args = append(args, tenantID, name)
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE channels SET `+strings.Join(sets, ", ")+fmt.Sprintf(` WHERE name = $%d`, idx),
+		`UPDATE channels SET `+strings.Join(sets, ", ")+fmt.Sprintf(` WHERE tenant_id = $%d AND name = $%d`, idx, idx+1),
 		args...,
 	)
 	if err != nil {
@@ -160,24 +160,33 @@ func (s *Store) ChannelsUpdate(ctx context.Context, name string, patch store.Cha
 // its persisted messages + cursors in one transaction. Returns
 // *store.ErrNotFound{Kind:"channel"} when the name isn't in the
 // runtime table.
-func (s *Store) ChannelsDelete(ctx context.Context, name string) error {
+func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("channels delete begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	tag, err := tx.Exec(ctx, `DELETE FROM channels WHERE name = $1`, name)
-	if err != nil {
+	// Read the def's scope first: the cascade must delete messages/cursors
+	// from the keyspace they actually live in — global => tenant_id="",
+	// every other scope => this tenant (store.ChannelScopeTenant).
+	var scope string
+	if err := tx.QueryRow(ctx, `SELECT scope FROM channels WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&scope); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &store.ErrNotFound{Kind: "channel", ID: name}
+		}
+		return fmt.Errorf("channels delete scope lookup: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM channels WHERE tenant_id = $1 AND name = $2`, tenantID, name); err != nil {
 		return fmt.Errorf("channels delete: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return &store.ErrNotFound{Kind: "channel", ID: name}
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE channel = $1`, name); err != nil {
+	// Cascade scoped by the message keyspace's tenant so deleting one
+	// tenant's channel never touches another tenant's same-named channel.
+	msgTenant := store.ChannelScopeTenant(tenantID, store.MemoryScope(scope))
+	if _, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE tenant_id = $1 AND channel = $2`, msgTenant, name); err != nil {
 		return fmt.Errorf("channels delete messages cascade: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM channel_cursors WHERE channel = $1`, name); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM channel_cursors WHERE tenant_id = $1 AND channel = $2`, msgTenant, name); err != nil {
 		return fmt.Errorf("channels delete cursors cascade: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -189,8 +198,8 @@ func (s *Store) ChannelsDelete(ctx context.Context, name string) error {
 // ChannelPurge deletes every channel_messages row for `name` and
 // returns the count. Leaves the channels row + channel_cursors intact
 // — see store.Store.ChannelPurge. One DELETE; no transaction needed.
-func (s *Store) ChannelPurge(ctx context.Context, name string) (int, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM channel_messages WHERE channel = $1`, name)
+func (s *Store) ChannelPurge(ctx context.Context, tenantID, name string) (int, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM channel_messages WHERE tenant_id = $1 AND channel = $2`, tenantID, name)
 	if err != nil {
 		return 0, fmt.Errorf("channel purge: %w", err)
 	}

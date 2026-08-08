@@ -307,6 +307,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// v0.8.6 system channels: visible_at + published_by_user_id columns
 		// land via the addColumns block below (idempotent ALTER pattern,
 		// works against both fresh + existing v0.8.4 schemas).
+		// tenant_id (leading the PK) isolates same-named agents/users
+		// across tenants — same rationale + SQLite upgrade caveat as the
+		// memory table above (fresh DB gets the tenant-leading PK; an
+		// UPGRADED DB keeps the old PK because SQLite can't rewrite it in
+		// place — byte-equivalent for single-tenant, Postgres for real
+		// multi-tenant isolation).
 		`CREATE TABLE IF NOT EXISTS channel_messages (
 			id                   TEXT    NOT NULL,
 			channel              TEXT    NOT NULL,
@@ -317,7 +323,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at           INTEGER,
 			visible_at           INTEGER NOT NULL DEFAULT 0,
 			published_by_user_id TEXT,
-			PRIMARY KEY (channel, scope, scope_id, id)
+			tenant_id            TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, channel, scope, scope_id, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS channel_messages_by_expires_at ON channel_messages(expires_at) WHERE expires_at IS NOT NULL`,
 		// NOTE: channel_messages_by_visible is created in `addIndexes`
@@ -334,7 +341,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			scope_id   TEXT    NOT NULL,
 			cursor     TEXT    NOT NULL,
 			updated_at INTEGER NOT NULL,
-			PRIMARY KEY (channel, scope, scope_id)
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, channel, scope, scope_id)
 		)`,
 		// v0.11.5 runtime-declared channels. yaml-declared channels
 		// stay in cfg.Channels (in-memory only); this table holds
@@ -345,7 +353,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		// here — yaml channels never had a parent row, so the table
 		// can't have a FK to itself).
 		`CREATE TABLE IF NOT EXISTS channels (
-			name         TEXT    PRIMARY KEY,
+			name         TEXT    NOT NULL,
 			description  TEXT    NOT NULL DEFAULT '',
 			scope        TEXT    NOT NULL,
 			semantic     TEXT    NOT NULL,
@@ -353,7 +361,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			max_messages INTEGER NOT NULL DEFAULT 0,
 			publisher    TEXT    NOT NULL DEFAULT '',
 			period       TEXT    NOT NULL DEFAULT '',
-			created_at   INTEGER NOT NULL
+			created_at   INTEGER NOT NULL,
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, name)
 		)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
@@ -952,6 +962,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		// them and the duplicate-column-name guard short-circuits these.
 		`ALTER TABLE channel_messages ADD COLUMN visible_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE channel_messages ADD COLUMN published_by_user_id TEXT`,
+		// Channel tenant axis. Idempotent ALTER for existing DBs; the
+		// fresh CREATE TABLE above already declares the column (the
+		// duplicate-column guard short-circuits these on fresh deploys).
+		// SQLite can't rewrite the PK in place, so an upgraded DB keeps
+		// its old (channel, scope, scope_id[, id]) / (name) PK — the
+		// ON CONFLICT upsert targets a dedicated uniq index (added in
+		// addIndexes) that exists on both fresh + upgraded DBs.
+		`ALTER TABLE channel_messages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE channel_cursors ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE channels ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		// v0.9.x content_sha256 — see internal/store/postgres/migrations/
 		// 0018_agent_defs_content_sha256.up.sql for the rationale. NULL
 		// until the boot-time backfill walks pre-migration rows.
@@ -1156,7 +1176,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// index is created. Required for the upgrade path
 		// v0.8.4/v0.8.5 → v0.8.6+ (channel_messages table exists
 		// from v0.8.4 without visible_at).
-		`CREATE INDEX IF NOT EXISTS channel_messages_by_visible ON channel_messages(channel, scope, scope_id, visible_at, id)`,
+		`CREATE INDEX IF NOT EXISTS channel_messages_by_visible ON channel_messages(tenant_id, channel, scope, scope_id, visible_at, id)`,
+		// The channel_cursors upsert (ChannelAck) targets this uniq index
+		// via ON CONFLICT(tenant_id, channel, scope, scope_id). It exists
+		// on BOTH a fresh DB (where it duplicates the PK) and an upgraded
+		// DB (where the PK stays the old tenant-blind tuple), so the ack
+		// path works regardless of when the DB was created — mirrors
+		// uniq_memory_tenant_scope_scope_id_key.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_channel_cursors_tenant ON channel_cursors(tenant_id, channel, scope, scope_id)`,
 		// v0.8.x process_samples_by_sampled_at. Drives the read
 		// path for /v1/_metrics/samples (window scan) and the
 		// sweep DELETE WHERE sampled_at < cutoff.
@@ -3422,10 +3449,10 @@ func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotE
 func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.ChannelMessage, error) {
 	now := time.Now().UnixNano()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id
+		`SELECT id, channel, tenant_id, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id
 		 FROM channel_messages
 		 WHERE expires_at IS NULL OR expires_at > ?
-		 ORDER BY channel ASC, scope ASC, scope_id ASC, visible_at ASC, id ASC`, now)
+		 ORDER BY tenant_id ASC, channel ASC, scope ASC, scope_id ASC, visible_at ASC, id ASC`, now)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read channel_messages: %w", err)
 	}
@@ -3442,7 +3469,7 @@ func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.Channe
 			publishedBy sql.NullString
 		)
 		if err := rows.Scan(
-			&m.ID, &m.Channel, &scopeStr, &m.ScopeID, &payload,
+			&m.ID, &m.Channel, &m.TenantID, &scopeStr, &m.ScopeID, &payload,
 			&publishedNs, &expiresNs, &visibleNs, &publishedBy,
 		); err != nil {
 			return nil, fmt.Errorf("scan channel_message: %w", err)
@@ -3467,9 +3494,9 @@ func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.Channe
 // SnapshotReadChannelCursors implements store.Store.
 func (s *Store) SnapshotReadChannelCursors(ctx context.Context) ([]store.ChannelCursorEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT channel, scope, scope_id, cursor, updated_at
+		`SELECT channel, tenant_id, scope, scope_id, cursor, updated_at
 		 FROM channel_cursors
-		 ORDER BY channel ASC, scope ASC, scope_id ASC`)
+		 ORDER BY tenant_id ASC, channel ASC, scope ASC, scope_id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read channel_cursors: %w", err)
 	}
@@ -3481,7 +3508,7 @@ func (s *Store) SnapshotReadChannelCursors(ctx context.Context) ([]store.Channel
 			scopeStr  string
 			updatedNs int64
 		)
-		if err := rows.Scan(&c.Channel, &scopeStr, &c.ScopeID, &c.Cursor, &updatedNs); err != nil {
+		if err := rows.Scan(&c.Channel, &c.TenantID, &scopeStr, &c.ScopeID, &c.Cursor, &updatedNs); err != nil {
 			return nil, fmt.Errorf("scan channel_cursor: %w", err)
 		}
 		c.Scope = store.MemoryScope(scopeStr)
@@ -3923,10 +3950,10 @@ func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.Chann
 		visibleNs = publishedNs
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.Channel, string(m.Scope), m.ScopeID, string(m.Payload),
-		publishedNs, expiresNs, visibleNs, nilIfEmpty(m.PublishedByUserID),
+		publishedNs, expiresNs, visibleNs, nilIfEmpty(m.PublishedByUserID), m.TenantID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore channel_message: %w", err)
@@ -3948,8 +3975,8 @@ func (s *Store) SnapshotRestoreChannelCursor(ctx context.Context, c store.Channe
 		updatedNs = time.Now().UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO channel_cursors(channel, scope, scope_id, cursor, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		c.Channel, string(c.Scope), c.ScopeID, c.Cursor, updatedNs,
+		`INSERT OR IGNORE INTO channel_cursors(channel, scope, scope_id, cursor, updated_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		c.Channel, string(c.Scope), c.ScopeID, c.Cursor, updatedNs, c.TenantID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore channel_cursor: %w", err)
@@ -5135,6 +5162,7 @@ func (s *Store) MemoryCursorRelease(ctx context.Context, tenantID string, scope 
 // scheduler schedules a Bus.Notify(channel) at visible_at so
 // long-poll subscribers wake on time.
 func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (string, int, error) {
+	msg.TenantID = store.ChannelScopeTenant(msg.TenantID, msg.Scope) // global => "" (cross-tenant keyspace)
 	now := time.Now()
 	msg.ID = store.MintChannelMessageID(now)
 	msg.PublishedAt = now
@@ -5158,10 +5186,10 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload),
-		now.UnixNano(), expiresAt, msg.VisibleAt.UnixNano(), publishedByUserID,
+		now.UnixNano(), expiresAt, msg.VisibleAt.UnixNano(), publishedByUserID, msg.TenantID,
 	); err != nil {
 		return "", 0, err
 	}
@@ -5198,16 +5226,16 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		// subscriber will eventually want to see.
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM channel_messages
-			 WHERE channel = ? AND scope = ? AND scope_id = ?
+			 WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?
 			   AND id != ?
 			   AND id NOT IN (
 			     SELECT id FROM channel_messages
-			      WHERE channel = ? AND scope = ? AND scope_id = ?
+			      WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?
 			      ORDER BY visible_at DESC, id DESC
 			      LIMIT ?
 			   )`,
-			msg.Channel, string(msg.Scope), msg.ScopeID, msg.ID,
-			msg.Channel, string(msg.Scope), msg.ScopeID,
+			msg.TenantID, msg.Channel, string(msg.Scope), msg.ScopeID, msg.ID,
+			msg.TenantID, msg.Channel, string(msg.Scope), msg.ScopeID,
 			maxMessages,
 		)
 		if err != nil {
@@ -5237,27 +5265,27 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 // ChannelSubscribe reads up to `limit` messages newer than fromCursor.
 // fromCursor == "" || "cur_0" → from the oldest non-expired row.
 // Returns the batch + the id of the LAST message as nextCursor.
-func (s *Store) ChannelSubscribe(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
-	return s.channelRead(ctx, channel, scope, scopeID, fromCursor, limit)
+func (s *Store) ChannelSubscribe(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
+	return s.channelRead(ctx, tenantID, channel, scope, scopeID, fromCursor, limit)
 }
 
 // ChannelPeek is identical to ChannelSubscribe (non-consuming — the
 // cursor table is never touched on either path). The semantic
 // difference lives entirely in the tool layer: Subscribe optionally
 // commits the returned cursor on the next call, Peek never does.
-func (s *Store) ChannelPeek(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, error) {
-	msgs, _, err := s.channelRead(ctx, channel, scope, scopeID, fromCursor, limit)
+func (s *Store) ChannelPeek(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, error) {
+	msgs, _, err := s.channelRead(ctx, tenantID, channel, scope, scopeID, fromCursor, limit)
 	return msgs, err
 }
 
 func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) {
 	now := time.Now().UnixNano()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT channel, COUNT(*), MIN(visible_at), MAX(visible_at)
+		SELECT tenant_id, channel, COUNT(*), MIN(visible_at), MAX(visible_at)
 		FROM channel_messages
 		WHERE (expires_at IS NULL OR expires_at > ?)
-		GROUP BY channel
-		ORDER BY channel`, now)
+		GROUP BY tenant_id, channel
+		ORDER BY tenant_id, channel`, now)
 	if err != nil {
 		return nil, fmt.Errorf("channel stats query: %w", err)
 	}
@@ -5266,14 +5294,15 @@ func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) 
 	var out []store.ChannelStats
 	for rows.Next() {
 		var (
+			tenantID         string
 			name             string
 			count            int64
 			oldestNS, newest sql.NullInt64
 		)
-		if err := rows.Scan(&name, &count, &oldestNS, &newest); err != nil {
+		if err := rows.Scan(&tenantID, &name, &count, &oldestNS, &newest); err != nil {
 			return nil, fmt.Errorf("channel stats scan: %w", err)
 		}
-		st := store.ChannelStats{Channel: name, MessageCount: count}
+		st := store.ChannelStats{Channel: name, TenantID: tenantID, MessageCount: count}
 		if oldestNS.Valid {
 			st.OldestVisibleAt = time.Unix(0, oldestNS.Int64).UTC()
 		}
@@ -5407,7 +5436,8 @@ func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn 
 // so subscribers can pick up exactly where they left off, including
 // deferred messages that become visible later than other messages
 // published in between.
-func (s *Store) channelRead(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
+func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
+	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
 	if limit <= 0 {
 		limit = 10
 	}
@@ -5425,25 +5455,25 @@ func (s *Store) channelRead(ctx context.Context, channel string, scope store.Mem
 	if fromOldest {
 		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id
 			 FROM channel_messages
-			 WHERE channel = ? AND scope = ? AND scope_id = ?
+			 WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?
 			   AND visible_at <= ?
 			   AND (expires_at IS NULL OR expires_at > ?)
 			 ORDER BY visible_at ASC, id ASC
 			 LIMIT ?`
 		rows, qErr = s.db.QueryContext(ctx, query,
-			channel, string(scope), scopeID, now, now, limit)
+			tenantID, channel, string(scope), scopeID, now, now, limit)
 	} else {
 		// Strictly-greater-than tuple comparison: (visible_at, id) > (cv, cid).
 		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id
 			 FROM channel_messages
-			 WHERE channel = ? AND scope = ? AND scope_id = ?
+			 WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?
 			   AND visible_at <= ?
 			   AND (expires_at IS NULL OR expires_at > ?)
 			   AND (visible_at > ? OR (visible_at = ? AND id > ?))
 			 ORDER BY visible_at ASC, id ASC
 			 LIMIT ?`
 		rows, qErr = s.db.QueryContext(ctx, query,
-			channel, string(scope), scopeID, now, now,
+			tenantID, channel, string(scope), scopeID, now, now,
 			cursorVisibleAt.UnixNano(), cursorVisibleAt.UnixNano(), cursorMsgID,
 			limit)
 	}
@@ -5470,6 +5500,7 @@ func (s *Store) channelRead(ctx context.Context, channel string, scope store.Mem
 		msg := store.ChannelMessage{
 			ID:          id,
 			Channel:     channel,
+			TenantID:    tenantID,
 			Scope:       scope,
 			ScopeID:     scopeID,
 			Payload:     json.RawMessage(payload),
@@ -5501,7 +5532,8 @@ func (s *Store) channelRead(ctx context.Context, channel string, scope store.Mem
 // matches tuple order because the v0.8.6 cursor format encodes
 // visible_at as a fixed-width hex prefix). Idempotent re-ack of the
 // SAME cursor is a no-op.
-func (s *Store) ChannelAck(ctx context.Context, channel string, scope store.MemoryScope, scopeID, cursor string) error {
+func (s *Store) ChannelAck(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID, cursor string) error {
+	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
 	if cursor == "" || cursor == "cur_0" {
 		return nil // nothing to commit
 	}
@@ -5518,8 +5550,8 @@ func (s *Store) ChannelAck(ctx context.Context, channel string, scope store.Memo
 
 	var existing string
 	err = tx.QueryRowContext(ctx,
-		`SELECT cursor FROM channel_cursors WHERE channel = ? AND scope = ? AND scope_id = ?`,
-		channel, string(scope), scopeID,
+		`SELECT cursor FROM channel_cursors WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?`,
+		tenantID, channel, string(scope), scopeID,
 	).Scan(&existing)
 	if err != nil && err != sql.ErrNoRows {
 		return err
@@ -5532,13 +5564,16 @@ func (s *Store) ChannelAck(ctx context.Context, channel string, scope store.Memo
 	}
 
 	now := time.Now().UnixNano()
+	// ON CONFLICT targets uniq_channel_cursors_tenant (added in addIndexes)
+	// so the upsert works on both a fresh DB (new PK) and an upgraded DB
+	// (old PK) — see the memory upsert precedent.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO channel_cursors(channel, scope, scope_id, cursor, updated_at)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(channel, scope, scope_id) DO UPDATE SET
+		`INSERT INTO channel_cursors(channel, scope, scope_id, cursor, updated_at, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, channel, scope, scope_id) DO UPDATE SET
 		    cursor = excluded.cursor,
 		    updated_at = excluded.updated_at`,
-		channel, string(scope), scopeID, cursor, now,
+		channel, string(scope), scopeID, cursor, now, tenantID,
 	); err != nil {
 		return err
 	}
@@ -5547,11 +5582,12 @@ func (s *Store) ChannelAck(ctx context.Context, channel string, scope store.Memo
 
 // ChannelCommittedCursor returns the last cursor ack'd for a
 // subscriber, or empty string when none.
-func (s *Store) ChannelCommittedCursor(ctx context.Context, channel string, scope store.MemoryScope, scopeID string) (string, error) {
+func (s *Store) ChannelCommittedCursor(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID string) (string, error) {
+	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
 	var cursor string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT cursor FROM channel_cursors WHERE channel = ? AND scope = ? AND scope_id = ?`,
-		channel, string(scope), scopeID,
+		`SELECT cursor FROM channel_cursors WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?`,
+		tenantID, channel, string(scope), scopeID,
 	).Scan(&cursor)
 	if err == sql.ErrNoRows {
 		return "", nil
@@ -5564,13 +5600,14 @@ func (s *Store) ChannelCommittedCursor(ctx context.Context, channel string, scop
 
 // ChannelListCursorsForScope — see store.Store doc. v0.9.x
 // introspection. Ordered by channel ASC for deterministic UI render.
-func (s *Store) ChannelListCursorsForScope(ctx context.Context, scope store.MemoryScope, scopeID string) ([]store.ChannelCursorEntry, error) {
+func (s *Store) ChannelListCursorsForScope(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) ([]store.ChannelCursorEntry, error) {
+	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT channel, scope, scope_id, cursor, updated_at
 		 FROM channel_cursors
-		 WHERE scope = ? AND scope_id = ?
+		 WHERE tenant_id = ? AND scope = ? AND scope_id = ?
 		 ORDER BY channel ASC`,
-		string(scope), scopeID,
+		tenantID, string(scope), scopeID,
 	)
 	if err != nil {
 		return nil, err

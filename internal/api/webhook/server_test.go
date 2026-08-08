@@ -65,27 +65,29 @@ func (f *fakeRunner) wasCalled() bool {
 
 // fakePublisher records channel publishes.
 type fakePublisher struct {
-	mu      sync.Mutex
-	channel string
-	payload json.RawMessage
-	called  bool
+	mu       sync.Mutex
+	channel  string
+	tenantID string
+	payload  json.RawMessage
+	called   bool
 }
 
-func (p *fakePublisher) Publish(ctx context.Context, channel string, scope store.MemoryScope, scopeID string,
+func (p *fakePublisher) Publish(ctx context.Context, channel, tenantID string, scope store.MemoryScope, scopeID string,
 	payload json.RawMessage, deliverAt time.Time, publishedByUserID string, maxMessages, defaultTTLSeconds int,
 ) (store.ChannelMessage, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.channel = channel
+	p.tenantID = tenantID
 	p.payload = payload
 	p.called = true
 	return store.ChannelMessage{ID: "msg-1"}, nil
 }
 
-func (p *fakePublisher) PublishNow(ctx context.Context, channel string, scope store.MemoryScope, scopeID string,
+func (p *fakePublisher) PublishNow(ctx context.Context, channel, tenantID string, scope store.MemoryScope, scopeID string,
 	payload json.RawMessage, publishedByUserID string, maxMessages, defaultTTLSeconds int,
 ) (store.ChannelMessage, error) {
-	return p.Publish(ctx, channel, scope, scopeID, payload, time.Time{}, publishedByUserID, maxMessages, defaultTTLSeconds)
+	return p.Publish(ctx, channel, tenantID, scope, scopeID, payload, time.Time{}, publishedByUserID, maxMessages, defaultTTLSeconds)
 }
 
 // newTestReceiver wires a Receiver against a yaml-only config (no store),

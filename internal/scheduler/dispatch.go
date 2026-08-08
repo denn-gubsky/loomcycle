@@ -43,7 +43,7 @@ func (s *Scheduler) dispatchHooks(ctx context.Context, scheduleName string, def 
 func (s *Scheduler) dispatchOneHook(ctx context.Context, scheduleName, userID, agentName, tenantID string, h scheduleHook, runID, agentID string) error {
 	switch h.Kind {
 	case "channel.publish":
-		return s.dispatchChannelPublish(ctx, scheduleName, userID, agentName, h, runID, agentID)
+		return s.dispatchChannelPublish(ctx, scheduleName, userID, agentName, tenantID, h, runID, agentID)
 	case "memory.set":
 		return s.dispatchMemorySet(ctx, scheduleName, userID, tenantID, h)
 	case "mcp.call":
@@ -55,7 +55,7 @@ func (s *Scheduler) dispatchOneHook(ctx context.Context, scheduleName, userID, a
 	}
 }
 
-func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, userID, agentName string, h scheduleHook, runID, agentID string) error {
+func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, userID, agentName, tenantID string, h scheduleHook, runID, agentID string) error {
 	if h.Channel == "" {
 		return fmt.Errorf("channel.publish missing `channel`")
 	}
@@ -73,7 +73,10 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 		return err
 	}
 	msg := store.ChannelMessage{
-		Channel:           h.Channel,
+		Channel: h.Channel,
+		// RFC N: the owning tenant comes from the schedule def (def.TenantID),
+		// threaded down from dispatchHooks — never from the hook payload.
+		TenantID:          tenantID,
 		Scope:             scope,
 		ScopeID:           scopeID,
 		Payload:           payload,

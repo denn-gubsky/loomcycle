@@ -490,7 +490,7 @@ func TestChannelTool_PublishedByUserIDFromCtx(t *testing.T) {
 		t.Fatalf("publish: %s", res.Text)
 	}
 	// Read back via subscribe + verify the store's row carries user_id.
-	msgs, _, err := tool.Store.ChannelSubscribe(ctx, "findings", store.MemoryScopeAgent, "researcher", "", 10)
+	msgs, _, err := tool.Store.ChannelSubscribe(ctx, "", "findings", store.MemoryScopeAgent, "researcher", "", 10)
 	if err != nil || len(msgs) != 1 {
 		t.Fatalf("read back: msgs=%d err=%v", len(msgs), err)
 	}

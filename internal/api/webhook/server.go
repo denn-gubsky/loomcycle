@@ -285,7 +285,9 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 	// Publish under the global scope — a webhook is an operator-level
 	// ingress, not bound to a user/agent keyspace. maxMessages/TTL default
 	// to 0 (the channel's own config / store defaults govern retention).
-	_, err := rec.publisher.PublishNow(ctx, wd.Channel, store.MemoryScopeGlobal, "",
+	// RFC N: the owning tenant comes from the webhook def (wd.TenantID),
+	// never from the request body.
+	_, err := rec.publisher.PublishNow(ctx, wd.Channel, wd.TenantID, store.MemoryScopeGlobal, "",
 		json.RawMessage(body), channels.SystemPublisherUserID, 0, 0)
 	if err != nil {
 		rec.finish(span, name, did, "rejected_publish", "")

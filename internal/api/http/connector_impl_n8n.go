@@ -68,7 +68,13 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 	if runtimeErr != nil {
 		return connector.ListChannelsResponse{}, runtimeErr
 	}
+	// ChannelsList returns every tenant's rows; tenant operators see only
+	// their own channels, admin sees all.
+	tenantID, all := s.principalTenantScope(ctx, "")
 	for _, r := range runtimeRows {
+		if !all && r.TenantID != tenantID {
+			continue
+		}
 		if _, yaml := s.cfg.Channels[r.Name]; yaml {
 			continue
 		}

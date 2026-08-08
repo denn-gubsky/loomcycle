@@ -193,7 +193,7 @@ func (s *Server) handleAgentChannels(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_agent_name", err.Error())
 		return
 	}
-	rows, err := s.store.ChannelListCursorsForScope(r.Context(), store.MemoryScopeAgent, agentName)
+	rows, err := s.store.ChannelListCursorsForScope(r.Context(), tenantFromCtx(r.Context()), store.MemoryScopeAgent, agentName)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return

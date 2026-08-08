@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -89,9 +90,20 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 		scope = "global"
 	}
 	switch scope {
-	case "global", "agent", "user":
+	case "global", "agent", "user", "tenant":
 	default:
-		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: scope must be one of global|agent|user, got %q", scope)
+		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: scope must be one of global|tenant|user|agent, got %q", scope)
+	}
+	// A global channel is a single cross-tenant keyspace (tenant_id="", see
+	// store.ChannelScopeTenant): its messages are shared across every
+	// tenant. Only an operator/admin may create one at runtime; a tenant
+	// operator is confined to its own tenant and must use tenant|user|agent
+	// scope (all partitioned by its tenant). Open mode (no principal) is
+	// single-tenant and unrestricted.
+	if scope == "global" {
+		if p, ok := auth.PrincipalFromContext(ctx); ok && !auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+			return connector.ChannelDescriptor{}, fmt.Errorf("create channel: scope=global requires operator (admin) scope; a tenant operator may create tenant|user|agent channels")
+		}
 	}
 
 	semantic := strings.TrimSpace(req.Semantic)
@@ -109,6 +121,7 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 
 	row := store.ChannelRow{
 		Name:        name,
+		TenantID:    tenantFromCtx(ctx), // RFC N: authoritative principal tenant
 		Description: req.Description,
 		Scope:       scope,
 		Semantic:    semantic,
@@ -160,7 +173,7 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 		MaxMessages: req.MaxMessages,
 		Semantic:    req.Semantic,
 	}
-	if err := s.store.ChannelsUpdate(ctx, name, patch); err != nil {
+	if err := s.store.ChannelsUpdate(ctx, tenantFromCtx(ctx), name, patch); err != nil {
 		var notFound *store.ErrNotFound
 		if errors.As(err, &notFound) {
 			return connector.ChannelDescriptor{}, fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
@@ -175,9 +188,13 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 	if err != nil {
 		return connector.ChannelDescriptor{}, fmt.Errorf("update channel re-read: %w", err)
 	}
+	// ChannelsList returns every tenant's rows; tenant operators see only
+	// their own channels, admin sees all. Scope the re-read so a same-named
+	// channel in another tenant can't be picked up.
+	tenantID, all := s.principalTenantScope(ctx, "")
 	var match *store.ChannelRow
 	for i := range rows {
-		if rows[i].Name == name {
+		if rows[i].Name == name && (all || rows[i].TenantID == tenantID) {
 			match = &rows[i]
 			break
 		}
@@ -210,7 +227,7 @@ func (s *Server) DeleteChannel(ctx context.Context, name string) error {
 	if !validChannelName(name) {
 		return fmt.Errorf("delete channel: name must match [A-Za-z0-9_-]{1,128}")
 	}
-	if err := s.store.ChannelsDelete(ctx, name); err != nil {
+	if err := s.store.ChannelsDelete(ctx, tenantFromCtx(ctx), name); err != nil {
 		var notFound *store.ErrNotFound
 		if errors.As(err, &notFound) {
 			return fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
@@ -229,7 +246,15 @@ func (s *Server) DeleteChannel(ctx context.Context, name string) error {
 // yaml-declared nor present in the runtime substrate.
 func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.ChannelPurgeResult, error) {
 	name = strings.TrimSpace(name)
-	if _, isYaml := s.cfg.Channels[name]; !isYaml {
+	// The channel's declared SCOPE determines which tenant keyspace its
+	// messages live in (global => "", every other scope => the caller's
+	// tenant; see store.ChannelScopeTenant). Purge must target that
+	// keyspace, not blindly the caller's tenant — otherwise a global
+	// channel's messages (at "") are never drained.
+	declaredScope := ""
+	if yamlCh, isYaml := s.cfg.Channels[name]; isYaml {
+		declaredScope = yamlCh.Scope
+	} else {
 		// Only the runtime plane obeys the strict name shape — yaml
 		// channels may use exotic names (slashes etc.) the runtime
 		// allow-set forbids, and we must still let those be purged.
@@ -240,10 +265,15 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 		if err != nil {
 			return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel existence check: %w", err)
 		}
+		// ChannelsList returns every tenant's rows; tenant operators see only
+		// their own channels, admin sees all — so a cross-tenant name can't be
+		// treated as "exists" here.
+		tenantID, all := s.principalTenantScope(ctx, "")
 		found := false
 		for i := range rows {
-			if rows[i].Name == name {
+			if rows[i].Name == name && (all || rows[i].TenantID == tenantID) {
 				found = true
+				declaredScope = rows[i].Scope
 				break
 			}
 		}
@@ -251,7 +281,8 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 			return connector.ChannelPurgeResult{}, fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
 		}
 	}
-	n, err := s.store.ChannelPurge(ctx, name)
+	msgTenant := store.ChannelScopeTenant(tenantFromCtx(ctx), store.MemoryScope(declaredScope))
+	n, err := s.store.ChannelPurge(ctx, msgTenant, name)
 	if err != nil {
 		return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel: %w", err)
 	}
