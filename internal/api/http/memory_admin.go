@@ -28,9 +28,18 @@ import (
 //	    returns rows_reembedded.
 
 type memoryEmbedStatsResponse struct {
-	Scope               string                        `json:"scope"`
+	Scope string `json:"scope"`
+	// Tenant names WHICH tenant was measured, and it is not decoration.
+	//
+	// This endpoint reported `models: [], total_embedding_bytes: 0` for a scope holding
+	// ~2,900 embeddings, because it resolved the tenant from the caller's principal and
+	// an admin's own tenant is not the one being inspected. A zero with no tenant beside
+	// it reads as "this scope is unembedded" when it actually means "you measured
+	// somewhere else" — so the answer now carries the question it answered.
+	Tenant              string                        `json:"tenant"`
 	Models              []store.MemoryEmbedModelStats `json:"models"`
 	TotalEmbeddingBytes int64                         `json:"total_embedding_bytes"`
+	Notes               []string                      `json:"notes,omitempty"`
 }
 
 type memoryReembedDryRunResponse struct {
@@ -60,10 +69,29 @@ type memoryReembedConfigured struct {
 	Dimension int    `json:"dimension"`
 }
 
-// handleMemoryEmbedStats serves GET /v1/_memory/embed_stats?scope=.
-// Returns per-(provider, model, dimension) row counts + total
-// embedding bytes for the scope. Operators (and the UI) use this to
-// spot multi-model scopes BEFORE running reembed.
+// quoteTenant renders a tenant for a message, naming the default partition rather than
+// showing an empty string — "" in prose reads as a missing value rather than a real one.
+func quoteTenant(t string) string {
+	if t == "" {
+		return `"" (the default partition)`
+	}
+	return `"` + t + `"`
+}
+
+// handleMemoryEmbedStats serves GET /v1/_memory/embed_stats?scope=&tenant=.
+// Returns per-(provider, model, dimension) row counts + total embedding bytes.
+// Operators (and the UI) use this to spot multi-model scopes BEFORE running reembed.
+//
+// ?tenant= IS HONOURED FOR AN ADMIN, which it was not. The tenant came from the
+// caller's principal alone, so an admin inspecting another tenant's scope measured
+// their OWN and got zeros — indistinguishable from an unembedded scope. A tenant
+// operator is still confined to its own tenant (principalTenantScope ignores the
+// override), so this widens nothing.
+//
+// AGGREGATES ACROSS EVERY scope_id in the (tenant, scope) partition — there is no
+// scope_id filter, and a caller expecting one subject's numbers would otherwise read
+// the whole tenant's as that subject's. Stated in the response notes rather than left
+// to be inferred.
 func (s *Server) handleMemoryEmbedStats(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
@@ -81,8 +109,12 @@ func (s *Server) handleMemoryEmbedStats(w http.ResponseWriter, r *http.Request) 
 			"scope must be one of: agent, user, tenant")
 		return
 	}
-	// RFC BL: tenant from the authenticated principal (server-sourced).
-	stats, err := s.store.MemoryEmbedStats(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope))
+	// principalTenantScope keeps a non-admin confined to its own tenant while letting an
+	// admin name one. Unlike the destructive sweeps this is a READ, so an admin naming
+	// none is not refused — it resolves to the default partition and the response says
+	// so, which is the ambiguity this endpoint used to have.
+	tenant, _ := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	stats, err := s.store.MemoryEmbedStats(r.Context(), tenant, store.MemoryScope(scope))
 	if err != nil {
 		// Vector-unsupported can also surface here from refusal-stub
 		// backends — treat as 503 for consistency with the upfront
@@ -100,11 +132,23 @@ func (s *Server) handleMemoryEmbedStats(w http.ResponseWriter, r *http.Request) 
 		stats.Models = []store.MemoryEmbedModelStats{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(memoryEmbedStatsResponse{
+	resp := memoryEmbedStatsResponse{
 		Scope:               scope,
+		Tenant:              tenant,
 		Models:              stats.Models,
 		TotalEmbeddingBytes: stats.TotalEmbeddingBytes,
-	})
+		Notes: []string{
+			"counts aggregate every scope_id in this (tenant, scope) partition — there is " +
+				"no per-subject filter, so this is not one user's total.",
+		},
+	}
+	if len(stats.Models) == 0 {
+		resp.Notes = append(resp.Notes,
+			"zero rows for tenant "+quoteTenant(tenant)+" — check that this is the tenant you "+
+				"meant before concluding the scope is unembedded. Pass ?tenant=<id> to measure "+
+				"another one (admin only).")
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleMemoryReembed serves POST /v1/_memory/reembed.

@@ -58,7 +58,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (semantic search over chunk BODIES for free text — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -68,7 +68,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","related","unlinked_mentions"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -82,7 +82,7 @@ const documentInputSchema = `{
 		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type."},
 		"body":        {"type": "string", "description": "Markdown body."},
 		"seed_ids":  {"type": "array", "items": {"type": "string"}, "description": "graph_recall: chunk ids to start from. Use this to hand in results you already found some other way (a Memory search, a previous recall) and follow the graph out from them."},
-		"query":     {"type": "string", "description": "graph_recall: find starting chunks whose title matches this text. Use seed_ids instead when you already know where to start."},
+		"query":     {"type": "string", "description": "search: free text matched semantically against chunk BODIES — the way into a document when you do not know where to look. graph_recall: find starting chunks whose title matches this text (use seed_ids instead when you already know where to start)."},
 		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. 0 = the starting chunks only, 1 = their neighbours (default), 2 = the maximum."},
 		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
@@ -422,6 +422,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.diffVersions(ctx, key, in)
 	case "backlinks":
 		return d.backlinks(ctx, key, in)
+	case "search":
+		return d.searchChunks(ctx, key, mscope, in)
 	case "related":
 		return d.related(ctx, key, mscope, in)
 	case "unlinked_mentions":
@@ -767,7 +769,11 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 		// The body is the CAPTION (export renders it as the alt text) and the
 		// description comes from the asset row, so an image with neither is what
 		// yields "" — not an image with no caption.
-		text = imageEmbedText(body, d.assetDescription(ctx, key, chunkID))
+		// The TITLE is a third source for an image, not a fallback — see imageEmbedText.
+		// It costs one query on a type that is rare, and it is the only place the brand
+		// or filename a vision model cannot infer becomes searchable.
+		text = imageEmbedText(d.chunkTitle(ctx, key, chunkID), body,
+			d.assetDescription(ctx, key, chunkID))
 	case "mermaid":
 		text = mermaidEmbedText(body)
 	default:
@@ -2651,6 +2657,87 @@ func (d *Document) chunkMetaByIDs(ctx context.Context, key sqlmem.ScopeKey, ids 
 		out[asStr(r[0])] = chunkMeta{title: asStr(r[1]), typ: asStr(r[2]), documentID: asStr(r[3])}
 	}
 	return out, nil
+}
+
+// searchChunks finds the chunks whose bodies best match a free-text query — the
+// convenience wrapper RFC BU §6 deferred.
+//
+// WHY IT EARNS ITS PLACE rather than being sugar. Without it the entry point into a
+// document is `memory op=search prefix="doc.chunk:"`, which asks a caller to know three
+// things that are not its business: that chunk bodies live in the memory keyspace, that
+// the reserved prefix is spelled exactly "doc.chunk:", and that the chunk id must be cut
+// back off the returned key. A live transcript showed an agent failing at precisely that
+// class of thing — it did not know a reserved string, so it guessed, and concluded
+// nothing was remembered. This op takes a query and returns chunks.
+//
+// It also RETURNS MORE than the raw search can: title, type and document_id per hit, so
+// a result is navigable without a second round trip. The raw form stays available for a
+// caller that wants the memory row itself.
+//
+// Scope-confined exactly like `related`, whose machinery this reuses — same embedder,
+// same prefixed vector search, same enrichment. One mechanism, two entry points.
+func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	q := strings.TrimSpace(in.Query)
+	if q == "" {
+		return errResult("search: missing required field: query (the text to match against chunk bodies)"), nil
+	}
+	if d.Embedder == nil {
+		return errResult("search: requires a configured embedder / vector memory"), nil
+	}
+	topK := 10
+	if in.Limit > 0 {
+		topK = in.Limit
+	}
+	if topK > 50 {
+		topK = 50
+	}
+	vec, err := d.Embedder.Embed(ctx, []string{q})
+	if err != nil {
+		return errResult("search: embed: " + err.Error()), nil
+	}
+	if len(vec) == 0 {
+		return errResult("search: embed: embedder returned no vector"), nil
+	}
+	// No topK+1 here, unlike `related`: there is no self-hit to drop when the query is
+	// text the caller typed rather than a chunk that is already in the index.
+	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
+		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], topK)
+	if err != nil {
+		return errResult("search: " + err.Error()), nil
+	}
+	ids := make([]string, 0, len(entries))
+	scores := make(map[string]float64, len(entries))
+	for _, e := range entries {
+		cid := ChunkIDFromBodyKey(e.Key)
+		if cid == "" {
+			continue
+		}
+		ids = append(ids, cid)
+		scores[cid] = e.Score
+	}
+	meta, err := d.chunkMetaByIDs(ctx, key, ids)
+	if err != nil {
+		return errResult("search: enrich: " + err.Error()), nil
+	}
+	out := make([]map[string]any, 0, len(ids))
+	for _, cid := range ids {
+		m := map[string]any{"chunk_id": cid, "score": scores[cid]}
+		if md, ok := meta[cid]; ok {
+			if md.title != "" {
+				m["title"] = md.title
+			}
+			if md.typ != "" {
+				m["type"] = md.typ
+			}
+			if md.documentID != "" {
+				m["document_id"] = md.documentID
+			}
+		}
+		out = append(out, m)
+	}
+	// Ordered by score, and the enrichment loop preserves that order — a caller reading
+	// the first element must get the best match, not whatever the metadata query returned.
+	return jsonResult(map[string]any{"chunks": out})
 }
 
 // related returns the chunks whose bodies embed CLOSEST to a chunk's — its

@@ -234,12 +234,22 @@ func (d *Document) SetAssetDescription(ctx context.Context, scope, chunkID, desc
 
 // imageEmbedText composes the searchable text for an image chunk.
 //
-// Returns "" when there is nothing to index — no caption and no description yet.
+// Returns "" when there is nothing to index — no title, no caption, no description.
 // The caller then stores no vector at all, which is the honest state: the image is
-// unsearchable but not lost, and it becomes searchable when a describe pass fills
-// the description in. Embedding a placeholder would be worse than embedding
-// nothing, because a row that exists ranks against every query.
-func imageEmbedText(caption, description string) string {
+// unsearchable but not lost, and it becomes searchable when any of the three arrives.
+// Embedding a placeholder would be worse than embedding nothing, because a row that
+// exists ranks against every query.
+//
+// THE TITLE IS INCLUDED HERE, NOT USED AS A FALLBACK, and an image is the one type
+// where that is right. Everywhere else the title is a fallback because a body usually
+// RESTATES its heading, so appending both double-weights the same words. An image has
+// no body to restate it — its "body" is the caption — so that rationale simply does not
+// apply. And the title routinely carries what a vision model provably cannot know:
+// "Loomcycle Logo 1280x640" tells you whose logo it is, while the generated description
+// says "five round characters around a central spool". Dropping the title to preserve a
+// rule whose reason is absent would lose the only searchable mention of the brand.
+func imageEmbedText(title, caption, description string) string {
+	title = strings.TrimSpace(title)
 	caption = strings.TrimSpace(caption)
 	description = strings.TrimSpace(description)
 	// A data URI is not a caption. An image chunk can transiently hold the rendered
@@ -249,16 +259,27 @@ func imageEmbedText(caption, description string) string {
 	if typ, _, _, _ := classifyMediaBody(caption); typ == "image" {
 		caption = ""
 	}
+	// A scaffold-only or letterless title is no more useful here than anywhere else.
+	title = indexableText(title)
+
+	// Appended rather than substituted, and deduped case-insensitively: each of the
+	// three can be the one that matches a query, so dropping one for tidiness trades
+	// recall away — but repeating the same words inflates their weight in the vector.
 	parts := make([]string, 0, 3)
-	if caption != "" {
-		parts = append(parts, caption)
+	add := func(v string) {
+		if v == "" {
+			return
+		}
+		for _, have := range parts {
+			if strings.EqualFold(have, v) {
+				return
+			}
+		}
+		parts = append(parts, v)
 	}
-	// Appended, not substituted. A caption is what the author chose to say and a
-	// description is what a model saw; either alone can be the one that matches, so
-	// dropping one to avoid duplication would trade recall for tidiness.
-	if description != "" && !strings.EqualFold(description, caption) {
-		parts = append(parts, description)
-	}
+	add(title)
+	add(caption)
+	add(description)
 	if len(parts) == 0 {
 		return ""
 	}
