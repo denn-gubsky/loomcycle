@@ -70,23 +70,26 @@ func NewUserQuotaStore(pool *pgxpool.Pool) *UserQuotaStore {
 // The INSERT arm always fires for a new user_id (initial count = 1);
 // the UPDATE arm only fires when the existing count is strictly less
 // than cap. rows_affected discriminates the at-cap case.
-func (s *UserQuotaStore) TryAcquire(ctx context.Context, userID string, cap int) (bool, error) {
+func (s *UserQuotaStore) TryAcquire(ctx context.Context, tenantID, userID string, cap int) (bool, error) {
 	if userID == "" {
 		return false, errors.New("user_id is empty")
 	}
 	if cap <= 0 {
 		return false, fmt.Errorf("cap must be > 0 (got %d)", cap)
 	}
+	// Keyed on (tenant_id, user_id) so same-named subjects in different
+	// tenants get independent caps (migration 0067). tenant_id="" is the
+	// shared/legacy tenant — a single-tenant cluster behaves as before.
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO user_quotas (user_id, active_count, updated_at)
-		VALUES ($1, 1, now())
-		ON CONFLICT (user_id) DO UPDATE
+		INSERT INTO user_quotas (tenant_id, user_id, active_count, updated_at)
+		VALUES ($1, $2, 1, now())
+		ON CONFLICT (tenant_id, user_id) DO UPDATE
 		  SET active_count = user_quotas.active_count + 1,
 		      updated_at   = now()
-		  WHERE user_quotas.active_count < $2
-	`, userID, cap)
+		  WHERE user_quotas.active_count < $3
+	`, tenantID, userID, cap)
 	if err != nil {
-		return false, fmt.Errorf("user_quotas upsert %s: %w", userID, err)
+		return false, fmt.Errorf("user_quotas upsert %s/%s: %w", tenantID, userID, err)
 	}
 	return tag.RowsAffected() > 0, nil
 }
@@ -103,7 +106,7 @@ func (s *UserQuotaStore) TryAcquire(ctx context.Context, userID string, cap int)
 // The row with count=0 is a tombstone that costs one Postgres row and
 // is harmless. Phase 5's sweeper can DELETE WHERE active_count = 0 if
 // row count ever becomes a concern.
-func (s *UserQuotaStore) Release(ctx context.Context, userID string) {
+func (s *UserQuotaStore) Release(ctx context.Context, tenantID, userID string) {
 	if userID == "" {
 		return
 	}
@@ -111,14 +114,14 @@ func (s *UserQuotaStore) Release(ctx context.Context, userID string) {
 		UPDATE user_quotas
 		   SET active_count = active_count - 1,
 		       updated_at   = now()
-		 WHERE user_id = $1 AND active_count > 0
-	`, userID)
+		 WHERE tenant_id = $1 AND user_id = $2 AND active_count > 0
+	`, tenantID, userID)
 	if err != nil {
-		log.Printf("coord: user_quotas release %s: %v", userID, err)
+		log.Printf("coord: user_quotas release %s/%s: %v", tenantID, userID, err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		log.Printf("coord: user_quotas release %s: no-op (already at 0 — double-release or Phase 5 reap)", userID)
+		log.Printf("coord: user_quotas release %s/%s: no-op (already at 0 — double-release or Phase 5 reap)", tenantID, userID)
 	}
 }
 
@@ -129,7 +132,7 @@ func (s *UserQuotaStore) Release(ctx context.Context, userID string) {
 // omitempty JSON marshal stays consistent across modes).
 func (s *UserQuotaStore) Snapshot(ctx context.Context) (map[string]int, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT user_id, active_count
+		SELECT tenant_id, user_id, active_count
 		  FROM user_quotas
 		 WHERE active_count > 0
 	`)
@@ -140,19 +143,37 @@ func (s *UserQuotaStore) Snapshot(ctx context.Context) (map[string]int, error) {
 	var out map[string]int
 	for rows.Next() {
 		var (
-			userID string
-			count  int
+			tenantID string
+			userID   string
+			count    int
 		)
-		if err := rows.Scan(&userID, &count); err != nil {
+		if err := rows.Scan(&tenantID, &userID, &count); err != nil {
 			return nil, fmt.Errorf("scan user_quotas row: %w", err)
 		}
 		if out == nil {
 			out = make(map[string]int)
 		}
-		out[userID] = count
+		out[FairnessDisplayKey(tenantID, userID)] = count
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate user_quotas: %w", err)
 	}
 	return out, nil
+}
+
+// FairnessDisplayKey renders a (tenant, user) pair as the single string
+// used as the map key in the per-user concurrency stats surface
+// (/v1/_concurrency/stats + the Prometheus per_user gauge). tenant=""
+// (the shared/legacy tenant, i.e. a single-tenant deployment) renders as
+// the bare user so the stats wire is byte-identical to the pre-tenant
+// shape; a real tenant renders as "tenant/user". This is DISPLAY ONLY —
+// enforcement keys on the (tenant_id, user_id) columns, so a "/" that
+// happens to appear in an id can at worst merge two rows in the display,
+// never merge two caps. The in-process Semaphore.Stats path uses an
+// identical format; keep the two in sync.
+func FairnessDisplayKey(tenantID, userID string) string {
+	if tenantID == "" {
+		return userID
+	}
+	return tenantID + "/" + userID
 }

@@ -421,7 +421,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		// Respect the per-tenant fairness semaphore so a boot that resumes many
 		// runs doesn't blow past MAX_CONCURRENT_RUNS. Acquired inside the
 		// goroutine so the caller's resume loop never blocks.
-		release, aerr := s.sem.AcquireForUser(runCtx, run.UserID)
+		release, aerr := s.sem.AcquireForUser(runCtx, run.TenantID, run.UserID)
 		if aerr != nil {
 			s.finishRunFailedReason(run.ID, "resume: acquire run slot: "+aerr.Error(), meta)
 			return
