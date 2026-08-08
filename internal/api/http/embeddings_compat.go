@@ -101,7 +101,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	// present; the wire user is the open/un-authed fallback. Empty
 	// key bypasses the per-user cap. Mirrors the chat-completions
 	// gateway exactly.
-	release, err := s.sem.AcquireForUser(r.Context(), auth.SubjectForFairness(r.Context(), req.User))
+	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.User))
 	if err != nil {
 		writeQuotaError(w, err)
 		return

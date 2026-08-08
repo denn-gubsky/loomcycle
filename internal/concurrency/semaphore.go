@@ -36,12 +36,16 @@ func (e *BackpressureError) Code() string { return "backpressure" }
 // strategy differs — backpressure is operator-wide load, per-user
 // quota is "you specifically need to wait."
 type ErrPerUserQuotaExhausted struct {
-	UserID string
-	Cap    int
+	TenantID string
+	UserID   string
+	Cap      int
 }
 
 func (e *ErrPerUserQuotaExhausted) Error() string {
-	return fmt.Sprintf("per-user quota exhausted: user=%s cap=%d", e.UserID, e.Cap)
+	if e.TenantID == "" {
+		return fmt.Sprintf("per-user quota exhausted: user=%s cap=%d", e.UserID, e.Cap)
+	}
+	return fmt.Sprintf("per-user quota exhausted: tenant=%s user=%s cap=%d", e.TenantID, e.UserID, e.Cap)
 }
 
 // Code is the typed identifier used in the HTTP error envelope.
@@ -56,9 +60,22 @@ func (e *ErrPerUserQuotaExhausted) Code() string { return "per_user_quota_exhaus
 // TryAcquire returns (acquired, err). false+nil = the user is at cap;
 // false+non-nil = infrastructure error (DB unreachable, etc).
 type userQuotaGate interface {
-	TryAcquire(ctx context.Context, userID string, cap int) (bool, error)
-	Release(ctx context.Context, userID string)
+	TryAcquire(ctx context.Context, tenantID, userID string, cap int) (bool, error)
+	Release(ctx context.Context, tenantID, userID string)
 	Snapshot(ctx context.Context) (map[string]int, error)
+}
+
+// userKey is the per-user fairness identity: a (tenant, user) pair, so
+// same-named subjects in different tenants get independent caps. It
+// replaces the bare user_id the counter keyed on before — a single value
+// still threads through the accounting (map key, release, cancel), just
+// as a struct instead of a string. tenant=="" is the shared/legacy tenant
+// (single-tenant / open mode), for which the fairness identity collapses
+// back to the bare user (see fairnessDisplayKey), keeping that path
+// byte-identical to the pre-tenant behaviour.
+type userKey struct {
+	tenant string
+	user   string
 }
 
 // Semaphore caps concurrent acquisitions. Acquire blocks (with timeout) when
@@ -82,7 +99,7 @@ type Semaphore struct {
 	// untouched — the DB-backed counter is authoritative. Single-
 	// replica deployments (quotaStore == nil) use perUser exactly as
 	// v0.10.1 did.
-	perUser map[string]int
+	perUser map[userKey]int
 	waiters []chan struct{}
 
 	// quotaStore is the v0.12.1 cluster-wide per-user counter. Nil in
@@ -154,7 +171,7 @@ func (s *Semaphore) WithUserQuotaStore(qs userQuotaGate) *Semaphore {
 // accounting. Existing call sites that don't care about per-tenant
 // fairness keep using this entry point.
 func (s *Semaphore) Acquire(ctx context.Context) (release func(), err error) {
-	return s.AcquireForUser(ctx, "")
+	return s.AcquireForUser(ctx, "", "")
 }
 
 // AcquireForUser is Acquire with a per-user cap layered on top. When
@@ -170,7 +187,13 @@ func (s *Semaphore) Acquire(ctx context.Context) (release func(), err error) {
 // 429 + Retry-After: 5). On global-queue rejection or timeout,
 // returns *BackpressureError (HTTP 429). On ctx cancel, returns
 // ctx.Err().
-func (s *Semaphore) AcquireForUser(ctx context.Context, userID string) (release func(), err error) {
+func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string) (release func(), err error) {
+	// The per-user cap is keyed on the (tenant, user) pair so same-named
+	// subjects in different tenants don't share a counter (migration 0067).
+	// tenant=="" collapses to the bare-user behaviour (single-tenant / open
+	// mode), keeping that path byte-identical.
+	key := userKey{tenant: tenantID, user: userID}
+
 	// v0.12.1: snapshot the quotaStore reference (and cap) outside the
 	// global-state mutex so the cluster-mode DB round-trip doesn't hold
 	// s.mu. Capturing here means a concurrent WithUserQuotaStore call
@@ -184,18 +207,18 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, userID string) (release 
 	cap := s.maxPerUser
 	s.mu.Unlock()
 
-	perUserActive := cap > 0 && userID != ""
+	perUserActive := cap > 0 && key.user != ""
 
 	// Cluster mode: acquire the per-user quota slot FIRST via the DB.
 	// On any later rejection (global-queue full, timeout, cancel), we
 	// compensate-Release so the cluster-wide count stays balanced.
 	if perUserActive && qs != nil {
-		ok, qerr := qs.TryAcquire(ctx, userID, cap)
+		ok, qerr := qs.TryAcquire(ctx, key.tenant, key.user, cap)
 		if qerr != nil {
 			return nil, fmt.Errorf("user_quotas acquire: %w", qerr)
 		}
 		if !ok {
-			return nil, &ErrPerUserQuotaExhausted{UserID: userID, Cap: cap}
+			return nil, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 		}
 	}
 
@@ -205,30 +228,30 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, userID string) (release 
 	// skip this block — perUser stays untouched.
 	if perUserActive && qs == nil {
 		if s.perUser == nil {
-			s.perUser = map[string]int{}
+			s.perUser = map[userKey]int{}
 		}
 		// Use the locked snapshot `cap` (not s.maxPerUser) — consistent with the
 		// perUserActive gate above, and the error is built AFTER Unlock so a bare
 		// s.maxPerUser read there would be a data race with WithPerUserCap.
-		if s.perUser[userID] >= cap {
+		if s.perUser[key] >= cap {
 			s.mu.Unlock()
-			return nil, &ErrPerUserQuotaExhausted{UserID: userID, Cap: cap}
+			return nil, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 		}
 	}
 
 	if s.active < s.maxConcurrent {
 		s.active++
 		if perUserActive && qs == nil {
-			s.perUser[userID]++
+			s.perUser[key]++
 		}
 		s.mu.Unlock()
-		return s.releaseFn(userID, qs), nil
+		return s.releaseFn(key, qs), nil
 	}
 	if s.queued >= s.maxQueue {
 		s.mu.Unlock()
 		// Cluster mode: compensate-Release the DB slot we just took.
 		if perUserActive && qs != nil {
-			go releaseInBackground(qs, userID)
+			go releaseInBackground(qs, key)
 		}
 		return nil, &BackpressureError{msg: "queue full"}
 	}
@@ -236,7 +259,7 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, userID string) (release 
 	s.waiters = append(s.waiters, w)
 	s.queued++
 	if perUserActive && qs == nil {
-		s.perUser[userID]++
+		s.perUser[key]++
 	}
 	s.mu.Unlock()
 
@@ -249,12 +272,12 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, userID string) (release 
 		// already promoted us (queued--; active++). Our perUser count
 		// (or DB slot) stays the same — increment happened at enqueue,
 		// decrement happens at release.
-		return s.releaseFn(userID, qs), nil
+		return s.releaseFn(key, qs), nil
 	case <-ctx.Done():
-		s.cancelWaiter(w, userID, qs)
+		s.cancelWaiter(w, key, qs)
 		return nil, ctx.Err()
 	case <-timer.C:
-		s.cancelWaiter(w, userID, qs)
+		s.cancelWaiter(w, key, qs)
 		return nil, &BackpressureError{msg: "queue timeout"}
 	}
 }
@@ -265,10 +288,10 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, userID string) (release 
 // in handler code expects fast return; the Release goroutine carries
 // its own bounded context so a permanently-down DB can't leak
 // goroutines indefinitely.
-func releaseInBackground(qs userQuotaGate, userID string) {
+func releaseInBackground(qs userQuotaGate, key userKey) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	qs.Release(ctx, userID)
+	qs.Release(ctx, key.tenant, key.user)
 }
 
 // Stats returns a snapshot for /metrics or admin views. The PerUser
@@ -286,7 +309,7 @@ func (s *Semaphore) Stats() Stats {
 	if qs == nil && len(s.perUser) > 0 {
 		out.PerUser = make(map[string]int, len(s.perUser))
 		for k, v := range s.perUser {
-			out.PerUser[k] = v
+			out.PerUser[fairnessDisplayKey(k.tenant, k.user)] = v
 		}
 	}
 	s.mu.Unlock()
@@ -312,14 +335,14 @@ func (s *Semaphore) Stats() Stats {
 // WithUserQuotaStore swap can't make a still-in-flight slot decrement
 // against the wrong gate. qs == nil means we used the in-memory path;
 // non-nil means the DB-backed Release fires in a goroutine.
-func (s *Semaphore) releaseFn(userID string, qs userQuotaGate) func() {
+func (s *Semaphore) releaseFn(key userKey, qs userQuotaGate) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			s.mu.Lock()
 			s.active--
 			if qs == nil {
-				s.decrementPerUser(userID)
+				s.decrementPerUser(key)
 			}
 			// Wake the next waiter if any. NOTE: the woken waiter's
 			// perUser count (or DB slot) stays as-is — its increment
@@ -339,14 +362,14 @@ func (s *Semaphore) releaseFn(userID string, qs userQuotaGate) func() {
 			// Cluster mode: DB Release after the mutex is released so
 			// the network round-trip doesn't block other Acquire
 			// callers. Background goroutine with a 5s timeout for safety.
-			if qs != nil && userID != "" {
-				go releaseInBackground(qs, userID)
+			if qs != nil && key.user != "" {
+				go releaseInBackground(qs, key)
 			}
 		})
 	}
 }
 
-func (s *Semaphore) cancelWaiter(target chan struct{}, userID string, qs userQuotaGate) {
+func (s *Semaphore) cancelWaiter(target chan struct{}, key userKey, qs userQuotaGate) {
 	s.mu.Lock()
 	needRelease := false
 	for i, w := range s.waiters {
@@ -354,13 +377,13 @@ func (s *Semaphore) cancelWaiter(target chan struct{}, userID string, qs userQuo
 			s.waiters = append(s.waiters[:i], s.waiters[i+1:]...)
 			s.queued--
 			if qs == nil {
-				s.decrementPerUser(userID)
+				s.decrementPerUser(key)
 			} else {
 				needRelease = true
 			}
 			s.mu.Unlock()
-			if needRelease && userID != "" {
-				go releaseInBackground(qs, userID)
+			if needRelease && key.user != "" {
+				go releaseInBackground(qs, key)
 			}
 			return
 		}
@@ -387,13 +410,13 @@ func (s *Semaphore) cancelWaiter(target chan struct{}, userID string, qs userQuo
 	case <-target:
 		s.active--
 		if qs == nil {
-			s.decrementPerUser(userID)
+			s.decrementPerUser(key)
 		} else {
 			needRelease = true
 		}
 		s.mu.Unlock()
-		if needRelease && userID != "" {
-			go releaseInBackground(qs, userID)
+		if needRelease && key.user != "" {
+			go releaseInBackground(qs, key)
 		}
 	default:
 		s.mu.Unlock()
@@ -406,14 +429,30 @@ func (s *Semaphore) cancelWaiter(target chan struct{}, userID string, qs userQuo
 // with Acquire's empty-userID path). Removes the entry when the count
 // hits zero so Stats().PerUser doesn't accumulate stale entries for
 // users no longer in flight.
-func (s *Semaphore) decrementPerUser(userID string) {
-	if userID == "" || s.perUser == nil {
+func (s *Semaphore) decrementPerUser(key userKey) {
+	if key.user == "" || s.perUser == nil {
 		return
 	}
-	s.perUser[userID]--
-	if s.perUser[userID] <= 0 {
-		delete(s.perUser, userID)
+	s.perUser[key]--
+	if s.perUser[key] <= 0 {
+		delete(s.perUser, key)
 	}
+}
+
+// fairnessDisplayKey renders a (tenant, user) pair as the single string
+// used as the map key in Stats().PerUser (the /v1/_concurrency/stats +
+// Prometheus per_user surface). tenant=="" renders as the bare user so
+// the single-tenant stats wire is byte-identical to the pre-tenant shape;
+// a real tenant renders as "tenant/user". DISPLAY ONLY — enforcement keys
+// on the userKey struct, so a "/" in an id can at worst merge two rows in
+// the display, never merge two caps. Kept identical to
+// coord.FairnessDisplayKey (the cluster-mode Snapshot path) so the stats
+// wire is the same across single-replica and cluster modes.
+func fairnessDisplayKey(tenantID, userID string) string {
+	if tenantID == "" {
+		return userID
+	}
+	return tenantID + "/" + userID
 }
 
 // IsBackpressure reports whether err is a BackpressureError.

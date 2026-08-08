@@ -143,11 +143,11 @@ func TestSemaphoreNoLeakOnCancellationRace(t *testing.T) {
 // care about per-tenant fairness see no behavior change.
 func TestAcquireForUser_NoCapBehavesLikeAcquire(t *testing.T) {
 	s := New(2, 4, time.Second) // no WithPerUserCap call
-	r1, err := s.AcquireForUser(context.Background(), "user_a")
+	r1, err := s.AcquireForUser(context.Background(), "", "user_a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, err := s.AcquireForUser(context.Background(), "user_a")
+	r2, err := s.AcquireForUser(context.Background(), "", "user_a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestAcquireForUser_EmptyUserIDSkipsCheck(t *testing.T) {
 	s := New(10, 4, time.Second).WithPerUserCap(2)
 	// Three acquires with empty userID should all succeed.
 	for i := 0; i < 3; i++ {
-		r, err := s.AcquireForUser(context.Background(), "")
+		r, err := s.AcquireForUser(context.Background(), "", "")
 		if err != nil {
 			t.Fatalf("empty-userID acquire %d: %v", i, err)
 		}
@@ -185,19 +185,19 @@ func TestAcquireForUser_EmptyUserIDSkipsCheck(t *testing.T) {
 // quota.
 func TestAcquireForUser_CapRefusesAtLimit(t *testing.T) {
 	s := New(10, 4, time.Second).WithPerUserCap(2)
-	r1, err := s.AcquireForUser(context.Background(), "user_a")
+	r1, err := s.AcquireForUser(context.Background(), "", "user_a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r1()
-	r2, err := s.AcquireForUser(context.Background(), "user_a")
+	r2, err := s.AcquireForUser(context.Background(), "", "user_a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r2()
 
 	// Third acquire by user_a hits the cap.
-	_, err = s.AcquireForUser(context.Background(), "user_a")
+	_, err = s.AcquireForUser(context.Background(), "", "user_a")
 	if !IsPerUserQuotaExhausted(err) {
 		t.Errorf("third acquire: got %v, want *ErrPerUserQuotaExhausted", err)
 	}
@@ -213,7 +213,7 @@ func TestAcquireForUser_CapRefusesAtLimit(t *testing.T) {
 	}
 
 	// user_b is unaffected — independent quota.
-	r3, err := s.AcquireForUser(context.Background(), "user_b")
+	r3, err := s.AcquireForUser(context.Background(), "", "user_b")
 	if err != nil {
 		t.Errorf("user_b first acquire: %v", err)
 	} else {
@@ -236,7 +236,7 @@ func TestAcquireForUser_CapRefusesAtLimit(t *testing.T) {
 // entries for users no longer in flight).
 func TestAcquireForUser_ReleaseDecrementsPerUser(t *testing.T) {
 	s := New(10, 4, time.Second).WithPerUserCap(4)
-	r, _ := s.AcquireForUser(context.Background(), "user_a")
+	r, _ := s.AcquireForUser(context.Background(), "", "user_a")
 	if s.Stats().PerUser["user_a"] != 1 {
 		t.Fatalf("after acquire, expected 1; got %d", s.Stats().PerUser["user_a"])
 	}
@@ -256,7 +256,7 @@ func TestAcquireForUser_QueuedCountsAgainstCap(t *testing.T) {
 	s := New(1, 4, 100*time.Millisecond).WithPerUserCap(2)
 
 	// First acquire by user_a takes the active slot.
-	r1, err := s.AcquireForUser(context.Background(), "user_a")
+	r1, err := s.AcquireForUser(context.Background(), "", "user_a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,14 +266,14 @@ func TestAcquireForUser_QueuedCountsAgainstCap(t *testing.T) {
 	// for user_a, exactly at cap). Run in a goroutine so we don't block.
 	queued := make(chan error, 1)
 	go func() {
-		_, err := s.AcquireForUser(context.Background(), "user_a")
+		_, err := s.AcquireForUser(context.Background(), "", "user_a")
 		queued <- err
 	}()
 	time.Sleep(20 * time.Millisecond) // let it enqueue
 
 	// Third acquire by user_a should be refused — user_a is at cap
 	// (1 active + 1 queued = 2).
-	_, err = s.AcquireForUser(context.Background(), "user_a")
+	_, err = s.AcquireForUser(context.Background(), "", "user_a")
 	if !IsPerUserQuotaExhausted(err) {
 		t.Errorf("third acquire: got %v, want per_user_quota_exhausted", err)
 	}
@@ -286,14 +286,14 @@ func TestAcquireForUser_QueuedCountsAgainstCap(t *testing.T) {
 // must decrement perUser, otherwise stale counts leak.
 func TestAcquireForUser_CancelDecrementsPerUser(t *testing.T) {
 	s := New(1, 4, time.Second).WithPerUserCap(2)
-	r1, _ := s.AcquireForUser(context.Background(), "user_a")
+	r1, _ := s.AcquireForUser(context.Background(), "", "user_a")
 	defer r1()
 
 	// user_a queues a second acquire, then cancels.
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.AcquireForUser(ctx, "user_a")
+		_, err := s.AcquireForUser(ctx, "", "user_a")
 		done <- err
 	}()
 	time.Sleep(20 * time.Millisecond)
@@ -312,24 +312,101 @@ func TestAcquireForUser_CancelDecrementsPerUser(t *testing.T) {
 	}
 }
 
+// TestSemaphore_PerUserCapIsolatedByTenant pins the tenant-aware keying: the
+// in-process per-user cap keys on the (tenant, user) pair, so "alice" in
+// tenant t1 and "alice" in tenant t2 hold INDEPENDENT caps. Under the prior
+// bare-user keying they shared one counter, so t2/alice would have been
+// refused while t1/alice held the only slot — this test fails against that
+// behaviour and passes now.
+//
+// Global capacity is large so the per-(tenant,user) cap of 1 — not the global
+// slot count — is always the limiting factor.
+func TestSemaphore_PerUserCapIsolatedByTenant(t *testing.T) {
+	s := New(100, 4, time.Second).WithPerUserCap(1)
+
+	// t1/alice takes its single slot.
+	r1, err := s.AcquireForUser(context.Background(), "t1", "alice")
+	if err != nil {
+		t.Fatalf("t1/alice first acquire: %v", err)
+	}
+
+	// t2/alice — same subject, different tenant — must succeed: independent cap.
+	r2, err := s.AcquireForUser(context.Background(), "t2", "alice")
+	if err != nil {
+		t.Fatalf("t2/alice acquire (independent tenant): %v", err)
+	}
+
+	// A second t1/alice acquire, while the first t1 slot is still held, is
+	// refused — the per-(tenant,user) cap of 1 is enforced WITHIN t1.
+	_, err = s.AcquireForUser(context.Background(), "t1", "alice")
+	if !IsPerUserQuotaExhausted(err) {
+		t.Errorf("second t1/alice acquire: got %v, want *ErrPerUserQuotaExhausted", err)
+	}
+
+	// Release t1's slot; a subsequent t1/alice acquire succeeds again.
+	r1()
+	r3, err := s.AcquireForUser(context.Background(), "t1", "alice")
+	if err != nil {
+		t.Errorf("t1/alice re-acquire after release: %v", err)
+	} else {
+		r3()
+	}
+	r2()
+}
+
+// TestSemaphore_SingleTenantPerUserUnchanged guards the backward-compat
+// claim: tenant "" is the shared/legacy tenant and must behave exactly like
+// the pre-tenant bare-user path — same cap enforcement, and Stats().PerUser
+// keyed by the bare user (fairnessDisplayKey("", user) == user), never a
+// tenant-prefixed "/user" key.
+func TestSemaphore_SingleTenantPerUserUnchanged(t *testing.T) {
+	s := New(10, 4, time.Second).WithPerUserCap(1)
+
+	r1, err := s.AcquireForUser(context.Background(), "", "alice")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer r1()
+
+	// Second acquire by the same bare user is refused at cap=1.
+	_, err = s.AcquireForUser(context.Background(), "", "alice")
+	if !IsPerUserQuotaExhausted(err) {
+		t.Errorf("second acquire: got %v, want *ErrPerUserQuotaExhausted", err)
+	}
+
+	st := s.Stats()
+	if st.PerUser["alice"] != 1 {
+		t.Errorf("PerUser[alice] = %d, want 1 (bare-user display key)", st.PerUser["alice"])
+	}
+	if _, ok := st.PerUser["/alice"]; ok {
+		t.Errorf("PerUser must not carry a tenant-prefixed key for tenant \"\": %v", st.PerUser)
+	}
+}
+
 // ---- v0.12.1 cluster-mode (userQuotaGate) tests ----
 
 // stubQuotaGate is the in-process fake for the v0.12.1 DB-backed
 // per-user counter. Lets us test Semaphore's cluster-mode dispatch
 // without standing up Postgres.
 type stubQuotaGate struct {
-	mu       sync.Mutex
-	counts   map[string]int
+	mu sync.Mutex
+	// counts keys on the (tenant, user) pair — same as the production
+	// userQuotaGate now does — so same-named subjects in different tenants
+	// can be stubbed independently. tenant=="" collapses to bare-user
+	// behaviour, keeping the single-tenant assertions below unchanged.
+	counts   map[userKey]int
 	failNext bool
-	atCapFor map[string]bool // when true, TryAcquire returns false+nil for this user
+	// atCapFor is a tenant-agnostic test knob keyed by bare userID: when set,
+	// TryAcquire returns false+nil for that user regardless of tenant.
+	atCapFor map[string]bool
 	releases int
 }
 
 func newStubQuotaGate() *stubQuotaGate {
-	return &stubQuotaGate{counts: map[string]int{}, atCapFor: map[string]bool{}}
+	return &stubQuotaGate{counts: map[userKey]int{}, atCapFor: map[string]bool{}}
 }
 
-func (g *stubQuotaGate) TryAcquire(_ context.Context, userID string, _ int) (bool, error) {
+func (g *stubQuotaGate) TryAcquire(_ context.Context, tenantID, userID string, _ int) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.failNext {
@@ -339,15 +416,16 @@ func (g *stubQuotaGate) TryAcquire(_ context.Context, userID string, _ int) (boo
 	if g.atCapFor[userID] {
 		return false, nil
 	}
-	g.counts[userID]++
+	g.counts[userKey{tenant: tenantID, user: userID}]++
 	return true, nil
 }
 
-func (g *stubQuotaGate) Release(_ context.Context, userID string) {
+func (g *stubQuotaGate) Release(_ context.Context, tenantID, userID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.counts[userID] > 0 {
-		g.counts[userID]--
+	k := userKey{tenant: tenantID, user: userID}
+	if g.counts[k] > 0 {
+		g.counts[k]--
 	}
 	g.releases++
 }
@@ -361,7 +439,9 @@ func (g *stubQuotaGate) Snapshot(_ context.Context) (map[string]int, error) {
 	out := make(map[string]int, len(g.counts))
 	for k, v := range g.counts {
 		if v > 0 {
-			out[k] = v
+			// Render display keys exactly as production Stats/Snapshot does,
+			// so tenant="" stays a bare user in the returned map.
+			out[fairnessDisplayKey(k.tenant, k.user)] = v
 		}
 	}
 	if len(out) == 0 {
@@ -370,10 +450,12 @@ func (g *stubQuotaGate) Snapshot(_ context.Context) (map[string]int, error) {
 	return out, nil
 }
 
+// count returns the active count for a single-tenant (tenant="") user — the
+// bare-user keying the existing assertions rely on.
 func (g *stubQuotaGate) count(userID string) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.counts[userID]
+	return g.counts[userKey{user: userID}]
 }
 
 func (g *stubQuotaGate) releaseCount() int {
@@ -392,7 +474,7 @@ func TestSemaphore_ClusterMode_DelegatesToQuotaGate(t *testing.T) {
 	gate := newStubQuotaGate()
 	s := New(10, 10, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
 
-	r, err := s.AcquireForUser(context.Background(), "alice")
+	r, err := s.AcquireForUser(context.Background(), "", "alice")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -401,7 +483,7 @@ func TestSemaphore_ClusterMode_DelegatesToQuotaGate(t *testing.T) {
 	}
 	// In-memory map must NOT be touched in cluster mode.
 	s.mu.Lock()
-	got := s.perUser["alice"]
+	got := s.perUser[userKey{user: "alice"}]
 	s.mu.Unlock()
 	if got != 0 {
 		t.Errorf("in-memory perUser[alice] = %d in cluster mode, want 0", got)
@@ -429,7 +511,7 @@ func TestSemaphore_ClusterMode_AtCapReturnsTypedError(t *testing.T) {
 	gate.atCapFor["alice"] = true
 	s := New(10, 10, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
 
-	_, err := s.AcquireForUser(context.Background(), "alice")
+	_, err := s.AcquireForUser(context.Background(), "", "alice")
 	if !IsPerUserQuotaExhausted(err) {
 		t.Errorf("got %v, want *ErrPerUserQuotaExhausted", err)
 	}
@@ -462,7 +544,7 @@ func TestSemaphore_ClusterMode_QueueFullCompensateReleases(t *testing.T) {
 
 	// Second acquire (with userID) calls gate.TryAcquire successfully
 	// but then hits queue-full backpressure.
-	_, err = s.AcquireForUser(context.Background(), "alice")
+	_, err = s.AcquireForUser(context.Background(), "", "alice")
 	if !IsBackpressure(err) {
 		t.Fatalf("got %v, want *BackpressureError", err)
 	}
@@ -490,7 +572,7 @@ func TestSemaphore_ClusterMode_GateFailureWrapsError(t *testing.T) {
 	gate.failNext = true
 	s := New(10, 10, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
 
-	_, err := s.AcquireForUser(context.Background(), "alice")
+	_, err := s.AcquireForUser(context.Background(), "", "alice")
 	if err == nil {
 		t.Fatal("expected error from gate failure")
 	}
@@ -507,7 +589,7 @@ func TestSemaphore_ClusterMode_StatsFromSnapshot(t *testing.T) {
 	gate := newStubQuotaGate()
 	s := New(10, 10, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
 
-	r, _ := s.AcquireForUser(context.Background(), "alice")
+	r, _ := s.AcquireForUser(context.Background(), "", "alice")
 	defer r()
 
 	st := s.Stats()
@@ -540,7 +622,7 @@ func TestSemaphore_ClusterMode_QueuedWaiterWakesAndReleases(t *testing.T) {
 
 	done := make(chan func(), 1)
 	go func() {
-		r, err := s.AcquireForUser(context.Background(), "alice")
+		r, err := s.AcquireForUser(context.Background(), "", "alice")
 		if err != nil {
 			t.Errorf("queued acquire: %v", err)
 			done <- nil

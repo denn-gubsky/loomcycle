@@ -75,7 +75,7 @@ func TestMetricsProm_EmitsExpectedSeries(t *testing.T) {
 func TestMetricsProm_PerUserSeriesOnlyWhenCapEnabled(t *testing.T) {
 	srv := newMetricsPromServer(t, true)
 	// Acquire a slot for a specific user_id so PerUser is populated.
-	rel, err := srv.sem.AcquireForUser(t.Context(), "alice")
+	rel, err := srv.sem.AcquireForUser(t.Context(), "", "alice")
 	if err != nil {
 		t.Fatalf("AcquireForUser failed: %v", err)
 	}
