@@ -228,6 +228,10 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 	case "global":
 		// Single shared cursor for the channel — empty scope_id.
 		return def, store.MemoryScopeGlobal, "", nil
+	case "tenant":
+		// Tenant-scoped: shared across the whole tenant (scope_id ""),
+		// isolated from other tenants by the store's tenant_id column.
+		return def, store.MemoryScopeTenant, "", nil
 	default:
 		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q has unknown scope %q (operator config bug)", name, def.Scope)
 	}
@@ -359,6 +363,7 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 
 	id, dropped, err := c.Store.ChannelPublish(ctx, store.ChannelMessage{
 		Channel:           channel,
+		TenantID:          tools.RunIdentity(ctx).TenantID, // RFC N: authoritative run tenant
 		Scope:             scope,
 		ScopeID:           scopeID,
 		Payload:           value,
@@ -481,6 +486,9 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
+	// RFC N: the authoritative run tenant, captured once so the long-poll
+	// read closure below uses the same value across retries.
+	tenantID := tools.RunIdentity(ctx).TenantID
 	limit := in.MaxMessages
 	if limit <= 0 {
 		limit = 10
@@ -492,7 +500,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	// from_cursor precedence: explicit > committed.
 	from := in.FromCursor
 	if from == "" {
-		committed, err := c.Store.ChannelCommittedCursor(ctx, in.Channel, scope, scopeID)
+		committed, err := c.Store.ChannelCommittedCursor(ctx, tenantID, in.Channel, scope, scopeID)
 		if err != nil {
 			return errResult(fmt.Sprintf("subscribe: read committed cursor: %s", err)), nil
 		}
@@ -500,7 +508,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	}
 
 	read := func() ([]store.ChannelMessage, string, error) {
-		return c.Store.ChannelSubscribe(ctx, in.Channel, scope, scopeID, from, limit)
+		return c.Store.ChannelSubscribe(ctx, tenantID, in.Channel, scope, scopeID, from, limit)
 	}
 
 	// Long-poll pattern: when long-poll is enabled, register the
@@ -637,7 +645,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	// explicit `ack` once processing is durable. The two-step
 	// pattern is documented in docs/TOOLS.md.
 	if next != "" {
-		if err := c.Store.ChannelAck(ctx, in.Channel, scope, scopeID, next); err != nil {
+		if err := c.Store.ChannelAck(ctx, tenantID, in.Channel, scope, scopeID, next); err != nil {
 			// Cursor regression on auto-commit is impossible by
 			// construction (we just read this cursor in the same
 			// txn, so it's always >= the previous committed value).
@@ -817,6 +825,11 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 		limit = 100
 	}
 
+	// RFC N: capture the run tenant ONCE here so the read closures below
+	// (and the long-poll re-read) all use the same authoritative value —
+	// never re-derive tenant inside a closure from a possibly-different ctx.
+	tenantID := tools.RunIdentity(ctx).TenantID
+
 	// Resolve + dedup every channel up front. Each goes through the
 	// SUBSCRIBE ACL + scope resolution (resolveChannel side="subscribe"),
 	// so await can't read a channel the agent can't subscribe to, and
@@ -843,7 +856,7 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 		}
 		from := in.FromCursor
 		if from == "" {
-			committed, err := c.Store.ChannelCommittedCursor(ctx, name, scope, scopeID)
+			committed, err := c.Store.ChannelCommittedCursor(ctx, tenantID, name, scope, scopeID)
 			if err != nil {
 				return errResult(fmt.Sprintf("await: read committed cursor for %q: %s", name, err)), nil
 			}
@@ -853,7 +866,7 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 	}
 
 	readChan := func(st *chanState) error {
-		msgs, next, err := c.Store.ChannelSubscribe(ctx, st.name, st.scope, st.scopeID, st.from, limit)
+		msgs, next, err := c.Store.ChannelSubscribe(ctx, tenantID, st.name, st.scope, st.scopeID, st.from, limit)
 		if err != nil {
 			return err
 		}
@@ -966,7 +979,7 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 				diag.poolTotal, diag.poolAcquired, diag.poolIdle = c.PoolStatsFn()
 			}
 			msgs, next, err := readWithRetry(func() ([]store.ChannelMessage, string, error) {
-				return c.Store.ChannelSubscribe(ctx, st.name, st.scope, st.scopeID, st.from, limit)
+				return c.Store.ChannelSubscribe(ctx, tenantID, st.name, st.scope, st.scopeID, st.from, limit)
 			}, st.name, diag)
 			if err != nil {
 				return errResult(fmt.Sprintf("await: read %q (after wake): %s", st.name, err)), nil
@@ -1024,7 +1037,8 @@ func (c *Channel) execAck(ctx context.Context, policy tools.ChannelPolicyValue, 
 	if in.Cursor == "" {
 		return errResult("ack: missing required field: cursor"), nil
 	}
-	if err := c.Store.ChannelAck(ctx, in.Channel, scope, scopeID, in.Cursor); err != nil {
+	tenantID := tools.RunIdentity(ctx).TenantID // RFC N: authoritative run tenant
+	if err := c.Store.ChannelAck(ctx, tenantID, in.Channel, scope, scopeID, in.Cursor); err != nil {
 		if errors.Is(err, store.ErrChannelCursorRegression) {
 			return errResult(fmt.Sprintf("ack: %s", err)), nil
 		}
@@ -1045,8 +1059,9 @@ func (c *Channel) execPeek(ctx context.Context, policy tools.ChannelPolicyValue,
 	if limit > 100 {
 		limit = 100
 	}
-	from := in.FromCursor // peek defaults to cur_0 (replay) when caller omits.
-	msgs, err := c.Store.ChannelPeek(ctx, in.Channel, scope, scopeID, from, limit)
+	from := in.FromCursor                       // peek defaults to cur_0 (replay) when caller omits.
+	tenantID := tools.RunIdentity(ctx).TenantID // RFC N: authoritative run tenant
+	msgs, err := c.Store.ChannelPeek(ctx, tenantID, in.Channel, scope, scopeID, from, limit)
 	if err != nil {
 		return errResult(fmt.Sprintf("peek: %s", err)), nil
 	}

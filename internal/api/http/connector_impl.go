@@ -1092,6 +1092,7 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 		_, _ = s.systemPublisher.PublishNow(
 			ctx,
 			"_system/interrupts/resolved",
+			tenantFromCtx(ctx), // RFC N: authoritative principal tenant
 			store.MemoryScopeUser, row.UserID,
 			payload, channels.SystemPublisherUserID, 0, 0,
 		)

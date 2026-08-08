@@ -76,7 +76,7 @@ func TestChannelSubscribe_ConcurrentPublishRace(t *testing.T) {
 					return
 				}
 				totalReads.Add(1)
-				msgs, _, err := s.ChannelSubscribe(ctx, "race-test",
+				msgs, _, err := s.ChannelSubscribe(ctx, "", "race-test",
 					store.MemoryScopeGlobal, "", "cur_0", 5000)
 				if err != nil {
 					t.Errorf("subscribe (worker %d msg %d): %v", workerID, j, err)
@@ -85,7 +85,7 @@ func TestChannelSubscribe_ConcurrentPublishRace(t *testing.T) {
 				if !containsMsg(msgs, msgID) {
 					missesOnFirstRead.Add(1)
 					time.Sleep(30 * time.Millisecond)
-					msgs2, _, err := s.ChannelSubscribe(ctx, "race-test",
+					msgs2, _, err := s.ChannelSubscribe(ctx, "", "race-test",
 						store.MemoryScopeGlobal, "", "cur_0", 5000)
 					if err != nil {
 						t.Errorf("subscribe retry (worker %d msg %d): %v",
@@ -194,7 +194,7 @@ func TestChannelSubscribe_CursorAdvanceRace(t *testing.T) {
 					return
 				default:
 				}
-				msgs, next, err := s.ChannelSubscribe(ctx, "cursor-race",
+				msgs, next, err := s.ChannelSubscribe(ctx, "", "cursor-race",
 					store.MemoryScopeGlobal, "", cursor, readBatchLimit)
 				if err != nil {
 					t.Errorf("subscribe: %v", err)

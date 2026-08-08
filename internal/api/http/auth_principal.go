@@ -667,6 +667,19 @@ func requiredScopeFor(method, path string) string {
 	// prefix — it has no slash after "memory".
 	case strings.HasPrefix(path, "/v1/_memory/"):
 		return auth.ScopeTenant
+	// The channel admin family (list/create/patch/delete/purge/publish/
+	// subscribe/peek/ack/_await/_broadcast). channel_messages/_cursors/
+	// the channels def table now carry a tenant_id (migration 0066), and
+	// every handler sources the tenant from the authenticated principal
+	// (tenantFromCtx / principalTenantScope), never the wire — so a
+	// substrate:tenant operator is confined to its own tenant's channels
+	// (list filters by tenant; the `global` cross-tenant scope stays
+	// admin-only to create). The routes were pinned to ScopeAdmin by the
+	// /v1/_* catch-all below; grant ScopeTenant so they're reachable, the
+	// handlers still confine. ScopeAdmin also satisfies. (Matches the
+	// RFC BV memory re-gate above; closes the RFC AS channels carve-out.)
+	case strings.HasPrefix(path, "/v1/_channels"):
+		return auth.ScopeTenant
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, cross-tenant user focus.

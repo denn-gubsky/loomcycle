@@ -14,7 +14,7 @@ import (
 // scope-blind ChannelStats can't give.
 func peekScopeCount(t *testing.T, st store.Store, channel string, scope store.MemoryScope, scopeID string) int {
 	t.Helper()
-	msgs, err := st.ChannelPeek(context.Background(), channel, scope, scopeID, "", 100)
+	msgs, err := st.ChannelPeek(context.Background(), "", channel, scope, scopeID, "", 100)
 	if err != nil {
 		t.Fatalf("ChannelPeek(%s/%s): %v", scope, scopeID, err)
 	}

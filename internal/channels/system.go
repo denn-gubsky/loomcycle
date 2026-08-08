@@ -26,17 +26,19 @@ import (
 // publishers bypass that gate by design.
 type SystemPublisher interface {
 	// Publish writes a message to a channel with optional future
-	// deliver time. publishedByUserID is the audit attribution
-	// ("_system" for internal, bearer-user-id for admin endpoint).
-	// Returns the persisted ChannelMessage row.
-	Publish(ctx context.Context, channel string, scope store.MemoryScope, scopeID string,
+	// deliver time. tenantID is the caller-authoritative owning tenant
+	// (RFC L authority model — derived from the principal / run, never
+	// from the wire or model). publishedByUserID is the audit
+	// attribution ("_system" for internal, bearer-user-id for admin
+	// endpoint). Returns the persisted ChannelMessage row.
+	Publish(ctx context.Context, channel, tenantID string, scope store.MemoryScope, scopeID string,
 		payload json.RawMessage, deliverAt time.Time, publishedByUserID string,
 		maxMessages int, defaultTTLSeconds int,
 	) (store.ChannelMessage, error)
 
 	// PublishNow is the convenience for "publish immediately" — same
 	// as Publish with a zero deliverAt.
-	PublishNow(ctx context.Context, channel string, scope store.MemoryScope, scopeID string,
+	PublishNow(ctx context.Context, channel, tenantID string, scope store.MemoryScope, scopeID string,
 		payload json.RawMessage, publishedByUserID string,
 		maxMessages int, defaultTTLSeconds int,
 	) (store.ChannelMessage, error)
@@ -59,7 +61,7 @@ type StorePublisher struct {
 const SystemPublisherUserID = "_system"
 
 // Publish implements SystemPublisher.
-func (p *StorePublisher) Publish(ctx context.Context, channel string, scope store.MemoryScope, scopeID string,
+func (p *StorePublisher) Publish(ctx context.Context, channel, tenantID string, scope store.MemoryScope, scopeID string,
 	payload json.RawMessage, deliverAt time.Time, publishedByUserID string,
 	maxMessages int, defaultTTLSeconds int,
 ) (store.ChannelMessage, error) {
@@ -82,6 +84,7 @@ func (p *StorePublisher) Publish(ctx context.Context, channel string, scope stor
 
 	msg := store.ChannelMessage{
 		Channel:           channel,
+		TenantID:          tenantID,
 		Scope:             scope,
 		ScopeID:           scopeID,
 		Payload:           payload,
@@ -119,9 +122,9 @@ func (p *StorePublisher) Publish(ctx context.Context, channel string, scope stor
 }
 
 // PublishNow implements SystemPublisher.
-func (p *StorePublisher) PublishNow(ctx context.Context, channel string, scope store.MemoryScope, scopeID string,
+func (p *StorePublisher) PublishNow(ctx context.Context, channel, tenantID string, scope store.MemoryScope, scopeID string,
 	payload json.RawMessage, publishedByUserID string,
 	maxMessages int, defaultTTLSeconds int,
 ) (store.ChannelMessage, error) {
-	return p.Publish(ctx, channel, scope, scopeID, payload, time.Time{}, publishedByUserID, maxMessages, defaultTTLSeconds)
+	return p.Publish(ctx, channel, tenantID, scope, scopeID, payload, time.Time{}, publishedByUserID, maxMessages, defaultTTLSeconds)
 }

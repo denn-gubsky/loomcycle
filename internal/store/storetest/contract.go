@@ -207,6 +207,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelSweepReapsExpired", testChannelSweepReapsExpired},
 		{"ChannelMaxMessagesTrimsOldest", testChannelMaxMessagesTrimsOldest},
 		{"ChannelScopeIsolation", testChannelScopeIsolation},
+		{"ChannelTenantIsolation", testChannelTenantIsolation},
 		{"ChannelPurge", testChannelPurge},
 		{"ChannelPeekDoesNotConsume", testChannelPeekDoesNotConsume},
 		{"ChannelReplayFromCursorZero", testChannelReplayFromCursorZero},
@@ -5074,7 +5075,7 @@ func testChannelPublishSubscribeRoundTrip(t *testing.T, s store.Store) {
 		// monotonic even on platforms with coarse time resolution.
 		time.Sleep(time.Microsecond)
 	}
-	msgs, next, err := s.ChannelSubscribe(ctx, "findings", store.MemoryScopeAgent, "researcher", "", 10)
+	msgs, next, err := s.ChannelSubscribe(ctx, "", "findings", store.MemoryScopeAgent, "researcher", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5100,7 +5101,7 @@ func testChannelPublishSubscribeRoundTrip(t *testing.T, s store.Store) {
 
 func testChannelSubscribeEmptyChannel(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	msgs, next, err := s.ChannelSubscribe(ctx, "unused", store.MemoryScopeAgent, "x", "", 10)
+	msgs, next, err := s.ChannelSubscribe(ctx, "", "unused", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5124,7 +5125,7 @@ func testChannelCursorAdvancesAcrossSubscribes(t *testing.T, s store.Store) {
 		time.Sleep(time.Microsecond)
 	}
 	// First page of 2.
-	msgs, next, err := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 2)
+	msgs, next, err := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5133,10 +5134,10 @@ func testChannelCursorAdvancesAcrossSubscribes(t *testing.T, s store.Store) {
 		t.Fatalf("page1: msgs=%d next=%q (want 2/%s)", len(msgs), next, wantNext1)
 	}
 	// Commit + read next page.
-	if err := s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", next); err != nil {
+	if err := s.ChannelAck(ctx, "", "ch", store.MemoryScopeAgent, "x", next); err != nil {
 		t.Fatal(err)
 	}
-	committed, err := s.ChannelCommittedCursor(ctx, "ch", store.MemoryScopeAgent, "x")
+	committed, err := s.ChannelCommittedCursor(ctx, "", "ch", store.MemoryScopeAgent, "x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5144,7 +5145,7 @@ func testChannelCursorAdvancesAcrossSubscribes(t *testing.T, s store.Store) {
 		t.Errorf("committed = %q, want %q", committed, wantNext1)
 	}
 	// Read from committed cursor.
-	msgs, next, err = s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", committed, 10)
+	msgs, next, err = s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", committed, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5165,14 +5166,14 @@ func testChannelAckIsIdempotent(t *testing.T, s store.Store) {
 	}, 0)
 	// v0.8.6: ChannelAck takes the tuple cursor returned by Subscribe,
 	// not a raw msg_id. Fetch the cursor through Subscribe.
-	msgs, cursor, err := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, cursor, err := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil || len(msgs) != 1 {
 		t.Fatalf("setup subscribe: msgs=%d err=%v", len(msgs), err)
 	}
-	if err := s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", cursor); err != nil {
+	if err := s.ChannelAck(ctx, "", "ch", store.MemoryScopeAgent, "x", cursor); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", cursor); err != nil {
+	if err := s.ChannelAck(ctx, "", "ch", store.MemoryScopeAgent, "x", cursor); err != nil {
 		t.Errorf("second ack of same cursor: %v (want nil — idempotent)", err)
 	}
 }
@@ -5190,19 +5191,19 @@ func testChannelAckRejectsCursorRegression(t *testing.T, s store.Store) {
 	}, 0)
 	// Get the two tuple cursors via Subscribe (one at a time, so each
 	// `next` reflects the per-message cursor).
-	msgs1, cur1, err := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 1)
+	msgs1, cur1, err := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 1)
 	if err != nil || len(msgs1) != 1 {
 		t.Fatalf("page1: %v / %d", err, len(msgs1))
 	}
-	msgs2, cur2, err := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", cur1, 1)
+	msgs2, cur2, err := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", cur1, 1)
 	if err != nil || len(msgs2) != 1 {
 		t.Fatalf("page2: %v / %d", err, len(msgs2))
 	}
-	if err := s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", cur2); err != nil {
+	if err := s.ChannelAck(ctx, "", "ch", store.MemoryScopeAgent, "x", cur2); err != nil {
 		t.Fatal(err)
 	}
 	// Trying to commit cur1 (older) must fail with ErrChannelCursorRegression.
-	err = s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", cur1)
+	err = s.ChannelAck(ctx, "", "ch", store.MemoryScopeAgent, "x", cur1)
 	if !errors.Is(err, store.ErrChannelCursorRegression) {
 		t.Errorf("got %v, want ErrChannelCursorRegression", err)
 	}
@@ -5229,18 +5230,18 @@ func testChannelListCursorsForScope(t *testing.T, s store.Store) {
 	}
 	// Alice acks both channels; bob acks only channel-a.
 	for _, ch := range []string{"channel-a", "channel-b"} {
-		_, next, _ := s.ChannelSubscribe(ctx, ch, store.MemoryScopeAgent, "alice", "", 1)
+		_, next, _ := s.ChannelSubscribe(ctx, "", ch, store.MemoryScopeAgent, "alice", "", 1)
 		if next != "" {
-			_ = s.ChannelAck(ctx, ch, store.MemoryScopeAgent, "alice", next)
+			_ = s.ChannelAck(ctx, "", ch, store.MemoryScopeAgent, "alice", next)
 		}
 	}
-	_, next, _ := s.ChannelSubscribe(ctx, "channel-a", store.MemoryScopeAgent, "bob", "", 1)
+	_, next, _ := s.ChannelSubscribe(ctx, "", "channel-a", store.MemoryScopeAgent, "bob", "", 1)
 	if next != "" {
-		_ = s.ChannelAck(ctx, "channel-a", store.MemoryScopeAgent, "bob", next)
+		_ = s.ChannelAck(ctx, "", "channel-a", store.MemoryScopeAgent, "bob", next)
 	}
 
 	// Alice's view: two rows, ordered ASC.
-	aliceRows, err := s.ChannelListCursorsForScope(ctx, store.MemoryScopeAgent, "alice")
+	aliceRows, err := s.ChannelListCursorsForScope(ctx, "", store.MemoryScopeAgent, "alice")
 	if err != nil {
 		t.Fatalf("alice list: %v", err)
 	}
@@ -5263,7 +5264,7 @@ func testChannelListCursorsForScope(t *testing.T, s store.Store) {
 	}
 
 	// Bob's view: one row (channel-a only).
-	bobRows, err := s.ChannelListCursorsForScope(ctx, store.MemoryScopeAgent, "bob")
+	bobRows, err := s.ChannelListCursorsForScope(ctx, "", store.MemoryScopeAgent, "bob")
 	if err != nil {
 		t.Fatalf("bob list: %v", err)
 	}
@@ -5272,7 +5273,7 @@ func testChannelListCursorsForScope(t *testing.T, s store.Store) {
 	}
 
 	// Mismatched scope: scope=user, scope_id=alice. No rows.
-	userRows, err := s.ChannelListCursorsForScope(ctx, store.MemoryScopeUser, "alice")
+	userRows, err := s.ChannelListCursorsForScope(ctx, "", store.MemoryScopeUser, "alice")
 	if err != nil {
 		t.Fatalf("user-scope list: %v", err)
 	}
@@ -5304,7 +5305,7 @@ func testChannelTTLFilteredAtRead(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msgs, _, err := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5360,7 +5361,7 @@ func testChannelMaxMessagesTrimsOldest(t *testing.T, s store.Store) {
 	if droppedTotal != 2 {
 		t.Errorf("total trimmed = %d, want 2", droppedTotal)
 	}
-	msgs, _, _ := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, _ := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if len(msgs) != 3 {
 		t.Errorf("post-trim msgs = %d, want 3 (the cap)", len(msgs))
 	}
@@ -5378,13 +5379,101 @@ func testChannelScopeIsolation(t *testing.T, s store.Store) {
 		Channel: "shared", Scope: store.MemoryScopeAgent, ScopeID: "agent-b",
 		Payload: json.RawMessage(`{"from":"b"}`),
 	}, 0)
-	msgs, _, _ := s.ChannelSubscribe(ctx, "shared", store.MemoryScopeAgent, "agent-a", "", 10)
+	msgs, _, _ := s.ChannelSubscribe(ctx, "", "shared", store.MemoryScopeAgent, "agent-a", "", 10)
 	if len(msgs) != 1 || !jsonEqual(msgs[0].Payload, `{"from":"a"}`) {
 		t.Errorf("agent-a sees: %+v, want only its own message", msgs)
 	}
-	msgs, _, _ = s.ChannelSubscribe(ctx, "shared", store.MemoryScopeAgent, "agent-b", "", 10)
+	msgs, _, _ = s.ChannelSubscribe(ctx, "", "shared", store.MemoryScopeAgent, "agent-b", "", 10)
 	if len(msgs) != 1 || !jsonEqual(msgs[0].Payload, `{"from":"b"}`) {
 		t.Errorf("agent-b sees: %+v, want only its own message", msgs)
+	}
+}
+
+// testChannelTenantIsolation pins the tenant axis (migration 0066): two
+// tenants using the SAME (channel, scope, scope_id) never see each other's
+// messages or cursors, the runtime def table is keyed per tenant, deleting
+// one tenant's channel leaves another tenant's same-named channel intact,
+// and the `global` scope stays a single cross-tenant keyspace. Fails on the
+// pre-0066 tenant-blind store (every read would leak across tenants).
+func testChannelTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// ---- message-plane isolation: same (channel, scope, scope_id), two tenants
+	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: "t-iso", TenantID: "t1", Scope: store.MemoryScopeAgent, ScopeID: "x",
+		Payload: json.RawMessage(`{"t":"1"}`),
+	}, 0); err != nil {
+		t.Fatalf("publish t1: %v", err)
+	}
+	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: "t-iso", TenantID: "t2", Scope: store.MemoryScopeAgent, ScopeID: "x",
+		Payload: json.RawMessage(`{"t":"2"}`),
+	}, 0); err != nil {
+		t.Fatalf("publish t2: %v", err)
+	}
+	m1, _, _ := s.ChannelSubscribe(ctx, "t1", "t-iso", store.MemoryScopeAgent, "x", "", 10)
+	if len(m1) != 1 || !jsonEqual(m1[0].Payload, `{"t":"1"}`) {
+		t.Errorf("t1 sees %+v, want only its own message (no cross-tenant leak)", m1)
+	}
+	m2, next2, _ := s.ChannelSubscribe(ctx, "t2", "t-iso", store.MemoryScopeAgent, "x", "", 10)
+	if len(m2) != 1 || !jsonEqual(m2[0].Payload, `{"t":"2"}`) {
+		t.Errorf("t2 sees %+v, want only its own message (no cross-tenant leak)", m2)
+	}
+
+	// ---- cursor-plane isolation: t2 acks; t1's committed cursor is untouched
+	if err := s.ChannelAck(ctx, "t2", "t-iso", store.MemoryScopeAgent, "x", next2); err != nil {
+		t.Fatalf("ack t2: %v", err)
+	}
+	c1, _ := s.ChannelCommittedCursor(ctx, "t1", "t-iso", store.MemoryScopeAgent, "x")
+	if c1 != "" {
+		t.Errorf("t1 committed cursor = %q after t2 ack, want empty (cursors are per-tenant)", c1)
+	}
+
+	// ---- def-plane isolation: both tenants own a same-named channel independently
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{Name: "dup", TenantID: "t1", Scope: "agent", Semantic: "queue"}); err != nil {
+		t.Fatalf("create dup t1: %v", err)
+	}
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{Name: "dup", TenantID: "t2", Scope: "user", Semantic: "queue"}); err != nil {
+		t.Fatalf("create dup t2 (same name, different tenant must be allowed): %v", err)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.ChannelGet(ctx, "t3", "dup"); !errors.As(err, &nf) {
+		t.Errorf("ChannelGet(t3,dup) err = %v, want *store.ErrNotFound (cross-tenant def must be invisible)", err)
+	}
+	rowT1, err := s.ChannelGet(ctx, "t1", "dup")
+	if err != nil || rowT1.Scope != "agent" {
+		t.Errorf("ChannelGet(t1,dup) = %+v err=%v, want t1's own row (scope=agent)", rowT1, err)
+	}
+
+	// ---- delete-cascade isolation: deleting t1's channel keeps t2's messages
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{Name: "del", TenantID: "t1", Scope: "agent", Semantic: "queue"}); err != nil {
+		t.Fatalf("create del t1: %v", err)
+	}
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{Name: "del", TenantID: "t2", Scope: "agent", Semantic: "queue"}); err != nil {
+		t.Fatalf("create del t2: %v", err)
+	}
+	_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{Channel: "del", TenantID: "t1", Scope: store.MemoryScopeAgent, ScopeID: "y", Payload: json.RawMessage(`{}`)}, 0)
+	_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{Channel: "del", TenantID: "t2", Scope: store.MemoryScopeAgent, ScopeID: "y", Payload: json.RawMessage(`{}`)}, 0)
+	if err := s.ChannelsDelete(ctx, "t1", "del"); err != nil {
+		t.Fatalf("delete del t1: %v", err)
+	}
+	survivors, _, _ := s.ChannelSubscribe(ctx, "t2", "del", store.MemoryScopeAgent, "y", "", 10)
+	if len(survivors) != 1 {
+		t.Errorf("t2 del messages after t1 delete = %d, want 1 (cascade must be tenant-scoped)", len(survivors))
+	}
+
+	// ---- global scope is a single cross-tenant keyspace (tenant_id forced "")
+	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: "g", TenantID: "t1", Scope: store.MemoryScopeGlobal, ScopeID: "",
+		Payload: json.RawMessage(`{"g":true}`),
+	}, 0); err != nil {
+		t.Fatalf("publish global t1: %v", err)
+	}
+	// A different tenant reading the SAME global channel must see it — global
+	// is shared across tenants (operator/infra broadcast), unlike agent/user.
+	gmsgs, _, _ := s.ChannelSubscribe(ctx, "t2", "g", store.MemoryScopeGlobal, "", "", 10)
+	if len(gmsgs) != 1 || !jsonEqual(gmsgs[0].Payload, `{"g":true}`) {
+		t.Errorf("t2 global read = %+v, want t1's global message (global is cross-tenant)", gmsgs)
 	}
 }
 
@@ -5404,19 +5493,19 @@ func testChannelPurge(t *testing.T, s store.Store) {
 		}
 	}
 
-	n, err := s.ChannelPurge(ctx, "purge-ch")
+	n, err := s.ChannelPurge(ctx, "", "purge-ch")
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
 	if n != 3 {
 		t.Errorf("purge returned %d, want 3", n)
 	}
-	if msgs, _, _ := s.ChannelSubscribe(ctx, "purge-ch", store.MemoryScopeAgent, "x", "", 10); len(msgs) != 0 {
+	if msgs, _, _ := s.ChannelSubscribe(ctx, "", "purge-ch", store.MemoryScopeAgent, "x", "", 10); len(msgs) != 0 {
 		t.Errorf("post-purge msgs = %d, want 0 (queue drained)", len(msgs))
 	}
 
 	// Idempotent on an already-empty channel.
-	n2, err := s.ChannelPurge(ctx, "purge-ch")
+	n2, err := s.ChannelPurge(ctx, "", "purge-ch")
 	if err != nil {
 		t.Fatalf("purge empty: %v", err)
 	}
@@ -5424,7 +5513,7 @@ func testChannelPurge(t *testing.T, s store.Store) {
 		t.Errorf("purge empty returned %d, want 0", n2)
 	}
 	// Idempotent on a never-seen channel (existence is the caller's concern).
-	if n3, err := s.ChannelPurge(ctx, "never-existed"); err != nil || n3 != 0 {
+	if n3, err := s.ChannelPurge(ctx, "", "never-existed"); err != nil || n3 != 0 {
 		t.Errorf("purge unknown channel = (%d, %v), want (0, nil)", n3, err)
 	}
 
@@ -5435,7 +5524,7 @@ func testChannelPurge(t *testing.T, s store.Store) {
 	}, 0); err != nil {
 		t.Fatalf("publish after purge: %v", err)
 	}
-	if msgs, _, _ := s.ChannelSubscribe(ctx, "purge-ch", store.MemoryScopeAgent, "x", "", 10); len(msgs) != 1 {
+	if msgs, _, _ := s.ChannelSubscribe(ctx, "", "purge-ch", store.MemoryScopeAgent, "x", "", 10); len(msgs) != 1 {
 		t.Errorf("post-purge-republish msgs = %d, want 1", len(msgs))
 	}
 }
@@ -5447,10 +5536,10 @@ func testChannelPeekDoesNotConsume(t *testing.T, s store.Store) {
 		Payload: json.RawMessage(`{}`),
 	}, 0)
 	// Peek does not modify the committed cursor.
-	if msgs, err := s.ChannelPeek(ctx, "ch", store.MemoryScopeAgent, "x", "", 10); err != nil || len(msgs) != 1 || msgs[0].ID != id {
+	if msgs, err := s.ChannelPeek(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10); err != nil || len(msgs) != 1 || msgs[0].ID != id {
 		t.Fatalf("peek: msgs=%+v err=%v want one msg with id %q", msgs, err, id)
 	}
-	committed, err := s.ChannelCommittedCursor(ctx, "ch", store.MemoryScopeAgent, "x")
+	committed, err := s.ChannelCommittedCursor(ctx, "", "ch", store.MemoryScopeAgent, "x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5520,7 +5609,7 @@ func testChannelGetPointLookup(t *testing.T, s store.Store) {
 		t.Fatalf("ChannelsCreate: %v", err)
 	}
 
-	got, err := s.ChannelGet(ctx, "cg-point")
+	got, err := s.ChannelGet(ctx, "", "cg-point")
 	if err != nil {
 		t.Fatalf("ChannelGet(existing): %v", err)
 	}
@@ -5529,7 +5618,7 @@ func testChannelGetPointLookup(t *testing.T, s store.Store) {
 		t.Errorf("ChannelGet round-trip mismatch: %+v", got)
 	}
 
-	_, err = s.ChannelGet(ctx, "cg-absent")
+	_, err = s.ChannelGet(ctx, "", "cg-absent")
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("ChannelGet(missing): got %v (%T), want *store.ErrNotFound", err, err)
@@ -5546,13 +5635,13 @@ func testChannelReplayFromCursorZero(t *testing.T, s store.Store) {
 		time.Sleep(time.Microsecond)
 	}
 	// Drain + commit.
-	msgs, next, _ := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, next, _ := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if len(msgs) != 3 {
 		t.Fatalf("drain: got %d, want 3", len(msgs))
 	}
-	_ = s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", next)
+	_ = s.ChannelAck(ctx, "", "ch", store.MemoryScopeAgent, "x", next)
 	// from_cursor=cur_0 replays everything regardless of committed.
-	msgs, _, _ = s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "cur_0", 10)
+	msgs, _, _ = s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "cur_0", 10)
 	if len(msgs) != 3 {
 		t.Errorf("replay: got %d, want 3 (cur_0 must ignore committed cursor)", len(msgs))
 	}
@@ -5576,7 +5665,7 @@ func testChannelDeferredHiddenUntilVisible(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("publish deferred: %v", err)
 	}
-	msgs, _, err := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatalf("immediate subscribe: %v", err)
 	}
@@ -5585,7 +5674,7 @@ func testChannelDeferredHiddenUntilVisible(t *testing.T, s store.Store) {
 	}
 	// Wait past visible_at, then verify it shows up.
 	time.Sleep(200 * time.Millisecond)
-	msgs, _, err = s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, err = s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatalf("post-visible subscribe: %v", err)
 	}
@@ -5618,7 +5707,7 @@ func testChannelDeferredDeliversAfterProgressedCursor(t *testing.T, s store.Stor
 		Payload: json.RawMessage(`"C"`),
 	}, 0)
 	// First subscribe: A and C only. B is not yet visible.
-	msgs, next, err := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, next, err := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatalf("page1: %v", err)
 	}
@@ -5629,7 +5718,7 @@ func testChannelDeferredDeliversAfterProgressedCursor(t *testing.T, s store.Stor
 		t.Errorf("page1 order = %s, %s; want A, C", msgs[0].Payload, msgs[1].Payload)
 	}
 	// Commit cursor past C.
-	if err := s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", next); err != nil {
+	if err := s.ChannelAck(ctx, "", "ch", store.MemoryScopeAgent, "x", next); err != nil {
 		t.Fatal(err)
 	}
 	// Wait past visible_at for B.
@@ -5638,7 +5727,7 @@ func testChannelDeferredDeliversAfterProgressedCursor(t *testing.T, s store.Stor
 	// msg_id is < C's. This is the (visible_at, id) tuple-ordering
 	// invariant that prevents silent skip-on-progress for deferred
 	// messages.
-	msgs, _, err = s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", next, 10)
+	msgs, _, err = s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", next, 10)
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
@@ -5667,7 +5756,7 @@ func testChannelDeferredTTLCountsFromPublished(t *testing.T, s store.Store) {
 	// expired AND become visible — the read-path filter should
 	// hide it because expires_at <= now.
 	time.Sleep(250 * time.Millisecond)
-	msgs, _, _ := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "cur_0", 10)
+	msgs, _, _ := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "cur_0", 10)
 	if len(msgs) != 0 {
 		t.Errorf("expired-before-visible delivered %d msgs, want 0", len(msgs))
 	}
@@ -5681,7 +5770,7 @@ func testChannelDeferredPastDeliverAtTreatedAsNow(t *testing.T, s store.Store) {
 		Payload:   json.RawMessage(`"past"`),
 		VisibleAt: time.Now().Add(-10 * time.Second),
 	}, 0)
-	msgs, _, _ := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, _ := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if len(msgs) != 1 {
 		t.Errorf("past visible_at delivered %d, want 1", len(msgs))
 	}
@@ -5696,14 +5785,14 @@ func testChannelDeferredAckCommitsTupleCursor(t *testing.T, s store.Store) {
 		VisibleAt: deferTo,
 	}, 0)
 	time.Sleep(120 * time.Millisecond)
-	msgs, next, _ := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, next, _ := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if len(msgs) != 1 {
 		t.Fatalf("subscribe len = %d, want 1", len(msgs))
 	}
-	if err := s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", next); err != nil {
+	if err := s.ChannelAck(ctx, "", "ch", store.MemoryScopeAgent, "x", next); err != nil {
 		t.Fatal(err)
 	}
-	committed, _ := s.ChannelCommittedCursor(ctx, "ch", store.MemoryScopeAgent, "x")
+	committed, _ := s.ChannelCommittedCursor(ctx, "", "ch", store.MemoryScopeAgent, "x")
 	if committed != next {
 		t.Errorf("committed = %q, want %q", committed, next)
 	}
@@ -5746,7 +5835,7 @@ func testChannelMaxMessagesTrimPreservesDeferred(t *testing.T, s store.Store) {
 
 	// Peek from cur_0 to see ALL non-expired rows regardless of
 	// visibility — we want to confirm B (deferred) is still there.
-	rows, err := s.ChannelPeek(ctx, "ch", store.MemoryScopeAgent, "x", "cur_0", 100)
+	rows, err := s.ChannelPeek(ctx, "", "ch", store.MemoryScopeAgent, "x", "cur_0", 100)
 	if err != nil {
 		t.Fatalf("peek: %v", err)
 	}
@@ -5810,7 +5899,7 @@ func testChannelPublishedByUserIDRoundTrip(t *testing.T, s store.Store) {
 		Payload:           json.RawMessage(`"hi"`),
 		PublishedByUserID: "alice",
 	}, 0)
-	msgs, _, _ := s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, _ := s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if len(msgs) != 1 {
 		t.Fatalf("subscribe len = %d, want 1", len(msgs))
 	}

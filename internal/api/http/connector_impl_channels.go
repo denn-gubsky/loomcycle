@@ -39,6 +39,10 @@ func resolveChannelScope(scopeStr, scopeID string) (store.MemoryScope, string, e
 			return "", "", fmt.Errorf("%w: scope=user requires scope_id", connector.ErrChannelScopeInvalid)
 		}
 		return store.MemoryScopeUser, scopeID, nil
+	case "tenant":
+		// Tenant-scoped: shared across the whole tenant (scope_id ""),
+		// isolated from other tenants by the store's tenant_id column.
+		return store.MemoryScopeTenant, "", nil
 	default:
 		return "", "", fmt.Errorf("%w: got %q", connector.ErrChannelScopeInvalid, scopeStr)
 	}
@@ -64,7 +68,7 @@ func (s *Server) requireChannelDeclared(ctx context.Context, name string) (chann
 		// publish/subscribe/peek/ack), and propagate a genuine store fault
 		// instead of swallowing it — the old `if err == nil` masked any
 		// transient error as a spurious channel_not_declared denial.
-		row, err := s.store.ChannelGet(ctx, name)
+		row, err := s.store.ChannelGet(ctx, tenantFromCtx(ctx), name)
 		switch {
 		case err == nil:
 			return channelDef{
@@ -136,7 +140,10 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 		publishedBy = scopeID
 	}
 
-	msg, err := s.systemPublisher.Publish(ctx, req.Channel, scope, scopeID,
+	// RFC N: the owning tenant is derived from the authenticated principal,
+	// never from the request body or scope_id.
+	tenantID := tenantFromCtx(ctx)
+	msg, err := s.systemPublisher.Publish(ctx, req.Channel, tenantID, scope, scopeID,
 		req.Payload, deliverAt, publishedBy, def.MaxMessages, def.DefaultTTL)
 	if err != nil {
 		return connector.ChannelPublishResult{}, fmt.Errorf("publish: %w", err)
@@ -178,9 +185,13 @@ func (s *Server) SubscribeChannel(ctx context.Context, req connector.ChannelSubs
 		limit = 100
 	}
 
+	// RFC N: capture the principal's tenant once so the long-poll read
+	// closure below uses the same authoritative value on the re-read.
+	tenantID := tenantFromCtx(ctx)
+
 	from := req.FromCursor
 	if from == "" {
-		committed, err := s.store.ChannelCommittedCursor(ctx, req.Channel, scope, scopeID)
+		committed, err := s.store.ChannelCommittedCursor(ctx, tenantID, req.Channel, scope, scopeID)
 		if err != nil {
 			return connector.ChannelSubscribeResult{}, fmt.Errorf("subscribe: read committed cursor: %w", err)
 		}
@@ -188,7 +199,7 @@ func (s *Server) SubscribeChannel(ctx context.Context, req connector.ChannelSubs
 	}
 
 	read := func() ([]store.ChannelMessage, string, error) {
-		return s.store.ChannelSubscribe(ctx, req.Channel, scope, scopeID, from, limit)
+		return s.store.ChannelSubscribe(ctx, tenantID, req.Channel, scope, scopeID, from, limit)
 	}
 	msgs, next, err := read()
 	if err != nil {
@@ -231,7 +242,7 @@ func (s *Server) SubscribeChannel(ctx context.Context, req connector.ChannelSubs
 	// error is a transient store fault — log + return the batch anyway
 	// (caller will re-receive on next subscribe; not silent data loss).
 	if next != "" && len(msgs) > 0 {
-		if ackErr := s.store.ChannelAck(ctx, req.Channel, scope, scopeID, next); ackErr != nil {
+		if ackErr := s.store.ChannelAck(ctx, tenantID, req.Channel, scope, scopeID, next); ackErr != nil {
 			if !errors.Is(ackErr, store.ErrChannelCursorRegression) {
 				// Same logging path as the in-band tool. The audit hole
 				// is documented in channel.go:execSubscribe; the wire
@@ -266,7 +277,8 @@ func (s *Server) PeekChannel(ctx context.Context, req connector.ChannelPeekReque
 		limit = 100
 	}
 
-	msgs, err := s.store.ChannelPeek(ctx, req.Channel, scope, scopeID, req.FromCursor, limit)
+	tenantID := tenantFromCtx(ctx) // RFC N: authoritative principal tenant
+	msgs, err := s.store.ChannelPeek(ctx, tenantID, req.Channel, scope, scopeID, req.FromCursor, limit)
 	if err != nil {
 		return connector.ChannelPeekResult{}, fmt.Errorf("peek: %w", err)
 	}
@@ -305,7 +317,7 @@ func (s *Server) AckChannel(ctx context.Context, req connector.ChannelAckRequest
 		return connector.ChannelAckResult{}, err
 	}
 
-	if err := s.store.ChannelAck(ctx, req.Channel, scope, scopeID, req.Cursor); err != nil {
+	if err := s.store.ChannelAck(ctx, tenantFromCtx(ctx), req.Channel, scope, scopeID, req.Cursor); err != nil {
 		if errors.Is(err, store.ErrChannelCursorRegression) {
 			return connector.ChannelAckResult{}, connector.ErrChannelCursorRegression
 		}
@@ -377,9 +389,10 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 	if scope == store.MemoryScopeUser {
 		publishedBy = scopeID
 	}
+	tenantID := tenantFromCtx(ctx) // RFC N: authoritative principal tenant
 	out := connector.ChannelBroadcastResult{Results: make([]connector.ChannelBroadcastEntry, 0, len(targets))}
 	for _, t := range targets {
-		msg, perr := s.systemPublisher.Publish(ctx, t.name, scope, scopeID,
+		msg, perr := s.systemPublisher.Publish(ctx, t.name, tenantID, scope, scopeID,
 			req.Payload, deliverAt, publishedBy, t.def.MaxMessages, t.def.DefaultTTL)
 		if perr != nil {
 			out.Failed++
@@ -439,6 +452,10 @@ func (s *Server) AwaitChannels(ctx context.Context, req connector.ChannelAwaitRe
 		limit = 100
 	}
 
+	// RFC N: capture the principal's tenant once so every read closure
+	// (initial + long-poll re-read) uses the same authoritative value.
+	tenantID := tenantFromCtx(ctx)
+
 	type chanState struct {
 		name string
 		from string
@@ -457,7 +474,7 @@ func (s *Server) AwaitChannels(ctx context.Context, req connector.ChannelAwaitRe
 		}
 		from := req.FromCursor
 		if from == "" {
-			committed, cerr := s.store.ChannelCommittedCursor(ctx, name, scope, scopeID)
+			committed, cerr := s.store.ChannelCommittedCursor(ctx, tenantID, name, scope, scopeID)
 			if cerr != nil {
 				return connector.ChannelAwaitResult{}, fmt.Errorf("await: read committed cursor for %q: %w", name, cerr)
 			}
@@ -467,7 +484,7 @@ func (s *Server) AwaitChannels(ctx context.Context, req connector.ChannelAwaitRe
 	}
 
 	readChan := func(st *chanState) error {
-		msgs, next, rerr := s.store.ChannelSubscribe(ctx, st.name, scope, scopeID, st.from, limit)
+		msgs, next, rerr := s.store.ChannelSubscribe(ctx, tenantID, st.name, scope, scopeID, st.from, limit)
 		if rerr != nil {
 			return rerr
 		}

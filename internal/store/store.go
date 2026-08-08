@@ -2002,20 +2002,20 @@ type Store interface {
 	// nextCursor is the id of the LAST message in the returned batch
 	// (empty when batch is empty); committing it via ChannelAck
 	// advances the per-subscriber position.
-	ChannelSubscribe(ctx context.Context, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) (msgs []ChannelMessage, nextCursor string, err error)
+	ChannelSubscribe(ctx context.Context, tenantID, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) (msgs []ChannelMessage, nextCursor string, err error)
 
 	// ChannelAck advances the committed cursor for one subscriber to
 	// the supplied cursor value. Idempotent — re-acking the same
 	// cursor is a no-op. Acking a cursor older than the current
 	// committed value is rejected with ErrChannelCursorRegression so
 	// out-of-order acks from buggy agents can't rewind delivery.
-	ChannelAck(ctx context.Context, channel string, scope MemoryScope, scopeID, cursor string) error
+	ChannelAck(ctx context.Context, tenantID, channel string, scope MemoryScope, scopeID, cursor string) error
 
 	// ChannelCommittedCursor returns the most recent cursor a
 	// subscriber acked, or empty string when no ack has happened
 	// yet (= read from oldest non-expired). Used by ChannelSubscribe
 	// when callers omit fromCursor — "pick up where I left off".
-	ChannelCommittedCursor(ctx context.Context, channel string, scope MemoryScope, scopeID string) (string, error)
+	ChannelCommittedCursor(ctx context.Context, tenantID, channel string, scope MemoryScope, scopeID string) (string, error)
 
 	// ChannelListCursorsForScope returns every channel_cursors row
 	// matching (scope, scope_id). v0.9.x introspection — drives the
@@ -2025,7 +2025,7 @@ type Store interface {
 	// (scope, scope_id) tuple has no cursors. Returns the full set so
 	// the UI can render "all channels this agent has ack'd on"
 	// without N+1 per-channel queries.
-	ChannelListCursorsForScope(ctx context.Context, scope MemoryScope, scopeID string) ([]ChannelCursorEntry, error)
+	ChannelListCursorsForScope(ctx context.Context, tenantID string, scope MemoryScope, scopeID string) ([]ChannelCursorEntry, error)
 
 	// ChannelSweepExpired deletes every channel_messages row whose
 	// expires_at has passed. Returns the deleted row count for the
@@ -2037,7 +2037,7 @@ type Store interface {
 	// but never updates a cursor and never auto-advances. Powers
 	// the tool's "peek" op for debugging — operators can replay
 	// from cur_0 without disturbing the consumer's position.
-	ChannelPeek(ctx context.Context, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) ([]ChannelMessage, error)
+	ChannelPeek(ctx context.Context, tenantID, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) ([]ChannelMessage, error)
 
 	// ChannelStats returns one row per channel that has at least one
 	// non-expired message, with the aggregate count + oldest/newest
@@ -2763,7 +2763,7 @@ type Store interface {
 	// peek/ack declared-check doesn't scan the whole table per op, and
 	// so a real store fault surfaces as an error instead of an empty
 	// list that masquerades as "not declared" (exp7 I5).
-	ChannelGet(ctx context.Context, name string) (ChannelRow, error)
+	ChannelGet(ctx context.Context, tenantID, name string) (ChannelRow, error)
 
 	// ChannelsCreate inserts a new runtime channel. Returns
 	// *ErrConflict{Kind:"channel"} when a runtime row with the
@@ -2774,12 +2774,12 @@ type Store interface {
 	// ChannelsUpdate patches mutable fields on a runtime channel
 	// (description, default_ttl, max_messages, semantic). Returns
 	// ErrNotFound when the name isn't in the runtime table.
-	ChannelsUpdate(ctx context.Context, name string, patch ChannelPatch) error
+	ChannelsUpdate(ctx context.Context, tenantID, name string, patch ChannelPatch) error
 
 	// ChannelsDelete removes a runtime channel + cascades deletion
 	// of its persisted messages + cursors. Returns ErrNotFound when
 	// the name isn't in the runtime table.
-	ChannelsDelete(ctx context.Context, name string) error
+	ChannelsDelete(ctx context.Context, tenantID, name string) error
 
 	// ChannelPurge deletes all buffered messages for a channel WITHOUT
 	// removing the channel definition or subscriber cursors — the
@@ -2789,7 +2789,7 @@ type Store interface {
 	// channel_messages table. Idempotent — purging a channel with no
 	// messages returns (0, nil) rather than ErrNotFound; existence is
 	// the caller's concern. Returns the number of messages deleted.
-	ChannelPurge(ctx context.Context, name string) (int, error)
+	ChannelPurge(ctx context.Context, tenantID, name string) (int, error)
 
 	// Close releases backend resources. Idempotent.
 	Close() error
@@ -2803,6 +2803,7 @@ type Store interface {
 // cfg.Channels at merge time.
 type ChannelRow struct {
 	Name        string
+	TenantID    string // RFC L/N owning tenant; "" = shared/legacy
 	Description string
 	Scope       string
 	Semantic    string
@@ -2868,6 +2869,23 @@ const (
 	// CHECK constraint, and the tenant axis arrived with migration 0059.
 	MemoryScopeTenant MemoryScope = "tenant"
 )
+
+// ChannelScopeTenant normalizes the tenant for a channel access. The
+// `global` scope is a single keyspace shared across ALL tenants
+// (tenant_id="", per the MemoryScopeGlobal contract above), so a global
+// access always resolves to "" regardless of the caller's tenant; every
+// other scope is partitioned by the caller's tenant. Centralizing the
+// rule here makes "global is cross-tenant" an unbreakable invariant — no
+// caller can accidentally tenant-partition a global channel, which would
+// desync a tenant agent (or a legacy operator whose tenant is "default")
+// from operator/infra publishes such as heartbeats. Channel store methods
+// apply this to the (tenant, scope) they receive before touching a row.
+func ChannelScopeTenant(tenantID string, scope MemoryScope) string {
+	if scope == MemoryScopeGlobal {
+		return ""
+	}
+	return tenantID
+}
 
 // MemorySearchFilter narrows which memory rows a vector or full-text search may
 // return. It replaces the bare keyPrefix argument both search methods used to take
@@ -3300,8 +3318,12 @@ func (e *MemoryError) Is(target error) bool {
 //     from the run's UserID; system publishes use the "_system"
 //     sentinel; admin-endpoint publishes use the bearer's user.
 type ChannelMessage struct {
-	ID                string          `json:"id"`
-	Channel           string          `json:"channel"`
+	ID      string `json:"id"`
+	Channel string `json:"channel"`
+	// TenantID is the server-derived owning tenant (RFC L authority model
+	// — never caller-supplied). "" = the shared/legacy tenant; omitempty
+	// keeps single-tenant wire + snapshot bytes unchanged.
+	TenantID          string          `json:"tenant_id,omitempty"`
 	Scope             MemoryScope     `json:"scope"` // re-uses MemoryScope so operators don't track two enums
 	ScopeID           string          `json:"scope_id"`
 	Payload           json.RawMessage `json:"payload"`
@@ -3317,6 +3339,7 @@ type ChannelMessage struct {
 // admin listing reflects what subscribers would actually receive.
 type ChannelStats struct {
 	Channel         string    `json:"channel"`
+	TenantID        string    `json:"tenant_id,omitempty"` // owning tenant; stats are aggregated per (tenant, channel)
 	MessageCount    int64     `json:"message_count"`
 	OldestVisibleAt time.Time `json:"oldest_visible_at,omitempty"`
 	NewestVisibleAt time.Time `json:"newest_visible_at,omitempty"`
@@ -4488,6 +4511,7 @@ type MemorySnapshotEntry struct {
 // cursor field is the opaque string form ack'd by the subscriber.
 type ChannelCursorEntry struct {
 	Channel   string      `json:"channel"`
+	TenantID  string      `json:"tenant_id,omitempty"`
 	Scope     MemoryScope `json:"scope"`
 	ScopeID   string      `json:"scope_id"`
 	Cursor    string      `json:"cursor"`

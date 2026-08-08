@@ -37,7 +37,7 @@ func (rec *Receiver) dispatchOnComplete(ctx context.Context, name string, wd con
 func (rec *Receiver) dispatchOneOnComplete(ctx context.Context, name, tenantID string, h config.ScheduledRunHook, runID, agentID, userID string) error {
 	switch h.Kind {
 	case "channel.publish":
-		return rec.dispatchOnCompleteChannelPublish(ctx, name, h, runID, agentID, userID)
+		return rec.dispatchOnCompleteChannelPublish(ctx, name, tenantID, h, runID, agentID, userID)
 	case "memory.set":
 		return rec.dispatchOnCompleteMemorySet(ctx, name, tenantID, h, userID)
 	case "mcp.call":
@@ -60,7 +60,7 @@ func (rec *Receiver) dispatchOneOnComplete(ctx context.Context, name, tenantID s
 // The published payload carries the webhook name + run/agent ids alongside
 // the operator-declared hook payload so a downstream consumer can correlate
 // the delivery to the run that produced it.
-func (rec *Receiver) dispatchOnCompleteChannelPublish(ctx context.Context, name string, h config.ScheduledRunHook, runID, agentID, userID string) error {
+func (rec *Receiver) dispatchOnCompleteChannelPublish(ctx context.Context, name, tenantID string, h config.ScheduledRunHook, runID, agentID, userID string) error {
 	if h.Channel == "" {
 		return fmt.Errorf("channel.publish missing `channel`")
 	}
@@ -83,7 +83,10 @@ func (rec *Receiver) dispatchOnCompleteChannelPublish(ctx context.Context, name 
 		scopeID = userID
 	}
 	msg := store.ChannelMessage{
-		Channel:           h.Channel,
+		Channel: h.Channel,
+		// RFC N: the owning tenant comes from the webhook def (wd.TenantID),
+		// threaded down from dispatchOnComplete — never from the hook payload.
+		TenantID:          tenantID,
 		Scope:             scope,
 		ScopeID:           scopeID,
 		Payload:           payload,

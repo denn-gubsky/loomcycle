@@ -280,6 +280,16 @@ func TestRequiredScopeFor(t *testing.T) {
 		// repair-tenant is a cross-tenant bulk rewrite — STAYS operator-admin even
 		// though it matches the /v1/_memory/ prefix (it is excluded first).
 		{"POST", "/v1/_memory/repair-tenant", auth.ScopeAdmin},
+		// Migration 0066: the channel admin family is tenant-confined (channel
+		// rows carry a tenant_id; handlers source the tenant from the principal,
+		// list filters by tenant, cross-tenant `global` create stays admin-only).
+		// Re-gated off the /v1/_* catch-all to ScopeTenant (mirrors memory/RFC BV).
+		{"GET", "/v1/_channels", auth.ScopeTenant},
+		{"POST", "/v1/_channels", auth.ScopeTenant},
+		{"POST", "/v1/_channels/team-updates/publish", auth.ScopeTenant},
+		{"POST", "/v1/_channels/team-updates/subscribe", auth.ScopeTenant},
+		{"DELETE", "/v1/_channels/team-updates", auth.ScopeTenant},
+		{"POST", "/v1/_channels/team-updates/purge", auth.ScopeTenant},
 		// The MemoryBackendDef def family stays tenant via isTenantConfinedDefPath,
 		// NOT via the /v1/_memory/ prefix (no slash after "memory").
 		{"POST", "/v1/_memorybackenddef", auth.ScopeTenant},

@@ -1968,7 +1968,14 @@ func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map
 	}
 	if includeRuntime && s.store != nil {
 		if rows, err := s.store.ChannelsList(ctx); err == nil {
+			// runtime channels are per-tenant; yaml channels stay
+			// operator-global. Skip runtime rows owned by another tenant so an
+			// agent only resolves the channels its own tenant declared.
+			callerTenant := tenantFromCtx(ctx)
 			for _, r := range rows {
+				if r.TenantID != callerTenant {
+					continue
+				}
 				if _, exists := channels[r.Name]; exists {
 					continue // yaml takes precedence on a name collision
 				}
@@ -3345,7 +3352,10 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 	// isn't a run-bound request), so we fall back to "_admin".
 	publishedBy := "_admin"
 
-	msg, err := s.systemPublisher.Publish(r.Context(), fullName, scope, scopeID,
+	// RFC N: the owning tenant is derived from the authenticated principal,
+	// never from the request body.
+	tenantID := tenantFromCtx(r.Context())
+	msg, err := s.systemPublisher.Publish(r.Context(), fullName, tenantID, scope, scopeID,
 		body.Payload, deliverAt, publishedBy, def.MaxMessages, def.DefaultTTL)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "publish_failed", fmt.Sprintf("publish failed: %s", err))

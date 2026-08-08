@@ -53,7 +53,7 @@ func TestChannelPublish_ImmediateIsVisibleDespiteHostClockAhead(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	msgs, _, err := s.ChannelSubscribe(ctx, "clock-ahead", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "clock-ahead", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestChannelPublish_ImmediateIsVisibleDespiteHostClockBehind(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	msgs, _, err := s.ChannelSubscribe(ctx, "clock-behind", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "clock-behind", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestChannelPublish_DeferredKeepsCallerSuppliedVisibleAt(t *testing.T) {
 		t.Fatalf("publish deferred: %v", err)
 	}
 
-	msgs, _, err := s.ChannelSubscribe(ctx, "deferred", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "deferred", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestChannelPublish_DeferredKeepsCallerSuppliedVisibleAt(t *testing.T) {
 	}
 
 	// And it is stored at the caller's instant, not clamped to NOW().
-	rows, err := s.ChannelPeek(ctx, "deferred", store.MemoryScopeAgent, "x", "cur_0", 10)
+	rows, err := s.ChannelPeek(ctx, "", "deferred", store.MemoryScopeAgent, "x", "cur_0", 10)
 	if err != nil {
 		t.Fatalf("peek: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestChannelPublish_PastVisibleAtClampsToServerNow(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	msgs, _, err := s.ChannelSubscribe(ctx, "past", store.MemoryScopeAgent, "x", "", 10)
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "past", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

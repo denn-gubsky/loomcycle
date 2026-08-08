@@ -300,6 +300,7 @@ func (s *Server) ResolveInterrupt(ctx context.Context, runID, interruptID, kind,
 		_, _ = s.systemPublisher.PublishNow(
 			ctx,
 			"_system/interrupts/resolved",
+			tenantFromCtx(ctx), // RFC N: authoritative principal/run tenant
 			store.MemoryScopeUser, row.UserID,
 			payload, channels.SystemPublisherUserID, 0, 0,
 		)

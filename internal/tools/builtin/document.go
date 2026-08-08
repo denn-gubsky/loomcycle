@@ -4320,7 +4320,8 @@ func (d *Document) publishChange(ctx context.Context, mscope store.MemoryScope, 
 	// subscriber/declared channel must never fail a chunk mutation. The Web UI
 	// subscriber arrives in a later phase.
 	_, _, _ = d.Store.ChannelPublish(ctx, store.ChannelMessage{
-		Channel: channel, Scope: mscope, ScopeID: scopeID, Payload: payload,
+		Channel: channel, TenantID: tools.RunIdentity(ctx).TenantID, // RFC N: authoritative run tenant
+		Scope: mscope, ScopeID: scopeID, Payload: payload,
 		PublishedByUserID: tools.RunIdentity(ctx).UserID,
 	}, 256)
 	d.Bus.Notify(channel)

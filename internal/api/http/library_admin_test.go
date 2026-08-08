@@ -243,14 +243,17 @@ func TestAgentChannels_HappyPath(t *testing.T) {
 	defer cleanup()
 	ctx := t.Context()
 
+	// The GET endpoint reads cursors under the authed principal's tenant
+	// ("default" for the legacy LOOMCYCLE_AUTH_TOKEN, auth_principal.go), so
+	// seed the cursor rows under that same tenant (RFC N).
 	for _, ch := range []string{"team-updates", "findings"} {
 		_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{
-			Channel: ch, Scope: store.MemoryScopeAgent, ScopeID: "alice",
+			Channel: ch, TenantID: "default", Scope: store.MemoryScopeAgent, ScopeID: "alice",
 			Payload: []byte(`{}`),
 		}, 0)
 		time.Sleep(time.Microsecond)
-		_, next, _ := s.ChannelSubscribe(ctx, ch, store.MemoryScopeAgent, "alice", "", 1)
-		_ = s.ChannelAck(ctx, ch, store.MemoryScopeAgent, "alice", next)
+		_, next, _ := s.ChannelSubscribe(ctx, "default", ch, store.MemoryScopeAgent, "alice", "", 1)
+		_ = s.ChannelAck(ctx, "default", ch, store.MemoryScopeAgent, "alice", next)
 	}
 
 	req := authedRequest("GET", "/v1/agents/alice/channels", nil)
@@ -295,13 +298,15 @@ func TestAgentChannels_SlashGroupedName(t *testing.T) {
 	ctx := t.Context()
 
 	const agentName = "doc/manager"
+	// Seed under tenant "default" — the tenant the authed GET endpoint reads
+	// (legacy LOOMCYCLE_AUTH_TOKEN principal, auth_principal.go; RFC N).
 	_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{
-		Channel: "findings", Scope: store.MemoryScopeAgent, ScopeID: agentName,
+		Channel: "findings", TenantID: "default", Scope: store.MemoryScopeAgent, ScopeID: agentName,
 		Payload: []byte(`{}`),
 	}, 0)
 	time.Sleep(time.Microsecond)
-	_, next, _ := s.ChannelSubscribe(ctx, "findings", store.MemoryScopeAgent, agentName, "", 1)
-	_ = s.ChannelAck(ctx, "findings", store.MemoryScopeAgent, agentName, next)
+	_, next, _ := s.ChannelSubscribe(ctx, "default", "findings", store.MemoryScopeAgent, agentName, "", 1)
+	_ = s.ChannelAck(ctx, "default", "findings", store.MemoryScopeAgent, agentName, next)
 
 	// The Web UI encodes the name; the `/` becomes %2F in the path.
 	req := authedRequest("GET", "/v1/agents/doc%2Fmanager/channels", nil)

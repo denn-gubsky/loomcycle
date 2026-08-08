@@ -145,7 +145,10 @@ func (h *HeartbeatRunner) run(ctx context.Context, spec HeartbeatSpec) {
 				log.Printf("heartbeat %s: marshal: %v", spec.Name, err)
 				continue
 			}
-			if _, err := h.publisher.PublishNow(ctx, spec.Name, store.MemoryScopeGlobal, "",
+			// Heartbeats are operator-global infrastructure (MemoryScopeGlobal,
+			// no run/principal in scope), so they belong to the shared/legacy
+			// tenant "" rather than any one tenant.
+			if _, err := h.publisher.PublishNow(ctx, spec.Name, "", store.MemoryScopeGlobal, "",
 				body, SystemPublisherUserID, spec.MaxMessages, spec.DefaultTTL); err != nil {
 				// ctx-cancel during publish = clean shutdown; don't
 				// noisy-log.

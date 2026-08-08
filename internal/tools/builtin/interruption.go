@@ -305,6 +305,7 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 		_, _ = it.SystemPublisher.PublishNow(
 			ctx,
 			"_system/interrupts/pending",
+			ident.TenantID, // RFC N: authoritative run tenant
 			store.MemoryScopeUser, ident.UserID,
 			payload, channels.SystemPublisherUserID,
 			0, // maxMessages — operator yaml configures
@@ -499,6 +500,7 @@ func (it *Interruption) execNotify(ctx context.Context, policy tools.Interruptio
 		_, _ = it.SystemPublisher.PublishNow(
 			ctx,
 			"_system/interrupts/pending",
+			ident.TenantID, // RFC N: authoritative run tenant
 			store.MemoryScopeUser, ident.UserID,
 			payload, channels.SystemPublisherUserID, 0, 0,
 		)

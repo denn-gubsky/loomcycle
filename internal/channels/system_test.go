@@ -21,7 +21,7 @@ func TestStorePublisher_PublishNowImmediate(t *testing.T) {
 	pub := &StorePublisher{Store: s, Bus: bus}
 	ctx := context.Background()
 
-	msg, err := pub.PublishNow(ctx, "_system/test", store.MemoryScopeGlobal, "",
+	msg, err := pub.PublishNow(ctx, "_system/test", "", store.MemoryScopeGlobal, "",
 		json.RawMessage(`{"k":"v"}`), SystemPublisherUserID, 0, 0)
 	if err != nil {
 		t.Fatalf("publish: %v", err)
@@ -34,7 +34,7 @@ func TestStorePublisher_PublishNowImmediate(t *testing.T) {
 	}
 
 	// Read back via store directly.
-	msgs, _, err := s.ChannelSubscribe(ctx, "_system/test", store.MemoryScopeGlobal, "", "", 10)
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "_system/test", store.MemoryScopeGlobal, "", "", 10)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestStorePublisher_PublishDeferredArmsScheduler(t *testing.T) {
 	ctx := context.Background()
 
 	deferTo := time.Now().Add(120 * time.Millisecond)
-	msg, err := pub.Publish(ctx, "_system/test", store.MemoryScopeGlobal, "",
+	msg, err := pub.Publish(ctx, "_system/test", "", store.MemoryScopeGlobal, "",
 		json.RawMessage(`{}`), deferTo, "alice", 0, 0)
 	if err != nil {
 		t.Fatalf("publish: %v", err)
@@ -73,7 +73,7 @@ func TestStorePublisher_PublishDeferredArmsScheduler(t *testing.T) {
 
 	// Wait past deferTo; subscribe should see the message.
 	time.Sleep(180 * time.Millisecond)
-	msgs, _, err := s.ChannelSubscribe(ctx, "_system/test", store.MemoryScopeGlobal, "", "", 10)
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "_system/test", store.MemoryScopeGlobal, "", "", 10)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestStorePublisher_PublishDeferredArmsScheduler(t *testing.T) {
 
 func TestStorePublisher_NoStoreErrors(t *testing.T) {
 	pub := &StorePublisher{}
-	_, err := pub.PublishNow(context.Background(), "_system/test", store.MemoryScopeGlobal, "",
+	_, err := pub.PublishNow(context.Background(), "_system/test", "", store.MemoryScopeGlobal, "",
 		json.RawMessage(`{}`), SystemPublisherUserID, 0, 0)
 	if err == nil {
 		t.Error("publish with no Store should error")
@@ -101,13 +101,13 @@ func TestStorePublisher_DefaultTTLApplied(t *testing.T) {
 	pub := &StorePublisher{Store: s}
 	ctx := context.Background()
 
-	msg, err := pub.PublishNow(ctx, "_system/test", store.MemoryScopeGlobal, "",
+	msg, err := pub.PublishNow(ctx, "_system/test", "", store.MemoryScopeGlobal, "",
 		json.RawMessage(`{}`), SystemPublisherUserID, 0, 60) // 60 sec TTL
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	// Verify the row carries an expires_at via re-read.
-	msgs, _, _ := s.ChannelSubscribe(ctx, "_system/test", store.MemoryScopeGlobal, "", "", 10)
+	msgs, _, _ := s.ChannelSubscribe(ctx, "", "_system/test", store.MemoryScopeGlobal, "", "", 10)
 	if len(msgs) != 1 {
 		t.Fatalf("subscribe len = %d, want 1", len(msgs))
 	}
