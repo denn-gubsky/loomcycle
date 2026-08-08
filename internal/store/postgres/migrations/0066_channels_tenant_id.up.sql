@@ -22,8 +22,15 @@
 
 -- channel_messages: the tenant axis, leading the PK so per-subscriber range
 -- scans stay index lookups within a tenant.
-ALTER TABLE channel_messages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE channel_messages DROP CONSTRAINT channel_messages_pkey;
+--
+-- IF NOT EXISTS / IF EXISTS make this migration re-runnable over an
+-- already-migrated DB: the migration test suite rewinds the version pointer
+-- (forceMigrationVersion) and re-applies every migration above 61, so each
+-- must no-op cleanly on a second pass (mirrors 0063's ADD COLUMN IF NOT
+-- EXISTS). The DROP-then-ADD-PRIMARY-KEY pair is idempotent because the
+-- guarded DROP always clears the current pkey first.
+ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE channel_messages DROP CONSTRAINT IF EXISTS channel_messages_pkey;
 ALTER TABLE channel_messages ADD PRIMARY KEY (tenant_id, channel, scope, scope_id, id);
 
 -- The visible-order read index must lead with tenant_id to match the
@@ -34,12 +41,12 @@ CREATE INDEX channel_messages_by_visible
     ON channel_messages(tenant_id, channel, scope, scope_id, visible_at, id);
 
 -- channel_cursors: the per-subscriber committed read position, tenant-keyed.
-ALTER TABLE channel_cursors ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE channel_cursors DROP CONSTRAINT channel_cursors_pkey;
+ALTER TABLE channel_cursors ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE channel_cursors DROP CONSTRAINT IF EXISTS channel_cursors_pkey;
 ALTER TABLE channel_cursors ADD PRIMARY KEY (tenant_id, channel, scope, scope_id);
 
 -- channels: the runtime-declared def table. (tenant_id, name) so two tenants
 -- can each own a same-named channel and ChannelGet is tenant-confinable.
-ALTER TABLE channels ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE channels DROP CONSTRAINT channels_pkey;
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_pkey;
 ALTER TABLE channels ADD PRIMARY KEY (tenant_id, name);
