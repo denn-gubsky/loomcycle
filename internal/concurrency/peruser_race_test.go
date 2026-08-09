@@ -31,7 +31,7 @@ func TestAcquireForUser_NoRaceWithCapSet(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 300; j++ {
-				rel, err := s.AcquireForUser(context.Background(), "u")
+				rel, err := s.AcquireForUser(context.Background(), "", "u")
 				if err == nil && rel != nil {
 					rel()
 				}

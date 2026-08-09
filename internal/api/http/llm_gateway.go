@@ -159,7 +159,7 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 	// (a caller can't forge a different user_id to dodge their cap); the
 	// wire user_id is only the fallback for open / un-authed mode. Empty
 	// key bypasses the per-user cap (global semaphore only).
-	release, err := s.sem.AcquireForUser(r.Context(), auth.SubjectForFairness(r.Context(), req.UserID))
+	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.UserID))
 	if err != nil {
 		provRelease()
 		writeQuotaError(w, err)

@@ -2252,7 +2252,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// ---- Concurrency slot ----
 	acquireStart := time.Now()
-	release, err := s.sem.AcquireForUser(ctx, effectiveUserID)
+	release, err := s.sem.AcquireForUser(ctx, tenantFromCtx(ctx), effectiveUserID)
 	queueWait := time.Since(acquireStart)
 	if err != nil {
 		if concurrency.IsPerUserQuotaExhausted(err) {
@@ -3732,7 +3732,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// Acquire concurrency slot first so backpressure is reported as 429
 	// before we open the SSE stream.
 	acquireStart := time.Now()
-	release, err := s.sem.AcquireForUser(r.Context(), req.UserID)
+	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), req.UserID)
 	queueWait := time.Since(acquireStart)
 	if err != nil {
 		writeQuotaError(w, err)
@@ -4392,7 +4392,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// is reported as 429. user_id comes from the session (set at original
 	// creation); continuations don't accept a new user_id.
 	acquireStart := time.Now()
-	release, err := s.sem.AcquireForUser(r.Context(), sess.UserID)
+	release, err := s.sem.AcquireForUser(r.Context(), tenantFromCtx(r.Context()), sess.UserID)
 	queueWait := time.Since(acquireStart)
 	if err != nil {
 		writeQuotaError(w, err)

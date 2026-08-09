@@ -224,26 +224,37 @@ func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) err
 // user_quotas decrement. Extracted from reapReplica so the
 // markedRuns > 0 gate stays clean.
 func (s *ReplicasSweeper) reapQuotas(ctx context.Context, replicaID string) error {
+	// Reconcile per (tenant_id, user_id): the counter is now keyed by the
+	// owning run's tenant (migration 0067), so the leaked-slot count must
+	// be grouped and decremented on the same pair — grouping by bare
+	// user_id would decrement the wrong tenant's row (or none) when two
+	// tenants share a subject.
+	// COALESCE(tenant_id, '') because runs.tenant_id is nullable (migration
+	// 0036) while user_quotas.tenant_id is NOT NULL DEFAULT '' (0067): a run
+	// with no tenant maps to the shared "" quota row. Without the coalesce a
+	// NULL run tenant would GROUP as NULL and the decrement's `tenant_id = $1`
+	// would never match (SQL NULL comparison), leaking the slot.
 	quotaRows, err := s.pool.Query(ctx, `
-		SELECT user_id, COUNT(*) AS leaked
+		SELECT COALESCE(tenant_id, '') AS tenant_id, user_id, COUNT(*) AS leaked
 		  FROM runs
 		 WHERE replica_id = $1
 		   AND status = 'failed'
 		   AND error = 'owner replica died'
 		   AND user_id IS NOT NULL AND user_id != ''
-		 GROUP BY user_id
+		 GROUP BY COALESCE(tenant_id, ''), user_id
 	`, replicaID)
 	if err != nil {
 		return fmt.Errorf("query quota reap: %w", err)
 	}
 	type reap struct {
-		userID string
-		leaked int
+		tenantID string
+		userID   string
+		leaked   int
 	}
 	var reaps []reap
 	for quotaRows.Next() {
 		var r reap
-		if err := quotaRows.Scan(&r.userID, &r.leaked); err != nil {
+		if err := quotaRows.Scan(&r.tenantID, &r.userID, &r.leaked); err != nil {
 			quotaRows.Close()
 			return fmt.Errorf("scan quota reap row: %w", err)
 		}
@@ -256,15 +267,15 @@ func (s *ReplicasSweeper) reapQuotas(ctx context.Context, replicaID string) erro
 	for _, r := range reaps {
 		_, qerr := s.pool.Exec(ctx, `
 			UPDATE user_quotas
-			   SET active_count = GREATEST(0, active_count - $2),
+			   SET active_count = GREATEST(0, active_count - $3),
 			       updated_at   = now()
-			 WHERE user_id = $1
-		`, r.userID, r.leaked)
+			 WHERE tenant_id = $1 AND user_id = $2
+		`, r.tenantID, r.userID, r.leaked)
 		if qerr != nil {
-			s.logf("coord: replicas sweep: quota decrement for user %s by %d: %v", r.userID, r.leaked, qerr)
+			s.logf("coord: replicas sweep: quota decrement for user %s/%s by %d: %v", r.tenantID, r.userID, r.leaked, qerr)
 			continue
 		}
-		s.logf("coord: replicas sweep: quota reap for user %s: decremented by %d", r.userID, r.leaked)
+		s.logf("coord: replicas sweep: quota reap for user %s/%s: decremented by %d", r.tenantID, r.userID, r.leaked)
 	}
 	return nil
 }

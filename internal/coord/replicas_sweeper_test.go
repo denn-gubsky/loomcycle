@@ -55,16 +55,19 @@ func seedRun(t *testing.T, pool *pgxpool.Pool, runID, sessionID, replicaID, user
 
 func seedUserQuota(t *testing.T, pool *pgxpool.Pool, userID string, count int) {
 	t.Helper()
+	// Seed under the shared "" tenant (migration 0067 made the PK
+	// (tenant_id, user_id)); the seeded runs carry a NULL/empty tenant that
+	// the sweeper COALESCEs to "", so the reap decrements this row.
 	_, err := pool.Exec(context.Background(), `
-		INSERT INTO user_quotas (user_id, active_count, updated_at)
-		VALUES ($1, $2, now())
-		ON CONFLICT (user_id) DO UPDATE SET active_count = $2
+		INSERT INTO user_quotas (tenant_id, user_id, active_count, updated_at)
+		VALUES ('', $1, $2, now())
+		ON CONFLICT (tenant_id, user_id) DO UPDATE SET active_count = $2
 	`, userID, count)
 	if err != nil {
 		t.Fatalf("seed quota: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM user_quotas WHERE user_id = $1`, userID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM user_quotas WHERE tenant_id = '' AND user_id = $1`, userID)
 	})
 }
 
@@ -107,7 +110,7 @@ func TestReplicasSweeper_ReapsStaleReplica(t *testing.T) {
 	// Quota should be decremented.
 	var quotaCount int
 	_ = pool.QueryRow(context.Background(),
-		`SELECT active_count FROM user_quotas WHERE user_id = $1`, userID).Scan(&quotaCount)
+		`SELECT active_count FROM user_quotas WHERE tenant_id = '' AND user_id = $1`, userID).Scan(&quotaCount)
 	if quotaCount != 0 {
 		t.Errorf("quota = %d, want 0", quotaCount)
 	}
@@ -164,7 +167,7 @@ func TestReplicasSweeper_GreatestZeroClampOnQuota(t *testing.T) {
 	// Quota should stay at 0 (no CHECK violation, no underflow).
 	var quotaCount int
 	_ = pool.QueryRow(context.Background(),
-		`SELECT active_count FROM user_quotas WHERE user_id = $1`, userID).Scan(&quotaCount)
+		`SELECT active_count FROM user_quotas WHERE tenant_id = '' AND user_id = $1`, userID).Scan(&quotaCount)
 	if quotaCount != 0 {
 		t.Errorf("quota = %d, want 0 (GREATEST clamp)", quotaCount)
 	}
