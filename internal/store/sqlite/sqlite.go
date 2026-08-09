@@ -365,6 +365,24 @@ func (s *Store) migrate(ctx context.Context) error {
 			tenant_id    TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY (tenant_id, name)
 		)`,
+		// RFC BX Phase 2 / P2a — the tenant-owned first-class users table.
+		// Mirrors postgres migration 0068. A "user" was previously derived
+		// from runs.user_id (no row to write); this makes identity a real,
+		// tenant-owned record a substrate:tenant operator can manage.
+		// access_mode is the collaboration dial ('tenant' = whole-tenant
+		// collaboration, the default preserving today's behaviour; 'isolated'
+		// = sandboxed); status is 'active' | 'disabled'. unix-nano created_at
+		// stamped in code (sqlite has no now() default idiom here).
+		`CREATE TABLE IF NOT EXISTS users (
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			subject      TEXT    NOT NULL,
+			display_name TEXT    NOT NULL DEFAULT '',
+			access_mode  TEXT    NOT NULL DEFAULT 'tenant',
+			status       TEXT    NOT NULL DEFAULT 'active',
+			created_at   INTEGER NOT NULL,
+			created_by   TEXT,
+			PRIMARY KEY (tenant_id, subject)
+		)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER

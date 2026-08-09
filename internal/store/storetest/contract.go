@@ -98,6 +98,11 @@ func Run(t *testing.T, factory Factory) {
 		{"SessionEmbedUpsertSearch", testSessionEmbedUpsertSearch},
 		{"SessionEmbedSearchTenantFold", testSessionEmbedSearchTenantFold},
 		{"ListUsers", testListUsers},
+		// RFC BX P2a: the tenant-owned first-class users table (create / get /
+		// list / update / delete + enum validation, and (tenant, subject) PK
+		// isolation). sqlite always; Postgres when a DSN is set.
+		{"UserCRUD", testUserCRUD},
+		{"UserTenantIsolation", testUserTenantIsolation},
 		{"ListRunsByParentAgentID", testListRunsByParentAgentID},
 		{"UpdateHeartbeat", testUpdateHeartbeat},
 		{"FinishRunCancelledTerminal", testFinishRunCancelledTerminal},
@@ -2718,6 +2723,150 @@ func testListUsers(t *testing.T, s store.Store) {
 	}
 	if len(none) != 0 {
 		t.Errorf("ListUsers(nonexistent) = %d users, want 0", len(none))
+	}
+}
+
+// testUserCRUD pins the RFC BX P2a first-class users-table contract:
+// create→get→list→update→delete, ErrConflict on a duplicate, ErrNotFound on
+// a missing row, created_at stamped when left zero, and access_mode/status
+// enum validation on both create and update.
+func testUserCRUD(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	var nf *store.ErrNotFound
+	var conflict *store.ErrConflict
+
+	// Get / list on an empty table.
+	if _, err := s.UserGet(ctx, "t", "alice"); !errors.As(err, &nf) {
+		t.Fatalf("UserGet(absent) err = %v, want *store.ErrNotFound", err)
+	}
+	if rows, err := s.UserList(ctx, "t"); err != nil || rows == nil || len(rows) != 0 {
+		t.Fatalf("UserList(empty) = %v, %v; want empty NON-nil slice", rows, err)
+	}
+
+	// Create with CreatedAt left zero — the store must stamp it.
+	row := store.UserRow{TenantID: "t", Subject: "alice", DisplayName: "Alice", AccessMode: "tenant", Status: "active", CreatedBy: "ops"}
+	if err := s.UserCreate(ctx, row); err != nil {
+		t.Fatalf("UserCreate: %v", err)
+	}
+	got, err := s.UserGet(ctx, "t", "alice")
+	if err != nil {
+		t.Fatalf("UserGet: %v", err)
+	}
+	if got.Subject != "alice" || got.DisplayName != "Alice" || got.AccessMode != "tenant" || got.Status != "active" || got.CreatedBy != "ops" {
+		t.Errorf("UserGet = %+v, want the created row", got)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Errorf("UserCreate left created_at zero; the store must stamp it")
+	}
+
+	// Duplicate (tenant, subject) → ErrConflict.
+	if err := s.UserCreate(ctx, row); !errors.As(err, &conflict) {
+		t.Fatalf("UserCreate(dup) err = %v, want *store.ErrConflict", err)
+	}
+
+	// Enum validation on create — both fields, rejected before insert.
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "t", Subject: "bad", AccessMode: "wat", Status: "active"}); err == nil {
+		t.Errorf("UserCreate(bad access_mode) err = nil, want rejection")
+	}
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "t", Subject: "bad", AccessMode: "tenant", Status: "wat"}); err == nil {
+		t.Errorf("UserCreate(bad status) err = nil, want rejection")
+	}
+
+	// List returns the one committed row.
+	rows, err := s.UserList(ctx, "t")
+	if err != nil || len(rows) != 1 || rows[0].Subject != "alice" {
+		t.Fatalf("UserList = %+v, %v; want exactly [alice]", rows, err)
+	}
+
+	// Update: change display_name + status; leave access_mode untouched.
+	newName, newStatus := "Alice A.", "disabled"
+	if err := s.UserUpdate(ctx, "t", "alice", store.UserPatch{DisplayName: &newName, Status: &newStatus}); err != nil {
+		t.Fatalf("UserUpdate: %v", err)
+	}
+	got, _ = s.UserGet(ctx, "t", "alice")
+	if got.DisplayName != "Alice A." || got.Status != "disabled" || got.AccessMode != "tenant" {
+		t.Errorf("after update = %+v, want name+status changed, access_mode preserved", got)
+	}
+
+	// Enum validation on update.
+	badMode := "nope"
+	if err := s.UserUpdate(ctx, "t", "alice", store.UserPatch{AccessMode: &badMode}); err == nil {
+		t.Errorf("UserUpdate(bad access_mode) err = nil, want rejection")
+	}
+	badStatus := "nope"
+	if err := s.UserUpdate(ctx, "t", "alice", store.UserPatch{Status: &badStatus}); err == nil {
+		t.Errorf("UserUpdate(bad status) err = nil, want rejection")
+	}
+
+	// Update a missing row → ErrNotFound.
+	if err := s.UserUpdate(ctx, "t", "ghost", store.UserPatch{DisplayName: &newName}); !errors.As(err, &nf) {
+		t.Errorf("UserUpdate(absent) err = %v, want *store.ErrNotFound", err)
+	}
+
+	// Delete returns whether a row went; the second delete reports false.
+	removed, err := s.UserDelete(ctx, "t", "alice")
+	if err != nil || !removed {
+		t.Fatalf("UserDelete = %v, %v; want true, nil", removed, err)
+	}
+	if again, _ := s.UserDelete(ctx, "t", "alice"); again {
+		t.Errorf("UserDelete(second) = true, want false (already gone)")
+	}
+	if _, err := s.UserGet(ctx, "t", "alice"); !errors.As(err, &nf) {
+		t.Errorf("UserGet after delete err = %v, want *store.ErrNotFound", err)
+	}
+}
+
+// testUserTenantIsolation pins that the users table is keyed on
+// (tenant_id, subject): two tenants own a same-named subject independently, a
+// third tenant sees neither, a list is confined to its tenant, and deleting
+// one tenant's row leaves the other's intact. tenantID "" reads all tenants.
+func testUserTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	var nf *store.ErrNotFound
+
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "t1", Subject: "alice", DisplayName: "T1 Alice", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatalf("create t1/alice: %v", err)
+	}
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "t2", Subject: "alice", DisplayName: "T2 Alice", AccessMode: "isolated", Status: "active"}); err != nil {
+		t.Fatalf("create t2/alice (same subject, different tenant must be allowed): %v", err)
+	}
+
+	// A third tenant sees neither — an opaque miss, no existence oracle.
+	if _, err := s.UserGet(ctx, "t3", "alice"); !errors.As(err, &nf) {
+		t.Errorf("UserGet(t3,alice) err = %v, want *store.ErrNotFound (cross-tenant invisible)", err)
+	}
+
+	// Each tenant's list contains only its own row.
+	t1rows, _ := s.UserList(ctx, "t1")
+	if len(t1rows) != 1 || t1rows[0].DisplayName != "T1 Alice" {
+		t.Errorf("UserList(t1) = %+v, want only t1's alice", t1rows)
+	}
+	t2rows, _ := s.UserList(ctx, "t2")
+	if len(t2rows) != 1 || t2rows[0].AccessMode != "isolated" {
+		t.Errorf("UserList(t2) = %+v, want only t2's alice (isolated)", t2rows)
+	}
+
+	// Deleting t1's alice leaves t2's alice intact (delete is tenant-scoped).
+	if removed, err := s.UserDelete(ctx, "t1", "alice"); err != nil || !removed {
+		t.Fatalf("UserDelete(t1,alice) = %v, %v; want true", removed, err)
+	}
+	if _, err := s.UserGet(ctx, "t2", "alice"); err != nil {
+		t.Errorf("t2's alice gone after deleting t1's alice: %v (delete must be tenant-scoped)", err)
+	}
+	if _, err := s.UserGet(ctx, "t1", "alice"); !errors.As(err, &nf) {
+		t.Errorf("t1's alice still present after its own delete: %v", err)
+	}
+
+	// tenantID "" reads across all tenants, ordered by (tenant_id, subject).
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "t1", Subject: "alice", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatalf("recreate t1/alice: %v", err)
+	}
+	all, err := s.UserList(ctx, "")
+	if err != nil {
+		t.Fatalf("UserList(all): %v", err)
+	}
+	if len(all) != 2 || all[0].TenantID != "t1" || all[1].TenantID != "t2" {
+		t.Fatalf("UserList(\"\") = %+v, want [t1/alice, t2/alice] in tenant order", all)
 	}
 }
 

@@ -2760,6 +2760,14 @@ func (s *Server) Mux() http.Handler {
 	// user_ids that have runs in the store. Bearer-authed; drives
 	// the Web UI's run-list user dropdown.
 	mux.Handle("GET /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUsers))))
+	// RFC BX P2a — the tenant-owned first-class users table. Create /
+	// update / delete are tenant-operator actions (substrate:tenant, admin
+	// also satisfies); the handlers derive the authoritative tenant from the
+	// principal (never the wire) and 404 cross-tenant. Scope-gated in
+	// requiredScopeFor (POST here; PATCH/DELETE via the /v1/_users/ prefix).
+	mux.Handle("POST /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCreateUser))))
+	mux.Handle("PATCH /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUpdateUser))))
+	mux.Handle("DELETE /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteUser))))
 	// v0.8.6 system channels admin endpoint. Bearer-authed publish to
 	// _system/* channels. Used by external monitoring (push alerts in
 	// via webhook), ops dashboards (operator-issued alarms), and
