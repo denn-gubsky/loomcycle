@@ -524,6 +524,14 @@ func (m *Memory) resolveScope(ctx context.Context, requested string) (store.Memo
 		return "", "", fmt.Errorf("Memory tool: scope %q not in this agent's memory_scopes %v", requested, policy.AllowedScopes)
 	}
 
+	// RFC BX P2b: an isolated member (substrate:user) may address only its own
+	// user/agent scope — refuse the tenant-shared / global keyspace even when the
+	// agent's memory_scopes would otherwise permit it. Server-derived from the
+	// run's Isolated bit; a non-isolated run is unaffected.
+	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)); err != nil {
+		return "", "", err
+	}
+
 	switch store.MemoryScope(requested) {
 	case store.MemoryScopeAgent:
 		name := tools.AgentName(ctx)
@@ -584,6 +592,12 @@ func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, 
 	}
 	if !contains(pol.AllowedScopes, requested) {
 		return "", "", fmt.Errorf("Memory tool: sql scope %q not in this agent's sql_scopes %v", requested, pol.AllowedScopes)
+	}
+	// RFC BX P2b: an isolated member may not reach the tenant-shared SQL keyspace.
+	// The {agent, user, run} scopes are own-scoped and pass through unaffected
+	// (ConfineIsolatedScope only refuses tenant/global).
+	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)); err != nil {
+		return "", "", err
 	}
 	switch requested {
 	case "agent":

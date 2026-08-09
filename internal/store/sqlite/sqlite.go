@@ -1082,6 +1082,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// at CreateRun from the principal + gate; read back on resume/restore so a
 		// re-dispatched run keeps its restriction. 0 on legacy rows (fail-open).
 		`ALTER TABLE runs ADD COLUMN operator_key_restricted INTEGER NOT NULL DEFAULT 0`,
+		// RFC BX P2b — the isolated-member confinement bit (0 = unconfined). Stamped
+		// at CreateRun from the substrate:user principal; read back on resume/restore
+		// so a re-dispatched run keeps its data-scope confinement. 0 on legacy rows
+		// (fail-open). See internal/store/postgres/migrations/0069_runs_isolated.
+		`ALTER TABLE runs ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0`,
 		// RFC BE — human/organizational chat metadata on the session row (the
 		// History tool's browse/search/annotate surface). All additive + nullable
 		// so legacy rows read the zero value. tags is a JSON array (NULL = never
@@ -1430,8 +1435,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -1445,6 +1450,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		nilIfEmpty(identity.IdempotencyKey),
 		boolToInt(identity.Interactive),
 		boolToInt(identity.OperatorKeyRestricted),
+		boolToInt(identity.Isolated),
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -1477,6 +1483,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		IdempotencyKey:        identity.IdempotencyKey,
 		Interactive:           identity.Interactive,
 		OperatorKeyRestricted: identity.OperatorKeyRestricted,
+		Isolated:              identity.Isolated,
 	}, nil
 }
 
@@ -2507,6 +2514,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var tenantID sql.NullString
 	var interactive sql.NullInt64
 	var operatorKeyRestricted sql.NullInt64
+	var isolated sql.NullInt64
 	var cost sql.NullFloat64
 	var costCurrency, credentialSource, credentialScopeID sql.NullString
 	var sessAgent sql.NullString
@@ -2519,7 +2527,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
 		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &tenantID,
-		&interactive, &operatorKeyRestricted,
+		&interactive, &operatorKeyRestricted, &isolated,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&sessAgent,
 	); err != nil {
@@ -2583,6 +2591,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	}
 	r.Interactive = interactive.Valid && interactive.Int64 != 0
 	r.OperatorKeyRestricted = operatorKeyRestricted.Valid && operatorKeyRestricted.Int64 != 0
+	r.Isolated = isolated.Valid && isolated.Int64 != 0
 	if cost.Valid {
 		v := cost.Float64
 		r.Cost = &v
@@ -2617,7 +2626,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
 		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.tenant_id,
-		r.interactive, r.operator_key_restricted,
+		r.interactive, r.operator_key_restricted, r.isolated,
 		r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		s.agent`
 
@@ -3659,15 +3668,15 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
-			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
 		nilIfEmpty(r.AgentID), nilIfEmpty(r.ParentAgentID), nilIfEmpty(r.ParentRunID),
 		nilIfEmpty(r.UserID), lastHbNs,
 		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState, pcVal,
-		boolToInt(r.Interactive), boolToInt(r.OperatorKeyRestricted),
+		boolToInt(r.Interactive), boolToInt(r.OperatorKeyRestricted), boolToInt(r.Isolated),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

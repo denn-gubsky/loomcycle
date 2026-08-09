@@ -27,7 +27,7 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 
 	// Auth configured but the credential is rejected → ErrUnauthenticated,
 	// principal left unauthenticated.
-	denied := principalInterceptor{auth: func(http.Header) (string, bool, bool) { return "", false, false }}
+	denied := principalInterceptor{auth: func(http.Header) (string, bool, bool, bool) { return "", false, false, false }}
 	cc := newCtx()
 	if _, _, err := denied.Before(context.Background(), cc, &a2asrv.Request{}); !errors.Is(err, a2asdk.ErrUnauthenticated) {
 		t.Fatalf("Before err = %v, want ErrUnauthenticated", err)
@@ -38,7 +38,7 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 
 	// Auth configured and the credential is accepted → no error, principal
 	// stamped with the resolved name.
-	ok := principalInterceptor{auth: func(http.Header) (string, bool, bool) { return "alice", false, true }}
+	ok := principalInterceptor{auth: func(http.Header) (string, bool, bool, bool) { return "alice", false, false, true }}
 	cc = newCtx()
 	newCtxOut, _, err := ok.Before(context.Background(), cc, &a2asrv.Request{})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 	}
 
 	// A RESTRICTED peer → the returned ctx carries the bit for the executor.
-	restricted := principalInterceptor{auth: func(http.Header) (string, bool, bool) { return "bob", true, true }}
+	restricted := principalInterceptor{auth: func(http.Header) (string, bool, bool, bool) { return "bob", true, false, true }}
 	cc = newCtx()
 	rctx, _, err := restricted.Before(context.Background(), cc, &a2asrv.Request{})
 	if err != nil {
@@ -61,6 +61,22 @@ func TestPrincipalInterceptor_RejectsUnauthenticated(t *testing.T) {
 	}
 	if !bridge.OperatorKeyRestrictedFrom(rctx) {
 		t.Error("restricted peer must stamp OperatorKeyRestricted=true on the ctx")
+	}
+	// RFC BX P2b: a restricted-but-not-isolated peer stamps Isolated=false.
+	if bridge.IsolatedFrom(rctx) {
+		t.Error("restricted (non-isolated) peer must stamp Isolated=false")
+	}
+
+	// RFC BX P2b: an ISOLATED peer (substrate:user) → the returned ctx carries the
+	// isolation bit for the executor's buildRunInput.
+	isolated := principalInterceptor{auth: func(http.Header) (string, bool, bool, bool) { return "carol", false, true, true }}
+	cc = newCtx()
+	ictx, _, err := isolated.Before(context.Background(), cc, &a2asrv.Request{})
+	if err != nil {
+		t.Fatalf("Before err = %v, want nil on accepted (isolated) auth", err)
+	}
+	if !bridge.IsolatedFrom(ictx) {
+		t.Error("isolated peer must stamp Isolated=true on the ctx")
 	}
 
 	// No authenticator (open/dev mode) → anonymous authenticated, no error.

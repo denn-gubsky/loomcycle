@@ -445,6 +445,13 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 	if requested == "" {
 		requested = "user"
 	}
+	// RFC BX P2b: an isolated member (substrate:user) may author/read only its own
+	// user/agent-scoped documents — refuse the tenant-shared scope even when the
+	// agent holds the tenant grants below. Server-derived from the run's Isolated
+	// bit; a non-isolated run is unaffected.
+	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)); err != nil {
+		return sqlmem.ScopeKey{}, "", err
+	}
 	switch requested {
 	case "agent":
 		name := tools.AgentName(ctx)

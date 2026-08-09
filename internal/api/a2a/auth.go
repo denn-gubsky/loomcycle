@@ -37,25 +37,25 @@ func FrontierAuthenticator(
 	resolve func(context.Context, string) (auth.Principal, bool),
 	operatorKeyGateOn bool,
 ) Authenticator {
-	return func(h http.Header) (string, bool, bool) {
+	return func(h http.Header) (string, bool, bool, bool) {
 		ctx := context.Background()
 		// Per-request open-mode check: no auth configured ⇒ anonymous, matching
 		// HTTP. Evaluated every call so a runtime-minted admin token flips A2A
-		// closed without a restart. Open mode is never restricted (fail-open).
+		// closed without a restart. Open mode is never restricted/isolated (fail-open).
 		if authConfigured == nil || !authConfigured(ctx) {
-			return "anonymous", false, true
+			return "anonymous", false, false, true
 		}
 		got := h.Get("Authorization")
 		const pfx = "Bearer "
 		if len(got) <= len(pfx) || !strings.EqualFold(got[:len(pfx)], pfx) {
-			return "", false, false
+			return "", false, false, false
 		}
 		if resolve == nil {
-			return "", false, false
+			return "", false, false, false
 		}
 		p, ok := resolve(ctx, got[len(pfx):])
 		if !ok {
-			return "", false, false
+			return "", false, false, false
 		}
 		// RFC AX: derive the operator-key restriction from the peer's OWN
 		// resolved scopes — the SAME auth.OperatorKeyRestricted used on the
@@ -63,11 +63,15 @@ func FrontierAuthenticator(
 		// that lacks providers:operator-key is restricted; a legacy peer / one
 		// holding the scope / the gate-off case all fail open (false).
 		restricted := auth.OperatorKeyRestricted(p, ok, operatorKeyGateOn)
+		// RFC BX P2b: derive the isolation bit from the peer's OWN resolved scopes
+		// — the SAME auth.IsIsolated used on the HTTP plane. A substrate:user peer
+		// is isolated; admin/tenant/legacy/open-mode all fail open (false).
+		isolated := auth.IsIsolated(p, ok)
 		// Attribution name only. Preserve the legacy peer's historical
 		// "a2a-peer" name; attribute operator-token peers by their subject.
 		if p.Legacy || p.Subject == "" {
-			return "a2a-peer", restricted, true
+			return "a2a-peer", restricted, isolated, true
 		}
-		return p.Subject, restricted, true
+		return p.Subject, restricted, isolated, true
 	}
 }

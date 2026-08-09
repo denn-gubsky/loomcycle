@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -92,6 +93,21 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 			AccessMode:  rec.AccessMode,
 			Status:      rec.Status,
 		})
+	}
+	// RFC BX P2b: an ISOLATED member (substrate:user) may see ONLY its own user
+	// record — never the tenant roster (that is tenant-shared information an
+	// isolated member has no authority over). Server-derived from the principal;
+	// the roster fetched above was already tenant-scoped, so this narrows to self
+	// before anything is written. Admin / tenant / open-mode are unaffected.
+	if s.isolatedForCtx(r.Context()) {
+		p, _ := auth.PrincipalFromContext(r.Context())
+		selfOnly := make([]wireUserSummary, 0, 1)
+		for _, u := range resp.Users {
+			if u.UserID == p.Subject {
+				selfOnly = append(selfOnly, u)
+			}
+		}
+		resp.Users = selfOnly
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

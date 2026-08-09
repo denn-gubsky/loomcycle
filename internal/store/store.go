@@ -416,6 +416,14 @@ type Run struct {
 	// zero value), so legacy rows + every unstamped path fail OPEN.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 
+	// Isolated is the RFC BX P2b confinement bit: true = this run belongs to an
+	// isolated member (a substrate:user principal). Persisted to runs.isolated and
+	// restored on resume so a snapshotted / crash-recovered run keeps its data-
+	// scope confinement without the original principal on ctx (the same reason
+	// operator_key_restricted rides the row). false on legacy rows + every
+	// unstamped path (fail-open).
+	Isolated bool `json:"isolated,omitempty"`
+
 	// --- RFC AV: per-run cost + credential-source summary. ---
 	// Cost is nil when the run was never priced (legacy rows, or an unknown
 	// model absent from the pricing table). CredentialSource is the primary key
@@ -736,6 +744,13 @@ type RunIdentity struct {
 	// original principal on ctx. Additive; false on legacy rows + every path
 	// that doesn't stamp it (fail-open, matching the scope's default-off gate).
 	OperatorKeyRestricted bool
+
+	// Isolated is the RFC BX P2b confinement bit captured on the run at creation
+	// and persisted to runs.isolated, so a resumed / snapshot-restored run
+	// reconstructs its data-scope confinement (tenant/global refused) without the
+	// original substrate:user principal on ctx. Additive; false on legacy rows +
+	// every unstamped path (fail-open).
+	Isolated bool
 }
 
 // ParentContext is the typed caller-tracking lineage attached to a run

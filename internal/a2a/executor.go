@@ -439,6 +439,10 @@ func (e *Executor) buildRunInput(ctx context.Context, execCtx *a2asrv.ExecutorCo
 		// interceptor derived from THIS peer's own scopes, so a restricted A2A
 		// peer's run is restricted at admission (RunOnce reads this off RunInput).
 		OperatorKeyRestricted: OperatorKeyRestrictedFrom(ctx),
+		// RFC BX P2b anti-bypass: carry the isolation bit the frontier interceptor
+		// derived from THIS peer's own scopes, so a substrate:user A2A peer's run is
+		// data-scope-confined at admission (RunOnce reads this off RunInput).
+		Isolated: IsolatedFrom(ctx),
 	}, nil
 }
 

@@ -2102,6 +2102,13 @@ type Webhook struct {
 	// false (the operator is unrestricted). Flows write→read→consumer alongside
 	// TenantID; drift-tested against mergedWebhookDef / SubstrateWebhookDef.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty" yaml:"operator_key_restricted"`
+	// Isolated is the RFC BX P2b confinement bit. For a DYNAMIC WebhookDef it is
+	// CAPTURED from the authoring principal (server authority); the receiver copies
+	// it into RunInput so the fired run keeps its creator's confinement. A static
+	// operator-authored yaml webhook leaves it false (the operator is unconfined).
+	// Flows write→read→consumer alongside OperatorKeyRestricted; drift-tested
+	// against mergedWebhookDef / SubstrateWebhookDef.
+	Isolated bool `json:"isolated,omitempty" yaml:"isolated"`
 }
 
 // WebhookAuth declares how inbound webhook requests are authenticated.

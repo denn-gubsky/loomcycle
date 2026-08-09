@@ -114,6 +114,7 @@ func Run(t *testing.T, factory Factory) {
 		{"SweepStaleRunsSkipsPaused", testSweepStaleRunsSkipsPaused},
 		{"CreateRunInteractiveRoundTrip", testCreateRunInteractiveRoundTrip},
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
+		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},
 		{"SetRunPauseStateMissingRunReturnsNotFound", testSetRunPauseStateMissingRunReturnsNotFound},
@@ -3151,6 +3152,31 @@ func testCreateRunOperatorKeyRestrictedRoundTrip(t *testing.T, s store.Store) {
 	got, _ := s.GetRun(ctx, restricted.ID)
 	if !got.OperatorKeyRestricted {
 		t.Errorf("restricted run OperatorKeyRestricted=false on read-back (did not persist)")
+	}
+}
+
+// RFC BX P2b: the isolated column round-trips on both backends — false by
+// default (fail-open), true when stamped, and it survives a fresh read (so a
+// resumed / snapshot-restored run reconstructs its data-scope confinement).
+func testCreateRunIsolatedRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	unconfined, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_iso_default"})
+	if unconfined.Isolated {
+		t.Errorf("default Isolated = true, want false (fail-open)")
+	}
+	if got, _ := s.GetRun(ctx, unconfined.ID); got.Isolated {
+		t.Errorf("default run Isolated = true on read-back, want false")
+	}
+
+	isolated, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_iso_confined", Isolated: true})
+	if !isolated.Isolated {
+		t.Errorf("CreateRun returned Isolated=false for an isolated run")
+	}
+	got, _ := s.GetRun(ctx, isolated.ID)
+	if !got.Isolated {
+		t.Errorf("isolated run Isolated=false on read-back (did not persist)")
 	}
 }
 

@@ -177,6 +177,9 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		// RFC AX: the captured operator-key restriction — no principal is on ctx
 		// at delivery time, so the def's captured bit is authority (anti-bypass).
 		OperatorKeyRestricted: w.OperatorKeyRestricted,
+		// RFC BX P2b: the captured isolation bit — same anti-bypass rationale as
+		// OperatorKeyRestricted (no principal at delivery time).
+		Isolated: w.Isolated,
 		// IdempotencyKey is set by the caller (deliverSpawn) to the
 		// delivery id, keeping this builder's signature focused on the
 		// Def + projected payload. See RFC H Decision 10 "Layer 2".

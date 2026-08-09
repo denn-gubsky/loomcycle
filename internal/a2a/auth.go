@@ -93,6 +93,28 @@ func OperatorKeyRestrictedFrom(ctx context.Context) bool {
 	return v
 }
 
+// isolatedKeyType keys the RFC BX P2b isolation bit the A2A frontier interceptor
+// derived from the authenticated peer's OWN scopes (auth.IsIsolated). The
+// interceptor stamps it on the request ctx (WithIsolated); the executor reads it
+// in buildRunInput and copies it onto RunInput so a substrate:user A2A peer's
+// run stays data-scope-confined (anti-bypass: it can't launder an unconfined run
+// through the A2A trigger). Mirrors operatorKeyRestrictedKeyType.
+type isolatedKeyType struct{}
+
+// WithIsolated stamps the RFC BX P2b isolation bit onto ctx. The A2A principal
+// interceptor calls this from its Before with the value it derived from the
+// peer's resolved scopes; the returned ctx flows to the executor.
+func WithIsolated(ctx context.Context, isolated bool) context.Context {
+	return context.WithValue(ctx, isolatedKeyType{}, isolated)
+}
+
+// IsolatedFrom returns the RFC BX P2b isolation bit the interceptor stamped, or
+// false when absent (fail-open — an un-stamped path is unconfined).
+func IsolatedFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(isolatedKeyType{}).(bool)
+	return v
+}
+
 // principalFromContext extracts the authenticated principal from the
 // SDK CallContext on ctx, combined with the request tenant. The tenant
 // argument is the SDK-carried value (SendMessageRequest.Tenant /

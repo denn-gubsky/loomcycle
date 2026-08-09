@@ -325,6 +325,31 @@ func (s *Server) operatorKeyRestrictedForCtx(ctx context.Context) bool {
 	return auth.OperatorKeyRestricted(p, ok, s.cfg.Env.OperatorKeyRestriction)
 }
 
+// isolatedForCtx computes the RFC BX P2b isolation bit from the LIVE principal on
+// ctx — the run-start path for surfaces that carry an auth.Principal (HTTP, and
+// gRPC/MCP/connector via applyPrincipal). Server-derived only (never a wire/body/
+// model field). Fail-open: no principal (open mode) / a principal whose authority
+// is tenant/admin all yield false (unconfined). See auth.IsIsolated. Sibling of
+// operatorKeyRestrictedForCtx; unlike that one there is NO deployment gate —
+// substrate:user is always enforced when present.
+func (s *Server) isolatedForCtx(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return auth.IsIsolated(p, ok)
+}
+
+// isolatedOrCaptured is the RunOnce variant (sibling of
+// operatorKeyRestrictedOrCaptured): use the live principal when one is on ctx
+// (gRPC/MCP/connector), else fall back to the bit CAPTURED on a trigger def by a
+// non-principal path (scheduler/webhook/A2A supply it via RunInput.Isolated).
+// RFC BX P2b anti-bypass: an isolated member's captured confinement must ride the
+// trigger def since no token is present at fire time.
+func (s *Server) isolatedOrCaptured(ctx context.Context, captured bool) bool {
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		return auth.IsIsolated(p, ok)
+	}
+	return captured
+}
+
 // operatorKeyRestrictedOrCaptured is the RunOnce variant: use the live principal
 // when one is on ctx (gRPC/MCP/connector), else fall back to the bit CAPTURED on
 // a trigger def by a non-principal path (scheduler/webhook/A2A supply it via

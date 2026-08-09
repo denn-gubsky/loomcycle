@@ -22,6 +22,18 @@ const (
 	// RFC L "principal-wins tenant" rule, extended from reads to writes).
 	ScopeTenant = "substrate:tenant"
 
+	// ScopeUser (RFC BX P2b) is the ISOLATED-MEMBER scope: operate within the
+	// principal's own tenant but confined to the caller's OWN user-scope
+	// (scope=user, scope_id=<my subject>) and own agents — NO access to the
+	// tenant's shared (tenant/global) data, no other users, no operator plane.
+	// It is DELIBERATELY NOT tenant-implied: unlike substrate:tenant it does not
+	// satisfy ScopeTenant/ScopeAdmin (so every /v1/_* tenant-admin route
+	// auto-denies it), and the data tools additionally refuse the tenant/global
+	// keyspace for a run stamped isolated (see tools.ConfineIsolatedScope). It
+	// implies only runs:create/runs:read (userImplied) — an isolated member must
+	// be able to run + read their own runs.
+	ScopeUser = "substrate:user"
+
 	ScopeRunsCreate     = "runs:create"
 	ScopeRunsRead       = "runs:read"
 	ScopeChannelPublish = "channel:publish"
@@ -51,6 +63,7 @@ const (
 var scopeCatalog = map[string]struct{}{
 	ScopeAdmin:                {},
 	ScopeTenant:               {},
+	ScopeUser:                 {},
 	ScopeRunsCreate:           {},
 	ScopeRunsRead:             {},
 	ScopeChannelPublish:       {},
@@ -70,6 +83,18 @@ var tenantImplied = map[string]struct{}{
 	ScopeChannelPublish:       {},
 	ScopeChannelRead:          {},
 	ScopeProvidersOperatorKey: {},
+}
+
+// userImplied is the set ScopeUser satisfies (RFC BX P2b). An isolated member
+// may create + read their OWN runs (subject-stamped; the data tools confine the
+// scope_id). It DELIBERATELY does NOT contain ScopeTenant, ScopeAdmin, or the
+// channel scopes — an isolated member has no tenant-shared authority, so it must
+// not satisfy any tenant-plane gate. ScopeUser satisfies itself (present here) so
+// a substrate:user token passes an explicit substrate:user check.
+var userImplied = map[string]struct{}{
+	ScopeUser:       {},
+	ScopeRunsCreate: {},
+	ScopeRunsRead:   {},
 }
 
 // ValidScope reports whether s is in the closed catalog.
@@ -107,8 +132,35 @@ func HasScope(granted []string, want string) bool {
 				return true
 			}
 		}
+		// RFC BX P2b: ScopeUser satisfies ONLY the userImplied set (itself +
+		// runs:create/read). It intentionally does NOT satisfy ScopeTenant or
+		// ScopeAdmin — an isolated member is auto-denied every tenant-plane /
+		// operator-plane gate.
+		if g == ScopeUser {
+			if _, ok := userImplied[want]; ok {
+				return true
+			}
+		}
 	}
 	return false
+}
+
+// IsIsolated reports whether principal p is an ISOLATED MEMBER (RFC BX P2b): its
+// authority tops out at substrate:user — it holds ScopeUser but neither
+// ScopeTenant nor ScopeAdmin. The isolation decision is SERVER-DERIVED from the
+// resolved principal's scopes, never from a request body / URL / model text. ok
+// is the PrincipalFromContext presence bool (false = open mode → never isolated).
+//
+// Note HasScope treats substrate:admin as satisfying every scope, so an admin
+// would pass HasScope(_, ScopeUser); the explicit !HasScope(_, ScopeAdmin) /
+// !HasScope(_, ScopeTenant) guards below exclude admin + tenant, leaving exactly
+// the substrate:user-topped principals. A token holding BOTH substrate:user and
+// substrate:tenant is NOT isolated (it has tenant-shared authority).
+func IsIsolated(p Principal, ok bool) bool {
+	return ok &&
+		HasScope(p.Scopes, ScopeUser) &&
+		!HasScope(p.Scopes, ScopeTenant) &&
+		!HasScope(p.Scopes, ScopeAdmin)
 }
 
 // OperatorKeyRestricted reports whether a run under principal p must be denied

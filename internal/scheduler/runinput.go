@@ -42,6 +42,9 @@ type scheduleDef struct {
 	// OperatorKeyRestricted is the RFC AX bit captured on the def at authoring;
 	// copied into RunInput so the fired run keeps the creator's restriction.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
+	// Isolated is the RFC BX P2b confinement bit captured on the def at authoring;
+	// copied into RunInput so the fired run keeps the creator's confinement.
+	Isolated bool `json:"isolated,omitempty"`
 }
 
 type schedulePromptSeg struct {
@@ -148,5 +151,8 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(form
 		// RFC AX: carry the captured operator-key restriction into the run — no
 		// principal is on ctx at fire time, so the def's captured bit is authority.
 		OperatorKeyRestricted: def.OperatorKeyRestricted,
+		// RFC BX P2b: carry the captured isolation bit into the run — same
+		// no-principal-at-fire-time rationale as OperatorKeyRestricted.
+		Isolated: def.Isolated,
 	}
 }
