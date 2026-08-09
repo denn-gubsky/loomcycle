@@ -966,6 +966,45 @@ type UserSummary struct {
 	LastStartedAt time.Time `json:"last_started_at"`
 }
 
+// UserRow is one row of the tenant-owned `users` table (RFC BX Phase 2 /
+// P2a). Unlike UserSummary — which is DERIVED from runs.user_id — this is a
+// first-class identity record a tenant operator explicitly manages.
+//
+// AccessMode is the RFC BX collaboration dial: "tenant" (full whole-tenant
+// collaboration, the default that preserves today's behaviour) or "isolated"
+// (the subject is sandboxed to its own scope). Status is "active" |
+// "disabled". TenantID "" is the shared/legacy tenant. CreatedBy is the
+// principal subject that registered the row (non-secret; "" in open mode).
+type UserRow struct {
+	TenantID    string
+	Subject     string
+	DisplayName string
+	AccessMode  string
+	Status      string
+	CreatedAt   time.Time
+	CreatedBy   string
+}
+
+// UserPatch carries the subset of fields UserUpdate can modify. Pointer
+// fields so nil = "leave unchanged"; non-nil = set to the dereferenced value
+// (including the empty string, e.g. clearing a display name).
+type UserPatch struct {
+	DisplayName *string
+	AccessMode  *string
+	Status      *string
+}
+
+// ValidUserAccessMode / ValidUserStatus are the shared enum checks both store
+// backends AND the HTTP handler use, so the accepted set can't drift between
+// the two backends or between the store and the wire layer (RFC BX P2a).
+func ValidUserAccessMode(mode string) bool {
+	return mode == "tenant" || mode == "isolated"
+}
+
+func ValidUserStatus(status string) bool {
+	return status == "active" || status == "disabled"
+}
+
 // TenantSummary is one tenant's derived activity, from ListTenants.
 type TenantSummary struct {
 	TenantID      string    `json:"tenant_id"`
@@ -1284,6 +1323,36 @@ type Store interface {
 	// workspace + the super-admin tenant-focus), filtering on the
 	// denormalised runs.tenant_id; "" returns all tenants.
 	ListUsers(ctx context.Context, tenantID string) ([]UserSummary, error)
+
+	// UserCreate inserts a first-class user identity row (RFC BX P2a).
+	// Returns *ErrConflict{Kind:"user", ID:subject} on a (tenant, subject)
+	// PK collision. Stamps CreatedAt to now if the caller left it zero.
+	// Rejects an AccessMode / Status outside the shared enum (so a direct
+	// store caller can't persist a value the wire layer would refuse).
+	UserCreate(ctx context.Context, row UserRow) error
+
+	// UserGet returns one identity row by (tenantID, subject). Returns
+	// *ErrNotFound{Kind:"user", ID:subject} when the row is absent — so a
+	// cross-tenant probe is an opaque miss, never an existence oracle.
+	UserGet(ctx context.Context, tenantID, subject string) (UserRow, error)
+
+	// UserList returns every identity row for tenantID ordered by
+	// (tenant_id, subject); tenantID "" returns ALL tenants' rows (the
+	// super-admin path — mirrors ListUsers' "" = all-tenants convention).
+	// Empty slice (not nil) when none match.
+	UserList(ctx context.Context, tenantID string) ([]UserRow, error)
+
+	// UserUpdate patches mutable fields on one identity row. Nil patch
+	// fields leave the corresponding column unchanged. Returns
+	// *ErrNotFound{Kind:"user"} when the (tenant, subject) row is absent,
+	// and rejects an AccessMode / Status outside the shared enum.
+	UserUpdate(ctx context.Context, tenantID, subject string, patch UserPatch) error
+
+	// UserDelete hard-deletes one identity row and reports whether a row
+	// was removed (false = the row did not exist). The subject's OWNED data
+	// (runs / sessions / memory) has no FK to this table and is left intact
+	// — deleting the identity record is not the erasure surface.
+	UserDelete(ctx context.Context, tenantID, subject string) (bool, error)
 
 	// ListTenants enumerates tenants that have RUN something, with derived
 	// per-tenant counts. A GROUP BY over runs.tenant_id, mirroring ListUsers —

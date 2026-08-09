@@ -5,10 +5,13 @@ package http
 //	GET /v1/_users/{subject}   one subject's aggregate view (ScopeTenant)
 //	GET /v1/_tenants           tenants with derived counts (ADMIN ONLY)
 //
-// There is no create/update/delete here, deliberately. A "user" in loomcycle is
-// derived from runs.user_id — there is no row to write. The delete half of "user
-// CRUD" is the subject-erasure surface, which is the only thing that removes a
-// person's footprint coherently across four planes.
+// There is no create/update/delete HERE, deliberately: these two endpoints
+// are the DERIVED directory (aggregated from runs.user_id + memory). Since RFC
+// BX P2a there is also a first-class, tenant-owned `users` table whose CRUD
+// lives in users_crud.go — a managed identity record, distinct from this
+// activity-derived view. Deleting that record is NOT the same as removing a
+// person's footprint: the subject-erasure surface remains the only thing that
+// clears a footprint coherently across all planes.
 
 import (
 	"context"

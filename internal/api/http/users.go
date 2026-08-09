@@ -18,6 +18,15 @@ type wireUserSummary struct {
 	RunningCount  int       `json:"running_count"`
 	TotalCount    int       `json:"total_count"`
 	LastStartedAt time.Time `json:"last_started_at"`
+	// RFC BX P2a — the first-class users-table fields, merged over the
+	// run-derived activity above. `Registered` distinguishes a managed user
+	// row (true) from a subject seen only in runs (false); the record fields
+	// are empty for the latter. Additive — the base four fields are
+	// unchanged so the Web UI's picker keeps working.
+	Registered  bool   `json:"registered"`
+	DisplayName string `json:"display_name"`
+	AccessMode  string `json:"access_mode"`
+	Status      string `json:"status"`
 }
 
 // handleListUsers serves GET /v1/_users — distinct user_ids with
@@ -46,9 +55,43 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	resp := listUsersResponse{Users: make([]wireUserSummary, 0, len(users))}
+	// RFC BX P2a: merge the first-class users-table rows over the run-derived
+	// activity so the response is authoritative about who is REGISTERED while
+	// staying an activity lens. Both sources are scoped by the SAME tenantID:
+	//   - a subject with runs but no record → registered:false, empty fields;
+	//   - a registered subject with no runs → appears with zero activity;
+	//   - a subject in both               → activity + record fields merged.
+	records, err := s.store.UserList(r.Context(), tenantID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	resp := listUsersResponse{Users: make([]wireUserSummary, 0, len(users)+len(records))}
+	// Index by user_id to fold records onto activity rows. In the admin
+	// all-tenants view (tenantID=="") ListUsers already collapses a subject
+	// across tenants (GROUP BY user_id), so this lens does too; the exact
+	// per-tenant view is the tenant-scoped read.
+	idx := map[string]int{}
 	for _, u := range users {
+		idx[u.UserID] = len(resp.Users)
 		resp.Users = append(resp.Users, toWireUser(u))
+	}
+	for _, rec := range records {
+		if i, ok := idx[rec.Subject]; ok {
+			resp.Users[i].Registered = true
+			resp.Users[i].DisplayName = rec.DisplayName
+			resp.Users[i].AccessMode = rec.AccessMode
+			resp.Users[i].Status = rec.Status
+			continue
+		}
+		idx[rec.Subject] = len(resp.Users)
+		resp.Users = append(resp.Users, wireUserSummary{
+			UserID:      rec.Subject,
+			Registered:  true,
+			DisplayName: rec.DisplayName,
+			AccessMode:  rec.AccessMode,
+			Status:      rec.Status,
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

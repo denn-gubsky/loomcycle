@@ -493,10 +493,20 @@ func requiredScopeFor(method, path string) string {
 	// identity (the Web UI's role source); a tenant token needs it too.
 	case path == "/v1/_me":
 		return ""
-	// User listing — any authenticated principal; the handler tenant-scopes
-	// the result (a tenant sees only its tenant's users; admin sees all /
-	// can focus via ?tenant=). The UI's per-tenant workspace picker needs it.
+	// The /v1/_users collection, method-aware (RFC BX P2a):
+	//   - GET (list) — any authenticated principal; the handler tenant-scopes
+	//     the result (a tenant sees only its tenant's users; admin sees all /
+	//     can focus via ?tenant=). The UI's per-tenant workspace picker needs it.
+	//   - POST (create a first-class user) — a tenant-operator action; only a
+	//     substrate:tenant operator (or admin, which also satisfies) may
+	//     register a user. The handler stamps the authoritative principal tenant.
+	// PATCH/DELETE /v1/_users/{subject} (update / delete) fall through to the
+	// strings.HasPrefix(path, "/v1/_users/") case below, which already returns
+	// ScopeTenant — so all three mutating ops are tenant-operator-gated.
 	case path == "/v1/_users":
+		if method == http.MethodPost {
+			return auth.ScopeTenant
+		}
 		return ""
 	// RFC BC: the client-tool host WebSocket. A client registers tools it runs on
 	// the user's own machine; the connection serves ONLY its own principal's runs
