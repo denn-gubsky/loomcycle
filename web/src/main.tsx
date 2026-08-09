@@ -18,6 +18,7 @@ import AuditView from "./pages/AuditView";
 import RoutingView from "./pages/RoutingView";
 import UsageView from "./pages/UsageView";
 import LimitsView from "./pages/LimitsView";
+import UsersView from "./pages/UsersView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
 import IntegrationsView from "./pages/IntegrationsView";
@@ -90,6 +91,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="routing" element={<RoutingView />} />
           <Route path="usage" element={<UsageView />} />
           <Route path="limits" element={<LimitsView />} />
+          <Route path="users" element={<UsersView />} />
           <Route path="activity" element={<ActivityMonitor />} />
           <Route path="settings" element={<SettingsView />} />
           <Route path="*" element={<Navigate to="/agents" replace />} />

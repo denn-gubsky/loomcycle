@@ -22,6 +22,7 @@ import {
   ScrollText,
   Settings,
   Sun,
+  Users,
   Workflow,
 } from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
@@ -70,6 +71,11 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/channels", label: "channels", Icon: Radio, vis: "tenant" },
   { to: "/schedules", label: "schedules", Icon: CalendarClock, vis: "tenant" },
   { to: "/teams", label: "teams", Icon: Workflow, vis: "tenant" },
+  // users: the RFC BX P2c tenant-operator console — manage first-class users +
+  // mint/revoke their bearer tokens. "tenant": the /v1/_users(/…) routes are
+  // ScopeTenant and the handlers confine to the caller's own tenant (a tenant
+  // operator sees only its own users; admin sees all + ?tenant= focus).
+  { to: "/users", label: "users", Icon: Users, vis: "tenant" },
   { to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },
   { to: "/memory", label: "memory", Icon: Brain, vis: "tenant" },
   { to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },

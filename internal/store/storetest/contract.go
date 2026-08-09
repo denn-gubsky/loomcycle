@@ -358,6 +358,7 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenDefCurrentByName", testOperatorTokenDefCurrentByName},
 		{"OperatorTokenDefRetireAndCountAdmin", testOperatorTokenDefRetireAndCountAdmin},
 		{"OperatorTokenDefListNames", testOperatorTokenDefListNames},
+		{"OperatorTokenDefListBySubject", testOperatorTokenDefListBySubject},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -10063,6 +10064,57 @@ func testOperatorTokenDefListNames(t *testing.T, s store.Store) {
 		if n.TenantID != "acme" || n.Subject == "" || !n.HasCurrent || n.TokenCount != 1 {
 			t.Errorf("summary wrong: %+v", n)
 		}
+	}
+}
+
+// testOperatorTokenDefListBySubject asserts the RFC BX P2c tenant-safe per-user
+// listing: it returns exactly (tenantID, subject)'s rows, and the SAME subject
+// in another tenant is isolated — the property the delegated-mint surface relies
+// on so a tenant operator can never see a sibling tenant's user tokens.
+func testOperatorTokenDefListBySubject(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Same subject "alice" in two tenants; plus a different subject in t1.
+	_, _ = s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-t1a-1", "u-alice", "t1", "alice", "h-t1a-1", []string{"runs:create"}))
+	_, _ = s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-t1a-2", "u-alice", "t1", "alice", "h-t1a-2", []string{"runs:read"}))
+	_, _ = s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-t2a-1", "u-alice", "t2", "alice", "h-t2a-1", []string{"substrate:user"}))
+	_, _ = s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-t1b-1", "u-bob", "t1", "bob", "h-t1b-1", []string{"runs:read"}))
+
+	// (t1, alice) → exactly the two t1/alice rows; never t2/alice, never t1/bob.
+	got, err := s.OperatorTokenDefListBySubject(ctx, "t1", "alice")
+	if err != nil {
+		t.Fatalf("list by subject: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("(t1,alice) → %d rows, want 2: %+v", len(got), got)
+	}
+	ids := map[string]bool{}
+	for _, r := range got {
+		ids[r.DefID] = true
+		if r.TenantID != "t1" || r.Subject != "alice" {
+			t.Errorf("leaked cross-key row: %+v", r)
+		}
+	}
+	if !ids["ot-t1a-1"] || !ids["ot-t1a-2"] {
+		t.Errorf("missing expected rows, got ids %v", ids)
+	}
+
+	// The SAME subject in another tenant is isolated (the core tenant-safety
+	// property — this must NOT see t1's alice rows).
+	other, err := s.OperatorTokenDefListBySubject(ctx, "t2", "alice")
+	if err != nil {
+		t.Fatalf("list (t2,alice): %v", err)
+	}
+	if len(other) != 1 || other[0].DefID != "ot-t2a-1" {
+		t.Errorf("(t2,alice) → %+v, want just ot-t2a-1", other)
+	}
+
+	// No match → empty (not an error, not nil-as-error).
+	none, err := s.OperatorTokenDefListBySubject(ctx, "t1", "nobody")
+	if err != nil {
+		t.Fatalf("list (t1,nobody): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("(t1,nobody) → %+v, want empty", none)
 	}
 }
 
