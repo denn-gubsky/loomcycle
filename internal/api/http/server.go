@@ -6312,6 +6312,13 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "list-by-user requires persistence (Store not configured)", http.StatusNotFound)
 		return
 	}
+	// RFC BX P2b: an isolated member sees only its OWN run metadata — another
+	// user_id yields an empty list (no cross-user enumeration), matching the
+	// session-plane confinement. Non-isolated principals keep the tenant view.
+	if s.isolatedCrossUser(r.Context(), userID) {
+		writeJSON(w, http.StatusOK, map[string]any{"agents": []agentResponse{}})
+		return
+	}
 	statusFilter := store.RunStatus(r.URL.Query().Get("status"))
 	// Default to running — the most useful view for "what's in flight
 	// for me?". Pass status=all to override.

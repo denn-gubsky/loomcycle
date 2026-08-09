@@ -296,3 +296,69 @@ func revokeReq(defID string, p auth.Principal, subject string) *http.Request {
 	req.SetPathValue("def_id", defID)
 	return req.WithContext(auth.WithPrincipal(req.Context(), p))
 }
+
+// Code-review HIGH regression: disabling or deleting a user must retire its
+// delegated tokens immediately — the auth hot path is token-only and never
+// consults users.status, so without the cascade a disabled/deleted user's
+// bearer keeps authenticating until its own retired_at.
+func mintForAlice(t *testing.T, s *Server) {
+	t.Helper()
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	rec := httptest.NewRecorder()
+	s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", "", acme, "subject", "alice"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("mint: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func activeAliceTokens(t *testing.T, st store.Store) int {
+	t.Helper()
+	rows, err := st.OperatorTokenDefListBySubject(context.Background(), "acme", "alice")
+	if err != nil {
+		t.Fatalf("list acme/alice: %v", err)
+	}
+	n := 0
+	for _, r := range rows {
+		if tokenActive(r) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestDisableUser_RetiresDelegatedTokens(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	mintForAlice(t, s)
+	if n := activeAliceTokens(t, st); n != 1 {
+		t.Fatalf("precondition: active tokens = %d, want 1", n)
+	}
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	rec := httptest.NewRecorder()
+	s.handleUpdateUser(rec, bodyReq("PATCH", "/v1/_users/alice", `{"status":"disabled"}`, acme, "subject", "alice"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := activeAliceTokens(t, st); n != 0 {
+		t.Errorf("active tokens after disable = %d, want 0 (disable must retire delegated tokens)", n)
+	}
+}
+
+func TestDeleteUser_RetiresDelegatedTokens(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	mintForAlice(t, s)
+	if n := activeAliceTokens(t, st); n != 1 {
+		t.Fatalf("precondition: active tokens = %d, want 1", n)
+	}
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	rec := httptest.NewRecorder()
+	s.handleDeleteUser(rec, bodyReq("DELETE", "/v1/_users/alice", "", acme, "subject", "alice"))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
+	}
+	// The token rows persist (retired) even though the identity row is gone.
+	if n := activeAliceTokens(t, st); n != 0 {
+		t.Errorf("active tokens after delete = %d, want 0 (delete must retire delegated tokens)", n)
+	}
+}

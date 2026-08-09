@@ -93,6 +93,14 @@ func (t *tenantScopedStore) GetSession(ctx context.Context, sessionID string) (s
 	if !t.visible(sess.TenantID) {
 		return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 	}
+	// RFC BX P2b: an ISOLATED member sees only its OWN sessions — the tenant
+	// visibility check above is not enough (it would expose another user's
+	// session/transcript in the same tenant, and a continuation would run under
+	// that user's identity). Opaque-404 on a cross-subject probe, exactly like
+	// the cross-tenant case. Non-isolated principals keep the whole-tenant model.
+	if p, ok := auth.PrincipalFromContext(ctx); ok && auth.IsIsolated(p, ok) && sess.UserID != p.Subject {
+		return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
+	}
 	return sess, nil
 }
 

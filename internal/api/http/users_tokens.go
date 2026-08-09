@@ -31,6 +31,7 @@ package http
 // correlation.
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -133,6 +134,37 @@ func isDelegatedUserToken(row store.OperatorTokenDefRow, tenant, subject string)
 // was never retired, or its retired_at is still in the future (rotation grace).
 func tokenActive(row store.OperatorTokenDefRow) bool {
 	return row.RetiredAt.IsZero() || time.Now().Before(row.RetiredAt)
+}
+
+// retireDelegatedUserTokens retires every currently-active DELEGATED member
+// token for (tenant, subject) and invalidates the token cache. Called when a
+// user is DELETED or DISABLED so their bearer(s) stop authenticating
+// immediately — the auth hot path (resolvePrincipalUncached) is token-only and
+// never consults users.status, so without this a disabled/deleted user's token
+// would keep working until its own retired_at. Only DELEGATED member tokens are
+// touched (isDelegatedUserToken): an admin/tenant-operator token that happens to
+// share the subject is a different role and is left to the operator-token
+// surface. Returns the count retired.
+func (s *Server) retireDelegatedUserTokens(ctx context.Context, tenant, subject string) (int, error) {
+	rows, err := s.store.OperatorTokenDefListBySubject(ctx, tenant, subject)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC()
+	n := 0
+	for _, row := range rows {
+		if !isDelegatedUserToken(row, tenant, subject) || !tokenActive(row) {
+			continue
+		}
+		if err := s.store.OperatorTokenDefSetRetiredAt(ctx, row.DefID, now); err != nil {
+			return n, err
+		}
+		n++
+	}
+	if n > 0 {
+		s.invalidateTokenCache(ctx)
+	}
+	return n, nil
 }
 
 // handleMintUserToken serves POST /v1/_users/{subject}/tokens. Mints a bearer
