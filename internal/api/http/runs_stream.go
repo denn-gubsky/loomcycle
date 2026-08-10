@@ -83,6 +83,13 @@ func (s *Server) handleStreamUserAgents(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "user_id path arg required")
 		return
 	}
+	// RFC BX P2b: an isolated member may stream only its OWN runs — another
+	// user_id is an opaque 404 (no cross-user enumeration), matching the
+	// session-plane + list confinement.
+	if s.isolatedCrossUser(r.Context(), userID) {
+		writeJSONError(w, http.StatusNotFound, "not_found", "no such user")
+		return
+	}
 	if s.runStateBus == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "stream_unavailable", "run-state bus not configured")
 		return

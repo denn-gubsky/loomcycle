@@ -169,6 +169,16 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "user_update_failed", err.Error())
 		return
 	}
+	// Disabling a user must revoke its live bearer(s) — the auth path is
+	// token-only and never checks users.status, so a status flip alone would
+	// leave existing tokens working. (Re-enabling does not re-issue tokens; the
+	// operator re-mints.)
+	if req.Status != nil && *req.Status == "disabled" {
+		if _, err := s.retireDelegatedUserTokens(r.Context(), tenant, subject); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "token_retire_failed", err.Error())
+			return
+		}
+	}
 	// Re-read so the response reflects the post-patch state.
 	updated, err := s.store.UserGet(r.Context(), tenant, subject)
 	if err != nil {
@@ -192,7 +202,17 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing_subject", "subject is required")
 		return
 	}
-	removed, err := s.store.UserDelete(r.Context(), tenantFromCtx(r.Context()), subject)
+	tenant := tenantFromCtx(r.Context())
+	// Fail-safe ordering: retire the user's delegated tokens BEFORE removing the
+	// identity row, so a deleted user's bearer can never outlive the record (the
+	// auth path is token-only). A no-op when the user has no tokens / doesn't
+	// exist; a retire error aborts the delete so the operator retries rather than
+	// stranding live tokens under a gone identity.
+	if _, err := s.retireDelegatedUserTokens(r.Context(), tenant, subject); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "token_retire_failed", err.Error())
+		return
+	}
+	removed, err := s.store.UserDelete(r.Context(), tenant, subject)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "user_delete_failed", err.Error())
 		return

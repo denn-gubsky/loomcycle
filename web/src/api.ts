@@ -8,6 +8,14 @@ export interface UserSummary {
   running_count: number;
   total_count: number;
   last_started_at: string;
+  // RFC BX P2a — first-class users-table fields merged over the run-derived
+  // activity above. `registered` distinguishes a managed user row (true) from a
+  // subject seen only in runs (false); the record fields are empty for the
+  // latter. Optional so older servers (which omit them) still typecheck.
+  registered?: boolean;
+  display_name?: string;
+  access_mode?: string; // "tenant" | "isolated"
+  status?: string; // "active" | "disabled"
 }
 
 export interface ListUsersResponse {
@@ -20,6 +28,113 @@ export interface ListUsersResponse {
 export function listUsers(tenant?: string): Promise<ListUsersResponse> {
   const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
   return jsonFetch<ListUsersResponse>(`/v1/_users${q}`);
+}
+
+// --- RFC BX Phase 2: tenant-owned users + delegated per-user token minting ---
+
+// UserRecord is one first-class users-table row (POST/PATCH /v1/_users).
+// The tenant is server-derived from the principal, never sent.
+export interface UserRecord {
+  tenant_id: string;
+  subject: string;
+  display_name: string;
+  access_mode: string; // "tenant" | "isolated"
+  status: string; // "active" | "disabled"
+  created_at: string;
+  created_by: string;
+}
+
+export interface CreateUserBody {
+  subject: string;
+  display_name?: string;
+  access_mode?: string; // default "tenant" server-side
+  status?: string; // default "active" server-side
+}
+
+export function createUser(body: CreateUserBody): Promise<UserRecord> {
+  return jsonFetch<UserRecord>("/v1/_users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// updateUser PATCHes mutable fields; an omitted key leaves the column unchanged.
+export interface UpdateUserBody {
+  display_name?: string;
+  access_mode?: string;
+  status?: string;
+}
+
+export function updateUser(subject: string, body: UpdateUserBody): Promise<UserRecord> {
+  return jsonFetch<UserRecord>(`/v1/_users/${encodeURIComponent(subject)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// deleteUser removes the identity row (204 No Content). Owned data is left
+// intact — deleting the record is not erasure. Raw fetch (empty body).
+export async function deleteUser(subject: string): Promise<void> {
+  const resp = await fetch(baseURL + `/v1/_users/${encodeURIComponent(subject)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) return;
+    const b = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${b.slice(0, 200)}`);
+  }
+}
+
+// MintedUserToken is the show-once result of POST /v1/_users/{subject}/tokens.
+// `token` is the plaintext, returned exactly once and never retrievable again.
+export interface MintedUserToken {
+  def_id: string;
+  token: string;
+  token_suffix: string;
+  name: string;
+  scopes: string[];
+  created_at: string;
+  warning: string;
+}
+
+// mintUserToken mints a bearer for a member. Scopes are DERIVED server-side from
+// the user's access_mode (not sent) and the tenant is forced from the principal.
+export function mintUserToken(subject: string): Promise<MintedUserToken> {
+  return jsonFetch<MintedUserToken>(`/v1/_users/${encodeURIComponent(subject)}/tokens`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// UserTokenMeta is one token row from GET /v1/_users/{subject}/tokens —
+// METADATA ONLY (no plaintext, no hash). `active` uses the auth validity rule.
+export interface UserTokenMeta {
+  def_id: string;
+  name: string;
+  scopes: string[];
+  created_at: string;
+  retired_at?: string;
+  active: boolean;
+}
+
+export interface ListUserTokensResponse {
+  subject: string;
+  tokens: UserTokenMeta[];
+}
+
+export function listUserTokens(subject: string): Promise<ListUserTokensResponse> {
+  return jsonFetch<ListUserTokensResponse>(`/v1/_users/${encodeURIComponent(subject)}/tokens`);
+}
+
+// revokeUserToken retires one member token (immediate). Returns {def_id,
+// retired_at}; a cross-tenant / privileged def_id is an opaque 404.
+export function revokeUserToken(subject: string, defID: string): Promise<{ def_id: string; retired_at: string }> {
+  return jsonFetch(`/v1/_users/${encodeURIComponent(subject)}/tokens/${encodeURIComponent(defID)}`, {
+    method: "DELETE",
+  });
 }
 
 // HealthResponse mirrors handleHealthz on the server. v0.8.21 added
@@ -2484,6 +2599,13 @@ export function retireOperatorToken(
 // substrate:admin …`), which prints the new token so access is never lost.
 export const TOKEN_SCOPES = [
   "substrate:tenant",
+  // RFC BX P2b: the ISOLATED-MEMBER scope. A substrate:user token operates only
+  // in its own user-scope (+ its own agents) — no tenant-shared data, no other
+  // users, no operator plane. It became a valid catalog scope in P2b; P2c adds
+  // it to the mint dropdown. (Delegated per-user minting derives it from the
+  // user's access_mode automatically — see the Users console — but it's offered
+  // here too for the manual operator-token form.)
+  "substrate:user",
   "runs:create",
   "runs:read",
   "channel:publish",

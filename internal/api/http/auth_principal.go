@@ -337,6 +337,17 @@ func (s *Server) isolatedForCtx(ctx context.Context) bool {
 	return auth.IsIsolated(p, ok)
 }
 
+// isolatedCrossUser reports whether the ctx principal is an isolated member
+// reaching for a DIFFERENT user's per-user surface (a `/v1/users/{user_id}/…`
+// route) — i.e. it should be confined to itself. RFC BX P2b: an isolated
+// member sees only its own runs/sessions/metadata; a non-isolated principal
+// keeps the whole-tenant view (returns false). Handlers use this to return an
+// empty/own-only result rather than another user's data.
+func (s *Server) isolatedCrossUser(ctx context.Context, pathUserID string) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return auth.IsIsolated(p, ok) && pathUserID != p.Subject
+}
+
 // isolatedOrCaptured is the RunOnce variant (sibling of
 // operatorKeyRestrictedOrCaptured): use the live principal when one is on ctx
 // (gRPC/MCP/connector), else fall back to the bit CAPTURED on a trigger def by a
@@ -383,6 +394,15 @@ func sessionOwnershipOK(ctx context.Context, sess store.Session) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true
+	}
+	// RFC BX P2b: an ISOLATED member is confined to its OWN sessions — the
+	// tenant match alone would let it read/continue another user's session in
+	// the same tenant (and, via a continuation, that user's user-scoped data,
+	// since the run inherits sess.UserID). Every non-isolated principal keeps
+	// the whole-tenant collaboration model (session_ids are not secret, so the
+	// tenant is the boundary there).
+	if auth.IsIsolated(p, ok) {
+		return sess.TenantID == p.TenantID && sess.UserID == p.Subject
 	}
 	return sess.TenantID == p.TenantID
 }

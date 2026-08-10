@@ -2636,6 +2636,15 @@ type Store interface {
 	// (retired_at IS NULL) token, or ErrNotFound. There is at most one.
 	OperatorTokenDefGetCurrentByName(ctx context.Context, name string) (OperatorTokenDefRow, error)
 	OperatorTokenDefListByName(ctx context.Context, name string) ([]OperatorTokenDefRow, error)
+	// OperatorTokenDefListBySubject returns every token row for
+	// (tenantID, subject), newest-first. WHY it exists separately from
+	// OperatorTokenDefListByName: the `name` key is NOT tenant-qualified (two
+	// tenants may mint same-named tokens), so listing by name would leak a
+	// sibling tenant's rows. This is the tenant-SAFE per-user listing the RFC BX
+	// P2c delegated-mint surface needs — a tenant operator enumerating one of its
+	// own users' minted tokens must see ONLY (its tenant, that subject). Empty
+	// slice (not nil) when none match.
+	OperatorTokenDefListBySubject(ctx context.Context, tenantID, subject string) ([]OperatorTokenDefRow, error)
 	OperatorTokenDefListNames(ctx context.Context) ([]OperatorTokenDefNameSummary, error)
 	// OperatorTokenDefSetRetiredAt sets retired_at. Used by both retire
 	// (now → immediate) and rotate (now+grace on the prior row).

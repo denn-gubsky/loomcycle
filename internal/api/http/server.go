@@ -2776,6 +2776,16 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCreateUser))))
 	mux.Handle("PATCH /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUpdateUser))))
 	mux.Handle("DELETE /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteUser))))
+	// RFC BX P2c — delegated per-user token minting. A substrate:tenant operator
+	// mints / lists / revokes bearer tokens for its OWN users (bounded
+	// delegation): the tenant is forced from the principal, scopes are derived
+	// from the user's access_mode, and list/revoke are confined to member tokens.
+	// All three are ScopeTenant via the /v1/_users/ prefix case in
+	// requiredScopeFor (a substrate:user member is auto-denied). The more
+	// specific token patterns win over GET/PATCH/DELETE /v1/_users/{subject}.
+	mux.Handle("POST /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMintUserToken))))
+	mux.Handle("GET /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserTokens))))
+	mux.Handle("DELETE /v1/_users/{subject}/tokens/{def_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRevokeUserToken))))
 	// v0.8.6 system channels admin endpoint. Bearer-authed publish to
 	// _system/* channels. Used by external monitoring (push alerts in
 	// via webhook), ops dashboards (operator-issued alarms), and
@@ -6300,6 +6310,13 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store == nil {
 		http.Error(w, "list-by-user requires persistence (Store not configured)", http.StatusNotFound)
+		return
+	}
+	// RFC BX P2b: an isolated member sees only its OWN run metadata — another
+	// user_id yields an empty list (no cross-user enumeration), matching the
+	// session-plane confinement. Non-isolated principals keep the tenant view.
+	if s.isolatedCrossUser(r.Context(), userID) {
+		writeJSON(w, http.StatusOK, map[string]any{"agents": []agentResponse{}})
 		return
 	}
 	statusFilter := store.RunStatus(r.URL.Query().Get("status"))

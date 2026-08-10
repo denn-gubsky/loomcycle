@@ -6434,6 +6434,61 @@ button.primary:disabled {
   flex-basis: 100%;
   margin: 4px 0 0;
 }
+
+/* RFC BX P2c Users console — reuses the settings-panel/settings-table
+   vocabulary; these add the page header row, the inline create form, and the
+   per-user token sub-panel. Values mirror .limits-* for visual consistency. */
+.settings-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.settings-head-row h1 {
+  margin: 0;
+}
+.users-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  margin: 12px 0;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--lc-radius-sm);
+}
+.users-add-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-soft);
+  font-size: 12px;
+  margin-right: 4px;
+}
+.users-add-err {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+}
+/* The token sub-panel expands inside a table row, so give it a soft inset card
+   distinct from the surrounding rows. */
+.users-tokens {
+  padding: 12px 14px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--lc-radius-sm);
+}
+.users-tokens-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.users-tokens-table {
+  margin-top: 10px;
+}
 .limits-table-wrap {
   overflow-x: auto;
   border: 1px solid var(--border);

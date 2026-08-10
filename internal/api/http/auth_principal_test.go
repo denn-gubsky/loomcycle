@@ -79,6 +79,12 @@ func TestSessionOwnershipOK_Matrix(t *testing.T) {
 		{"wrong tenant blocked", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "evil", Subject: "alice"}), false},
 		// Super-admin crosses tenants by design.
 		{"super-admin sees all", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "x", Scopes: []string{auth.ScopeAdmin}}), true},
+		// RFC BX P2b: an ISOLATED member (substrate:user) is confined to its OWN
+		// sessions — its own is allowed, a same-tenant DIFFERENT subject is now
+		// DENIED (unlike the whole-tenant collaboration case above). This is the
+		// regression guard for the code-review CRITICAL finding.
+		{"isolated owner matches", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeUser}}), true},
+		{"isolated, same tenant different subject BLOCKED", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "mallory", Scopes: []string{auth.ScopeUser}}), false},
 	}
 	for _, c := range cases {
 		if got := sessionOwnershipOK(c.ctx, sess); got != c.want {

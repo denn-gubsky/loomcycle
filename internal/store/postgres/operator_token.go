@@ -136,6 +136,24 @@ func (s *Store) OperatorTokenDefListByName(ctx context.Context, name string) ([]
 	return out, rows.Err()
 }
 
+func (s *Store) OperatorTokenDefListBySubject(ctx context.Context, tenantID, subject string) ([]store.OperatorTokenDefRow, error) {
+	rows, err := s.pool.Query(ctx,
+		operatorTokenDefSelect+` WHERE tenant_id = $1 AND subject = $2 ORDER BY created_at DESC`, tenantID, subject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []store.OperatorTokenDefRow{}
+	for rows.Next() {
+		r, err := scanOperatorTokenDef(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) OperatorTokenDefListNames(ctx context.Context) ([]store.OperatorTokenDefNameSummary, error) {
 	// DISTINCT ON keeps the newest row per name for tenant/subject, while
 	// the aggregate columns roll up the whole name's history.

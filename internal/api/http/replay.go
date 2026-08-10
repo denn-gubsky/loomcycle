@@ -99,7 +99,11 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 
 	// Mint the new session (bound to the target agent) + a seed run to hold the
 	// carried transcript. Reuses the same create path as a fresh run.
-	identity := store.RunIdentity{AgentID: newAgentID(), UserID: subject, TenantID: tenant, ReplicaID: s.replicaID}
+	// Isolated for parity with every other run-start site (RFC BX P2b): the seed
+	// run isn't executed, but it's a persisted identity and the bit must not
+	// fail-open. sessionOwnershipOK already confined an isolated caller to its
+	// own source session above.
+	identity := store.RunIdentity{AgentID: newAgentID(), UserID: subject, TenantID: tenant, ReplicaID: s.replicaID, Isolated: s.isolatedForCtx(ctx)}
 	newSessionID, seedRunID, cErr := s.openOrCreateSessionAndRun(ctx, "", req.Agent, tenant, subject, identity)
 	if cErr != nil {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusInternalServerError, msg: "create session: " + cErr.Error()}
