@@ -102,6 +102,12 @@ func (p *Path) resolveScope(ctx context.Context, requested string) (tenantID, sc
 	if requested == "" {
 		requested = "agent"
 	}
+	// RFC BX P2b: an isolated member (substrate:user) may name only its own
+	// user/agent-scoped Path entries — refuse the tenant-shared scope. Server-
+	// derived from the run's Isolated bit; a non-isolated run is unaffected.
+	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)); err != nil {
+		return "", "", "", err
+	}
 	switch requested {
 	case "agent":
 		name := tools.AgentName(ctx)

@@ -191,6 +191,9 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	// authority — unconditional so the overlay can't set it) so the scheduler
 	// stamps the fired run with the creator's grant.
 	def.OperatorKeyRestricted = operatorKeyRestrictedFromCtx(ctx, s.Cfg)
+	// RFC BX P2b: capture the authoring principal's isolation status (server
+	// authority) so the scheduler stamps the fired run confined.
+	def.Isolated = isolatedFromCtx(ctx)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -340,6 +343,9 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	// RFC AX: re-capture the forking principal's operator-key restriction (server
 	// authority) — a fork is a new version, its authority is the forker's grant.
 	def.OperatorKeyRestricted = operatorKeyRestrictedFromCtx(ctx, s.Cfg)
+	// RFC BX P2b: capture the authoring principal's isolation status (server
+	// authority) so the scheduler stamps the fired run confined.
+	def.Isolated = isolatedFromCtx(ctx)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
@@ -1022,6 +1028,13 @@ type mergedScheduleDef struct {
 	// restriction (anti-bypass). NOT part of any content hash (schedules have no
 	// content_sha256); omitempty keeps gate-off def bodies byte-identical.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
+	// Isolated is the RFC BX P2b confinement bit CAPTURED from the authoring
+	// principal at create/fork (server authority, NOT overlay-set). The scheduler
+	// copies it into RunInput so a fired run keeps its creator's confinement
+	// (anti-bypass). NOT part of any content hash; omitempty keeps pre-P2b def
+	// bodies byte-identical. Drift-tested against scheduler.scheduleDef /
+	// SubstrateScheduleDef.
+	Isolated bool `json:"isolated,omitempty"`
 }
 
 // mergedSchedulePromptSeg mirrors config.ScheduledRunSegment with JSON tags.

@@ -36,7 +36,7 @@ func (p *principalInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallC
 		callCtx.User = a2asrv.NewAuthenticatedUser("anonymous", nil)
 		return ctx, nil, nil
 	}
-	name, restricted, ok := p.auth(serviceParamsToHeader(callCtx.ServiceParams()))
+	name, restricted, isolated, ok := p.auth(serviceParamsToHeader(callCtx.ServiceParams()))
 	if !ok {
 		// Auth is configured but the request carried no valid credential.
 		// REJECT at the frontier: returning a non-nil error from a
@@ -52,9 +52,12 @@ func (p *principalInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallC
 		return ctx, nil, a2asdk.ErrUnauthenticated
 	}
 	callCtx.User = a2asrv.NewAuthenticatedUser(name, nil)
-	// RFC AX: thread the peer-derived operator-key restriction to the executor
-	// (the returned ctx propagates to the handler → buildRunInput → RunInput).
-	return bridge.WithOperatorKeyRestricted(ctx, restricted), nil, nil
+	// RFC AX + RFC BX P2b: thread the peer-derived operator-key restriction AND
+	// isolation bit to the executor (the returned ctx propagates to the handler →
+	// buildRunInput → RunInput).
+	ctx = bridge.WithOperatorKeyRestricted(ctx, restricted)
+	ctx = bridge.WithIsolated(ctx, isolated)
+	return ctx, nil, nil
 }
 
 // serviceParamsToHeader projects the SDK ServiceParams (request headers,

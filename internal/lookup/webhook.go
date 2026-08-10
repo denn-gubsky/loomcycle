@@ -112,6 +112,9 @@ type SubstrateWebhookDef struct {
 	// OperatorKeyRestricted (RFC AX) mirrors mergedWebhookDef — captured from the
 	// authoring principal, projected onto config.Webhook for the receiver.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
+	// Isolated (RFC BX P2b) mirrors mergedWebhookDef — captured from the authoring
+	// principal, projected onto config.Webhook for the receiver.
+	Isolated bool `json:"isolated,omitempty"`
 }
 
 // SubstrateWebhookAuth mirrors config.WebhookAuth.
@@ -172,5 +175,6 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 		},
 		OnComplete:            s.OnComplete,
 		OperatorKeyRestricted: s.OperatorKeyRestricted,
+		Isolated:              s.Isolated,
 	}
 }

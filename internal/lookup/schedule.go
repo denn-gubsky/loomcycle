@@ -120,6 +120,12 @@ type SubstrateScheduleDef struct {
 	// ToConfigDef — so config.ScheduledRun deliberately carries no such field.
 	// Present here only to keep the three JSON mirrors drift-parity-clean.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
+	// Isolated (RFC BX P2b) mirrors mergedScheduleDef so the def round-trips
+	// losslessly through the lookup. Like OperatorKeyRestricted, the scheduler fire
+	// path reads it via scheduler.scheduleDef (unmarshalDef → buildRunInput), NOT
+	// via a config projection — present here only to keep the JSON mirrors
+	// drift-parity-clean.
+	Isolated bool `json:"isolated,omitempty"`
 }
 
 // SubstratePromptSegment mirrors config.ScheduledRunSegment with

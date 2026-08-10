@@ -203,6 +203,10 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		// NOT on config.ScheduledRun — the scheduler fire path reads it via
 		// scheduler.scheduleDef (unmarshalDef→buildRunInput), not ToConfigDef.
 		"operator_key_restricted": true,
+		// RFC BX P2b: captured isolation bit (anti-bypass). Like
+		// operator_key_restricted, deliberately NOT on config.ScheduledRun — the
+		// scheduler fire path reads it via scheduler.scheduleDef, not ToConfigDef.
+		"isolated": true,
 	}
 	have := scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{}))
 	for tag := range want {

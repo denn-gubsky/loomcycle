@@ -892,6 +892,9 @@ func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
 	}
 	restricted := s.operatorKeyRestrictedOrCaptured(ctx, id.OperatorKeyRestricted)
 	id.OperatorKeyRestricted = restricted
+	// RFC BX P2b: re-derive the isolation bit (live principal wins; else the bit
+	// inherited on the ctx RunIdentity) so a team run's tools stay confined.
+	id.Isolated = s.isolatedOrCaptured(ctx, id.Isolated)
 	ctx = tools.WithRunIdentity(ctx, id)
 	ctx = providers.WithOperatorKeyAllowed(ctx, !restricted)
 	ctx = builtin.IncrementAgentDepth(ctx)
@@ -2197,6 +2200,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// continuation recomputes from the presenting principal (current token is
 	// authority), matching handleMessages.
 	operatorKeyRestricted := s.operatorKeyRestrictedOrCaptured(ctx, in.OperatorKeyRestricted)
+	// RFC BX P2b: same posture — live principal (gRPC/MCP/connector) wins, else the
+	// bit CAPTURED on the trigger def and supplied via RunInput.Isolated. Confines
+	// the fired run's data tools to its own user/agent scope (anti-bypass).
+	isolated := s.isolatedOrCaptured(ctx, in.Isolated)
 
 	if effectiveAgentName == "" {
 		return fmt.Errorf("%w: agent is required", runner.ErrInvalidArgument)
@@ -2330,7 +2337,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2441,6 +2448,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserCredentials:       in.UserCredentials, // v1.x RFC F: per-tool named credentials
 		ParentContext:         in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 		OperatorKeyRestricted: operatorKeyRestricted,
+		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 	}
 	emit := s.makeRecordingEmit(ctx, runID, rid, sessionID, func(ev providers.Event) {
 		if cb.OnEvent != nil {
@@ -3635,6 +3643,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// Fail-open when the gate is off or no principal is present (stage 1 threads
 	// it; enforcement is stage 2).
 	operatorKeyRestricted := s.operatorKeyRestrictedForCtx(r.Context())
+	// RFC BX P2b: derive the isolation bit from the live principal (server
+	// authority) so the run identity / row / ctx all agree and the data tools
+	// confine an isolated member to its own user/agent scope.
+	isolated := s.isolatedForCtx(r.Context())
 
 	// Existence-check the agent at the run's authoritative tenant.
 	agentDef, ok := s.lookupAgent(r.Context(), req.TenantID, req.Agent)
@@ -3829,7 +3841,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -4001,6 +4013,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserCredentials:       req.UserCredentials, // v1.x RFC F: per-tool named credentials
 		ParentContext:         req.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 		OperatorKeyRestricted: operatorKeyRestricted,
+		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 	}
 	// Persist under runCtx so events survive a client disconnect on an
 	// interactive run (runCtx tracks the request for a normal run).
@@ -4361,6 +4374,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// decision, not the original run's bit). Computed here so credential-aware
 	// routing (resolveAgent) and the fallback cascade both honor it.
 	operatorKeyRestricted := s.operatorKeyRestrictedForCtx(r.Context())
+	// RFC BX P2b: recompute isolation from the PRESENTING principal (the current
+	// token is authority on a continuation, mirroring operatorKeyRestricted).
+	isolated := s.isolatedForCtx(r.Context())
 	providerID, model, effort, err := s.resolveAgent(r.Context(), sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
@@ -4488,6 +4504,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		ReplicaID:             s.replicaID,
 		ParentContext:         body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
 		OperatorKeyRestricted: operatorKeyRestricted,
+		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -4588,6 +4605,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserCredentials:       body.UserCredentials, // v1.x RFC F: per-tool named credentials
 		ParentContext:         body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 		OperatorKeyRestricted: operatorKeyRestricted,
+		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 	}
 	emit := s.makeRecordingEmit(r.Context(), run.ID, rid, id, stream.send)
 	// RFC AW: emit any soft budget crossings found at admission so the warning
@@ -5603,6 +5621,9 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		// RFC AX: a child INHERITS the parent's operator-key restriction — it
 		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
 		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
+		// RFC BX P2b: a child INHERITS the parent's isolation confinement — it
+		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
+		Isolated: parentIdentity.Isolated,
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, parentIdentity.TenantID, parentIdentity.UserID, subIdentity)
 	if err != nil {
@@ -5795,6 +5816,9 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		// escape). The providers ctx value inherits automatically via
 		// subRunCtx←ctx (same as WithCredentialResolver), so no re-stamp needed.
 		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
+		// RFC BX P2b: inherit the parent's isolation confinement (a child cannot
+		// escape by spawning). Read from ctx RunIdentity by the data tools.
+		Isolated: parentIdentity.Isolated,
 	}
 	// Sub-emit records to the sub's transcript only — the parent's SSE
 	// stream is fwd=no-op so sub events don't bleed into the parent's

@@ -253,6 +253,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		// column — the original principal isn't on ctx for a resumed/crash-
 		// recovered run, so the durable bit is the authority.
 		OperatorKeyRestricted: run.OperatorKeyRestricted,
+		// RFC BX P2b: RESTORE the isolation confinement from the persisted runs
+		// column — same rationale: no principal on ctx for a resumed run, so the
+		// durable bit is the authority. Without this a paused isolated run could
+		// escape its data-scope confinement on resume.
+		Isolated: run.Isolated,
 	}
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.

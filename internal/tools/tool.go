@@ -474,6 +474,18 @@ type RunIdentityValue struct {
 	// (a child cannot escape its parent's restriction). Stage 1 only threads
 	// it; enforcement (resolver routing + driver backstop) lands in stage 2.
 	OperatorKeyRestricted bool
+
+	// Isolated is the RFC BX P2b confinement bit: true = this run belongs to an
+	// ISOLATED MEMBER (a substrate:user principal — see auth.IsIsolated) and the
+	// data tools must refuse the tenant-shared / cross-tenant-global keyspace,
+	// leaving only the run's own user + agent scope reachable (see
+	// ConfineIsolatedScope). Computed once at run-start from the principal (never
+	// a wire/body/model field) and carried here so it survives to the tool
+	// dispatch and INHERITS to sub-agents unchanged (a child cannot escape its
+	// parent's confinement). false (the zero value) = unconfined, so every
+	// unstamped path fails OPEN — matching the OperatorKeyRestricted posture and
+	// keeping existing runs byte-identical until a substrate:user token is minted.
+	Isolated bool
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The
@@ -521,6 +533,26 @@ func WithRunIdentity(ctx context.Context, ident RunIdentityValue) context.Contex
 func RunIdentity(ctx context.Context) RunIdentityValue {
 	v, _ := ctx.Value(ctxKeyRunIdentity{}).(RunIdentityValue)
 	return v
+}
+
+// ConfineIsolatedScope enforces the RFC BX P2b data-scope confinement for an
+// ISOLATED run (RunIdentity(ctx).Isolated — set from a substrate:user principal
+// at run-start, never from a wire/body/model field). An isolated member may
+// address only its OWN user/agent scope; the tenant-SHARED (MemoryScopeTenant)
+// and cross-tenant GLOBAL (MemoryScopeGlobal) keyspaces are refused for both
+// read and write. The scope-resolution path of each data tool (Memory / Channel
+// / Document / Path) calls this and surfaces the returned error as a tool_result
+// (never a panic). A non-isolated run (the default) is unaffected.
+//
+// First cut is STRICT: tenant AND global are refused outright. Using bundled
+// agents/skills is unaffected — those are run DEFINITIONS, not scoped tool data.
+// A future refinement may allow READ-ONLY global/bundled access for an isolated
+// member; that is intentionally NOT implemented here.
+func ConfineIsolatedScope(ctx context.Context, scope store.MemoryScope) error {
+	if RunIdentity(ctx).Isolated && (scope == store.MemoryScopeTenant || scope == store.MemoryScopeGlobal) {
+		return fmt.Errorf("isolated user: access to the shared %q scope is not permitted", scope)
+	}
+	return nil
 }
 
 // ctxKeyAgentName is the context key under which the runtime stores the

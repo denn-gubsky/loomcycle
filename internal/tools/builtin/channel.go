@@ -212,6 +212,14 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: %s not allowed on channel %q (agent allowlist: %v)", side, name, allowed)
 	}
 
+	// RFC BX P2b: an isolated member (substrate:user) may use only its own
+	// user/agent-scoped channels — refuse a tenant-shared or cross-tenant global
+	// channel even when the agent's channel allowlist permits it. Server-derived
+	// from the run's Isolated bit; a non-isolated run is unaffected.
+	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(def.Scope)); err != nil {
+		return tools.ChannelDef{}, "", "", err
+	}
+
 	switch def.Scope {
 	case "agent":
 		agentName := tools.AgentName(ctx)

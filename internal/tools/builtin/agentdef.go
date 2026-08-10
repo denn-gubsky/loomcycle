@@ -188,6 +188,19 @@ func operatorKeyRestrictedFromCtx(ctx context.Context, cfg *config.Config) bool 
 	return auth.OperatorKeyRestricted(p, ok, gate)
 }
 
+// isolatedFromCtx captures the RFC BX P2b isolation bit from the authoring
+// principal on ctx, mirroring operatorKeyRestrictedFromCtx: a run-triggering def
+// (Schedule / Webhook) captures it so the scheduler/webhook executor stamps the
+// fired run confined without a token on ctx (anti-bypass: an isolated member
+// can't launder an unconfined run through a trigger). SERVER authority — the
+// model must NOT set it via the overlay, so write sites stamp it unconditionally
+// after applying the overlay. Unlike the operator-key bit it has NO deployment
+// gate: substrate:user is always enforced when present. false when no principal /
+// non-isolated (fail-open).
+func isolatedFromCtx(ctx context.Context) bool {
+	return auth.IsIsolated(auth.PrincipalFromContext(ctx))
+}
+
 func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("create: missing required field: name"), nil

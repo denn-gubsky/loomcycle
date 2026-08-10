@@ -68,6 +68,77 @@ func TestHasScope_ProvidersOperatorKey(t *testing.T) {
 	}
 }
 
+// TestHasScope_UserImplication locks RFC BX P2b's scope semantics: substrate:user
+// satisfies ONLY itself + runs:create/runs:read, and NOT the tenant plane
+// (substrate:tenant), the operator plane (substrate:admin), or the channel
+// scopes. It is also in the closed catalog (grantable at mint).
+func TestHasScope_UserImplication(t *testing.T) {
+	if !ValidScope(ScopeUser) {
+		t.Fatal("substrate:user must be a valid catalog scope (grantable)")
+	}
+	if bad := UnknownScopes([]string{ScopeUser, ScopeRunsCreate}); bad != nil {
+		t.Errorf("UnknownScopes flagged valid scopes: %v", bad)
+	}
+
+	user := []string{ScopeUser}
+	// An isolated member may create + read their own runs, and satisfies itself.
+	for _, want := range []string{ScopeUser, ScopeRunsCreate, ScopeRunsRead} {
+		if !HasScope(user, want) {
+			t.Errorf("substrate:user should satisfy %q", want)
+		}
+	}
+	// But NOT the tenant plane, the operator plane, or the channel scopes — the
+	// whole point of the isolated-member scope.
+	for _, want := range []string{ScopeTenant, ScopeAdmin, ScopeChannelPublish, ScopeChannelRead, ScopeProvidersOperatorKey} {
+		if HasScope(user, want) {
+			t.Errorf("substrate:user must NOT satisfy %q (would widen an isolated member)", want)
+		}
+	}
+	// substrate:admin remains the superuser — satisfies substrate:user too.
+	if !HasScope([]string{ScopeAdmin}, ScopeUser) {
+		t.Error("substrate:admin should satisfy substrate:user (superuser)")
+	}
+	// substrate:tenant does NOT satisfy substrate:user (it is not tenant-implied).
+	if HasScope([]string{ScopeTenant}, ScopeUser) {
+		t.Error("substrate:tenant must NOT satisfy substrate:user (a separate axis)")
+	}
+}
+
+// TestIsIsolated_Matrix pins the RFC BX P2b isolation predicate: true iff the
+// principal is present AND holds substrate:user AND neither substrate:tenant nor
+// substrate:admin. Every other combination (tenant, admin, open mode, a
+// user+tenant token) is NOT isolated.
+func TestIsIsolated_Matrix(t *testing.T) {
+	userP := Principal{TenantID: "acme", Subject: "alice", Scopes: []string{ScopeUser}}
+	userRunsP := Principal{TenantID: "acme", Subject: "bob", Scopes: []string{ScopeUser, ScopeRunsCreate}}
+	tenantP := Principal{TenantID: "acme", Subject: "op", Scopes: []string{ScopeTenant}}
+	adminP := Principal{TenantID: "", Subject: "root", Scopes: []string{ScopeAdmin}}
+	userAndTenantP := Principal{TenantID: "acme", Subject: "hybrid", Scopes: []string{ScopeUser, ScopeTenant}}
+	legacyP := Principal{TenantID: "default", Subject: "default", Scopes: []string{ScopeAdmin}, Legacy: true}
+
+	cases := []struct {
+		name string
+		p    Principal
+		ok   bool
+		want bool
+	}{
+		{"user_only", userP, true, true},
+		{"user_plus_runs", userRunsP, true, true},
+		{"tenant", tenantP, true, false},
+		{"admin", adminP, true, false},
+		{"user_plus_tenant_not_isolated", userAndTenantP, true, false},
+		{"legacy_admin", legacyP, true, false},
+		{"open_mode_no_principal", Principal{}, false, false},
+		// Present bool false always wins, even if the principal happens to carry user.
+		{"present_false_with_user", userP, false, false},
+	}
+	for _, c := range cases {
+		if got := IsIsolated(c.p, c.ok); got != c.want {
+			t.Errorf("%s: IsIsolated = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // TestOperatorKeyRestricted_Matrix pins the RFC AX helper: restricted only when
 // the gate is on AND a real (non-legacy, non-admin, un-scoped) principal is
 // present AND lacks the scope. Every other combination is fail-OPEN (false =

@@ -33,10 +33,16 @@ import (
 // providers:operator-key). The interceptor stamps it on ctx so the executor's
 // buildRunInput can copy it onto RunInput — anti-bypass for the A2A trigger.
 //
+// isolated (RFC BX P2b) is likewise meaningful only when ok is true: the
+// single-resolve derivation of "is this peer an isolated member (substrate:user)"
+// (auth.IsIsolated; false in open mode / for a legacy peer). The interceptor
+// stamps it on ctx so buildRunInput copies it onto RunInput — anti-bypass so a
+// substrate:user peer's run stays data-scope-confined.
+//
 // This is the bearer-header check at the A2A frontier, reusing the same
 // constant-time comparison loomcycle's HTTP authMiddleware uses. It is
 // injected so tests can supply a deterministic fake.
-type Authenticator func(h http.Header) (name string, restricted bool, ok bool)
+type Authenticator func(h http.Header) (name string, restricted bool, isolated bool, ok bool)
 
 // CardAndRunStore is the narrow store surface the A2A server needs: the
 // active-server-card resolver path (lookup), the run-table reader the
@@ -420,6 +426,6 @@ func (s *Server) adminAuthed(r *http.Request) bool {
 		// authorized, matching authMiddleware's open-mode behaviour.
 		return true
 	}
-	_, _, ok := s.deps.Auth(r.Header)
+	_, _, _, ok := s.deps.Auth(r.Header)
 	return ok
 }

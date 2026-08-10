@@ -281,6 +281,15 @@ type RunInput struct {
 	// live token. false = allowed (fail-open); the principal-on-ctx paths ignore
 	// this field and compute restriction from the live principal instead.
 	OperatorKeyRestricted bool
+
+	// Isolated is the RFC BX P2b confinement bit for the NON-principal trigger
+	// paths (scheduler / webhook / A2A). Those paths capture the creating
+	// principal's substrate:user status on the trigger def and pass it here so
+	// RunOnce stamps the run confined without a live token (anti-bypass: an
+	// isolated member cannot launder an unconfined run through a trigger). false =
+	// unconfined (fail-open); the principal-on-ctx paths ignore this and derive
+	// isolation from the live principal instead.
+	Isolated bool
 }
 
 // RunCallbacks is how the wire surfaces observe the run.
