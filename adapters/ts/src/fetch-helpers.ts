@@ -199,6 +199,25 @@ export async function deleteRequest(
   }
 }
 
+/** deleteJSON is deleteRequest for the DELETE endpoints that DO return a
+ *  body (e.g. a revoke that echoes {def_id, retired_at}). 204 → null. */
+export async function deleteJSON<T>(
+  ctx: _FetchContext,
+  path: string,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
+  const resp = await ctx.fetchImpl(ctx.baseUrl + path, {
+    method: "DELETE",
+    headers: authHeaders(ctx),
+    signal: opts?.signal,
+  });
+  if (!resp.ok) {
+    await raiseFromResponse(resp);
+  }
+  if (resp.status === 204) return null as T;
+  return (await resp.json()) as T;
+}
+
 /**
  * raiseFromResponse — the single point where HTTP status + body
  * text get mapped to typed errors. Always throws; the function

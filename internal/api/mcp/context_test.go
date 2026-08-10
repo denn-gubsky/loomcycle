@@ -303,6 +303,40 @@ func TestMCPPolicies_SqlScopesOmitsRun(t *testing.T) {
 	}
 }
 
+// TestMcpPrincipalCtx_StampsIsolatedBit is the RFC BX P2b defense-in-depth
+// guard: mcpPrincipalCtx must stamp RunIdentity.Isolated server-side from the
+// principal's scopes, so ConfineIsolatedScope would still confine an isolated
+// (substrate:user-topped) principal to its own data scope if this MCP-direct
+// path is ever reached. Only a principal that holds substrate:user WITHOUT
+// tenant/admin is isolated; tenant, admin, and the no-principal operator path
+// are all unconfined. Reverting the `Isolated:` stamp in mcpPrincipalCtx must
+// break the isolated case.
+func TestMcpPrincipalCtx_StampsIsolatedBit(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+		want   bool
+	}{
+		{"isolated member", []string{auth.ScopeUser, auth.ScopeRunsCreate, auth.ScopeRunsRead}, true},
+		{"tenant operator", []string{auth.ScopeTenant}, false},
+		{"admin", []string{auth.ScopeAdmin}, false},
+		// A token holding BOTH user and tenant has tenant-shared authority → not isolated.
+		{"user+tenant", []string{auth.ScopeUser, auth.ScopeTenant}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: tc.scopes}
+			ctx := mcpPrincipalCtx(auth.WithPrincipal(context.Background(), p))
+			if got := tools.RunIdentity(ctx).Isolated; got != tc.want {
+				t.Errorf("RunIdentity.Isolated = %v, want %v (the isolation confinement would be wrong for this principal)", got, tc.want)
+			}
+		})
+	}
+	// No-principal operator path is never isolated (full operator authority).
+	if tools.RunIdentity(operatorCtx(context.Background())).Isolated {
+		t.Error("operatorCtx (no-principal) must never be isolated")
+	}
+}
+
 func containsStr(hay []string, needle string) bool {
 	for _, h := range hay {
 		if h == needle {
