@@ -553,6 +553,18 @@ func requiredScopeFor(method, path string) string {
 			return auth.ScopeTenant
 		}
 		return ""
+	// RFC BY: user-facing READ surfaces — a delegated user's OWN chat history
+	// (/v1/_history) and the runnable-agent catalog (/v1/_runnable-agents).
+	// Gated member-read (runs:read) so a delegated user token reaches them —
+	// isolated users hold substrate:user (→ runs:read via userImplied) and
+	// tenant-mode users hold runs:read directly; tenant operators + admin also
+	// satisfy runs:read (see auth.HasScope). The HANDLERS do the real
+	// confinement: history is capped to [self, user] for a member
+	// (substrateAdminCtx), and discovery is tiered by the caller's
+	// users.access_mode. Keying on substrate:tenant would lock users out; keying
+	// on substrate:user would lock TENANT-MODE users out (they hold neither).
+	case memberReadable(path):
+		return auth.ScopeRunsRead
 	// RFC BC: the client-tool host WebSocket. A client registers tools it runs on
 	// the user's own machine; the connection serves ONLY its own principal's runs
 	// (filed under (tenant, subject) from the bearer). Requires runs:create — you
@@ -846,6 +858,24 @@ func requiredScopeFor(method, path string) string {
 //
 // The def handlers confine a non-admin principal to its own tenant (write-stamp
 // + opaque-404), so opening these gates to ScopeTenant doesn't widen reach.
+// memberReadable reports whether path is a USER-FACING READ surface (RFC BY): a
+// route any member of a tenant may read — an end-user (isolated OR tenant-mode),
+// a tenant operator, or admin — with the HANDLER doing the real per-principal
+// confinement (own subject only for history; tiered by access mode for
+// discovery). requiredScopeFor gates these on runs:read, the honest floor every
+// such principal holds (auth.HasScope): substrate:user implies it (userImplied),
+// tenant-mode user tokens hold it directly, substrate:tenant implies it
+// (tenantImplied), and admin/legacy satisfy everything. It deliberately is NOT
+// substrate:tenant (which no delegated user holds) nor substrate:user (which a
+// tenant-mode user does not hold).
+func memberReadable(path string) bool {
+	switch path {
+	case "/v1/_history", "/v1/_runnable-agents":
+		return true
+	}
+	return false
+}
+
 func isTenantConfinedDefPath(path string) bool {
 	// RFC BO — the image-asset serving GET lives UNDER /v1/_document with a
 	// variable {chunk_id} suffix, so it needs a prefix match (the family list
@@ -865,10 +895,11 @@ func isTenantConfinedDefPath(path string) bool {
 		// tools (resolve scope from the operator-trust ctx + tenant-stamp via
 		// RunIdentity). Same posture as _volumedef: ScopeTenant, no /names.
 		"/v1/_path", "/v1/_document",
-		// RFC BE History tool — scope-aware, tenant-isolated (owner resolved
-		// from the operator-trust ctx; cross-tenant `global` gated to admin by
-		// the policy). Same posture as _path/_document: ScopeTenant, no /names.
-		"/v1/_history",
+		// RFC BE History tool was here (ScopeTenant); RFC BY moved it to the
+		// member-read gate (memberReadable → runs:read) so a delegated USER token
+		// can read its OWN chats. The handler caps a member to [self, user]
+		// history scopes (substrateAdminCtx), so opening the gate does not widen a
+		// user's reach beyond its own subject.
 		// RFC AR secure credential store — scope-aware, tenant-isolated
 		// (scope_id derived from the operator-trust ctx's authoritative
 		// tenant/subject, never the wire; fail-closed without

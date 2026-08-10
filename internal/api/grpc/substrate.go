@@ -125,9 +125,17 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	// means nothing to it — granting "any" would refuse EVERY op. A tenant
 	// operator reaching the History RPC is thus confined to its own tenant even
 	// though the route gate (ScopeTenant) admits it.
-	histScopes := []string{"self", "user", "tenant"}
-	if auth.HasScope(principal.Scopes, auth.ScopeAdmin) {
-		histScopes = append(histScopes, "global")
+	// RFC BY: cap a delegated USER (member — neither tenant operator nor admin)
+	// to its OWN chats [self, user]; tenant adds `tenant`; admin adds `global`.
+	// Mirror of the HTTP substrateAdminCtx derivation so the History tool
+	// confines a member identically on either transport, keeping the invariant
+	// true if the gRPC History RPC gate is ever opened to member-read.
+	histScopes := []string{"self", "user"}
+	switch {
+	case auth.HasScope(principal.Scopes, auth.ScopeAdmin):
+		histScopes = []string{"self", "user", "tenant", "global"}
+	case auth.HasScope(principal.Scopes, auth.ScopeTenant):
+		histScopes = []string{"self", "user", "tenant"}
 	}
 	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: histScopes})
 	return ctx
