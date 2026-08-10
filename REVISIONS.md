@@ -4,6 +4,22 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.51.0
+
+**RFC BY: a user token can now read its own chats and discover the agents it may run.** Minor — one new endpoint, one additive `@loomcycle/client` method, and a widened-then-reconfined gate. No schema change, no wire-breaking change. Completes RFC BX's "user access = own + bundled + tenant-if-enabled" model on the read side.
+
+**The gap it closes.** RFC BX gave a `substrate:user` token the run plane but no read surfaces. A delegated user could start and read its own runs and nothing else — it could not see its own past chats, and it had no way to find a runnable agent without being told the name out of band. Both surfaces were gated at `substrate:tenant`, which no delegated user token holds; and a **tenant-mode** user token holds neither `substrate:tenant` nor `substrate:user` (only *isolated* users carry `substrate:user`), so keying the gate on either scope would lock one user type out.
+
+**A member-read gate, not a scope hole.** The user-read surfaces are gated on `runs:read` — the honest floor every such principal already holds (isolated users imply it, tenant-mode users hold it directly, tenant operators and admin sit above), so opening them grants no capability a user did not have. The security-bearing decision moves into the handler, keyed on the authenticated principal, never the wire.
+
+**Own history is capped, not just admitted.** `/v1/_history` now admits a member token, and a delegated user's history scope is capped to `[self, user]` — its own chats, in both access modes — while a tenant operator keeps `[self, user, tenant]` and admin adds cross-tenant `global`. The owner subject/tenant is stamped from the principal, so `[self, user]` is exactly the caller's own history and nothing else. The cap is applied on both the HTTP and gRPC paths, so a member is confined identically on either transport. The TS `history()` method is unchanged — it already carried the caller's bearer.
+
+**Discovery is tiered server-side by access mode.** A new `GET /v1/_runnable-agents` returns the agents the caller may run: bundled/system agents always (the shared floor), the tenant's shared agents only when the caller may use them, and own user-scoped agents (reserved — none today). An **isolated** token never sees the tenant's agents — a hard floor read from the token scopes, so a stale `access_mode` column can never widen it; a tenant-mode user is governed by its authoritative `users.access_mode` row. Entries are lean (`name` + `source` tier) — no operator metadata (version counts, retired badges, content hashes) and no system prompts; that stays in the `substrate:tenant` Library. A different tenant's agent is never leaked.
+
+**`@loomcycle/client` 1.51.0** adds `runnableAgents()` (+ `RunnableAgent` / `RunnableAgentsResponse`). Additive; existing callers unchanged.
+
+`loomcycle` (PyPI) stays 1.46.0 and `@loomcycle/explorer` 0.6.0 — neither was touched. The gRPC/MCP discovery twins and a longer-term scope-hierarchy cleanup are noted as follow-ons in the RFC.
+
 ## What's in v1.50.0
 
 **RFC BX Phase 2 follow-ups: an isolation invariant made structural, and the delegated-users API reaches `@loomcycle/client`.** Minor — additive adapter surface, one defense-in-depth runtime stamp, one CI deflake. No schema change, no wire change.
