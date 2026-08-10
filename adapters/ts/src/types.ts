@@ -715,10 +715,78 @@ export interface UserSummary {
   running_count: number;
   total_count: number;
   last_started_at: string;
+  // RFC BX P2a (loomcycle v1.50.0+) — the first-class users-table fields merged
+  // over the run-derived activity above. `registered` distinguishes a managed
+  // user row (true) from a subject seen only in runs (false); the record fields
+  // are empty for the latter. Optional so older servers (which omit them) still
+  // typecheck.
+  registered?: boolean;
+  display_name?: string;
+  access_mode?: string; // "tenant" | "isolated"
+  status?: string; // "active" | "disabled"
 }
 
 export interface ListUsersResponse {
   users: UserSummary[];
+}
+
+// ---- RFC BX Phase 2: tenant-owned users + delegated per-user tokens (v1.50.0+) ----
+
+/** One first-class users-table row (POST/PATCH /v1/_users). The tenant is
+ *  server-derived from the authenticated principal, never sent. */
+export interface UserRecord {
+  tenant_id: string;
+  subject: string;
+  display_name: string;
+  access_mode: string; // "tenant" | "isolated"
+  status: string; // "active" | "disabled"
+  created_at: string;
+  created_by: string;
+}
+
+export interface CreateUserBody {
+  subject: string;
+  display_name?: string;
+  /** "tenant" (default) collaborates on the tenant's shared primitives;
+   *  "isolated" confines the member to its own user scope. */
+  access_mode?: string;
+  status?: string; // default "active" server-side
+}
+
+/** PATCH body — an omitted key leaves the column unchanged; a present key
+ *  (even the empty string) is applied. */
+export interface UpdateUserBody {
+  display_name?: string;
+  access_mode?: string;
+  status?: string;
+}
+
+/** The show-once result of POST /v1/_users/{subject}/tokens. `token` is the
+ *  plaintext bearer, returned exactly once and never retrievable again. */
+export interface MintedUserToken {
+  def_id: string;
+  token: string;
+  token_suffix: string;
+  name: string;
+  scopes: string[];
+  created_at: string;
+  warning: string;
+}
+
+/** One token row from GET /v1/_users/{subject}/tokens — METADATA ONLY (never
+ *  the plaintext or hash). `active` applies the auth-layer validity rule. */
+export interface UserTokenMeta {
+  def_id: string;
+  name: string;
+  scopes: string[];
+  created_at: string;
+  retired_at?: string;
+  active: boolean;
+}
+
+export interface ListUserTokensResponse {
+  subject: string;
+  tokens: UserTokenMeta[];
 }
 
 // ---- Whoami / principal (RFC L, v0.17.0) ----

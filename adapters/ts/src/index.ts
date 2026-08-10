@@ -17,6 +17,12 @@
  *     getTranscript(sessionId): Promise<TranscriptResponse>
  *     health(): Promise<HealthResponse>
  *     listUsers(opts?): Promise<ListUsersResponse>   // tenant-scoped (RFC L)
+ *     createUser(body, opts?): Promise<UserRecord>    // RFC BX P2 (v1.50.0)
+ *     updateUser(subject, body, opts?): Promise<UserRecord>
+ *     deleteUser(subject, opts?): Promise<void>
+ *     mintUserToken(subject, opts?): Promise<MintedUserToken>   // delegated token
+ *     listUserTokens(subject, opts?): Promise<ListUserTokensResponse>
+ *     revokeUserToken(subject, defId, opts?): Promise<{def_id, retired_at}>
  *     whoami(): Promise<WhoamiResponse>               // RFC L principal (v0.17.0)
  *
  *     // Pause / Resume / State (v0.8.17/8.18)
@@ -168,6 +174,13 @@ export type {
   HealthResponse,
   ListUsersResponse,
   UserSummary,
+  // RFC BX Phase 2: tenant-owned users + delegated per-user tokens (v1.50.0+)
+  UserRecord,
+  CreateUserBody,
+  UpdateUserBody,
+  MintedUserToken,
+  UserTokenMeta,
+  ListUserTokensResponse,
   // Whoami / principal (RFC L, v0.17.0)
   WhoamiResponse,
   // Pause / Resume / State

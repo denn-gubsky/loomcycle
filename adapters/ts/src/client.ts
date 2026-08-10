@@ -28,6 +28,7 @@ import type { _FetchContext } from "./fetch-helpers.js";
 import {
   authHeaders,
   deleteRequest,
+  deleteJSON,
   jsonFetch,
   patchJSON,
   postJSON,
@@ -90,6 +91,12 @@ import type {
   LibrarySkillDefinition,
   ListHooksResponse,
   ListUsersResponse,
+  UserRecord,
+  CreateUserBody,
+  UpdateUserBody,
+  MintedUserToken,
+  UserTokenMeta,
+  ListUserTokensResponse,
   LLMChatOptions,
   LLMChatResponse,
   LLMChatStreamItem,
@@ -737,6 +744,99 @@ export class LoomcycleClient {
   }): Promise<ListUsersResponse> {
     const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
     return jsonFetch<ListUsersResponse>(this.ctx, `/v1/_users${q}`, opts);
+  }
+
+  // ---- RFC BX Phase 2: tenant-owned users + delegated per-user tokens (v1.50.0+) ----
+  //
+  // A tenant operator (substrate:tenant) manages the first-class users in its
+  // OWN tenant and mints/lists/revokes bearer tokens for them. The tenant is
+  // always server-derived from the authenticated principal — never sent — so
+  // there is no tenant field on any of these calls. Requires a persistent store
+  // (503 otherwise).
+
+  /** Register a first-class user in the caller's own tenant. `access_mode`
+   *  defaults to "tenant" (collaborates on tenant-shared primitives);
+   *  "isolated" confines the member to its own user scope. 409 on a duplicate
+   *  (tenant, subject). */
+  async createUser(
+    body: CreateUserBody,
+    opts?: { signal?: AbortSignal },
+  ): Promise<UserRecord> {
+    return postJSON<UserRecord>(this.ctx, "/v1/_users", body, opts);
+  }
+
+  /** Patch mutable fields on a user in the caller's own tenant. An omitted key
+   *  leaves the column unchanged. Disabling a user (status:"disabled") also
+   *  revokes its delegated tokens server-side. Cross-tenant target → 404. */
+  async updateUser(
+    subject: string,
+    body: UpdateUserBody,
+    opts?: { signal?: AbortSignal },
+  ): Promise<UserRecord> {
+    return patchJSON<UserRecord>(
+      this.ctx,
+      `/v1/_users/${encodeURIComponent(subject)}`,
+      body,
+      opts,
+    );
+  }
+
+  /** Delete the user identity row in the caller's own tenant (204). Its
+   *  delegated tokens are retired first so the bearer cannot outlive the row.
+   *  Owned data (runs / sessions / memory) is left intact — this is not
+   *  erasure ({@link erasureExecute}). Cross-tenant target → 404. */
+  async deleteUser(subject: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    return deleteRequest(
+      this.ctx,
+      `/v1/_users/${encodeURIComponent(subject)}`,
+      opts,
+    );
+  }
+
+  /** Mint a bearer token for one of the caller's own ACTIVE users. The granted
+   *  scopes are DERIVED server-side from the member's access_mode (never sent),
+   *  and the plaintext `token` is returned exactly ONCE — store it now, it is
+   *  never retrievable again. 404 for an unknown/cross-tenant subject; 409 for
+   *  a disabled user. */
+  async mintUserToken(
+    subject: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<MintedUserToken> {
+    return postJSON<MintedUserToken>(
+      this.ctx,
+      `/v1/_users/${encodeURIComponent(subject)}/tokens`,
+      undefined,
+      opts,
+    );
+  }
+
+  /** List the caller's own user's delegated tokens — METADATA ONLY (never the
+   *  plaintext or hash). `active` applies the auth-layer validity rule so a
+   *  revoked token reads as inactive. */
+  async listUserTokens(
+    subject: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ListUserTokensResponse> {
+    return jsonFetch<ListUserTokensResponse>(
+      this.ctx,
+      `/v1/_users/${encodeURIComponent(subject)}/tokens`,
+      opts,
+    );
+  }
+
+  /** Revoke (retire, immediate) one of the caller's own user's delegated
+   *  tokens by def_id. A def_id that is not this (tenant, subject)'s member
+   *  token is an opaque 404. Returns {def_id, retired_at}. */
+  async revokeUserToken(
+    subject: string,
+    defId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ def_id: string; retired_at: string }> {
+    return deleteJSON<{ def_id: string; retired_at: string }>(
+      this.ctx,
+      `/v1/_users/${encodeURIComponent(subject)}/tokens/${encodeURIComponent(defId)}`,
+      opts,
+    );
   }
 
   /** Whoami — the authenticated principal (RFC L v0.17.0). Any
