@@ -4,6 +4,18 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.50.0
+
+**RFC BX Phase 2 follow-ups: an isolation invariant made structural, and the delegated-users API reaches `@loomcycle/client`.** Minor — additive adapter surface, one defense-in-depth runtime stamp, one CI deflake. No schema change, no wire change.
+
+**The isolation bit is now stamped where it was merely unreachable.** RFC BX Phase 2 confines an isolated member (a `substrate:user`-topped principal) to its own data scope through `RunIdentity.Isolated`, which `ConfineIsolatedScope` reads to refuse tenant/global scopes. Every HTTP run-start site stamped it; the MCP-direct path (`mcpPrincipalCtx`) and the two gRPC substrate paths (`substrateGRPCCtx`, `substrateGRPCUserCtx`) did not. That was safe — but only because all three gate on `substrate:tenant`, a scope an isolated token cannot hold, so no isolated principal ever reached them. Safe-by-unreachability is a coupling between a route gate and a confinement in a different file: widen the gate and the confinement disappears silently. It is now stamped from `auth.IsIsolated(principal)` at all three sites, so the property holds by construction rather than by the current gate. Behaviour is unchanged today; the regression tests fail on the unstamped code.
+
+**`@loomcycle/client` 1.50.0 gains the user + token management surface.** The RFC BX Phase 2 routes — `/v1/_users` CRUD and `/v1/_users/{subject}/tokens` mint/list/revoke — shipped with a Web UI console but no adapter method, so a programmatic operator had to hand-roll `fetch`. Added `createUser` / `updateUser` / `deleteUser` / `mintUserToken` / `listUserTokens` / `revokeUserToken` and their types, mirroring the Web UI client. The tenant is server-derived from the bearer, so none of them send one; the mint result carries the plaintext bearer exactly once. These are HTTP-only admin routes — the Python adapter is gRPC-only and there are no gRPC user RPCs, so it is unchanged.
+
+**A CI flake removed.** `TestProviderGate_ZeroOverheadWhenUnconfigured` asserts five runs overlap in the provider (`peak > 1`) using a bare 20 ms delay, which a loaded runner could stagger into a false `peak=1` — it failed exactly this way on a recent `Go 1.26.x` job. It now uses the harness's existing `holdUntil` rendezvous so the observed peak is deterministic; a genuine under-admit still fails (the 2 s safety valve fires, peak stays < 2).
+
+`loomcycle` (PyPI) stays 1.46.0 and `@loomcycle/explorer` 0.6.0 — neither was touched.
+
 ## What's in v1.49.0
 
 **🎯 Targeted memory search: ask for facts, notes, or documents by name.** RFC BW, all three phases, plus the `@loomcycle/memory-view` console package. One wire field changes value set — see the note below.
