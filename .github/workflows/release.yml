@@ -38,6 +38,16 @@ on:
   push:
     tags:
       - "v*"
+  # Escape hatch: force the FULL build (binaries + Homebrew + every image)
+  # regardless of the tag shape. Use it to give a patch tag the full treatment
+  # when a minor's worth of artifacts is needed (e.g. an arm64 or Homebrew fix
+  # shipped as a patch). Dispatch this workflow on the tag ref with force_full=true.
+  workflow_dispatch:
+    inputs:
+      force_full:
+        description: "Force the full build even on a patch tag (true/false)"
+        required: false
+        default: "false"
 
 # Run JavaScript-based actions (checkout, setup-go/node, docker/*,
 # goreleaser-action) on Node.js 24. GitHub forces this default 2026-06-16
@@ -51,8 +61,58 @@ permissions:
   contents: write  # needed for goreleaser to upload release assets
 
 jobs:
+  # Decide FULL vs LEAN from the tag shape (the release-cadence rule):
+  #   vX.Y.0 (patch component 0) or a major, or a force_full dispatch → FULL
+  #   build (binaries + Homebrew + every image variant, as before).
+  #   vX.Y.Z with Z>0 (a patch / subversion) → LEAN build: only the
+  #   loomcycle-browser linux/amd64 image (see the browser-patch job). A
+  #   non-semver ref defaults to FULL (safe).
+  classify:
+    name: classify release
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.c.outputs.full }}
+      version: ${{ steps.c.outputs.version }}
+    steps:
+      - id: c
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          FORCE_FULL: ${{ github.event.inputs.force_full }}
+        run: |
+          set -euo pipefail
+          VER="${REF_NAME#v}"          # v1.51.1 -> 1.51.1
+          # Charset-validate before it flows into a docker tag downstream.
+          if ! printf '%s' "$VER" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
+            echo "::error::Invalid version '$VER' (a docker tag must match [A-Za-z0-9._-])"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if [ "${FORCE_FULL:-false}" = "true" ]; then
+            echo "full=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::force_full requested — running the FULL build"
+            exit 0
+          fi
+          case "$VER" in
+            *.*.*)
+              PATCH="${VER##*.}"       # 1.51.1 -> 1 ; 1.51.0 -> 0
+              if [ "$PATCH" = "0" ]; then
+                echo "full=true" >> "$GITHUB_OUTPUT"
+                echo "::notice::$REF_NAME is a minor/major — FULL build (all variants)"
+              else
+                echo "full=false" >> "$GITHUB_OUTPUT"
+                echo "::notice::$REF_NAME is a patch — LEAN build (loomcycle-browser linux/amd64 only)"
+              fi
+              ;;
+            *)
+              echo "full=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::$REF_NAME is not X.Y.Z — defaulting to FULL build"
+              ;;
+          esac
+
   goreleaser:
     name: goreleaser
+    needs: classify
+    if: needs.classify.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -189,3 +249,107 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  # LEAN patch path: on a vX.Y.Z (Z>0) tag, publish ONLY the loomcycle-browser
+  # linux/amd64 image — the deployable variant — and skip the binaries,
+  # Homebrew, the other images, and the sandbox images (publish-sandbox-images
+  # skips itself on a patch too). Adapters publish independently, gated on their
+  # own version-match ("if changed"). This turns a 30+ min full build into a few
+  # minutes for a bugfix release. Force the full build on a patch with a
+  # workflow_dispatch (force_full=true).
+  browser-patch:
+    name: patch — loomcycle-browser (linux/amd64)
+    needs: classify
+    if: needs.classify.outputs.full == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # pre-create the GitHub release from the annotated tag
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # A patch still gets a GitHub release page carrying the annotated-tag
+      # notes (no binaries attached — those are a full-build artifact). Same
+      # annotated-tag verification as the goreleaser path, so a lightweight tag
+      # (no notes) fails loudly instead of publishing the commit message.
+      - name: Pre-create GitHub release with annotated tag body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          OBJ_TYPE="$(git cat-file -t "$TAG")"
+          if [ "$OBJ_TYPE" != "tag" ]; then
+            echo "::error::Tag $TAG is lightweight (object type: $OBJ_TYPE) — it carries no release notes. Re-tag annotated: git tag -a $TAG -F notes.md && git push --force origin $TAG"
+            exit 1
+          fi
+          git tag -l --format='%(contents)' "$TAG" > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::error::Tag $TAG has an empty annotated message."
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists — skipping pre-create."
+            exit 0
+          fi
+          gh release create "$TAG" --notes-file /tmp/release-notes.md --latest --verify-tag --title "$TAG"
+
+      # The image build is gated on DOCKER_PUBLISH_ENABLED, exactly like the
+      # goreleaser docker stage. A patch's only artifact IS the image, so with
+      # docker publishing off there is nothing more to do (the release page
+      # above is still created).
+      - uses: actions/setup-go@v5
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        with:
+          go-version: "1.26"
+          cache: true
+      - uses: actions/setup-node@v5
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build embedded Web UI
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        run: make build-ui
+
+      - name: Build the linux/amd64 loomcycle binary
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        # Dockerfile.browser COPYs a pre-built binary from the context (the same
+        # contract goreleaser's dockers stage uses), so build it here with the
+        # SAME ldflag vars cmd/loomcycle/main.go reads (buildVersion / buildCommit
+        # / buildTime), then leave it at the context root for the buildx step.
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          BUILD_TIME="$(git log -1 --format=%cI)"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags "-s -w -X main.buildVersion=${VER} -X main.buildCommit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
+            -o ./loomcycle ./cmd/loomcycle
+
+      - name: Set up Docker Buildx
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to Docker Hub
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build + push loomcycle-browser (linux/amd64)
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.browser
+          platforms: linux/amd64
+          push: true
+          tags: |
+            denngubsky/loomcycle-browser:${{ needs.classify.outputs.version }}
+            denngubsky/loomcycle-browser:latest
