@@ -568,3 +568,41 @@ func TestGrpcSubstrate_VolumeDefCtxSynthesis(t *testing.T) {
 		t.Errorf("is_error = true with output_json = %s — gRPC ctx synthesis didn't grant VolumeDef scope=[any]", resp.GetOutputJson())
 	}
 }
+
+// TestSubstrateGRPCCtx_StampsIsolatedBit is the RFC BX P2b defense-in-depth
+// guard for the gRPC substrate path: both substrateGRPCCtx and
+// substrateGRPCUserCtx must stamp RunIdentity.Isolated server-side from the
+// principal's scopes, so ConfineIsolatedScope would still confine an isolated
+// (substrate:user-topped) principal if these RPCs are ever reached by one. Only
+// substrate:user WITHOUT tenant/admin is isolated; tenant, admin, and the
+// no-principal path are unconfined. Reverting either `Isolated:` stamp must
+// break the isolated case.
+func TestSubstrateGRPCCtx_StampsIsolatedBit(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+		want   bool
+	}{
+		{"isolated member", []string{auth.ScopeUser, auth.ScopeRunsCreate, auth.ScopeRunsRead}, true},
+		{"tenant operator", []string{auth.ScopeTenant}, false},
+		{"admin", []string{auth.ScopeAdmin}, false},
+		{"user+tenant", []string{auth.ScopeUser, auth.ScopeTenant}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: tc.scopes}
+			base := auth.WithPrincipal(context.Background(), p)
+			if got := tools.RunIdentity(substrateGRPCCtx(base)).Isolated; got != tc.want {
+				t.Errorf("substrateGRPCCtx: RunIdentity.Isolated = %v, want %v", got, tc.want)
+			}
+			// substrateGRPCUserCtx re-stamps RunIdentity with the principal's
+			// subject — it must carry the isolation bit forward too.
+			if got := tools.RunIdentity(substrateGRPCUserCtx(base)).Isolated; got != tc.want {
+				t.Errorf("substrateGRPCUserCtx: RunIdentity.Isolated = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// No-principal path is never isolated (operator-trust).
+	if tools.RunIdentity(substrateGRPCCtx(context.Background())).Isolated {
+		t.Error("substrateGRPCCtx (no principal) must never be isolated")
+	}
+}

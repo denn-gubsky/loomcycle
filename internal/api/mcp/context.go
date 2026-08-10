@@ -70,6 +70,14 @@ func mcpPrincipalCtx(ctx context.Context) context.Context {
 		UserID:   p.Subject,
 		AgentID:  operatorAgentID,
 		TenantID: p.TenantID,
+		// RFC BX P2b defense-in-depth: stamp the isolation bit server-side from
+		// the principal, exactly like every HTTP run-start site (s.isolatedForCtx)
+		// — so ConfineIsolatedScope still refuses tenant/global data scopes if an
+		// isolated (substrate:user-topped) principal ever reaches this MCP-direct
+		// path. Today the /v1/_mcp route gate is substrate:tenant, which a
+		// substrate:user token cannot satisfy, so this is unreachable now; stamping
+		// it keeps the invariant true if that gate is ever widened.
+		Isolated: auth.IsIsolated(p, ok),
 	})
 	ctx = tools.WithAgentName(ctx, operatorAgentName)
 	return grantOperatorPolicies(ctx, operatorAgentName, auth.HasScope(p.Scopes, auth.ScopeAdmin))

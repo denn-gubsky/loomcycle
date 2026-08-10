@@ -41,11 +41,18 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	// substrateAdminCtx — without carrying TenantID the def-tools stamp
 	// every gRPC-admin-registered def into the shared "" tenant. Zero
 	// value "" when no principal → shared tenant (correct single-tenant).
-	principal, _ := auth.PrincipalFromContext(ctx)
+	principal, ok := auth.PrincipalFromContext(ctx)
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
 		UserID:   grpcSubstrateAdminUserID,
 		AgentID:  grpcSubstrateAdminAgentID,
 		TenantID: principal.TenantID,
+		// RFC BX P2b defense-in-depth: stamp the isolation bit server-side from the
+		// principal so ConfineIsolatedScope still refuses tenant/global data scopes
+		// if an isolated (substrate:user-topped) principal ever reaches this gRPC
+		// substrate path. The substrate RPCs gate on substrate:tenant, which a
+		// substrate:user token cannot satisfy, so this is unreachable today; the
+		// stamp keeps the invariant true if that gate is ever widened.
+		Isolated: auth.IsIsolated(principal, ok),
 	})
 	ctx = tools.WithAgentName(ctx, grpcSubstrateAdminAgentName)
 	// AgentTools wildcard ceiling (F11): operator-trust path → mirror HTTP
@@ -142,6 +149,8 @@ func substrateGRPCUserCtx(ctx context.Context) context.Context {
 		UserID:   principal.Subject,
 		AgentID:  grpcSubstrateAdminAgentID,
 		TenantID: principal.TenantID,
+		// RFC BX P2b defense-in-depth: carry the isolation bit (see substrateGRPCCtx).
+		Isolated: auth.IsIsolated(principal, ok),
 	})
 }
 
