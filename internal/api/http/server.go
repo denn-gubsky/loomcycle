@@ -2764,6 +2764,12 @@ func (s *Server) Mux() http.Handler {
 	// concrete model. Non-secret global config; scope-gated to substrate:tenant
 	// in requiredScopeFor.
 	mux.Handle("GET /v1/_models", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListModels))))
+	// RFC BY: the user-facing runnable-agent catalog. Member-read gated
+	// (memberReadable -> runs:read in requiredScopeFor), so a delegated user
+	// token discovers the agents it may run without knowing names out of band;
+	// the handler tiers the result by the caller's access mode (bundled always,
+	// tenant only for a non-isolated caller, own reserved).
+	mux.Handle("GET /v1/_runnable-agents", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunnableAgents))))
 	// v0.7.3+ user picker — admin-style endpoint surfacing distinct
 	// user_ids that have runs in the store. Bearer-authed; drives
 	// the Web UI's run-list user dropdown.

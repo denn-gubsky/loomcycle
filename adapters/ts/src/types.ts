@@ -789,6 +789,19 @@ export interface ListUserTokensResponse {
   tokens: UserTokenMeta[];
 }
 
+// ---- RFC BY: runnable-agent discovery (v1.51.0+) ----
+
+/** One entry in the runnable-agent catalog — the name to run + its tier.
+ *  Intentionally lean: no operator metadata (versions, retired, hashes). */
+export interface RunnableAgent {
+  name: string;
+  source: string; // "bundled" | "tenant" | "own"
+}
+
+export interface RunnableAgentsResponse {
+  agents: RunnableAgent[];
+}
+
 // ---- Whoami / principal (RFC L, v0.17.0) ----
 
 /** GET /v1/_me — the authenticated principal resolved from the bearer.
