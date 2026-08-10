@@ -379,14 +379,21 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
-	// History tool (RFC BE): own-scope access always; the cross-tenant
-	// `global` scope only for an admin principal (mirrors the in-loop
-	// historyGlobalAllowed gate). A tenant operator reaching POST /v1/_history
-	// is thus confined to its own tenant even though the route gate
-	// (ScopeTenant) admits it.
-	histScopes := []string{"self", "user", "tenant"}
-	if auth.HasScope(principal.Scopes, auth.ScopeAdmin) {
-		histScopes = append(histScopes, "global")
+	// History tool (RFC BE / RFC BY): scope by principal authority.
+	//   - a delegated USER (a member — neither tenant operator nor admin) sees
+	//     ONLY its own chats: [self, user]. This is the cap that makes
+	//     /v1/_history safe to open to the RFC BY member-read gate — the owner
+	//     subject/tenant is stamped from the principal (never the wire), so
+	//     [self, user] is exactly the caller's own history.
+	//   - a tenant operator adds `tenant` (its own tenant's chats).
+	//   - admin adds cross-tenant `global` (mirrors the in-loop
+	//     historyGlobalAllowed gate). Legacy holds ScopeAdmin, so it lands here.
+	histScopes := []string{"self", "user"}
+	switch {
+	case auth.HasScope(principal.Scopes, auth.ScopeAdmin):
+		histScopes = []string{"self", "user", "tenant", "global"}
+	case auth.HasScope(principal.Scopes, auth.ScopeTenant):
+		histScopes = []string{"self", "user", "tenant"}
 	}
 	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: histScopes})
 	// OperatorTokenDef: operator-admin (RFC L). The /v1/_* endpoints are

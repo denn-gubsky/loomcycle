@@ -253,6 +253,13 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"GET", "/v1/_library/agents", auth.ScopeTenant},
 		{"GET", "/v1/_library/skills", auth.ScopeTenant},
 		{"GET", "/v1/_library/mcp-servers", auth.ScopeTenant},
+		// RFC BY: user-facing read surfaces are MEMBER-READ (runs:read), not
+		// substrate:tenant — a delegated user token (isolated or tenant-mode)
+		// reaches its own history + the runnable-agent catalog. /v1/_history moved
+		// off isTenantConfinedDefPath (was ScopeTenant); the handler caps a member
+		// to [self, user] history scopes, and discovery tiers by access mode.
+		{"POST", "/v1/_history", auth.ScopeRunsRead},
+		{"GET", "/v1/_runnable-agents", auth.ScopeRunsRead},
 		// RFC AS: the schedules surface (list-all + per-def ops) is tenant-
 		// reachable; the handlers confine a tenant to its own schedule defs.
 		{"GET", "/v1/_schedules/list-all", auth.ScopeTenant},

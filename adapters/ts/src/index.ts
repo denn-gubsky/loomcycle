@@ -23,6 +23,7 @@
  *     mintUserToken(subject, opts?): Promise<MintedUserToken>   // delegated token
  *     listUserTokens(subject, opts?): Promise<ListUserTokensResponse>
  *     revokeUserToken(subject, defId, opts?): Promise<{def_id, retired_at}>
+ *     runnableAgents(opts?): Promise<RunnableAgentsResponse>    // RFC BY (v1.51.0) — agents I can run
  *     whoami(): Promise<WhoamiResponse>               // RFC L principal (v0.17.0)
  *
  *     // Pause / Resume / State (v0.8.17/8.18)
@@ -181,6 +182,9 @@ export type {
   MintedUserToken,
   UserTokenMeta,
   ListUserTokensResponse,
+  // RFC BY: runnable-agent discovery (v1.51.0+)
+  RunnableAgent,
+  RunnableAgentsResponse,
   // Whoami / principal (RFC L, v0.17.0)
   WhoamiResponse,
   // Pause / Resume / State

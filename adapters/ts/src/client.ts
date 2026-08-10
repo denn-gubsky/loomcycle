@@ -97,6 +97,7 @@ import type {
   MintedUserToken,
   UserTokenMeta,
   ListUserTokensResponse,
+  RunnableAgentsResponse,
   LLMChatOptions,
   LLMChatResponse,
   LLMChatStreamItem,
@@ -835,6 +836,22 @@ export class LoomcycleClient {
     return deleteJSON<{ def_id: string; retired_at: string }>(
       this.ctx,
       `/v1/_users/${encodeURIComponent(subject)}/tokens/${encodeURIComponent(defId)}`,
+      opts,
+    );
+  }
+
+  /** List the agents the caller may run (RFC BY, v1.51.0+), tiered by access
+   *  mode: bundled/system always, the tenant's shared agents for a non-isolated
+   *  caller, own reserved. Member-read (runs:read), so a delegated user token
+   *  reaches it — the tiering is decided server-side from the caller's access
+   *  mode. Lean entries (name + source); operator metadata stays in the
+   *  Library. */
+  async runnableAgents(opts?: {
+    signal?: AbortSignal;
+  }): Promise<RunnableAgentsResponse> {
+    return jsonFetch<RunnableAgentsResponse>(
+      this.ctx,
+      "/v1/_runnable-agents",
       opts,
     );
   }
