@@ -243,7 +243,14 @@ func TestProviderGate_OverCapReturns429(t *testing.T) {
 // concurrent runs to the same provider all admit (only the global cap applies),
 // and the gate holder is a noop.
 func TestProviderGate_ZeroOverheadWhenUnconfigured(t *testing.T) {
-	prov := &countingProvider{delay: 20 * time.Millisecond}
+	const n = 5
+	// holdUntil=n makes the n admitted calls RENDEZVOUS in provider.Call so the
+	// observed peak deterministically reaches n regardless of CI scheduling
+	// jitter. Without it a loaded race-runner can stagger the admitted requests
+	// so only one is ever in Call at a time — a false peak=1 that flaked this
+	// test in CI. A genuine under-admit still fails: fewer than n arrive, the 2s
+	// safety valve fires, and peak stays < 2.
+	prov := &countingProvider{delay: 20 * time.Millisecond, holdUntil: n}
 	cfg := gateTestConfig()
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "zero.db"))
 	if err != nil {
@@ -262,7 +269,6 @@ func TestProviderGate_ZeroOverheadWhenUnconfigured(t *testing.T) {
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
-	const n = 5
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
