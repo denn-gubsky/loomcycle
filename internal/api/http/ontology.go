@@ -23,6 +23,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -122,6 +123,20 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	flat := meminject.ParseOntologyMarkdown(body.Markdown)
 	if len(flat) == 0 {
 		return nil, confirmed, ""
+	}
+	// The note must state the cause it actually established. A tree read that FAILED
+	// and one that legitimately found no chunks lead here identically, and telling an
+	// operator to split their chunks when the real problem was a store fault sends
+	// them to fix the one thing that was fine.
+	if terr != nil {
+		// The detail is LOGGED, not returned. A store fault's text can carry a DSN or a
+		// filesystem path, and this note renders in a tenant operator's browser — the
+		// operator needs to know their subclasses are not in force, not where the
+		// database lives.
+		log.Printf("ontology: chunk-tree read failed for tenant %q, falling back to flat markdown: %v", mi.Tenant, terr)
+		return flat, confirmed, "The document's chunk structure could not be read, so " +
+			"it was read as flat Markdown — subclasses are not in force until this " +
+			"resolves. See the server log for the cause."
 	}
 	return flat, confirmed, "This ontology was read as flat Markdown because the " +
 		"document has no per-entity chunks. Split each entity into its own chunk to " +
