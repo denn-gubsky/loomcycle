@@ -499,12 +499,49 @@ function OntologySection() {
       <h2>Ontology</h2>
       <p className="settings-help">
         The entity types agents extract against. Every tenant starts from a
-        standard set; types you define in{" "}
-        <Link to="/paths">{state?.path ?? "/memory/ontology"}</Link> (tenant
-        scope) are layered on top — but only once you confirm them. Until then
-        your edits are stored and inert, so you can draft an ontology without
-        changing what any running agent is told.
+        standard set; the types you define are layered on top — but only once
+        you confirm them below. Until then your edits are stored and inert, so
+        you can draft an ontology without changing what any running agent is
+        told.
       </p>
+
+      {/* THE EDIT AFFORDANCE, and it is deliberately a button rather than the
+          path in prose. An operator reported being unable to find any way to
+          change the ontology: this panel renders types and offers "Revert to
+          draft", so it reads as the place you edit them, while the only route in
+          was a sentence linking to the Paths browser — a file tree, from which
+          you still had to know which document to open. A labelled action that
+          lands ON the document removes the guess.
+
+          Links by document_id when the API returned one (it is provisioned and
+          the caller may read it); falls back to the Paths browser only when
+          there is no id to address, which is the un-provisioned case the panel
+          already explains below. */}
+      <p className="settings-help">
+        {state?.document_id ? (
+          <Link className="settings-action-link" to={`/documents/${state.document_id}`}>
+            Edit ontology →
+          </Link>
+        ) : (
+          <Link to="/paths">{state?.path ?? "/memory/ontology"}</Link>
+        )}
+        {" "}
+        <span className="settings-muted-inline">
+          {state?.path ?? "/memory/ontology"} (tenant scope)
+        </span>
+      </p>
+
+      {/* The format, stated here rather than left to be inferred from the
+          template. Guessing it was the second half of the same report. */}
+      <details className="settings-help">
+        <summary>How the document is written</summary>
+        <p>
+          Each section is one entity type: the <code>## heading</code> names it,
+          and each <code>- `field`</code> bullet declares a field. Prose around
+          them is documentation and is ignored. Reuse a standard type's name to
+          override its fields.
+        </p>
+      </details>
 
       {err && <div className="settings-error">{err}</div>}
 

@@ -5678,6 +5678,32 @@ button.primary:disabled {
   color: var(--lc-text-faint);
   font-size: var(--lc-text-sm);
 }
+/* The ontology panel's edit affordance. Weighted like an action rather than a
+   link in prose — the report that prompted it was an operator unable to find any
+   way to change the ontology, and a path mentioned mid-sentence does not read as
+   "click here to edit". Uses the same accent + border tokens as the rest of the
+   settings surface so it stays inside the design system. */
+.settings-action-link {
+  display: inline-block;
+  color: var(--lc-accent);
+  font-size: var(--lc-text-sm);
+  font-weight: 500;
+  text-decoration: none;
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: 2px var(--lc-space-2);
+  background: var(--lc-surface-2);
+}
+.settings-action-link:hover {
+  border-color: var(--lc-accent);
+}
+/* The document path beside the action: present for orientation, not competing
+   with it for attention. */
+.settings-muted-inline {
+  color: var(--lc-text-faint);
+  font-size: var(--lc-text-sm);
+  font-family: var(--lc-font-mono);
+}
 .settings-error {
   color: var(--lc-failed);
   background: rgba(255, 93, 104, 0.1);
