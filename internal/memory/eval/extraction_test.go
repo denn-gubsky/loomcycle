@@ -462,9 +462,61 @@ func TestExtractionFixture_Validates(t *testing.T) {
 func TestExtractionFixture_CoversEveryAbility(t *testing.T) {
 	byAbility := ExtractionFixture().CasesByAbility()
 	for _, a := range AllAbilities() {
+		if optionalAbility(a) {
+			continue
+		}
 		if len(byAbility[a]) == 0 {
 			t.Errorf("ability %q has no cases, so its score would be vacuous", a)
 		}
+	}
+}
+
+// TestHierarchyFixture_IsWhereTheOptionalAbilityIsActuallyMeasured.
+//
+// "Optional" must not become "measured nowhere". The default corpus is allowed to omit
+// specificity because it is scored against a flat ontology — so the counterpart
+// assertion belongs here: the corpus that DOES supply a hierarchy must cover it, and
+// must cover it in both directions. A corpus with only subtype-is-right cases would
+// score a model that always takes the deepest type as perfect, which is the failure the
+// ability was created to catch.
+func TestHierarchyFixture_IsWhereTheOptionalAbilityIsActuallyMeasured(t *testing.T) {
+	corpus := ExtractionHierarchyFixture()
+	if err := corpus.Validate(); err != nil {
+		t.Fatalf("the hierarchy corpus must be coherent: %v", err)
+	}
+	byAbility := corpus.CasesByAbility()
+	if len(byAbility[AbilitySpecificity]) == 0 {
+		t.Fatal("the hierarchy corpus does not cover specificity — then nothing does")
+	}
+	// Every expected type must be a type the paired -ontology-terms actually renders,
+	// or the case asks for a subtype the model was never shown and scores it as a miss.
+	declared := map[string]bool{}
+	for _, seg := range strings.Split(HierarchyOntologyTerms, ",") {
+		parts := strings.Split(strings.TrimSpace(seg), "/")
+		declared[parts[len(parts)-1]] = true
+	}
+	wantTypes := map[string]bool{}
+	for _, cs := range byAbility[AbilitySpecificity] {
+		for _, w := range cs.Want {
+			if w.Type == "" {
+				t.Errorf("case %q asserts no type, so it measures nothing about specificity", cs.Name)
+				continue
+			}
+			if !declared[w.Type] {
+				t.Errorf("case %q expects type %q, which HierarchyOntologyTerms does not declare — "+
+					"the model would be scored on a type it was never shown", cs.Name, w.Type)
+			}
+			wantTypes[w.Type] = true
+		}
+	}
+	// BOTH DIRECTIONS: at least one case whose answer is a leaf subtype, and at least
+	// one whose answer is the root. Otherwise the corpus only measures one failure.
+	if !wantTypes["outage"] && !wantTypes["incident"] {
+		t.Error("no case expects a SUBtype — under-specification would go unmeasured")
+	}
+	if !wantTypes["event"] {
+		t.Error("no case expects the ROOT type — over-specification, the more dangerous " +
+			"direction, would go unmeasured")
 	}
 }
 
@@ -482,7 +534,10 @@ func TestExtractionFixture_ValidateCatchesAVacuousCorpus(t *testing.T) {
 			ExtractionCanary(),
 			{Name: "a", Ability: AbilityUpdate, Turns: []string{"t"}, Want: []ExpectedFact{{Why: "w"}}},
 		}}},
-		{"missing ability", ExtractionCorpus{Cases: []ExtractionCase{ExtractionCanary()}}},
+		// NO "missing ability" case: coverage is no longer Validate's job — it is a
+		// property of the SHIPPED corpus and is asserted in
+		// TestExtractionFixture_CoversEveryAbility. A narrow, purpose-built corpus is
+		// legitimate, and Validate refusing one was the bug.
 	}
 	for _, c := range cases {
 		if err := c.corpus.Validate(); err == nil {

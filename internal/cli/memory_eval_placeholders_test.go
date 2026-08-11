@@ -1,10 +1,15 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/memory/eval"
 )
 
 // TestExpandEvalPlaceholders_RendersTheOntology is the defect this exists for.
@@ -102,5 +107,106 @@ func TestExpandEvalPlaceholders_LeavesAPlainPromptAlone(t *testing.T) {
 	}
 	if got != plain {
 		t.Errorf("a prompt with no placeholder must be byte-identical:\n%q", got)
+	}
+}
+
+// TestExpandEvalPlaceholders_SeedOnlyPromptStillMatchesTheRecordedBaseline answers a
+// question the ontology-hierarchy work raised, with a fact instead of a belief.
+//
+// Adding subclasses changed how the ontology renders — but only when a hierarchy is
+// actually present. The eval expands the SEED alone, whose types are all roots, so it
+// takes the flat path and the prompt should be byte-identical to the one the committed
+// numbers were measured against. "Should be" is exactly the kind of claim that turns
+// out to be wrong, and the cost of being wrong is silent: the baseline keys on the
+// prompt digest, so a changed prompt does not fail — it un-gates every model at once
+// and the next run reports a clean pass with nothing behind it.
+//
+// So: recompute the digest from the SHIPPED bundle prompt and require it to still match
+// a recorded entry. If someone edits the seed, the renderer, or the extractor prompt,
+// this fails and names re-measurement as the cost, rather than letting the gate expire
+// unnoticed.
+func TestExpandEvalPlaceholders_SeedOnlyPromptStillMatchesTheRecordedBaseline(t *testing.T) {
+	t.Setenv("LOOMCYCLE_PRESETS", "base,memory")
+	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
+	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
+	cfg, err := loadLayeredConfig("")
+	if err != nil {
+		t.Fatalf("loadLayeredConfig: %v", err)
+	}
+	agent, ok := cfg.Agents[extractorAgentName]
+	if !ok {
+		t.Fatalf("the %s bundle did not provide %q", "memory", extractorAgentName)
+	}
+	prompt, err := expandEvalPlaceholders(agent.SystemPrompt, "")
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	sum := sha256.Sum256([]byte(prompt))
+	got := hex.EncodeToString(sum[:])
+
+	base, err := eval.LoadBaseline(filepath.Join("..", "memory", "eval", "extraction-baseline.json"))
+	if err != nil {
+		t.Fatalf("load baseline: %v", err)
+	}
+	if len(base.Entries) == 0 {
+		t.Skip("no recorded baseline to compare against")
+	}
+	recorded := map[string]bool{}
+	for _, e := range base.Entries {
+		recorded[e.SystemPromptSHA256] = true
+	}
+	if !recorded[got] {
+		have := make([]string, 0, len(recorded))
+		for k := range recorded {
+			have = append(have, k[:12])
+		}
+		sort.Strings(have)
+		t.Errorf("the seed-only extractor prompt now digests to %s, which no recorded baseline "+
+			"entry was measured against (recorded: %v).\n\nEvery stored score is now ungated: "+
+			"EntryFor keys on this digest, so a mismatch reports as \"no baseline\" rather than as "+
+			"a regression. Re-measure with `make memory-eval-live` and commit the new entries.",
+			got[:12], have)
+	}
+}
+
+// TestExpandEvalPlaceholders_SlashDeclaresASubclass — the hierarchy corpus is
+// unscoreable without this, and a silently-flat expansion would score the model on
+// subtypes it was never shown.
+func TestExpandEvalPlaceholders_SlashDeclaresASubclass(t *testing.T) {
+	got, err := expandEvalPlaceholders("{{memory:ontology}}", "event/incident/outage,person")
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	// The rendered form must be the TREE, not a flat list — indentation is how the
+	// prompt conveys specificity, and the "most specific type" instruction is what
+	// makes the ladder get used at all.
+	if !strings.Contains(got, "  - **incident**") {
+		t.Errorf("incident is not nested under event:\n%s", got)
+	}
+	if !strings.Contains(got, "    - **outage**") {
+		t.Errorf("outage is not nested under incident:\n%s", got)
+	}
+	if !strings.Contains(got, "MOST SPECIFIC") {
+		t.Errorf("the specificity instruction is missing, so the ladder has no caller:\n%s", got)
+	}
+	// An INTERMEDIATE ancestor must be declared by the path alone. If it were not, its
+	// child's parent would dangle, the render would fall back to flat, and the run would
+	// measure nothing it claims to — while looking completely normal.
+	if !strings.Contains(got, "- **event**") {
+		t.Errorf("the path did not declare its ancestor:\n%s", got)
+	}
+	// And a term outside the chain stays a root.
+	if !strings.Contains(got, "\n- **person**") {
+		t.Errorf("an unrelated term was pulled into the tree:\n%s", got)
+	}
+}
+
+// TestExpandEvalPlaceholders_RefusesAMalformedPath: a trailing slash names nothing, and
+// silently dropping it would flatten the hierarchy the run depends on.
+func TestExpandEvalPlaceholders_RefusesAMalformedPath(t *testing.T) {
+	for _, bad := range []string{"event/", "event//incident"} {
+		if _, err := expandEvalPlaceholders("{{memory:ontology}}", bad); err == nil {
+			t.Errorf("%q should have been refused", bad)
+		}
 	}
 }

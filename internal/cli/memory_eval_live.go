@@ -70,7 +70,12 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	ontologyTerms := fs.String("ontology-terms", "",
 		"comma-separated tenant entity types to add to the base seed when expanding "+
 			"{{memory:ontology}} (a deployment with a CONFIRMED tenant ontology adds its own; "+
-			"empty = the base seed alone, which is what an unconfirmed deployment gets)")
+			"empty = the base seed alone, which is what an unconfirmed deployment gets). "+
+			"A slash declares a subclass: event/incident puts incident under event")
+	corpusName := fs.String("corpus", "default",
+		"which fixture set to score: default | hierarchy. hierarchy measures whether the "+
+			"model picks the most specific type that fits, and REQUIRES an -ontology-terms "+
+			"carrying the matching hierarchy (it is defaulted for you when omitted)")
 	showFacts := fs.Bool("show-facts", false, "print every case's emitted facts, including the ones that passed")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -115,6 +120,25 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	// placeholder — which is a complete explanation for the eval's finding that half
 	// the emitted types were outside the ontology, and for why the live deployment,
 	// where expansion does happen, used its ontology's types correctly.
+	// THE CORPUS CHOOSES THE ONTOLOGY when the operator did not, and this is the one
+	// pairing the harness must not leave to the invocation. Scoring the hierarchy cases
+	// against the flat seed asks the model to pick a subtype it was never shown, and
+	// reports its failure to do so as a model weakness — a wrong number that looks
+	// entirely normal.
+	var corpus eval.ExtractionCorpus
+	switch *corpusName {
+	case "default", "":
+		corpus = eval.ExtractionFixture()
+	case "hierarchy":
+		corpus = eval.ExtractionHierarchyFixture()
+		if strings.TrimSpace(*ontologyTerms) == "" {
+			*ontologyTerms = eval.HierarchyOntologyTerms
+			fmt.Fprintf(stdout, "corpus=hierarchy: using -ontology-terms %q\n", *ontologyTerms)
+		}
+	default:
+		return fail(stderr, "memory-eval-live: unknown --corpus %q (default | hierarchy)", *corpusName)
+	}
+
 	systemPrompt, err := expandEvalPlaceholders(agent.SystemPrompt, *ontologyTerms)
 	if err != nil {
 		return fail(stderr, "memory-eval-live: %v", err)
@@ -132,7 +156,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	// measured should not depend on where the wall clock happens to land.
 	rep, err := eval.RunExtraction(context.Background(), prov, eval.ExtractionInput{
 		CaseTimeout:  *timeout,
-		Corpus:       eval.ExtractionFixture(),
+		Corpus:       corpus,
 		SystemPrompt: systemPrompt,
 		Provider:     *providerID,
 		Model:        *model,
@@ -392,13 +416,65 @@ func splitWords(s string) []string {
 // tenantTerms lets a run reproduce a deployment whose operator has CONFIRMED an
 // ontology. Empty is the unconfirmed case — the base seed alone — and the two give
 // materially different results, which is the entire question the flag exists to ask.
+// dedupeOntologyTerms keeps the FIRST declaration of each name.
+//
+// Paths overlap by design ("event/incident" and "event/incident/outage" both declare
+// event), and EffectiveOntology is a map keyed by name, so duplicates would not corrupt
+// the render — but they would corrupt the reported term COUNT, and a flag that says it
+// declared six types when it declared four is a flag nobody trusts twice.
+func dedupeOntologyTerms(in []meminject.OntologyTerm) []meminject.OntologyTerm {
+	seen := map[string]bool{}
+	out := make([]meminject.OntologyTerm, 0, len(in))
+	for _, t := range in {
+		if seen[t.Name] {
+			continue
+		}
+		seen[t.Name] = true
+		out = append(out, t)
+	}
+	return out
+}
+
 func expandEvalPlaceholders(prompt, tenantTerms string) (string, error) {
 	var extra []meminject.OntologyTerm
-	for _, name := range strings.Split(tenantTerms, ",") {
-		if name = strings.TrimSpace(name); name != "" {
-			extra = append(extra, meminject.OntologyTerm{Name: name})
+	for _, seg := range strings.Split(tenantTerms, ",") {
+		if seg = strings.TrimSpace(seg); seg == "" {
+			continue
+		}
+		// A SLASH DECLARES A SUBCLASS: "event/incident" is incident under event, and
+		// "event/incident/outage" names the whole chain so the intermediate term does
+		// not have to be listed separately to be a parent. Only the last segment is the
+		// term being declared; the one before it is its parent.
+		//
+		// A path rather than a "child:parent" pair because that is the direction the
+		// hierarchy reads in every other surface (the document, the panel, the prompt),
+		// and because a shell needs no quoting for it.
+		parts := strings.Split(seg, "/")
+		name := strings.TrimSpace(parts[len(parts)-1])
+		if name == "" {
+			return "", fmt.Errorf("ontology term %q ends in a slash, so it names nothing", seg)
+		}
+		parent := ""
+		if len(parts) > 1 {
+			parent = strings.TrimSpace(parts[len(parts)-2])
+		}
+		extra = append(extra, meminject.OntologyTerm{Name: name, Parent: parent})
+		// Declare each ancestor the path names, once, so a chain works without also
+		// listing every prefix — otherwise a dangling parent silently drops the
+		// hierarchy back to flat and the run measures nothing it claims to.
+		for i := len(parts) - 2; i >= 0; i-- {
+			anc := strings.TrimSpace(parts[i])
+			if anc == "" {
+				return "", fmt.Errorf("ontology term %q has an empty path segment", seg)
+			}
+			ancParent := ""
+			if i > 0 {
+				ancParent = strings.TrimSpace(parts[i-1])
+			}
+			extra = append(extra, meminject.OntologyTerm{Name: anc, Parent: ancParent})
 		}
 	}
+	extra = dedupeOntologyTerms(extra)
 	// confirmed=true only when terms were supplied: EffectiveOntology discards a
 	// tenant layer that is not confirmed, so passing true with no terms would render
 	// the "this deployment has confirmed additions" wording over the bare seed.

@@ -71,12 +71,23 @@ const (
 	// that must never be stored. Scored by violations, not recall: the correct
 	// answer is often the empty array.
 	AbilityAbstention Ability = "abstention"
+	// AbilitySpecificity — the model is given a type HIERARCHY and must pick the most
+	// specific type that fits, WITHOUT reaching past what the transcript supports.
+	//
+	// Two failure directions, and a corpus that measured only one would be worse than
+	// none. Under-specifying wastes the taxonomy: the operator classified incidents and
+	// gets everything back as `event`. Over-specifying is the more dangerous direction,
+	// because the extra precision is fabricated — a birthday party typed `incident`
+	// reads as a real claim about what happened, and subtype-expanded retrieval will
+	// keep surfacing it under a filter it does not belong to.
+	AbilitySpecificity Ability = "specificity"
 )
 
 // AllAbilities is the fixed report order — stable so two runs' output diffs
 // cleanly.
 func AllAbilities() []Ability {
-	return []Ability{AbilityExtraction, AbilityProperty, AbilityTemporal, AbilityUpdate, AbilityAbstention}
+	return []Ability{AbilityExtraction, AbilityProperty, AbilityTemporal, AbilityUpdate,
+		AbilityAbstention, AbilitySpecificity}
 }
 
 // ExpectedFact is one fact the extractor MUST produce for a case.
@@ -110,6 +121,13 @@ type ExpectedFact struct {
 	// reported but does NOT fail the fact — classification is softer than
 	// capture, and a mis-classed fact is still recorded and recallable.
 	Class string
+	// Type, when set, is the entity type the fact MUST carry, and unlike Class it is
+	// hard: a fact with the wrong type does not satisfy the expectation.
+	//
+	// Hard because for a hierarchy case the type IS the measurement. Scoring it softly
+	// would report full recall for a model that captured every fact and ignored the
+	// taxonomy entirely — which is the exact outcome this ability exists to detect.
+	Type string
 }
 
 // ExtractionCase is one transcript plus what the extractor must and must not
@@ -534,6 +552,13 @@ func (c ExtractionCorpus) Digest() string {
 			fmt.Fprintf(h, "want\x00%s\x00%s\x00%s\x00%s\x00%s\x00",
 				w.Why, strings.Join(w.AllOf, "|"), strings.Join(w.AnyOf, "|"),
 				strings.Join(w.NoneOf, "|"), w.Class)
+			// APPENDED ONLY WHEN SET. An unset field must contribute nothing, or adding
+			// it to the struct would re-digest every existing case and silently expire
+			// the gate on every recorded baseline entry — the failure the digest was
+			// put in the key to prevent, arriving through the digest itself.
+			if w.Type != "" {
+				fmt.Fprintf(h, "wanttype\x00%s\x00", w.Type)
+			}
 		}
 		for _, f := range cs.Forbid {
 			fmt.Fprintf(h, "forbid\x00%s\x00%s\x00%s\x00", f.Kind, f.Marker, f.Key)
@@ -547,12 +572,10 @@ func (c ExtractionCorpus) Digest() string {
 // case has turns, every ability is represented, and no expected fact is empty.
 func (c ExtractionCorpus) Validate() error {
 	canaries := 0
-	seen := map[Ability]bool{}
 	for _, cs := range c.Cases {
 		if cs.Canary {
 			canaries++
 		}
-		seen[cs.Ability] = true
 		if len(cs.Turns) == 0 {
 			return fmt.Errorf("case %q has no turns", cs.Name)
 		}
@@ -571,10 +594,29 @@ func (c ExtractionCorpus) Validate() error {
 	if canaries != 1 {
 		return fmt.Errorf("corpus must carry exactly 1 canary case, found %d", canaries)
 	}
-	for _, a := range AllAbilities() {
-		if !seen[a] {
-			return fmt.Errorf("no case covers ability %q, so its score would be vacuous", a)
-		}
-	}
+	// ABILITY COVERAGE IS NOT CHECKED HERE, and moving it out was the point.
+	//
+	// "Every ability must be covered" is a property of the corpus we SHIP as canonical,
+	// not of every corpus that can be run. Enforcing it here made Validate refuse a
+	// purpose-built corpus — the specificity fixture, which deliberately covers one
+	// ability because it is the only one its paired ontology can score. The rule now
+	// lives where its subject does, on the shipped fixture, in
+	// TestExtractionFixture_CoversEveryAbility.
+	//
+	// Nothing is lost: that test fails if the shipped corpus stops covering something,
+	// which is the case the rule was written for. What is gained is that a caller may
+	// legitimately score a narrow corpus.
 	return nil
 }
+
+// optionalAbility reports whether the SHIPPED corpus may omit an ability.
+//
+// Only specificity, and for a reason the shipped corpus cannot fix: scoring it requires
+// a type hierarchy in the rendered ontology, and the default invocation renders the seed
+// alone, whose types are all roots. A specificity case there would ask the model to
+// choose a subtype it was never shown and score it for failing.
+//
+// It is measured in ExtractionHierarchyFixture instead, and
+// TestHierarchyFixture_IsWhereTheOptionalAbilityIsActuallyMeasured asserts that —
+// "optional" must not quietly become "measured nowhere".
+func optionalAbility(a Ability) bool { return a == AbilitySpecificity }
