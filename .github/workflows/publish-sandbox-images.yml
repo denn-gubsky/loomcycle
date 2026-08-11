@@ -40,12 +40,49 @@ permissions:
   contents: read
 
 jobs:
+  # FULL vs LEAN, mirroring release.yml: the sandbox images are FULL-build-only.
+  # A minor/major tag (vX.Y.0) or a manual dispatch builds them; a patch tag
+  # (vX.Y.Z, Z>0) SKIPS them — a bugfix release rebuilds only loomcycle-browser
+  # (see release.yml's browser-patch job). Operators wanting the sandbox images
+  # at a patch version run this workflow via workflow_dispatch.
+  classify:
+    name: classify release
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.c.outputs.full }}
+    steps:
+      - id: c
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "full=true" >> "$GITHUB_OUTPUT"   # manual → always build
+            exit 0
+          fi
+          VER="${REF_NAME#v}"
+          case "$VER" in
+            *.*.*)
+              PATCH="${VER##*.}"
+              if [ "$PATCH" = "0" ]; then
+                echo "full=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "full=false" >> "$GITHUB_OUTPUT"
+                echo "::notice::patch tag $REF_NAME — sandbox images skipped (build on the next minor, or via workflow_dispatch)"
+              fi
+              ;;
+            *) echo "full=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+
   publish:
     name: build + push sandbox images
+    needs: classify
     runs-on: ubuntu-latest
     # Same explicit gate as goreleaser's docker publish: skip cleanly until the
-    # operator sets DOCKER_PUBLISH_ENABLED and the Docker Hub credentials.
-    if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+    # operator sets DOCKER_PUBLISH_ENABLED and the Docker Hub credentials. Plus
+    # the FULL-build gate — a patch tag skips the sandbox images.
+    if: vars.DOCKER_PUBLISH_ENABLED == 'true' && needs.classify.outputs.full == 'true'
     steps:
       - uses: actions/checkout@v5
 
