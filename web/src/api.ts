@@ -2708,6 +2708,12 @@ export interface OntologyTerm {
    * document's chunk tree: a child chunk is a subclass of its parent.
    */
   parent?: string;
+  /**
+   * Field names this type gets from its ancestors, nearest ancestor last. Kept
+   * apart from `fields` so the panel can show what the operator actually declared
+   * rather than claiming they wrote the inherited ones.
+   */
+  inherited?: string[];
 }
 
 export interface OntologyResponse {

@@ -3,6 +3,7 @@ package memory
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestEffectiveOntology_DraftIsInactive is the operator's gate, and the whole
@@ -169,4 +170,173 @@ func TestRenderOntology_ExplainsAnUnconfirmedDeployment(t *testing.T) {
 	if strings.Contains(confirmed, "RFC") {
 		t.Error("rendered ontology must not cite internal RFC letters")
 	}
+}
+
+// TestResolveInheritance_SubclassCarriesItsParentsFields is the phase-2 claim: a
+// subclass adds fields rather than restating them.
+func TestResolveInheritance_SubclassCarriesItsParentsFields(t *testing.T) {
+	got := ResolveInheritance([]OntologyTerm{
+		{Name: "event", Fields: []string{"name", "occurred_at"}},
+		{Name: "incident", Parent: "event", Fields: []string{"severity"}},
+		{Name: "outage", Parent: "incident", Fields: []string{"minutes_down"}},
+	})
+	byName := map[string]OntologyTerm{}
+	for _, t := range got {
+		byName[t.Name] = t
+	}
+	if got := strings.Join(byName["event"].Inherited, ","); got != "" {
+		t.Errorf("a root inherits nothing, got %q", got)
+	}
+	if got := strings.Join(byName["incident"].Inherited, ","); got != "name,occurred_at" {
+		t.Errorf("incident.Inherited = %q, want name,occurred_at", got)
+	}
+	// TRANSITIVE, ancestor-first: the general fields read ahead of the specific ones,
+	// which is also the order a model fills them in.
+	if got := strings.Join(byName["outage"].Inherited, ","); got != "name,occurred_at,severity" {
+		t.Errorf("outage.Inherited = %q, want name,occurred_at,severity", got)
+	}
+	// Declared fields are untouched — the panel has to be able to show what the
+	// operator actually wrote, so inheritance must not be merged into Fields.
+	if got := strings.Join(byName["outage"].Fields, ","); got != "minutes_down" {
+		t.Errorf("outage.Fields = %q, want only its own declaration", got)
+	}
+	if got := strings.Join(AllFields(byName["outage"]), ","); got != "name,occurred_at,severity,minutes_down" {
+		t.Errorf("AllFields(outage) = %q", got)
+	}
+}
+
+// TestResolveInheritance_ChildRedeclarationWins: most specific wins, the same rule as
+// the tenant-over-seed layer. The field must appear ONCE, in the child's own list.
+func TestResolveInheritance_ChildRedeclarationWins(t *testing.T) {
+	got := ResolveInheritance([]OntologyTerm{
+		{Name: "event", Fields: []string{"name", "occurred_at"}},
+		{Name: "incident", Parent: "event", Fields: []string{"occurred_at", "severity"}},
+	})
+	for _, term := range got {
+		if term.Name != "incident" {
+			continue
+		}
+		if strings.Join(term.Inherited, ",") != "name" {
+			t.Errorf("a redeclared field must not also be inherited: %v", term.Inherited)
+		}
+		if got := strings.Join(AllFields(term), ","); got != "name,occurred_at,severity" {
+			t.Errorf("AllFields = %q, want each field once", got)
+		}
+	}
+}
+
+// TestResolveInheritance_CycleDoesNotHang. The chunk tree cannot produce a cycle, but
+// this runs on every prompt render and accepts caller-supplied terms — an unbounded
+// walk would turn a malformed input into a hung request instead of a wrong answer.
+func TestResolveInheritance_CycleDoesNotHang(t *testing.T) {
+	done := make(chan []OntologyTerm, 1)
+	go func() {
+		done <- ResolveInheritance([]OntologyTerm{
+			{Name: "a", Parent: "b", Fields: []string{"fa"}},
+			{Name: "b", Parent: "a", Fields: []string{"fb"}},
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResolveInheritance hung on a cycle")
+	}
+}
+
+// TestResolveInheritance_DanglingParentCostsOnlyInheritance: a typo'd parent name
+// should cost the operator their inheritance, not the whole ontology.
+func TestResolveInheritance_DanglingParentCostsOnlyInheritance(t *testing.T) {
+	got := ResolveInheritance([]OntologyTerm{
+		{Name: "incident", Parent: "evnet", Fields: []string{"severity"}},
+	})
+	if len(got) != 1 {
+		t.Fatalf("the term must survive, got %v", got)
+	}
+	if len(got[0].Inherited) != 0 {
+		t.Errorf("nothing to inherit from a missing parent, got %v", got[0].Inherited)
+	}
+	if strings.Join(AllFields(got[0]), ",") != "severity" {
+		t.Errorf("its own fields must remain: %v", got[0].Fields)
+	}
+}
+
+// TestRenderOntology_FlatOntologyIsByteIdentical is the compatibility guarantee, and
+// the reason it is asserted rather than assumed.
+//
+// This string goes into the system prompt of every extracting agent. A whitespace
+// change would invalidate provider prompt caches and shift extraction results for every
+// deployment that never nests anything — a cost paid by people who did not opt in. So
+// the tree rendering engages ONLY when a hierarchy is actually present.
+func TestRenderOntology_FlatOntologyIsByteIdentical(t *testing.T) {
+	flat := []OntologyTerm{
+		{Name: "person", Fields: []string{"name", "aliases"}},
+		{Name: "event", Fields: []string{"occurred_at"}},
+	}
+	want := "# Entity types\n\n" +
+		"When you record an entity or a fact, use one of these types and fill the fields it lists.\n\n" +
+		"- **person** — name, aliases\n" +
+		"- **event** — occurred_at\n"
+	if got := RenderOntology(flat, true); got != want {
+		t.Errorf("flat rendering drifted.\n got: %q\nwant: %q", got, want)
+	}
+	// A DANGLING parent must not flip the rendering either — one typo'd chunk title
+	// would otherwise switch every deployment to the tree form and bolt on a
+	// specificity instruction with no hierarchy to apply it to.
+	dangling := append([]OntologyTerm{}, flat...)
+	dangling[1].Parent = "nonexistent"
+	if got := RenderOntology(dangling, true); got != want {
+		t.Errorf("a dangling parent changed the rendering:\n%s", got)
+	}
+}
+
+// TestRenderOntology_HierarchyIndentsAndDemandsSpecificity.
+//
+// The indentation carries the hierarchy; the per-line field list carries what to fill
+// in, duplicated on purpose because a model asked to infer "incident also has
+// occurred_at" from indentation gets it wrong often enough to matter. And the
+// specificity instruction is load-bearing: handed a ladder with no instruction, a model
+// sits at the top of it and the subclasses go unused — a capability with no caller.
+func TestRenderOntology_HierarchyIndentsAndDemandsSpecificity(t *testing.T) {
+	got := RenderOntology(ResolveInheritance([]OntologyTerm{
+		{Name: "event", Fields: []string{"occurred_at"}},
+		{Name: "incident", Parent: "event", Fields: []string{"severity"}},
+		{Name: "person", Fields: []string{"name"}},
+	}), true)
+
+	if !strings.Contains(got, "\n  - **incident** — occurred_at, severity\n") {
+		t.Errorf("subclass must be indented and carry inherited fields:\n%s", got)
+	}
+	if !strings.Contains(got, "- **event** — occurred_at\n") {
+		t.Errorf("parent line missing:\n%s", got)
+	}
+	if !strings.Contains(got, "MOST SPECIFIC") {
+		t.Errorf("the specificity instruction is missing, so the ladder has no caller:\n%s", got)
+	}
+	// A root stays flush left even when a sibling root has children.
+	if !strings.Contains(got, "\n- **person** — name\n") {
+		t.Errorf("unrelated root got indented:\n%s", got)
+	}
+}
+
+// TestEffectiveOntology_InheritanceUsesTheOVERRIDDENParent: resolution runs AFTER
+// layering, so a subclass of a type the tenant redefined gets the tenant's fields, not
+// the seed's. Resolving first would hand the child fields its parent no longer has.
+func TestEffectiveOntology_InheritanceUsesTheOverriddenParent(t *testing.T) {
+	got := EffectiveOntology([]OntologyTerm{
+		// Override the standard `event` wholesale — the documented way to subclass a
+		// standard type is to declare it as your own root and nest beneath it.
+		{Name: "event", Fields: []string{"when", "where"}},
+		{Name: "incident", Parent: "event", Fields: []string{"severity"}},
+	}, true)
+
+	for _, term := range got {
+		if term.Name != "incident" {
+			continue
+		}
+		if strings.Join(term.Inherited, ",") != "when,where" {
+			t.Errorf("incident inherited %v — want the tenant's override, not the seed's fields", term.Inherited)
+		}
+		return
+	}
+	t.Fatal("incident missing from the effective ontology")
 }

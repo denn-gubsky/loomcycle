@@ -33,15 +33,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// ontologyMaxDepth bounds how deep a subclass chain may go (RFC BZ §5).
-//
-// The rendered tree goes into every extraction prompt, so depth costs tokens on every
-// call; and a taxonomy deeper than this is usually modelling confusion rather than
-// precision. Deeper nodes are still returned — re-parented to the deepest allowed
-// ancestor rather than dropped, because silently discarding an entity is the bug this
-// file exists to fix.
-const ontologyMaxDepth = 4
-
 // ontologyChunk is one row of the tree walk.
 type ontologyChunk struct {
 	id       string
@@ -134,7 +125,7 @@ func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string
 			// every deeper descendant collapses into that same flat set. The chain is
 			// bounded at ontologyMaxDepth levels and nothing is discarded.
 			childParent := name
-			if depth >= ontologyMaxDepth {
+			if depth >= memrank.OntologyMaxDepth {
 				childParent = parentName
 			}
 			walk(c.id, childParent, depth+1)

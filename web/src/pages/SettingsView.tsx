@@ -627,6 +627,12 @@ function OntologySection() {
                               — {t.fields.join(", ")}
                             </span>
                           )}
+                          {t.inherited && t.inherited.length > 0 && (
+                            <span className="settings-muted">
+                              {" "}
+                              (inherits {t.inherited.join(", ")})
+                            </span>
+                          )}
                         </div>
                       ))
                     )}
@@ -639,10 +645,10 @@ function OntologySection() {
                         {t.source === "tenant" && (
                           <span className="settings-flash"> yours</span>
                         )}
-                        {t.fields && t.fields.length > 0 && (
+                        {((t.inherited?.length ?? 0) + (t.fields?.length ?? 0) > 0) && (
                           <span className="settings-muted">
                             {" "}
-                            — {t.fields.join(", ")}
+                            — {[...(t.inherited ?? []), ...(t.fields ?? [])].join(", ")}
                           </span>
                         )}
                       </div>
