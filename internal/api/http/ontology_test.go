@@ -165,3 +165,75 @@ func (s *Server) confirmOntology(t *testing.T, mi memInject) {
 	t.Helper()
 	s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
 }
+
+// TestOntology_NestedChunkReachesTheEffectiveOntology is the bug, end to end.
+//
+// The unit test proves the tree reader; this proves the SERVER read uses it. Those are
+// different claims, and this subsystem has already shipped the gap between them twice —
+// a correct component wired to nothing passes all of its own tests.
+//
+// FAILS before the change: the read went through export_md, which flattens chunk depth
+// into "#" repetition, and the parser matched only "## ".
+func TestOntology_NestedChunkReachesTheEffectiveOntology(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	// Provision by rendering once, exactly as a run does.
+	s.applyMemoryInjection(context.Background(), config.AgentDef{
+		SystemPrompt: "{{memory:ontology}}",
+	}, mi)
+
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	dctx := s.ontologyDocCtx(context.Background(), mi)
+
+	// Find the sample `project` term's chunk and hang a subclass off it.
+	q, _ := json.Marshal(map[string]any{
+		"op": "query_chunks", "scope": "tenant",
+		"sql": "SELECT id, document_id FROM chunks WHERE title = 'project' LIMIT 1",
+	})
+	qres, err := doc.Execute(dctx, q)
+	if err != nil || qres.IsError {
+		t.Fatalf("query_chunks: %v %s", err, qres.Text)
+	}
+	var qout struct {
+		Rows [][]any `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(qres.Text), &qout); err != nil || len(qout.Rows) == 0 {
+		t.Fatalf("no `project` chunk to nest under: %v %s", err, qres.Text)
+	}
+	parentID, docID := qout.Rows[0][0].(string), qout.Rows[0][1].(string)
+
+	c, _ := json.Marshal(map[string]any{
+		"op": "create_chunk", "scope": "tenant", "document_id": docID,
+		"parent_id": parentID, "title": "internal-project",
+		"body": "- `cost_center` — who pays\n",
+	})
+	if cres, cerr := doc.Execute(dctx, c); cerr != nil || cres.IsError {
+		t.Fatalf("create_chunk: %v %s", cerr, cres.Text)
+	}
+
+	terms, _, note := s.tenantOntologyTerms(context.Background(), mi)
+	var found *meminject.OntologyTerm
+	for i := range terms {
+		if terms[i].Name == "internal-project" {
+			found = &terms[i]
+		}
+	}
+	if found == nil {
+		names := []string{}
+		for _, tm := range terms {
+			names = append(names, tm.Name)
+		}
+		t.Fatalf("the nested type never reached the server read — have %v", names)
+	}
+	if found.Parent != "project" {
+		t.Errorf("internal-project.Parent = %q, want project", found.Parent)
+	}
+	if len(found.Fields) != 1 || found.Fields[0] != "cost_center" {
+		t.Errorf("fields = %v, want [cost_center]", found.Fields)
+	}
+	// The tree read succeeded, so the flat-Markdown fallback must NOT have reported
+	// itself — a note here would mean the tree path silently lost and the caveat is
+	// the only thing telling anyone.
+	if note != "" {
+		t.Errorf("unexpected fallback note: %q", note)
+	}
+}

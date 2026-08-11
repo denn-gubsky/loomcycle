@@ -129,14 +129,15 @@ func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string
 				Source: "tenant",
 				Parent: parentName,
 			})
-			next := depth + 1
-			// At the cap, deeper nodes attach to THIS node's parent chain rather than
-			// growing the tree — they stay in the ontology, just flattened.
-			if next >= ontologyMaxDepth {
-				walk(c.id, name, depth)
-				continue
+			// AT the cap, this node's children are reported with this node's OWN
+			// parent — so a would-be level-5 type lands at level 4 as a sibling, and
+			// every deeper descendant collapses into that same flat set. The chain is
+			// bounded at ontologyMaxDepth levels and nothing is discarded.
+			childParent := name
+			if depth >= ontologyMaxDepth {
+				childParent = parentName
 			}
-			walk(c.id, name, next)
+			walk(c.id, childParent, depth+1)
 		}
 	}
 	walk(rootID, "", 1)
