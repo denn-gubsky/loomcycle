@@ -63,6 +63,11 @@ type ontologyResponse struct {
 	// applied only if Confirmed. Each term carries its own source, so the UI can
 	// mark which half it came from without diffing against the seed.
 	Effective []meminject.OntologyTerm `json:"effective"`
+	// Note carries a reader-level caveat the operator has to know to act on — today
+	// only "this document had no per-entity chunks, so it was read flat and cannot
+	// express subclasses". Surfaced rather than logged because the consequence lands
+	// on the operator's data, not on the server.
+	Note string `json:"note,omitempty"`
 }
 
 // handleOntology serves GET /v1/_ontology — the tenant ontology's state.
@@ -177,7 +182,7 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 	}
 
 	mi := memInject{Tenant: tenant}
-	terms, confirmed := s.tenantOntologyTerms(ctx, mi)
+	terms, confirmed, note := s.tenantOntologyTerms(ctx, mi)
 
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.ontologyDocCtx(ctx, mi)
@@ -193,6 +198,7 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		resp.Terms = terms
 	}
 	resp.Confirmed = confirmed
+	resp.Note = note
 	resp.Effective = meminject.EffectiveOntology(terms, confirmed)
 	return resp, nil
 }

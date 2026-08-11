@@ -39,7 +39,7 @@ import (
 // guidance and a run that dies for want of it is worse than a run using the
 // standard types.
 func (s *Server) renderOntology(ctx context.Context, mi memInject) string {
-	terms, confirmed := s.tenantOntologyTerms(ctx, mi)
+	terms, confirmed, _ := s.tenantOntologyTerms(ctx, mi)
 	return meminject.RenderOntology(meminject.EffectiveOntology(terms, confirmed), confirmed)
 }
 
@@ -51,9 +51,9 @@ func (s *Server) renderOntology(ctx context.Context, mi memInject) string {
 // document's terms are still returned so a caller can show them, but
 // EffectiveOntology discards them. Keeping the discard in one place means no caller
 // can accidentally honour a draft.
-func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms []meminject.OntologyTerm, confirmed bool) {
+func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms []meminject.OntologyTerm, confirmed bool, note string) {
 	if s.store == nil || s.sqlMem == nil {
-		return nil, false
+		return nil, false, ""
 	}
 	s.ensureOntologyDoc(ctx, mi)
 
@@ -74,35 +74,58 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	})
 	res, _ := doc.Execute(dctx, req)
 	if res.IsError {
-		return nil, false
+		return nil, false, ""
 	}
 	var meta struct {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(res.Text), &meta); err != nil {
-		return nil, false
+		return nil, false, ""
 	}
 	confirmed = strings.EqualFold(strings.TrimSpace(meta.Status), meminject.OntologyConfirmedStatus)
 
-	// The TERMS come from export_md — one call for the whole document, in exactly
-	// the shape the operator authored it. Reading the Markdown rather than the
-	// materialized types keeps a single authority: the document is the source, and
-	// anything derived from it is a cache.
+	// The TERMS come from the CHUNK TREE, not from the exported Markdown.
+	//
+	// The export flattens chunk depth into "#" repetition, which makes a subclass's
+	// title byte-identical to a heading inside a body — so the tree read is not an
+	// optimisation, it is the only way to tell a nested TYPE from a nested COMMENT.
+	// It also ends a silent data loss: the markdown parser matched only "## ", so
+	// every nested type an operator wrote was dropped without a word.
+	tree, terr := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath)
+	if terr == nil && len(tree) > 0 {
+		return tree, confirmed, ""
+	}
+
+	// FALLBACK, deliberately narrow: only when the tree yielded NOTHING.
+	//
+	// A document whose entities were typed into one chunk's body — the root's, say,
+	// replacing the provisioned structure — has headings but no child chunks, and the
+	// tree read would correctly report zero while the operator sees a full document.
+	// Emptying someone's ontology on upgrade is a worse failure than carrying a second
+	// reader for one case, so the flat parse still runs, and it reports itself: a
+	// silent fallback would leave the operator's hierarchy quietly inert, which is the
+	// exact bug being fixed here wearing a different hat.
 	exp, _ := json.Marshal(map[string]any{
 		"op": "export_md", "scope": "tenant", "path": meminject.OntologyPath,
 		"include_metadata": false,
 	})
 	eres, _ := doc.Execute(dctx, exp)
 	if eres.IsError {
-		return nil, confirmed
+		return nil, confirmed, ""
 	}
 	var body struct {
 		Markdown string `json:"markdown"`
 	}
 	if err := json.Unmarshal([]byte(eres.Text), &body); err != nil {
-		return nil, confirmed
+		return nil, confirmed, ""
 	}
-	return meminject.ParseOntologyMarkdown(body.Markdown), confirmed
+	flat := meminject.ParseOntologyMarkdown(body.Markdown)
+	if len(flat) == 0 {
+		return nil, confirmed, ""
+	}
+	return flat, confirmed, "This ontology was read as flat Markdown because the " +
+		"document has no per-entity chunks. Split each entity into its own chunk to " +
+		"use subclasses — a child chunk is a subclass of its parent."
 }
 
 // ensureOntologyDoc provisions the tenant's ontology document from the embedded

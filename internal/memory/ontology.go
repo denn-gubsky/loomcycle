@@ -58,6 +58,15 @@ type OntologyTerm struct {
 	// overrode. Reported so a reader can tell which half of the layering they are
 	// looking at without diffing against the seed.
 	Source string `json:"source"`
+	// Parent is the NAME of the entity this one subclasses, or "" for a root
+	// (RFC BZ). A name rather than a chunk id because the ontology is consumed by
+	// name everywhere downstream — the prompt, the stored fact's type, the retrieval
+	// filter — and an id would have to be resolved back to a name at each of them.
+	//
+	// Seed terms are always roots: the seed lives in Go and has no chunks to nest
+	// beneath, so subclassing a standard type means overriding it as a root chunk and
+	// nesting under your own copy (RFC BZ §10.1).
+	Parent string `json:"parent,omitempty"`
 }
 
 // BaseSeedOntology is the ontology every tenant starts with: POLE+O — person,
@@ -178,6 +187,62 @@ func joinComma(ss []string) string {
 	return out
 }
 
+// TrimOntologyName normalises a heading line or a chunk title into an entity name.
+//
+// ONE definition, shared by the chunk-tree reader (where the name comes from a title)
+// and the markdown parser (where it comes from a heading), so the same entity cannot end
+// up with two spellings depending on which path read it — the name is a fact's natural
+// key and a retrieval filter, so a stray "#" would split a type in half.
+func TrimOntologyName(s string) string {
+	return strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(s), "#"))
+}
+
+// FirstHeadingName returns the name from the first Markdown heading in a body, or "".
+//
+// The fallback for a chunk with no title: an operator who typed "## incident" into a body
+// through update_chunk named their entity, and dropping it for want of a title column
+// would be the same silent loss RFC BZ exists to remove. Any heading level is accepted
+// because the level a chunk renders at depends on its depth, not on the author.
+func FirstHeadingName(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "#") {
+			continue
+		}
+		// Require the space: "#tag" is not a heading.
+		if i := strings.IndexByte(t, ' '); i > 0 && strings.Trim(t[:i], "#") == "" {
+			if n := TrimOntologyName(t); n != "" {
+				return n
+			}
+		}
+	}
+	return ""
+}
+
+// ParseOntologyFields extracts the field names from ONE entity's body.
+//
+// Exported because RFC BZ reads the chunk tree while the legacy markdown path still
+// exists as a narrow fallback (§2.3), and both must agree on what a field is. Two
+// readers deciding that independently is how they drift — the same failure the
+// embedding predicate had when the writer and the sweep disagreed.
+//
+// A field is the FIRST backticked token on a `- ` bullet. Prose after it is the
+// operator's description and is deliberately ignored, so a field can be documented
+// inline without the documentation becoming part of the name.
+func ParseOntologyFields(body string) []string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "- ") {
+			continue
+		}
+		if f := firstBackticked(t); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // ParseOntologyMarkdown extracts terms from the ontology document's Markdown.
 //
 // It reads the format the TEMPLATE writes and an operator edits: a `## name`
@@ -212,7 +277,7 @@ func ParseOntologyMarkdown(md string) []OntologyTerm {
 		switch {
 		case strings.HasPrefix(t, "## "):
 			flush()
-			name := strings.TrimSpace(strings.TrimPrefix(t, "## "))
+			name := TrimOntologyName(strings.TrimPrefix(t, "## "))
 			cur = &OntologyTerm{Name: name, Source: "tenant"}
 		case strings.HasPrefix(t, "# "):
 			// The document title, not a term.

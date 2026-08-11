@@ -59,7 +59,7 @@ func TestOntology_ProvisionsTheDocumentOnFirstReference(t *testing.T) {
 	def := config.AgentDef{SystemPrompt: "{{memory:ontology}}"}
 	s.applyMemoryInjection(context.Background(), def, mi)
 
-	terms, confirmed := s.tenantOntologyTerms(context.Background(), mi)
+	terms, confirmed, _ := s.tenantOntologyTerms(context.Background(), mi)
 	if confirmed {
 		t.Error("a provisioned document must start unconfirmed")
 	}
