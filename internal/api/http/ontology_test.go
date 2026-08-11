@@ -210,7 +210,7 @@ func TestOntology_NestedChunkReachesTheEffectiveOntology(t *testing.T) {
 		t.Fatalf("create_chunk: %v %s", cerr, cres.Text)
 	}
 
-	terms, _, note := s.tenantOntologyTerms(context.Background(), mi)
+	terms, _, notes := s.tenantOntologyTerms(context.Background(), mi)
 	var found *meminject.OntologyTerm
 	for i := range terms {
 		if terms[i].Name == "internal-project" {
@@ -233,8 +233,8 @@ func TestOntology_NestedChunkReachesTheEffectiveOntology(t *testing.T) {
 	// The tree read succeeded, so the flat-Markdown fallback must NOT have reported
 	// itself — a note here would mean the tree path silently lost and the caveat is
 	// the only thing telling anyone.
-	if note != "" {
-		t.Errorf("unexpected fallback note: %q", note)
+	if len(notes) != 0 {
+		t.Errorf("unexpected notes: %v", notes)
 	}
 }
 

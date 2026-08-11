@@ -63,11 +63,15 @@ type ontologyResponse struct {
 	// applied only if Confirmed. Each term carries its own source, so the UI can
 	// mark which half it came from without diffing against the seed.
 	Effective []meminject.OntologyTerm `json:"effective"`
-	// Note carries a reader-level caveat the operator has to know to act on — today
-	// only "this document had no per-entity chunks, so it was read flat and cannot
-	// express subclasses". Surfaced rather than logged because the consequence lands
-	// on the operator's data, not on the server.
-	Note string `json:"note,omitempty"`
+	// Notes carries reader-level caveats the operator has to act on: the document had
+	// no per-entity chunks and was read flat, or it nests deeper than the cap and was
+	// flattened. A LIST because those conditions are independent and more than one can
+	// hold at once — folded into one string, the panel could not render them
+	// separately and each new case would make it worse.
+	//
+	// Surfaced rather than logged because the consequence lands on the operator's
+	// data, not on the server.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // handleOntology serves GET /v1/_ontology — the tenant ontology's state.
@@ -182,7 +186,7 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 	}
 
 	mi := memInject{Tenant: tenant}
-	terms, confirmed, note := s.tenantOntologyTerms(ctx, mi)
+	terms, confirmed, notes := s.tenantOntologyTerms(ctx, mi)
 
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.ontologyDocCtx(ctx, mi)
@@ -202,7 +206,7 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		resp.Terms = meminject.ResolveInheritance(terms)
 	}
 	resp.Confirmed = confirmed
-	resp.Note = note
+	resp.Notes = notes
 	resp.Effective = meminject.EffectiveOntology(terms, confirmed)
 	return resp, nil
 }

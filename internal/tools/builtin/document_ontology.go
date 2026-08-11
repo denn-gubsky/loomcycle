@@ -51,16 +51,32 @@ type ontologyChunk struct {
 // DEPTH-FIRST IN POSITION ORDER, so the returned slice reads like the document: a
 // parent immediately followed by its subclasses. EffectiveOntology sorts by name for
 // rendering, but a caller showing the tree (the Settings panel) wants document order.
-func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string) ([]memrank.OntologyTerm, error) {
+func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string) (OntologyRead, error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return nil, fmt.Errorf("ontology: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return OntologyRead{}, fmt.Errorf("ontology: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
 	}
 	key, mscope, err := d.resolveScope(ctx, scope)
 	if err != nil {
-		return nil, err
+		return OntologyRead{}, err
 	}
-	terms, _, err := d.ontologyForKey(ctx, key, mscope, path)
-	return terms, err
+	return d.ontologyForKey(ctx, key, mscope, path)
+}
+
+// OntologyRead is one read of the ontology document.
+//
+// A struct rather than a growing return list: the read already reports terms and the
+// confirm gate, and DepthCapped is the third thing a caller has to know. Each addition
+// as a positional return is one more call site that can silently pass the wrong slot.
+type OntologyRead struct {
+	Terms     []memrank.OntologyTerm
+	Confirmed bool
+	// DepthCapped is true when the document nests deeper than OntologyMaxDepth, so
+	// some types were flattened onto the cap rather than kept at their written depth.
+	//
+	// REPORTED because the flattening was otherwise invisible: an operator whose
+	// level-5 type quietly became a level-4 sibling had no way to know their document
+	// and their ontology disagreed — the exact failure this file was written to end.
+	DepthCapped bool
 }
 
 // ontologyForKey is the reader proper: terms plus the document's confirmed status.
@@ -68,7 +84,7 @@ func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string
 // Split out from OntologyTermsFromTree so the retrieval-side expansion can reuse it
 // with a tenant key it built itself. One reader, two callers — the alternative was a
 // second tree walk, and two walks of the same tree eventually disagree about it.
-func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, path string) ([]memrank.OntologyTerm, bool, error) {
+func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, path string) (OntologyRead, error) {
 	// DELIBERATELY NO ensureSchema. Reading must not provision.
 	//
 	// This is called from a query path, so ensuring here would mean an agent running
@@ -83,14 +99,14 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// and the caller reads it as "no tenant layer", which is the truth.
 	docID, err := d.docIDFromInput(ctx, key, docInput{Path: path})
 	if err != nil {
-		return nil, false, nil // no such document — no tenant layer
+		return OntologyRead{}, nil // no such document — no tenant layer
 	}
 	var rootID, status string
 	if res, qerr := d.query(ctx, key,
 		`SELECT root_chunk_id, coalesce(status, '') FROM documents WHERE id = ? LIMIT 1`, docID); qerr != nil {
-		return nil, false, qerr
+		return OntologyRead{}, qerr
 	} else if len(res.Rows) == 0 || len(res.Rows[0]) < 2 {
-		return nil, false, nil
+		return OntologyRead{}, nil
 	} else {
 		rootID, status = asStr(res.Rows[0][0]), asStr(res.Rows[0][1])
 	}
@@ -100,7 +116,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		`SELECT id, coalesce(parent_id, ''), coalesce(title, ''), position
 		   FROM chunks WHERE document_id = ? ORDER BY position`, docID)
 	if err != nil {
-		return nil, confirmed, err
+		return OntologyRead{Confirmed: confirmed}, err
 	}
 	kids := map[string][]ontologyChunk{}
 	for _, row := range res.Rows {
@@ -120,6 +136,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 
 	var out []memrank.OntologyTerm
+	depthCapped := false
 	// The walk starts at the ROOT CHUNK'S CHILDREN: the root is the document's title
 	// ("Tenant Ontology"), not an entity. Including it would invent a type nobody
 	// declared and make every real entity its subclass.
@@ -148,12 +165,15 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			childParent := name
 			if depth >= memrank.OntologyMaxDepth {
 				childParent = parentName
+				if len(kids[c.id]) > 0 {
+					depthCapped = true
+				}
 			}
 			walk(c.id, childParent, depth+1)
 		}
 	}
 	walk(rootID, "", 1)
-	return out, confirmed, nil
+	return OntologyRead{Terms: out, Confirmed: confirmed, DepthCapped: depthCapped}, nil
 }
 
 // ontologyEntityName resolves an entity's name: the chunk's title, or — when the title
@@ -257,14 +277,14 @@ func (d *Document) tenantOntologyForRun(ctx context.Context) ([]memrank.Ontology
 		Scope:   "tenant",
 		ScopeID: sqlScopeTenant(ctx),
 	}
-	terms, confirmed, err := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath)
 	if err != nil {
 		// Best-effort, exactly as the prompt-side render is: a store fault must not
 		// turn a retrieval into an error. The unexpanded filter still answers the
 		// question that was asked, just narrowly.
 		return nil, false
 	}
-	return memrank.ResolveInheritance(terms), confirmed
+	return memrank.ResolveInheritance(read.Terms), read.Confirmed
 }
 
 // typeFilterSQL renders an expanded type filter as a WHERE fragment plus its args.
