@@ -203,7 +203,21 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		// effective one. Without this the panel's "this deployment defines" column
 		// shows a subclass with no sign of what it inherits, which is exactly the
 		// question an operator has when looking at a subclass that declares one field.
-		resp.Terms = meminject.ResolveInheritance(terms)
+		reported, rerooted := meminject.EnforcePinnedRoots(terms)
+		reported = meminject.ResolveInheritance(reported)
+		for i := range reported {
+			reported[i].NameIssue = meminject.OntologyNameIssue(reported[i].Name)
+		}
+		resp.Terms = reported
+		if len(rerooted) > 0 {
+			// Said out loud because the nesting was accepted by the document and then
+			// dropped here. An operator who nested `preference` under something and saw
+			// their document keep it would otherwise believe it took effect.
+			notes = append(notes, "These are the memory tier's own structural types and "+
+				"cannot be nested under another type, so they were kept as roots: "+
+				strings.Join(rerooted, ", ")+". Subclassing them is fine — it is giving "+
+				"them a parent that is not.")
+		}
 	}
 	resp.Confirmed = confirmed
 	resp.Notes = notes

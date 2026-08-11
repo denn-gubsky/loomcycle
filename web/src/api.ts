@@ -2714,6 +2714,12 @@ export interface OntologyTerm {
    * rather than claiming they wrote the inherited ones.
    */
   inherited?: string[];
+  /**
+   * An advisory about the NAME itself (spaces, capitals, odd characters). The type is
+   * fully in force regardless — names are never rewritten, because a name is part of a
+   * stored fact's key and normalising one would split the type in half.
+   */
+  name_issue?: string;
 }
 
 export interface OntologyResponse {

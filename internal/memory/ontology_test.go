@@ -340,3 +340,92 @@ func TestEffectiveOntology_InheritanceUsesTheOverriddenParent(t *testing.T) {
 	}
 	t.Fatal("incident missing from the effective ontology")
 }
+
+// TestEnforcePinnedRoots_TierTypesCannotBeNestedButCanBeSubclassed.
+//
+// The asymmetry is the whole rule. Subclassing `preference` is a good idea and stays
+// legal; giving it a parent inverts the tier, and with subtype-expanded retrieval a query
+// for that parent would start sweeping in every preference the user ever expressed.
+func TestEnforcePinnedRoots_TierTypesCannotBeNestedButCanBeSubclassed(t *testing.T) {
+	got, rerooted := EnforcePinnedRoots([]OntologyTerm{
+		{Name: "signal", Fields: []string{"kind"}},
+		{Name: "preference", Parent: "signal"},
+		{Name: "dietary-preference", Parent: "preference", Fields: []string{"restriction"}},
+		{Name: "fact", Parent: "signal"},
+		{Name: "project", Parent: "signal", Fields: []string{"status"}},
+	})
+	byName := map[string]OntologyTerm{}
+	for _, tm := range got {
+		byName[tm.Name] = tm
+	}
+	if byName["preference"].Parent != "" || byName["fact"].Parent != "" {
+		t.Errorf("a tier type kept a parent: preference=%q fact=%q",
+			byName["preference"].Parent, byName["fact"].Parent)
+	}
+	// SUBCLASSING one is untouched.
+	if byName["dietary-preference"].Parent != "preference" {
+		t.Errorf("subclassing a tier type must stay legal, got parent %q",
+			byName["dietary-preference"].Parent)
+	}
+	// And an ordinary type is not swept up by the rule.
+	if byName["project"].Parent != "signal" {
+		t.Errorf("an unrelated type was re-rooted: %q", byName["project"].Parent)
+	}
+	if len(rerooted) != 2 {
+		t.Errorf("both re-rootings must be reported so the operator is told, got %v", rerooted)
+	}
+	// Nothing is DROPPED — the operator keeps their ontology, they just lose the nesting.
+	if len(got) != 5 {
+		t.Errorf("want all five terms, got %d", len(got))
+	}
+}
+
+// TestEffectiveOntology_PinnedRootIsEnforcedBeforeInheritance: a wrongly-nested tier type
+// must not inherit its would-be parent's fields on the way through.
+func TestEffectiveOntology_PinnedRootIsEnforcedBeforeInheritance(t *testing.T) {
+	for _, term := range EffectiveOntology([]OntologyTerm{
+		{Name: "signal", Fields: []string{"kind", "weight"}},
+		{Name: "preference", Parent: "signal"},
+	}, true) {
+		if term.Name != "preference" {
+			continue
+		}
+		if len(term.Inherited) != 0 {
+			t.Errorf("preference inherited %v — the pin must apply before inheritance", term.Inherited)
+		}
+		if term.Parent != "" {
+			t.Errorf("preference kept parent %q in the effective ontology", term.Parent)
+		}
+	}
+}
+
+// TestOntologyNameIssue_WarnsWithoutRewriting (RFC BZ §10.2).
+//
+// Warn-only is the decision, not a first step toward normalising. A name is part of a
+// stored fact's key, so rewriting `Notes on naming` into `notes-on-naming` after facts
+// exist under the old spelling splits the type in half — the cost of a bad name is
+// friction in a prompt, not corruption.
+func TestOntologyNameIssue_WarnsWithoutRewriting(t *testing.T) {
+	fine := []string{"event", "security-incident", "work_item", "p", "x9"}
+	for _, n := range fine {
+		if got := OntologyNameIssue(n); got != "" {
+			t.Errorf("%q should be accepted quietly, got %q", n, got)
+		}
+	}
+	awkward := []string{"Notes on naming", "Event", "type:thing", "trailing-"}
+	for _, n := range awkward {
+		if OntologyNameIssue(n) == "" {
+			t.Errorf("%q should have produced an advisory", n)
+		}
+	}
+	// The SEED must be quiet — a warning on a name the operator cannot edit is noise.
+	for _, term := range BaseSeedOntology() {
+		if got := OntologyNameIssue(term.Name); got != "" {
+			t.Errorf("seed term %q warns: %q", term.Name, got)
+		}
+	}
+	// An empty name is not an advisory case: it is dropped elsewhere as nameless.
+	if OntologyNameIssue("  ") != "" {
+		t.Error("an empty name should not produce a name advisory")
+	}
+}

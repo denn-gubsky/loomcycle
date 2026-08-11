@@ -16,6 +16,7 @@ package memory
 import (
 	_ "embed"
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -67,6 +68,11 @@ type OntologyTerm struct {
 	// to show which fields a subclass actually declared. Merging would make the
 	// panel's "this deployment defines" column claim fields nobody wrote there.
 	Inherited []string `json:"inherited,omitempty"`
+	// NameIssue is an operator-facing advisory about the name itself — spaces, capitals,
+	// odd characters. Advisory only: the type is fully in force. Per-TERM rather than a
+	// document-level note so the panel can point at the offender instead of asking the
+	// operator to find it.
+	NameIssue string `json:"name_issue,omitempty"`
 	// Parent is the NAME of the entity this one subclasses, or "" for a root
 	// (RFC BZ). A name rather than a chunk id because the ontology is consumed by
 	// name everywhere downstream — the prompt, the stored fact's type, the retrieval
@@ -136,6 +142,9 @@ func EffectiveOntology(tenantTerms []OntologyTerm, tenantConfirmed bool) []Ontol
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	// Pinned roots are re-rooted BEFORE inheritance, so a wrongly-nested tier type does
+	// not also inherit a domain type's fields on its way through.
+	out, _ = EnforcePinnedRoots(out)
 	// AFTER layering, so a subclass inherits what its parent effectively HAS — if the
 	// parent overrode a standard type, the child gets the override, not the seed.
 	return ResolveInheritance(out)
@@ -211,6 +220,73 @@ func joinComma(ss []string) string {
 		out += s
 	}
 	return out
+}
+
+// PinnedOntologyRoots are the memory tier's own structural types, which a tenant may
+// not re-parent (RFC BZ §10.3, decided here rather than left to discovery).
+//
+// They may still be SUBCLASSED — `dietary-preference` under `preference` is a good idea
+// and stays legal. What is refused is giving them a parent, because that inverts the
+// tier: make `preference` a subclass of some domain type and, with subtype-expanded
+// retrieval, a query for that domain type starts sweeping in every preference the user
+// ever expressed. The tier stops meaning what every other surface assumes it means.
+//
+// Enforced by clearing the parent rather than by rejecting the document, so an operator
+// who nests one by accident loses the nesting and keeps their ontology. The panel says
+// what happened; silence would leave them believing it took.
+func PinnedOntologyRoots() []string { return []string{"preference", "fact"} }
+
+// EnforcePinnedRoots clears the parent of any pinned root and reports which were
+// re-rooted, so the caller can tell the operator rather than let them discover it.
+func EnforcePinnedRoots(terms []OntologyTerm) ([]OntologyTerm, []string) {
+	pinned := map[string]bool{}
+	for _, n := range PinnedOntologyRoots() {
+		pinned[n] = true
+	}
+	var rerooted []string
+	out := make([]OntologyTerm, 0, len(terms))
+	for _, t := range terms {
+		if t.Parent != "" && pinned[strings.ToLower(t.Name)] {
+			rerooted = append(rerooted, t.Name)
+			t.Parent = ""
+		}
+		out = append(out, t)
+	}
+	return out, rerooted
+}
+
+// ontologyNameRe is the identifier shape an entity name should take.
+var ontologyNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
+
+// OntologyNameIssue returns an operator-facing warning when a name is awkward as a type,
+// or "" when it is fine (RFC BZ §10.2).
+//
+// WARN, NEVER NORMALISE, and never reject. Any free-text heading is a legal type name
+// today, so rewriting or refusing one would silently change — or break — an ontology that
+// already works, and a name is a fact's natural key: normalising `Notes on naming` into
+// `notes-on-naming` after facts were stored under the old spelling splits the type in
+// half. The cost of a bad name is friction in a prompt, not corruption, so the right
+// response is to point at it.
+//
+// Deliberately not applied to the seed: its names are already in this shape, and a
+// warning on a name the operator cannot edit is noise.
+func OntologyNameIssue(name string) string {
+	n := strings.TrimSpace(name)
+	if n == "" || ontologyNameRe.MatchString(n) {
+		return ""
+	}
+	switch {
+	case strings.ContainsAny(n, " \t"):
+		return "contains spaces — a type name is used inside a prompt and as part of a " +
+			"fact's key, where a phrase reads as prose rather than as a type. Prefer " +
+			"lowercase words joined by - or _."
+	case n != strings.ToLower(n):
+		return "has capitals — type names are matched case-insensitively, so two spellings " +
+			"of the same type are easy to create by accident. Prefer lowercase."
+	default:
+		return "has characters outside a-z, 0-9, - and _, which are awkward in a prompt " +
+			"and in a fact's key."
+	}
 }
 
 // ResolveInheritance fills each term's Inherited from its ancestors.
