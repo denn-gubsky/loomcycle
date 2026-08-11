@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -58,28 +59,48 @@ func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string
 	if err != nil {
 		return nil, err
 	}
-	if err := d.ensureSchema(ctx, key); err != nil {
-		return nil, err
-	}
+	terms, _, err := d.ontologyForKey(ctx, key, mscope, path)
+	return terms, err
+}
+
+// ontologyForKey is the reader proper: terms plus the document's confirmed status.
+//
+// Split out from OntologyTermsFromTree so the retrieval-side expansion can reuse it
+// with a tenant key it built itself. One reader, two callers — the alternative was a
+// second tree walk, and two walks of the same tree eventually disagree about it.
+func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, path string) ([]memrank.OntologyTerm, bool, error) {
+	// DELIBERATELY NO ensureSchema. Reading must not provision.
+	//
+	// This is called from a query path, so ensuring here would mean an agent running
+	// `query_chunks type=x` CREATES its tenant's SQL-Memory schema — and on the
+	// Postgres tier a per-scope LOGIN role — for a tenant that has no tenant documents
+	// at all. A read that builds infrastructure can also FAIL to build it (the role
+	// needs CREATEROLE), turning a working query into an error over a taxonomy the
+	// tenant never had.
+	//
+	// Callers that legitimately provision (the server's ontology endpoints) do it
+	// themselves before they get here. With no schema the lookup below simply errors
+	// and the caller reads it as "no tenant layer", which is the truth.
 	docID, err := d.docIDFromInput(ctx, key, docInput{Path: path})
 	if err != nil {
-		return nil, nil // no such document — no tenant layer
+		return nil, false, nil // no such document — no tenant layer
 	}
-	var rootID string
+	var rootID, status string
 	if res, qerr := d.query(ctx, key,
-		`SELECT root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID); qerr != nil {
-		return nil, qerr
-	} else if len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
-		return nil, nil
+		`SELECT root_chunk_id, coalesce(status, '') FROM documents WHERE id = ? LIMIT 1`, docID); qerr != nil {
+		return nil, false, qerr
+	} else if len(res.Rows) == 0 || len(res.Rows[0]) < 2 {
+		return nil, false, nil
 	} else {
-		rootID = asStr(res.Rows[0][0])
+		rootID, status = asStr(res.Rows[0][0]), asStr(res.Rows[0][1])
 	}
+	confirmed := strings.EqualFold(strings.TrimSpace(status), memrank.OntologyConfirmedStatus)
 
 	res, err := d.query(ctx, key,
 		`SELECT id, coalesce(parent_id, ''), coalesce(title, ''), position
 		   FROM chunks WHERE document_id = ? ORDER BY position`, docID)
 	if err != nil {
-		return nil, err
+		return nil, confirmed, err
 	}
 	kids := map[string][]ontologyChunk{}
 	for _, row := range res.Rows {
@@ -132,7 +153,7 @@ func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string
 		}
 	}
 	walk(rootID, "", 1)
-	return out, nil
+	return out, confirmed, nil
 }
 
 // ontologyEntityName resolves an entity's name: the chunk's title, or — when the title
@@ -152,4 +173,112 @@ func (d *Document) ontologyEntityName(ctx context.Context, mscope store.MemorySc
 		return ""
 	}
 	return memrank.FirstHeadingName(body.Body)
+}
+
+// expandTypeFilter turns a type filter into the type plus every type that is a
+// SUBCLASS of it in the tenant's confirmed ontology.
+//
+// THIS IS THE POINT OF THE HIERARCHY. Without it a taxonomy is decorative: an
+// operator gains a tidy document and no new answers, because a search for `event`
+// still misses every `incident` they carefully classified. Storage keeps the CONCRETE
+// type only and expansion happens here, at query time — materialising ancestors into
+// each stored row would mean re-parenting a type silently invalidates history, since
+// facts recorded before the move would still claim the old ancestor and need a
+// backfill nobody will run. Expanding at query time makes a correction take effect
+// immediately and retroactively, which is what an operator fixing their taxonomy
+// expects.
+//
+// Returns nil for an empty filter, and a single-element slice when there is nothing to
+// expand — the caller then emits the same `type = ?` SQL it always did.
+//
+// ONLY WHEN CONFIRMED. A draft ontology is inert everywhere else, and retrieval must
+// not be the one surface where an unconfirmed edit quietly changes answers.
+func (d *Document) expandTypeFilter(ctx context.Context, typ string) []string {
+	typ = strings.TrimSpace(typ)
+	if typ == "" || d.Store == nil || d.SqlMem == nil {
+		return nil
+	}
+	terms, confirmed := d.tenantOntologyForRun(ctx)
+	if !confirmed || len(terms) == 0 {
+		return []string{typ}
+	}
+	kids := make(map[string][]string, len(terms))
+	for _, t := range terms {
+		if t.Parent != "" {
+			kids[t.Parent] = append(kids[t.Parent], t.Name)
+		}
+	}
+	out := []string{typ}
+	seen := map[string]bool{typ: true}
+	// Breadth-first with a visited set, bounded by the depth cap. The chunk tree
+	// cannot cycle, but this runs inside a query path and a cycle here would hang the
+	// request rather than return a wrong row.
+	frontier := []string{typ}
+	for depth := 0; depth < memrank.OntologyMaxDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, name := range frontier {
+			for _, kid := range kids[name] {
+				if seen[kid] {
+					continue
+				}
+				seen[kid] = true
+				out = append(out, kid)
+				next = append(next, kid)
+			}
+		}
+		frontier = next
+	}
+	sort.Strings(out[1:]) // stable output; the requested type stays first
+	return out
+}
+
+// tenantOntologyForRun reads the run's tenant ontology for retrieval purposes.
+//
+// The tenant key is built HERE rather than through resolveScope, deliberately
+// skipping the `scope=tenant` grant check, and that is not a hole:
+//
+//   - The tenant comes from the run's server-stamped identity. Nothing the model says
+//     reaches it.
+//   - The ontology is operator-authored CONFIG, not tenant data. It already reaches
+//     the agent — the server renders it into the system prompt with grants it stamps
+//     itself, for exactly this reason.
+//   - Nothing from the tenant scope is returned. The only effect is which of the
+//     agent's OWN rows, in the scope it already queried, match its filter.
+//
+// Requiring the grant instead would mean subtype expansion worked only for agents
+// holding tenant-write authority — so the operators most careful about scoping would
+// be the ones whose taxonomy silently did nothing.
+//
+// Not cached: an operator who fixes their taxonomy expects the next query to reflect
+// it, and the read is two point lookups on a filter that is not on any hot path.
+func (d *Document) tenantOntologyForRun(ctx context.Context) ([]memrank.OntologyTerm, bool) {
+	key := sqlmem.ScopeKey{
+		Tenant:  sqlScopeTenant(ctx),
+		Scope:   "tenant",
+		ScopeID: sqlScopeTenant(ctx),
+	}
+	terms, confirmed, err := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath)
+	if err != nil {
+		// Best-effort, exactly as the prompt-side render is: a store fault must not
+		// turn a retrieval into an error. The unexpanded filter still answers the
+		// question that was asked, just narrowly.
+		return nil, false
+	}
+	return memrank.ResolveInheritance(terms), confirmed
+}
+
+// typeFilterSQL renders an expanded type filter as a WHERE fragment plus its args.
+//
+// Emits `= ?` for a single type so the common, hierarchy-free case produces byte-identical
+// SQL to what it did before subclasses existed — no new query plan for a deployment that
+// never nests anything.
+func typeFilterSQL(column string, types []string) (string, []any) {
+	if len(types) == 0 {
+		return "", nil
+	}
+	if len(types) == 1 {
+		return column + " = ?", []any{types[0]}
+	}
+	ph, args := inPlaceholders(types)
+	return column + " IN (" + ph + ")", args
 }

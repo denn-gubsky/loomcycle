@@ -259,9 +259,12 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 
 	where := []string{}
 	args := []any{}
-	if in.Type != "" {
-		where = append(where, "c.type = ?")
-		args = append(args, in.Type)
+	// RFC BZ subtype expansion: listing facts of type `event` must also list the
+	// `incident` facts, or the taxonomy an operator built changes no answers.
+	typeExpansion := d.expandTypeFilter(ctx, in.Type)
+	if frag, targs := typeFilterSQL("c.type", typeExpansion); frag != "" {
+		where = append(where, frag)
+		args = append(args, targs...)
 	}
 	if in.Class != "" {
 		where = append(where, "m.class = ?")
@@ -331,7 +334,14 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		}
 		facts = append(facts, fact)
 	}
-	return okJSON(map[string]any{"facts": facts, "count": len(facts), "truncated": truncated})
+	out := map[string]any{"facts": facts, "count": len(facts), "truncated": truncated}
+	// REPORTED for the same reason query_chunks reports it: the filter that ran is
+	// wider than the one that was asked for, and a count nobody can account for reads
+	// as a bug rather than as a working taxonomy.
+	if len(typeExpansion) > 1 {
+		out["type_expanded_to"] = typeExpansion
+	}
+	return okJSON(out)
 }
 
 // writeChunkMeta upserts the sidecar row, PRESERVING every field the caller did not

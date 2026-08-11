@@ -79,7 +79,7 @@ const documentInputSchema = `{
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
 		"direction":   {"type": "string", "enum": ["up","down"], "description": "reorder_chunk: move the chunk up or down within its current level."},
-		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type."},
+		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type. On list_facts and query_chunks the filter INCLUDES SUBTYPES — asking for a general type also returns the more specific kinds of it, so filter by the broadest type that still answers your question. The response reports type_expanded_to when this widened the filter."},
 		"body":        {"type": "string", "description": "Markdown body."},
 		"seed_ids":  {"type": "array", "items": {"type": "string"}, "description": "graph_recall: chunk ids to start from. Use this to hand in results you already found some other way (a Memory search, a previous recall) and follow the graph out from them."},
 		"query":     {"type": "string", "description": "search: free text matched semantically against chunk BODIES — the way into a document when you do not know where to look. graph_recall: find starting chunks whose title matches this text (use seed_ids instead when you already know where to start)."},
@@ -3150,9 +3150,11 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		where += " AND document_id = ?"
 		args = append(args, in.DocumentID)
 	}
-	if in.Type != "" {
-		where += " AND type = ?"
-		args = append(args, in.Type)
+	// RFC BZ subtype expansion: `type=event` also matches its subclasses.
+	typeExpansion := d.expandTypeFilter(ctx, in.Type)
+	if frag, targs := typeFilterSQL("type", typeExpansion); frag != "" {
+		where += " AND " + frag
+		args = append(args, targs...)
 	}
 	if in.Status != "" {
 		where += " AND status = ?"
@@ -3197,7 +3199,14 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		}
 		chunks = append(chunks, m)
 	}
-	return jsonResult(map[string]any{"chunks": chunks})
+	out := map[string]any{"chunks": chunks}
+	// REPORTED, not silent. The filter the caller asked for is not the filter that
+	// ran, and a reader comparing counts across two deployments needs to know which
+	// subclasses were folded in — a wider answer with no explanation reads as a bug.
+	if len(typeExpansion) > 1 {
+		out["type_expanded_to"] = typeExpansion
+	}
+	return jsonResult(out)
 }
 
 // documentsUnderPath returns the document ids named at/under a Path-tree path
