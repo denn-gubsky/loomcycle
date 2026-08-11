@@ -417,6 +417,35 @@ export default function DocumentViewerBody({
     }
   }, [data, documentId, scope, browse, selectedId, selectedIsRoot, rootChunkId, refresh]);
 
+  // "+ child": a chunk NESTED UNDER the selected one.
+  //
+  // The viewer had no way to do this. "+ text" inserts a SIBLING (after_id), which is
+  // right for prose flow and wrong for structure — so a document's hierarchy could only
+  // ever be created by import_md or by an agent, and every attempt to nest something
+  // through the UI silently produced a sibling instead. That made the ontology's
+  // subclasses (a child chunk is a subclass) unauthorable by the operator who owns them:
+  // selecting `project` and adding a type put it BESIDE project, at the top level.
+  //
+  // Passing parent_id with no after_id appends it as the selection's last child.
+  const addChild = useCallback(async () => {
+    if (!data.documentCreateChunk || !selectedId) return;
+    setErr(null);
+    try {
+      const created = await data.documentCreateChunk(
+        documentId,
+        selectedId,
+        { title: "Text", body: "" },
+        scope,
+        browse,
+      );
+      refresh();
+      setSelectedId(created.id);
+      setEditing(created);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [data, documentId, scope, browse, selectedId, refresh]);
+
   // RFC BP — the selected chunk's siblings (same parent) in position order, to
   // gate the up/down buttons at the level boundaries.
   const siblingBounds = useMemo(() => {
@@ -500,9 +529,21 @@ export default function DocumentViewerBody({
               <button
                 type="button"
                 onClick={() => void addText()}
-                title="Add a text chunk after the selected chunk"
+                title="Add a text chunk AFTER the selected chunk, at the same level"
               >
                 + text
+              </button>
+              <button
+                type="button"
+                onClick={() => void addChild()}
+                disabled={!selectedId}
+                title={
+                  selectedId
+                    ? "Add a chunk NESTED UNDER the selected chunk (in the ontology, a child is a subclass)"
+                    : "Select a chunk first — this nests a new chunk under it"
+                }
+              >
+                + child
               </button>
               <button
                 type="button"
