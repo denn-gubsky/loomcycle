@@ -4,6 +4,20 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.52.1
+
+**Patch: the ontology was not editable through the UI, for two independent reasons.** v1.52.0 shipped RFC BZ's reader, inheritance, retrieval expansion and panel tree — and no working path for the operator who owns the taxonomy to author one. Both bugs were reported from a real deployment.
+
+**The document viewer could not nest anything, anywhere.** `+ text` inserts a SIBLING (`after_id`), which is right for prose flow and wrong for structure — so a hierarchy could only ever be created by `import_md` or by an agent. Selecting a type and adding a sub-item put it BESIDE that type at the top level. A new **`+ child`** action passes `parent_id`, appending the new chunk under the selection and opening the editor on it so it can be named immediately (a type's name is its heading). `+ text` keeps its sibling behaviour; the tooltips now say which is which.
+
+**And the Settings panel's "Edit ontology →" link never worked.** It pointed at `/documents/<id>` with no scope. The ontology lives at *tenant* scope and the viewer folds an absent scope to `user`, so the link opened the right document id in the wrong store, the read 422'd, and the operator got "No chunks" and no create buttons at all — indistinguishable from "editing is not possible here", and most of why the UI read as unusable. The URL is now built by a tested helper rather than an inline template literal, because a dropped query param is exactly what nobody notices. This was the only `/documents/` deep link in the codebase, so no other surface carried the same defect.
+
+The panel also now names the steps — select a type, then `+ child` — which is not something anyone can guess.
+
+**Release note for operators:** this is a Web-UI fix, and the Web UI is embedded in the binary and the `denngubsky/loomcycle` image. The patch build tier publishes only `loomcycle-browser`, so this tag was released with the `force_full` dispatch to produce the full artifact set (binaries, Homebrew, and every image variant) — the escape hatch the release workflow documents for exactly this case. The RFC BR sandbox sidecar images are unchanged and were not rebuilt.
+
+Nothing else changed: no Go code, no schema, no wire surface. `@loomcycle/client` stays 1.51.0, `loomcycle` (PyPI) 1.46.0, `@loomcycle/explorer` 0.6.0 and `@loomcycle/memory-view` 0.1.0. The `+ child` fix reaches the Web UI through the package source (Vite alias); publishing it to external `@loomcycle/explorer` consumers needs an `explorer-v*` bump and tag.
+
 ## What's in v1.52.0
 
 **RFC BZ: the tenant ontology gets classes and subclasses — one chunk is one entity, and a child chunk is a subclass.** Minor — no schema change and no wire-breaking change, but retrieval returns strictly more for a hierarchical ontology, and a bug fix makes types live that were silently inert. Read the upgrade note below before confirming an ontology you had already nested.
