@@ -2703,6 +2703,11 @@ export interface OntologyTerm {
   name: string;
   fields?: string[];
   source: "base" | "tenant";
+  /**
+   * The name of the type this one subclasses, absent for a root. Comes from the
+   * document's chunk tree: a child chunk is a subclass of its parent.
+   */
+  parent?: string;
 }
 
 export interface OntologyResponse {
@@ -2720,6 +2725,11 @@ export interface OntologyResponse {
   terms: OntologyTerm[];
   /** What a run gets right now: the seed, plus the tenant layer if confirmed. */
   effective: OntologyTerm[];
+  /**
+   * A reader-level caveat the operator has to act on — today only "this document
+   * has no per-entity chunks, so it was read flat and cannot express subclasses".
+   */
+  note?: string;
 }
 
 export function getOntology(tenant?: string): Promise<OntologyResponse> {

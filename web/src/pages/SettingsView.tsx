@@ -538,6 +538,8 @@ function OntologySection() {
             )}
           </div>
 
+          {state.note && <p className="settings-help">{state.note}</p>}
+
           {oddStatus && (
             <p className="settings-help">
               The document's status reads <code>{state.status}</code>, which is
@@ -552,7 +554,9 @@ function OntologySection() {
               Confirmed, but no types were found in the document. Each type needs
               its own <code>## name</code> heading, with field names in backticks
               on the bullets beneath it — anything else is skipped, so a
-              differently-formatted document confirms to nothing.
+              differently-formatted document confirms to nothing. Nest a heading
+              (<code>### name</code>) to make that type a <em>subclass</em> of the
+              one above it.
             </p>
           )}
 
@@ -571,8 +575,15 @@ function OntologySection() {
                       <span className="settings-muted">none yet</span>
                     ) : (
                       tenantTerms.map((t) => (
-                        <div key={t.name}>
+                        <div key={t.name} style={t.parent ? { paddingLeft: "1em" } : undefined}>
+                          {t.parent && <span className="settings-muted">↳ </span>}
                           <code>{t.name}</code>
+                          {t.parent && (
+                            <span className="settings-muted">
+                              {" "}
+                              subclass of <code>{t.parent}</code>
+                            </span>
+                          )}
                           {t.fields && t.fields.length > 0 && (
                             <span className="settings-muted">
                               {" "}
@@ -585,7 +596,8 @@ function OntologySection() {
                   </td>
                   <td>
                     {(state.effective ?? []).map((t) => (
-                      <div key={t.name}>
+                      <div key={t.name} style={t.parent ? { paddingLeft: "1em" } : undefined}>
+                        {t.parent && <span className="settings-muted">↳ </span>}
                         <code>{t.name}</code>
                         {t.source === "tenant" && (
                           <span className="settings-flash"> yours</span>

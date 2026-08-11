@@ -13,6 +13,12 @@ The standard types are always available and do not need repeating here:
 Add a type below only when your work needs something they do not cover — or
 reuse a standard name to override its fields.
 
+**Nesting makes a subclass.** A `### internal-project` under `## project` is a
+kind of project — its own type, recorded as a child of the one above it. Nest as
+deep as four levels. To subclass a *standard* type, first give it a `##` heading
+of its own here: that overrides the standard one, and you can then nest beneath
+your copy.
+
 ## project
 
 A body of work with a lifecycle of its own. Worth its own type when memory
