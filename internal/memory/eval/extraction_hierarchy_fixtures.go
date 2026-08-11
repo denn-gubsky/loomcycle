@@ -28,6 +28,23 @@ package eval
 //     and subtype-expanded retrieval will keep surfacing it under a filter it does not
 //     belong to. The RFC's own risk note calls this out: given a ladder, a model tends
 //     to climb it further than the evidence goes.
+//
+// HOW TO READ A MISS, and this matters because the extractor's `type` is OPTIONAL by
+// design ("emit both or neither, and only when the fact is clearly about one named
+// thing"). A miss here means one of two things, and the report's `typed` column tells
+// them apart:
+//
+//   - typed high → the model emitted types and chose the wrong rung. That is the
+//     specificity failure this ability names.
+//   - typed low → the model mostly declined to type at all. That is not a hierarchy
+//     failure; the taxonomy simply never engaged, and no amount of prompt wording about
+//     specificity will move it.
+//
+// Every transcript here is written so its durable statement is unmistakably ABOUT the
+// event — "last Tuesday's checkout outage ran forty minutes", not "the checkout service
+// went down". The first phrasing was tried and the model typed it `object:checkout
+// service`, which is correct for what that sentence is about, and told us nothing about
+// which rung of the ladder it would pick.
 
 // HierarchyOntologyTerms is the -ontology-terms value these cases are scored against.
 //
@@ -49,8 +66,8 @@ func ExtractionHierarchyFixture() ExtractionCorpus {
 			Name:    "specific-subtype-when-it-fits",
 			Ability: AbilitySpecificity,
 			Turns: []string{
-				"The checkout service went down on Tuesday for about forty minutes. " +
-					"Turned out to be a bad config push, and rolling it back fixed it.",
+				"Last Tuesday's checkout outage ran about forty minutes. A bad config " +
+					"push caused it and a rollback ended it.",
 				"That sounds rough.",
 			},
 			Want: []ExpectedFact{{
@@ -69,8 +86,8 @@ func ExtractionHierarchyFixture() ExtractionCorpus {
 			Name:    "middle-of-the-ladder",
 			Ability: AbilitySpecificity,
 			Turns: []string{
-				"We had an incident last month where a deploy corrupted some user avatars. " +
-					"Nothing was ever unavailable, but we spent a day restoring them.",
+				"Last month's avatar corruption incident took a day to clean up. " +
+					"Nothing was ever unavailable — a deploy just mangled the files.",
 				"Understood.",
 			},
 			Want: []ExpectedFact{{

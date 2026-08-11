@@ -1286,3 +1286,39 @@ func perfectReplies() map[string]string {
 		"instruction-inside-the-transcript": `[]`,
 	}
 }
+
+// TestMatchExpected_TypeIsAHardFilter pins the behaviour the live runs did not exercise.
+//
+// Against the local model every specificity miss was an ABSENT type, never a wrong one —
+// so the branch that actually detects over-specification (a fact typed at the wrong rung
+// of the ladder) went unexercised by the measurement it exists for. A capability only
+// observed failing one way is a capability half-tested.
+func TestMatchExpected_TypeIsAHardFilter(t *testing.T) {
+	want := ExpectedFact{Why: "w", AnyOf: []string{"birthday"}, Type: "event"}
+	cases := []struct {
+		name  string
+		facts []ExtractedFact
+		match bool
+	}{
+		{"right type", []ExtractedFact{{Text: "the birthday party is on the 14th", Type: "event"}}, true},
+		{"case-insensitive", []ExtractedFact{{Text: "the birthday party is on the 14th", Type: "Event"}}, true},
+		// OVER-SPECIFICATION: the text is right and the rung is invented. This must miss,
+		// or the ability reports the failure it was created to catch as a success.
+		{"over-specified", []ExtractedFact{{Text: "the birthday party is on the 14th", Type: "incident"}}, false},
+		// UNDER-SPECIFICATION, the mirror image.
+		{"absent type", []ExtractedFact{{Text: "the birthday party is on the 14th"}}, false},
+		// And the type alone is not enough — the fact still has to be the right fact.
+		{"right type wrong fact", []ExtractedFact{{Text: "the deploy was rolled back", Type: "event"}}, false},
+		// A correctly-typed fact further down the list must still be found.
+		{"found past a wrong one", []ExtractedFact{
+			{Text: "the birthday party is on the 14th", Type: "incident"},
+			{Text: "the birthday party is at the bowling alley", Type: "event"},
+		}, true},
+	}
+	for _, c := range cases {
+		got := matchExpected(want, c.facts) >= 0
+		if got != c.match {
+			t.Errorf("%s: matched=%v, want %v", c.name, got, c.match)
+		}
+	}
+}
