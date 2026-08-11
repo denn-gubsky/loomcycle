@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strconv"
 	"strings"
 
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -52,9 +53,9 @@ func (s *Server) renderOntology(ctx context.Context, mi memInject) string {
 // document's terms are still returned so a caller can show them, but
 // EffectiveOntology discards them. Keeping the discard in one place means no caller
 // can accidentally honour a draft.
-func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms []meminject.OntologyTerm, confirmed bool, note string) {
+func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms []meminject.OntologyTerm, confirmed bool, notes []string) {
 	if s.store == nil || s.sqlMem == nil {
-		return nil, false, ""
+		return nil, false, nil
 	}
 	s.ensureOntologyDoc(ctx, mi)
 
@@ -75,13 +76,13 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	})
 	res, _ := doc.Execute(dctx, req)
 	if res.IsError {
-		return nil, false, ""
+		return nil, false, nil
 	}
 	var meta struct {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(res.Text), &meta); err != nil {
-		return nil, false, ""
+		return nil, false, nil
 	}
 	confirmed = strings.EqualFold(strings.TrimSpace(meta.Status), meminject.OntologyConfirmedStatus)
 
@@ -93,8 +94,15 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	// It also ends a silent data loss: the markdown parser matched only "## ", so
 	// every nested type an operator wrote was dropped without a word.
 	tree, terr := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath)
-	if terr == nil && len(tree) > 0 {
-		return tree, confirmed, ""
+	if terr == nil && len(tree.Terms) > 0 {
+		if tree.DepthCapped {
+			notes = append(notes, "This document nests deeper than "+
+				strconv.Itoa(meminject.OntologyMaxDepth)+" levels. The types below that "+
+				"depth are still in force, but they were flattened onto level "+
+				strconv.Itoa(meminject.OntologyMaxDepth)+" — the tree shown here is what "+
+				"agents are told, not the shape of the document.")
+		}
+		return tree.Terms, confirmed, notes
 	}
 
 	// FALLBACK, deliberately narrow: only when the tree yielded NOTHING.
@@ -112,17 +120,17 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	})
 	eres, _ := doc.Execute(dctx, exp)
 	if eres.IsError {
-		return nil, confirmed, ""
+		return nil, confirmed, nil
 	}
 	var body struct {
 		Markdown string `json:"markdown"`
 	}
 	if err := json.Unmarshal([]byte(eres.Text), &body); err != nil {
-		return nil, confirmed, ""
+		return nil, confirmed, nil
 	}
 	flat := meminject.ParseOntologyMarkdown(body.Markdown)
 	if len(flat) == 0 {
-		return nil, confirmed, ""
+		return nil, confirmed, nil
 	}
 	// The note must state the cause it actually established. A tree read that FAILED
 	// and one that legitimately found no chunks lead here identically, and telling an
@@ -134,13 +142,13 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 		// operator needs to know their subclasses are not in force, not where the
 		// database lives.
 		log.Printf("ontology: chunk-tree read failed for tenant %q, falling back to flat markdown: %v", mi.Tenant, terr)
-		return flat, confirmed, "The document's chunk structure could not be read, so " +
+		return flat, confirmed, []string{"The document's chunk structure could not be read, so " +
 			"it was read as flat Markdown — subclasses are not in force until this " +
-			"resolves. See the server log for the cause."
+			"resolves. See the server log for the cause."}
 	}
-	return flat, confirmed, "This ontology was read as flat Markdown because the " +
+	return flat, confirmed, []string{"This ontology was read as flat Markdown because the " +
 		"document has no per-entity chunks. Split each entity into its own chunk to " +
-		"use subclasses — a child chunk is a subclass of its parent."
+		"use subclasses — a child chunk is a subclass of its parent."}
 }
 
 // ensureOntologyDoc provisions the tenant's ontology document from the embedded

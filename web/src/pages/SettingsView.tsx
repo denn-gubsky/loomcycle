@@ -21,6 +21,7 @@ import {
   resumeRuntime,
   setOntologyStatus,
   showPreset,
+  OntologyTerm,
 } from "../api";
 import { usePrincipal } from "../components/Layout";
 import LimitsView from "./LimitsView";
@@ -444,6 +445,96 @@ function PresetsSection() {
 // collision-aware UPDATE against a live database.
 // ─── Ontology ────────────────────────────────────────────────────────────────
 
+// ─── Ontology tree rendering (RFC BZ P4) ─────────────────────────────────────
+
+// OntologyNode is a term with its subclasses attached.
+type OntologyNode = OntologyTerm & { children: OntologyNode[] };
+
+// buildOntologyTree assembles the parent/child tree the panel renders.
+//
+// An ORPHAN — a term whose named parent is absent — is rendered at the root rather
+// than dropped, matching what the prompt renderer does with the same input. A type
+// missing from this panel is a type the operator cannot see is in force, which is the
+// silent-loss failure the whole feature exists to end.
+function buildOntologyTree(terms: OntologyTerm[]): OntologyNode[] {
+  const byName = new Map<string, OntologyNode>();
+  terms.forEach((t) => byName.set(t.name, { ...t, children: [] }));
+  const roots: OntologyNode[] = [];
+  byName.forEach((n) => {
+    const parent = n.parent ? byName.get(n.parent) : undefined;
+    if (parent && parent !== n) parent.children.push(n);
+    else roots.push(n);
+  });
+  return roots;
+}
+
+// ontologyFieldSummary describes a type's fields the way an operator needs to judge it:
+// how many there are in total, which the type declared, and which it inherited.
+function OntologyFieldSummary({ term, isLeaf }: { term: OntologyNode; isLeaf: boolean }) {
+  const declared = term.fields ?? [];
+  const inherited = term.inherited ?? [];
+  const total = declared.length + inherited.length;
+  // THE PHANTOM TEST IS ON DECLARED FIELDS, NOT ON THE TOTAL, and getting this wrong
+  // would have missed the exact case worth warning about. The scenario is an operator
+  // adding a section chunk for readability — "Notes on naming" under `project` — which
+  // silently becomes a subclass. It INHERITS its parent's fields, so a total-based test
+  // sees a well-formed type and says nothing. A leaf that declares nothing of its own
+  // is a folder, not a class.
+  //
+  // A node with CHILDREN that declares nothing is different and fine: that is a
+  // deliberate abstract grouping type (`work item` over `project` and `task`).
+  const phantom = declared.length === 0 && isLeaf;
+  return (
+    <span className="settings-muted">
+      {" "}
+      {total === 0 ? "no fields" : `${total} field${total === 1 ? "" : "s"}`}
+      {declared.length > 0 && <> — {declared.join(", ")}</>}
+      {inherited.length > 0 && (
+        <span className="ontology-inherited">
+          {" "}
+          · inherited: {inherited.join(", ")}
+        </span>
+      )}
+      {phantom && (
+        <span className="ontology-warn">
+          {" "}
+          · declares no fields of its own — a section heading rather than a type?
+        </span>
+      )}
+    </span>
+  );
+}
+
+// OntologyTermTree renders the nodes, recursing into subclasses.
+//
+// Depth-bounded even though the chunk tree cannot cycle: a malformed term list must not
+// be able to hang the operator's browser on the one page they would use to fix it.
+function OntologyTermTree({
+  nodes,
+  depth = 0,
+  markSource = false,
+}: {
+  nodes: OntologyNode[];
+  depth?: number;
+  markSource?: boolean;
+}) {
+  if (nodes.length === 0 || depth > 8) return null;
+  return (
+    <ul className="ontology-tree">
+      {nodes.map((n) => (
+        <li key={n.name}>
+          <code>{n.name}</code>
+          {markSource && n.source === "tenant" && (
+            <span className="settings-flash"> yours</span>
+          )}
+          <OntologyFieldSummary term={n} isLeaf={n.children.length === 0} />
+          <OntologyTermTree nodes={n.children} depth={depth + 1} markSource={markSource} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // OntologySection is the operator control for the tenant's entity types.
 //
 // The failure this exists to prevent is not an error message: it is an operator
@@ -541,6 +632,15 @@ function OntologySection() {
           them is documentation and is ignored. Reuse a standard type's name to
           override its fields.
         </p>
+        <p>
+          <strong>Nest a heading to make a subclass.</strong> A{" "}
+          <code>### incident</code> under <code>## event</code> is a kind of event:
+          it inherits every field above it and adds its own, and a search for the
+          general type also finds the specific ones. Nest up to four levels. To
+          subclass a <em>standard</em> type, give it a <code>##</code> heading of
+          its own first — that overrides the standard one — then nest beneath your
+          copy.
+        </p>
       </details>
 
       {err && <div className="settings-error">{err}</div>}
@@ -575,7 +675,11 @@ function OntologySection() {
             )}
           </div>
 
-          {state.note && <p className="settings-help">{state.note}</p>}
+          {(state.notes ?? []).map((n) => (
+            <p className="settings-help" key={n}>
+              {n}
+            </p>
+          ))}
 
           {oddStatus && (
             <p className="settings-help">
@@ -598,7 +702,7 @@ function OntologySection() {
           )}
 
           <div className="settings-row">
-            <table className="settings-table">
+            <table className="settings-table ontology-compare">
               <thead>
                 <tr>
                   <th>this deployment defines</th>
@@ -611,48 +715,14 @@ function OntologySection() {
                     {tenantTerms.length === 0 ? (
                       <span className="settings-muted">none yet</span>
                     ) : (
-                      tenantTerms.map((t) => (
-                        <div key={t.name} style={t.parent ? { paddingLeft: "1em" } : undefined}>
-                          {t.parent && <span className="settings-muted">↳ </span>}
-                          <code>{t.name}</code>
-                          {t.parent && (
-                            <span className="settings-muted">
-                              {" "}
-                              subclass of <code>{t.parent}</code>
-                            </span>
-                          )}
-                          {t.fields && t.fields.length > 0 && (
-                            <span className="settings-muted">
-                              {" "}
-                              — {t.fields.join(", ")}
-                            </span>
-                          )}
-                          {t.inherited && t.inherited.length > 0 && (
-                            <span className="settings-muted">
-                              {" "}
-                              (inherits {t.inherited.join(", ")})
-                            </span>
-                          )}
-                        </div>
-                      ))
+                      <OntologyTermTree nodes={buildOntologyTree(tenantTerms)} />
                     )}
                   </td>
                   <td>
-                    {(state.effective ?? []).map((t) => (
-                      <div key={t.name} style={t.parent ? { paddingLeft: "1em" } : undefined}>
-                        {t.parent && <span className="settings-muted">↳ </span>}
-                        <code>{t.name}</code>
-                        {t.source === "tenant" && (
-                          <span className="settings-flash"> yours</span>
-                        )}
-                        {((t.inherited?.length ?? 0) + (t.fields?.length ?? 0) > 0) && (
-                          <span className="settings-muted">
-                            {" "}
-                            — {[...(t.inherited ?? []), ...(t.fields ?? [])].join(", ")}
-                          </span>
-                        )}
-                      </div>
-                    ))}
+                    <OntologyTermTree
+                      nodes={buildOntologyTree(state.effective ?? [])}
+                      markSource
+                    />
                   </td>
                 </tr>
               </tbody>

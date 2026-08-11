@@ -2732,10 +2732,11 @@ export interface OntologyResponse {
   /** What a run gets right now: the seed, plus the tenant layer if confirmed. */
   effective: OntologyTerm[];
   /**
-   * A reader-level caveat the operator has to act on — today only "this document
-   * has no per-entity chunks, so it was read flat and cannot express subclasses".
+   * Reader-level caveats the operator has to act on: the document had no per-entity
+   * chunks and was read flat, or it nests deeper than the cap and was flattened. A
+   * list because those are independent and more than one can hold at once.
    */
-  note?: string;
+  notes?: string[];
 }
 
 export function getOntology(tenant?: string): Promise<OntologyResponse> {

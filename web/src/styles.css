@@ -5736,6 +5736,46 @@ button.primary:disabled {
   border-bottom: 1px solid var(--lc-rule);
   vertical-align: middle;
 }
+/* The ontology tree (RFC BZ P4). A taxonomy read as a flat list with one level of
+   indent is a taxonomy nobody can check — the operator has to see which type is a
+   kind of which, because that is now what steers extraction AND what widens a
+   retrieval filter. Real nesting, with a guide rule so depth is legible at a glance. */
+/* The ontology comparison table puts two trees of different heights side by side, and
+   the shared .settings-table rule centres cells vertically — which floats the shorter
+   column into the middle of the taller one and reads as a rendering fault. Top-align
+   this table only, so the two trees start on the same line and the gap between them
+   stays legible as "these types are not in force". */
+.ontology-compare td {
+  vertical-align: top;
+}
+.ontology-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ontology-tree .ontology-tree {
+  margin-left: var(--lc-space-1);
+  padding-left: var(--lc-space-2);
+  border-left: 1px solid var(--lc-rule);
+}
+.ontology-tree li {
+  padding: 1px 0;
+  line-height: 1.5;
+}
+/* Inherited fields, dimmer than declared ones: the operator asked "what did I write
+   here", and the answer is the part that is NOT this colour. */
+.ontology-inherited {
+  color: var(--lc-text-faint);
+  font-style: italic;
+}
+/* A fieldless LEAF — nothing can be recorded as it, so it is almost always an
+   accidental section chunk quietly steering extraction. Amber rather than red: the
+   operator may have meant it, and the design system's warning colour is --lc-running,
+   which is defined in both themes. */
+.ontology-warn {
+  color: var(--lc-running);
+}
+
 .settings-row-actions {
   display: flex;
   gap: var(--lc-space-1);

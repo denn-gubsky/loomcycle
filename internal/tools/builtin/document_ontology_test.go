@@ -65,8 +65,8 @@ func readTerms(t *testing.T, d *Document, ctx context.Context, path string) []on
 	if err != nil {
 		t.Fatalf("OntologyTermsFromTree: %v", err)
 	}
-	out := make([]ontologyTermForTest, 0, len(got))
-	for _, g := range got {
+	out := make([]ontologyTermForTest, 0, len(got.Terms))
+	for _, g := range got.Terms {
 		out = append(out, ontologyTermForTest{Name: g.Name, Parent: g.Parent, Fields: g.Fields})
 	}
 	return out
@@ -205,12 +205,12 @@ func TestOntologyTree_DepthBeyondTheCapIsFlattenedNotDropped(t *testing.T) {
 // mentions the ontology.
 func TestOntologyTree_AbsentDocumentIsNotAnError(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
-	terms, err := d.OntologyTermsFromTree(ctx, "user", "/test/nope")
+	read, err := d.OntologyTermsFromTree(ctx, "user", "/test/nope")
 	if err != nil {
 		t.Fatalf("absent document should read as empty, got %v", err)
 	}
-	if len(terms) != 0 {
-		t.Errorf("want no terms, got %v", terms)
+	if len(read.Terms) != 0 {
+		t.Errorf("want no terms, got %v", read.Terms)
 	}
 }
 
@@ -499,5 +499,35 @@ func TestSubtypeExpansion_NoOntologyDocumentIsTheCommonCase(t *testing.T) {
 	})
 	if len(provisioned) > 0 {
 		t.Errorf("the ontology read provisioned the tenant scope: %v", provisioned)
+	}
+}
+
+// TestOntologyTree_ReportsThatItFlattenedTheDepth.
+//
+// The flattening itself was already correct — nothing is dropped — but it was SILENT,
+// so an operator whose level-5 type quietly became a level-4 sibling had no way to know
+// their document and their ontology disagreed. That is the same class of failure this
+// reader was written to end, so the cap has to announce itself.
+func TestOntologyTree_ReportsThatItFlattenedTheDepth(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+
+	shallow := ontologyDocFixture(t, d, ctx, "# Tenant Ontology\n\n## a\n\n### b\n\n#### c\n\n##### d\n")
+	if read, err := d.OntologyTermsFromTree(ctx, "user", shallow); err != nil {
+		t.Fatalf("read: %v", err)
+	} else if read.DepthCapped {
+		t.Errorf("a document AT the cap must not report flattening (%d terms)", len(read.Terms))
+	}
+
+	deep := ontologyDocFixture(t, d, ctx, "# Tenant Ontology\n\n## a\n\n### b\n\n#### c\n\n##### d\n\n###### e\n")
+	read, err := d.OntologyTermsFromTree(ctx, "user", deep)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !read.DepthCapped {
+		t.Error("a document nesting past the cap must report that it was flattened")
+	}
+	// And still nothing lost.
+	if len(read.Terms) != 5 {
+		t.Errorf("want all five types, got %d", len(read.Terms))
 	}
 }
