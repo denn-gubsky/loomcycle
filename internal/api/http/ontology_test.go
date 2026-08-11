@@ -237,3 +237,63 @@ func TestOntology_NestedChunkReachesTheEffectiveOntology(t *testing.T) {
 		t.Errorf("unexpected fallback note: %q", note)
 	}
 }
+
+// TestOntology_HierarchyReachesTheAssembledPrompt closes the loop phase 2 opened.
+//
+// A renderer that emits a beautiful tree into nothing is the failure mode this
+// subsystem has shipped twice — the entity tier with no producer, graph_recall with
+// nothing to walk. So the assertion is on the system prompt a run is actually given:
+// the subclass is indented, it carries the field it inherited without the operator
+// restating it, and the specificity instruction is present to make the ladder get used.
+func TestOntology_HierarchyReachesTheAssembledPrompt(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	def := config.AgentDef{SystemPrompt: "You extract entities.\n\n{{memory:ontology}}"}
+	s.applyMemoryInjection(context.Background(), def, mi) // provisions
+
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	dctx := s.ontologyDocCtx(context.Background(), mi)
+
+	q, _ := json.Marshal(map[string]any{
+		"op": "query_chunks", "scope": "tenant",
+		"sql": "SELECT id, document_id FROM chunks WHERE title = 'incident' LIMIT 1",
+	})
+	qres, qerr := doc.Execute(dctx, q)
+	if qerr != nil || qres.IsError {
+		t.Fatalf("query_chunks: %v %s", qerr, qres.Text)
+	}
+	var qout struct {
+		Rows [][]any `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(qres.Text), &qout); err != nil || len(qout.Rows) == 0 {
+		t.Fatalf("no `incident` chunk in the template: %v %s", err, qres.Text)
+	}
+	parentID, docID := qout.Rows[0][0].(string), qout.Rows[0][1].(string)
+
+	// A subclass declaring exactly ONE field, so an inherited field showing up in the
+	// prompt can only have come from inheritance.
+	c, _ := json.Marshal(map[string]any{
+		"op": "create_chunk", "scope": "tenant", "document_id": docID,
+		"parent_id": parentID, "title": "security-incident",
+		"body": "- `cve` — the identifier, if there is one\n",
+	})
+	if cres, cerr := doc.Execute(dctx, c); cerr != nil || cres.IsError {
+		t.Fatalf("create_chunk: %v %s", cerr, cres.Text)
+	}
+	// CONFIRM, because a draft is inert by design and an unconfirmed document would
+	// make this test pass for the wrong reason.
+	s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
+
+	got, _ := s.applyMemoryInjection(context.Background(), def, mi)
+
+	if !strings.Contains(got.SystemPrompt, "  - **security-incident**") {
+		t.Errorf("the subclass is not indented in the assembled prompt:\n%s", got.SystemPrompt)
+	}
+	// `cause` is declared on the template's `incident`, never on the subclass.
+	if !strings.Contains(got.SystemPrompt, "cve") ||
+		!strings.Contains(got.SystemPrompt, "cause") {
+		t.Errorf("the subclass line lacks its own or its inherited fields:\n%s", got.SystemPrompt)
+	}
+	if !strings.Contains(got.SystemPrompt, "MOST SPECIFIC") {
+		t.Errorf("the specificity instruction never reached the prompt:\n%s", got.SystemPrompt)
+	}
+}

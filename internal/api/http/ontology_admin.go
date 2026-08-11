@@ -195,7 +195,11 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		}
 	}
 	if terms != nil {
-		resp.Terms = terms
+		// Resolve inheritance on the REPORTED tenant layer too, not only on the
+		// effective one. Without this the panel's "this deployment defines" column
+		// shows a subclass with no sign of what it inherits, which is exactly the
+		// question an operator has when looking at a subclass that declares one field.
+		resp.Terms = meminject.ResolveInheritance(terms)
 	}
 	resp.Confirmed = confirmed
 	resp.Note = note

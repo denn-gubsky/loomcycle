@@ -14,10 +14,13 @@ Add a type below only when your work needs something they do not cover — or
 reuse a standard name to override its fields.
 
 **Nesting makes a subclass.** A `### internal-project` under `## project` is a
-kind of project — its own type, recorded as a child of the one above it. Nest as
-deep as four levels. To subclass a *standard* type, first give it a `##` heading
-of its own here: that overrides the standard one, and you can then nest beneath
-your copy.
+kind of project: it inherits every field declared above it and adds its own, so
+you never restate them. Nest as deep as four levels. To subclass a *standard*
+type, first give it a `##` heading of its own here: that overrides the standard
+one, and you can then nest beneath your copy.
+
+An inherited field cannot be removed — a subclass that lacks its parent's fields
+is not a subclass. If you want a type without them, make it a sibling instead.
 
 ## project
 
