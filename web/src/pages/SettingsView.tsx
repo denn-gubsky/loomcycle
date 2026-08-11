@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import { ontologyEditHref } from "../lib/ontologyEditHref";
 import {
   CredentialMeta,
   CredentialScope,
@@ -613,10 +614,17 @@ function OntologySection() {
           Links by document_id when the API returned one (it is provisioned and
           the caller may read it); falls back to the Paths browser only when
           there is no id to address, which is the un-provisioned case the panel
-          already explains below. */}
+          already explains below.
+
+          ?scope=tenant IS LOAD-BEARING. The ontology lives at tenant scope, and
+          the viewer folds an absent scope to `user` — so without it this link
+          opened the right document id in the wrong store, the read 422'd, and the
+          operator got "No chunks" and no create buttons. The affordance existed
+          and led nowhere, which is most of why the ontology UI was reported
+          unusable. */}
       <p className="settings-help">
         {state?.document_id ? (
-          <Link className="settings-action-link" to={`/documents/${state.document_id}`}>
+          <Link className="settings-action-link" to={ontologyEditHref(state.document_id)}>
             Edit ontology →
           </Link>
         ) : (
@@ -648,6 +656,14 @@ function OntologySection() {
           copy. <code>preference</code> and <code>fact</code> are the memory tier's
           own types and always stay top-level: you may nest types <em>under</em> them,
           but not them under something else.
+        </p>
+        <p>
+          <strong>In the editor:</strong> select the type you want to extend, then
+          use <strong>+ child</strong> to nest a subtype under it (<strong>+ text</strong>{" "}
+          adds a sibling at the same level instead). Rename it in the dialog that
+          opens — a type's name is its heading — and list its own fields as
+          backticked bullets in the body. Changes take effect on the next run once
+          the document is confirmed.
         </p>
       </details>
 
