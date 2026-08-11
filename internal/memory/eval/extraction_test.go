@@ -462,9 +462,61 @@ func TestExtractionFixture_Validates(t *testing.T) {
 func TestExtractionFixture_CoversEveryAbility(t *testing.T) {
 	byAbility := ExtractionFixture().CasesByAbility()
 	for _, a := range AllAbilities() {
+		if optionalAbility(a) {
+			continue
+		}
 		if len(byAbility[a]) == 0 {
 			t.Errorf("ability %q has no cases, so its score would be vacuous", a)
 		}
+	}
+}
+
+// TestHierarchyFixture_IsWhereTheOptionalAbilityIsActuallyMeasured.
+//
+// "Optional" must not become "measured nowhere". The default corpus is allowed to omit
+// specificity because it is scored against a flat ontology — so the counterpart
+// assertion belongs here: the corpus that DOES supply a hierarchy must cover it, and
+// must cover it in both directions. A corpus with only subtype-is-right cases would
+// score a model that always takes the deepest type as perfect, which is the failure the
+// ability was created to catch.
+func TestHierarchyFixture_IsWhereTheOptionalAbilityIsActuallyMeasured(t *testing.T) {
+	corpus := ExtractionHierarchyFixture()
+	if err := corpus.Validate(); err != nil {
+		t.Fatalf("the hierarchy corpus must be coherent: %v", err)
+	}
+	byAbility := corpus.CasesByAbility()
+	if len(byAbility[AbilitySpecificity]) == 0 {
+		t.Fatal("the hierarchy corpus does not cover specificity — then nothing does")
+	}
+	// Every expected type must be a type the paired -ontology-terms actually renders,
+	// or the case asks for a subtype the model was never shown and scores it as a miss.
+	declared := map[string]bool{}
+	for _, seg := range strings.Split(HierarchyOntologyTerms, ",") {
+		parts := strings.Split(strings.TrimSpace(seg), "/")
+		declared[parts[len(parts)-1]] = true
+	}
+	wantTypes := map[string]bool{}
+	for _, cs := range byAbility[AbilitySpecificity] {
+		for _, w := range cs.Want {
+			if w.Type == "" {
+				t.Errorf("case %q asserts no type, so it measures nothing about specificity", cs.Name)
+				continue
+			}
+			if !declared[w.Type] {
+				t.Errorf("case %q expects type %q, which HierarchyOntologyTerms does not declare — "+
+					"the model would be scored on a type it was never shown", cs.Name, w.Type)
+			}
+			wantTypes[w.Type] = true
+		}
+	}
+	// BOTH DIRECTIONS: at least one case whose answer is a leaf subtype, and at least
+	// one whose answer is the root. Otherwise the corpus only measures one failure.
+	if !wantTypes["outage"] && !wantTypes["incident"] {
+		t.Error("no case expects a SUBtype — under-specification would go unmeasured")
+	}
+	if !wantTypes["event"] {
+		t.Error("no case expects the ROOT type — over-specification, the more dangerous " +
+			"direction, would go unmeasured")
 	}
 }
 
@@ -482,7 +534,10 @@ func TestExtractionFixture_ValidateCatchesAVacuousCorpus(t *testing.T) {
 			ExtractionCanary(),
 			{Name: "a", Ability: AbilityUpdate, Turns: []string{"t"}, Want: []ExpectedFact{{Why: "w"}}},
 		}}},
-		{"missing ability", ExtractionCorpus{Cases: []ExtractionCase{ExtractionCanary()}}},
+		// NO "missing ability" case: coverage is no longer Validate's job — it is a
+		// property of the SHIPPED corpus and is asserted in
+		// TestExtractionFixture_CoversEveryAbility. A narrow, purpose-built corpus is
+		// legitimate, and Validate refusing one was the bug.
 	}
 	for _, c := range cases {
 		if err := c.corpus.Validate(); err == nil {
@@ -1229,5 +1284,41 @@ func perfectReplies() map[string]string {
 		"pure-chatter":                      `[]`,
 		"question-is-not-a-fact":            `[]`,
 		"instruction-inside-the-transcript": `[]`,
+	}
+}
+
+// TestMatchExpected_TypeIsAHardFilter pins the behaviour the live runs did not exercise.
+//
+// Against the local model every specificity miss was an ABSENT type, never a wrong one —
+// so the branch that actually detects over-specification (a fact typed at the wrong rung
+// of the ladder) went unexercised by the measurement it exists for. A capability only
+// observed failing one way is a capability half-tested.
+func TestMatchExpected_TypeIsAHardFilter(t *testing.T) {
+	want := ExpectedFact{Why: "w", AnyOf: []string{"birthday"}, Type: "event"}
+	cases := []struct {
+		name  string
+		facts []ExtractedFact
+		match bool
+	}{
+		{"right type", []ExtractedFact{{Text: "the birthday party is on the 14th", Type: "event"}}, true},
+		{"case-insensitive", []ExtractedFact{{Text: "the birthday party is on the 14th", Type: "Event"}}, true},
+		// OVER-SPECIFICATION: the text is right and the rung is invented. This must miss,
+		// or the ability reports the failure it was created to catch as a success.
+		{"over-specified", []ExtractedFact{{Text: "the birthday party is on the 14th", Type: "incident"}}, false},
+		// UNDER-SPECIFICATION, the mirror image.
+		{"absent type", []ExtractedFact{{Text: "the birthday party is on the 14th"}}, false},
+		// And the type alone is not enough — the fact still has to be the right fact.
+		{"right type wrong fact", []ExtractedFact{{Text: "the deploy was rolled back", Type: "event"}}, false},
+		// A correctly-typed fact further down the list must still be found.
+		{"found past a wrong one", []ExtractedFact{
+			{Text: "the birthday party is on the 14th", Type: "incident"},
+			{Text: "the birthday party is at the bowling alley", Type: "event"},
+		}, true},
+	}
+	for _, c := range cases {
+		got := matchExpected(want, c.facts) >= 0
+		if got != c.match {
+			t.Errorf("%s: matched=%v, want %v", c.name, got, c.match)
+		}
 	}
 }

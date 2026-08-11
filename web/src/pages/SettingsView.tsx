@@ -501,6 +501,12 @@ function OntologyFieldSummary({ term, isLeaf }: { term: OntologyNode; isLeaf: bo
           · declares no fields of its own — a section heading rather than a type?
         </span>
       )}
+      {term.name_issue && (
+        <span className="ontology-warn">
+          {" "}
+          · name {term.name_issue}
+        </span>
+      )}
     </span>
   );
 }
@@ -639,7 +645,9 @@ function OntologySection() {
           general type also finds the specific ones. Nest up to four levels. To
           subclass a <em>standard</em> type, give it a <code>##</code> heading of
           its own first — that overrides the standard one — then nest beneath your
-          copy.
+          copy. <code>preference</code> and <code>fact</code> are the memory tier's
+          own types and always stay top-level: you may nest types <em>under</em> them,
+          but not them under something else.
         </p>
       </details>
 

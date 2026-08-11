@@ -618,6 +618,13 @@ func scoreCase(res *CaseResult, cs ExtractionCase, facts []ExtractedFact) {
 // same fact.
 func matchExpected(w ExpectedFact, facts []ExtractedFact) int {
 	for i, f := range facts {
+		// Type is a HARD filter, checked before the text markers: a fact about the
+		// right thing carrying the wrong type has not satisfied a specificity
+		// expectation, and letting the text alone match would report the failure this
+		// ability measures as a success.
+		if w.Type != "" && !strings.EqualFold(strings.TrimSpace(f.Type), w.Type) {
+			continue
+		}
 		hay := normalizeForMatch(f.Text)
 		ok := true
 		for _, m := range w.AllOf {

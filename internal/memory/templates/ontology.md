@@ -22,6 +22,11 @@ one, and you can then nest beneath your copy.
 An inherited field cannot be removed — a subclass that lacks its parent's fields
 is not a subclass. If you want a type without them, make it a sibling instead.
 
+`preference` and `fact` are the memory tier's own types and always stay
+top-level. You may nest your types *under* them, but nesting them under one of
+yours is ignored. Names work best lowercase, as `a-z0-9-_` — a name with spaces
+still works, it just reads as prose inside a prompt.
+
 ## project
 
 A body of work with a lifecycle of its own. Worth its own type when memory
