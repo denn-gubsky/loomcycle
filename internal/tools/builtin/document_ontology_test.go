@@ -897,3 +897,48 @@ func mustTenantKey(t *testing.T, d *Document, ctx context.Context) sqlmem.ScopeK
 	}
 	return key
 }
+
+// TestProposeEntity_NeedsNoTenantGrant is the claim a live run disproved.
+//
+// Every guard test above grants tenant scopes, deliberately — the guard is only
+// interesting against an agent that HAS full authority. That masked the thing the design
+// rests on: a curator is supposed to file suggestions WITHOUT tenant write authority, and
+// the first implementation routed the write back through the grant-checked dispatch, so
+// the op failed for the exact agent it was built for. The unit tests all passed.
+func TestProposeEntity_NeedsNoTenantGrant(t *testing.T) {
+	d, opCtx, _ := ontologyAgentFixture(t)
+
+	// An agent with NO memory/sqlmem grants at all — what a curator should be.
+	bare := tools.WithAgentName(context.Background(), "curator")
+	bare = tools.WithRunIdentity(bare, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
+
+	// The tenant SCOPE itself stays refused, so this is a carve-out for the op and not a
+	// hole in the scope gate.
+	if _, r := docExec(t, d, bare, `{"op":"query_chunks","scope":"tenant"}`); !r.IsError {
+		t.Error("an ungranted agent reached the tenant scope directly")
+	}
+	out, r := docExec(t, d, bare,
+		`{"op":"propose_entity","name":"outage","parent":"event","body":"- `+"`minutes_down`"+`\n\nSeen 3 times.\n"}`)
+	if r.IsError {
+		t.Fatalf("propose_entity must work without tenant grants: %s", r.Text)
+	}
+	if out["chunk_id"] == nil {
+		t.Fatalf("no chunk id in the result: %v", out)
+	}
+	read, err := d.OntologyTermsFromTree(opCtx, "tenant", memrank.OntologyPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(read.Proposals) != 1 || read.Proposals[0].Name != "outage" {
+		t.Fatalf("the proposal did not land: %+v", read.Proposals)
+	}
+	if read.Proposals[0].Parent != "event" {
+		t.Errorf("proposal parent = %q, want event", read.Proposals[0].Parent)
+	}
+	// Still inert, still the operator's call.
+	for _, term := range read.Terms {
+		if term.Name == "outage" {
+			t.Error("an ungranted agent's proposal went into force")
+		}
+	}
+}

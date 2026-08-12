@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { ontologyEditHref } from "../lib/ontologyEditHref";
+import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
 import {
   CredentialMeta,
   CredentialScope,
@@ -27,7 +27,7 @@ import {
   showPreset,
   OntologyTerm,
 } from "../api";
-import { usePrincipal } from "../components/Layout";
+import { usePrincipal, useUserId } from "../components/Layout";
 import LimitsView from "./LimitsView";
 import RoutingView from "./RoutingView";
 import TokenManager from "../components/TokenManager";
@@ -558,6 +558,9 @@ function OntologyTermTree({
 // editor); the two things that cannot live there are the gate and the layered
 // result, so those are what this panel is.
 function OntologySection() {
+  // The topbar user picker IS the survey scope: facts live per user, so which user the
+  // curation run belongs to decides what it can see.
+  const pickedUser = useUserId();
   const [state, setState] = useState<OntologyResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -818,6 +821,22 @@ function OntologySection() {
               </div>
             </div>
           )}
+
+          {/* Where suggestions COME FROM. Placed with them rather than at the top of the
+              panel: an operator reading a list of suggestions is the one who wants
+              another pass, and an operator who has never seen one needs to know a pass
+              is a thing they can ask for. A link, not a button — it stages the run in
+              the terminal so the agent and prompt are visible before tokens are spent. */}
+          <p className="settings-help">
+            <Link className="settings-action-link" to={ontologistRunHref(pickedUser)}>
+              Review suggestions →
+            </Link>{" "}
+            <span className="settings-muted">
+              stages a pass that reads {pickedUser ? <code>{pickedUser}</code> : "a user"}
+              &rsquo;s stored facts and files suggestions here. It cannot change anything
+              on its own — everything it files waits for you.
+            </span>
+          </p>
 
           {rejectedProposals.length > 0 && (
             <details className="settings-help">

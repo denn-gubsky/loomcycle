@@ -12,3 +12,16 @@
 export function ontologyEditHref(documentId: string): string {
   return `/documents/${encodeURIComponent(documentId)}?scope=tenant`;
 }
+
+// ontologistRunHref stages a curation pass in the run terminal.
+//
+// A LINK, not a button that starts a run: a settings click that spends tokens is a
+// surprise, and the operator should see which agent and which prompt before anything
+// runs. The user id is carried because the survey reads ONE user's stored facts — the
+// curator looks at the run's own scope, so which user the run belongs to IS the scope.
+export function ontologistRunHref(userId?: string): string {
+  const prompt = userId
+    ? `Review the stored facts for user ${userId} and suggest ontology improvements.`
+    : "Review the stored facts in this scope and suggest ontology improvements.";
+  return `/run?agent=${encodeURIComponent("memory/ontologist")}&prompt=${encodeURIComponent(prompt)}`;
+}

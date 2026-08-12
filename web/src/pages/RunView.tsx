@@ -119,6 +119,11 @@ function SingleRunTab({
   // returned from the runs list). Attach once on mount, then drop the param so
   // a manual reset/new-run isn't re-hijacked by a stale URL.
   const attachRunId = searchParams.get("attach");
+  // `?agent=&prompt=` stage a run for the operator to review and send. Read ONCE into
+  // the form's initial state (below) rather than watched: re-applying them would fight
+  // the operator's own edits every render.
+  const stagedAgent = searchParams.get("agent") ?? "";
+  const stagedPrompt = searchParams.get("prompt") ?? "";
   const attachedRef = useRef<string | null>(null);
   useEffect(() => {
     if (attachRunId && attachedRef.current !== attachRunId) {
@@ -176,6 +181,8 @@ function SingleRunTab({
             defaultUserId={defaultUserId}
             submitting={run.status === "running"}
             onSubmit={(req) => run.start(req)}
+            defaultAgent={stagedAgent}
+            defaultPrompt={stagedPrompt}
           />
         </div>
       )}

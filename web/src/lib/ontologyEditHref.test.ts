@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ontologyEditHref } from "./ontologyEditHref";
+import { ontologistRunHref, ontologyEditHref } from "./ontologyEditHref";
 
 describe("ontologyEditHref", () => {
   // The regression. Without scope=tenant the viewer opens the tenant document at user
@@ -12,5 +12,20 @@ describe("ontologyEditHref", () => {
 
   it("escapes the id rather than interpolating it raw", () => {
     expect(ontologyEditHref("a/b?c")).toBe("/documents/a%2Fb%3Fc?scope=tenant");
+  });
+});
+
+describe("ontologistRunHref", () => {
+  // Staged, not started: the target is the run terminal with the form filled, so the
+  // operator sees the agent and prompt before any tokens are spent.
+  it("stages the curator in the run terminal", () => {
+    const href = ontologistRunHref("alice");
+    expect(href).toContain("/run?agent=memory%2Fontologist");
+    expect(href).toContain("prompt=");
+    expect(decodeURIComponent(href)).toContain("user alice");
+  });
+
+  it("works without a user, since the run's own scope is the survey scope", () => {
+    expect(ontologistRunHref()).toContain("/run?agent=memory%2Fontologist");
   });
 });
