@@ -11,14 +11,24 @@ export default function RunForm({
   defaultUserId,
   submitting,
   onSubmit,
+  defaultAgent = "",
+  defaultPrompt = "",
 }: {
   agents: string[];
   defaultUserId: string;
   submitting: boolean;
   onSubmit: (req: StartRunRequest) => void;
+  /**
+   * Prefill, for a link that arrives from elsewhere in the UI with a run in mind
+   * (Settings → Ontology's "review suggestions"). STAGED, never submitted: a link
+   * that spends tokens on click is a surprise, and the operator should see the agent
+   * and the prompt before anything runs.
+   */
+  defaultAgent?: string;
+  defaultPrompt?: string;
 }) {
-  const [agent, setAgent] = useState("");
-  const [prompt, setPrompt] = useState("");
+  const [agent, setAgent] = useState(defaultAgent);
+  const [prompt, setPrompt] = useState(defaultPrompt);
   const [userId, setUserId] = useState(defaultUserId);
   const [userTier, setUserTier] = useState("");
   const [allowedHosts, setAllowedHosts] = useState("");

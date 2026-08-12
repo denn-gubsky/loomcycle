@@ -227,15 +227,19 @@ func (d *Document) ontologyTenantKey(ctx context.Context) (sqlmem.ScopeKey, stor
 // contract is that what it produces is not in force, and a status argument would be a way
 // to spell that contract wrong.
 func (d *Document) createOntologyProposal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, parentID, name, body string) (tools.Result, error) {
-	req, _ := json.Marshal(map[string]any{
-		"op": "create_chunk", "scope": "tenant",
-		"document_id": docID, "parent_id": parentID,
-		"title": name, "status": memrank.OntologyStatusProposed, "body": body,
+	// CALLED DIRECTLY, not through Execute, and this is the whole no-grant design.
+	//
+	// Execute resolves the scope from the request and grant-checks it, so routing a
+	// `scope: tenant` create back through it asked for the very authority propose_entity
+	// exists to avoid — a live run failed with "scope=tenant is not granted to this
+	// agent" while every unit test passed, because the test fixture granted tenant scopes
+	// to exercise the guard. The key here came from ontologyTenantKey, which resolves the
+	// caller's own tenant without the check; the write is bounded to an inert entity by
+	// stamping the status below rather than by a policy gate.
+	res, err := d.createChunk(ctx, key, mscope, docInput{
+		Scope: "tenant", DocumentID: docID, ParentID: parentID,
+		Title: name, Status: memrank.OntologyStatusProposed, Body: body,
 	})
-	// Routed through the tool's own dispatch so a proposal is an ordinary chunk written
-	// the ordinary way — position, body storage, embedding all behave as they do for
-	// anything else. The guard admits it because the status is `proposed`.
-	res, err := d.Execute(ctx, req)
 	if err != nil {
 		return errResult("propose_entity: " + err.Error()), nil
 	}
