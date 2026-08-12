@@ -31,19 +31,19 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"type": "object",
 				"properties": {
 					"agent":            {"type": "string", "description": "Registered agent name. Required for fresh runs; ignored for continuations (session's stored agent is authoritative)."},
-					"segments":         {"type": "array",  "description": "Prompt segments — each {role, content:[blocks]}. Typically required for fresh runs; continuations may omit when the caller has nothing new to add.", "items": {"type": "object", "required": ["role", "content"], "properties": {"role": {"type": "string", "enum": ["system", "user"]}, "content": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string", "enum": ["trusted-text", "untrusted-block", "image"]}, "text": {"type": "string"}, "cacheable": {"type": "boolean"}, "kind": {"type": "string", "description": "untrusted-block source label (e.g. web_content)"}, "media_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"], "description": "image blocks only (RFC AT); valid only in a user segment"}, "data": {"type": "string", "description": "image blocks only: base64-encoded image bytes, NO data: prefix"}}}}}}},
+					"segments":         {"type": "array",  "description": "Prompt segments — each {role, content:[blocks]}. Typically required for fresh runs; continuations may omit when the caller has nothing new to add.", "items": {"type": "object", "required": ["role", "content"], "properties": {"role": {"type": "string", "enum": ["system", "user"]}, "content": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string", "enum": ["trusted-text", "untrusted-block", "image"]}, "text": {"type": "string"}, "cacheable": {"type": "boolean"}, "kind": {"type": "string", "description": "untrusted-block source label (e.g. web_content)"}, "media_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"], "description": "image blocks only; valid only in a user segment"}, "data": {"type": "string", "description": "image blocks only: base64-encoded image bytes, NO data: prefix"}}}}}}},
 					"session_id":       {"type": "string", "description": "Set to continue an existing session. When set, agent is ignored."},
 					"tenant_id":        {"type": "string"},
 					"user_id":          {"type": "string"},
 					"agent_id":         {"type": "string", "description": "Optional caller-supplied tracking handle."},
 					"user_tier":        {"type": "string"},
 					"user_bearer":      {"type": "string", "description": "Per-run MCP bearer (substituted into ${run.user_bearer} in mcp_servers.*.headers)."},
-					"user_credentials": {"type": "object", "additionalProperties": {"type": "string"}, "description": "v1.x RFC F per-tool named credentials map. Keys [a-zA-Z0-9_-]{1,64}; values arbitrary strings. Substituted into ${run.credentials.<name>} in mcp_servers.*.headers. Coexists with user_bearer (legacy promotes to user_credentials.default for back-compat)."},
+					"user_credentials": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Per-tool named credentials map. Keys [a-zA-Z0-9_-]{1,64}; values arbitrary strings. Substituted into ${run.credentials.<name>} in mcp_servers.*.headers. Coexists with user_bearer (legacy promotes to user_credentials.default for back-compat)."},
 					"tools":    {"type": "array", "items": {"type": "string"}},
 					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing (operator's static allowlist applies). Pass empty array [] to DENY ALL outbound HTTP. Pass non-empty array to intersect with operator's list."},
 					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
 					"parent_context":   {"type": "object", "description": "v0.12.x opaque caller-tracking lineage carried verbatim, inherited by every sub-agent, and echoed on the per-agent report surfaces so a consumer can attribute a child sub-agent's usage to the user-initiated request.", "properties": {"root_agent_run_id": {"type": "string"}, "function_key": {"type": "string"}, "tier_at_run": {"type": "string"}}},
-					"timeout_ms":       {"type": "integer", "minimum": 1, "description": "Optional transport timeout (RFC P): max milliseconds this spawn_run call may block before loomcycle cancels the run and returns status:\"timeout\" instead of hanging. Narrows the operator default (LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS) — it can shorten but not exceed it. Omit to block until the run finishes on its own run_timeout_seconds budget. This is a transport bound, NOT the run's wall-clock budget."},
+					"timeout_ms":       {"type": "integer", "minimum": 1, "description": "Optional transport timeout: max milliseconds this spawn_run call may block before loomcycle cancels the run and returns status:\"timeout\" instead of hanging. Narrows the operator default (LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS) — it can shorten but not exceed it. Omit to block until the run finishes on its own run_timeout_seconds budget. This is a transport bound, NOT the run's wall-clock budget."},
 					"compaction":       {"type": "object", "description": "Optional per-run context-compaction override, merged per-field over the agent's own block. Trigger compaction mid-run with the compact_run tool.", "properties": {"enabled": {"type": "boolean", "description": "Turn AUTO-compaction on for this run."}, "target_percentage": {"type": "integer", "minimum": 10, "maximum": 50, "description": "Summary aims for ~N% of the compacted span (default 10)."}, "keep_last_n": {"type": "integer", "minimum": 0, "description": "Keep the last N messages verbatim (default 4; 0 = summarize all)."}, "keep_first": {"type": "boolean", "description": "Pin the first user message (the task) verbatim (default true)."}, "autocompact_at_pct": {"type": "integer", "minimum": 50, "maximum": 95, "description": "Auto-compact when used/window ≥ N% (default 80; only when enabled + the provider reports a window)."}, "model": {"type": "string", "description": "Optional cheaper/faster summary model served by the same provider."}}}
 				},
 				"anyOf": [
@@ -54,7 +54,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "spawn_runs",
-			Description: "RFC Y external fan-out: spawn up to 32 agent runs concurrently in ONE call (server-side, bounded by the per-user admission gate) and block until all settle, returning a combined index-aligned envelope. A per-child failure is captured in that child's result and never fails the batch. Prefer this over firing N parallel spawn_run calls, which serialize over a single MCP connection. Each child is a FRESH run (no session continuation). mode \"detach\" (async run handles) is reserved for a future release and rejected today.",
+			Description: "External fan-out: spawn up to 32 agent runs concurrently in ONE call (server-side, bounded by the per-user admission gate) and block until all settle, returning a combined index-aligned envelope. A per-child failure is captured in that child's result and never fails the batch. Prefer this over firing N parallel spawn_run calls, which serialize over a single MCP connection. Each child is a FRESH run (no session continuation). mode \"detach\" (async run handles) is reserved for a future release and rejected today.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["spawns"],
@@ -69,7 +69,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 							"required": ["agent"],
 							"properties": {
 								"agent":            {"type": "string", "description": "Registered agent name."},
-								"segments":         {"type": "array", "description": "Prompt segments — each {role, content:[blocks]}.", "items": {"type": "object", "required": ["role", "content"], "properties": {"role": {"type": "string", "enum": ["system", "user"]}, "content": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string", "enum": ["trusted-text", "untrusted-block", "image"]}, "text": {"type": "string"}, "cacheable": {"type": "boolean"}, "kind": {"type": "string", "description": "untrusted-block source label"}, "media_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"], "description": "image blocks only (RFC AT)"}, "data": {"type": "string", "description": "image blocks only: base64 image bytes, NO data: prefix"}}}}}}},
+								"segments":         {"type": "array", "description": "Prompt segments — each {role, content:[blocks]}.", "items": {"type": "object", "required": ["role", "content"], "properties": {"role": {"type": "string", "enum": ["system", "user"]}, "content": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string", "enum": ["trusted-text", "untrusted-block", "image"]}, "text": {"type": "string"}, "cacheable": {"type": "boolean"}, "kind": {"type": "string", "description": "untrusted-block source label"}, "media_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"], "description": "image blocks only"}, "data": {"type": "string", "description": "image blocks only: base64 image bytes, NO data: prefix"}}}}}}},
 								"tenant_id":        {"type": "string"},
 								"user_id":          {"type": "string"},
 								"agent_id":         {"type": "string", "description": "Optional caller-supplied tracking handle."},
@@ -273,7 +273,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "teamdef",
-			Description: "TeamDef tool ops (create/fork/get/list/promote/retire/verify). RFC AP team-workflow substrate — a state-machine graph (states + transitions) validated before any write; invalid graphs are refused. Colours are excluded from the content hash. Tenant-confined. Pass-through.",
+			Description: "TeamDef tool ops (create/fork/get/list/promote/retire/verify). The team-workflow substrate — a state-machine graph (states + transitions) validated before any write; invalid graphs are refused. Colours are excluded from the content hash. Tenant-confined. Pass-through.",
 			InputSchema: builtinSchema("teamdef"),
 		},
 		{
@@ -283,47 +283,47 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "scheduledef",
-			Description: "ScheduleDef tool ops (create/fork/get/list/retire). v1.x RFC E scheduled-runs substrate. Operator-admin-only — author + fork per-user schedules at runtime. Forks auto-promote by default (schedule versioning model differs from agent/skill where promote is a separate step). Pass-through.",
+			Description: "ScheduleDef tool ops (create/fork/get/list/retire). The scheduled-runs substrate. Operator-admin-only — author + fork per-user schedules at runtime. Forks auto-promote by default (schedule versioning model differs from agent/skill where promote is a separate step). Pass-through.",
 			InputSchema: builtinSchema("scheduledef"),
 		},
 		{
 			Name:        "a2aservercarddef",
-			Description: "A2AServerCardDef tool ops (create/fork/get/list/retire). v1.x RFC G A2A-server-card substrate. Operator-admin-only — author + fork A2A server cards at runtime. Pass-through.",
+			Description: "A2AServerCardDef tool ops (create/fork/get/list/retire). The A2A-server-card substrate. Operator-admin-only — author + fork A2A server cards at runtime. Pass-through.",
 			InputSchema: builtinSchema("a2aservercarddef"),
 		},
 		{
 			Name:        "a2aagentdef",
-			Description: "A2AAgentDef tool ops (create/fork/get/list/retire). v1.x RFC G A2A-agent substrate. Operator-admin-only — author + fork A2A agents at runtime. Pass-through.",
+			Description: "A2AAgentDef tool ops (create/fork/get/list/retire). The A2A-agent substrate. Operator-admin-only — author + fork A2A agents at runtime. Pass-through.",
 			InputSchema: builtinSchema("a2aagentdef"),
 		},
 		{
 			Name:        "webhookdef",
-			Description: "WebhookDef tool ops (create/fork/get/list/retire). v1.x RFC H inbound-webhook substrate. Operator-admin-only — author + fork inbound webhook definitions at runtime. Static webhooks.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
+			Description: "WebhookDef tool ops (create/fork/get/list/retire). The inbound-webhook substrate. Operator-admin-only — author + fork inbound webhook definitions at runtime. Static webhooks.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
 			InputSchema: builtinSchema("webhookdef"),
 		},
 		{
 			Name:        "memorybackenddef",
-			Description: "MemoryBackendDef tool ops (create/fork/get/list/retire). RFC I MR-3a memory-backend substrate. Operator-admin-only — author + fork named memory backend definitions at runtime. Static memory_backends.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
+			Description: "MemoryBackendDef tool ops (create/fork/get/list/retire). The pluggable memory-backend substrate. Operator-admin-only — author + fork named memory backend definitions at runtime. Static memory_backends.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
 			InputSchema: builtinSchema("memorybackenddef"),
 		},
 		{
 			Name:        "operatortokendef",
-			Description: "OperatorTokenDef tool ops (create/rotate/retire/get/list). RFC L OSS multi-tenant authorization. Operator-admin-only — mint, rotate, and retire bearer tokens each bound to an authoritative principal {tenant_id, subject, allowed_scopes}. The token plaintext is shown ONCE on create/rotate. Pass-through.",
+			Description: "OperatorTokenDef tool ops (create/rotate/retire/get/list). Multi-tenant authorization. Operator-admin-only — mint, rotate, and retire bearer tokens each bound to an authoritative principal {tenant_id, subject, allowed_scopes}. The token plaintext is shown ONCE on create/rotate. Pass-through.",
 			InputSchema: builtinSchema("operatortokendef"),
 		},
 		{
 			Name:        "volumedef",
-			Description: "VolumeDef tool ops (create/get/list/delete/purge). RFC AH dynamic filesystem-volume substrate. Tenant-confined — provision + manage CONFINED per-tenant volumes at runtime. Volumes are created by NAME + MODE only; the runtime derives the path inside an operator-blessed parent (dynamic_root/<tenant>/<name>) — you never supply a host path. delete unmaps (keeps files); purge removes the row AND the directory tree. Pass-through.",
+			Description: "VolumeDef tool ops (create/get/list/delete/purge). The dynamic filesystem-volume substrate. Tenant-confined — provision + manage CONFINED per-tenant volumes at runtime. Volumes are created by NAME + MODE only; the runtime derives the path inside an operator-blessed parent (dynamic_root/<tenant>/<name>) — you never supply a host path. delete unmaps (keeps files); purge removes the row AND the directory tree. Pass-through.",
 			InputSchema: builtinSchema("volumedef"),
 		},
 		{
 			Name:        "credentialdef",
-			Description: "CredentialDef tool ops (create/get/list/delete). RFC AR secure per-tenant credential store — named API secrets encrypted at rest, scoped tenant|user|agent, referenced elsewhere as $cred:<name> and bound server-side (the model never sees the value). user scope keys on YOUR subject (per-user tokens, e.g. a personal Telegram/Slack bot token); tenant scope is shared. get/list return metadata only, never the secret. Requires LOOMCYCLE_SECRET_KEY. Tenant-confined. Pass-through.",
+			Description: "CredentialDef tool ops (create/get/list/delete). A secure per-tenant credential store — named API secrets encrypted at rest, scoped tenant|user|agent, referenced elsewhere as $cred:<name> and bound server-side (the model never sees the value). user scope keys on YOUR subject (per-user tokens, e.g. a personal Telegram/Slack bot token); tenant scope is shared. get/list return metadata only, never the secret. Requires LOOMCYCLE_SECRET_KEY. Tenant-confined. Pass-through.",
 			InputSchema: builtinSchema("credentialdef"),
 		},
 		{
 			Name:        "path",
-			Description: "Path tool ops (resolve/ls/stat/mkdir/mv/rm). RFC AL Unix-like VFS over the dirents table — address Memory entries, Volume mounts, and Documents by human-readable paths (e.g. /docs/launch). Scope-aware (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\". mkdir is a no-op (dirs are implicit). Pass-through.",
+			Description: "Path tool ops (resolve/ls/stat/mkdir/mv/rm). A Unix-like VFS over the dirents table — address Memory entries, Volume mounts, and Documents by human-readable paths (e.g. /docs/launch). Scope-aware (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\". mkdir is a no-op (dirs are implicit). Pass-through.",
 			InputSchema: builtinSchema("path"),
 		},
 		{
@@ -335,12 +335,12 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			// A model reads this description; an under-advertised op is one it will not
 			// reach for. Same failure as a hand-written tool inventory beside the list
 			// it describes.
-			Description: "Document tool ops (create_document/get_document/documents_summary/delete_document/set_path, create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk, upsert_chunk/supersede_chunk/graph_recall, link_chunks/unlink_chunks/get_edges, query_chunks, define_type/list_types, set_asset/get_asset, export_md/import_md). RFC AK chunked-graph documents — each chunk is a first-class unit (UUID, hierarchy, type, fields, edges, Markdown body). upsert_chunk/supersede_chunk/graph_recall add a bi-temporal fact tier: write by natural_key, correct without deleting, and recall across relations as of a past instant. Requires SQL Memory. Scope agent/user/tenant (tenant = shared across the whole tenant, and requires BOTH memory_scopes and sql_scopes to grant it); tenant-isolated. Pass-through.",
+			Description: "Document tool ops — documents (create_document/get_document/query_documents/documents_summary/delete_document/set_path), chunks (create_chunk/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk), facts (upsert_chunk/supersede_chunk/graph_recall/list_facts), the ontology (propose_entity), links (link_chunks/unlink_chunks/get_edges/backlinks/related/unlinked_mentions), tags (add_tags/remove_tags/list_tags), history (history/get_version/diff), types (define_type/list_types), assets (set_asset/get_asset), search (query_chunks/search), and import/export (export_md/import_md/export_canvas/import_canvas). Chunked-graph documents — each chunk is a first-class unit (UUID, hierarchy, type, fields, edges, Markdown body). upsert_chunk/supersede_chunk/graph_recall add a bi-temporal fact tier: write by natural_key, correct without deleting, and recall across relations as of a past instant. propose_entity SUGGESTS an entity type for the tenant ontology: what it files is inert until an operator accepts it, and it is the only way an agent may touch the ontology document. Requires SQL Memory. Scope agent/user/tenant (tenant = shared across the whole tenant, and requires BOTH memory_scopes and sql_scopes to grant it); tenant-isolated. Pass-through.",
 			InputSchema: builtinSchema("document"),
 		},
 		{
 			Name:        "history",
-			Description: "History tool ops (list/get/search/rename/annotate/pin/archive). RFC BE — browse, search, and annotate past chats (a chat = a conversation session). Owner-scope-aware (self/user/tenant/global; global = admin only) with the owner resolved server-side from the run identity; cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats included. Pass-through.",
+			Description: "History tool ops (list/get/search/rename/annotate/pin/archive). Browse, search, and annotate past chats (a chat = a conversation session). Owner-scope-aware (self/user/tenant/global; global = admin only) with the owner resolved server-side from the run identity; cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats included. Pass-through.",
 			InputSchema: builtinSchema("history"),
 		},
 		{
