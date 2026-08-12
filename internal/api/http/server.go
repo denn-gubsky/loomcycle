@@ -2742,6 +2742,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_erasure", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleErasureExecute))))
 	mux.Handle("GET /v1/_ontology", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntology))))
 	mux.Handle("POST /v1/_ontology", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologySetStatus))))
+	// RFC CA phase 1: resolve a proposal, and adopt a standard type into the document.
+	// Both are operator actions on the caller's own ontology, gated with the pair above.
+	mux.Handle("POST /v1/_ontology/proposals", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyProposal))))
+	mux.Handle("POST /v1/_ontology/adopt", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyAdopt))))
 	// RFC BK P3: resident interactive sub-agent visibility + operator control.
 	// GET lists (tenant-scoped); POST close/cancel act on one (tenant-gated).
 	// Per-replica (the resident registry is in-process). Scope-gated in

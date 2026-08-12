@@ -531,3 +531,129 @@ func TestOntologyTree_ReportsThatItFlattenedTheDepth(t *testing.T) {
 		t.Errorf("want all five types, got %d", len(read.Terms))
 	}
 }
+
+// TestOntologyTree_ProposedIsNotInForceButIsReported (RFC CA §2.1).
+//
+// A proposal has to be BOTH invisible to the runtime and visible to the operator. Half of
+// that is easy to get and useless: a suggestion nothing reports is a suggestion nobody
+// acts on, and a suggestion that steers extraction is not a suggestion.
+func TestOntologyTree_ProposedIsNotInForceButIsReported(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, r := docExec(t, d, ctx,
+		`{"op":"create_document","scope":"user","title":"Tenant Ontology","body":""}`)
+	if r.IsError {
+		t.Fatalf("create_document: %s", r.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	root, _ := out["root_chunk_id"].(string)
+	mk := func(title, status, body string) string {
+		bj, _ := json.Marshal(body)
+		res, rr := docExec(t, d, ctx, fmt.Sprintf(
+			`{"op":"create_chunk","scope":"user","document_id":"%s","parent_id":"%s","title":"%s","status":"%s","body":%s}`,
+			docID, root, title, status, string(bj)))
+		if rr.IsError {
+			t.Fatalf("create_chunk %s: %s", title, rr.Text)
+		}
+		id, _ := res["id"].(string)
+		return id
+	}
+	mk("event", "", "- `occurred_at`\n")
+	propID := mk("outage", "proposed", "- `minutes_down`\n\nSeen 12 times as an untyped fact.\n")
+	mk("wontfix", "rejected", "")
+	// An UNKNOWN status must stay in force — the fail-open rule.
+	mk("project", "wip", "- `status`\n")
+
+	path := "/test/ontology-proposals"
+	if _, r = docExec(t, d, ctx,
+		`{"op":"set_path","scope":"user","id":"`+docID+`","path":"`+path+`"}`); r.IsError {
+		t.Fatalf("set_path: %s", r.Text)
+	}
+	read, err := d.OntologyTermsFromTree(ctx, "user", path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	inForce := map[string]bool{}
+	for _, tm := range read.Terms {
+		inForce[tm.Name] = true
+	}
+	if inForce["outage"] || inForce["wontfix"] {
+		t.Errorf("an inert entity reached the in-force set: %v", inForce)
+	}
+	if !inForce["event"] {
+		t.Errorf("a live entity went missing: %v", inForce)
+	}
+	// THE FAIL-OPEN RULE. Only the two reserved words are inert; a status this build has
+	// never heard of must not be able to switch a type off.
+	if !inForce["project"] {
+		t.Error(`a chunk with status "wip" was dropped — only "proposed"/"rejected" are inert`)
+	}
+
+	byName := map[string]memrank.OntologyProposal{}
+	for _, p := range read.Proposals {
+		byName[p.Name] = p
+	}
+	if len(byName) != 2 {
+		t.Fatalf("want outage + wontfix reported, got %v", byName)
+	}
+	if got := byName["outage"]; got.ChunkID != propID || got.Status != "proposed" {
+		t.Errorf("outage proposal = %+v", got)
+	}
+	if len(byName["outage"].Fields) != 1 || byName["outage"].Fields[0] != "minutes_down" {
+		t.Errorf("a proposal must carry its own fields: %v", byName["outage"].Fields)
+	}
+	// The evidence has to survive to the operator, or they are judging a bare name.
+	if !strings.Contains(byName["outage"].Body, "12 times") {
+		t.Errorf("the proposal lost its evidence body: %q", byName["outage"].Body)
+	}
+	if byName["wontfix"].Status != "rejected" {
+		t.Errorf("a rejection must be reported as such (it is a tombstone): %+v", byName["wontfix"])
+	}
+}
+
+// TestOntologyTree_RejectingAParentDoesNotSwitchOffLiveChildren.
+//
+// Children of an inert chunk re-parent to the nearest IN-FORCE ancestor rather than
+// disappearing with it. Turning a live type off as a side effect of rejecting something
+// above it is exactly the silent loss this reader was written to end.
+func TestOntologyTree_RejectingAParentDoesNotSwitchOffLiveChildren(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, r := docExec(t, d, ctx,
+		`{"op":"create_document","scope":"user","title":"Tenant Ontology","body":""}`)
+	if r.IsError {
+		t.Fatalf("create_document: %s", r.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	root, _ := out["root_chunk_id"].(string)
+	res, _ := docExec(t, d, ctx, fmt.Sprintf(
+		`{"op":"create_chunk","scope":"user","document_id":"%s","parent_id":"%s","title":"event","status":"rejected","body":""}`,
+		docID, root))
+	evID, _ := res["id"].(string)
+	if _, r = docExec(t, d, ctx, fmt.Sprintf(
+		`{"op":"create_chunk","scope":"user","document_id":"%s","parent_id":"%s","title":"incident","body":"- `+"`severity`"+`\n"}`,
+		docID, evID)); r.IsError {
+		t.Fatalf("create_chunk child: %s", r.Text)
+	}
+	path := "/test/ontology-reject-parent"
+	if _, r = docExec(t, d, ctx,
+		`{"op":"set_path","scope":"user","id":"`+docID+`","path":"`+path+`"}`); r.IsError {
+		t.Fatalf("set_path: %s", r.Text)
+	}
+
+	read, err := d.OntologyTermsFromTree(ctx, "user", path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var inc *memrank.OntologyTerm
+	for i := range read.Terms {
+		if read.Terms[i].Name == "incident" {
+			inc = &read.Terms[i]
+		}
+	}
+	if inc == nil {
+		t.Fatalf("the live child vanished with its rejected parent: %+v", read.Terms)
+	}
+	if inc.Parent != "" {
+		t.Errorf("incident.Parent = %q — it should attach to the nearest IN-FORCE ancestor (the root)", inc.Parent)
+	}
+}

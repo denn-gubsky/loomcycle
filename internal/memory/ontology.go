@@ -436,6 +436,57 @@ func renderOntologyTree(terms []OntologyTerm) string {
 // precision. Nothing deeper is DISCARDED: the reader flattens it to the cap.
 const OntologyMaxDepth = 4
 
+// Inert entity statuses (RFC CA §2.1). A chunk carrying one of these is NOT an
+// entity: not returned, not rendered into the prompt, not expanded in retrieval.
+//
+// `rejected` is KEPT rather than deleted (§8.1) so a curator can read it as a
+// tombstone and stop re-proposing a type the operator already turned down. Nagging is
+// how a review surface stops being read.
+const (
+	OntologyStatusProposed = "proposed"
+	OntologyStatusRejected = "rejected"
+)
+
+// IsInertEntityStatus reports whether a chunk status takes the entity out of force.
+//
+// FAIL OPEN, and this is the load-bearing rule of RFC CA. ONLY the two reserved words
+// are inert; every other status — including one this build has never heard of — leaves
+// the entity in force.
+//
+// The tempting inverse ("anything other than blank or confirmed is inert") is a shorter
+// rule that would silently drop types from any document where an operator had used the
+// status field for their own purposes. That is exactly the failure the chunk-tree reader
+// was written to remove: a document that reads correctly and an ontology that does not
+// match it. A new gate must not be able to turn existing types off.
+func IsInertEntityStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case OntologyStatusProposed, OntologyStatusRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// OntologyProposal is an entity that exists in the document but is not in force — a
+// curator's suggestion, or one the operator rejected.
+//
+// Carries its CHUNK ID, unlike OntologyTerm: accepting a proposal acts on the chunk, and
+// resolving a name back to a chunk at that point would be a second lookup that can
+// disagree with the one that produced the list.
+type OntologyProposal struct {
+	ChunkID string `json:"chunk_id"`
+	Name    string `json:"name"`
+	// Parent is the name of the nearest IN-FORCE ancestor — where this entity would
+	// attach if accepted, which is not always its literal parent chunk (an inert
+	// chunk between them is skipped).
+	Parent string   `json:"parent,omitempty"`
+	Fields []string `json:"fields,omitempty"`
+	Status string   `json:"status"`
+	// Body is the proposal's own text, which for a curator's proposal is its evidence.
+	// Surfaced so the operator judges a case rather than a bare suggestion.
+	Body string `json:"body,omitempty"`
+}
+
 // TrimOntologyName normalises a heading line or a chunk title into an entity name.
 //
 // ONE definition, shared by the chunk-tree reader (where the name comes from a title)

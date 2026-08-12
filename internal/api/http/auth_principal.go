@@ -625,7 +625,12 @@ func requiredScopeFor(method, path string) string {
 	// token can already write the same root-chunk status through /v1/_document
 	// update_chunk — so gating the write harder here would deny the intended actor
 	// without closing anything. ScopeAdmin also satisfies it (+ ?tenant= focus).
-	case path == "/v1/_ontology":
+	// RFC CA: /proposals (accept/reject) and /adopt sit with it. Same reasoning — one
+	// document per tenant, the tenant derived from the principal and never the wire —
+	// and both are strictly NARROWER than what this token can already do through
+	// /v1/_document, which is the point of having them as dedicated ops.
+	case path == "/v1/_ontology" ||
+		path == "/v1/_ontology/proposals" || path == "/v1/_ontology/adopt":
 		return auth.ScopeTenant
 	// RFC AS: the Web UI schedules surface (list-all + per-def state / run-now /
 	// pause / resume). list-all is tenant-scoped (the handler filters substrate

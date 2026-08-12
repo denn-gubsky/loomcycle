@@ -40,6 +40,7 @@ type ontologyChunk struct {
 	parentID string
 	title    string
 	position int
+	status   string
 }
 
 // OntologyTermsFromTree reads the ontology document at the given path and returns its
@@ -70,6 +71,15 @@ func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string
 type OntologyRead struct {
 	Terms     []memrank.OntologyTerm
 	Confirmed bool
+	// Proposals are the entities present but NOT in force — a curator's suggestions and
+	// the operator's rejections. Returned alongside the terms rather than through a
+	// second read, so the panel cannot show a proposal list that disagrees with the
+	// type list it sits next to.
+	Proposals []memrank.OntologyProposal
+	// DocumentID and RootChunkID let a caller act on what it just read (accept a
+	// proposal, adopt a type as a new root) without resolving the path again.
+	DocumentID  string
+	RootChunkID string
 	// DepthCapped is true when the document nests deeper than OntologyMaxDepth, so
 	// some types were flattened onto the cap rather than kept at their written depth.
 	//
@@ -113,19 +123,19 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	confirmed := strings.EqualFold(strings.TrimSpace(status), memrank.OntologyConfirmedStatus)
 
 	res, err := d.query(ctx, key,
-		`SELECT id, coalesce(parent_id, ''), coalesce(title, ''), position
+		`SELECT id, coalesce(parent_id, ''), coalesce(title, ''), position, coalesce(status, '')
 		   FROM chunks WHERE document_id = ? ORDER BY position`, docID)
 	if err != nil {
 		return OntologyRead{Confirmed: confirmed}, err
 	}
 	kids := map[string][]ontologyChunk{}
 	for _, row := range res.Rows {
-		if len(row) < 4 {
+		if len(row) < 5 {
 			continue
 		}
 		c := ontologyChunk{
 			id: asStr(row[0]), parentID: asStr(row[1]),
-			title: asStr(row[2]), position: asInt(row[3]),
+			title: asStr(row[2]), position: asInt(row[3]), status: asStr(row[4]),
 		}
 		kids[c.parentID] = append(kids[c.parentID], c)
 	}
@@ -136,6 +146,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 
 	var out []memrank.OntologyTerm
+	var proposals []memrank.OntologyProposal
 	depthCapped := false
 	// The walk starts at the ROOT CHUNK'S CHILDREN: the root is the document's title
 	// ("Tenant Ontology"), not an entity. Including it would invent a type nobody
@@ -144,6 +155,24 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	walk = func(parentChunkID, parentName string, depth int) {
 		for _, c := range kids[parentChunkID] {
 			name := d.ontologyEntityName(ctx, mscope, key, c)
+			// INERT: a proposal (or a rejected one) is in the document and not in force.
+			// Recorded so the operator can act on it, then skipped.
+			if memrank.IsInertEntityStatus(c.status) {
+				if name != "" {
+					body, _ := d.readBody(ctx, mscope, key.ScopeID, c.id)
+					proposals = append(proposals, memrank.OntologyProposal{
+						ChunkID: c.id, Name: name, Parent: parentName,
+						Fields: memrank.ParseOntologyFields(body.Body),
+						Status: strings.ToLower(strings.TrimSpace(c.status)),
+						Body:   body.Body,
+					})
+				}
+				// Its children keep walking against the nearest IN-FORCE ancestor, so
+				// rejecting a parent never silently switches off a live type beneath it.
+				// Turning types off is what this reader exists to prevent.
+				walk(c.id, parentName, depth)
+				continue
+			}
 			if name == "" {
 				// No title and no leading heading: nothing names this entity. Its
 				// children are still walked, attached to the nearest NAMED ancestor, so
@@ -173,7 +202,10 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 	}
 	walk(rootID, "", 1)
-	return OntologyRead{Terms: out, Confirmed: confirmed, DepthCapped: depthCapped}, nil
+	return OntologyRead{
+		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
+		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
+	}, nil
 }
 
 // ontologyEntityName resolves an entity's name: the chunk's title, or — when the title
