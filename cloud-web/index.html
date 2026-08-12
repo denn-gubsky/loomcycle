@@ -726,7 +726,7 @@ table.models tr[data-dim] td { color: color-mix(in srgb, var(--color-text) 45%, 
     <div class="row-item rise">
       <p class="r-num">Step 03</p>
       <h2 class="r-title">Pick a token and sign in</h2>
-      <p class="r-copy">Pick a token by name and sign in. The bearer is handed to the app over an origin-pinned <code>postMessage</code> — never a <code>?token=</code> query string, so it stays out of browser history, out of the <code>Referer</code> header, and out of every Cloudflare and nginx access log. The runtime itself sits behind a reverse proxy on its own VPS.</p>
+      <p class="r-copy">Pick a token by name and sign in — it opens <code>app.loomcycle.cloud/ui</code> already authenticated: the runtime consumes the bearer, sets an HttpOnly session cookie, and drops it from the address bar. The runtime itself sits behind a reverse proxy on its own VPS.</p>
     </div>
   </section>
 
@@ -1013,7 +1013,7 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
           <button type="button" class="btn btn-ghost" data-back-tokens>Back to the vault</button>
           <span class="copied" id="copied-flag">Copied</span>
         </div>
-        <p class="fineprint" style="margin-top:var(--half)">The bearer is handed to the app over <code class="inline-code">postMessage</code>, origin-pinned to <code class="inline-code">https://app.loomcycle.cloud</code> — it never appears in a URL, in browser history, or in a Cloudflare or nginx access log.</p>
+        <p class="fineprint" style="margin-top:var(--half)">Signing in opens <code class="inline-code">app.loomcycle.cloud/ui</code> with your bearer; the runtime consumes it, sets an HttpOnly session cookie, and 302s to a clean URL. (A postMessage handoff that keeps the token out of the URL entirely is coming in the next runtime build.)</p>
       </div>
     </div>
   </div>
