@@ -6,9 +6,11 @@ import {
   CredentialScope,
   HealthResponse,
   MemoryOrphanReport,
+  OntologyProposal,
   OntologyResponse,
   PresetUnit,
   RuntimeStateResponse,
+  adoptOntologyType,
   createCredential,
   deleteCredential,
   getEnvTemplate,
@@ -20,6 +22,7 @@ import {
   pauseRuntime,
   repairTenantMemory,
   resumeRuntime,
+  resolveOntologyProposal,
   setOntologyStatus,
   showPreset,
   OntologyTerm,
@@ -572,6 +575,35 @@ function OntologySection() {
     load();
   }, [load]);
 
+  // RFC CA: accept puts the entity in force where it already sits; reject keeps it as a
+  // tombstone so a curator stops re-proposing it. Both re-read the whole state from the
+  // response, so the panel shows the effective result rather than an optimistic guess.
+  const resolveProposal = async (chunkId: string, action: "accept" | "reject") => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      setState(await resolveOntologyProposal(chunkId, action));
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const adopt = async (name: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      setState(await adoptOntologyType(name));
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const flip = async (status: "confirmed" | "draft") => {
     if (busy) return;
     setBusy(true);
@@ -586,6 +618,12 @@ function OntologySection() {
   };
 
   const tenantTerms = state?.terms ?? [];
+  // Split by status rather than filtering twice at the render site: pending needs a
+  // decision, rejected is a record. Conflating them would put "reject" buttons next to
+  // things already rejected.
+  const allProposals: OntologyProposal[] = state?.proposals ?? [];
+  const pendingProposals = allProposals.filter((p) => p.status === "proposed");
+  const rejectedProposals = allProposals.filter((p) => p.status === "rejected");
   // A status that is neither of the two words the gate accepts — reachable by
   // editing the document's status field by hand. Called out explicitly, because
   // this is precisely the state that looks confirmed and behaves as draft.
@@ -722,6 +760,115 @@ function OntologySection() {
               differently-formatted document confirms to nothing. Nest a heading
               (<code>### name</code>) to make that type a <em>subclass</em> of the
               one above it.
+            </p>
+          )}
+
+          {/* PROPOSALS — entities in the document that are not in force. Above the
+              table on purpose: they are the only thing here that needs a decision,
+              and a pending decision buried under a type listing is a decision nobody
+              makes. Rejected ones are kept as tombstones (so a curator stops
+              re-proposing them) but folded away, since they compete with live types
+              for attention and never need action. */}
+          {pendingProposals.length > 0 && (
+            <div className="settings-row ontology-proposals">
+              <div>
+                <strong>
+                  {pendingProposals.length} suggested type
+                  {pendingProposals.length === 1 ? "" : "s"}
+                </strong>{" "}
+                <span className="settings-muted">
+                  not in force until you accept — accepting keeps each one exactly where
+                  it sits in the document
+                </span>
+                {pendingProposals.map((p) => (
+                  <div className="ontology-proposal" key={p.chunk_id}>
+                    <div>
+                      <code>{p.name}</code>
+                      {p.parent && (
+                        <span className="settings-muted">
+                          {" "}
+                          under <code>{p.parent}</code>
+                        </span>
+                      )}
+                      {p.fields && p.fields.length > 0 && (
+                        <span className="settings-muted"> — {p.fields.join(", ")}</span>
+                      )}
+                    </div>
+                    {/* The evidence, so the operator judges a case and not a name. */}
+                    {p.body && <pre className="ontology-evidence">{p.body.trim()}</pre>}
+                    <div className="settings-row-actions">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void resolveProposal(p.chunk_id, "accept")}
+                      >
+                        accept
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        disabled={busy}
+                        onClick={() => void resolveProposal(p.chunk_id, "reject")}
+                      >
+                        reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {rejectedProposals.length > 0 && (
+            <details className="settings-help">
+              <summary>
+                {rejectedProposals.length} rejected type
+                {rejectedProposals.length === 1 ? "" : "s"}
+              </summary>
+              <p>
+                Kept on purpose: a rejection is a record, so an automated curator can
+                see what you already turned down instead of proposing it again. They are
+                not in force, and they never will be unless you clear the status in the
+                document editor.
+              </p>
+              {rejectedProposals.map((p) => (
+                <div key={p.chunk_id}>
+                  <code>{p.name}</code>
+                  {p.parent && (
+                    <span className="settings-muted">
+                      {" "}
+                      under <code>{p.parent}</code>
+                    </span>
+                  )}
+                </div>
+              ))}
+            </details>
+          )}
+
+          {/* ADOPT — the standard types this document does not declare. Offered here
+              because the documented way to subclass one is to declare it yourself
+              first, which otherwise means retyping its field names off the column on
+              the right, by hand, correctly. */}
+          {(state.adoptable ?? []).length > 0 && (
+            <p className="settings-help">
+              <strong>Extend a standard type:</strong> adopting one copies it into your
+              document with its fields, so you can add to it or nest subtypes under it.
+              Your copy then overrides the standard one, wholesale — a field a later
+              loomcycle release adds to it will not reach your copy.
+              <span className="ontology-adopt-row">
+                {(state.adoptable ?? []).map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className="ghost-btn"
+                    disabled={busy}
+                    onClick={() => void adopt(name)}
+                    title={`Copy the standard "${name}" into your document so you can extend or subclass it`}
+                  >
+                    adopt <code>{name}</code>
+                  </button>
+                ))}
+              </span>
             </p>
           )}
 

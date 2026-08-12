@@ -313,3 +313,282 @@ func termNames(terms []meminject.OntologyTerm) []string {
 	}
 	return out
 }
+
+// postOntologyJSON drives one of the RFC CA operator actions.
+func (s *Server) postOntologyJSON(t *testing.T, path, tenant string, payload any, wantCode int) ontologyResponse {
+	t.Helper()
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, path+"?tenant="+tenant, strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	switch path {
+	case "/v1/_ontology/proposals":
+		s.handleOntologyProposal(rec, req)
+	case "/v1/_ontology/adopt":
+		s.handleOntologyAdopt(rec, req)
+	default:
+		t.Fatalf("unknown path %q", path)
+	}
+	if rec.Code != wantCode {
+		t.Fatalf("POST %s %v = %d, want %d: %s", path, payload, rec.Code, wantCode, rec.Body.String())
+	}
+	var got ontologyResponse
+	if wantCode == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+		}
+	}
+	return got
+}
+
+// TestOntologyAdopt_CopiesTheStandardTypeWithItsFieldsAndProvenance (RFC CA §3).
+//
+// The transcription this removes is the point: the operator had to read the field names
+// off the panel and retype them to override a standard type. The fields therefore come
+// from the seed SERVER-SIDE — a client-supplied list could disagree with the type it
+// claims to copy, and the disagreement would be invisible in the document.
+func TestOntologyAdopt_CopiesTheStandardTypeWithItsFieldsAndProvenance(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	s.buildVersion = "v9.9.9"
+	s.applyMemoryInjection(context.Background(), config.AgentDef{SystemPrompt: "{{memory:ontology}}"}, mi)
+
+	before := s.ontologyStateOrFail(t, mi.Tenant)
+	if !containsName(before.Adoptable, "event") {
+		t.Fatalf("a standard type the document does not declare must be adoptable: %v", before.Adoptable)
+	}
+
+	after := s.postOntologyJSON(t, "/v1/_ontology/adopt", mi.Tenant, map[string]string{"name": "event"}, http.StatusOK)
+
+	var adopted *meminject.OntologyTerm
+	for i := range after.Terms {
+		if after.Terms[i].Name == "event" {
+			adopted = &after.Terms[i]
+		}
+	}
+	if adopted == nil {
+		names := []string{}
+		for _, tm := range after.Terms {
+			names = append(names, tm.Name)
+		}
+		t.Fatalf("event was not adopted into the document — have %v", names)
+	}
+	// The seed's fields, not an empty shell the operator still has to fill in.
+	var seed meminject.OntologyTerm
+	for _, tm := range meminject.BaseSeedOntology() {
+		if tm.Name == "event" {
+			seed = tm
+		}
+	}
+	if len(seed.Fields) == 0 {
+		t.Fatal("the seed `event` has no fields — this test would be vacuous")
+	}
+	if strings.Join(adopted.Fields, ",") != strings.Join(seed.Fields, ",") {
+		t.Errorf("adopted fields %v, want the seed's %v", adopted.Fields, seed.Fields)
+	}
+	// It is a ROOT, so the operator can nest beneath it — the whole reason to adopt.
+	if adopted.Parent != "" {
+		t.Errorf("an adopted type must be a root, got parent %q", adopted.Parent)
+	}
+	// And it is no longer offered for adoption.
+	if containsName(after.Adoptable, "event") {
+		t.Errorf("event is still adoptable after being adopted: %v", after.Adoptable)
+	}
+	// PROVENANCE (§8.3) is in the chunk's structured fields, not its body — asserted by
+	// reading the column, because the response deliberately does not carry it and a claim
+	// nothing checks is a claim that quietly stops being true. Without this, §3.2's freeze
+	// (an adopted type never sees a later seed field) is undiscoverable after the fact.
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	dctx := s.ontologyDocCtx(context.Background(), mi)
+	// The fields JSON travels with the BODY in the k/v plane, not in a SQL column, so
+	// get_chunk is where it surfaces.
+	q, _ := json.Marshal(map[string]any{
+		"op": "query_chunks", "scope": "tenant",
+		"sql": "SELECT id FROM chunks WHERE title = 'event' LIMIT 1",
+	})
+	qres, qerr := doc.Execute(dctx, q)
+	if qerr != nil || qres.IsError {
+		t.Fatalf("locate the adopted chunk: %v %s", qerr, qres.Text)
+	}
+	var qout struct {
+		Rows [][]any `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(qres.Text), &qout); err != nil || len(qout.Rows) == 0 {
+		t.Fatalf("no adopted chunk row: %v %s", err, qres.Text)
+	}
+	adoptedID, _ := qout.Rows[0][0].(string)
+	g, _ := json.Marshal(map[string]any{"op": "get_chunk", "scope": "tenant", "id": adoptedID})
+	gres, gerr := doc.Execute(dctx, g)
+	if gerr != nil || gres.IsError {
+		t.Fatalf("get_chunk: %v %s", gerr, gres.Text)
+	}
+	var chunk struct {
+		Fields map[string]any `json:"fields"`
+	}
+	if err := json.Unmarshal([]byte(gres.Text), &chunk); err != nil {
+		t.Fatalf("decode chunk: %v (%s)", err, gres.Text)
+	}
+	prov := chunk.Fields
+	if prov == nil {
+		t.Fatalf("the adopted chunk carries no provenance fields: %s", gres.Text)
+	}
+	if prov["adopted_from"] != "event" || prov["adopted_from_source"] != "base" {
+		t.Errorf("provenance = %v, want it to name what was copied and from where", prov)
+	}
+	if prov["adopted_at_version"] != "v9.9.9" {
+		t.Errorf("provenance version = %v, want the running build's", prov["adopted_at_version"])
+	}
+	// And the body stays the OPERATOR'S — the machine-written note must not be a field
+	// bullet, or it would parse as one.
+	if strings.Contains(strings.Join(adopted.Fields, ","), "Adopted") {
+		t.Errorf("the provenance note leaked into the parsed fields: %v", adopted.Fields)
+	}
+
+	// Adopting twice must not silently produce two `event` sections.
+	s.postOntologyJSON(t, "/v1/_ontology/adopt", mi.Tenant, map[string]string{"name": "event"}, http.StatusConflict)
+	// A name that is not a standard type is refused rather than invented.
+	s.postOntologyJSON(t, "/v1/_ontology/adopt", mi.Tenant, map[string]string{"name": "nonesuch"}, http.StatusBadRequest)
+}
+
+// TestOntologyProposal_AcceptPutsItInForceInPlace_RejectKeepsATombstone (RFC CA §2.3, §8.1).
+func TestOntologyProposal_AcceptPutsItInForceInPlace_RejectKeepsATombstone(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	s.applyMemoryInjection(context.Background(), config.AgentDef{SystemPrompt: "{{memory:ontology}}"}, mi)
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	dctx := s.ontologyDocCtx(context.Background(), mi)
+
+	// A proposal nested under the template's `incident`, as a curator would file it.
+	q, _ := json.Marshal(map[string]any{
+		"op": "query_chunks", "scope": "tenant",
+		"sql": "SELECT id, document_id FROM chunks WHERE title = 'incident' LIMIT 1",
+	})
+	qres, _ := doc.Execute(dctx, q)
+	var qout struct {
+		Rows [][]any `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(qres.Text), &qout); err != nil || len(qout.Rows) == 0 {
+		t.Fatalf("no incident chunk: %v %s", err, qres.Text)
+	}
+	parentID, docID := qout.Rows[0][0].(string), qout.Rows[0][1].(string)
+	mkProposal := func(title string) string {
+		c, _ := json.Marshal(map[string]any{
+			"op": "create_chunk", "scope": "tenant", "document_id": docID, "parent_id": parentID,
+			"title": title, "status": meminject.OntologyStatusProposed,
+			"body": "- `severity_scale`\n\nSeen 9 times.\n",
+		})
+		res, err := doc.Execute(dctx, c)
+		if err != nil || res.IsError {
+			t.Fatalf("create proposal: %v %s", err, res.Text)
+		}
+		var out map[string]any
+		_ = json.Unmarshal([]byte(res.Text), &out)
+		id, _ := out["id"].(string)
+		return id
+	}
+	acceptID, rejectID := mkProposal("sev1-incident"), mkProposal("bogus-incident")
+
+	state := s.ontologyStateOrFail(t, mi.Tenant)
+	if len(state.Proposals) != 2 {
+		t.Fatalf("want both proposals reported, got %+v", state.Proposals)
+	}
+	for _, tm := range state.Terms {
+		if tm.Name == "sev1-incident" {
+			t.Fatal("a proposal was in force before it was accepted")
+		}
+	}
+
+	// ACCEPT: in force, in place — still under `incident`, nothing moved.
+	after := s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant,
+		map[string]string{"chunk_id": acceptID, "action": "accept"}, http.StatusOK)
+	var accepted *meminject.OntologyTerm
+	for i := range after.Terms {
+		if after.Terms[i].Name == "sev1-incident" {
+			accepted = &after.Terms[i]
+		}
+	}
+	if accepted == nil {
+		t.Fatalf("accepting did not put the entity in force: %+v", after.Terms)
+	}
+	if accepted.Parent != "incident" {
+		t.Errorf("accepted.Parent = %q — accepting must not move the entity", accepted.Parent)
+	}
+	if len(accepted.Inherited) == 0 {
+		t.Error("an accepted subclass should inherit its parent's fields like any other")
+	}
+
+	// REJECT: kept as a tombstone, not deleted, so a curator stops re-proposing it.
+	after = s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant,
+		map[string]string{"chunk_id": rejectID, "action": "reject"}, http.StatusOK)
+	var tomb *meminject.OntologyProposal
+	for i := range after.Proposals {
+		if after.Proposals[i].ChunkID == rejectID {
+			tomb = &after.Proposals[i]
+		}
+	}
+	if tomb == nil || tomb.Status != meminject.OntologyStatusRejected {
+		t.Errorf("a rejection must survive as a tombstone, got %+v", after.Proposals)
+	}
+	for _, tm := range after.Terms {
+		if tm.Name == "bogus-incident" {
+			t.Error("a rejected entity reached the in-force set")
+		}
+	}
+	// Accepting a rejection is a conflict, not a silent un-reject.
+	s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant,
+		map[string]string{"chunk_id": rejectID, "action": "accept"}, http.StatusConflict)
+}
+
+// TestOntologyProposal_RefusesAChunkThatIsNotAProposal is the narrowing (RFC CA §8.2).
+//
+// The route must not be usable as a general status-writer: accepting is meant to be a
+// strictly smaller capability than writing the document. A live entity's id, and the
+// document ROOT's id (whose status is the confirm gate itself), must both be refused —
+// otherwise "accept a proposal" could confirm the whole ontology.
+func TestOntologyProposal_RefusesAChunkThatIsNotAProposal(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	s.applyMemoryInjection(context.Background(), config.AgentDef{SystemPrompt: "{{memory:ontology}}"}, mi)
+	state := s.ontologyStateOrFail(t, mi.Tenant)
+
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	dctx := s.ontologyDocCtx(context.Background(), mi)
+	q, _ := json.Marshal(map[string]any{
+		"op": "query_chunks", "scope": "tenant",
+		"sql": "SELECT id FROM chunks WHERE title = 'project' LIMIT 1",
+	})
+	qres, _ := doc.Execute(dctx, q)
+	var qout struct {
+		Rows [][]any `json:"rows"`
+	}
+	_ = json.Unmarshal([]byte(qres.Text), &qout)
+	if len(qout.Rows) == 0 {
+		t.Fatal("no live `project` chunk to try")
+	}
+	liveID := qout.Rows[0][0].(string)
+
+	for _, id := range []string{liveID, state.RootChunkID, "no-such-chunk"} {
+		s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant,
+			map[string]string{"chunk_id": id, "action": "accept"}, http.StatusNotFound)
+	}
+	// The confirm gate is untouched by the attempt on the root.
+	if got := s.ontologyStateOrFail(t, mi.Tenant); got.Status != state.Status {
+		t.Errorf("the document status changed from %q to %q", state.Status, got.Status)
+	}
+}
+
+// containsName is a local helper — the package already has a containsString.
+func containsName(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// ontologyStateOrFail reads the state directly, without going through a mutation.
+func (s *Server) ontologyStateOrFail(t *testing.T, tenant string) ontologyResponse {
+	t.Helper()
+	resp, err := s.ontologyState(context.Background(), tenant)
+	if err != nil {
+		t.Fatalf("ontologyState: %v", err)
+	}
+	return resp
+}

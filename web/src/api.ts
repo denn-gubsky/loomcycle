@@ -2722,6 +2722,18 @@ export interface OntologyTerm {
   name_issue?: string;
 }
 
+/** An entity present in the ontology document but NOT in force (RFC CA). */
+export interface OntologyProposal {
+  chunk_id: string;
+  name: string;
+  /** The name of the nearest in-force ancestor — where it would attach if accepted. */
+  parent?: string;
+  fields?: string[];
+  status: "proposed" | "rejected";
+  /** The proposal's own text; for a curator's proposal, its evidence. */
+  body?: string;
+}
+
 export interface OntologyResponse {
   tenant: string;
   path: string;
@@ -2743,6 +2755,32 @@ export interface OntologyResponse {
    * list because those are independent and more than one can hold at once.
    */
   notes?: string[];
+  /** Entities in the document that are not in force: suggestions and rejections. */
+  proposals?: OntologyProposal[];
+  /** Standard type names this document does not declare — what `adopt` can copy in. */
+  adoptable?: string[];
+}
+
+/** Accept (put in force, in place) or reject (keep as a tombstone) a proposal. */
+export function resolveOntologyProposal(
+  chunkId: string,
+  action: "accept" | "reject",
+  tenant?: string,
+): Promise<OntologyResponse> {
+  const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
+  return postJSON<OntologyResponse>(
+    `/v1/_ontology/proposals${q}`,
+    JSON.stringify({ chunk_id: chunkId, action }),
+  );
+}
+
+/**
+ * Copy a standard type into the document so it can be extended or subclassed. The
+ * fields come from the seed server-side; the caller sends only the name.
+ */
+export function adoptOntologyType(name: string, tenant?: string): Promise<OntologyResponse> {
+  const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
+  return postJSON<OntologyResponse>(`/v1/_ontology/adopt${q}`, JSON.stringify({ name }));
 }
 
 export function getOntology(tenant?: string): Promise<OntologyResponse> {

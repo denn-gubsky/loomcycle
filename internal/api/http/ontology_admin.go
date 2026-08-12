@@ -72,6 +72,16 @@ type ontologyResponse struct {
 	// Surfaced rather than logged because the consequence lands on the operator's
 	// data, not on the server.
 	Notes []string `json:"notes,omitempty"`
+	// Proposals are entities present in the document but NOT in force — a curator's
+	// suggestions and the operator's rejections (RFC CA). Reported from the same read
+	// that produced Terms, so the two cannot disagree.
+	Proposals []meminject.OntologyProposal `json:"proposals,omitempty"`
+	// Adoptable names the standard types this document does not declare — the ones the
+	// adopt action can copy in. Computed server-side because the answer is "in the
+	// effective set and not in the document", which the UI would otherwise re-derive
+	// from two lists and get subtly wrong (a tenant term that overrides a standard name
+	// is NOT adoptable).
+	Adoptable []string `json:"adoptable,omitempty"`
 }
 
 // handleOntology serves GET /v1/_ontology — the tenant ontology's state.
@@ -137,7 +147,7 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
 		return
 	}
-	rev, err := s.ontologyRootRevision(dctx, doc, rootID)
+	rev, err := s.ontologyChunkRevision(dctx, doc, rootID)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
 		return
@@ -190,6 +200,9 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.ontologyDocCtx(ctx, mi)
+	if read, rerr := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath); rerr == nil {
+		resp.Proposals = read.Proposals
+	}
 	rootID, docID, status, err := s.ontologyRoot(dctx, doc)
 	if err == nil {
 		resp.Provisioned = true
@@ -221,6 +234,18 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 	}
 	resp.Confirmed = confirmed
 	resp.Notes = notes
+	// A standard type is adoptable when the document does not already declare it. A
+	// tenant term that overrides a standard name is a declaration, so it drops out here
+	// — offering "adopt" for a type the operator already owns would be a no-op button.
+	declared := make(map[string]bool, len(terms))
+	for _, t := range terms {
+		declared[strings.ToLower(t.Name)] = true
+	}
+	for _, t := range meminject.BaseSeedOntology() {
+		if !declared[strings.ToLower(t.Name)] {
+			resp.Adoptable = append(resp.Adoptable, t.Name)
+		}
+	}
 	resp.Effective = meminject.EffectiveOntology(terms, confirmed)
 	return resp, nil
 }
@@ -266,11 +291,11 @@ func (s *Server) ontologyRoot(dctx context.Context, doc *builtin.Document) (root
 	return meta.RootChunkID, meta.DocumentID, meta.Status, nil
 }
 
-// ontologyRootRevision reads the root chunk's current revision for the
+// ontologyChunkRevision reads a chunk's current revision for the
 // optimistic-concurrency guard on update_chunk.
-func (s *Server) ontologyRootRevision(dctx context.Context, doc *builtin.Document, rootID string) (int, error) {
+func (s *Server) ontologyChunkRevision(dctx context.Context, doc *builtin.Document, chunkID string) (int, error) {
 	req, _ := json.Marshal(map[string]any{
-		"op": "get_chunk", "scope": "tenant", "id": rootID,
+		"op": "get_chunk", "scope": "tenant", "id": chunkID,
 	})
 	res, err := doc.Execute(dctx, req)
 	if err != nil {
