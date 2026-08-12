@@ -444,6 +444,10 @@ table.tokens .revoke:focus-visible { outline: 2px solid var(--color-accent); out
 .rowact .use { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
   color: var(--color-accent-700); }
 .rowact .use:hover { color: var(--color-accent); }
+/* Locked vault: SIGN IN is disabled (use.disabled = !unlocked) — make that
+   unmistakable instead of a live-looking button that silently swallows clicks. */
+.rowact button:disabled { opacity: 0.4; cursor: not-allowed; }
+.rowact button:disabled:hover { color: var(--color-accent-700); }
 .rowact .rm { color: color-mix(in srgb, var(--color-text) 70%, transparent); }
 .rowact .rm:hover { color: var(--color-accent); }
 .rowact button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
