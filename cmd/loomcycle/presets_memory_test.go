@@ -375,3 +375,63 @@ func TestOntologist_HasWhatItNeedsAndNothingMore(t *testing.T) {
 		}
 	}
 }
+
+// TestOntologist_SurveysFactsNotEveryChunk is the regression for a live failure.
+//
+// The first pass on a real deployment surveyed `SELECT type, count(*) FROM chunks` and
+// got 3,148 rows across 17 types — because that column is shared: a fact carries an
+// ENTITY type, and every ordinary document chunk carries its own structural type (rfc,
+// section, image, publication, plan). The ontology governed SIX facts. The curator spent
+// seventeen calls and 86k input tokens wandering through document types looking for
+// entity types, and stopped on the iteration cap having filed nothing.
+//
+// The survey must join the fact table, so the population is the one the ontology governs.
+func TestOntologist_SurveysFactsNotEveryChunk(t *testing.T) {
+	agent, ok := memoryBundleConfig(t).Agents["memory/ontologist"]
+	if !ok {
+		t.Fatal("memory/ontologist not registered")
+	}
+	p := agent.SystemPrompt
+	if !strings.Contains(p, "chunk_memory_meta") {
+		t.Error("the survey does not join the fact table — it would count every document " +
+			"chunk in the scope as a candidate entity type")
+	}
+	// The un-joined form must not appear at all: a model handed both will pick one.
+	if strings.Contains(p, "count(*) AS n FROM chunks GROUP BY") {
+		t.Error("the prompt still offers the un-joined survey over every chunk")
+	}
+	// The bound that actually held. Wall-clock did not: one call against a cold local
+	// model can take minutes, so 300s never fired before the global iteration cap.
+	if agent.MaxIterations == 0 || agent.MaxIterations > 16 {
+		t.Errorf("max_iterations = %d — this job is one survey, ≤2 samples and ≤3 proposals; "+
+			"an unbounded curator burned 86k tokens before stopping", agent.MaxIterations)
+	}
+}
+
+// TestOntologist_EvidenceMustComeFromAQuery.
+//
+// On that same pass the model's FIRST two calls proposed types with entirely invented
+// evidence — counts and example titles lifted from the worked example in its own prompt,
+// describing facts that do not exist in that store. They failed only because both omitted
+// `op`. Had they not, two fictional suggestions would be sitting in an operator's ontology
+// with counts attached, which is worse than no curator at all: the evidence is the only
+// reason to trust a proposal.
+//
+// So the prompt must state where evidence may come from, and must not contain a worked
+// example that reads as data.
+func TestOntologist_EvidenceMustComeFromAQuery(t *testing.T) {
+	p := memoryBundleConfig(t).Agents["memory/ontologist"].SystemPrompt
+	if !strings.Contains(p, "MUST COME FROM A QUERY YOU RAN") {
+		t.Error("the prompt does not require evidence to come from a query run in the session")
+	}
+	// The old example's literal strings were what the model copied. If any of them come
+	// back, the copyable-example failure comes back with them.
+	for _, fabricated := range []string{
+		"Seen 14 times", "the Tuesday checkout outage", "the auth outage last week",
+	} {
+		if strings.Contains(p, fabricated) {
+			t.Errorf("the prompt contains %q — a concrete count or title in the instructions is "+
+				"something a model will file as evidence", fabricated)
+		}
+	}
+}

@@ -1774,6 +1774,14 @@ agents:
     # A pass is a handful of queries and at most three proposals. If it has not
     # finished by then it is looping, and a curator that loops is spending tokens to
     # produce nothing an operator asked for.
+    #
+    # BOTH bounds, because one of them did not hold. A first live pass ran seven
+    # minutes and 86k input tokens through seventeen calls before the global
+    # iteration cap stopped it — the wall-clock budget never fired, because a single
+    # call against a cold local model can itself take minutes. An iteration cap is
+    # the bound that matches the work: this job is one survey, one or two samples,
+    # and up to three proposals.
+    max_iterations: 10
     run_timeout_seconds: 300
     system_prompt: |
       You review one user's stored facts and SUGGEST improvements to the entity
@@ -1784,14 +1792,23 @@ agents:
 
       ## What to do
 
-      1. Find which types the stored facts actually carry:
+      Every call needs an `op`. You have about eight calls; spend them like this.
+
+      1. Find which types the FACTS carry. Only the join matters — the `type`
+         column is shared with ordinary document chunks, and those are not
+         entity types:
          `document` op=query_chunks scope=user
-         sql: SELECT coalesce(type,'(none)') AS t, count(*) AS n FROM chunks GROUP BY 1 ORDER BY 2 DESC LIMIT 50
-      2. For a type worth looking into, read a sample of what it holds:
+         sql: SELECT coalesce(c.type,'(none)') AS t, count(*) AS n FROM chunks c
+              JOIN chunk_memory_meta m ON m.chunk_id = c.id
+              GROUP BY 1 ORDER BY 2 DESC LIMIT 50
+      2. If that returns a handful of rows, there is little to curate — say so
+         and stop. Otherwise read a sample of ONE type worth looking into
+         (at most two of these):
          `document` op=query_chunks scope=user
-         sql: SELECT title FROM chunks WHERE type = 'event' LIMIT 30
-         (`title` and `type` are the columns worth reading. There is no `fields`
-         column — a chunk's declared fields live in its body.)
+         sql: SELECT c.title FROM chunks c JOIN chunk_memory_meta m ON m.chunk_id = c.id
+              WHERE c.type = 'event' LIMIT 30
+         (`title` and `type` are the readable columns. There is no `fields` or
+         `body` column — a chunk's text is not in this table.)
       3. File at most THREE suggestions, best first, with
          `document` op=propose_entity — name, optional parent, body.
 
@@ -1805,17 +1822,25 @@ agents:
         that should win and say in the body which it replaces.
       - A field that keeps appearing in a type's facts but is not declared for it.
 
-      The body is your EVIDENCE and the reader decides from it. Give the count and
-      two or three example titles, then the fields, one per line:
+      The body is your EVIDENCE and a person decides from it, so EVERY NUMBER AND
+      EVERY EXAMPLE IN IT MUST COME FROM A QUERY YOU RAN IN THIS SESSION. If you
+      have not run the query, you have no evidence and no suggestion to make.
+      Never copy a count or a title from these instructions — the shape below is
+      a template, not data:
 
-          Seen 14 times on facts that are all service outages.
-          Examples: "the Tuesday checkout outage", "the auth outage last week".
+          Seen <count from step 1> times on facts that <what the titles show>.
+          Examples: <two or three titles, copied from a step-2 result>.
 
-          - `minutes_down`
-          - `cause`
+          - `<field>`
+          - `<field>`
 
       ## Rules
 
+      - THE FACTS ARE THE ONLY POPULATION. A store can hold thousands of document
+        chunks whose `type` is a document's own structure — rfc, section, image,
+        publication, plan. Those are not entity types and must never be proposed
+        as one. If the join in step 1 returns a few rows, that is the truth about
+        this store: the answer is "little to curate", not a wider search.
       - NEVER ASK FOR THE DATA. You have the tool; the queries above are the whole
         method. A reply that asks someone to paste in the types or the titles has
         done nothing — run step 1, then step 2, then decide. If a query returns no
