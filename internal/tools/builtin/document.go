@@ -68,13 +68,14 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
 		"title":       {"type": "string"},
 		"document_id": {"type": "string"},
 		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path)."},
+		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions."},
 		"parent_id":   {"type": "string", "description": "create_chunk: parent chunk (omit for a child of the root)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
@@ -140,8 +141,11 @@ type docInput struct {
 	Body      string          `json:"body"`
 	Fields    json.RawMessage `json:"fields"`
 	Status    string          `json:"status"`
-	Position  *int            `json:"position"`
-	Revision  *int            `json:"revision"`
+	// Parent names an entity by NAME (propose_entity). Distinct from ParentID, which
+	// addresses a chunk: a curator knows the type it read in its prompt, not a uuid.
+	Parent   string `json:"parent"`
+	Position *int   `json:"position"`
+	Revision *int   `json:"revision"`
 	// FromRevision / ToRevision select the two body-change revisions to diff (RFC
 	// BS Phase 3a). Pointers so an omitted bound is distinguishable from a value
 	// (the log is 1-based, so 0 is never a real revision, but the pointer keeps the
@@ -350,6 +354,13 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if err := d.ensureSchema(ctx, key); err != nil {
 		return errResult("document: schema init: " + err.Error()), nil
 	}
+	// RFC CA: an agent may PROPOSE an ontology entity, never decide one. Checked at the
+	// single dispatch point rather than inside each op — a per-op check is one op away
+	// from being forgotten, and the ops that would need it (create/update/delete/move/
+	// reorder) are exactly the ones a future change is likely to add a sibling to.
+	if refused := d.guardOntologyWrite(ctx, key, in.Op, in); refused != nil {
+		return *refused, nil
+	}
 
 	switch in.Op {
 	case "create_document":
@@ -364,6 +375,10 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.deleteDocument(ctx, key, mscope, in)
 	case "set_path":
 		return d.setPath(ctx, key, in)
+	case "propose_entity":
+		// RFC CA: files an INERT ontology proposal. Resolves its own tenant scope, so it
+		// is deliberately not routed through the caller's `scope` argument.
+		return d.proposeEntity(ctx, in)
 	case "create_chunk":
 		return d.createChunk(ctx, key, mscope, in)
 	case "get_chunk":

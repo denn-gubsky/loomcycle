@@ -225,6 +225,11 @@ func ontologyRetrievalFixture(t *testing.T, confirm bool) (*Document, context.Co
 	d, ctx, _ := documentFixture(t)
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
 	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	// SETUP ACTS AS THE OPERATOR. Building the fixture means writing the ontology
+	// document and flipping its confirm status, which RFC CA's guard reserves for the
+	// operator surfaces — an agent context is refused, correctly. That refusal is what
+	// TestOntologyGuard_* asserts; here it would only be testing the fixture.
+	ctx = tools.WithSubstrateOperator(ctx)
 
 	md := "# Tenant Ontology\n\n## event\n- `occurred_at`\n\n### incident\n- `severity`\n\n#### outage\n- `minutes_down`\n\n## person\n- `name`\n"
 	mj, _ := json.Marshal(md)
@@ -656,4 +661,239 @@ func TestOntologyTree_RejectingAParentDoesNotSwitchOffLiveChildren(t *testing.T)
 	if inc.Parent != "" {
 		t.Errorf("incident.Parent = %q — it should attach to the nearest IN-FORCE ancestor (the root)", inc.Parent)
 	}
+}
+
+// ontologyAgentFixture returns an operator ctx (for setup) and an AGENT ctx (for the
+// calls under test) over the same tenant ontology, with tenant grants on both.
+//
+// The grants are on the agent ctx DELIBERATELY: the point of the guard is that full
+// tenant Document authority is still not authority over the ontology's type system.
+// Testing it with an under-granted agent would prove nothing.
+func ontologyAgentFixture(t *testing.T) (*Document, context.Context, context.Context) {
+	t.Helper()
+	d, base, _ := documentFixture(t)
+	base = tools.WithMemoryPolicy(base, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
+	base = tools.WithSqlMemPolicy(base, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	opCtx := tools.WithSubstrateOperator(base)
+
+	md := "# Tenant Ontology\n\n## event\n- `occurred_at`\n"
+	mj, _ := json.Marshal(md)
+	out, r := docExec(t, d, opCtx, `{"op":"import_md","scope":"tenant","markdown":`+string(mj)+`}`)
+	if r.IsError {
+		t.Fatalf("import_md: %s", r.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	pj, _ := json.Marshal(memrank.OntologyPath)
+	if _, r = docExec(t, d, opCtx,
+		`{"op":"set_path","scope":"tenant","id":"`+docID+`","path":`+string(pj)+`}`); r.IsError {
+		t.Fatalf("set_path: %s", r.Text)
+	}
+	return d, opCtx, base
+}
+
+// TestOntologyGuard_AnAgentMayProposeButNotDecide is the phase-2 claim.
+//
+// Phase 1's review gate was unenforced underneath: an agent holding tenant Document
+// authority could create a live type outright, or clear its own proposal's status and
+// call that reviewed. A gate the reviewed thing can open is ceremony.
+func TestOntologyGuard_AnAgentMayProposeButNotDecide(t *testing.T) {
+	d, opCtx, agentCtx := ontologyAgentFixture(t)
+
+	read, err := d.OntologyTermsFromTree(opCtx, "tenant", memrank.OntologyPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	docID, rootID := read.DocumentID, read.RootChunkID
+	eventID := d.chunkIDForEntity(opCtx, mustTenantKey(t, d, opCtx), docID, "event")
+	if eventID == "" {
+		t.Fatal("no `event` chunk in the fixture")
+	}
+
+	// PROPOSE: allowed, and inert.
+	out, r := docExec(t, d, agentCtx,
+		`{"op":"propose_entity","name":"outage","parent":"event","body":"- `+"`minutes_down`"+`\n\nSeen 9 times.\n"}`)
+	if r.IsError {
+		t.Fatalf("propose_entity should be allowed to an agent: %s", r.Text)
+	}
+	proposedID, _ := out["chunk_id"].(string)
+	if proposedID == "" {
+		t.Fatalf("propose_entity returned no chunk id: %v", out)
+	}
+	after, _ := d.OntologyTermsFromTree(opCtx, "tenant", memrank.OntologyPath)
+	for _, term := range after.Terms {
+		if term.Name == "outage" {
+			t.Fatal("a proposal went into force — it must be inert until an operator accepts")
+		}
+	}
+	if len(after.Proposals) != 1 || after.Proposals[0].Name != "outage" {
+		t.Fatalf("the proposal was not recorded: %+v", after.Proposals)
+	}
+	// It hangs off the named parent, resolved from a name the agent could actually know.
+	if after.Proposals[0].Parent != "event" {
+		t.Errorf("proposal parent = %q, want event", after.Proposals[0].Parent)
+	}
+
+	// DECIDE: refused, in every spelling.
+	refusals := []struct {
+		name string
+		req  string
+	}{
+		{"clear its own proposal's status", fmt.Sprintf(
+			`{"op":"update_chunk","scope":"tenant","id":"%s","status":"","revision":1}`, proposedID)},
+		{"confirm the whole document", fmt.Sprintf(
+			`{"op":"update_chunk","scope":"tenant","id":"%s","status":"confirmed","revision":1}`, rootID)},
+		{"delete an entity", fmt.Sprintf(`{"op":"delete_chunk","scope":"tenant","id":"%s"}`, proposedID)},
+		{"create a LIVE entity", fmt.Sprintf(
+			`{"op":"create_chunk","scope":"tenant","document_id":"%s","parent_id":"%s","title":"decided","body":""}`,
+			docID, rootID)},
+		{"move an entity", fmt.Sprintf(
+			`{"op":"move_chunk","scope":"tenant","id":"%s","new_parent_id":"%s"}`, proposedID, rootID)},
+		// The four routes the first version of this guard missed. Each reaches the same
+		// effect by a different op, which is why the refused set was audited from the op
+		// list instead of from the obvious mutations.
+		{"import live types over the document", fmt.Sprintf(
+			`{"op":"import_md","scope":"tenant","document_id":"%s","markdown":"## decided\n"}`, docID)},
+		{"import a canvas over the document", fmt.Sprintf(
+			`{"op":"import_canvas","scope":"tenant","document_id":"%s","canvas":{"nodes":[],"edges":[]}}`, docID)},
+		// A VALID supersede: the proposal replaces the live `event`, retiring it. The
+		// first version of this case omitted `id` and failed input validation instead of
+		// the guard — an assertion that passes because the call was malformed proves
+		// nothing about the gate.
+		{"supersede a live entity", fmt.Sprintf(
+			`{"op":"supersede_chunk","scope":"tenant","document_id":"%s","id":"%s","supersedes_id":"%s","natural_key":"k"}`,
+			docID, proposedID, eventID)},
+		{"delete the whole ontology", fmt.Sprintf(
+			`{"op":"delete_document","scope":"tenant","id":"%s"}`, docID)},
+		{"re-home the ontology path", fmt.Sprintf(
+			`{"op":"set_path","scope":"tenant","id":"%s","path":"/elsewhere/onto"}`, docID)},
+	}
+	for _, c := range refusals {
+		if _, rr := docExec(t, d, agentCtx, c.req); !rr.IsError {
+			t.Errorf("an agent was allowed to %s", c.name)
+		}
+	}
+	// Nothing leaked through: still one proposal, still no `decided` type.
+	final, _ := d.OntologyTermsFromTree(opCtx, "tenant", memrank.OntologyPath)
+	for _, term := range final.Terms {
+		if term.Name == "decided" || term.Name == "outage" {
+			t.Errorf("a refused write took effect anyway: %q is in force", term.Name)
+		}
+	}
+
+	// THE OPERATOR is unaffected — same calls, allowed. Without this the guard could be
+	// "refuse everyone", which passes every assertion above and breaks the product.
+	rev := 1
+	if g, gr := docExec(t, d, opCtx, `{"op":"get_chunk","scope":"tenant","id":"`+proposedID+`"}`); !gr.IsError {
+		rev = int(g["revision"].(float64))
+	}
+	if _, rr := docExec(t, d, opCtx, fmt.Sprintf(
+		`{"op":"update_chunk","scope":"tenant","id":"%s","status":"","revision":%d}`, proposedID, rev)); rr.IsError {
+		t.Fatalf("the operator must still be able to accept: %s", rr.Text)
+	}
+	accepted, _ := d.OntologyTermsFromTree(opCtx, "tenant", memrank.OntologyPath)
+	var found bool
+	for _, term := range accepted.Terms {
+		if term.Name == "outage" {
+			found = true
+			if term.Parent != "event" {
+				t.Errorf("accepted outage.Parent = %q, want event — accepting must not move it", term.Parent)
+			}
+		}
+	}
+	if !found {
+		t.Error("the operator's accept did not put the entity in force")
+	}
+}
+
+// TestOntologyGuard_LeavesOtherDocumentsAlone.
+//
+// The guard is scoped to ONE document. If it caught every tenant-scope document, an agent
+// with tenant Document grants would lose the ability to write ordinary shared documents —
+// a much larger change than RFC CA describes, arriving as a side effect.
+func TestOntologyGuard_LeavesOtherDocumentsAlone(t *testing.T) {
+	d, _, agentCtx := ontologyAgentFixture(t)
+
+	out, r := docExec(t, d, agentCtx,
+		`{"op":"create_document","scope":"tenant","title":"Team notes","body":""}`)
+	if r.IsError {
+		t.Fatalf("an agent must still be able to create a tenant document: %s", r.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	root, _ := out["root_chunk_id"].(string)
+	c, r := docExec(t, d, agentCtx, `{"op":"create_chunk","scope":"tenant","document_id":"`+docID+
+		`","parent_id":"`+root+`","title":"a note","body":"text"}`)
+	if r.IsError {
+		t.Fatalf("an agent must still be able to write a live chunk elsewhere: %s", r.Text)
+	}
+	id, _ := c["id"].(string)
+	g, _ := docExec(t, d, agentCtx, `{"op":"get_chunk","scope":"tenant","id":"`+id+`"}`)
+	rev := int(g["revision"].(float64))
+	if _, r = docExec(t, d, agentCtx, fmt.Sprintf(
+		`{"op":"update_chunk","scope":"tenant","id":"%s","status":"final","revision":%d}`, id, rev)); r.IsError {
+		t.Errorf("an agent must still be able to set a status elsewhere: %s", r.Text)
+	}
+}
+
+// TestProposeEntity_RefusesWhatAnOperatorHasAlreadySeen.
+//
+// A curator that re-files the same suggestion every run turns the review surface into
+// noise, which is the whole reason a rejection is kept rather than deleted.
+func TestProposeEntity_RefusesWhatAnOperatorHasAlreadySeen(t *testing.T) {
+	d, opCtx, agentCtx := ontologyAgentFixture(t)
+
+	// Already IN FORCE → refused, and pointed at the useful move instead.
+	_, r := docExec(t, d, agentCtx, `{"op":"propose_entity","name":"event"}`)
+	if !r.IsError || !strings.Contains(r.Text, "already in force") {
+		t.Errorf("proposing a live type should be refused: %s", r.Text)
+	}
+	// Already PROPOSED → refused.
+	if _, rr := docExec(t, d, agentCtx, `{"op":"propose_entity","name":"outage","parent":"event"}`); rr.IsError {
+		t.Fatalf("first proposal: %s", rr.Text)
+	}
+	_, r = docExec(t, d, agentCtx, `{"op":"propose_entity","name":"outage","parent":"event"}`)
+	if !r.IsError || !strings.Contains(r.Text, "proposed") {
+		t.Errorf("a duplicate proposal should be refused: %s", r.Text)
+	}
+	// REJECTED → still refused, which is what the tombstone is for.
+	read, _ := d.OntologyTermsFromTree(opCtx, "tenant", memrank.OntologyPath)
+	var pid string
+	for _, p := range read.Proposals {
+		if p.Name == "outage" {
+			pid = p.ChunkID
+		}
+	}
+	g, _ := docExec(t, d, opCtx, `{"op":"get_chunk","scope":"tenant","id":"`+pid+`"}`)
+	rev := int(g["revision"].(float64))
+	if _, rr := docExec(t, d, opCtx, fmt.Sprintf(
+		`{"op":"update_chunk","scope":"tenant","id":"%s","status":"rejected","revision":%d}`, pid, rev)); rr.IsError {
+		t.Fatalf("operator reject: %s", rr.Text)
+	}
+	_, r = docExec(t, d, agentCtx, `{"op":"propose_entity","name":"outage","parent":"event"}`)
+	if !r.IsError || !strings.Contains(r.Text, "rejected") {
+		t.Errorf("a rejected type must not be re-proposable, and the refusal should say so: %s", r.Text)
+	}
+
+	// An unknown parent is refused rather than silently filed at the top level, where an
+	// operator would see a root type they never asked for.
+	_, r = docExec(t, d, agentCtx, `{"op":"propose_entity","name":"thing","parent":"nonesuch"}`)
+	if !r.IsError || !strings.Contains(r.Text, "no entity named") {
+		t.Errorf("an unknown parent should be refused: %s", r.Text)
+	}
+	// And the evidence body is bounded.
+	big, _ := json.Marshal(strings.Repeat("x", proposalBodyMax+1))
+	_, r = docExec(t, d, agentCtx, `{"op":"propose_entity","name":"huge","body":`+string(big)+`}`)
+	if !r.IsError || !strings.Contains(r.Text, "limit") {
+		t.Errorf("an oversized proposal body should be refused: %s", r.Text)
+	}
+}
+
+// mustTenantKey exposes the tenant scope key for a test that needs to address chunks
+// directly.
+func mustTenantKey(t *testing.T, d *Document, ctx context.Context) sqlmem.ScopeKey {
+	t.Helper()
+	key, _, err := d.ontologyTenantKey(ctx)
+	if err != nil {
+		t.Fatalf("ontologyTenantKey: %v", err)
+	}
+	return key
 }

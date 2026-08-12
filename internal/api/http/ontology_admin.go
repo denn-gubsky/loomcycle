@@ -258,7 +258,10 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 // reaching tenant memory, so it does not require the caller to hold the agent-side
 // tenant grants. The tenant itself is principal-derived and never from the wire.
 func (s *Server) ontologyDocCtx(ctx context.Context, mi memInject) context.Context {
-	dctx := s.docToolCtx(ctx, mi)
+	// RFC CA: these routes ARE the operator surface — the confirm toggle, accept/reject,
+	// adopt. Marked so the ontology guard admits them while refusing an agent's tool call
+	// (which is never stamped, because there is no wire field for it).
+	dctx := tools.WithSubstrateOperator(s.docToolCtx(ctx, mi))
 	dctx = tools.WithMemoryPolicy(dctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
 	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
 	return dctx
