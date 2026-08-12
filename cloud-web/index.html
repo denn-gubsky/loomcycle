@@ -1452,21 +1452,14 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     return { list, add, reveal, remove };
   })();
 
-  /* the bearer goes to the app over an origin-pinned postMessage — never in a
-     URL, so it stays out of history, Referer, and every proxy access log */
+  /* Sign in to the runtime UI via its own login URL: the Go handler
+     (internal/webui) consumes /ui?token=<bearer>, sets the HttpOnly
+     loomcycle_session cookie, and 302s to /ui — dropping the token from the
+     address bar. The runtime UI is served at /ui (its root 404s), and it has no
+     postMessage receiver, so open the login URL directly. */
   function handoff(token) {
-    const w = window.open(APP, 'loomcycle-app');
-    if (!w) { alert('Allow the popup to hand the token to app.loomcycle.cloud.'); return; }
-    let n = 0;
-    const t = setInterval(() => {
-      if (n++ > 40) return clearInterval(t);
-      try { w.postMessage({ type: 'loomcycle.login', token }, APP); } catch (_) {}
-    }, 250);
-    /* the app replies once it has stored the bearer */
-    addEventListener('message', function ack(e) {
-      if (e.origin !== APP || e.data?.type !== 'loomcycle.login.ok') return;
-      clearInterval(t); removeEventListener('message', ack);
-    });
+    const w = window.open(APP + '/ui?token=' + encodeURIComponent(token), 'loomcycle-app');
+    if (!w) { alert('Allow the popup to sign in to app.loomcycle.cloud.'); }
   }
 
   function go(step) {
