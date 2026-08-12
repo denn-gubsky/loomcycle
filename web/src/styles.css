@@ -5736,6 +5736,44 @@ button.primary:disabled {
   border-bottom: 1px solid var(--lc-rule);
   vertical-align: middle;
 }
+/* Suggested types (RFC CA). Boxed and accent-edged because it is the only part of
+   this panel that asks for a decision — a pending suggestion styled like the type
+   listing beside it is a decision nobody notices. */
+.ontology-proposals {
+  border: 1px solid var(--lc-rule);
+  border-left: 3px solid var(--lc-accent);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  background: var(--lc-surface-2);
+}
+.ontology-proposal {
+  margin-top: var(--lc-space-1);
+  padding-top: var(--lc-space-1);
+  border-top: 1px solid var(--lc-rule);
+  font-size: var(--lc-text-sm);
+}
+/* The evidence a curator filed with its proposal. Monospace + scrollable: it is
+   quoted material (counts, example facts), not prose the panel wrote. */
+.ontology-evidence {
+  margin: var(--lc-space-1) 0;
+  padding: var(--lc-space-1);
+  max-height: 8em;
+  overflow: auto;
+  background: var(--lc-surface-3);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  font-family: var(--lc-font-mono);
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text-muted);
+  white-space: pre-wrap;
+}
+.ontology-adopt-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--lc-space-1);
+  margin-top: var(--lc-space-1);
+}
+
 /* The ontology tree (RFC BZ P4). A taxonomy read as a flat list with one level of
    indent is a taxonomy nobody can check — the operator has to see which type is a
    kind of which, because that is now what steers extraction AND what widens a
