@@ -2358,7 +2358,14 @@ type Env struct {
 	// decoded bytes, so the request cap is the binding one on upload.
 	// LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES (bytes; <=0 ignored, default kept).
 	MaxDocumentAssetBytes int64
-	AuthToken             string
+	// UILoginOrigins (LOOMCYCLE_UI_LOGIN_ORIGINS, comma-separated) are the
+	// first-party origins the Web UI's postMessage login receiver may accept a
+	// bearer handoff FROM — e.g. "https://loomcycle.cloud" for the landing that
+	// mints tenant tokens. Empty ⇒ the receiver stays disabled (no cross-origin
+	// handoff), so a deployment without a configured landing can't be handed a
+	// token by any page. Non-secret.
+	UILoginOrigins []string
+	AuthToken      string
 	// OperatorTokenPepper is prepended to a bearer before SHA-256 when
 	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
 	// the pepper yields no usable token lookup. Secret — never logged.
@@ -3279,6 +3286,19 @@ func Load(paths ...string) (*Config, error) {
 // historical byte-identical fast path; everything else goes through the RFC AN
 // merge. Downstream — AGENTS_ROOT discovery, system_prompt_file resolution, the
 // env block, validate() — runs once over the assembled whole, unchanged.
+// splitCommaTrim splits a comma-separated env value into trimmed, non-empty
+// entries with any trailing slash removed (so an origin compares exactly).
+// Returns nil for an empty/blank input.
+func splitCommaTrim(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if v := strings.TrimRight(strings.TrimSpace(part), "/"); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func LoadLayers(layers ...Layer) (*Config, error) {
 	cfg := &Config{
 		Concurrency: Concurrency{
@@ -3396,6 +3416,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		GeminiBaseURL:               os.Getenv("GEMINI_BASE_URL"),
 		ListenAddr:                  getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		PublicURL:                   strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
+		UILoginOrigins:              splitCommaTrim(os.Getenv("LOOMCYCLE_UI_LOGIN_ORIGINS")),
 		AuthToken:                   os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		OperatorTokenPepper:         os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
 		SecretKey:                   os.Getenv("LOOMCYCLE_SECRET_KEY"),

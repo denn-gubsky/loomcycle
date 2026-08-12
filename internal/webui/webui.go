@@ -14,6 +14,7 @@ package webui
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -46,25 +47,71 @@ var uiAssets embed.FS
 // The `secureCookie` flag forces the Secure attribute on the
 // session cookie. Operators behind TLS terminators that don't set
 // r.TLS should pass true.
-func Handler(prefix string, secureCookie bool) http.Handler {
+func Handler(prefix string, secureCookie bool, loginOrigins []string) http.Handler {
 	prefix = strings.TrimRight(prefix, "/")
 	mux := http.NewServeMux()
 
+	setSession := func(w http.ResponseWriter, r *http.Request, token string) {
+		http.SetCookie(w, &http.Cookie{
+			Name:     SessionCookie,
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			Secure:   secureCookie || r.TLS != nil,
+		})
+	}
+
 	mux.HandleFunc(fmt.Sprintf("GET %s", prefix), func(w http.ResponseWriter, r *http.Request) {
-		// Token-set redirect — operator's first load.
+		// Token-set redirect — operator's first load. Kept for backward
+		// compatibility (bookmarks, the CLI hint). The POST /session route below
+		// is the preferred, URL-free path.
 		if token := r.URL.Query().Get("token"); token != "" {
-			http.SetCookie(w, &http.Cookie{
-				Name:     SessionCookie,
-				Value:    token,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
-				Secure:   secureCookie || r.TLS != nil,
-			})
+			setSession(w, r, token)
 			http.Redirect(w, r, prefix, http.StatusFound)
 			return
 		}
 		serveFile(w, "index.html")
+	})
+
+	// POST <prefix>/session — set the session cookie from an Authorization: Bearer
+	// header instead of a ?token= query, so the bearer never appears in a URL,
+	// browser history, or an access log. Used by (1) the SPA's paste-token form and
+	// (2) its postMessage receiver, which accepts a bearer handed off from an
+	// allowed first-party origin (e.g. the loomcycle.cloud landing) and posts it
+	// here same-origin. LOGIN-CSRF GUARD: require Sec-Fetch-Site: same-origin so
+	// only THIS app's own /ui page can set the cookie — a cross-site page cannot
+	// force a victim's browser to adopt an attacker's token (and a cross-origin
+	// fetch cannot set the Authorization header without a CORS grant we never make).
+	mux.HandleFunc(fmt.Sprintf("POST %s/session", prefix), func(w http.ResponseWriter, r *http.Request) {
+		if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" && sfs != "same-origin" {
+			writeJSONErr(w, http.StatusForbidden, "cross_site_login_refused",
+				"session login must be same-origin")
+			return
+		}
+		token := bearerToken(r.Header.Get("Authorization"))
+		if token == "" {
+			writeJSONErr(w, http.StatusBadRequest, "missing_bearer",
+				"Authorization: Bearer <token> required")
+			return
+		}
+		setSession(w, r, token)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// GET <prefix>/login-config.json — the non-secret origins the SPA's
+	// postMessage login receiver may accept a bearer handoff FROM (set via
+	// LOOMCYCLE_UI_LOGIN_ORIGINS). Empty list ⇒ the receiver stays disabled, so a
+	// deployment that doesn't configure a landing origin can't be handed a token
+	// by any page. Never secret; safe to serve unauthenticated.
+	mux.HandleFunc(fmt.Sprintf("GET %s/login-config.json", prefix), func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		origins := loginOrigins
+		if origins == nil {
+			origins = []string{}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"login_origins": origins})
 	})
 
 	// Logout — clears the session cookie and bounces to the login page. The
@@ -107,6 +154,24 @@ func Handler(prefix string, secureCookie bool) http.Handler {
 	})
 
 	return mux
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header
+// value (scheme match is case-insensitive per RFC 7235). Returns "" when the
+// header is absent or not a Bearer credential.
+func bearerToken(authHeader string) string {
+	const p = "bearer "
+	if len(authHeader) <= len(p) || !strings.EqualFold(authHeader[:len(p)], p) {
+		return ""
+	}
+	return strings.TrimSpace(authHeader[len(p):])
+}
+
+// writeJSONErr writes a {code,error} JSON body with the given status.
+func writeJSONErr(w http.ResponseWriter, status int, code, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": msg})
 }
 
 // serveFile reads a file from the embedded fs and writes it with a

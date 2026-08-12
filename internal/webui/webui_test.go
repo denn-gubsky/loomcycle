@@ -8,7 +8,7 @@ import (
 )
 
 func TestHandler_TokenQueryRedirectsAndSetsCookie(t *testing.T) {
-	h := Handler("/ui", false)
+	h := Handler("/ui", false, nil)
 	req := httptest.NewRequest("GET", "/ui?token=secret-token-123", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -44,7 +44,7 @@ func TestHandler_TokenQueryRedirectsAndSetsCookie(t *testing.T) {
 }
 
 func TestHandler_LogoutClearsCookieAndRedirects(t *testing.T) {
-	h := Handler("/ui", false)
+	h := Handler("/ui", false, nil)
 	req := httptest.NewRequest("GET", "/ui/logout", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -73,7 +73,7 @@ func TestHandler_LogoutClearsCookieAndRedirects(t *testing.T) {
 func TestHandler_SecureCookieFlag(t *testing.T) {
 	// secureCookie=true forces the Secure attribute even when r.TLS is
 	// nil — covers the operator behind a TLS terminator.
-	h := Handler("/ui", true)
+	h := Handler("/ui", true, nil)
 	req := httptest.NewRequest("GET", "/ui?token=x", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -90,7 +90,7 @@ func TestHandler_IndexReturns503WhenUINotBuilt(t *testing.T) {
 	// dist/ in the source tree contains only .gitkeep at this point
 	// (assuming tests run before `make build-ui`). Hitting /ui without
 	// an index.html should produce the documented diagnostic.
-	h := Handler("/ui", false)
+	h := Handler("/ui", false, nil)
 	req := httptest.NewRequest("GET", "/ui", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -123,5 +123,90 @@ func TestContentType(t *testing.T) {
 		if got := contentType(name); got != want {
 			t.Errorf("contentType(%q) = %q, want %q", name, got, want)
 		}
+	}
+}
+
+// TestPostSession_SetsCookieFromBearer: the URL-free login (RFC — secure
+// handoff). A same-origin POST /ui/session with Authorization: Bearer <token>
+// sets the loomcycle_session cookie (HttpOnly, SameSite=Strict) and 204s — the
+// bearer never appears in a URL.
+func TestPostSession_SetsCookieFromBearer(t *testing.T) {
+	h := Handler("/ui", true, []string{"https://loomcycle.cloud"})
+	req := httptest.NewRequest("POST", "/ui/session", nil)
+	req.Header.Set("Authorization", "Bearer secret-token-123")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+	var found *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == SessionCookie {
+			found = c
+		}
+	}
+	if found == nil || found.Value != "secret-token-123" {
+		t.Fatalf("session cookie = %+v, want value secret-token-123", found)
+	}
+	if !found.HttpOnly || found.SameSite != http.SameSiteStrictMode || !found.Secure {
+		t.Errorf("cookie attrs weak: HttpOnly=%v SameSite=%v Secure=%v", found.HttpOnly, found.SameSite, found.Secure)
+	}
+}
+
+// TestPostSession_RejectsCrossSite: the login-CSRF guard. A cross-site POST
+// (Sec-Fetch-Site: cross-site) is refused, so no page can force a victim's
+// browser to adopt an attacker's token.
+func TestPostSession_RejectsCrossSite(t *testing.T) {
+	h := Handler("/ui", false, nil)
+	req := httptest.NewRequest("POST", "/ui/session", nil)
+	req.Header.Set("Authorization", "Bearer x")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site POST status = %d, want 403", rec.Code)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == SessionCookie {
+			t.Fatalf("cross-site request must NOT set a session cookie")
+		}
+	}
+}
+
+// TestPostSession_RejectsMissingBearer: no bearer → 400, no cookie.
+func TestPostSession_RejectsMissingBearer(t *testing.T) {
+	h := Handler("/ui", false, nil)
+	req := httptest.NewRequest("POST", "/ui/session", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing-bearer status = %d, want 400", rec.Code)
+	}
+}
+
+// TestLoginConfig_ServesConfiguredOrigins: the SPA reads the allowed handoff
+// origins here; an unconfigured deployment returns an empty list (receiver
+// disabled).
+func TestLoginConfig_ServesConfiguredOrigins(t *testing.T) {
+	h := Handler("/ui", false, []string{"https://loomcycle.cloud"})
+	req := httptest.NewRequest("GET", "/ui/login-config.json", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "https://loomcycle.cloud") || !strings.Contains(body, "login_origins") {
+		t.Errorf("login-config body = %s, want login_origins incl. the landing origin", body)
+	}
+
+	// Unconfigured → empty array, not null (so the SPA gets a definite disabled state).
+	h2 := Handler("/ui", false, nil)
+	rec2 := httptest.NewRecorder()
+	h2.ServeHTTP(rec2, httptest.NewRequest("GET", "/ui/login-config.json", nil))
+	if body := strings.TrimSpace(rec2.Body.String()); !strings.Contains(body, "[]") {
+		t.Errorf("unconfigured login-config = %s, want an empty [] list", body)
 	}
 }

@@ -3108,9 +3108,15 @@ func (s *Server) Mux() http.Handler {
 	// — the SPA shell is public; it pulls protected data from
 	// /v1/* which DOES go through authMiddleware. Standard SPA-on-
 	// API split.
-	uiHandler := webui.Handler("/ui", false)
+	uiHandler := webui.Handler("/ui", false, s.cfg.Env.UILoginOrigins)
 	mux.Handle("GET /ui", recoveryMiddleware(uiHandler))
 	mux.Handle("GET /ui/", recoveryMiddleware(uiHandler))
+	// POST /ui/session — the URL-free login (Authorization: Bearer -> session
+	// cookie), used by the SPA's paste-token form + its postMessage handoff
+	// receiver. Unauthenticated like GET /ui (it ESTABLISHES the session); the
+	// handler enforces the same-origin login-CSRF guard. The GET-only /ui routes
+	// above don't match a POST, so it needs its own registration.
+	mux.Handle("POST /ui/session", recoveryMiddleware(uiHandler))
 	// v1.x RFC G A2A — additive routes (well-known AgentCard + REST /
 	// JSON-RPC binding mounts) registered by an external hook so the
 	// A2A package stays decoupled from this one. The hook also receives
