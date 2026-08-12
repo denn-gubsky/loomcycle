@@ -794,6 +794,31 @@ type ctxKeyDispatcher struct{}
 // WithDispatcher attaches the run's Dispatcher to ctx. Called at run
 // start in the HTTP server (same locations as WithRunID /
 // WithRunIdentity).
+type ctxKeySubstrateOperator struct{}
+
+// WithSubstrateOperator marks a context as the OPERATOR's own off-run substrate call —
+// the Web UI and the admin HTTP routes, not an agent's tool call inside a run.
+//
+// EXPLICIT DISCRIMINATOR, deliberately, rather than inferring it from the identity the
+// off-run path already stamps. That path uses a synthetic agent id (`a_http-admin`), and
+// reading authorization off it would be a hole: `POST /v1/runs` accepts a caller-supplied
+// `agent_id`, so a run could claim that value and be mistaken for the operator. A marker
+// with no wire field cannot be claimed.
+//
+// Absent means "not the operator", so anything that has not been explicitly stamped —
+// every run path, every sub-agent, every MCP session — is treated as an agent. A
+// no-op-on-empty setter here would silently widen, which is the failure mode this
+// codebase has already paid for once.
+func WithSubstrateOperator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySubstrateOperator{}, true)
+}
+
+// IsSubstrateOperator reports whether ctx is an operator's own off-run call.
+func IsSubstrateOperator(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeySubstrateOperator{}).(bool)
+	return v
+}
+
 func WithDispatcher(ctx context.Context, d *Dispatcher) context.Context {
 	if d == nil {
 		return ctx
