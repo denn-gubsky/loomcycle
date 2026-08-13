@@ -846,7 +846,7 @@ npm install @loomboard/chat</pre>
     </div>
 
     <div class="sheet-actions rise" style="margin-top:var(--leading)">
-      <button type="button" class="btn btn-primary" data-open-board>Open loomboard in your browser →</button>
+      <button type="button" class="btn btn-primary" data-open-console>Open loomboard — sign in from your vault →</button>
     </div>
     <p class="fineprint rise" style="margin-top:var(--half)">Downloads are GitHub releases of <a href="https://github.com/denn-gubsky/loomboard">denn-gubsky/loomboard</a>; the hosted browser app is the same source, served alongside your runtime.</p>
   </section>
@@ -1546,6 +1546,27 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     send();
   }
 
+  // Hand the SAME vault bearer to the hosted loomboard over its origin-allowlisted
+  // postMessage receiver ({type:'loomboard.connect'}); baseUrl:'' rides board's
+  // same-origin /v1 proxy. Same popup-safe shape as openApp/handoff. loomboard has
+  // no ?token= URL ingestion, so a blocked popup falls back to a bare same-tab open
+  // (the user pastes into loomboard's own connect screen).
+  const BOARD = 'https://board.loomcycle.cloud';
+  function openBoard() { return window.open(BOARD, 'loomboard-app'); }
+  function handoffBoard(w, token) {
+    if (!w || !token) return;
+    let done = false, iv = 0, to = 0;
+    const send = () => { try { w.postMessage({ type: 'loomboard.connect', baseUrl: '', token: token }, BOARD); } catch (_) {} };
+    const stop = () => { clearInterval(iv); clearTimeout(to); removeEventListener('message', onAck); };
+    const onAck = (e) => {
+      if (e.origin === BOARD && e.data && e.data.type === 'loomboard.connect.ok') { done = true; stop(); }
+    };
+    addEventListener('message', onAck);
+    iv = setInterval(send, 300);   /* loomboard needs a moment to mount its receiver — resend until acked */
+    to = setTimeout(() => { if (done) return; stop(); }, 8000);  /* no ack → leave board open for a manual paste */
+    send();
+  }
+
   function go(step) {
     document.querySelectorAll('[data-pane]').forEach((p) => { p.hidden = p.dataset.pane !== String(step); });
     document.querySelectorAll('[data-rail]').forEach((r) => {
@@ -1569,10 +1590,6 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     lastFocus?.focus();
   }
   document.querySelectorAll('[data-open-console]').forEach((b) => b.addEventListener('click', open));
-  // Open the hosted loomboard. Phase 1: plain new-tab open (the app prompts for a
-  // token). The token-from-vault handoff lands once board.loomcycle.cloud is up.
-  document.querySelectorAll('[data-open-board]').forEach((b) =>
-    b.addEventListener('click', () => window.open('https://board.loomcycle.cloud', '_blank', 'noopener')));
   document.querySelectorAll('[data-close-console]').forEach((b) => b.addEventListener('click', close));
   sheet.addEventListener('click', (e) => { if (e.target === sheet) close(); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape' && !sheet.hidden) close(); });
@@ -1642,13 +1659,26 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
         }
         catch (err) { console.error('vault', err); if (w) w.close(); vaultError('Could not unwrap that token.'); }
       });
+      const board = document.createElement('button');
+      board.type = 'button'; board.className = 'use'; board.textContent = 'loomboard →';
+      board.disabled = !unlocked;
+      board.title = unlocked ? 'Open this token in loomboard (board.loomcycle.cloud)' : 'Unlock the vault first';
+      board.addEventListener('click', async () => {
+        const w = openBoard();   /* open in the click gesture; null if the browser blocked it */
+        try {
+          const token = await Vault.reveal(it.id);
+          if (w) handoffBoard(w, token);       /* popup allowed → postMessage handoff (no token in URL) */
+          else window.location.href = BOARD;    /* popup blocked → bare board; paste in its connect screen */
+        }
+        catch (err) { console.error('vault', err); if (w) w.close(); vaultError('Could not unwrap that token.'); }
+      });
       const rm = document.createElement('button');
       rm.type = 'button'; rm.className = 'rm'; rm.textContent = 'Remove';
       rm.addEventListener('click', async () => {
         try { await Vault.remove(it.id); } catch (err) { console.error('vault', err); }
         render();
       });
-      box.append(use, rm); act.appendChild(box);
+      box.append(use, board, rm); act.appendChild(box);
       rows.appendChild(tr);
     }
     document.getElementById('quota-text').textContent = items.length + ' of ' + LIMIT + ' tokens in use';
