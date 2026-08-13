@@ -59,6 +59,52 @@ func routingFor(t *testing.T, srv *Server, scopes []string) routingResponse {
 	return resp
 }
 
+// TestRouting_EmptyCascadeSerializesAsArray: a tier that is configured (so it
+// appears in the routing view) but resolves to ZERO candidates must serialize
+// its cascade as [] — NOT null. A JSON null decodes to a nil slice and, in the
+// web UI, TierCard does tier.cascade.length on it, which throws and blanks the
+// whole routing page. Regression for that blank-page bug.
+func TestRouting_EmptyCascadeSerializesAsArray(t *testing.T) {
+	cfg := &config.Config{
+		ProviderPriority: []string{"deepseek"},
+		Tiers: map[string][]config.TierCandidate{
+			"middle": {{Provider: "deepseek", Model: "deepseek-v4-pro"}},
+			// "high" is configured (→ shown in the routing view) but the resolver
+			// below has no "high" candidates, so its cascade resolves empty.
+			"high": {{Provider: "deepseek", Model: "deepseek-v4-pro"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	cfg.Env.AuthToken = ""
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	res := resolve.NewResolver([]string{"deepseek"}, map[string][]resolve.Candidate{
+		"middle": {{Provider: "deepseek", Model: "deepseek-v4-pro"}},
+	})
+	srv.SetResolver(res)
+
+	resp := routingFor(t, srv, []string{auth.ScopeAdmin})
+	if len(resp.UserTiers) == 0 {
+		t.Fatal("no user_tiers in response")
+	}
+	var high *routingTier
+	for i := range resp.UserTiers[0].Tiers {
+		if resp.UserTiers[0].Tiers[i].Tier == "high" {
+			high = &resp.UserTiers[0].Tiers[i]
+		}
+	}
+	if high == nil {
+		t.Fatal("high tier missing from routing response")
+	}
+	// A JSON "cascade": null decodes to a nil slice; "cascade": [] to a non-nil
+	// empty slice. This is exactly the distinction the UI crashes on.
+	if high.Cascade == nil {
+		t.Errorf("empty high cascade decoded to nil (serialized as null) — the UI blanks; want [] (non-nil)")
+	}
+	if len(high.Cascade) != 0 {
+		t.Errorf("high cascade = %d candidates, want 0", len(high.Cascade))
+	}
+}
+
 // TestRouting_AdminSeesCascadeAndAvailability: an admin gets the ordered cascade
 // (deepseek primary, anthropic fallback) with live-availability fields populated
 // and the active-providers header.
