@@ -54,8 +54,10 @@ export default function RoutingView() {
   // presence — a redacted/filtered tenant payload still shows what it has.
   const hasAvailability =
     (!!resp?.providers && resp.providers.length > 0) ||
-    !!resp?.user_tiers.some((ut) =>
-      ut.tiers.some((t) => t.cascade.some((c) => c.available !== undefined)),
+    !!(resp?.user_tiers ?? []).some((ut) =>
+      (ut.tiers ?? []).some((t) =>
+        (t.cascade ?? []).some((c) => c.available !== undefined),
+      ),
     );
 
   return (
@@ -146,7 +148,7 @@ export default function RoutingView() {
               )}
             </h2>
             <div className="routing-tier-grid">
-              {[...ut.tiers]
+              {[...(ut.tiers ?? [])]
                 .sort((a, b) => tierRank(a.tier) - tierRank(b.tier))
                 .map((t) => (
                   <TierCard key={t.tier} tier={t} />
@@ -219,14 +221,17 @@ function searchStatusText(sp: SearchRoutingProvider): string {
 }
 
 function TierCard({ tier }: { tier: RoutingTier }) {
+  // Defensive: the backend now serializes an empty cascade as [], but guard null
+  // too so a single tier can never blank the whole routing view.
+  const cascade = tier.cascade ?? [];
   return (
     <div className="routing-tier-card">
       <div className="routing-tier-title">{tier.tier}</div>
-      {tier.cascade.length === 0 ? (
+      {cascade.length === 0 ? (
         <div className="routing-tier-empty">no candidates</div>
       ) : (
         <ol className="routing-cascade">
-          {tier.cascade.map((c, i) => (
+          {cascade.map((c, i) => (
             <CandidateRow key={`${c.provider}/${c.model}/${i}`} c={c} />
           ))}
         </ol>

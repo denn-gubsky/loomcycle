@@ -150,7 +150,9 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, ut := range utNames {
 		overlay := s.userTierOverlay(ut)
-		rut := routingUserTier{Name: ut}
+		// Non-nil so an empty tier set serializes as [] not null (the routing-view
+		// UI does [...ut.tiers] / tier.cascade.length and blanks on a null).
+		rut := routingUserTier{Name: ut, Tiers: []routingTier{}}
 		for _, tier := range tierNames {
 			req := resolve.AgentRequest{Name: "routing-view", Tier: tier, UserTier: overlay}
 			casc := s.resolver.Cascade(req)
@@ -167,7 +169,10 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 					keyableUnion[p] = true
 				}
 			}
-			rt := routingTier{Tier: tier}
+			// Non-nil cascade so a tier with zero resolved candidates (a valid
+			// config state) serializes as [] not null — a null crashes the routing
+			// view's TierCard (tier.cascade.length).
+			rt := routingTier{Tier: tier, Cascade: []routingCandidate{}}
 			selectedMarked := false
 			for _, c := range casc {
 				if restricted && !keyable[c.Provider] {
