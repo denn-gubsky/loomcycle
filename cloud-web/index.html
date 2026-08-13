@@ -552,6 +552,7 @@ table.models tr[data-dim] td { color: color-mix(in srgb, var(--color-text) 45%, 
   <a href="#how">How it works</a>
   <a href="#trust">Isolation</a>
   <a href="#plugin">Claude Plugin</a>
+  <a href="#loomboard">loomboard</a>
   <a href="#quickstart">Quickstart</a>
   <button type="button" class="btn btn-primary" data-open-console>Sign in</button>
 </nav>
@@ -800,6 +801,54 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     </div>
 
     <p class="fineprint rise" style="margin-top:var(--leading)">The plugin does not bundle or start a runtime — with loomcycle.cloud you do not need one locally. Source and issues: <a href="https://github.com/denn-gubsky/claude-code-plugin-loomcycle">denn-gubsky/claude-code-plugin-loomcycle</a>.</p>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="code-sec" id="loomboard">
+    <div class="code-head">
+      <div class="rise">
+        <span class="kicker">loomboard</span>
+        <h2 class="r-title" style="font-size:26px">A chat app for your cloud tenant — desktop or browser</h2>
+      </div>
+    </div>
+
+    <p class="rise" style="margin:0 0 var(--half)">A thin-client chat UI for loomcycle — runs, streaming, history, documents, memory — Apache-2.0. Native desktop app, latest <code class="inline-code">v0.1.2</code>:</p>
+    <p class="rise" style="margin:0 0 var(--leading)">
+      <a href="https://github.com/denn-gubsky/loomboard/releases/download/v0.1.2/loomboard_0.1.2_universal.dmg">macOS · DMG</a> &nbsp;·&nbsp;
+      <a href="https://github.com/denn-gubsky/loomboard/releases/download/v0.1.2/loomboard_0.1.2_x64-setup.exe">Windows · EXE</a> &nbsp;·&nbsp;
+      <a href="https://github.com/denn-gubsky/loomboard/releases/download/v0.1.2/loomboard_0.1.2_amd64.AppImage">Linux · AppImage</a> &nbsp;·&nbsp;
+      <a href="https://github.com/denn-gubsky/loomboard/releases">all builds (.deb / .msi) →</a>
+    </p>
+
+    <pre class="code rise"><span class="c"># or run it locally — serves the app + reverse-proxies /v1 to your tenant</span>
+npm install -g @loomboard/app
+
+<span class="c"># or embed the chat as a React component</span>
+npm install @loomboard/chat</pre>
+
+    <div class="rows" style="padding-top:calc(1.5 * var(--leading));padding-bottom:0">
+      <div class="row-item rise">
+        <p class="r-num">01</p>
+        <h2 class="r-title">Thin client, your loop</h2>
+        <p class="r-copy">No loomboard backend — it talks straight to your tenant over loomcycle&rsquo;s <code>/v1</code> wire with <code>@loomcycle/client</code>. Anything it writes (runs, documents, memory) lands where your Web UI reads it.</p>
+      </div>
+      <div class="row-item rise">
+        <p class="r-num">02</p>
+        <h2 class="r-title">Open in your browser</h2>
+        <p class="r-copy">No install: <a href="https://board.loomcycle.cloud" target="_blank" rel="noopener">board.loomcycle.cloud</a> runs the same app, hosted next to your runtime. Sign in from your token vault and it hands loomboard your bearer over an origin-checked postMessage — the same posture as the Web UI login, never in the URL.</p>
+      </div>
+      <div class="row-item rise">
+        <p class="r-num">03</p>
+        <h2 class="r-title">One token, everywhere</h2>
+        <p class="r-copy">Desktop, CLI, and browser all authenticate with a bearer from your vault against <code>https://app.loomcycle.cloud</code>. Desktop keeps it in the OS keychain; the hosted app in browser storage — loomcycle owns real persistence.</p>
+      </div>
+    </div>
+
+    <div class="sheet-actions rise" style="margin-top:var(--leading)">
+      <button type="button" class="btn btn-primary" data-open-board>Open loomboard in your browser →</button>
+    </div>
+    <p class="fineprint rise" style="margin-top:var(--half)">Downloads are GitHub releases of <a href="https://github.com/denn-gubsky/loomboard">denn-gubsky/loomboard</a>; the hosted browser app is the same source, served alongside your runtime.</p>
   </section>
 
   <hr class="rule2" />
@@ -1520,6 +1569,10 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     lastFocus?.focus();
   }
   document.querySelectorAll('[data-open-console]').forEach((b) => b.addEventListener('click', open));
+  // Open the hosted loomboard. Phase 1: plain new-tab open (the app prompts for a
+  // token). The token-from-vault handoff lands once board.loomcycle.cloud is up.
+  document.querySelectorAll('[data-open-board]').forEach((b) =>
+    b.addEventListener('click', () => window.open('https://board.loomcycle.cloud', '_blank', 'noopener')));
   document.querySelectorAll('[data-close-console]').forEach((b) => b.addEventListener('click', close));
   sheet.addEventListener('click', (e) => { if (e.target === sheet) close(); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape' && !sheet.hidden) close(); });
