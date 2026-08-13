@@ -444,6 +444,10 @@ table.tokens .revoke:focus-visible { outline: 2px solid var(--color-accent); out
 .rowact .use { font-family: var(--font-heading); font-weight: var(--font-heading-weight);
   color: var(--color-accent-700); }
 .rowact .use:hover { color: var(--color-accent); }
+/* Locked vault: SIGN IN is disabled (use.disabled = !unlocked) — make that
+   unmistakable instead of a live-looking button that silently swallows clicks. */
+.rowact button:disabled { opacity: 0.4; cursor: not-allowed; }
+.rowact button:disabled:hover { color: var(--color-accent-700); }
 .rowact .rm { color: color-mix(in srgb, var(--color-text) 70%, transparent); }
 .rowact .rm:hover { color: var(--color-accent); }
 .rowact button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
@@ -1013,7 +1017,7 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
           <button type="button" class="btn btn-ghost" data-back-tokens>Back to the vault</button>
           <span class="copied" id="copied-flag">Copied</span>
         </div>
-        <p class="fineprint" style="margin-top:var(--half)">Signing in opens <code class="inline-code">app.loomcycle.cloud/ui</code> with your bearer; the runtime consumes it, sets an HttpOnly session cookie, and 302s to a clean URL. (A postMessage handoff that keeps the token out of the URL entirely is coming in the next runtime build.)</p>
+        <p class="fineprint" style="margin-top:var(--half)">Signing in opens <code class="inline-code">app.loomcycle.cloud/ui</code> and hands your bearer to it over an origin-checked postMessage; the runtime sets an HttpOnly session cookie — the token never touches the address bar, browser history, or an access log.</p>
       </div>
     </div>
   </div>
@@ -1452,14 +1456,45 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     return { list, add, reveal, remove };
   })();
 
-  /* Sign in to the runtime UI via its own login URL: the Go handler
-     (internal/webui) consumes /ui?token=<bearer>, sets the HttpOnly
-     loomcycle_session cookie, and 302s to /ui — dropping the token from the
-     address bar. The runtime UI is served at /ui (its root 404s), and it has no
-     postMessage receiver, so open the login URL directly. */
-  function handoff(token) {
-    const w = window.open(APP + '/ui?token=' + encodeURIComponent(token), 'loomcycle-app');
-    if (!w) { alert('Allow the popup to sign in to app.loomcycle.cloud.'); }
+  /* Sign in to the runtime UI WITHOUT the bearer in the address bar. Two steps so
+     the browser never blocks it as a popup: openApp() opens the /ui login window
+     synchronously INSIDE the click gesture (before any async vault unwrap), then
+     handoff() delivers the token to it over postMessage. The runtime LoginView
+     (>= 1.53) checks the sender origin against LOOMCYCLE_UI_LOGIN_ORIGINS and
+     exchanges the token for the HttpOnly session cookie via same-origin
+     POST /ui/session, acking with {type:'loomcycle.login.ok'}. If no ack arrives
+     (older runtime / receiver disabled) we fall back to the /ui?token= URL flow in
+     the SAME already-open window — the Go handler still consumes it and 302s to a
+     clean URL. Opening /ui (not /ui?token=) means the token is never in the URL on
+     the happy path. */
+  function openApp() {
+    /* Returns null when the browser blocks the popup (some block a cross-origin
+       window.open even inside a click). Callers then fall back to a SAME-TAB nav
+       so sign-in still works without the user touching popup settings. */
+    return window.open(APP + '/ui', 'loomcycle-app');
+  }
+  /* Same-tab fallback used when the popup is blocked: the Go handler consumes
+     /ui?token= and 302s to a clean URL. Token is briefly in the URL here (only on
+     this degraded path); the postMessage path above keeps it out entirely. */
+  function signInSameTab(token) {
+    if (token) window.location.href = APP + '/ui?token=' + encodeURIComponent(token);
+  }
+  function handoff(w, token) {
+    if (!w || !token) return;
+    let done = false, iv = 0, to = 0;
+    const send = () => { try { w.postMessage({ type: 'loomcycle.login', token: token }, APP); } catch (_) {} };
+    const stop = () => { clearInterval(iv); clearTimeout(to); removeEventListener('message', onAck); };
+    const onAck = (e) => {
+      if (e.origin === APP && e.data && e.data.type === 'loomcycle.login.ok') { done = true; stop(); }
+    };
+    addEventListener('message', onAck);
+    iv = setInterval(send, 300);   /* the /ui page needs a moment to mount its receiver — resend until acked */
+    to = setTimeout(() => {         /* no ack in time → graceful fallback to the ?token= flow (no new popup) */
+      if (done) return;
+      stop();
+      try { w.location = APP + '/ui?token=' + encodeURIComponent(token); } catch (_) {}
+    }, 8000);
+    send();
   }
 
   function go(step) {
@@ -1546,8 +1581,13 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
       use.disabled = !unlocked;
       use.title = unlocked ? 'Hand this token to app.loomcycle.cloud' : 'Unlock the vault first';
       use.addEventListener('click', async () => {
-        try { handoff(await Vault.reveal(it.id)); }
-        catch (err) { console.error('vault', err); vaultError('Could not unwrap that token.'); }
+        const w = openApp();   /* open in the click gesture; null if the browser blocked it */
+        try {
+          const token = await Vault.reveal(it.id);
+          if (w) handoff(w, token);      /* popup allowed → secure postMessage (no token in URL) */
+          else signInSameTab(token);      /* popup blocked → same-tab ?token= fallback */
+        }
+        catch (err) { console.error('vault', err); if (w) w.close(); vaultError('Could not unwrap that token.'); }
       });
       const rm = document.createElement('button');
       rm.type = 'button'; rm.className = 'rm'; rm.textContent = 'Remove';
@@ -1617,7 +1657,10 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
   });
 
   sheet.querySelector('[data-back-tokens]').addEventListener('click', () => go(2));
-  sheet.querySelector('[data-handoff]').addEventListener('click', () => handoff(liveToken));
+  sheet.querySelector('[data-handoff]').addEventListener('click', () => {
+    const w = openApp();
+    if (w) handoff(w, liveToken); else signInSameTab(liveToken);
+  });
 
   /* use-tabs on the reveal */
   sheet.querySelectorAll('[data-use]').forEach((btn) => {
