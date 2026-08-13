@@ -276,10 +276,26 @@ services:
       tailscale:
         condition: service_healthy
 
-  # ── Cloudflare tunnel (token method) — app.loomcycle.cloud + loomcycle.cloud ──
+  # ── Hosted loomboard browser app — board.loomcycle.cloud ──
+  #    Serves the standalone SPA (connect-handoff allowlist baked in) + proxies
+  #    /v1/* to the runtime. Tunnel route: board.loomcycle.cloud → loomboard:8080.
+  loomboard:
+    build:
+      context: ./loomboard
+      args:
+        LOOMBOARD_REF: feature-connect-handoff
+        CONNECT_ORIGINS: https://loomcycle.cloud
+    restart: unless-stopped
+    networks: [loomnet]
+    depends_on:
+      tailscale:
+        condition: service_healthy
+
+  # ── Cloudflare tunnel (token method) — app + loomcycle + board.loomcycle.cloud ──
   #    Dashboard routes: app.loomcycle.cloud → http://tailscale:8787 (the runtime),
-  #    loomcycle.cloud → http://landing:8080 (this stack). Protect /api/* on
-  #    loomcycle.cloud with a Cloudflare Access (Google) policy — see INSTALL.md.
+  #    loomcycle.cloud → http://landing:8080 (this stack),
+  #    board.loomcycle.cloud → http://loomboard:8080 (the hosted loomboard).
+  #    Protect /api/* on loomcycle.cloud with a Cloudflare Access (Google) policy — see INSTALL.md.
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped

@@ -552,6 +552,7 @@ table.models tr[data-dim] td { color: color-mix(in srgb, var(--color-text) 45%, 
   <a href="#how">How it works</a>
   <a href="#trust">Isolation</a>
   <a href="#plugin">Claude Plugin</a>
+  <a href="#loomboard">loomboard</a>
   <a href="#quickstart">Quickstart</a>
   <button type="button" class="btn btn-primary" data-open-console>Sign in</button>
 </nav>
@@ -800,6 +801,54 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     </div>
 
     <p class="fineprint rise" style="margin-top:var(--leading)">The plugin does not bundle or start a runtime — with loomcycle.cloud you do not need one locally. Source and issues: <a href="https://github.com/denn-gubsky/claude-code-plugin-loomcycle">denn-gubsky/claude-code-plugin-loomcycle</a>.</p>
+  </section>
+
+  <hr class="rule2" />
+
+  <section class="code-sec" id="loomboard">
+    <div class="code-head">
+      <div class="rise">
+        <span class="kicker">loomboard</span>
+        <h2 class="r-title" style="font-size:26px">A chat app for your cloud tenant — desktop or browser</h2>
+      </div>
+    </div>
+
+    <p class="rise" style="margin:0 0 var(--half)">A thin-client chat UI for loomcycle — runs, streaming, history, documents, memory — Apache-2.0. Native desktop app, latest <code class="inline-code">v0.1.2</code>:</p>
+    <p class="rise" style="margin:0 0 var(--leading)">
+      <a href="https://github.com/denn-gubsky/loomboard/releases/download/v0.1.2/loomboard_0.1.2_universal.dmg">macOS · DMG</a> &nbsp;·&nbsp;
+      <a href="https://github.com/denn-gubsky/loomboard/releases/download/v0.1.2/loomboard_0.1.2_x64-setup.exe">Windows · EXE</a> &nbsp;·&nbsp;
+      <a href="https://github.com/denn-gubsky/loomboard/releases/download/v0.1.2/loomboard_0.1.2_amd64.AppImage">Linux · AppImage</a> &nbsp;·&nbsp;
+      <a href="https://github.com/denn-gubsky/loomboard/releases">all builds (.deb / .msi) →</a>
+    </p>
+
+    <pre class="code rise"><span class="c"># or run it locally — serves the app + reverse-proxies /v1 to your tenant</span>
+npm install -g @loomboard/app
+
+<span class="c"># or embed the chat as a React component</span>
+npm install @loomboard/chat</pre>
+
+    <div class="rows" style="padding-top:calc(1.5 * var(--leading));padding-bottom:0">
+      <div class="row-item rise">
+        <p class="r-num">01</p>
+        <h2 class="r-title">Thin client, your loop</h2>
+        <p class="r-copy">No loomboard backend — it talks straight to your tenant over loomcycle&rsquo;s <code>/v1</code> wire with <code>@loomcycle/client</code>. Anything it writes (runs, documents, memory) lands where your Web UI reads it.</p>
+      </div>
+      <div class="row-item rise">
+        <p class="r-num">02</p>
+        <h2 class="r-title">Open in your browser</h2>
+        <p class="r-copy">No install: <a href="https://board.loomcycle.cloud" target="_blank" rel="noopener">board.loomcycle.cloud</a> runs the same app, hosted next to your runtime. Sign in from your token vault and it hands loomboard your bearer over an origin-checked postMessage — the same posture as the Web UI login, never in the URL.</p>
+      </div>
+      <div class="row-item rise">
+        <p class="r-num">03</p>
+        <h2 class="r-title">One token, everywhere</h2>
+        <p class="r-copy">Desktop, CLI, and browser all authenticate with a bearer from your vault against <code>https://app.loomcycle.cloud</code>. Desktop keeps it in the OS keychain; the hosted app in browser storage — loomcycle owns real persistence.</p>
+      </div>
+    </div>
+
+    <div class="sheet-actions rise" style="margin-top:var(--leading)">
+      <button type="button" class="btn btn-primary" data-open-console>Open loomboard — sign in from your vault →</button>
+    </div>
+    <p class="fineprint rise" style="margin-top:var(--half)">Downloads are GitHub releases of <a href="https://github.com/denn-gubsky/loomboard">denn-gubsky/loomboard</a>; the hosted browser app is the same source, served alongside your runtime.</p>
   </section>
 
   <hr class="rule2" />
@@ -1497,6 +1546,27 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     send();
   }
 
+  // Hand the SAME vault bearer to the hosted loomboard over its origin-allowlisted
+  // postMessage receiver ({type:'loomboard.connect'}); baseUrl:'' rides board's
+  // same-origin /v1 proxy. Same popup-safe shape as openApp/handoff. loomboard has
+  // no ?token= URL ingestion, so a blocked popup falls back to a bare same-tab open
+  // (the user pastes into loomboard's own connect screen).
+  const BOARD = 'https://board.loomcycle.cloud';
+  function openBoard() { return window.open(BOARD, 'loomboard-app'); }
+  function handoffBoard(w, token) {
+    if (!w || !token) return;
+    let done = false, iv = 0, to = 0;
+    const send = () => { try { w.postMessage({ type: 'loomboard.connect', baseUrl: '', token: token }, BOARD); } catch (_) {} };
+    const stop = () => { clearInterval(iv); clearTimeout(to); removeEventListener('message', onAck); };
+    const onAck = (e) => {
+      if (e.origin === BOARD && e.data && e.data.type === 'loomboard.connect.ok') { done = true; stop(); }
+    };
+    addEventListener('message', onAck);
+    iv = setInterval(send, 300);   /* loomboard needs a moment to mount its receiver — resend until acked */
+    to = setTimeout(() => { if (done) return; stop(); }, 8000);  /* no ack → leave board open for a manual paste */
+    send();
+  }
+
   function go(step) {
     document.querySelectorAll('[data-pane]').forEach((p) => { p.hidden = p.dataset.pane !== String(step); });
     document.querySelectorAll('[data-rail]').forEach((r) => {
@@ -1589,13 +1659,26 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
         }
         catch (err) { console.error('vault', err); if (w) w.close(); vaultError('Could not unwrap that token.'); }
       });
+      const board = document.createElement('button');
+      board.type = 'button'; board.className = 'use'; board.textContent = 'loomboard →';
+      board.disabled = !unlocked;
+      board.title = unlocked ? 'Open this token in loomboard (board.loomcycle.cloud)' : 'Unlock the vault first';
+      board.addEventListener('click', async () => {
+        const w = openBoard();   /* open in the click gesture; null if the browser blocked it */
+        try {
+          const token = await Vault.reveal(it.id);
+          if (w) handoffBoard(w, token);       /* popup allowed → postMessage handoff (no token in URL) */
+          else window.location.href = BOARD;    /* popup blocked → bare board; paste in its connect screen */
+        }
+        catch (err) { console.error('vault', err); if (w) w.close(); vaultError('Could not unwrap that token.'); }
+      });
       const rm = document.createElement('button');
       rm.type = 'button'; rm.className = 'rm'; rm.textContent = 'Remove';
       rm.addEventListener('click', async () => {
         try { await Vault.remove(it.id); } catch (err) { console.error('vault', err); }
         render();
       });
-      box.append(use, rm); act.appendChild(box);
+      box.append(use, board, rm); act.appendChild(box);
       rows.appendChild(tr);
     }
     document.getElementById('quota-text').textContent = items.length + ' of ' + LIMIT + ' tokens in use';
