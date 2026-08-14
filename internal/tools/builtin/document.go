@@ -88,6 +88,7 @@ const documentInputSchema = `{
 		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
 		"limit":     {"type": "integer", "description": "graph_recall: maximum chunks returned (default 50)."},
+		"subject":      {"type": "string", "description": "upsert_chunk: the thing this entity assertion is ABOUT, paired with type — emit both or neither. type says what kind of thing it is, subject names it. A plain document chunk has no subject; passing the pair is what marks a write as an entity the ontology governs."},
 		"source_quote": {"type": "string", "description": "upsert_chunk: the EXACT text this fact was derived from, copied verbatim from the source you read — not a paraphrase. It is what a later pass checks the claim against, and what an operator sees when they ask why the store believes this. Omit only when there is no source text (material you are recording as evidence in its own right)."},
 		"natural_key": {"type": "string", "description": "upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
@@ -149,8 +150,12 @@ type docInput struct {
 	// entity row so a later pass can check the claim against it, and so an operator
 	// asking "why do you believe this" has an answer.
 	SourceQuote string `json:"source_quote"`
-	Position    *int   `json:"position"`
-	Revision    *int   `json:"revision"`
+	// Subject is WHAT an entity assertion is about, travelling with Type as a pair.
+	// First-class rather than encoded in the natural key, so it can be read, queried and
+	// checked — and so the tool can tell an entity assertion from a document write.
+	Subject  string `json:"subject"`
+	Position *int   `json:"position"`
+	Revision *int   `json:"revision"`
 	// FromRevision / ToRevision select the two body-change revisions to diff (RFC
 	// BS Phase 3a). Pointers so an omitted bound is distinguishable from a value
 	// (the log is 1-based, so 0 is never a real revision, but the pointer keeps the
@@ -272,7 +277,7 @@ var docSchemaDDL = []string{
 		created_at BIGINT, expired_at BIGINT,
 		class TEXT, origin TEXT, confidence DOUBLE PRECISION,
 		session_id TEXT, run_id TEXT, event_seq BIGINT,
-		natural_key TEXT, source_quote TEXT)`,
+		natural_key TEXT, source_quote TEXT, subject TEXT)`,
 	// UNIQUE per SCOPE, not per document: each scope owns its own database (a
 	// sqlite file / a postgres schema), so a bare UNIQUE index on the column IS
 	// scope-wide — one entity per tenant regardless of which document holds it.
@@ -579,7 +584,10 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if err := d.migrateEdgeAuto(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateSourceQuote(ctx, key)
+	if err := d.migrateSourceQuote(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateSubject(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -746,6 +754,25 @@ func (d *Document) tableHasColumn(ctx context.Context, key sqlmem.ScopeKey, tabl
 //
 // PROBES before it alters, like its siblings — ensureSchema is on every op's hot path, so
 // the fast case is one 0-row SELECT.
+// migrateSubject adds the subject an entity assertion is ABOUT.
+//
+// Until now the subject existed only inside the natural key and the title —
+// `location:user` with title "user" — so nothing could read it as data. Two
+// consequences, both observed: the tool could not tell an entity assertion from an
+// idempotent DOCUMENT write (both carry a type and a natural key, and `type` holds a
+// document's structural vocabulary too), and a mistyped subject was invisible to any
+// query. `location:user`, asserting that the user is a location, is only findable by
+// parsing a key.
+//
+// Nullable. A document write carries no subject and never will, which is exactly what
+// makes the pair a usable discriminator.
+func (d *Document) migrateSubject(ctx context.Context, key sqlmem.ScopeKey) error {
+	if _, err := d.query(ctx, key, `SELECT subject FROM chunk_memory_meta WHERE 1=0`); err == nil {
+		return nil
+	}
+	return d.exec(ctx, key, `ALTER TABLE chunk_memory_meta ADD COLUMN subject TEXT`)
+}
+
 func (d *Document) migrateSourceQuote(ctx context.Context, key sqlmem.ScopeKey) error {
 	if _, err := d.query(ctx, key, `SELECT source_quote FROM chunk_memory_meta WHERE 1=0`); err == nil {
 		return nil

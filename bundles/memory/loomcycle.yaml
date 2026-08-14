@@ -1286,7 +1286,7 @@ agents:
         var subjKey = entityKey(fact.type, fact.subject);
         var isNewSubject = !st.entity_ids[subjKey];
         var subjID = upsertEntityChunk(st, docID, subjKey, {
-          title: fact.subject, type: fact.type
+          title: fact.subject, type: fact.type, subject: fact.subject
         });
         if (!subjID) { return; }
         if (isNewSubject) { st.entity_nodes++; }

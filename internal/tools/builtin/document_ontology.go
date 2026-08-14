@@ -304,6 +304,18 @@ func (d *Document) expandTypeFilter(ctx context.Context, typ string) []string {
 // Not cached: an operator who fixes their taxonomy expects the next query to reflect
 // it, and the read is two point lookups on a filter that is not on any hot path.
 func (d *Document) tenantOntologyForRun(ctx context.Context) ([]memrank.OntologyTerm, bool) {
+	terms, confirmed, _ := d.tenantOntologyState(ctx)
+	return terms, confirmed
+}
+
+// tenantOntologyState additionally reports whether the tenant HAS an ontology document.
+//
+// That third value matters to the write gate and not to retrieval. The seed is compiled
+// in, so the effective set is never empty and "no terms" cannot distinguish a tenant that
+// never opened the ontology from one whose layer is empty. A gate reading only the terms
+// would enforce a vocabulary nobody chose to curate, changing behaviour for every
+// deployment that has not opted in.
+func (d *Document) tenantOntologyState(ctx context.Context) (terms []memrank.OntologyTerm, confirmed, exists bool) {
 	key := sqlmem.ScopeKey{
 		Tenant:  sqlScopeTenant(ctx),
 		Scope:   "tenant",
@@ -314,9 +326,9 @@ func (d *Document) tenantOntologyForRun(ctx context.Context) ([]memrank.Ontology
 		// Best-effort, exactly as the prompt-side render is: a store fault must not
 		// turn a retrieval into an error. The unexpanded filter still answers the
 		// question that was asked, just narrowly.
-		return nil, false
+		return nil, false, false
 	}
-	return memrank.ResolveInheritance(read.Terms), read.Confirmed
+	return memrank.ResolveInheritance(read.Terms), read.Confirmed, read.DocumentID != ""
 }
 
 // typeFilterSQL renders an expanded type filter as a WHERE fragment plus its args.
