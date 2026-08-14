@@ -57,6 +57,11 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if in.Class != "" && !entityClasses[in.Class] {
 		return errResult(fmt.Sprintf("upsert_chunk: unknown class %q (want derived or evidential)", in.Class)), nil
 	}
+	// The ontology governs what an entity assertion may be about, so every writer is
+	// held to it here rather than only the one that carries its own list.
+	if refused := d.gateEntityType(ctx, in); refused != nil {
+		return *refused, nil
+	}
 
 	existing, err := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey)
 	if err != nil {
@@ -174,12 +179,15 @@ type chunkMetaRow struct {
 	// checks the claim against. Empty means unverifiable, not false: every fact
 	// written before the column existed has none.
 	SourceQuote string
+	// Subject is what the assertion is about. Paired with the chunk's type; a document
+	// chunk has neither.
+	Subject string
 }
 
 // readChunkMeta returns the chunk's sidecar row, or found=false when it has none.
 func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (row chunkMetaRow, found bool, err error) {
 	res, err := d.query(ctx, key,
-		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, coalesce(source_quote, '')
+		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, coalesce(source_quote, ''), coalesce(subject, '')
 		   FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID)
 	if err != nil || len(res.Rows) == 0 {
 		return chunkMetaRow{}, false, err
@@ -190,7 +198,7 @@ func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunk
 		CreatedAt: asInt64Ptr(r[2]), ExpiredAt: asInt64Ptr(r[3]),
 		Class: asStr(r[4]), Origin: asStr(r[5]), Confidence: asFloat64Ptr(r[6]),
 		SessionID: asStr(r[7]), RunID: asStr(r[8]), EventSeq: asInt64Ptr(r[9]),
-		NaturalKey: asStr(r[10]), SourceQuote: asStr(r[11]),
+		NaturalKey: asStr(r[10]), SourceQuote: asStr(r[11]), Subject: asStr(r[12]),
 	}, true, nil
 }
 
@@ -242,6 +250,9 @@ func chunkMetaToJSON(m chunkMetaRow) map[string]any {
 	if m.SourceQuote != "" {
 		out["source_quote"] = m.SourceQuote
 	}
+	if m.Subject != "" {
+		out["subject"] = m.Subject
+	}
 	return out
 }
 
@@ -292,7 +303,7 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 
 	stmt := `SELECT c.id, c.document_id, c.parent_id, c.position, c.title, c.type, c.status, c.revision,
 	                m.valid_at, m.invalid_at, m.created_at, m.expired_at, m.class, m.origin, m.confidence,
-	                m.session_id, m.run_id, m.event_seq, m.natural_key, coalesce(m.source_quote, '')
+	                m.session_id, m.run_id, m.event_seq, m.natural_key, coalesce(m.source_quote, ''), coalesce(m.subject, '')
 	           FROM chunks c JOIN chunk_memory_meta m ON m.chunk_id = c.id`
 	if len(where) > 0 {
 		stmt += " WHERE " + strings.Join(where, " AND ")
@@ -320,7 +331,7 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			CreatedAt: asInt64Ptr(r[10]), ExpiredAt: asInt64Ptr(r[11]),
 			Class: asStr(r[12]), Origin: asStr(r[13]), Confidence: asFloat64Ptr(r[14]),
 			SessionID: asStr(r[15]), RunID: asStr(r[16]), EventSeq: asInt64Ptr(r[17]),
-			NaturalKey: asStr(r[18]), SourceQuote: asStr(r[19]),
+			NaturalKey: asStr(r[18]), SourceQuote: asStr(r[19]), Subject: asStr(r[20]),
 		}
 		fact := map[string]any{
 			"id":          asStr(r[0]),
@@ -453,21 +464,27 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 	if sourceQuote == "" {
 		sourceQuote = prev.SourceQuote
 	}
+	// Preserved on absence, like the span: an edit that does not restate the subject is
+	// not withdrawing it.
+	subject := in.Subject
+	if subject == "" {
+		subject = prev.Subject
+	}
 
 	if err := d.exec(ctx, key, `DELETE FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID); err != nil {
 		return err
 	}
 	return d.exec(ctx, key,
 		`INSERT INTO chunk_memory_meta
-		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		chunkID, validAt, invalidAt, createdAt, expiredAt, class,
 		originForEntityWrite(ctx), confidence,
 		// session_id has no writer yet: it is not on the run ctx, only the run id is.
 		// Preserved rather than nulled so the consolidation path — which CAN fill it
 		// when it relays a drained pending row — does not lose it to the next upsert.
 		nullIfEmpty(prev.SessionID), nullIfEmpty(runID), int64Arg(prev.EventSeq),
-		nullIfEmpty(naturalKey), nullIfEmpty(sourceQuote))
+		nullIfEmpty(naturalKey), nullIfEmpty(sourceQuote), nullIfEmpty(subject))
 }
 
 // int64Arg / float64Arg turn a nullable read back into a bind arg that round-trips
