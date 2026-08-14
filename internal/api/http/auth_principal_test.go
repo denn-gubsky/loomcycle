@@ -411,6 +411,96 @@ func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 	}
 }
 
+// runMW drives a (method, path) through the real authMiddleware with the given
+// bearer, returning whether the inner handler was reached + the status code.
+func runMW(t *testing.T, s *Server, method, path, token string) (reached bool, code int) {
+	t.Helper()
+	h := s.authMiddleware(passthroughHandler(&reached))
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return reached, rec.Code
+}
+
+// TestTenantMemberAccessible: the RFC CB member-access predicate — every
+// ScopeTenant collaboration/data route opens; the operator-control carve-outs,
+// the ScopeAdmin routes, and the non-tenant routes do not.
+func TestTenantMemberAccessible(t *testing.T) {
+	open := []struct{ method, path string }{
+		{"GET", "/v1/_library/agents"}, {"POST", "/v1/_agentdef"}, {"GET", "/v1/_agentdef/names"},
+		{"POST", "/v1/_document"}, {"POST", "/v1/_path"}, {"POST", "/v1/_credentialdef"},
+		{"GET", "/v1/_memory/scopes"}, {"POST", "/v1/_memory/search"}, {"GET", "/v1/_schedules/list-all"},
+		{"GET", "/v1/_channels"}, {"POST", "/v1/_channels"}, {"GET", "/v1/_ontology"},
+		{"GET", "/v1/_usage"}, {"GET", "/v1/_routing"}, {"GET", "/v1/_models"}, {"GET", "/v1/_retention"},
+		{"GET", "/v1/_volumes"}, {"POST", "/v1/_mcp"}, {"GET", "/v1/_resident"}, {"GET", "/v1/_limits"},
+	}
+	for _, c := range open {
+		if !tenantMemberAccessible(c.method, c.path) {
+			t.Errorf("tenantMemberAccessible(%s %s) = false, want true (opened)", c.method, c.path)
+		}
+	}
+	closed := []struct{ method, path string }{
+		{"POST", "/v1/_users"}, {"PATCH", "/v1/_users/alice"}, {"DELETE", "/v1/_users/alice"},
+		{"POST", "/v1/_users/alice/tokens"}, {"POST", "/v1/_erasure"}, {"GET", "/v1/_erasure"},
+		{"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"}, {"POST", "/v1/hooks"},
+		{"POST", "/v1/_operatortokendef"}, {"GET", "/v1/_tenants"}, {"POST", "/v1/_pause"},
+		{"POST", "/v1/_memory/repair-tenant"}, {"POST", "/v1/runs"}, {"GET", "/v1/_me"},
+	}
+	for _, c := range closed {
+		if tenantMemberAccessible(c.method, c.path) {
+			t.Errorf("tenantMemberAccessible(%s %s) = true, want false", c.method, c.path)
+		}
+	}
+}
+
+// TestAuthMiddleware_RFCCBMember drives the RFC CB gate through the real
+// middleware: a NON-ISOLATED user token (a tenant member — runs:*/channel:*, no
+// substrate:tenant) is ADMITTED on the member-accessible tenant surfaces and
+// REFUSED on the operator-control carve-outs; an ISOLATED token (substrate:user)
+// is refused on every one of them — the isolation floor.
+func TestAuthMiddleware_RFCCBMember(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	member := []string{auth.ScopeRunsCreate, auth.ScopeRunsRead, auth.ScopeChannelPublish, auth.ScopeChannelRead}
+	seedToken(t, st, "lct_member", "acme", "alice", member, time.Time{})
+	seedToken(t, st, "lct_isolated", "acme", "bob", []string{auth.ScopeUser}, time.Time{})
+
+	admitted := []struct{ method, path string }{
+		{"GET", "/v1/_library/agents"}, {"POST", "/v1/_agentdef"}, {"POST", "/v1/_document"},
+		{"POST", "/v1/_path"}, {"GET", "/v1/_memory/scopes"}, {"POST", "/v1/_memory/search"},
+		{"GET", "/v1/_schedules/list-all"}, {"POST", "/v1/_channels"}, {"GET", "/v1/_ontology"},
+		{"POST", "/v1/_credentialdef"}, {"GET", "/v1/_usage"}, {"GET", "/v1/_routing"},
+		{"GET", "/v1/_limits"}, {"GET", "/v1/_volumes"}, {"POST", "/v1/_mcp"}, {"GET", "/v1/_resident"},
+	}
+	for _, c := range admitted {
+		reached, code := runMW(t, s, c.method, c.path, "lct_member")
+		if !reached || code == http.StatusForbidden {
+			t.Errorf("member on %s %s: code=%d reached=%v, want admitted", c.method, c.path, code, reached)
+		}
+	}
+
+	refused := []struct{ method, path string }{
+		{"POST", "/v1/_users"}, {"PATCH", "/v1/_users/alice"}, {"POST", "/v1/_users/alice/tokens"},
+		{"POST", "/v1/_erasure"}, {"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"},
+		{"POST", "/v1/hooks"}, {"POST", "/v1/_operatortokendef"}, {"POST", "/v1/_pause"},
+		{"GET", "/v1/_tenants"},
+	}
+	for _, c := range refused {
+		reached, code := runMW(t, s, c.method, c.path, "lct_member")
+		if code != http.StatusForbidden || reached {
+			t.Errorf("member on %s %s: code=%d reached=%v, want 403", c.method, c.path, code, reached)
+		}
+	}
+
+	// The isolation floor: an isolated token is refused on every member surface.
+	for _, c := range admitted {
+		reached, code := runMW(t, s, c.method, c.path, "lct_isolated")
+		if code != http.StatusForbidden || reached {
+			t.Errorf("isolated on %s %s: code=%d reached=%v, want 403 (floor)", c.method, c.path, code, reached)
+		}
+	}
+}
+
 func TestAuthMiddleware_StampsPrincipalAndAllowsScopedRoute(t *testing.T) {
 	s, st := tokenAuthServer(t, "legacy")
 	seedToken(t, st, "lct_creator", "acme", "alice", []string{auth.ScopeRunsCreate}, time.Time{})

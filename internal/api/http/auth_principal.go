@@ -63,10 +63,22 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		if required := requiredScopeFor(r.Method, r.URL.Path); required != "" && !auth.HasScope(p.Scopes, required) {
-			// Scope names are public; token state is not.
-			w.Header().Set("WWW-Authenticate", `Bearer scope="`+required+`"`)
-			http.Error(w, "insufficient scope", http.StatusForbidden)
-			return
+			// RFC CB: the scope check failed, but a NON-ISOLATED user token (a
+			// tenant member — runs:*/channel:*, no substrate:tenant) may still
+			// reach a member-accessible tenant surface. Such a token already has
+			// whole-tenant DATA access inside a run (it is not isolated — see
+			// auth/grants.go), so this admits the matching HTTP surfaces for
+			// read+write. Isolated tokens (substrate:user) fail !IsIsolated and
+			// stay 403; the operator-control carve-outs (minting / roster /
+			// budget-write / erasure / hooks) are excluded by
+			// tenantMemberAccessible; and every such handler still confines a
+			// member to its own tenant via principalTenantScope / tenantFromCtx.
+			if !(tenantMemberAccessible(r.Method, r.URL.Path) && !auth.IsIsolated(p, ok)) {
+				// Scope names are public; token state is not.
+				w.Header().Set("WWW-Authenticate", `Bearer scope="`+required+`"`)
+				http.Error(w, "insufficient scope", http.StatusForbidden)
+				return
+			}
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
 	})
@@ -841,6 +853,51 @@ func requiredScopeFor(method, path string) string {
 		}
 		return ""
 	}
+}
+
+// tenantMemberAccessible reports whether a NON-ISOLATED user token (a "tenant
+// member" — RFC CB) may reach this route despite lacking substrate:tenant. A
+// member already has whole-tenant DATA access inside a run (it is not isolated;
+// auth/grants.go: "whole-tenant data access is conferred by NOT being isolated"),
+// so this opens the matching HTTP tenant surfaces for read+write. The rule: any
+// route that requires ScopeTenant, MINUS the operator-control carve-outs
+// (memberCarveOut). Routes already at ScopeAdmin (cross-tenant enumeration,
+// runtime admin, token minting via the /v1/_* catch-all) are excluded
+// automatically — they are not ScopeTenant. The middleware still requires the
+// caller to be non-isolated (auth.IsIsolated == false), and every one of these
+// handlers still confines a member to its own tenant (principalTenantScope /
+// tenantFromCtx), so opening the gate here does not widen a member cross-tenant.
+func tenantMemberAccessible(method, path string) bool {
+	if requiredScopeFor(method, path) != auth.ScopeTenant {
+		return false
+	}
+	return !memberCarveOut(method, path)
+}
+
+// memberCarveOut lists the ScopeTenant routes that STAY operator-only (require a
+// real substrate:tenant token) even for a non-isolated member — the operator
+// CONTROLS, not member data (RFC CB §Scope). Opening these to a member would be a
+// privilege / cost-control / destruction hazard:
+//   - user create + roster mutation + user-token minting (/v1/_users*) — escalation
+//   - per-subject erasure (/v1/_erasure) — destructive
+//   - budget WRITES (PUT/DELETE /v1/_limits) — cost-control bypass (GET stays open)
+//   - tool-use hooks (/v1/hooks) — a cross-run control over every one of the
+//     tenant's runs (kept operator-only in the safe direction; not in RFC CB's
+//     explicit opened list)
+func memberCarveOut(method, path string) bool {
+	switch {
+	case path == "/v1/_users" && method == http.MethodPost:
+		return true
+	case strings.HasPrefix(path, "/v1/_users/"):
+		return true
+	case path == "/v1/_erasure":
+		return true
+	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
+		return true
+	case strings.HasPrefix(path, "/v1/hooks"):
+		return true
+	}
+	return false
 }
 
 // isTenantConfinedDefPath matches the substrate def-authoring families that
