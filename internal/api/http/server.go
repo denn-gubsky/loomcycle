@@ -3117,6 +3117,12 @@ func (s *Server) Mux() http.Handler {
 	// handler enforces the same-origin login-CSRF guard. The GET-only /ui routes
 	// above don't match a POST, so it needs its own registration.
 	mux.Handle("POST /ui/session", recoveryMiddleware(uiHandler))
+	// OpenAPI contract (RFC CD Part A) — served UNAUTHENTICATED, like /ui:
+	// the machine-readable contract is non-secret and must be discoverable
+	// for codegen, while the data behind it still goes through authMiddleware.
+	// recoveryMiddleware only, no authMiddleware.
+	mux.Handle("GET /v1/openapi.yaml", recoveryMiddleware(http.HandlerFunc(s.handleOpenAPIYAML)))
+	mux.Handle("GET /v1/openapi.json", recoveryMiddleware(http.HandlerFunc(s.handleOpenAPIJSON)))
 	// v1.x RFC G A2A — additive routes (well-known AgentCard + REST /
 	// JSON-RPC binding mounts) registered by an external hook so the
 	// A2A package stays decoupled from this one. The hook also receives

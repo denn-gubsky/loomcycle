@@ -1,0 +1,610 @@
+openapi: 3.1.0
+info:
+  title: loomcycle data API (memory + documents)
+  version: "1.0.0"
+  description: |
+    The external HTTP data API for loomcycle's **memory** and **document/path**
+    storage. Every route here already existed — this contract publishes them so
+    any language can generate a client (e.g. `openapi-generator`) instead of
+    hand-rolling requests, and so a peer instance or a second application can
+    consume the store directly.
+
+    **Auth.** All data routes require a bearer token minted by an
+    `OperatorTokenDef`, carrying an authoritative `(tenant, subject, scopes)`.
+    The memory + document + path families require the `substrate:tenant` scope,
+    and are also reachable by a **non-isolated tenant member** (a `runs:*` /
+    `channel:*` user token) — an isolated `substrate:user` token is confined and
+    refused. The tenant is always derived server-side from the token, NEVER from
+    the request; the `?scope_id=` / `?tenant=` query params only re-focus a
+    browse WITHIN the caller's authorized tenant (admin may cross tenants).
+
+    The spec document itself (`/v1/openapi.yaml`, `/v1/openapi.json`) and the
+    docs console (`/v1/docs`) are served unauthenticated — the contract is
+    non-secret; the data behind it is not.
+servers:
+  - url: /
+    description: This loomcycle instance (relative to the API host).
+security:
+  - bearerAuth: []
+tags:
+  - name: memory
+    description: Key/value + vector memory (scopes agent/user/tenant).
+  - name: documents
+    description: Chunked-graph documents and the Path VFS (op-dispatch).
+paths:
+  /v1/_memory/scopes:
+    get:
+      tags: [memory]
+      summary: List the memory scope kinds.
+      operationId: listMemoryScopes
+      responses:
+        "200":
+          description: The constant set of scope kinds.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scopes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string, enum: [agent, user, tenant] }
+                        description: { type: string }
+                      required: [name, description]
+                required: [scopes]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_memory/scopes/{scope}:
+    get:
+      tags: [memory]
+      summary: List the scope_ids under a scope, with per-scope_id summaries.
+      operationId: listMemoryScopeIDs
+      parameters:
+        - $ref: "#/components/parameters/Scope"
+      responses:
+        "200":
+          description: Scope_id summaries for the caller's tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scope: { type: string }
+                  scope_ids:
+                    type: array
+                    items: { $ref: "#/components/schemas/MemoryScopeIDSummary" }
+                required: [scope, scope_ids]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_memory/scopes/{scope}/{scope_id}/keys:
+    get:
+      tags: [memory]
+      summary: List entries under a (scope, scope_id).
+      operationId: listMemoryEntries
+      parameters:
+        - $ref: "#/components/parameters/Scope"
+        - $ref: "#/components/parameters/ScopeIDPath"
+        - name: prefix
+          in: query
+          required: false
+          schema: { type: string }
+          description: Return only keys with this prefix.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 200, maximum: 1000 }
+        - name: include_embedding_metadata
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: Include per-key embedding provider/model/dimension (vector stores only).
+      responses:
+        "200":
+          description: The entries (embedding vectors are never serialized).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scope: { type: string }
+                  scope_id: { type: string }
+                  entries:
+                    type: array
+                    items: { $ref: "#/components/schemas/MemoryEntry" }
+                  truncated: { type: boolean }
+                  embedding_metadata:
+                    type: object
+                    additionalProperties: { $ref: "#/components/schemas/EmbedMeta" }
+                required: [scope, scope_id, entries, truncated]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}:
+    parameters:
+      - $ref: "#/components/parameters/Scope"
+      - $ref: "#/components/parameters/ScopeIDPath"
+      - $ref: "#/components/parameters/MemoryKey"
+    get:
+      tags: [memory]
+      summary: Get one entry.
+      operationId: getMemoryEntry
+      responses:
+        "200":
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scope: { type: string }
+                  scope_id: { type: string }
+                  entry: { $ref: "#/components/schemas/MemoryEntry" }
+                required: [scope, scope_id, entry]
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [memory]
+      summary: Upsert an entry (idempotent).
+      operationId: setMemoryEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryEntryPutBody" }
+      responses:
+        "200":
+          description: The upsert result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scope: { type: string }
+                  scope_id: { type: string }
+                  key: { type: string }
+                  embedded: { type: boolean }
+                  embed_warning: { type: string }
+                required: [scope, scope_id, key, embedded]
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [memory]
+      summary: Delete an entry (idempotent).
+      operationId: deleteMemoryEntry
+      responses:
+        "204": { description: Deleted (or already absent). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_memory/search:
+    post:
+      tags: [memory]
+      summary: Semantic search over KV entries and document-chunk bodies.
+      operationId: memorySearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemorySearchRequest" }
+      responses:
+        "200":
+          description: Ranked results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemorySearchResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_memory/embed_stats:
+    get:
+      tags: [memory]
+      summary: Per-(provider, model) embedding statistics for a scope.
+      operationId: memoryEmbedStats
+      parameters:
+        - name: scope
+          in: query
+          required: true
+          schema: { type: string, enum: [agent, user, tenant] }
+        - name: tenant
+          in: query
+          required: false
+          schema: { type: string }
+          description: Admin-only tenant focus; ignored for a non-admin (confined to its own tenant).
+      responses:
+        "200":
+          description: Embedding stats.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scope: { type: string }
+                  tenant: { type: string }
+                  models:
+                    type: array
+                    items: { $ref: "#/components/schemas/EmbedModelStats" }
+                  total_embedding_bytes: { type: integer }
+                  notes: { type: array, items: { type: string } }
+                required: [scope, tenant, models, total_embedding_bytes]
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_memory/reembed:
+    post:
+      tags: [memory]
+      summary: Re-embed a scope's entries under the current embedder (migration).
+      description: |
+        All parameters are query parameters (no request body). `dry_run` defaults
+        to true; pass `dry_run=false` to commit. Returns a dry-run report or a
+        real-run report depending on `dry_run`.
+      operationId: reembedMemory
+      parameters:
+        - name: scope
+          in: query
+          required: true
+          schema: { type: string, enum: [agent, user, tenant] }
+        - name: scope_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: Required for agent/user scopes.
+        - name: dry_run
+          in: query
+          required: false
+          schema: { type: boolean, default: true }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 1000, maximum: 10000 }
+      responses:
+        "200":
+          description: Dry-run report (dry_run=true) or real-run report (dry_run=false).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ReembedDryRun"
+                  - $ref: "#/components/schemas/ReembedReal"
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_document:
+    post:
+      tags: [documents]
+      summary: Document tool op-dispatch (create/read/update chunks, search, versioning, ...).
+      description: |
+        A single op-dispatch endpoint: the request body is the `Document` tool's
+        input, discriminated on `op`. On success the response is the tool's own
+        JSON result (shape varies by `op`). A tool refusal returns HTTP 422 with
+        `{code:"tool_refused", tool:"Document", error}`. Requires SQL Memory.
+      operationId: documentOp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentToolInput" }
+      responses:
+        "200":
+          description: The tool's JSON result (op-dependent).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/ToolRefused" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_path:
+    post:
+      tags: [documents]
+      summary: Path VFS op-dispatch (resolve/ls/stat/mkdir/mv/rm).
+      description: |
+        A single op-dispatch endpoint over the Path VFS; the request body is the
+        `Path` tool's input, discriminated on `op`. Response and error semantics
+        mirror `/v1/_document`.
+      operationId: pathOp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PathToolInput" }
+      responses:
+        "200":
+          description: The tool's JSON result (op-dependent).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/ToolRefused" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_document/asset/{chunk_id}:
+    get:
+      tags: [documents]
+      summary: Fetch a chunk's binary image asset.
+      operationId: getDocumentAsset
+      parameters:
+        - name: chunk_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: scope
+          in: query
+          required: false
+          schema: { type: string, enum: [agent, user, tenant] }
+      responses:
+        "200":
+          description: The stored image bytes (whitelisted media type; nosniff).
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/gif: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "404":
+          description: Missing, wrong-scope, or non-image chunk (opaque — no cross-scope probing).
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: An OperatorTokenDef-minted bearer (substrate:tenant, or a non-isolated member token).
+  parameters:
+    Scope:
+      name: scope
+      in: path
+      required: true
+      schema: { type: string, enum: [agent, user, tenant] }
+    ScopeIDPath:
+      name: scope_id
+      in: path
+      required: true
+      schema: { type: string }
+      description: For scope=tenant this URL segment is a placeholder (the store scope_id is forced to "").
+    MemoryKey:
+      name: key
+      in: path
+      required: true
+      schema: { type: string }
+      description: Memory key; may contain slashes (multi-segment).
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Authenticated but lacks the required scope (e.g. an isolated token on a tenant route).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: Value exceeds the memory quota or size cap.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unavailable:
+      description: A required capability (vectors / embedder / store) is unavailable.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ToolRefused:
+      description: The op-dispatch tool refused the request.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              code: { type: string, enum: [tool_refused] }
+              tool: { type: string }
+              error: { type: string }
+            required: [code, tool, error]
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        error: { type: string }
+      required: [code, error]
+    MemoryEntry:
+      type: object
+      properties:
+        key: { type: string }
+        value:
+          description: Arbitrary JSON value.
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [key, value, created_at, updated_at]
+    MemoryScopeIDSummary:
+      type: object
+      properties:
+        scope_id: { type: string }
+        key_count: { type: integer }
+        bytes: { type: integer }
+        updated_at: { type: string, format: date-time }
+      required: [scope_id, key_count, bytes]
+    EmbedMeta:
+      type: object
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        dimension: { type: integer }
+      required: [provider, model, dimension]
+    EmbedModelStats:
+      type: object
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        dimension: { type: integer }
+        row_count: { type: integer }
+      required: [provider, model, dimension, row_count]
+    MemoryEntryPutBody:
+      type: object
+      properties:
+        value:
+          description: Arbitrary JSON value (required, must be valid JSON).
+        embed:
+          type: boolean
+          description: Embed the value text for vector search.
+        ttl_seconds:
+          type: integer
+          description: Positive TTL sets an expiry; omit for no expiry.
+      required: [value]
+    MemorySearchRequest:
+      type: object
+      properties:
+        query: { type: string }
+        scope: { type: string, enum: [agent, user, tenant] }
+        scope_id: { type: string, description: "Required for agent/user scopes." }
+        top_k: { type: integer, default: 10, maximum: 50 }
+        rank: { description: "Optional rank config (memrank.RankConfig).", type: [object, "null"] }
+        dedup: { description: "Optional dedup config (memrank.DedupConfig).", type: [object, "null"] }
+        sources:
+          type: array
+          description: "Restrict to any of: facts, notes, documents. Unknown values are dropped."
+          items: { type: string, enum: [facts, notes, documents] }
+      required: [query, scope]
+    MemorySearchResponse:
+      type: object
+      properties:
+        scope: { type: string }
+        scope_id: { type: string }
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              value: { description: "Arbitrary JSON value." }
+              score: { type: number, description: "Raw cosine similarity." }
+              rank_score: { type: number }
+              embedded_with:
+                type: object
+                properties:
+                  provider: { type: string }
+                  model: { type: string }
+              kind: { type: string, enum: [fact, note, document] }
+              chunk_id: { type: string, description: "Set when kind == document." }
+        query_embedding_dim: { type: integer }
+        truncated: { type: boolean }
+      required: [scope, scope_id, entries, query_embedding_dim, truncated]
+    ReembedDryRun:
+      type: object
+      properties:
+        scope: { type: string }
+        scope_id: { type: string }
+        dry_run: { type: boolean, enum: [true] }
+        rows_total: { type: integer }
+        rows_to_reembed: { type: integer }
+        current_embedder: { $ref: "#/components/schemas/EmbedMeta" }
+        sample_keys: { type: array, items: { type: string } }
+        sample_keys_capped: { type: boolean }
+      required: [scope, scope_id, dry_run, rows_total, rows_to_reembed]
+    ReembedReal:
+      type: object
+      properties:
+        scope: { type: string }
+        scope_id: { type: string }
+        dry_run: { type: boolean, enum: [false] }
+        rows_reembedded: { type: integer }
+        rows_failed: { type: integer }
+        current_embedder: { $ref: "#/components/schemas/EmbedMeta" }
+        failed_keys: { type: array, items: { type: string } }
+      required: [scope, scope_id, dry_run, rows_reembedded, rows_failed]
+    # DocumentToolInput / PathToolInput mirror the Document / Path tool
+    # InputSchema()s. The `op` enums here are drift-tested against the live
+    # tool schemas (internal/api/http/openapi_test.go); additionalProperties is
+    # true because the endpoint forwards the raw body to the tool verbatim.
+    DocumentToolInput:
+      type: object
+      additionalProperties: true
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum:
+            - create_document
+            - get_document
+            - documents_summary
+            - query_documents
+            - delete_document
+            - set_path
+            - create_chunk
+            - propose_entity
+            - upsert_chunk
+            - get_chunk
+            - update_chunk
+            - delete_chunk
+            - supersede_chunk
+            - graph_recall
+            - list_facts
+            - move_chunk
+            - reorder_chunk
+            - link_chunks
+            - unlink_chunks
+            - get_edges
+            - query_chunks
+            - add_tags
+            - remove_tags
+            - list_tags
+            - define_type
+            - list_types
+            - set_asset
+            - get_asset
+            - export_md
+            - import_md
+            - export_canvas
+            - import_canvas
+            - history
+            - get_version
+            - diff
+            - backlinks
+            - search
+            - related
+            - unlinked_mentions
+        scope: { type: string, enum: [agent, user, tenant] }
+        id: { type: string, description: "Document id or chunk id (op-dependent)." }
+        path: { type: string }
+        title: { type: string }
+        document_id: { type: string }
+        body: { type: string, description: "Markdown body." }
+        parent_id: { type: string }
+        natural_key: { type: string }
+        supersedes_id: { type: string }
+        revision: { type: integer, description: "update_chunk optimistic concurrency / get_version target." }
+        from_revision: { type: integer }
+        to_revision: { type: integer }
+        query: { type: string }
+        sql: { type: string, description: "query_chunks read-only SELECT escape hatch." }
+        tags: { type: array, items: { type: string } }
+        markdown: { type: string, description: "import_md source." }
+        media_type: { type: string }
+        data: { type: string, description: "set_asset image bytes, base64." }
+    PathToolInput:
+      type: object
+      additionalProperties: true
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum: [resolve, ls, stat, mkdir, mv, rm]
+        path: { type: string }
+        to: { type: string, description: "Destination path (mv)." }
+        scope: { type: string, enum: [agent, user, tenant] }
+        recursive: { type: boolean }
+        kind_filter: { type: string, description: "ls: document/volume_mount/memory_entry/directory." }
+        resource_too: { type: boolean }
