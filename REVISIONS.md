@@ -4,6 +4,18 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.53.1
+
+**The routing view stops blanking on an empty tier cascade.** Patch (Go + Web UI). The Settings → Routing page went blank on a real deployment, and the cause was a `null` where the UI expected a list.
+
+**The bug.** `GET /v1/_routing` builds each tier's candidate cascade by appending to a nil slice, so a `user_tier × tier` that resolves to **zero candidates** — a perfectly valid config state, e.g. a `high` user-tier whose `high` tier has no available model — came back as JSON `"cascade": null`. The routing view's `TierCard` does `tier.cascade.length` on that; `null.length` throws, React unmounts, and the whole page is blank. Same class as the `/v1/_usage` nil→null crash in v1.11.1.
+
+**The fix, at both ends.** `handleRouting` now initializes the `Tiers` and `Cascade` slices to non-nil empties, so an empty resolve serializes as `[]`; and `RoutingView` adds `?? []` guards on `user_tiers` / `tiers` / `cascade` so a single bad tier can never blank the page again. A regression test asserts an empty cascade decodes to a non-nil slice (verified failing on the old code).
+
+**Built with `force_full` on purpose.** Like v1.52.1, this Web-UI-touching patch was cut with the full pipeline so it publishes the deployable `denngubsky/loomcycle` image with the fixed UI embedded — a lean browser-patch would ship only `loomcycle-browser`, which the standard deployment does not consume.
+
+Adapter versions are unchanged — no adapter surface was touched.
+
 ## What's in v1.53.0
 
 **Ontology curation: an agent can suggest entity types, and only an operator can accept one.** Minor — a new inert entity status, two operator actions, one narrow authoring op, a bundled curator agent, and a refreshed MCP tool surface. No schema change; one behaviour change for agents that were writing the ontology document directly (below).
