@@ -88,6 +88,7 @@ const documentInputSchema = `{
 		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
 		"limit":     {"type": "integer", "description": "graph_recall: maximum chunks returned (default 50)."},
+		"source_quote": {"type": "string", "description": "upsert_chunk: the EXACT text this fact was derived from, copied verbatim from the source you read — not a paraphrase. It is what a later pass checks the claim against, and what an operator sees when they ask why the store believes this. Omit only when there is no source text (material you are recording as evidence in its own right)."},
 		"natural_key": {"type": "string", "description": "upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
 		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Defaults to now. Distinct from when it was recorded."},
@@ -143,9 +144,13 @@ type docInput struct {
 	Status    string          `json:"status"`
 	// Parent names an entity by NAME (propose_entity). Distinct from ParentID, which
 	// addresses a chunk: a curator knows the type it read in its prompt, not a uuid.
-	Parent   string `json:"parent"`
-	Position *int   `json:"position"`
-	Revision *int   `json:"revision"`
+	Parent string `json:"parent"`
+	// SourceQuote is the span a fact was derived from (upsert_chunk). Persisted on the
+	// entity row so a later pass can check the claim against it, and so an operator
+	// asking "why do you believe this" has an answer.
+	SourceQuote string `json:"source_quote"`
+	Position    *int   `json:"position"`
+	Revision    *int   `json:"revision"`
 	// FromRevision / ToRevision select the two body-change revisions to diff (RFC
 	// BS Phase 3a). Pointers so an omitted bound is distinguishable from a value
 	// (the log is 1-based, so 0 is never a real revision, but the pointer keeps the
@@ -267,7 +272,7 @@ var docSchemaDDL = []string{
 		created_at BIGINT, expired_at BIGINT,
 		class TEXT, origin TEXT, confidence DOUBLE PRECISION,
 		session_id TEXT, run_id TEXT, event_seq BIGINT,
-		natural_key TEXT)`,
+		natural_key TEXT, source_quote TEXT)`,
 	// UNIQUE per SCOPE, not per document: each scope owns its own database (a
 	// sqlite file / a postgres schema), so a bare UNIQUE index on the column IS
 	// scope-wide — one entity per tenant regardless of which document holds it.
@@ -571,7 +576,10 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if err := d.migrateAssetDescription(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateEdgeAuto(ctx, key)
+	if err := d.migrateEdgeAuto(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateSourceQuote(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -723,6 +731,28 @@ func (d *Document) tableHasColumn(ctx context.Context, key sqlmem.ScopeKey, tabl
 // tier-portable; `ADD COLUMN … NOT NULL DEFAULT 0` fills existing rows on both
 // tiers, so every edge predating this migration reads back as manual (auto=0),
 // which is what it is.
+// migrateSourceQuote adds the span a fact was derived from.
+//
+// A fact could say who wrote it (`origin`, `run_id`) but never what it was based on,
+// so nothing downstream could ask whether the source supported the claim — not the
+// consolidator, not retrieval, not an operator reading the memory page. Three separate
+// failures on a live deployment traced to that: a curator inventing counts, an extractor
+// typing the subject of "the user resides in Cluj-Napoca" as a location, and three entity
+// writes refused for a class-where-a-type-belongs. None of them was checkable.
+//
+// NULLABLE, and existing rows stay NULL. A fact written before this column cannot be
+// verified retroactively and must not be treated as if it were: no span means unverified,
+// which is honest, and it stays recallable.
+//
+// PROBES before it alters, like its siblings — ensureSchema is on every op's hot path, so
+// the fast case is one 0-row SELECT.
+func (d *Document) migrateSourceQuote(ctx context.Context, key sqlmem.ScopeKey) error {
+	if _, err := d.query(ctx, key, `SELECT source_quote FROM chunk_memory_meta WHERE 1=0`); err == nil {
+		return nil
+	}
+	return d.exec(ctx, key, `ALTER TABLE chunk_memory_meta ADD COLUMN source_quote TEXT`)
+}
+
 func (d *Document) migrateEdgeAuto(ctx context.Context, key sqlmem.ScopeKey) error {
 	if _, err := d.query(ctx, key, `SELECT auto FROM chunk_edges WHERE 1=0`); err == nil {
 		return nil

@@ -287,6 +287,17 @@ agents:
         // much, since it has to stay under the lease TTL.
         max_parts_per_chat: 4,
         max_fact_chars: 400,
+        // A span may run longer than the one-sentence fact it supports, but it must
+        // not become a way to copy the transcript into the store. Over-long spans are
+        // TRUNCATED rather than dropped: a fact with a clipped quote is still better
+        // evidence than a fact with none, and dropping it would lose the claim over a
+        // formatting excess.
+        max_quote_chars: 800,
+        // Dice floor for accepting a derived span. A fact PARAPHRASES its source, so
+        // this is "clearly about the same thing", not "nearly identical". Set too high
+        // and every fact loses its evidence; too low and a fact gets handed an
+        // unrelated sentence, which is worse than none because it looks like proof.
+        min_span_overlap: 0.25,
         // The SECOND signal an in-place rewrite has to clear, alongside the
         // similarity band — see mergeRefusal for why one number is not enough
         // authority to destroy a fact. It is the Dice overlap between the two
@@ -602,6 +613,10 @@ agents:
         for (var i = 0; i < parts.length; i++) {
           var facts = extract(st, parts[i], sid);
           if (facts === null) { unreadable++; continue; }
+          // Against THIS part, not the whole transcript: the span must come from the
+          // text the extractor actually saw, or a fact could be handed evidence from a
+          // section that was never in front of the model.
+          deriveSpans(facts, parts[i]);
           all = all.concat(facts);
           readable++;
         }
@@ -808,7 +823,7 @@ agents:
           var typ = (typeof f.type === "string") ? f.type.trim().toLowerCase() : "";
           var subj = (typeof f.subject === "string") ? f.subject.trim() : "";
           if (!typ || !subj) { typ = ""; subj = ""; }
-          out.push({ text: text, cls: cls, type: typ, subject: subj });
+          out.push({ text: text, cls: cls, type: typ, subject: subj, quote: "" });
         }
         return out;
       }
@@ -835,7 +850,9 @@ agents:
         // "" marks this as the queued batch rather than a chat: an unreadable
         // batch extraction leaves its items unacked, so they are re-drained next
         // pass on their own and nothing about it should hold the CHAT watermark.
-        var facts = extract(st, renderPending(taken), "");
+        var pendingText = renderPending(taken);
+        var facts = extract(st, pendingText, "");
+        deriveSpans(facts, pendingText);
         if (facts === null) { return []; }
         // An empty reply lets a CHAT through because the cost is bounded — the
         // watermark moves one row past a chat that had nothing to give. Acking
@@ -1056,6 +1073,63 @@ agents:
         return (2 * shared) / (na + nb);
       }
 
+      // deriveSpans attaches, to each fact, the sentence from its SOURCE that best
+      // supports it — the span a later pass checks the claim against.
+      //
+      // DERIVED HERE RATHER THAN ASKED OF THE EXTRACTOR, and that was a measured
+      // decision, not a preference. Adding a required `quote` field to the extractor's
+      // output contract was tried first: across three runs of the extraction eval it
+      // scored 2 violations, then a missed property, then clean, against a recorded
+      // baseline of zero violations and 1.00 recall that the unchanged prompt still
+      // hits. The extractor is at its capacity on a small local model, and a field
+      // added to its contract is paid for out of rule-following.
+      //
+      // Deriving costs the model nothing and cannot be fabricated: a span SELECTED
+      // from the source is in the source by construction, so the "did the model invent
+      // this quote" check the model-supplied version would have needed does not exist.
+      // What is lost is intent — this is the sentence that best supports the claim, not
+      // provably the one the extractor read. For checking whether the source supports
+      // the claim, the strongest candidate is the right thing to check.
+      //
+      // No match above the floor means NO span, which reads as unverified rather than
+      // as refuted. A fact whose support cannot be located is exactly the fact a
+      // verifier should be told nothing about.
+      function deriveSpans(facts, sourceText) {
+        if (!facts || !facts.length || !sourceText) { return facts; }
+        var sentences = splitSentences(sourceText);
+        if (!sentences.length) { return facts; }
+        for (var i = 0; i < facts.length; i++) {
+          var best = "", bestScore = 0;
+          for (var j = 0; j < sentences.length; j++) {
+            var sc = subjectOverlap(facts[i].text, sentences[j]);
+            if (sc > bestScore) { bestScore = sc; best = sentences[j]; }
+          }
+          if (bestScore < CONFIG.min_span_overlap) { continue; }
+          facts[i].quote = best.length > CONFIG.max_quote_chars
+            ? best.slice(0, CONFIG.max_quote_chars) : best;
+        }
+        return facts;
+      }
+
+      // splitSentences cuts a transcript into candidate spans.
+      //
+      // Line breaks count as boundaries, not just sentence punctuation: a transcript is
+      // turns and tool payloads, where a whole line is often one utterance with no
+      // terminator at all. Fragments shorter than a few words are dropped — they cannot
+      // support a claim and they score noisily against short facts.
+      function splitSentences(text) {
+        // NO LOOKBEHIND. The engine here is ES5.1-era and `(?<=…)` is ES2018 — it
+        // parses as a syntax error at load, taking the whole consolidator with it.
+        // Marking the terminator and splitting on the mark is portable.
+        var raw = String(text).replace(/([.!?])\s+/g, "$1\n").split(/\n+/);
+        var out = [];
+        for (var i = 0; i < raw.length; i++) {
+          var t = raw[i].trim();
+          if (t.length >= 12) { out.push(t); }
+        }
+        return out;
+      }
+
       // wordSet collapses a word list to a presence map. `=== true` on lookup
       // and hasOwnProperty on iteration, because a fact may legitimately contain
       // a word like "constructor" that Object.prototype already answers to.
@@ -1219,10 +1293,15 @@ agents:
 
         // The fact node carries the sentence; its title is the sentence too,
         // trimmed, because a chunk with no title is unreadable in the Path browser.
-        var factID = upsertEntityChunk(st, docID, key, {
+        var factArgs = {
           title: fact.text.length > 80 ? fact.text.slice(0, 77) + "..." : fact.text,
           type: "fact", body: fact.text
-        });
+        };
+        // The span goes on the FACT node only. A subject node is an identity, not a
+        // claim — there is nothing about "Denn" for a quote to support, and attaching
+        // one there would make the evidence look like it backed the wrong thing.
+        if (fact.quote) { factArgs.source_quote = fact.quote; }
+        var factID = upsertEntityChunk(st, docID, key, factArgs);
         if (!factID) { return; }
         st.entity_facts++;
 
