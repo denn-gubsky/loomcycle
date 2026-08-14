@@ -4,6 +4,18 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.53.2
+
+**Tenant-member access: a non-isolated user reads and writes the tenant plane (RFC CB).** Patch (Go, auth only). A delegated per-user token that is not isolated is now a full tenant *member* over HTTP.
+
+**The gap.** A non-isolated user token (a "member" — `runs:*`/`channel:*`, `access_mode "tenant"`) already had whole-tenant *data* access inside a run — loomcycle's rule is "whole-tenant data access is conferred by NOT being isolated." But the same token was 403'd at every HTTP `/v1/_*` tenant surface by the route scope-gate alone, so a member could not browse or author its tenant's shared Library, Documents, or Memory over HTTP, and consumers (loomboard) hid those views rather than render a wall of 403s.
+
+**The change.** `authMiddleware` now admits a non-isolated principal on a *member-accessible* tenant route: `tenantMemberAccessible(method, path) && !auth.IsIsolated(p)`. The predicate opens any route that requires `substrate:tenant`, **minus** the operator-control carve-outs — user create / roster mutation / user-token minting, per-subject erasure, budget *writes* (`PUT`/`DELETE /v1/_limits`), and tool-use hooks — which stay operator-only. `substrate:admin` routes (cross-tenant enumeration, runtime admin, token minting) are excluded automatically, since they are not `substrate:tenant`.
+
+**No new scope, no re-mint.** It keys on the existing isolated/non-isolated boundary — generalizing RFC BY's discovery tiering to the route gate — so no token changes. The isolation floor is untouched: an isolated `substrate:user` token still fails every tenant gate, `auth.IsIsolated` stays true for it, and `ConfineIsolatedScope` plus the run-start isolation stamps are unchanged. A member is still confined to its own tenant by each handler's `principalTenantScope`/`tenantFromCtx`.
+
+**Scope.** The HTTP gate. gRPC/MCP substrate-plane parity is deferred (a member's runs already reach tenant data on those planes since they are not isolated). loomboard's `canTenant` relax — so a member renders the Library/Documents/Memory nav — ships in loomboard separately. No adapter or Web UI changes here.
+
 ## What's in v1.53.1
 
 **The routing view stops blanking on an empty tier cascade.** Patch (Go + Web UI). The Settings → Routing page went blank on a real deployment, and the cause was a `null` where the UI expected a list.
