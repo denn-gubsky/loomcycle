@@ -550,6 +550,7 @@ components:
             - update_chunk
             - delete_chunk
             - supersede_chunk
+            - judge_fact
             - graph_recall
             - list_facts
             - move_chunk
