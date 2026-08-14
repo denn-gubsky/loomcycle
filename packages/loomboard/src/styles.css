@@ -1,0 +1,399 @@
+/* @loomcycle/loomboard — scoped, self-contained styles. Everything lives under
+   .loomcycle-loomboard so a host that imports this sheet gets the board styled
+   without leaking rules. Dark is the default palette; a light override applies
+   when the root carries data-theme="light" OR inherits it from any ancestor
+   (so an app theming <html data-theme="light"> themes the board for free).
+   Import once: `import "@loomcycle/loomboard/styles.css"`. */
+
+.loomcycle-loomboard {
+  --lb-bg: #14161a;
+  --lb-surface: #1b1e24;
+  --lb-surface-2: #22262d;
+  --lb-border: #2c313a;
+  --lb-text: #e7e9ee;
+  --lb-dim: #9aa2af;
+  --lb-accent: #3b82f6;
+  --lb-accent-fg: #ffffff;
+  --lb-danger: #ef4444;
+
+  color-scheme: dark;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--lb-bg);
+  color: var(--lb-text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.loomcycle-loomboard[data-theme="light"],
+[data-theme="light"] .loomcycle-loomboard {
+  --lb-bg: #ffffff;
+  --lb-surface: #f6f7f9;
+  --lb-surface-2: #eef0f3;
+  --lb-border: #d9dce1;
+  --lb-text: #1a1d23;
+  --lb-dim: #616a76;
+  --lb-accent: #2563eb;
+  --lb-accent-fg: #ffffff;
+  --lb-danger: #dc2626;
+  color-scheme: light;
+}
+
+.loomcycle-loomboard *,
+.loomcycle-loomboard *::before,
+.loomcycle-loomboard *::after {
+  box-sizing: border-box;
+}
+.loomcycle-loomboard button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.loomcycle-loomboard .error-banner {
+  margin: 1rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--lb-danger);
+  border-radius: 8px;
+  color: var(--lb-danger);
+}
+
+/* ---- shell ---- */
+.loomcycle-loomboard .loomboard-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.loomcycle-loomboard .loomboard-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--lb-border);
+}
+.loomcycle-loomboard .scope-toggle {
+  display: inline-flex;
+  border: 1px solid var(--lb-border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.loomcycle-loomboard .scope-toggle button {
+  padding: 0.25em 0.7em;
+  background: transparent;
+  border: 0;
+  color: var(--lb-dim);
+  text-transform: capitalize;
+}
+.loomcycle-loomboard .scope-toggle button.on {
+  background: var(--lb-accent);
+  color: var(--lb-accent-fg);
+}
+.loomcycle-loomboard .loomboard-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+.loomcycle-loomboard .loomboard-error {
+  margin: 0.6rem 0.7rem 0;
+  color: var(--lb-danger);
+  font-size: 0.85em;
+}
+
+.loomcycle-loomboard .loomboard-split {
+  flex: 1;
+  min-height: 0;
+}
+.loomcycle-loomboard .loomboard-main {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.8rem;
+}
+.loomcycle-loomboard .loomboard-placeholder {
+  color: var(--lb-dim);
+  padding: 2rem 1rem;
+  text-align: center;
+}
+
+/* ---- buttons + fields ---- */
+.loomcycle-loomboard .btn-ghost,
+.loomcycle-loomboard .view-new {
+  padding: 0.3em 0.7em;
+  background: var(--lb-surface-2);
+  border: 1px solid var(--lb-border);
+  border-radius: 6px;
+  color: var(--lb-text);
+}
+.loomcycle-loomboard .btn-ghost.danger {
+  color: var(--lb-danger);
+}
+.loomcycle-loomboard .btn-primary {
+  padding: 0.4em 0.9em;
+  background: var(--lb-accent);
+  border: 1px solid var(--lb-accent);
+  border-radius: 6px;
+  color: var(--lb-accent-fg);
+}
+.loomcycle-loomboard .btn-primary:disabled,
+.loomcycle-loomboard .btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.loomcycle-loomboard .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  margin-bottom: 0.6rem;
+}
+.loomcycle-loomboard .field > span {
+  font-size: 0.75em;
+  color: var(--lb-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.loomcycle-loomboard .field input,
+.loomcycle-loomboard .field select {
+  padding: 0.4em 0.55em;
+  background: var(--lb-bg);
+  border: 1px solid var(--lb-border);
+  border-radius: 6px;
+  color: var(--lb-text);
+}
+.loomcycle-loomboard .field-row {
+  display: flex;
+  gap: 0.6rem;
+}
+.loomcycle-loomboard .field-row .field {
+  flex: 1;
+}
+
+/* ---- saved-view rail ---- */
+.loomcycle-loomboard .view-list {
+  height: 100%;
+  overflow: auto;
+  padding: 0.6rem;
+  border-right: 1px solid var(--lb-border);
+}
+.loomcycle-loomboard .view-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+.loomcycle-loomboard .view-list-title {
+  font-weight: 600;
+}
+.loomcycle-loomboard .view-list-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.loomcycle-loomboard .view-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.4em 0.55em;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--lb-text);
+}
+.loomcycle-loomboard .view-item:hover {
+  background: var(--lb-surface-2);
+}
+.loomcycle-loomboard .view-item.on {
+  background: var(--lb-accent);
+  color: var(--lb-accent-fg);
+}
+.loomcycle-loomboard .view-list-empty,
+.loomcycle-loomboard .view-list-loading,
+.loomcycle-loomboard .view-list-error {
+  color: var(--lb-dim);
+  font-size: 0.85em;
+  padding: 0.4rem 0.2rem;
+}
+.loomcycle-loomboard .view-list-error {
+  color: var(--lb-danger);
+}
+
+/* ---- view editor ---- */
+.loomcycle-loomboard .view-editor {
+  max-width: 560px;
+}
+.loomcycle-loomboard .view-editor-head {
+  font-weight: 600;
+  font-size: 1.05em;
+  margin-bottom: 0.8rem;
+}
+.loomcycle-loomboard .view-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+.loomcycle-loomboard .view-editor-error {
+  color: var(--lb-danger);
+  font-size: 0.85em;
+  margin-bottom: 0.5rem;
+}
+
+/* ---- board renderers ---- */
+.loomcycle-loomboard .board-view-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.7rem;
+}
+.loomcycle-loomboard .board-view-title {
+  font-weight: 600;
+  font-size: 1.05em;
+}
+.loomcycle-loomboard .board-view-kind {
+  font-size: 0.75em;
+  color: var(--lb-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.loomcycle-loomboard .board-loading,
+.loomcycle-loomboard .board-empty {
+  color: var(--lb-dim);
+  padding: 1rem 0;
+}
+.loomcycle-loomboard .board-error {
+  color: var(--lb-danger);
+  padding: 0.7rem 0;
+}
+.loomcycle-loomboard .board-scroll {
+  overflow-x: auto;
+}
+
+.loomcycle-loomboard .board-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.loomcycle-loomboard .board-table th,
+.loomcycle-loomboard .board-table td {
+  text-align: left;
+  padding: 0.4em 0.7em;
+  border-bottom: 1px solid var(--lb-border);
+  white-space: nowrap;
+}
+.loomcycle-loomboard .board-table th {
+  color: var(--lb-dim);
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.loomcycle-loomboard .cell-title {
+  white-space: normal;
+}
+.loomcycle-loomboard .cell-dim {
+  color: var(--lb-dim);
+}
+
+.loomcycle-loomboard .board-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.6rem;
+}
+.loomcycle-loomboard .board-card {
+  background: var(--lb-surface);
+  border: 1px solid var(--lb-border);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+}
+.loomcycle-loomboard .board-card-title {
+  font-weight: 500;
+  margin-bottom: 0.4rem;
+}
+.loomcycle-loomboard .board-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8em;
+}
+
+.loomcycle-loomboard .board-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.loomcycle-loomboard .board-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.4em 0.2em;
+  border-bottom: 1px solid var(--lb-border);
+}
+
+.loomcycle-loomboard .board-kanban {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+}
+.loomcycle-loomboard .kanban-col {
+  flex: 0 0 240px;
+  background: var(--lb-surface);
+  border: 1px solid var(--lb-border);
+  border-radius: 8px;
+}
+.loomcycle-loomboard .kanban-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--lb-border);
+  font-weight: 600;
+}
+.loomcycle-loomboard .kanban-col-count {
+  color: var(--lb-dim);
+  font-size: 0.85em;
+}
+.loomcycle-loomboard .kanban-col-body {
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.loomcycle-loomboard .kanban-col-body .board-card {
+  background: var(--lb-surface-2);
+}
+
+/* ---- badges ---- */
+.loomcycle-loomboard .badge {
+  display: inline-block;
+  padding: 0.1em 0.5em;
+  border-radius: 999px;
+  font-size: 0.75em;
+  border: 1px solid var(--lb-border);
+  color: var(--lb-dim);
+}
+.loomcycle-loomboard .badge-status {
+  border-color: var(--lb-accent);
+  color: var(--lb-accent);
+}
+
+/* ---- splitter (self-contained copy) ---- */
+.loomcycle-loomboard .splitter {
+  display: grid;
+  height: 100%;
+  min-height: 0;
+}
+.loomcycle-loomboard .splitter-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.loomcycle-loomboard .splitter-handle {
+  cursor: col-resize;
+  background: var(--lb-border);
+}
+.loomcycle-loomboard .splitter.dragging {
+  user-select: none;
+}
