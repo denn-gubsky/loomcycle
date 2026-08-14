@@ -58,7 +58,7 @@ type Document struct {
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (semantic search over chunk BODIES for free text — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (semantic search over chunk BODIES for free text — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -68,7 +68,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -88,6 +88,9 @@ const documentInputSchema = `{
 		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
 		"limit":     {"type": "integer", "description": "graph_recall: maximum chunks returned (default 50)."},
+		"include_refuted": {"type": "boolean", "description": "list_facts / graph_recall: also return facts a judge marked unsupported. They are withheld by default and never deleted, so this is how you read what was refused and why (each carries judge_reason)."},
+		"verdict":      {"type": "string", "enum": ["supported","unclear","unsupported"], "description": "judge_fact: whether the fact's recorded source span supports it. supported = the span carries the claim; unclear = it partly does; unsupported = it does not. The confidence this maps to is set by the server, and an unsupported fact stops being returned by the fact surfaces without being deleted."},
+		"reason":       {"type": "string", "description": "judge_fact: one sentence on WHY, quoted back to the operator. A verdict nobody can act on is a verdict nobody trusts."},
 		"subject":      {"type": "string", "description": "upsert_chunk: the thing this entity assertion is ABOUT, paired with type — emit both or neither. type says what kind of thing it is, subject names it. A plain document chunk has no subject; passing the pair is what marks a write as an entity the ontology governs."},
 		"source_quote": {"type": "string", "description": "upsert_chunk: the EXACT text this fact was derived from, copied verbatim from the source you read — not a paraphrase. It is what a later pass checks the claim against, and what an operator sees when they ask why the store believes this. Omit only when there is no source text (material you are recording as evidence in its own right)."},
 		"natural_key": {"type": "string", "description": "upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
@@ -153,9 +156,16 @@ type docInput struct {
 	// Subject is WHAT an entity assertion is about, travelling with Type as a pair.
 	// First-class rather than encoded in the natural key, so it can be read, queried and
 	// checked — and so the tool can tell an entity assertion from a document write.
-	Subject  string `json:"subject"`
-	Position *int   `json:"position"`
-	Revision *int   `json:"revision"`
+	Subject string `json:"subject"`
+	// Verdict and Reason are judge_fact's inputs. The verdict is a WORD, never a number:
+	// the confidence it maps to is derived server-side so one place owns the scale.
+	// IncludeRefuted surfaces facts a judge refused. Off by default and available on
+	// purpose: "quarantine, never delete" is only meaningful if the quarantine can be read.
+	IncludeRefuted bool   `json:"include_refuted"`
+	Verdict        string `json:"verdict"`
+	Reason         string `json:"reason"`
+	Position       *int   `json:"position"`
+	Revision       *int   `json:"revision"`
 	// FromRevision / ToRevision select the two body-change revisions to diff (RFC
 	// BS Phase 3a). Pointers so an omitted bound is distinguishable from a value
 	// (the log is 1-based, so 0 is never a real revision, but the pointer keeps the
@@ -277,7 +287,8 @@ var docSchemaDDL = []string{
 		created_at BIGINT, expired_at BIGINT,
 		class TEXT, origin TEXT, confidence DOUBLE PRECISION,
 		session_id TEXT, run_id TEXT, event_seq BIGINT,
-		natural_key TEXT, source_quote TEXT, subject TEXT)`,
+		natural_key TEXT, source_quote TEXT, subject TEXT,
+		judged_at BIGINT, judge_reason TEXT)`,
 	// UNIQUE per SCOPE, not per document: each scope owns its own database (a
 	// sqlite file / a postgres schema), so a bare UNIQUE index on the column IS
 	// scope-wide — one entity per tenant regardless of which document holds it.
@@ -385,6 +396,8 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.deleteDocument(ctx, key, mscope, in)
 	case "set_path":
 		return d.setPath(ctx, key, in)
+	case "judge_fact":
+		return d.judgeFact(ctx, key, in)
 	case "propose_entity":
 		// RFC CA: files an INERT ontology proposal. Resolves its own tenant scope, so it
 		// is deliberately not routed through the caller's `scope` argument.
@@ -587,7 +600,10 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if err := d.migrateSourceQuote(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateSubject(ctx, key)
+	if err := d.migrateSubject(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateVerdict(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -766,6 +782,29 @@ func (d *Document) tableHasColumn(ctx context.Context, key sqlmem.ScopeKey, tabl
 //
 // Nullable. A document write carries no subject and never will, which is exactly what
 // makes the pair a usable discriminator.
+// migrateVerdict adds when a fact was last judged, and why.
+//
+// `confidence` is the verdict AXIS — one number for how much this is trusted, rather than
+// a second status that can disagree with it. These two columns are the PROVENANCE of that
+// number, not a competing verdict: they answer "who set this, and on what grounds".
+//
+// The distinction they exist for is the one withholding depends on. A never-judged fact
+// and a judged-and-refuted one are different states, and confidence alone cannot separate
+// them: a refuted claim at 0.0 and a hedged one at 0.1 would look the same, and a store
+// where nothing has been judged has NULL everywhere. judged_at is what says a verdict was
+// actually reached.
+func (d *Document) migrateVerdict(ctx context.Context, key sqlmem.ScopeKey) error {
+	if _, err := d.query(ctx, key, `SELECT judged_at FROM chunk_memory_meta WHERE 1=0`); err != nil {
+		if aerr := d.exec(ctx, key, `ALTER TABLE chunk_memory_meta ADD COLUMN judged_at BIGINT`); aerr != nil {
+			return aerr
+		}
+	}
+	if _, err := d.query(ctx, key, `SELECT judge_reason FROM chunk_memory_meta WHERE 1=0`); err == nil {
+		return nil
+	}
+	return d.exec(ctx, key, `ALTER TABLE chunk_memory_meta ADD COLUMN judge_reason TEXT`)
+}
+
 func (d *Document) migrateSubject(ctx context.Context, key sqlmem.ScopeKey) error {
 	if _, err := d.query(ctx, key, `SELECT subject FROM chunk_memory_meta WHERE 1=0`); err == nil {
 		return nil

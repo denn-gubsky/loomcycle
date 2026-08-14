@@ -195,6 +195,12 @@ func (d *Document) graphSeeds(ctx context.Context, key sqlmem.ScopeKey, in docIn
 			args = append(args, targs...)
 		}
 	}
+	// Applied whether the seeds were discovered or supplied: handing in an id must not
+	// smuggle a refuted fact into a walk. No placeholders, so it does not disturb the
+	// argument ordering the union branches depend on.
+	if w := graphWithholdClause(in); w != "" {
+		where = append(where, w)
+	}
 
 	// OVER-FETCH when discovering, because the word-boundary filter below rejects
 	// some of what the LIKE returned. Fetching exactly `limit` and then filtering
@@ -286,6 +292,11 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 	if temporal != "" {
 		extra = " AND " + temporal
 	}
+	// Argument-free by construction, so it can be concatenated into `extra` without
+	// touching the placeholder ordering documented below.
+	if w := graphWithholdClause(in); w != "" {
+		extra += " AND " + w
+	}
 
 	// Argument order must follow the statement's PLACEHOLDER order, and the
 	// temporal clause appears in BOTH union branches — so the sequence is
@@ -369,6 +380,21 @@ func graphTemporalClause(in docInput) (string, []any) {
 	// different answer than the same caller passing nothing.
 	return `(m.chunk_id IS NULL OR m.invalid_at IS NULL OR m.invalid_at > ?)`,
 		[]any{time.Now().UnixNano()}
+}
+
+// graphWithholdClause keeps a refuted fact out of a graph walk.
+//
+// Beside the temporal clause and for the same reason it treats a sidecar-less chunk as
+// current: a chunk with no entity row has no verdict to fail, and excluding it would make
+// graph_recall blind to the rest of the document.
+//
+// Keyed on include_refuted ALONE, deliberately, though include_retired sits right beside
+// it and would have been easy to fold in. They are different axes: retired means a fact
+// was corrected by a later one, refuted means it was checked and failed. A caller reading
+// history wants the first without the second, and coupling them would leave no way to ask
+// for it — as well as making two flags that can disagree about which facts exist.
+func graphWithholdClause(in docInput) string {
+	return withholdClause("m.confidence", in.IncludeRefuted)
 }
 
 func scanGraphRows(rows [][]any, hop int, viaKind, viaID string) []graphChunk {
