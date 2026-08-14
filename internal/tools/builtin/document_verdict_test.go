@@ -290,3 +290,62 @@ func TestVerdict_RetiredAndRefutedAreSeparateAxes(t *testing.T) {
 		}
 	}
 }
+
+// TestVerdict_MistypedIsReducedNotWithheld.
+//
+// The fourth verdict exists because "the span does not support this" and "the span supports
+// this but it is filed as the wrong kind of thing" have different fixes — drop it versus
+// retype it — and a verdict that collapsed them would tell an operator to delete a true
+// fact. So a mistyped fact must stay VISIBLE while reading as lower-confidence than a clean
+// one: withholding it would be a false refusal in service of a filing error.
+func TestVerdict_MistypedIsReducedNotWithheld(t *testing.T) {
+	d, ctx, withSpan, _ := verdictFixture(t)
+	out, r := docExec(t, d, ctx, `{"op":"judge_fact","scope":"user","id":"`+withSpan+
+		`","verdict":"mistyped","reason":"the span supports this, but location is not what the user is"}`)
+	if r.IsError {
+		t.Fatalf("judge: %s", r.Text)
+	}
+	if w, _ := out["withheld"].(bool); w {
+		t.Error("a mistyped fact was withheld — the claim is true, only its filing is wrong")
+	}
+	conf, _ := out["confidence"].(float64)
+	if conf <= withholdBelowConfidence {
+		t.Errorf("mistyped confidence %v is at or below the floor %v, so it will be withheld",
+			conf, withholdBelowConfidence)
+	}
+	if conf >= confidenceSupported {
+		t.Errorf("mistyped confidence %v does not sort behind a clean fact (%v)", conf, confidenceSupported)
+	}
+
+	facts, r := docExec(t, d, ctx, `{"op":"list_facts","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("list_facts: %s", r.Text)
+	}
+	var found map[string]any
+	for _, f := range facts["facts"].([]any) {
+		m := f.(map[string]any)
+		if m["id"] == withSpan {
+			found, _ = m["entity"].(map[string]any)
+		}
+	}
+	if found == nil {
+		t.Fatal("the mistyped fact is gone from list_facts")
+	}
+	// The reason is what tells an operator to retype rather than delete, so it has to
+	// survive to the surface they read.
+	if !strings.Contains(found["judge_reason"].(string), "location is not what the user is") {
+		t.Errorf("the retype instruction did not reach the surface: %v", found["judge_reason"])
+	}
+}
+
+// TestVerdict_MistypedStillNeedsASpan pins that widening the vocabulary did not widen the
+// evidence rule. Only `unclear` may be recorded without a span; a claim about whether
+// something is filed correctly is still a claim about its content.
+func TestVerdict_MistypedStillNeedsASpan(t *testing.T) {
+	d, ctx, _, noSpan := verdictFixture(t)
+	_, r := docExec(t, d, ctx, `{"op":"judge_fact","scope":"user","id":"`+noSpan+
+		`","verdict":"mistyped","reason":"r"}`)
+	if !r.IsError || !strings.Contains(r.Text, "no source span") {
+		t.Errorf("a span-less fact was judged mistyped: err=%v %s", r.IsError, r.Text)
+	}
+}
