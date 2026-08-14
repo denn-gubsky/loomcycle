@@ -461,6 +461,12 @@ func main() {
 			// property, temporal, update, abstention) and gates on updates +
 			// abstention. Not hermetic: it needs a provider and spends tokens.
 			os.Exit(cli.RunMemoryEvalLive(os.Args[2:], os.Stdout, os.Stderr))
+		case "memory-eval-judge":
+			// The write-time JUDGE against a real model: does it admit claims their
+			// quotes plainly carry, and refuse the ones that say more than their
+			// quote does. Gated on FALSE REFUSALS — the judge decides which facts
+			// stop being returned, so its failures are the invisible kind.
+			os.Exit(cli.RunMemoryEvalJudge(os.Args[2:], os.Stdout, os.Stderr))
 		case "memory-calibrate":
 			// Measures the consolidation similarity bands against the
 			// operator's OWN embedder. Cosine scale is a property of the

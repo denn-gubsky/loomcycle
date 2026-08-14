@@ -27,6 +27,24 @@ import (
 	"time"
 )
 
+// Measured is a run a baseline can key on and compare: the five key fields plus the
+// per-ability numbers. Both the extraction and the judge reports implement it.
+//
+// AN INTERFACE RATHER THAN A SECOND COPY of this file, because nothing here is specific
+// to extraction — and the refusals below (a harness-faulted run, an incomplete run, a run
+// that emitted forbidden material) are exactly the rules that would drift apart if the
+// judge had its own baseline writer. They were each added after a real incident; having
+// them in one place is the point.
+type Measured interface {
+	// baselineKeyFields returns (provider, model, effort, promptSHA, corpusSHA).
+	baselineKeyFields() (string, string, string, string, string)
+	// AbilityScores are the per-ability numbers to record and compare.
+	AbilityScores() []AbilityScore
+	// Incomplete reports (errors, harnessFault) — why a run's numbers may not be
+	// recordable.
+	Incomplete() (int, string)
+}
+
 // BaselineEntry is one measured run's scores.
 type BaselineEntry struct {
 	Provider string `json:"provider"`
@@ -89,10 +107,11 @@ func LoadBaseline(path string) (Baseline, error) {
 }
 
 // EntryFor returns the baseline entry matching a report's exact key.
-func (b Baseline) EntryFor(r ExtractionReport) (BaselineEntry, bool) {
+func (b Baseline) EntryFor(r Measured) (BaselineEntry, bool) {
+	provider, model, effort, promptSHA, corpusSHA := r.baselineKeyFields()
 	want := BaselineEntry{
-		Provider: r.Provider, Model: r.Model, Effort: r.Effort,
-		SystemPromptSHA256: r.SystemPromptSHA256, CorpusSHA256: r.CorpusSHA256,
+		Provider: provider, Model: model, Effort: effort,
+		SystemPromptSHA256: promptSHA, CorpusSHA256: corpusSHA,
 	}.Key()
 	for _, e := range b.Entries {
 		if e.Key() == want {
@@ -118,12 +137,13 @@ func (b Baseline) EntryFor(r ExtractionReport) (BaselineEntry, bool) {
 //
 // This does not block. It exists so the difference between "never measured" and
 // "no longer gated" is visible at the point the gate would have spoken.
-func (b Baseline) StaleMatch(r ExtractionReport) (BaselineEntry, bool) {
+func (b Baseline) StaleMatch(r Measured) (BaselineEntry, bool) {
 	if _, exact := b.EntryFor(r); exact {
 		return BaselineEntry{}, false
 	}
+	provider, model, effort, _, _ := r.baselineKeyFields()
 	for _, e := range b.Entries {
-		if e.Provider == r.Provider && e.Model == r.Model && e.Effort == r.Effort {
+		if e.Provider == provider && e.Model == model && e.Effort == effort {
 			return e, true
 		}
 	}
@@ -138,13 +158,13 @@ func (b Baseline) StaleMatch(r ExtractionReport) (BaselineEntry, bool) {
 // A new violation is ALWAYS a regression regardless of tolerance — tolerance
 // exists for recall jitter, and there is no jitter that turns "stored no secrets"
 // into "stored one".
-func (b Baseline) Regressions(r ExtractionReport) []string {
+func (b Baseline) Regressions(r Measured) []string {
 	base, ok := b.EntryFor(r)
 	if !ok {
 		return nil
 	}
 	var out []string
-	for _, s := range r.Abilities {
+	for _, s := range r.AbilityScores() {
 		name := string(s.Ability)
 		if was, had := base.Violations[name]; had && s.Violations > was {
 			out = append(out, fmt.Sprintf("%s violations rose %d → %d against the baseline", name, was, s.Violations))
@@ -160,7 +180,7 @@ func (b Baseline) Regressions(r ExtractionReport) []string {
 
 // DeltaFor renders an ability's change against the baseline for the report table,
 // or "" when there is nothing to compare.
-func (b Baseline) DeltaFor(r ExtractionReport, s AbilityScore) string {
+func (b Baseline) DeltaFor(r Measured, s AbilityScore) string {
 	base, ok := b.EntryFor(r)
 	if !ok {
 		return "   (new)"
@@ -192,11 +212,13 @@ func (b Baseline) DeltaFor(r ExtractionReport, s AbilityScore) string {
 // It REFUSES a harness-faulted report. Recording scores from a run whose canary
 // failed would bake "0.0 recall" in as the number to beat, and the next run would
 // then look like an improvement.
-func SaveBaselineEntry(path string, r ExtractionReport) error {
-	if r.HarnessFault != "" {
-		return fmt.Errorf("refusing to record a baseline from a harness-faulted run: %s", r.HarnessFault)
+func SaveBaselineEntry(path string, r Measured) error {
+	totalErrors, harnessFault := r.Incomplete()
+	abilities := r.AbilityScores()
+	if harnessFault != "" {
+		return fmt.Errorf("refusing to record a baseline from a harness-faulted run: %s", harnessFault)
 	}
-	if len(r.Abilities) == 0 {
+	if len(abilities) == 0 {
 		return fmt.Errorf("refusing to record a baseline with no ability scores")
 	}
 	// Same argument as the harness-fault refusal above, for the case that actually
@@ -204,8 +226,8 @@ func SaveBaselineEntry(path string, r ExtractionReport) error {
 	// and the resulting `update 0.00` was written in as the number to beat. A
 	// partial run's figures describe a subset of the corpus, so recording them
 	// makes the next full run look like an improvement.
-	if r.TotalErrors > 0 {
-		return fmt.Errorf("refusing to record a baseline from an INCOMPLETE run: %d case(s) never produced an answer, so these numbers describe only part of the corpus", r.TotalErrors)
+	if totalErrors > 0 {
+		return fmt.Errorf("refusing to record a baseline from an INCOMPLETE run: %d case(s) never produced an answer, so these numbers describe only part of the corpus", totalErrors)
 	}
 	// A run that emitted forbidden material is not a reference point. Recording it
 	// makes the violations the accepted norm: Regressions() only fires when a count
@@ -216,22 +238,27 @@ func SaveBaselineEntry(path string, r ExtractionReport) error {
 	// credential mention, chatter, and a prompt-injection attempt as a durable
 	// user PREFERENCE, and all four violations were written in as its baseline.
 	// The gate still refuses such a run; the baseline must not quietly accept it.
-	if r.TotalViolations > 0 {
-		return fmt.Errorf("refusing to record a baseline from a run with %d violation(s): a baseline is a reference for how a healthy run looks, and recording forbidden emissions makes them the norm (Regressions only fires when a count RISES)", r.TotalViolations)
+	violations := 0
+	for _, s := range abilities {
+		violations += s.Violations
+	}
+	if violations > 0 {
+		return fmt.Errorf("refusing to record a baseline from a run with %d violation(s): a baseline is a reference for how a healthy run looks, and recording forbidden emissions makes them the norm (Regressions only fires when a count RISES)", violations)
 	}
 	b, err := LoadBaseline(path)
 	if err != nil {
 		return err
 	}
+	provider, model, effort, promptSHA, corpusSHA := r.baselineKeyFields()
 	entry := BaselineEntry{
-		Provider: r.Provider, Model: r.Model, Effort: r.Effort,
-		SystemPromptSHA256: r.SystemPromptSHA256,
-		CorpusSHA256:       r.CorpusSHA256,
+		Provider: provider, Model: model, Effort: effort,
+		SystemPromptSHA256: promptSHA,
+		CorpusSHA256:       corpusSHA,
 		MeasuredAt:         time.Now().UTC().Format(time.RFC3339),
 		Recall:             map[string]float64{},
 		Violations:         map[string]int{},
 	}
-	for _, s := range r.Abilities {
+	for _, s := range abilities {
 		if s.Recall >= 0 {
 			entry.Recall[string(s.Ability)] = s.Recall
 		}
