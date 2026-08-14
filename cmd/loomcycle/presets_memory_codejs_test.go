@@ -54,6 +54,7 @@ type fakeToolset struct {
 	entitiesDocID    string
 	chunks           map[string]string // natural_key -> chunk id
 	chunkTypes       map[string]string // natural_key -> type
+	chunkSpans       map[string]string // natural_key -> source_quote (RFC CC)
 	edges            []string          // "from-kind->to"
 	supersededChunks []string          // "old by new"
 	failEntityKeys   map[string]bool
@@ -123,6 +124,7 @@ func newFakeToolset() *fakeToolset {
 		failSetKeys:    map[string]bool{},
 		chunks:         map[string]string{},
 		chunkTypes:     map[string]string{},
+		chunkSpans:     map[string]string{},
 		failEntityKeys: map[string]bool{},
 		// Source of truth for this format: formatSubAgentOutput in
 		// internal/api/http/resume.go. Nothing links them — grep that name.
@@ -244,6 +246,9 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		}
 		if typ, ok := in["type"].(string); ok && typ != "" {
 			d.f.chunkTypes[key] = typ
+		}
+		if q, ok := in["source_quote"].(string); ok && q != "" {
+			d.f.chunkSpans[key] = q
 		}
 		return okResult(map[string]any{"id": id, "natural_key": key, "created": !existed})
 	case "link_chunks":
@@ -2788,5 +2793,83 @@ func TestConsolidator_RefusesAStatementClassAsAnEntityType(t *testing.T) {
 	// rejected must not look like a pass with nothing to mirror.
 	if !strings.Contains(res.FinalText, "2 refused") {
 		t.Errorf("the refusals must be reported; got %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_DerivesTheSpanAFactCameFrom (RFC CC phase 1).
+//
+// A fact could say who wrote it and never what it was based on, so nothing downstream
+// could ask whether the source supported the claim. The span closes that — and it is
+// DERIVED from the transcript here rather than asked of the extractor, because adding a
+// required field to the extractor's contract measurably cost rule-following on a small
+// model while the unchanged prompt holds a zero-violation baseline.
+//
+// A derived span also cannot be fabricated: it is selected FROM the source, so it is in
+// the source by construction.
+func TestConsolidator_DerivesTheSpanAFactCameFrom(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: I live in Cluj-Napoca and I work on loomcycle every day.\n" +
+		"assistant: noted.\n" +
+		"user: unrelated chatter about the weather in Berlin this morning."
+	f.factsJSON = `[{"text":"The user lives in Cluj-Napoca.","class":"fact","type":"location","subject":"Cluj-Napoca"}]`
+
+	runConsolidator(t, f)
+
+	span := f.chunkSpans["memory/fact/user-lives-cluj-napoca"]
+	if span == "" {
+		// The key is derived; find whichever fact node got a span.
+		for k, v := range f.chunkSpans {
+			if strings.Contains(k, "fact") {
+				span, _ = v, k
+			}
+		}
+	}
+	if span == "" {
+		t.Fatalf("no fact node carries a span (spans=%v)", f.chunkSpans)
+	}
+	// The RIGHT sentence: the one that supports the claim, not the Berlin chatter.
+	if !strings.Contains(span, "Cluj-Napoca") {
+		t.Errorf("span = %q, want the sentence that supports the claim", span)
+	}
+	if strings.Contains(span, "Berlin") {
+		t.Errorf("span = %q — an unrelated sentence was attached, which is worse than none "+
+			"because it looks like proof", span)
+	}
+	// It must be a real substring of the source, which is the property that makes
+	// fabrication impossible rather than merely unlikely.
+	if !strings.Contains(f.transcript, span) {
+		t.Errorf("span %q is not in the transcript verbatim", span)
+	}
+	// The SUBJECT node must NOT carry it: a subject is an identity, not a claim.
+	for k, v := range f.chunkSpans {
+		if strings.HasPrefix(k, "location:") && v != "" {
+			t.Errorf("subject node %q carries a span (%q) — there is nothing about an "+
+				"identity for evidence to support", k, v)
+		}
+	}
+}
+
+// TestConsolidator_NoSupportingSentenceMeansNoSpan.
+//
+// A fact whose support cannot be located must get NO span, not the least-bad sentence.
+// An unrelated span is worse than an absent one: absent reads as unverified, while a
+// wrong one reads as proof and would be handed to a verifier as the thing to check.
+func TestConsolidator_NoSupportingSentenceMeansNoSpan(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	// PARTIAL overlap on purpose. A transcript with zero shared words would pass this
+	// test whatever the floor is — the first version did exactly that, and proved
+	// nothing. "importer" is shared, so the best candidate scores above zero and below
+	// the floor, which is the case the floor exists for.
+	f.transcript = "user: the importer felt slow this morning, any idea why\nassistant: not sure."
+	f.factsJSON = `[{"text":"The invoice importer parses CSV date columns using a strict format.","class":"fact","type":"object","subject":"invoice importer"}]`
+
+	runConsolidator(t, f)
+
+	for k, v := range f.chunkSpans {
+		if v != "" {
+			t.Errorf("chunk %q got span %q from a transcript that does not support it", k, v)
+		}
 	}
 }
