@@ -3123,6 +3123,10 @@ func (s *Server) Mux() http.Handler {
 	// recoveryMiddleware only, no authMiddleware.
 	mux.Handle("GET /v1/openapi.yaml", recoveryMiddleware(http.HandlerFunc(s.handleOpenAPIYAML)))
 	mux.Handle("GET /v1/openapi.json", recoveryMiddleware(http.HandlerFunc(s.handleOpenAPIJSON)))
+	// /v1/docs — the self-contained Swagger UI console (also unauthenticated;
+	// its "Try it out" calls carry a bearer the operator pastes in).
+	mux.Handle("GET /v1/docs", recoveryMiddleware(http.HandlerFunc(s.handleOpenAPIDocs)))
+	mux.Handle("GET /v1/docs/{file}", recoveryMiddleware(http.HandlerFunc(s.handleOpenAPIDocs)))
 	// v1.x RFC G A2A — additive routes (well-known AgentCard + REST /
 	// JSON-RPC binding mounts) registered by an external hook so the
 	// A2A package stays decoupled from this one. The hook also receives

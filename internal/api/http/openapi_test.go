@@ -96,6 +96,45 @@ func TestOpenAPIHandlers_Serve(t *testing.T) {
 	})
 }
 
+// TestOpenAPIDocs_Serve exercises the /v1/docs Swagger UI console: the index
+// page, the two vendored assets, and the whitelist (a non-listed name 404s).
+func TestOpenAPIDocs_Serve(t *testing.T) {
+	var s Server
+	cases := []struct {
+		path    string
+		wantCT  string
+		wantHit []byte
+	}{
+		{"/v1/docs", "text/html", []byte("swagger-ui")},
+		{"/v1/docs/index.html", "text/html", []byte("SwaggerUIBundle")},
+		{"/v1/docs/swagger-ui.css", "text/css", []byte(".swagger-ui")},
+		{"/v1/docs/swagger-ui-bundle.js", "application/javascript", []byte("SwaggerUIBundle")},
+	}
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		s.handleOpenAPIDocs(rec, httptest.NewRequest(http.MethodGet, c.path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", c.path, rec.Code)
+			continue
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, c.wantCT) {
+			t.Errorf("%s: Content-Type = %q, want %s*", c.path, ct, c.wantCT)
+		}
+		if !strings.Contains(rec.Body.String(), string(c.wantHit)) {
+			t.Errorf("%s: body missing marker %q", c.path, c.wantHit)
+		}
+	}
+
+	// Whitelist: an unlisted / traversal-ish name must 404, never serve.
+	for _, bad := range []string{"/v1/docs/PROVENANCE.md", "/v1/docs/../openapi.go", "/v1/docs/nope.js"} {
+		rec := httptest.NewRecorder()
+		s.handleOpenAPIDocs(rec, httptest.NewRequest(http.MethodGet, bad, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404 (whitelist)", bad, rec.Code)
+		}
+	}
+}
+
 // specOpEnum extracts components.schemas.<name>.properties.op.enum from the
 // embedded spec.
 func specOpEnum(t *testing.T, schemaName string) []string {
