@@ -135,6 +135,42 @@ func TestMemoryBackendDefTool_CreateRefusesUnknownKind(t *testing.T) {
 	}
 }
 
+// TestMemoryBackendDefTool_CreateRemote pins that kind:remote (RFC CD Part B)
+// is now an accepted, authorable backend kind with a base_url + api_key_env.
+func TestMemoryBackendDefTool_CreateRemote(t *testing.T) {
+	tool, ctx, cleanup := memoryBackendDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"peerb","overlay":{"kind":"remote","config":{"base_url":"https://peer.example:8787","api_key_env":"LOOMCYCLE_PEER_KEY"},"fallback_on_error":"inprocess"}}`))
+	if res.IsError {
+		t.Fatalf("create kind=remote should succeed; got %s", res.Text)
+	}
+	def := decodeResult(t, res.Text)["definition"].(map[string]any)
+	if def["kind"] != "remote" {
+		t.Errorf("kind = %v, want remote", def["kind"])
+	}
+}
+
+func TestMemoryBackendDefTool_CreateRemoteRefusesMissingBaseURL(t *testing.T) {
+	tool, ctx, cleanup := memoryBackendDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"peerb","overlay":{"kind":"remote","config":{"api_key_env":"LOOMCYCLE_PEER_KEY"}}}`))
+	if !res.IsError || !strings.Contains(res.Text, "base_url is required") {
+		t.Fatalf("kind=remote without base_url should be refused; got %s", res.Text)
+	}
+}
+
+func TestMemoryBackendDefTool_CreateRemoteRefusesSharedPrefixTenancy(t *testing.T) {
+	tool, ctx, cleanup := memoryBackendDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"peerb","overlay":{"kind":"remote","config":{"base_url":"https://peer.example:8787"},"tenancy_strategy":{"kind":"shared_key_with_prefix","prefix_pattern":"t-{tenant_id}-"}}}`))
+	if !res.IsError || !strings.Contains(res.Text, "shared_key_with_prefix") {
+		t.Fatalf("kind=remote + shared_key_with_prefix should be refused; got %s", res.Text)
+	}
+}
+
 func TestMemoryBackendDefTool_CreateRefusesTenancyPatternWithoutTenantID(t *testing.T) {
 	tool, ctx, cleanup := memoryBackendDefFixture(t)
 	defer cleanup()

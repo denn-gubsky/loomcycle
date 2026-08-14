@@ -535,8 +535,30 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 				"(must be LOOMCYCLE_-prefixed or a known third-party key, and must not be one "+
 				"of loomcycle's own infrastructure secrets)", def.Config.APIKeyEnv)
 		}
+	case "remote":
+		// A remote backend (RFC CD Part B) HTTP-proxies to a peer's
+		// /v1/_memory/*. base_url is required and dialed; api_key_env is
+		// resolved and SENT to it, so both are validated at the door (the same
+		// checks the inprocess arm applies defensively, here load-bearing).
+		if def.Config.BaseURL == "" {
+			return fmt.Errorf("config.base_url is required for kind %q", def.Kind)
+		}
+		if err := requireHTTPURL("config.base_url", def.Config.BaseURL); err != nil {
+			return err
+		}
+		if def.Config.APIKeyEnv != "" && !config.EnvNameCredentialSafe(def.Config.APIKeyEnv) {
+			return fmt.Errorf("config.api_key_env %q is not an allowed credential env var "+
+				"(must be LOOMCYCLE_-prefixed or a known third-party key, and must not be one "+
+				"of loomcycle's own infrastructure secrets)", def.Config.APIKeyEnv)
+		}
+		// The peer search API has no key-prefix parameter, so a namespaced
+		// search cannot be scoped to one tenant — refuse the combination at the
+		// door rather than degrade at runtime.
+		if def.TenancyStrategy.Kind == "shared_key_with_prefix" {
+			return fmt.Errorf("kind=remote does not support tenancy_strategy=shared_key_with_prefix (use key_per_tenant): the peer search API has no key-prefix parameter")
+		}
 	default:
-		return fmt.Errorf("unknown kind %q (must be one of: inprocess)", def.Kind)
+		return fmt.Errorf("unknown kind %q (must be one of: inprocess, remote)", def.Kind)
 	}
 
 	// tenancy_strategy.kind ∈ {"", "key_per_tenant", "shared_key_with_prefix"}.

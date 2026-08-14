@@ -5786,6 +5786,17 @@ func validate(c *Config) error {
 			!strings.Contains(mb.TenancyStrategy.PrefixPattern, "{tenant_id}") {
 			return fmt.Errorf("memory_backends.%s: tenancy_strategy.prefix_pattern %q must contain {tenant_id} for shared_key_with_prefix (an empty or token-less prefix collapses all tenants into one keyspace)", bname, mb.TenancyStrategy.PrefixPattern)
 		}
+		// RFC CD Part B: a static kind:remote backend is dialed at runtime, so
+		// fail fast at load on a missing base_url or the unsupported tenancy
+		// (the api_key_env allowlist is enforced at resolve time).
+		if mb.Kind == "remote" {
+			if mb.Config.BaseURL == "" {
+				return fmt.Errorf("memory_backends.%s: kind=remote requires config.base_url", bname)
+			}
+			if mb.TenancyStrategy.Kind == "shared_key_with_prefix" {
+				return fmt.Errorf("memory_backends.%s: kind=remote does not support tenancy_strategy=shared_key_with_prefix (use key_per_tenant)", bname)
+			}
+		}
 	}
 	// Static webhooks: a misconfigured delivery target can never fire (F24).
 	for wname, wh := range c.Webhooks {
