@@ -5814,6 +5814,77 @@ button.primary:disabled {
   color: var(--lc-running);
 }
 
+/* The facts list (Settings → Memory). Rows rather than a table: each fact is a claim,
+   its evidence and its verdict — three things of very different lengths, which a table
+   would either truncate or stretch. The state drives the left border so a scan down the
+   column reads as a state column without one existing. */
+.facts-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lc-space-2);
+  margin: var(--lc-space-2) 0;
+}
+.fact-row {
+  border: 1px solid var(--lc-rule);
+  border-left-width: 3px;
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-2);
+  background: var(--lc-surface-2);
+}
+.fact-row[data-state="withheld"] {
+  border-left-color: var(--lc-danger);
+}
+.fact-row[data-state="checked"] {
+  border-left-color: var(--lc-completed);
+}
+.fact-claim {
+  display: flex;
+  align-items: baseline;
+  gap: var(--lc-space-1);
+}
+.fact-expand {
+  background: none;
+  border: none;
+  color: var(--lc-text-faint);
+  cursor: pointer;
+  font-family: var(--lc-font-mono, monospace);
+  padding: 0;
+}
+.fact-badge {
+  margin-left: auto;
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text-faint);
+  white-space: nowrap;
+}
+/* The span is quoted, and set apart, because it is the thing the claim is checked
+   against — not a note about the claim. */
+.fact-span {
+  margin: var(--lc-space-1) 0 0;
+  padding-left: var(--lc-space-2);
+  border-left: 2px solid var(--lc-rule);
+  color: var(--lc-text-faint);
+  font-size: var(--lc-text-sm);
+}
+.fact-span-missing {
+  font-style: italic;
+}
+.fact-reason {
+  margin-top: var(--lc-space-1);
+}
+.fact-reason-form input {
+  flex: 1;
+  min-width: 12rem;
+}
+.facts-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--lc-space-1);
+  font-size: var(--lc-text-sm);
+}
+.settings-subhead {
+  margin-top: var(--lc-space-3);
+}
+
 /* Verification coverage (Settings → Memory). A definition list rather than a table:
    there is no row/column relationship here, just six labelled counts, and a table would
    make an operator hunt for a header that says nothing. Auto-fit so it reflows from six
