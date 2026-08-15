@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import {
+  canSee,
+  hasTenantScope as principalHasTenantScope,
+  type Visibility,
+} from "../lib/visibility";
 import { verificationSummary } from "../lib/verificationSummary";
 import {
   consolidationRunHref,
@@ -67,30 +72,40 @@ type Section =
 interface SectionDef {
   id: Section;
   label: string;
-  admin: boolean; // true = super-admin only
+  // Which roles may reach this tab, using the same three-tier class the left nav
+  // uses. It replaces a binary `admin` boolean, which could not express the middle
+  // tier: a substrate:tenant operator is not an admin, but is not a delegated user
+  // either, and every tab below is at least tenant-gated on the server.
+  //
+  // ⚠️ ASSIGNED FROM THE ROUTE GATE, never from taste. A tab is "tenant" only where
+  // requiredScopeFor on its backing endpoint returns ScopeTenant. Mislabelling one
+  // grants nothing — the server still refuses — but it produces a control that
+  // 403s, which is exactly the defect this replaces.
+  vis: Visibility;
 }
 
 const SECTIONS: SectionDef[] = [
-  { id: "credentials", label: "Credentials", admin: false },
-  { id: "limits", label: "Limits", admin: false },
-  { id: "routing", label: "Routing", admin: false },
-  // Tenant-visible: the ontology is per-tenant config, and the operator who owns
-  // the vocabulary is the one who should activate it. GET/POST /v1/_ontology are
-  // ScopeTenant and derive the tenant from the principal, so a tenant operator
-  // reaches only its own.
-  { id: "ontology", label: "Ontology", admin: false },
-  // Tenant-visible for the same reason: the coverage read goes through
-  // POST /v1/_document (ScopeTenant, subject resolved from the principal), and
-  // starting a pass is staged in the run terminal rather than done here.
-  { id: "memory", label: "Memory", admin: false },
-  { id: "tokens", label: "Tokens", admin: true },
-  { id: "presets", label: "Presets", admin: true },
-  { id: "runtime", label: "Runtime", admin: true },
-  // Admin-only: the repair rewrites rows across every scope in one statement,
-  // which is not a tenant operator's authority even over its own tenant. The
-  // route enforces this too (defence in depth).
-  { id: "maintenance", label: "Maintenance", admin: true },
-  { id: "health", label: "Health", admin: true },
+  // Every tab here is at least tenant-gated: there is no "all" settings surface,
+  // because a delegated user administers nothing. The nav's gear is already gated on
+  // (admin || tenant), so this list is what protects the direct-URL path.
+  //
+  // ScopeTenant on the server: /v1/_credentialdef (isTenantConfinedDefPath),
+  // /v1/_limits, /v1/_routing, /v1/_ontology, and the memory tab's /v1/_document +
+  // /v1/_memory/* family.
+  { id: "credentials", label: "Credentials", vis: "tenant" },
+  { id: "limits", label: "Limits", vis: "tenant" },
+  { id: "routing", label: "Routing", vis: "tenant" },
+  { id: "ontology", label: "Ontology", vis: "tenant" },
+  { id: "memory", label: "Memory", vis: "tenant" },
+  // ScopeAdmin: token minting has no tenant axis and is deliberately excluded from
+  // the tenant-confined def set; presets/runtime/health fall through to the /v1/_*
+  // catch-all; and repair-tenant is explicitly admin because it rewrites rows across
+  // every scope in one statement.
+  { id: "tokens", label: "Tokens", vis: "admin" },
+  { id: "presets", label: "Presets", vis: "admin" },
+  { id: "runtime", label: "Runtime", vis: "admin" },
+  { id: "maintenance", label: "Maintenance", vis: "admin" },
+  { id: "health", label: "Health", vis: "admin" },
 ];
 
 export default function SettingsView() {
@@ -99,12 +114,35 @@ export default function SettingsView() {
   // handleWhoami's open-mode synthetic admin). Layout only renders this view
   // once the principal has resolved, so this reflects the real role.
   const isAdmin = !principal || principal.is_admin;
-  const visible = SECTIONS.filter((s) => isAdmin || !s.admin);
-  // Default to the first tab the principal can see: tokens for an admin,
-  // credentials for a tenant operator.
-  const [section, setSection] = useState<Section>(
-    isAdmin ? "tokens" : "credentials",
-  );
+  const hasTenantScope = principalHasTenantScope(principal?.scopes);
+  const visible = SECTIONS.filter((s) => canSee(s.vis, isAdmin, hasTenantScope));
+  // Default to the first tab the principal can actually see, rather than to a
+  // hardcoded one. The old default was "credentials" for anyone non-admin, which a
+  // delegated user could reach by typing /settings — rendering a panel whose every
+  // call 403s.
+  const [section, setSection] = useState<Section>(visible[0]?.id ?? "credentials");
+  // And re-derive on every render rather than trusting the stored value: the role
+  // resolves asynchronously, and a section selected before it lands (or left over
+  // from a previous principal) must not render just because state remembers it.
+  // Selection is a preference; visibility is a rule.
+  const active = visible.some((s) => s.id === section) ? section : visible[0]?.id;
+
+  if (visible.length === 0) {
+    // Reachable by direct URL only — the nav's gear is gated on (admin || tenant) —
+    // but "no tabs at all" renders as a blank page, which reads as broken rather
+    // than as forbidden. Say which it is.
+    return (
+      <div className="settings-view">
+        <div className="settings-panel">
+          <h2>Settings</h2>
+          <p className="settings-help">
+            Nothing here is available to your access level. Settings administers a
+            tenant or the operator plane; your token holds neither.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="settings-view">
@@ -113,7 +151,7 @@ export default function SettingsView() {
           <button
             key={s.id}
             type="button"
-            className={"settings-tab" + (section === s.id ? " active" : "")}
+            className={"settings-tab" + (active === s.id ? " active" : "")}
             onClick={() => setSection(s.id)}
           >
             {s.label}
@@ -121,16 +159,16 @@ export default function SettingsView() {
         ))}
       </nav>
       <div className="settings-body">
-        {section === "credentials" && <CredentialsSection />}
-        {section === "limits" && <LimitsView />}
-        {section === "routing" && <RoutingView />}
-        {section === "ontology" && <OntologySection />}
-        {section === "memory" && <MemorySection />}
-        {section === "tokens" && <TokenManager />}
-        {section === "presets" && <PresetsSection />}
-        {section === "runtime" && <RuntimeSection />}
-        {section === "maintenance" && <MaintenanceSection />}
-        {section === "health" && <HealthSection />}
+        {active === "credentials" && <CredentialsSection />}
+        {active === "limits" && <LimitsView />}
+        {active === "routing" && <RoutingView />}
+        {active === "ontology" && <OntologySection />}
+        {active === "memory" && <MemorySection />}
+        {active === "tokens" && <TokenManager />}
+        {active === "presets" && <PresetsSection />}
+        {active === "runtime" && <RuntimeSection />}
+        {active === "maintenance" && <MaintenanceSection />}
+        {active === "health" && <HealthSection />}
       </div>
     </div>
   );
