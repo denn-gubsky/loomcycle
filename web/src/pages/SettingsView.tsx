@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
+import { verificationSummary } from "../lib/verificationSummary";
+import {
+  consolidationRunHref,
+  ontologistRunHref,
+  ontologyEditHref,
+} from "../lib/ontologyEditHref";
 import {
   CredentialMeta,
   CredentialScope,
@@ -16,6 +21,7 @@ import {
   getEnvTemplate,
   getHealth,
   getOntology,
+  getVerificationStats,
   getRuntimeState,
   listCredentials,
   listPresets,
@@ -26,6 +32,7 @@ import {
   setOntologyStatus,
   showPreset,
   OntologyTerm,
+  VerificationStats,
 } from "../api";
 import { usePrincipal, useUserId } from "../components/Layout";
 import LimitsView from "./LimitsView";
@@ -50,6 +57,7 @@ type Section =
   | "limits"
   | "routing"
   | "ontology"
+  | "memory"
   | "tokens"
   | "presets"
   | "runtime"
@@ -71,6 +79,10 @@ const SECTIONS: SectionDef[] = [
   // ScopeTenant and derive the tenant from the principal, so a tenant operator
   // reaches only its own.
   { id: "ontology", label: "Ontology", admin: false },
+  // Tenant-visible for the same reason: the coverage read goes through
+  // POST /v1/_document (ScopeTenant, subject resolved from the principal), and
+  // starting a pass is staged in the run terminal rather than done here.
+  { id: "memory", label: "Memory", admin: false },
   { id: "tokens", label: "Tokens", admin: true },
   { id: "presets", label: "Presets", admin: true },
   { id: "runtime", label: "Runtime", admin: true },
@@ -113,6 +125,7 @@ export default function SettingsView() {
         {section === "limits" && <LimitsView />}
         {section === "routing" && <RoutingView />}
         {section === "ontology" && <OntologySection />}
+        {section === "memory" && <MemorySection />}
         {section === "tokens" && <TokenManager />}
         {section === "presets" && <PresetsSection />}
         {section === "runtime" && <RuntimeSection />}
@@ -920,6 +933,147 @@ function OntologySection() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ─── Memory operations ───────────────────────────────────────────────────────
+//
+// TWO THINGS AN OPERATOR CANNOT GET ANYWHERE ELSE: how much of a user's memory is
+// actually verified, and a way to run a pass NOW instead of waiting for the hourly
+// schedule, which ships disabled.
+//
+// The coverage read is what makes the rest legible. Without it, "is verification
+// working" gets answered by impression — and these numbers separate three states that
+// look identical from outside: nothing stored, stored but never judged, and judged and
+// refused.
+function MemorySection() {
+  // The SAME picker the run form seeds its user_id from, so the coverage shown here and
+  // the pass staged below describe one user rather than two.
+  const pickedUser = useUserId();
+  const [stats, setStats] = useState<VerificationStats | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setBusy(true);
+    try {
+      setStats(
+        await getVerificationStats("user", pickedUser ? { scopeId: pickedUser } : undefined),
+      );
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setStats(null);
+    } finally {
+      setBusy(false);
+    }
+  }, [pickedUser]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const who = pickedUser ? <code>{pickedUser}</code> : "your own scope";
+  const facts = stats?.facts ?? 0;
+  // Every "what should this say" decision lives in one tested place — see the helper
+  // for which numbers are misleading when rendered naively.
+  const summary = verificationSummary(stats);
+
+  return (
+    <div className="settings-panel">
+      <h2>Memory</h2>
+      <p className="settings-help">
+        Coverage and manual passes for {who}. Pick a different user in the top bar to
+        switch target — the pass staged below runs against whoever is picked there.
+      </p>
+
+      {err && <div className="settings-error">{err}</div>}
+
+      <div className="settings-row">
+        <button type="button" onClick={() => void load()} disabled={busy}>
+          {busy ? "reading…" : "Refresh coverage"}
+        </button>
+      </div>
+
+      {stats && summary.empty && (
+        <div className="settings-muted">
+          No facts stored for {who} yet. A consolidation pass reads that user&rsquo;s
+          chats and distils them.
+        </div>
+      )}
+
+      {stats && !summary.empty && (
+        <>
+          <dl className="settings-stats">
+            <div>
+              <dt>facts</dt>
+              <dd>{facts}</dd>
+            </div>
+            <div>
+              <dt>with a span</dt>
+              <dd>{stats.with_span ?? 0}</dd>
+            </div>
+            <div>
+              <dt>verified</dt>
+              <dd>
+                {stats.supported ?? 0}
+                {summary.sharePct !== null && ` (${summary.sharePct}%)`}
+              </dd>
+            </div>
+            <div>
+              <dt>withheld</dt>
+              <dd>{stats.withheld ?? 0}</dd>
+            </div>
+            <div>
+              <dt>awaiting a judge</dt>
+              <dd>{stats.awaiting_judge ?? 0}</dd>
+            </div>
+            <div>
+              {/* Named for what it is. These can never be verified by ANYONE — the
+                  transcript they came from may be gone — so they are a different
+                  population from the ones merely waiting, and rolling the two together
+                  would make the backlog look like something a pass can fix. */}
+              <dt>no span, unverifiable</dt>
+              <dd>{stats.unverifiable_no_span ?? 0}</dd>
+            </div>
+          </dl>
+          {summary.showUnjudgedNote && (
+            // A zero here reads as "broken" unless the reason is stated, and the most
+            // likely reason is that nobody turned verification on.
+            <div className="settings-muted">
+              Nothing has been judged. Verdicts are only recorded when{" "}
+              <code>memory.consolidation.verify_writes</code> is enabled — until then
+              these facts are stored and fully recallable, just unverified.
+            </div>
+          )}
+          {summary.showWithheldNote && (
+            <div className="settings-muted">
+              Withheld facts are hidden from the fact surfaces, never deleted — an agent
+              reads them back with <code>include_refuted</code>, along with the reason
+              each was refused.
+            </div>
+          )}
+        </>
+      )}
+
+      {/* A LINK, not a button, and deliberately so — the same argument the curation
+          control makes. A consolidation pass is the most expensive thing this UI can
+          start (one extractor call per chat read, plus the judge's), and a settings
+          click that spends tokens with no preview is a surprise. */}
+      <p className="settings-help">
+        <Link className="settings-action-link" to={consolidationRunHref(pickedUser)}>
+          Run consolidation &rarr;
+        </Link>{" "}
+        <span className="settings-muted">
+          stages a pass in the terminal — it reads {who}&rsquo;s unconsolidated chats,
+          distils durable facts, and (when verification is on) judges what it writes and
+          works through older unjudged ones. Nothing runs until you start it there.
+        </span>
+      </p>
+      <p className="settings-help settings-muted">
+        Entity types and suggestions live in the <strong>Ontology</strong> tab.
+      </p>
     </div>
   );
 }

@@ -25,3 +25,22 @@ export function ontologistRunHref(userId?: string): string {
     : "Review the stored facts in this scope and suggest ontology improvements.";
   return `/run?agent=${encodeURIComponent("memory/ontologist")}&prompt=${encodeURIComponent(prompt)}`;
 }
+
+// consolidationRunHref stages a consolidation pass in the run terminal.
+//
+// A LINK, for the same reason the curation one is: a settings click that spends tokens
+// is a surprise, and a consolidation pass is the most expensive thing this UI can start
+// — one extractor call per chat read, plus the judge's calls when verification is on.
+// The operator should see the agent and the prompt before any of that runs.
+//
+// THE USER ID IS THE SCOPE, not decoration. The pass consolidates whichever user the RUN
+// belongs to (its scope is "user"), and the run form seeds that from the same topbar
+// picker this href reads — so the prompt naming a user and the run targeting one cannot
+// disagree. The prompt still names them, because an operator reviewing a staged run
+// should be able to see the target without inspecting the form.
+export function consolidationRunHref(userId?: string): string {
+  const prompt = userId
+    ? `Run one consolidation pass for ${userId}.`
+    : "Run one consolidation pass for your assigned memory target.";
+  return `/run?agent=${encodeURIComponent("memory/consolidator")}&prompt=${encodeURIComponent(prompt)}`;
+}

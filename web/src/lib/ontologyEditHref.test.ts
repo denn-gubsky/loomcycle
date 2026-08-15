@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ontologistRunHref, ontologyEditHref } from "./ontologyEditHref";
+import { consolidationRunHref, ontologistRunHref, ontologyEditHref } from "./ontologyEditHref";
 
 describe("ontologyEditHref", () => {
   // The regression. Without scope=tenant the viewer opens the tenant document at user
@@ -27,5 +27,26 @@ describe("ontologistRunHref", () => {
 
   it("works without a user, since the run's own scope is the survey scope", () => {
     expect(ontologistRunHref()).toContain("/run?agent=memory%2Fontologist");
+  });
+});
+
+describe("consolidationRunHref", () => {
+  it("stages the consolidator, and names the target in the prompt", () => {
+    const href = consolidationRunHref("alice");
+    expect(href).toContain("/run?agent=memory%2Fconsolidator");
+    expect(decodeURIComponent(href)).toContain("for alice");
+  });
+
+  it("does not invent a target when no user is picked", () => {
+    // The run form falls back to the principal's own subject, so a fabricated user
+    // in the prompt would describe a run that targets someone else.
+    expect(decodeURIComponent(consolidationRunHref())).toContain("your assigned memory target");
+    expect(consolidationRunHref()).not.toContain("undefined");
+  });
+
+  it("stages rather than starts — the href is the run page, not an API call", () => {
+    // The whole point of a link here: a settings click must not spend tokens. If this
+    // ever becomes a POST, this test should be the thing that argues about it.
+    expect(consolidationRunHref("alice").startsWith("/run?")).toBe(true);
   });
 });
