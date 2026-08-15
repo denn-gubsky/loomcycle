@@ -51,12 +51,24 @@ type fakeToolset struct {
 	calls []recordedCall
 
 	// The entity half, filled by fakeDocument.
-	entitiesDocID    string
-	chunks           map[string]string // natural_key -> chunk id
-	chunkTypes       map[string]string // natural_key -> type
-	chunkSpans       map[string]string // natural_key -> source_quote (RFC CC)
-	edges            []string          // "from-kind->to"
-	supersededChunks []string          // "old by new"
+	entitiesDocID string
+	chunks        map[string]string // natural_key -> chunk id
+	chunkTypes    map[string]string // natural_key -> type
+	chunkSpans    map[string]string // natural_key -> source_quote (RFC CC)
+	// chunkRows is what a READ of a chunk returns: id -> the fields upsert_chunk was
+	// given, plus any verdict since written. The backfill sweep reads facts back
+	// (list_facts to find them, get_chunk for the body the listing truncates), so the
+	// double has to be able to answer a read and not only record a write.
+	chunkRows  map[string]map[string]any
+	chunkOrder []string // insertion order; list_facts answers newest-first
+	// preexistingFacts are rows planted as though an EARLIER pass wrote them — the
+	// backlog a backfill exists for. Seeded before the run, never written by it.
+	preexistingFacts []map[string]any
+	// failListFacts makes the backfill's scan refuse, which must read as a scan
+	// failure and not as a broken judge.
+	failListFacts    bool
+	edges            []string // "from-kind->to"
+	supersededChunks []string // "old by new"
 	failEntityKeys   map[string]bool
 
 	leaseAcquired bool
@@ -133,6 +145,7 @@ func newFakeToolset() *fakeToolset {
 		chunks:         map[string]string{},
 		chunkTypes:     map[string]string{},
 		chunkSpans:     map[string]string{},
+		chunkRows:      map[string]map[string]any{},
 		verdicts:       map[string]string{},
 		failEntityKeys: map[string]bool{},
 		// Source of truth for this format: formatSubAgentOutput in
@@ -259,6 +272,17 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		if q, ok := in["source_quote"].(string); ok && q != "" {
 			d.f.chunkSpans[key] = q
 		}
+		row := d.f.chunkRows[id]
+		if row == nil {
+			row = map[string]any{"id": id, "natural_key": key}
+			d.f.chunkRows[id] = row
+			d.f.chunkOrder = append(d.f.chunkOrder, id)
+		}
+		for _, field := range []string{"title", "body", "type", "source_quote", "subject"} {
+			if v, ok := in[field].(string); ok && v != "" {
+				row[field] = v
+			}
+		}
 		return okResult(map[string]any{"id": id, "natural_key": key, "created": !existed})
 	case "judge_fact":
 		id, _ := in["id"].(string)
@@ -275,7 +299,45 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 			return tools.Result{IsError: true, Text: "judge_fact: verdict must be a known word"}, nil
 		}
 		d.f.verdicts[id] = verdict + ": " + reason
+		if row := d.f.chunkRows[id]; row != nil {
+			// judged_at is what stops a later scan re-judging this fact, so the double
+			// has to set it — otherwise a backfill test would loop forever on the same
+			// rows and look like it was working.
+			row["judged_at"] = 1700000000000000000
+			row["judge_reason"] = reason
+		}
 		return okResult(map[string]any{"chunk_id": id, "verdict": verdict})
+	case "list_facts":
+		if d.f.failListFacts {
+			return tools.Result{IsError: true, Text: "list_facts: store unavailable"}, nil
+		}
+		// Newest first, as the real op documents. Planted rows are OLDER than anything
+		// this pass wrote, so they come last.
+		facts := []map[string]any{}
+		for i := len(d.f.chunkOrder) - 1; i >= 0; i-- {
+			facts = append(facts, factView(d.f.chunkRows[d.f.chunkOrder[i]]))
+		}
+		for _, row := range d.f.preexistingFacts {
+			facts = append(facts, factView(row))
+		}
+		if lim, ok := in["limit"].(float64); ok && int(lim) < len(facts) {
+			facts = facts[:int(lim)]
+		}
+		return okResult(map[string]any{"facts": facts, "count": len(facts)})
+	case "get_chunk":
+		id, _ := in["id"].(string)
+		row := d.f.chunkRows[id]
+		if row == nil {
+			for _, pre := range d.f.preexistingFacts {
+				if pre["id"] == id {
+					row = pre
+				}
+			}
+		}
+		if row == nil {
+			return tools.Result{IsError: true, Text: "get_chunk: no such chunk"}, nil
+		}
+		return okResult(row)
 	case "link_chunks":
 		from, _ := in["from_id"].(string)
 		to, _ := in["to_id"].(string)
@@ -3227,5 +3289,193 @@ func TestJudge_CannotWriteAnything(t *testing.T) {
 	// It must ALSO see the entity types, or `mistyped` is a verdict it cannot reach.
 	if !strings.Contains(judge.SystemPrompt, "{{memory:ontology}}") {
 		t.Error("the judge prompt does not receive the ontology, so it cannot tell a mistyped fact")
+	}
+}
+
+// factView renders a stored row the way list_facts does: the metadata, with the entity
+// block carrying the span and any verdict — and NOT the body, which is exactly why the
+// backfill has to read each candidate back before judging it.
+func factView(row map[string]any) map[string]any {
+	entity := map[string]any{}
+	for _, k := range []string{"source_quote", "subject", "judged_at", "judge_reason"} {
+		if v, ok := row[k]; ok {
+			entity[k] = v
+		}
+	}
+	title, _ := row["title"].(string)
+	if len(title) > 80 {
+		title = title[:77] + "..."
+	}
+	return map[string]any{"id": row["id"], "title": title, "entity": entity}
+}
+
+// plantedFact is a fact a PREVIOUS pass stored — the backlog a backfill exists for.
+func plantedFact(id, text, quote, typ, subject string) map[string]any {
+	row := map[string]any{"id": id, "title": text, "body": text, "type": typ}
+	if quote != "" {
+		row["source_quote"] = quote
+	}
+	if subject != "" {
+		row["subject"] = subject
+	}
+	return row
+}
+
+// ------------------------------------------------------- the backfill sweep
+
+// TestConsolidator_BackfillJudgesOlderFactsThatCarryASpan.
+//
+// Turning verification on does not retroactively verify anything: every fact already in
+// the store has no verdict, and the write path only ever looks at what it just wrote. So
+// the backlog would sit unverified forever while the coverage number stayed near zero and
+// nobody could tell whether the judge was working.
+//
+// A fact stored earlier WITH a span can be judged now — the evidence is on the row and
+// nothing about it has expired.
+func TestConsolidator_BackfillJudgesOlderFactsThatCarryASpan(t *testing.T) {
+	f := judgeFixture(t, true)
+	f.preexistingFacts = []map[string]any{
+		plantedFact("old-1", "The user's Postgres role needs CREATEROLE.",
+			"without CREATEROLE the per-scope roles cannot be made", "object", "postgres role"),
+	}
+	f.factsByNeedle = []needleReply{{Needle: "CREATEROLE", Reply: `[{"i":1,"verdict":"supported","reason":"the quote states it"}]`},
+		{Needle: "BEGIN CANDIDATES", Reply: `[{"i":1,"verdict":"supported","reason":"ok"},{"i":2,"verdict":"supported","reason":"ok"}]`}}
+
+	res := runConsolidator(t, f)
+
+	if v, ok := f.verdicts["old-1"]; !ok {
+		t.Fatalf("the older fact was never judged; verdicts=%v", f.verdicts)
+	} else if !strings.HasPrefix(v, "supported:") {
+		t.Errorf("old-1 got %q", v)
+	}
+	if !strings.Contains(res.FinalText, "backfill 1 older fact(s) judged") {
+		t.Errorf("the backfill is not reported: %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_BackfillNeverJudgesASpanlessFactAndSaysHowMany.
+//
+// A fact with no span cannot be verified by anyone: the transcript it came from may be
+// gone, and the judge refuses a verdict without evidence by design. Sending it would buy
+// a guaranteed refusal at the price of a model call.
+//
+// Counting it is the point. That number — how much of a store can never be verified — is
+// what says whether verified facts are the norm, and it is the only thing the sweep can
+// do for that population.
+func TestConsolidator_BackfillNeverJudgesASpanlessFactAndSaysHowMany(t *testing.T) {
+	f := judgeFixture(t, true)
+	f.preexistingFacts = []map[string]any{
+		plantedFact("old-nospan-1", "Something recorded before spans existed.", "", "object", "thing"),
+		plantedFact("old-nospan-2", "Another one, equally unverifiable.", "", "object", "thing2"),
+	}
+	f.factsByNeedle = []needleReply{{Needle: "BEGIN CANDIDATES",
+		Reply: `[{"i":1,"verdict":"supported","reason":"ok"},{"i":2,"verdict":"supported","reason":"ok"}]`}}
+
+	res := runConsolidator(t, f)
+
+	for _, id := range []string{"old-nospan-1", "old-nospan-2"} {
+		if v, judged := f.verdicts[id]; judged {
+			t.Errorf("a span-less fact was judged anyway: %s = %q", id, v)
+		}
+	}
+	// The prompts must not even mention them.
+	for _, p := range judgePrompts(f) {
+		if strings.Contains(p, "equally unverifiable") {
+			t.Errorf("a span-less fact reached the judge:\n%s", p)
+		}
+	}
+	if !strings.Contains(res.FinalText, "carry no span and can never be judged") {
+		t.Errorf("the unverifiable population is not reported: %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_BackfillNeverCrowdsOutThisPassesFacts.
+//
+// The write path comes first: a fact written now should be verified now, and the backlog
+// has already waited. If a backfill could consume the call budget ahead of fresh
+// candidates, then enabling verification on a store with history would mean new facts go
+// unverified for passes on end — the opposite of what turning it on is for.
+func TestConsolidator_BackfillNeverCrowdsOutThisPassesFacts(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.bands = map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5, "verify_writes": true}
+	// Ten fresh facts = 2 batches, and a backlog far larger than the remaining budget.
+	var turns, facts []string
+	for i := 1; i <= 10; i++ {
+		turns = append(turns, fmt.Sprintf("user: server node%d runs the billing shard.", i))
+		facts = append(facts, fmt.Sprintf(
+			`{"text":"Server node%d runs the billing shard.","class":"fact","type":"object","subject":"node%d"}`, i, i))
+	}
+	f.transcript = strings.Join(turns, "\n")
+	f.factsJSON = "[" + strings.Join(facts, ",") + "]"
+	for i := 0; i < 60; i++ {
+		f.preexistingFacts = append(f.preexistingFacts, plantedFact(
+			fmt.Sprintf("old-%d", i), fmt.Sprintf("An older claim number %d.", i),
+			fmt.Sprintf("the source said claim %d", i), "object", "thing"))
+	}
+	f.factsByNeedle = []needleReply{{Needle: "BEGIN CANDIDATES", Reply: `[]`}}
+
+	runConsolidator(t, f)
+
+	prompts := judgePrompts(f)
+	if len(prompts) > 6 { // CONFIG.max_judge_calls
+		t.Errorf("judge calls = %d, above the cap", len(prompts))
+	}
+	// The first two calls must be this pass's facts, not the backlog.
+	if len(prompts) < 2 {
+		t.Fatalf("only %d judge call(s); the fresh facts were not judged", len(prompts))
+	}
+	for i := 0; i < 2; i++ {
+		if strings.Contains(prompts[i], "An older claim") {
+			t.Errorf("call %d carried backlog before this pass's facts were done:\n%s", i, prompts[i])
+		}
+		if !strings.Contains(prompts[i], "billing shard") {
+			t.Errorf("call %d is not a fresh-fact batch:\n%s", i, prompts[i])
+		}
+	}
+}
+
+// TestConsolidator_BackfillDoesNotReAskWithinOnePass.
+//
+// A fact whose verdict did not land — an unreadable reply, a dropped entry, a failed
+// write — is still unjudged, so the scan finds it. Sending it straight back to the same
+// judge with the same prompt in the same pass is not a retry: it is paying twice for one
+// failure, and on a judge that is slightly off it silently doubles every pass's spend.
+func TestConsolidator_BackfillDoesNotReAskWithinOnePass(t *testing.T) {
+	f := judgeFixture(t, true)
+	// The judge answers nothing usable, so both fresh facts stay unjudged and become
+	// backfill candidates on the very next step.
+	f.factsByNeedle = []needleReply{{Needle: "BEGIN CANDIDATES", Reply: `[]`}}
+
+	runConsolidator(t, f)
+
+	if n := len(judgePrompts(f)); n != 1 {
+		t.Errorf("judge calls = %d, want 1 — the pass re-asked about facts it had just asked about", n)
+	}
+	if len(f.verdicts) != 0 {
+		t.Errorf("verdicts appeared from an empty reply: %v", f.verdicts)
+	}
+}
+
+// TestConsolidator_AFailedBackfillScanIsNotAFailedJudge. Two different problems with two
+// different fixes: a listing call that refuses versus a judge tier that cannot be
+// reached. Reporting the first as the second sends an operator to the wrong place.
+func TestConsolidator_AFailedBackfillScanIsNotAFailedJudge(t *testing.T) {
+	f := judgeFixture(t, true)
+	f.failListFacts = true
+	f.factsByNeedle = []needleReply{{Needle: "BEGIN CANDIDATES",
+		Reply: `[{"i":1,"verdict":"supported","reason":"ok"},{"i":2,"verdict":"supported","reason":"ok"}]`}}
+
+	res := runConsolidator(t, f)
+
+	// This pass's own facts are unaffected: the scan failure happens after they are judged.
+	if len(f.verdicts) != 2 {
+		t.Errorf("the scan failure cost this pass's verdicts: %v", f.verdicts)
+	}
+	if strings.Contains(res.FinalText, "judge call(s) or write(s) failed") {
+		t.Errorf("a listing failure was reported as a judge failure: %q", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "read(s) failed") {
+		t.Errorf("the scan failure is not reported at all: %q", res.FinalText)
 	}
 }
