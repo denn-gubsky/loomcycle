@@ -87,6 +87,7 @@ const (
 	Loomcycle_Path_FullMethodName                = "/loomcycle.v1.Loomcycle/Path"
 	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
 	Loomcycle_History_FullMethodName             = "/loomcycle.v1.Loomcycle/History"
+	Loomcycle_Memory_FullMethodName              = "/loomcycle.v1.Loomcycle/Memory"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
 	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
 	Loomcycle_PublishChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PublishChannel"
@@ -412,6 +413,16 @@ type LoomcycleClient interface {
 	// search / rename / annotate / pin / archive / recap / resume); same
 	// SubstrateRequest/Response body shape (is_error carries tool refusals).
 	History(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// Memory dispatches to the Memory tool (RFC CD Part D — Python/gRPC memory
+	// parity; the TS adapter reaches memory over HTTP). Op-discriminated
+	// input_json (key/value: get/set/delete/list/incr/merge/append_dedupe/
+	// bounded_list/search; memory-layer: add/recall). TENANT-CONFINED
+	// (ScopeTenant, member-accessible): scope (agent/user/tenant) is resolved
+	// from the operator-trust ctx + the caller's authoritative tenant, never the
+	// wire — a scope:"user" op keys on the principal's own subject. Same
+	// SubstrateRequest/Response body shape (is_error carries tool refusals, e.g.
+	// vector_unsupported for search without an embedder).
+	Memory(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -974,6 +985,16 @@ func (c *loomcycleClient) History(ctx context.Context, in *SubstrateRequest, opt
 	return out, nil
 }
 
+func (c *loomcycleClient) Memory(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_Memory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListChannelsResponse)
@@ -1378,6 +1399,16 @@ type LoomcycleServer interface {
 	// search / rename / annotate / pin / archive / recap / resume); same
 	// SubstrateRequest/Response body shape (is_error carries tool refusals).
 	History(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// Memory dispatches to the Memory tool (RFC CD Part D — Python/gRPC memory
+	// parity; the TS adapter reaches memory over HTTP). Op-discriminated
+	// input_json (key/value: get/set/delete/list/incr/merge/append_dedupe/
+	// bounded_list/search; memory-layer: add/recall). TENANT-CONFINED
+	// (ScopeTenant, member-accessible): scope (agent/user/tenant) is resolved
+	// from the operator-trust ctx + the caller's authoritative tenant, never the
+	// wire — a scope:"user" op keys on the principal's own subject. Same
+	// SubstrateRequest/Response body shape (is_error carries tool refusals, e.g.
+	// vector_unsupported for search without an embedder).
+	Memory(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -1569,6 +1600,9 @@ func (UnimplementedLoomcycleServer) Document(context.Context, *SubstrateRequest)
 }
 func (UnimplementedLoomcycleServer) History(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method History not implemented")
+}
+func (UnimplementedLoomcycleServer) Memory(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Memory not implemented")
 }
 func (UnimplementedLoomcycleServer) ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListChannels not implemented")
@@ -2476,6 +2510,24 @@ func _Loomcycle_History_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_Memory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).Memory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_Memory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).Memory(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_ListChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListChannelsRequest)
 	if err := dec(in); err != nil {
@@ -2803,6 +2855,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "History",
 			Handler:    _Loomcycle_History_Handler,
+		},
+		{
+			MethodName: "Memory",
+			Handler:    _Loomcycle_Memory_Handler,
 		},
 		{
 			MethodName: "ListChannels",

@@ -375,6 +375,25 @@ func (s *Server) History(ctx context.Context, req *loomcyclepb.SubstrateRequest)
 	})
 }
 
+// Memory serves the Memory gRPC RPC (RFC CD Part D — Python/gRPC memory
+// parity; the TS adapter reaches memory over HTTP). Op-discriminated input_json
+// (get/set/delete/list/incr/merge/append_dedupe/bounded_list/search + the
+// memory-layer add/recall) routes via the Connector to the in-process Memory
+// tool — the SAME connector.Memory path the MCP `memory` tool takes. USER-
+// SCOPE-AWARE like Path/Document/History (substrateGRPCUserCtx): a scope:"user"
+// op keys on the principal's own Subject, scope:"tenant" on its authoritative
+// tenant, NEVER the wire. TENANT-CONFINED; the substrateGRPCCtx MemoryPolicy
+// grant confines scopes and leaves SQL ops (no sql_scopes grant) to refuse.
+func (s *Server) Memory(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "Memory", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.Memory(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
 // dispatchSubstrateRPC is the shared body of the substrate-def handlers. The
 // def-tools scope on tenant (not user), so they use the plain operator-trust
 // substrateGRPCCtx.

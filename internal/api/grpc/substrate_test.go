@@ -33,6 +33,7 @@ type substrateMock struct {
 	gotPathInput        json.RawMessage
 	gotDocumentInput    json.RawMessage
 	gotHistoryInput     json.RawMessage
+	gotMemoryInput      json.RawMessage
 
 	agentDefResult    connector.ToolResult
 	skillDefResult    connector.ToolResult
@@ -42,6 +43,7 @@ type substrateMock struct {
 	pathResult        connector.ToolResult
 	documentResult    connector.ToolResult
 	historyResult     connector.ToolResult
+	memoryResult      connector.ToolResult
 
 	agentDefErr    error
 	skillDefErr    error
@@ -51,6 +53,7 @@ type substrateMock struct {
 	pathErr        error
 	documentErr    error
 	historyErr     error
+	memoryErr      error
 }
 
 func (m *substrateMock) Path(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -66,6 +69,11 @@ func (m *substrateMock) Document(_ context.Context, in json.RawMessage) (connect
 func (m *substrateMock) History(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	m.gotHistoryInput = in
 	return m.historyResult, m.historyErr
+}
+
+func (m *substrateMock) Memory(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotMemoryInput = in
+	return m.memoryResult, m.memoryErr
 }
 
 func (m *substrateMock) AgentDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -116,6 +124,33 @@ func TestGrpcAgentDef_HappyPath(t *testing.T) {
 		t.Errorf("connector wasn't called with the input")
 	}
 	if string(resp.GetOutputJson()) != `{"def_id":"def_abc","name":"reviewer","version":1}` {
+		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
+func TestGrpcMemory_HappyPath(t *testing.T) {
+	mc := &substrateMock{
+		memoryResult: connector.ToolResult{
+			Text:    `{"scope":"user","key":"tone","value":"concise"}`,
+			IsError: false,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.Memory(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"get","scope":"user","key":"tone"}`),
+	})
+	if err != nil {
+		t.Fatalf("Memory: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true, want false")
+	}
+	if string(mc.gotMemoryInput) != `{"op":"get","scope":"user","key":"tone"}` {
+		t.Errorf("connector Memory input = %s", mc.gotMemoryInput)
+	}
+	if string(resp.GetOutputJson()) != `{"scope":"user","key":"tone","value":"concise"}` {
 		t.Errorf("output_json = %s", resp.GetOutputJson())
 	}
 }
