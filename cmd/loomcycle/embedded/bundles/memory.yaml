@@ -339,7 +339,15 @@ agents:
         // Bounds the judge calls one pass can make, for the same wall-clock reason
         // max_parts_per_chat bounds the extractor's. When it bites, the facts past
         // the cap stay UNJUDGED and recallable, and the report says how many.
-        max_judge_calls: 6
+        max_judge_calls: 6,
+        // How many of the most recent facts a BACKFILL scan looks at. Bounded because
+        // this runs every pass and the backlog is meant to drain ACROSS passes rather
+        // than in one: a store with thousands of unjudged facts should cost the same
+        // per pass as a store with ten.
+        //
+        // It also bounds the coverage figure in the report, which is why that figure
+        // says "of the N scanned" rather than claiming to describe the whole store.
+        backfill_scan: 50
       };
 
       // The verdicts the judge may return. Anything else is dropped: this caller
@@ -457,6 +465,19 @@ agents:
           judge_failed: 0,          // spawn refused, or judge_fact refused
           judge_no_span: 0,         // facts with no evidence: unjudgeable, not refused
           judge_capped: 0,          // candidates past max_judge_calls
+          backfilled: 0,            // older facts judged with the leftover budget
+          backfill_scanned: 0,      // facts the backfill scan looked at
+          backfill_no_span: 0,      // ... of which can never be judged (no evidence)
+          backfill_pending: 0,      // ... judgeable, still waiting on budget
+          backfill_failed: 0,       // scan or body read refused (NOT a judge failure)
+          // The ids this pass has already put in front of the judge. A fact that came
+          // back unjudged — an unreadable reply, a dropped entry, a failed write — is
+          // still UNJUDGED, so the backfill scan finds it and would send it straight
+          // back to the same judge with the same prompt, in the same pass, for the same
+          // answer. That is not a retry, it is paying twice for one failure, and on a
+          // judge that is slightly off it doubles every pass's model spend silently.
+          // Next pass will try again; within a pass, once is enough.
+          judge_attempted: {},
           entity_failed: 0,         // entity writes that failed (k/v still landed)
           entity_type_refused: 0,   // typed facts whose type was a statement class
           watermark: null,          // the LAST scan row actually consolidated, by reference
@@ -1402,22 +1423,107 @@ agents:
       // time the judge tier failed to resolve.
       function judgePass(st) {
         if (!st.bands.judge) { return; }
-        var cands = st.judge_candidates;
-        if (!cands.length) { return; }
-        var calls = 0;
+        // THIS PASS'S FACTS FIRST, always. They are the write path: a fact written
+        // now should be verified now, and the backlog has already waited. A backfill
+        // that could crowd out fresh candidates would make enabling verification on a
+        // store with history mean new facts go unverified for passes on end.
+        var calls = judgeQueue(st, st.judge_candidates, 0, false);
+        if (calls >= CONFIG.max_judge_calls) {
+          // No room to even look. Reported as such rather than silently skipped —
+          // "the backfill did nothing" and "the backfill was never reached" are
+          // different problems.
+          return;
+        }
+        judgeQueue(st, backfillCandidates(st, CONFIG.max_judge_calls - calls), calls, true);
+      }
+
+      // judgeQueue batches one list of candidates and returns the running call count.
+      function judgeQueue(st, cands, calls, isBackfill) {
         for (var i = 0; i < cands.length; i += CONFIG.judge_batch) {
           if (calls >= CONFIG.max_judge_calls) {
-            st.judge_capped += cands.length - i;
-            return;
+            // Left for the next pass, not lost. An unjudged fact is recallable, so a
+            // cap costs verification latency and nothing else.
+            if (isBackfill) { st.backfill_pending += cands.length - i; }
+            else { st.judge_capped += cands.length - i; }
+            return calls;
           }
           calls++;
+          var before = st.judged;
           judgeBatch(st, cands.slice(i, i + CONFIG.judge_batch));
+          if (isBackfill) { st.backfilled += st.judged - before; }
         }
+        return calls;
+      }
+
+      // backfillCandidates finds facts that were stored before verification was on —
+      // or missed by an outage, an unreadable reply, or the call cap — and that CAN
+      // still be judged, meaning they carry a span.
+      //
+      // A FACT WITH NO SPAN IS COUNTED, NEVER SENT. It cannot be verified
+      // retroactively by anyone: the transcript it came from may be gone, and the
+      // judge refuses a verdict without evidence by design. Sending it would buy a
+      // guaranteed refusal at the price of a model call. So the sweep's job for that
+      // population is to make it VISIBLE — which is also the number that says whether
+      // verified facts are the norm in a given store.
+      //
+      // Bounded by the scan window AND by the leftover call budget, so this costs the
+      // same on a store with ten unjudged facts as on one with ten thousand.
+      function backfillCandidates(st, room) {
+        if (room <= 0) { return []; }
+        var listed;
+        try {
+          listed = JSON.parse(Document({
+            op: "list_facts", scope: CONFIG.scope, limit: CONFIG.backfill_scan
+          }));
+        } catch (e) {
+          // NOT judge_failed: nothing was asked of the judge. Counting a listing
+          // failure there would report a broken judge tier to an operator whose judge
+          // is fine, and send them to the wrong place.
+          st.backfill_failed++;
+          return [];
+        }
+        var facts = (listed && listed.facts) ? listed.facts : [];
+        st.backfill_scanned = facts.length;
+        var want = room * CONFIG.judge_batch;
+        var out = [];
+        for (var i = 0; i < facts.length; i++) {
+          var f = facts[i], e = (f && f.entity) ? f.entity : {};
+          if (e.judged_at) { continue; }          // already has a verdict
+          if (st.judge_attempted[f.id] === true) { continue; } // asked once already this pass
+          if (!e.source_quote) { st.backfill_no_span++; continue; }
+          if (out.length >= want) { st.backfill_pending++; continue; }
+          // The listing carries a TRUNCATED title, not the claim, and no entity type.
+          // Judging a truncated claim would be judging something nobody stored, so the
+          // body is read per candidate. Local calls, no model, bounded by `want`.
+          var full = backfillFact(st, f.id, e);
+          if (full) { out.push(full); }
+        }
+        return out;
+      }
+
+      // backfillFact reads one candidate's full text and filing. Returns null when the
+      // chunk cannot be read, which drops that candidate and nothing else.
+      function backfillFact(st, id, meta) {
+        var got;
+        try {
+          got = JSON.parse(Document({ op: "get_chunk", scope: CONFIG.scope, id: id }));
+        } catch (e) {
+          st.backfill_failed++;
+          return null;
+        }
+        if (!got) { return null; }
+        var text = got.body ? String(got.body) : String(got.title || "");
+        if (!text) { return null; }
+        return {
+          id: id, text: text, quote: meta.source_quote,
+          type: got.type || "", subject: meta.subject || ""
+        };
       }
 
       // judgeBatch spawns ONE judge call for a bounded batch and applies whatever
       // came back that this caller can trust.
       function judgeBatch(st, batch) {
+        for (var a = 0; a < batch.length; a++) { st.judge_attempted[batch[a].id] = true; }
         var out;
         try {
           out = Agent.spawn({ name: CONFIG.judge, prompt: judgePrompt(batch) });
@@ -1736,6 +1842,25 @@ agents:
             j += ", " + st.judge_capped + " past the call cap (left unverified for the next pass)";
           }
           parts.push(j);
+
+          // The BACKLOG, and the coverage figure that goes with it. Scoped to the scan
+          // window explicitly: a number that silently described only the 50 most recent
+          // facts while reading as a whole-store figure is the kind of thing a decision
+          // gets made on.
+          if (st.backfill_scanned > 0 || st.backfill_failed) {
+            var b = "backfill " + st.backfilled + " older fact(s) judged";
+            if (st.backfill_no_span) {
+              b += ", " + st.backfill_no_span + " of the " + st.backfill_scanned +
+                   " scanned carry no span and can never be judged";
+            }
+            if (st.backfill_pending) {
+              b += ", " + st.backfill_pending + " judgeable and waiting on the next pass";
+            }
+            if (st.backfill_failed) {
+              b += ", " + st.backfill_failed + " read(s) failed";
+            }
+            parts.push(b);
+          }
         }
 
         if (st.advanced) {
