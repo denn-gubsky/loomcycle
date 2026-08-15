@@ -187,6 +187,7 @@ func TestDocumentSourcesValidation(t *testing.T) {
 		{"valid key_per_tenant", "document_sources:\n  peerA: { config: { base_url: \"https://peer.example.com\", api_key_env: LOOMCYCLE_PEERA_KEY }, tenancy_strategy: { kind: key_per_tenant, env_pattern: \"LOOMCYCLE_PEERA_{tenant_id}_KEY\" } }", false},
 		{"missing base_url", "document_sources:\n  peerA: { config: {} }", true},
 		{"non-http base_url", "document_sources:\n  peerA: { config: { base_url: \"ftp://peer\" } }", true},
+		{"empty-host base_url", "document_sources:\n  peerA: { config: { base_url: \"http:///v1\" } }", true},
 		{"infra-secret api_key_env", "document_sources:\n  peerA: { config: { base_url: \"https://peer\", api_key_env: LOOMCYCLE_AUTH_TOKEN } }", true},
 		{"unlisted api_key_env", "document_sources:\n  peerA: { config: { base_url: \"https://peer\", api_key_env: RANDOM_SECRET } }", true},
 		{"bad tenancy kind", "document_sources:\n  peerA: { config: { base_url: \"https://peer\" }, tenancy_strategy: { kind: shared_key } }", true},

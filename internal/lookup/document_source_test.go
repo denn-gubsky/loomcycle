@@ -76,6 +76,27 @@ func TestDocumentSource_EquivalenceYamlVsSubstrate(t *testing.T) {
 	}
 }
 
+func TestDocumentSource_RetiredActiveDoesNotResolve(t *testing.T) {
+	ss := &stubDocumentSourceStore{
+		defs: map[string]store.DocumentSourceDefRow{
+			"peer": {DefID: "ds_v1", Name: "peer", Retired: true, Definition: json.RawMessage(`{"config":{"base_url":"https://retired.example.com"}}`)},
+		},
+	}
+	// A retired def that is still the active pointer must NOT resolve — retiring
+	// the active source deactivates it.
+	if _, ok := lookup.DocumentSource(context.Background(), ss, &config.Config{}, "", "peer"); ok {
+		t.Errorf("a retired active def must not resolve")
+	}
+	// Static yaml still wins even when a retired substrate pointer exists.
+	cfg := &config.Config{DocumentSources: map[string]config.DocumentSource{
+		"peer": {Config: config.DocumentSourceConfig{BaseURL: "https://static.example.com"}},
+	}}
+	got, ok := lookup.DocumentSource(context.Background(), ss, cfg, "", "peer")
+	if !ok || got.Config.BaseURL != "https://static.example.com" {
+		t.Errorf("static should resolve past a retired substrate pointer, got ok=%v %q", ok, got.Config.BaseURL)
+	}
+}
+
 func TestDocumentSource_StaticBeforeSubstrate(t *testing.T) {
 	cfg := &config.Config{
 		DocumentSources: map[string]config.DocumentSource{

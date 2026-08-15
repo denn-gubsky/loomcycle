@@ -621,3 +621,123 @@ func TestDocumentSync_PropagatesTitleChange(t *testing.T) {
 		t.Errorf("local title = %v, want RemoteTitle (title change must land)", got["title"])
 	}
 }
+
+// TestDocumentSync_TagsOnlyNoBodyRevision is the #6 regression: a tags-only sync
+// must NOT record a duplicate-body entry in the chunk's revision history
+// (update_chunk snapshots history whenever the body field is present, so the
+// reconcile must omit the body when it is unchanged).
+func TestDocumentSync_TagsOnlyNoBodyRevision(t *testing.T) {
+	// Peer nk1: same body, but an extra tag.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Op string `json:"op"`
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		w.Header().Set("Content-Type", "application/json")
+		switch in.Op {
+		case "get_document":
+			_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "remoteDoc", "root_chunk_id": "r"})
+		case "list_facts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"facts": []map[string]any{
+				{"id": "c1", "title": "One", "type": "note", "entity": map[string]any{"natural_key": "nk1"}},
+			}})
+		case "get_chunk":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": in.ID, "body": "same-body", "tags": []string{"a", "b"}})
+		case "query_chunks":
+			_ = json.NewEncoder(w).Encode(map[string]any{"chunks": []map[string]any{{"id": "r"}, {"id": "c1"}}})
+		case "get_edges":
+			_ = json.NewEncoder(w).Encode(map[string]any{"edges": []any{}})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	d, ctx, _ := documentFixture(t)
+	d.Cfg = &config.Config{DocumentSources: map[string]config.DocumentSource{"peerA": {Config: config.DocumentSourceConfig{BaseURL: srv.URL}}}}
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Local"}`)
+	docID := out["document_id"].(string)
+	// Local nk1: same body, tag [a] only.
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"nk1","title":"One","type":"note","body":"same-body","tags":["a"]}`, docID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_remote","scope":"user","id":%q,"source":"peerA","remote_ref":"/docs/x"}`, docID))
+
+	key, _, _ := d.resolveScope(ctx, "user")
+	localID, _ := d.chunkIDByNaturalKey(ctx, key, "nk1")
+	before, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"history","scope":"user","id":%q}`, localID))
+	nBefore := len(before["revisions"].([]any))
+
+	s, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"sync","scope":"user","id":%q}`, docID))
+	if r.IsError {
+		t.Fatalf("sync: %s", r.Text)
+	}
+	if s["updated"].(float64) != 1 {
+		t.Fatalf("expected the tag change to update (updated=1), got %+v", s)
+	}
+	after, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"history","scope":"user","id":%q}`, localID))
+	nAfter := len(after["revisions"].([]any))
+	if nAfter != nBefore {
+		t.Errorf("body revision history grew from %d to %d on a TAGS-ONLY sync (spurious body revision)", nBefore, nAfter)
+	}
+	// The tags did land.
+	got, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, localID))
+	tj, _ := json.Marshal(got["tags"])
+	if string(tj) != `["a","b"]` {
+		t.Errorf("tags = %s, want [a b]", tj)
+	}
+}
+
+// TestDocumentDiffRemote_ReparentAcrossHole is the #4 regression: diff_remote
+// must report a reparent even when the parent is keyed on only ONE side (a real
+// sync WOULD move the chunk). Before the fix the symmetric effective-parent
+// comparison collapsed both sides to "root" and reported nothing.
+func TestDocumentDiffRemote_ReparentAcrossHole(t *testing.T) {
+	// Peer has nkX at the ROOT (and no nkP).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Op string `json:"op"`
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		w.Header().Set("Content-Type", "application/json")
+		switch in.Op {
+		case "get_document":
+			_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "remoteDoc", "root_chunk_id": "r"})
+		case "list_facts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"facts": []map[string]any{
+				{"id": "cx", "title": "X", "type": "note", "entity": map[string]any{"natural_key": "nkX"}},
+			}})
+		case "get_chunk":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": in.ID, "body": "bx", "position": 0})
+		case "query_chunks":
+			_ = json.NewEncoder(w).Encode(map[string]any{"chunks": []map[string]any{{"id": "r"}, {"id": "cx"}}})
+		case "get_edges":
+			_ = json.NewEncoder(w).Encode(map[string]any{"edges": []any{}})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	d, ctx, _ := documentFixture(t)
+	d.Cfg = &config.Config{DocumentSources: map[string]config.DocumentSource{"peerA": {Config: config.DocumentSourceConfig{BaseURL: srv.URL}}}}
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Local"}`)
+	docID := out["document_id"].(string)
+	// Local: nkP (keyed, local-only) and nkX UNDER nkP with the same body as the peer.
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"nkP","title":"P","type":"note","body":"bp"}`, docID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"nkX","title":"X","type":"note","body":"bx"}`, docID))
+	key, _, _ := d.resolveScope(ctx, "user")
+	pID, _ := d.chunkIDByNaturalKey(ctx, key, "nkP")
+	xID, _ := d.chunkIDByNaturalKey(ctx, key, "nkX")
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"move_chunk","scope":"user","id":%q,"new_parent_id":%q,"position":0}`, xID, pID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_remote","scope":"user","id":%q,"source":"peerA","remote_ref":"/docs/x"}`, docID))
+
+	diff, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"diff_remote","scope":"user","id":%q}`, docID))
+	var reparented []string
+	for _, e := range diff["reparented"].([]any) {
+		reparented = append(reparented, e.(map[string]any)["natural_key"].(string))
+	}
+	found := false
+	for _, nk := range reparented {
+		if nk == "nkX" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("diff reparented = %v, want it to include nkX (a pull would move it from nkP to root)", reparented)
+	}
+}

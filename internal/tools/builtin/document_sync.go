@@ -386,7 +386,11 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 // direction-agnostic applyReconcile resolves natural_keys to ids.
 type sideWriter interface {
 	createKeyed(ctx context.Context, sc syncChunk) (id string, err error)
-	updateKeyed(ctx context.Context, id string, sc syncChunk, revision int) error
+	// updateKeyed updates a keyed chunk's content. includeBody=false omits the
+	// body from the write so an update that only touches title/type/status/tags
+	// does NOT record a duplicate-body entry in the chunk's revision history
+	// (update_chunk snapshots history only when the body field is present).
+	updateKeyed(ctx context.Context, id string, sc syncChunk, revision int, includeBody bool) error
 	move(ctx context.Context, id, parentID string, position int) error
 	ensureEdge(ctx context.Context, fromID, toID, kind string) error
 }
@@ -416,12 +420,16 @@ func (w localWriter) createKeyed(ctx context.Context, sc syncChunk) (string, err
 	return out.ID, nil
 }
 
-func (w localWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int) error {
-	raw, _ := json.Marshal(map[string]any{"id": id, "revision": revision, "body": sc.body, "title": sc.title, "type": sc.ctype, "status": sc.status, "tags": nonNilTags(sc.tags)})
+func (w localWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int, includeBody bool) error {
 	rev := revision
-	res, err := w.d.updateChunk(ctx, w.key, w.mscope, docInput{
-		ID: id, Revision: &rev, Body: sc.body, Title: sc.title, Type: sc.ctype, Status: sc.status, Tags: nonNilTags(sc.tags),
-	}, raw)
+	payload := map[string]any{"id": id, "revision": revision, "title": sc.title, "type": sc.ctype, "status": sc.status, "tags": nonNilTags(sc.tags)}
+	in := docInput{ID: id, Revision: &rev, Title: sc.title, Type: sc.ctype, Status: sc.status, Tags: nonNilTags(sc.tags)}
+	if includeBody {
+		payload["body"] = sc.body
+		in.Body = sc.body
+	}
+	raw, _ := json.Marshal(payload)
+	res, err := w.d.updateChunk(ctx, w.key, w.mscope, in, raw)
 	if err != nil {
 		return err
 	}
@@ -476,11 +484,15 @@ func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, er
 	return out.ID, nil
 }
 
-func (w remoteWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int) error {
-	_, err := w.client.Do(ctx, map[string]any{
+func (w remoteWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int, includeBody bool) error {
+	payload := map[string]any{
 		"op": "update_chunk", "id": id, "revision": revision, "scope": w.scope,
-		"body": sc.body, "title": sc.title, "type": sc.ctype, "status": sc.status, "tags": nonNilTags(sc.tags),
-	})
+		"title": sc.title, "type": sc.ctype, "status": sc.status, "tags": nonNilTags(sc.tags),
+	}
+	if includeBody {
+		payload["body"] = sc.body
+	}
+	_, err := w.client.Do(ctx, payload)
 	return err
 }
 
@@ -534,7 +546,7 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 			idByNK[nk] = id
 			c.created++
 		} else if contentDiffers(sc, tc) {
-			if err := w.updateKeyed(ctx, tc.id, sc, tc.revision); err != nil {
+			if err := w.updateKeyed(ctx, tc.id, sc, tc.revision, sc.body != tc.body); err != nil {
 				return c, fmt.Errorf("update %s: %w", nk, err)
 			}
 			c.updated++
@@ -709,9 +721,12 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		if !sameTags(lc.tags, rc.tags) {
 			retagged = append(retagged, diffEntry{NaturalKey: nk, Title: lc.title})
 		}
-		// Effective parent on each side (a parent absent on the other side is a
-		// hole that resolves to the root), plus sibling position.
-		if effectiveParentNK(lc, remote) != effectiveParentNK(rc, local) || lc.position != rc.position {
+		// Report a reparent if a sync in EITHER direction would move the chunk —
+		// exactly the check applyReconcile pass 2 runs (wanted parent = the
+		// source's parent if it is keyed on the target, else the root; plus
+		// position). The earlier symmetric effective-parent comparison missed a
+		// move when the parent was keyed on only one side.
+		if wouldReparent(rc, lc, local.chunks) || wouldReparent(lc, rc, remote.chunks) {
 			reparented = append(reparented, diffEntry{NaturalKey: nk, Title: lc.title})
 		}
 	}
@@ -755,17 +770,19 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	})
 }
 
-// effectiveParentNK is a chunk's parent natural_key AS IT WOULD RESOLVE against
-// `other` — a parent that isn't keyed on the other side is a hole that resolves
-// to the root (""), so the two sides are compared on the same footing.
-func effectiveParentNK(sc syncChunk, other *sideSnapshot) string {
-	if sc.parentNK == "" {
-		return ""
+// wouldReparent reports whether reconciling `src` INTO the side holding
+// `tgtChunks` (where `tgt` is src's current counterpart there) would move it —
+// the exact rule applyReconcile pass 2 uses: the wanted parent is src's parent
+// if that parent is keyed on the target (else the root), and a position change
+// also counts. Used by diff_remote to predict a move for either sync direction.
+func wouldReparent(src, tgt syncChunk, tgtChunks map[string]syncChunk) bool {
+	wantParentNK := ""
+	if src.parentNK != "" {
+		if _, ok := tgtChunks[src.parentNK]; ok {
+			wantParentNK = src.parentNK
+		}
 	}
-	if _, ok := other.chunks[sc.parentNK]; ok {
-		return sc.parentNK
-	}
-	return ""
+	return wantParentNK != tgt.parentNK || src.position != tgt.position
 }
 
 // ---- helpers ----
