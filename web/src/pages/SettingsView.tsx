@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import FactsPanel from "../components/FactsPanel";
 import {
   canSee,
   hasTenantScope as principalHasTenantScope,
@@ -1109,6 +1110,18 @@ function MemorySection() {
           works through older unjudged ones. Nothing runs until you start it there.
         </span>
       </p>
+      {/* The facts themselves, under the numbers that describe them. Placed here rather
+          than on their own tab because the coverage figures are unreadable without the
+          rows they summarise, and the rows are unjudgeable without knowing how much of
+          the store is verified at all. */}
+      <h3 className="settings-subhead">Facts</h3>
+      <p className="settings-help settings-muted">
+        What {who} has stored, with the evidence each fact was drawn from. A verdict here
+        overrides the judge&rsquo;s and is itself reversible — nothing on this panel
+        deletes anything.
+      </p>
+      <FactsPanel browse={pickedUser ? { scopeId: pickedUser } : undefined} />
+
       <p className="settings-help settings-muted">
         Entity types and suggestions live in the <strong>Ontology</strong> tab.
       </p>

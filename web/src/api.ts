@@ -3,6 +3,8 @@
 // operator visits `/ui?token=...` — fetch() includes it
 // automatically because we're same-origin. No bearer header needed.
 
+import type { FactEntity } from "./lib/factVerdict";
+
 export interface UserSummary {
   user_id: string;
   running_count: number;
@@ -1114,6 +1116,52 @@ export function getVerificationStats(
   browse?: BrowseScope,
 ): Promise<VerificationStats> {
   return substratePost("/v1/_document", { op: "verification_stats", scope }, browse);
+}
+
+// FactRow is one row of `Document op=list_facts`.
+//
+// `title` is the claim, TRUNCATED by the writer at 80 characters — the consolidator
+// stores the sentence as the chunk body and a shortened form as its title. The span in
+// `entity.source_quote` is NOT truncated, so a row can show full evidence next to a
+// possibly-clipped claim; the body is fetched per row on demand rather than for every
+// row up front.
+export interface FactRow {
+  id: string;
+  document_id: string;
+  title: string;
+  revision: number;
+  entity?: FactEntity;
+}
+
+// listFacts reads a scope's facts, newest first. `includeRefuted` surfaces the ones a
+// judge withheld, each carrying the reason it was refused.
+export function listFacts(
+  scope: DocScope = "user",
+  opts?: { includeRefuted?: boolean; limit?: number },
+  browse?: BrowseScope,
+): Promise<{ facts: FactRow[]; count: number }> {
+  return substratePost(
+    "/v1/_document",
+    {
+      op: "list_facts",
+      scope,
+      ...(opts?.includeRefuted ? { include_refuted: true } : {}),
+      ...(opts?.limit ? { limit: opts.limit } : {}),
+    },
+    browse,
+  );
+}
+
+// judgeFact records a verdict against a fact's stored span. The server maps the word to
+// a confidence and stamps the time; a caller supplies only the word and the reason.
+export function judgeFact(
+  id: string,
+  verdict: "supported" | "unclear" | "unsupported" | "mistyped",
+  reason: string,
+  scope: DocScope = "user",
+  browse?: BrowseScope,
+): Promise<{ chunk_id: string; verdict: string; confidence: number; withheld: boolean }> {
+  return substratePost("/v1/_document", { op: "judge_fact", scope, id, verdict, reason }, browse);
 }
 
 export function documentGetChunk(id: string, scope: DocScope, browse?: BrowseScope): Promise<ChunkDetail> {
