@@ -1,0 +1,276 @@
+package builtin
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+)
+
+// verbatimFixture builds a Document with a working vector search (the same in-memory
+// store + fake embedder the `related` tests use) and one document to hang facts on.
+func verbatimFixture(t *testing.T) (*Document, context.Context, string, string) {
+	t.Helper()
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	vs := newVectorStore(s)
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	emb := newFakeEmbedder("fake", "fake-embed-001",
+		"github", "username", "denn", "postgres", "role", "createrole", "berlin", "lives")
+	d := &Document{Store: vs, SqlMem: mgr, Bus: channels.NewBus(), Embedder: emb}
+	ctx := tools.WithAgentName(context.Background(), "verbatim-agent")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", UserID: "u1"})
+
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Facts","path":"/v/one"}`)
+	if r.IsError {
+		t.Fatalf("create_document: %s", r.Text)
+	}
+	return d, ctx, out["document_id"].(string), out["root_chunk_id"].(string)
+}
+
+// mkFact writes a fact and optionally judges it, returning the chunk id.
+func mkFact(t *testing.T, d *Document, ctx context.Context, doc, root, nk, body, quote, verdict string) string {
+	t.Helper()
+	req := fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"parent_id":%q,`+
+		`"natural_key":%q,"title":%q,"body":%q`, doc, root, nk, body, body)
+	if quote != "" {
+		req += fmt.Sprintf(`,"source_quote":%q`, quote)
+	}
+	out, r := docExec(t, d, ctx, req+`}`)
+	if r.IsError {
+		t.Fatalf("upsert %s: %s", nk, r.Text)
+	}
+	id := out["id"].(string)
+	if verdict != "" {
+		if _, jr := docExec(t, d, ctx, fmt.Sprintf(
+			`{"op":"judge_fact","scope":"user","id":%q,"verdict":%q,"reason":"scripted"}`, id, verdict)); jr.IsError {
+			t.Fatalf("judge %s: %s", nk, jr.Text)
+		}
+	}
+	return id
+}
+
+// TestVerbatim_QuotesAVerifiedFactWithItsCitation is the feature: a lookup question
+// answered with the stored claim and the span it was checked against, and no generated
+// text anywhere in the path.
+func TestVerbatim_QuotesAVerifiedFactWithItsCitation(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	id := mkFact(t, d, ctx, doc, root, "fact:gh",
+		"The user's github username is denn.", "my github username is denn", "supported")
+
+	out, r := docExec(t, d, ctx, `{"op":"verbatim_answer","scope":"user","query":"github username"}`)
+	if r.IsError {
+		t.Fatalf("verbatim_answer: %s", r.Text)
+	}
+	if ok, _ := out["answered"].(bool); !ok {
+		t.Fatalf("a verified fact was not quoted: %v", out)
+	}
+	if got, _ := out["answer"].(string); got != "The user's github username is denn." {
+		t.Errorf("answer = %q, want the stored claim VERBATIM", got)
+	}
+	// The citation is the point: an answer with no source is just a shorter generation.
+	if got, _ := out["source"].(string); got != "my github username is denn" {
+		t.Errorf("source = %q, want the span it was verified against", got)
+	}
+	if got, _ := out["chunk_id"].(string); got != id {
+		t.Errorf("chunk_id = %q, want %q", got, id)
+	}
+}
+
+// TestVerbatim_RefusesAnUnverifiedFact.
+//
+// The whole reason this is the last phase. An unverified claim quoted verbatim reads as
+// authority it has not earned — worse than synthesising the same claim, because a
+// generated sentence invites the doubt a quotation suppresses.
+func TestVerbatim_RefusesAnUnverifiedFact(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	mkFact(t, d, ctx, doc, root, "fact:gh",
+		"The user's github username is denn.", "my github username is denn", "") // never judged
+
+	out, r := docExec(t, d, ctx, `{"op":"verbatim_answer","scope":"user","query":"github username"}`)
+	if r.IsError {
+		t.Fatalf("verbatim_answer: %s", r.Text)
+	}
+	if ok, _ := out["answered"].(bool); ok {
+		t.Fatalf("an unverified fact was quoted as authority: %v", out)
+	}
+	// The reason has to be actionable: "nothing here" and "here but unchecked" lead to
+	// different next steps (write it down vs run the judge).
+	if reason, _ := out["reason"].(string); !strings.Contains(reason, "not been verified") {
+		t.Errorf("the refusal does not say the fact is merely unverified: %q", reason)
+	}
+}
+
+// TestVerbatim_RefusesARefutedFact. A fact the judge threw out must never come back as
+// an answer — it is withheld from the fact surfaces precisely so it stops being asserted.
+func TestVerbatim_RefusesARefutedFact(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	mkFact(t, d, ctx, doc, root, "fact:gh",
+		"The user's github username is denn.", "my github username is denn", "unsupported")
+
+	out, r := docExec(t, d, ctx, `{"op":"verbatim_answer","scope":"user","query":"github username"}`)
+	if r.IsError {
+		t.Fatalf("verbatim_answer: %s", r.Text)
+	}
+	if ok, _ := out["answered"].(bool); ok {
+		t.Fatalf("a REFUTED fact was quoted: %v", out)
+	}
+}
+
+// TestVerbatim_RefusesWhenTwoFactsMatchAboutEqually.
+//
+// Two facts that both answer the question are not an answer; they are a question about
+// which one is meant. Quoting either as authority is the confident-wrong failure this op
+// is shaped against, and it is the failure a caller cannot detect downstream.
+func TestVerbatim_RefusesWhenTwoFactsMatchAboutEqually(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	// Same tokens, so the fake embedder scores them identically.
+	mkFact(t, d, ctx, doc, root, "fact:gh1",
+		"The user's github username is denn.", "my github username is denn", "supported")
+	mkFact(t, d, ctx, doc, root, "fact:gh2",
+		"The user's github username is denn.", "it is denn on github", "supported")
+
+	out, r := docExec(t, d, ctx, `{"op":"verbatim_answer","scope":"user","query":"github username"}`)
+	if r.IsError {
+		t.Fatalf("verbatim_answer: %s", r.Text)
+	}
+	if ok, _ := out["answered"].(bool); ok {
+		t.Fatalf("one of two equally-matching facts was quoted as THE answer: %v", out)
+	}
+	if reason, _ := out["reason"].(string); !strings.Contains(reason, "about equally well") {
+		t.Errorf("the refusal does not name the ambiguity: %q", reason)
+	}
+	if _, has := out["runner_up"]; !has {
+		t.Error("the runner-up is not reported, so a caller cannot see what it collided with")
+	}
+}
+
+// TestVerbatim_NeverSkipsPastABetterUnverifiedMatch.
+//
+// The subtle one. If the best-matching fact is unverified and a WORSE match is verified,
+// answering with the worse one is answering with something we know is not the closest
+// thing we have — verified, and wrong. Silence is correct.
+func TestVerbatim_NeverSkipsPastABetterUnverifiedMatch(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	// The unverified fact matches the query on both tokens; the verified one on one.
+	mkFact(t, d, ctx, doc, root, "fact:best",
+		"The user's github username is denn.", "my github username is denn", "")
+	mkFact(t, d, ctx, doc, root, "fact:worse",
+		"The user's postgres role needs createrole.", "the role needs createrole", "supported")
+
+	out, r := docExec(t, d, ctx, `{"op":"verbatim_answer","scope":"user","query":"github username"}`)
+	if r.IsError {
+		t.Fatalf("verbatim_answer: %s", r.Text)
+	}
+	if ok, _ := out["answered"].(bool); ok {
+		t.Fatalf("answered with a worse-matching fact because it happened to be verified: %v", out)
+	}
+	// It must refuse because the TOP fact is unverified — not because nothing matched.
+	// Without this the test would pass on an embedder that scored everything below the
+	// floor, which proves nothing about the rule it is named for.
+	if reason, _ := out["reason"].(string); !strings.Contains(reason, "not been verified") {
+		t.Errorf("refused for the wrong reason (%q); the unverified top match is the point", reason)
+	}
+	if id, _ := out["chunk_id"].(string); id == "" {
+		t.Error("no chunk_id reported, so the caller cannot see which fact blocked the answer")
+	}
+}
+
+// TestVerbatim_RefusesAWeakMatch. A store with nothing relevant must say so rather than
+// quoting the least-bad thing it holds.
+func TestVerbatim_RefusesAWeakMatch(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	mkFact(t, d, ctx, doc, root, "fact:pg",
+		"The user's postgres role needs createrole.", "the role needs createrole", "supported")
+
+	out, r := docExec(t, d, ctx, `{"op":"verbatim_answer","scope":"user","query":"berlin lives"}`)
+	if r.IsError {
+		t.Fatalf("verbatim_answer: %s", r.Text)
+	}
+	if ok, _ := out["answered"].(bool); ok {
+		t.Fatalf("an unrelated fact was quoted as the answer: %v", out)
+	}
+	// It must refuse on the FLOOR, and report the score and the floor with it — that
+	// pair is what lets an operator tell a mis-calibrated threshold (the score is high,
+	// the floor is higher) from a store that simply holds nothing relevant.
+	if reason, _ := out["reason"].(string); !strings.Contains(reason, "not close enough") {
+		t.Errorf("refused for the wrong reason: %q", reason)
+	}
+	if _, has := out["score"]; !has {
+		t.Errorf("no score reported on a floor refusal: %v", out)
+	}
+	if _, has := out["min_score"]; !has {
+		t.Errorf("no min_score reported, so the floor cannot be judged: %v", out)
+	}
+}
+
+// TestVerbatim_DocumentProseNeitherAnswersNorBlocks.
+//
+// A document chunk is prose, not a claim: nothing asserted it and it has no span to cite,
+// so it cannot be an answer. It must also not BLOCK one — a store that holds documents
+// alongside facts is every store, and letting prose out-rank a fact would make this
+// feature useless exactly where it is useful.
+func TestVerbatim_DocumentProseNeitherAnswersNorBlocks(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(
+		`{"op":"create_chunk","scope":"user","document_id":%q,"parent_id":%q,"title":"Notes",`+
+			`"body":"Notes about the github username convention we use."}`, doc, root)); r.IsError {
+		t.Fatalf("create_chunk: %s", r.Text)
+	}
+	mkFact(t, d, ctx, doc, root, "fact:gh",
+		"The user's github username is denn.", "my github username is denn", "supported")
+
+	out, r := docExec(t, d, ctx, `{"op":"verbatim_answer","scope":"user","query":"github username"}`)
+	if r.IsError {
+		t.Fatalf("verbatim_answer: %s", r.Text)
+	}
+	if ok, _ := out["answered"].(bool); !ok {
+		t.Fatalf("document prose blocked a verified fact from answering: %v", out)
+	}
+	if got, _ := out["answer"].(string); !strings.Contains(got, "username is denn") {
+		t.Errorf("answered with prose instead of the fact: %q", got)
+	}
+}
+
+// TestVerificationStats_ReportsTheGateNumber.
+//
+// The phase this op belongs to is gated on "verified facts are the norm rather than the
+// exception", and nothing could report that — so the decision would have been made on
+// impression, which is the habit this line exists to replace. The populations are counted
+// separately because they mean different things: a fact with no span can never be
+// verified by anyone, while one merely awaiting a judge can.
+func TestVerificationStats_ReportsTheGateNumber(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	mkFact(t, d, ctx, doc, root, "f:1", "Claim one.", "quote one", "supported")
+	mkFact(t, d, ctx, doc, root, "f:2", "Claim two.", "quote two", "unsupported")
+	mkFact(t, d, ctx, doc, root, "f:3", "Claim three.", "quote three", "")
+	mkFact(t, d, ctx, doc, root, "f:4", "Claim four.", "", "")
+
+	out, r := docExec(t, d, ctx, `{"op":"verification_stats","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("verification_stats: %s", r.Text)
+	}
+	for field, want := range map[string]float64{
+		"facts": 4, "with_span": 3, "judged": 2, "supported": 1, "withheld": 1,
+		"unverifiable_no_span": 1, "awaiting_judge": 1,
+	} {
+		if got, _ := out[field].(float64); got != want {
+			t.Errorf("%s = %v, want %v (full report: %v)", field, out[field], want, out)
+		}
+	}
+	if got, _ := out["verified_share"].(float64); got != 0.25 {
+		t.Errorf("verified_share = %v, want 0.25", got)
+	}
+}
