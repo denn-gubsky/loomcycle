@@ -1118,6 +1118,52 @@ export function getVerificationStats(
   return substratePost("/v1/_document", { op: "verification_stats", scope }, browse);
 }
 
+// MemorySearchHit is one hit from POST /v1/_memory/search.
+//
+// `kind` is the server's own classification — "fact" (a consolidator distilled it),
+// "note" (an agent wrote it directly) or "document" (a Document chunk body) — and a
+// document hit carries the chunk_id its entity block hangs off. The console does not
+// re-derive any of that from the key.
+export interface MemorySearchHit {
+  key: string;
+  value?: unknown;
+  score: number;
+  rank_score: number;
+  kind: string;
+  chunk_id?: string;
+}
+
+export interface MemorySearchResponse {
+  scope: string;
+  scope_id: string;
+  entries: MemorySearchHit[];
+  truncated?: boolean;
+}
+
+// searchMemory runs a semantic search across a scope's remembered things.
+//
+// `scopeId` is a REQUEST FIELD here, not the ?scope_id= browse override the substrate
+// endpoints take — this is a different endpoint with its own shape, and the tenant is
+// still stamped server-side from the authenticated principal.
+export function searchMemory(
+  query: string,
+  scope: "agent" | "user" | "tenant",
+  scopeId: string,
+  opts?: { sources?: string[]; topK?: number },
+): Promise<MemorySearchResponse> {
+  return jsonFetch<MemorySearchResponse>("/v1/_memory/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query,
+      scope,
+      scope_id: scopeId,
+      ...(opts?.sources ? { sources: opts.sources } : {}),
+      ...(opts?.topK ? { top_k: opts.topK } : {}),
+    }),
+  });
+}
+
 // FactRow is one row of `Document op=list_facts`.
 //
 // `title` is the claim, TRUNCATED by the writer at 80 characters — the consolidator
