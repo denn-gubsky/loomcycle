@@ -1447,7 +1447,18 @@ export type DocumentToolInput = {
     | "get_version"
     | "diff"
     | "export_canvas"
-    | "import_canvas";
+    | "import_canvas"
+    // The fact tier (RFC CC). upsert_chunk/supersede_chunk/graph_recall are above;
+    // these are the rest of it.
+    | "list_facts"
+    | "judge_fact"
+    | "verbatim_answer"
+    | "verification_stats"
+    | "propose_entity"
+    | "search"
+    // Remote document sources (RFC CE).
+    | "set_remote"
+    | "sync";
   scope?: "agent" | "user" | "tenant";
   /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
   id?: string;
@@ -1493,6 +1504,36 @@ export type DocumentToolInput = {
   /** export_md: embed round-trippable chunk metadata + edges as HTML comments
    *  (default true server-side). false = clean human-facing Markdown. */
   include_metadata?: boolean;
+  /** search / graph_recall: free text. search matches it semantically against
+   *  chunk BODIES; graph_recall uses it to find starting chunks by title.
+   *  verbatim_answer: the lookup question to answer. */
+  query?: string;
+  /** upsert_chunk: the stable identity of this fact — upserting twice with the
+   *  same key updates ONE chunk. judge_fact: name the fact by key instead of id. */
+  natural_key?: string;
+  /** The entity this fact is about, paired with `type` (RFC CC). Documents
+   *  carry neither, which is what lets the ontology gate tell them apart. */
+  subject?: string;
+  /** upsert_chunk: the span of source text this fact was drawn from — the
+   *  evidence a judge checks the claim against. */
+  source_quote?: string;
+  /** judge_fact: whether the fact's recorded span supports it. The confidence
+   *  each maps to is set by the SERVER, so a caller cannot invent a scale.
+   *  `mistyped` = the span does support the claim, but it is filed as the wrong
+   *  kind of thing; the fix is a retype, so it stays visible. */
+  verdict?: "supported" | "unclear" | "unsupported" | "mistyped";
+  /** judge_fact: why. Required — a withheld fact whose ground is not stated is
+   *  indistinguishable from a bug. */
+  reason?: string;
+  /** list_facts / graph_recall: also return facts a judge marked unsupported.
+   *  They are withheld by default and never deleted, so this is how to read what
+   *  was refused, and why. */
+  include_refuted?: boolean;
+  /** verbatim_answer: how close a match must be before it can be quoted as an
+   *  answer (default 0.6 server-side). Cosine scale is a property of the
+   *  EMBEDDING MODEL, so tune this against your own — the response reports the
+   *  actual score even when it declines to answer. */
+  min_score?: number;
   /** import_md: an export_md-shaped Markdown document (headings = hierarchy;
    *  `<!-- loom: ... -->` metadata; `<!-- loom-edges: ... -->` trailer). Omit
    *  document_id to create a new document; pass it (+ optional parent_id) to
