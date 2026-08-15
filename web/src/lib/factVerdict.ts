@@ -17,43 +17,42 @@ export interface FactEntity {
   subject?: string;
   judged_at?: number;
   judge_reason?: string;
+  /** Who reached the verdict: "operator", or the agent's name. Server-stamped — a
+   *  writer does not get to label its own provenance. Absent on a verdict recorded
+   *  before the column existed, which reads as unknown rather than as either party. */
+  judged_by?: string;
   withheld?: boolean;
   confidence?: number;
   origin?: string;
   natural_key?: string;
 }
 
-// OPERATOR_REASON_PREFIX marks a verdict a human recorded.
-//
-// A prefix rather than a column: nothing BRANCHES on who judged, it only changes how the
-// reason renders, and a display distinction is not worth a migration. If anything ever
-// needs to act on it — a judge that must not overwrite a human's decision, say — this
-// becomes a real field and this constant is the thing to grep for.
-export const OPERATOR_REASON_PREFIX = "operator: ";
-
-export function operatorReason(text: string): string {
-  return OPERATOR_REASON_PREFIX + text.trim();
-}
+// OPERATOR marks a verdict a human recorded. It is the value the SERVER stamps for an
+// off-run call, not something this client sends — the column is provenance, and a writer
+// that could set it could launder a machine's verdict into a human's.
+export const OPERATOR = "operator";
 
 export interface FactVerdict {
   state: FactState;
-  /** True when a person recorded this verdict rather than the judge. */
+  /** True when a person recorded this verdict rather than an agent. */
   byOperator: boolean;
-  /** The reason with any operator marker removed — the marker is rendered separately. */
+  /** Who judged, for display: "an operator", the agent's name, or "" when the store
+   *  does not know (a verdict predating the column). */
+  judgedBy: string;
   reason: string;
 }
 
 export function factVerdict(entity: FactEntity | undefined): FactVerdict {
-  const reasonRaw = entity?.judge_reason ?? "";
-  const byOperator = reasonRaw.startsWith(OPERATOR_REASON_PREFIX);
-  const reason = byOperator ? reasonRaw.slice(OPERATOR_REASON_PREFIX.length) : reasonRaw;
+  const reason = entity?.judge_reason ?? "";
+  const judgedBy = entity?.judged_by ?? "";
+  const byOperator = judgedBy === OPERATOR;
   // `judged_at` is the discriminator, NOT the confidence. A fact can legitimately carry
   // a confidence with no verdict (an extractor could supply one), and reading that as
   // "checked" would report a machine's guess as a decision.
   if (!entity?.judged_at) {
-    return { state: "unverified", byOperator: false, reason: "" };
+    return { state: "unverified", byOperator: false, judgedBy: "", reason: "" };
   }
-  return { state: entity.withheld ? "withheld" : "checked", byOperator, reason };
+  return { state: entity.withheld ? "withheld" : "checked", byOperator, judgedBy, reason };
 }
 
 // factActions decides which controls a row offers.

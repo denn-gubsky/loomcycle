@@ -303,7 +303,7 @@ var docSchemaDDL = []string{
 		class TEXT, origin TEXT, confidence DOUBLE PRECISION,
 		session_id TEXT, run_id TEXT, event_seq BIGINT,
 		natural_key TEXT, source_quote TEXT, subject TEXT,
-		judged_at BIGINT, judge_reason TEXT)`,
+		judged_at BIGINT, judge_reason TEXT, judged_by TEXT)`,
 	// UNIQUE per SCOPE, not per document: each scope owns its own database (a
 	// sqlite file / a postgres schema), so a bare UNIQUE index on the column IS
 	// scope-wide — one entity per tenant regardless of which document holds it.
@@ -628,7 +628,10 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if err := d.migrateSubject(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateVerdict(ctx, key)
+	if err := d.migrateVerdict(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateJudgedBy(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -828,6 +831,19 @@ func (d *Document) migrateVerdict(ctx context.Context, key sqlmem.ScopeKey) erro
 		return nil
 	}
 	return d.exec(ctx, key, `ALTER TABLE chunk_memory_meta ADD COLUMN judge_reason TEXT`)
+}
+
+// migrateJudgedBy adds the column recording WHO reached a verdict.
+//
+// Probe-then-ALTER like its siblings. An existing row keeps a NULL, which reads as
+// "unknown" rather than as either party — a verdict recorded before this column existed
+// was reached by the judge or by an operator and the store genuinely cannot say which,
+// so it must not claim one.
+func (d *Document) migrateJudgedBy(ctx context.Context, key sqlmem.ScopeKey) error {
+	if _, err := d.query(ctx, key, `SELECT judged_by FROM chunk_memory_meta WHERE 1=0`); err == nil {
+		return nil
+	}
+	return d.exec(ctx, key, `ALTER TABLE chunk_memory_meta ADD COLUMN judged_by TEXT`)
 }
 
 func (d *Document) migrateSubject(ctx context.Context, key sqlmem.ScopeKey) error {

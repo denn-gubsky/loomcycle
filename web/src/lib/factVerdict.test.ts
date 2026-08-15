@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { factActions, factVerdict, operatorReason, OPERATOR_REASON_PREFIX } from "./factVerdict";
+import { factActions, factVerdict, OPERATOR } from "./factVerdict";
 
 describe("factVerdict", () => {
   it("a fact with no verdict is unverified, not refuted", () => {
@@ -25,17 +25,41 @@ describe("factVerdict", () => {
     expect(factVerdict({ judged_at: 1, confidence: 0.1 }).state).toBe("checked");
   });
 
-  it("separates an operator's verdict from the judge's, and strips the marker", () => {
-    const v = factVerdict({ judged_at: 1, judge_reason: operatorReason("this is out of date") });
+  it("reads who judged from the server's column, not from the reason text", () => {
+    // The reason is free text a judge writes. Inferring provenance from it would let a
+    // model that happens to start its reason with the marker word be rendered as a human.
+    const v = factVerdict({
+      judged_at: 1,
+      judged_by: OPERATOR,
+      judge_reason: "this is out of date",
+    });
     expect(v.byOperator).toBe(true);
     expect(v.reason).toBe("this is out of date");
-    expect(v.reason.startsWith(OPERATOR_REASON_PREFIX)).toBe(false);
   });
 
-  it("treats a judge's reason as the judge's", () => {
-    const v = factVerdict({ judged_at: 1, judge_reason: "the quote gives no duration" });
+  it("does not read a reason that merely mentions the operator as an operator verdict", () => {
+    const v = factVerdict({
+      judged_at: 1,
+      judged_by: "memory/judge",
+      judge_reason: "operator: the quote gives no duration",
+    });
     expect(v.byOperator).toBe(false);
-    expect(v.reason).toBe("the quote gives no duration");
+    expect(v.judgedBy).toBe("memory/judge");
+  });
+
+  it("names the agent that judged", () => {
+    const v = factVerdict({ judged_at: 1, judged_by: "memory/judge", judge_reason: "no city" });
+    expect(v.byOperator).toBe(false);
+    expect(v.judgedBy).toBe("memory/judge");
+    expect(v.reason).toBe("no city");
+  });
+
+  it("says nothing about who when the store does not know", () => {
+    // A verdict recorded before the column existed. Claiming either party would be a
+    // guess presented as a record.
+    const v = factVerdict({ judged_at: 1, judge_reason: "an older verdict" });
+    expect(v.byOperator).toBe(false);
+    expect(v.judgedBy).toBe("");
   });
 
   it("reports no reason for an unverified fact even if one is somehow stored", () => {
