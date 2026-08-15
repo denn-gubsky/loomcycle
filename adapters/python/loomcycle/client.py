@@ -770,6 +770,27 @@ class LoomcycleClient:
         requesting it is refused). Mirror of :meth:`document`."""
         return await self._dispatch_substrate("History", input)
 
+    async def memory(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the Memory tool — persistent key/value + vector memory scoped
+        to an agent, an end-user, or the tenant (RFC CD Part D). Op-discriminated:
+        key/value ``get`` / ``set`` / ``delete`` / ``list`` / ``incr`` /
+        ``merge`` / ``append_dedupe`` / ``bounded_list`` / ``search`` (semantic),
+        plus the memory-layer ``add`` / ``recall``. Scope (agent/user/tenant) +
+        tenant are resolved server-side from the authenticated principal, never
+        the wire — a ``scope="user"`` op keys on your own subject. ``search`` /
+        ``recall`` need the vector stack; without an embedder they refuse
+        (``vector_unsupported``). Mirror of :meth:`document`.
+
+        This is the gRPC/Python twin of the memory surface the TypeScript client
+        reaches over HTTP.
+
+        Example::
+
+            await client.memory({"op": "set", "scope": "user", "key": "tone", "value": "concise"})
+            got = await client.memory({"op": "get", "scope": "user", "key": "tone"})
+        """
+        return await self._dispatch_substrate("Memory", input)
+
     async def _dispatch_substrate(
         self, tool: str, input: Mapping[str, Any]
     ) -> Mapping[str, Any]:
