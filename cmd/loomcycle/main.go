@@ -1080,6 +1080,7 @@ func main() {
 		Bus:           channelBus,
 		MaxAssetBytes: int(cfg.Env.MaxDocumentAssetBytes),
 		Embedder:      embedder,
+		Cfg:           cfg, // RFC CE: resolve document_sources: for set_remote / sync
 	}
 	allTools = append(allTools, documentTool)
 
@@ -2707,7 +2708,7 @@ func main() {
 	// On by default, unlike retention, because everything it removes is unreachable:
 	// it restores an invariant rather than enacting a policy.
 	if cfg.Env.DeadLinkGCInterval > 0 && storeIface != nil && sqlMemMgr != nil {
-		docTool := &builtin.Document{Store: storeIface, SqlMem: sqlMemMgr}
+		docTool := &builtin.Document{Store: storeIface, SqlMem: sqlMemMgr, Cfg: cfg}
 		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.DeadLinkGCInterval, advisoryLock, coord.LockKeyDeadLinkGC, "deadlink",
 			func(ctx context.Context) {
 				scopes, err := sqlMemMgr.ListScopes(ctx)

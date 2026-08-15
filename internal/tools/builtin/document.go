@@ -15,6 +15,7 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -53,12 +54,17 @@ type Document struct {
 	// (ontology provisioning, the tenant-root probe) neither need nor have an
 	// embedder, and a required field would force them to fabricate one.
 	Embedder providers.Embedder
+
+	// Cfg is the loaded operator config, used to resolve `document_sources:`
+	// (a peer loomcycle) for the RFC CE set_remote / sync ops. Set in main.go
+	// (documentTool.Cfg = cfg); nil disables remote document sources.
+	Cfg *config.Config
 }
 
 func (d *Document) Name() string { return "Document" }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (semantic search over chunk BODIES for free text — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (semantic search over chunk BODIES for free text — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (pull the bound peer document's keyed chunks into this one, reconciling by natural_key). Scope is agent or user; documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -68,7 +74,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -120,7 +126,9 @@ const documentInputSchema = `{
 		"name":        {"type": "string", "description": "define/list_types: the type name."},
 		"include_metadata": {"type": "boolean", "description": "export_md: embed round-trippable chunk metadata + edges as HTML comments (default true). false = clean human-facing Markdown."},
 		"markdown":    {"type": "string", "description": "import_md: an export_md-shaped Markdown document (headings = hierarchy; <!-- loom: ... --> metadata; <!-- loom-edges: ... --> trailer). Omit document_id to create a new document; pass document_id (+ optional parent_id) to import under an existing chunk."},
-		"canvas":      {"type": "object", "description": "import_canvas: a JSON Canvas v1.0 object ({\"nodes\":[...],\"edges\":[...]}) — e.g. the contents of an Obsidian .canvas file. Each node becomes a chunk (positioned via its x/y/width/height); each edge becomes a link. Pass title/path to name the new document."}
+		"canvas":      {"type": "object", "description": "import_canvas: a JSON Canvas v1.0 object ({\"nodes\":[...],\"edges\":[...]}) — e.g. the contents of an Obsidian .canvas file. Each node becomes a chunk (positioned via its x/y/width/height); each edge becomes a link. Pass title/path to name the new document."},
+		"source":      {"type": "string", "description": "set_remote: the document_sources name (a peer loomcycle declared in operator config) to bind this document to."},
+		"remote_ref":  {"type": "string", "description": "set_remote: the remote document's path (or id) on the peer. sync pulls that document's keyed chunks into this one."}
 	},
 	"required": ["op"]
 }`
@@ -227,7 +235,9 @@ type docInput struct {
 	// ({"nodes":[...],"edges":[...]}). Kept as RawMessage so a caller can hand in
 	// an object verbatim (e.g. the contents of an Obsidian .canvas file) and it is
 	// decoded into the canvas struct in import_canvas.
-	Canvas json.RawMessage `json:"canvas"`
+	Canvas    json.RawMessage `json:"canvas"`
+	Source    string          `json:"source,omitempty"`     // set_remote: the document_sources name
+	RemoteRef string          `json:"remote_ref,omitempty"` // set_remote: the remote doc's path or id
 }
 
 // docSchemaDDL is portable across SQL Memory's sqlite + postgres tiers: BIGINT
@@ -466,6 +476,10 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return d.related(ctx, key, mscope, in)
 	case "unlinked_mentions":
 		return d.unlinkedMentions(ctx, key, mscope, in)
+	case "set_remote":
+		return d.setRemote(ctx, key, mscope, in)
+	case "sync":
+		return d.syncDocument(ctx, key, mscope, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
