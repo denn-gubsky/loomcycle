@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import FactsPanel from "../components/FactsPanel";
+import MemorySearchPanel from "../components/MemorySearchPanel";
 import {
   canSee,
   hasTenantScope as principalHasTenantScope,
@@ -1114,6 +1115,20 @@ function MemorySection() {
           than on their own tab because the coverage figures are unreadable without the
           rows they summarise, and the rows are unjudgeable without knowing how much of
           the store is verified at all. */}
+      {/* Search sits ABOVE the list: an operator who came here to fix one fact should
+          not have to scroll a store to find it, and the list below is capped and ordered
+          by recency rather than relevance. */}
+      <h3 className="settings-subhead">Search</h3>
+      <p className="settings-help settings-muted">
+        Across everything {who} has remembered — facts a pass distilled, notes an agent
+        wrote directly, and prose inside documents. Only a document hit can carry a
+        verdict; the key/value plane has nowhere to hold one.
+      </p>
+      <MemorySearchPanel
+        scopeId={pickedUser}
+        browse={pickedUser ? { scopeId: pickedUser } : undefined}
+      />
+
       <h3 className="settings-subhead">Facts</h3>
       <p className="settings-help settings-muted">
         What {who} has stored, with the evidence each fact was drawn from. A verdict here

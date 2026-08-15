@@ -5814,6 +5814,49 @@ button.primary:disabled {
   color: var(--lc-running);
 }
 
+/* Memory search (Settings → Memory). Hits are looser than facts — a note has no span
+   and no verdict — so the row is lighter than a fact card and does not pretend to the
+   same structure. */
+.memory-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lc-space-1);
+  margin: var(--lc-space-2) 0;
+}
+.memory-search > .settings-row input {
+  flex: 1;
+  min-width: 14rem;
+}
+.search-sources {
+  gap: var(--lc-space-2);
+  font-size: var(--lc-text-sm);
+}
+.search-sources label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.search-hit {
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-2);
+  background: var(--lc-surface-2);
+}
+.search-hit-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--lc-space-1);
+}
+.search-hit-head .fact-badge {
+  margin-left: 0;
+}
+.search-hit-head .settings-action-link {
+  margin-left: auto;
+}
+.search-hit-text {
+  margin-top: 4px;
+}
+
 /* The facts list (Settings → Memory). Rows rather than a table: each fact is a claim,
    its evidence and its verdict — three things of very different lengths, which a table
    would either truncate or stretch. The state drives the left border so a scan down the
