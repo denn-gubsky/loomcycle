@@ -896,6 +896,15 @@ func memberCarveOut(method, path string) bool {
 		return true
 	case strings.HasPrefix(path, "/v1/hooks"):
 		return true
+	// RFC CD Part C — the memory/document CHANGE FEED is substrate:tenant-only,
+	// NOT member-accessible (locked decision): the feed exposes the tenant's
+	// write pattern (a metadata side-channel) and is operator observability, not
+	// member data. Both the /v1/_memory/ prefix (ScopeTenant) and the
+	// /v1/_document/changes route (ScopeTenant via isTenantConfinedDefPath) would
+	// otherwise be member-accessible; carve them out so a non-isolated member is
+	// refused.
+	case path == "/v1/_memory/changes" || path == "/v1/_document/changes":
+		return true
 	}
 	return false
 }
@@ -943,6 +952,13 @@ func isTenantConfinedDefPath(path string) bool {
 	// variable {chunk_id} suffix, so it needs a prefix match (the family list
 	// below is exact-match). Same ScopeTenant posture as /v1/_document itself.
 	if strings.HasPrefix(path, "/v1/_document/asset/") {
+		return true
+	}
+	// RFC CD Part C — the document change feed lives under /v1/_document with a
+	// /changes suffix, so (like the asset GET) it needs a prefix match; the
+	// family list below is exact-match. Same ScopeTenant posture as /v1/_document
+	// (and it is carved out of member access — see memberCarveOut).
+	if strings.HasPrefix(path, "/v1/_document/changes") {
 		return true
 	}
 	for _, fam := range []string{
