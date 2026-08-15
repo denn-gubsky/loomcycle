@@ -38,13 +38,27 @@ import (
 // cannot write an arbitrary number and no two callers can disagree about what
 // "unsupported" is worth.
 //
-// `unclear` deliberately lands ABOVE the withholding floor. A judge that is unsure is not
-// evidence against a claim, and the failure this whole line guards against is the
-// false refusal — a fact withheld on a maybe is a fact nobody will notice is gone.
+// `unclear` and `mistyped` deliberately land ABOVE the withholding floor. A judge that is
+// unsure is not evidence against a claim, and the failure this whole line guards against is
+// the false refusal — a fact withheld on a maybe is a fact nobody will notice is gone.
 const (
 	confidenceSupported   = 0.9
 	confidenceUnclear     = 0.5
 	confidenceUnsupported = 0.0
+
+	// confidenceMistyped is "the span supports this claim, but it is filed as something
+	// the ontology does not say it is".
+	//
+	// A SEPARATE VERDICT because the fix is different. An unsupported fact should go
+	// away; a mistyped one should be RETYPED, and a verdict that collapsed the two would
+	// tell an operator to delete a true fact. `location:user` as the subject of a
+	// sentence about living in Cluj-Napoca is the case that motivated it: loosely
+	// entailed by its span, and wrong.
+	//
+	// It stays VISIBLE — reduced, not withheld. The claim is true, so withholding it
+	// would be a false refusal in service of a filing error, and the number sits low
+	// enough to sort behind clean facts and to be queried for.
+	confidenceMistyped = 0.4
 
 	// withholdBelowConfidence is the floor the fact surfaces apply.
 	//
@@ -69,8 +83,10 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		confidence = confidenceUnclear
 	case "unsupported":
 		confidence = confidenceUnsupported
+	case "mistyped":
+		confidence = confidenceMistyped
 	default:
-		return errResult("judge_fact: verdict must be \"supported\", \"unclear\" or " +
+		return errResult("judge_fact: verdict must be \"supported\", \"unclear\", \"mistyped\" or " +
 			"\"unsupported\" — a number is not accepted, because the scale belongs to the " +
 			"server and two callers using different scales would make the floor meaningless"), nil
 	}

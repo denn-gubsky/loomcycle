@@ -549,6 +549,20 @@ type ConsolidationConfig struct {
 	// but make different claims, so the pass adds rather than merges.
 	// 0 = DefaultConsolidationRelatedThreshold.
 	RelatedThreshold float64 `yaml:"related_threshold"`
+	// VerifyWrites turns on the write-time verification pass: after a fact is
+	// stored, a judge is asked whether the quote recorded as its evidence
+	// actually carries the claim, and a fact the judge refuses stops being
+	// returned by the fact surfaces (it is never deleted).
+	//
+	// OFF BY DEFAULT because it costs a model call per batch of facts on top of
+	// the extraction spend, and because no deployment should adopt a classifier
+	// in its write path before measuring what that classifier refuses. A
+	// deployment that leaves this unset behaves exactly as it did before.
+	//
+	// Read by the consolidation pass through the capabilities report rather than
+	// baked into the bundle: turning verification on must not require restating
+	// a code body, and the pass already reads its similarity bands the same way.
+	VerifyWrites bool `yaml:"verify_writes"`
 }
 
 // DefaultConsolidationMergeThreshold / DefaultConsolidationRelatedThreshold are

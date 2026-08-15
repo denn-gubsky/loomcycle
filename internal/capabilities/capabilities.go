@@ -192,6 +192,7 @@ func Consolidation(cfg *config.Config) map[string]any {
 			"configured":        false,
 			"merge_threshold":   unset.EffectiveMergeThreshold(),
 			"related_threshold": unset.EffectiveRelatedThreshold(),
+			"verify_writes":     false,
 		}
 	}
 	configured, enabled := false, false
@@ -210,6 +211,9 @@ func Consolidation(cfg *config.Config) map[string]any {
 		"configured":        configured,
 		"merge_threshold":   cfg.Memory.Consolidation.EffectiveMergeThreshold(),
 		"related_threshold": cfg.Memory.Consolidation.EffectiveRelatedThreshold(),
+		// Reported so the pass can read it. Non-secret, and a boolean an operator
+		// set themselves.
+		"verify_writes": cfg.Memory.Consolidation.VerifyWrites,
 	}
 }
 

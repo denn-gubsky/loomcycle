@@ -209,6 +209,14 @@ type ExtractionReport struct {
 	HarnessFault string `json:"harness_fault,omitempty"`
 }
 
+// baselineKeyFields / AbilityScores / Incomplete make an ExtractionReport Measured — see
+// the Baseline header for why the two report types share that machinery.
+func (r ExtractionReport) baselineKeyFields() (string, string, string, string, string) {
+	return r.Provider, r.Model, r.Effort, r.SystemPromptSHA256, r.CorpusSHA256
+}
+func (r ExtractionReport) AbilityScores() []AbilityScore { return r.Abilities }
+func (r ExtractionReport) Incomplete() (int, string)     { return r.TotalErrors, r.HarnessFault }
+
 // ScoreFor returns the ability's score.
 func (r ExtractionReport) ScoreFor(a Ability) (AbilityScore, bool) {
 	for _, s := range r.Abilities {

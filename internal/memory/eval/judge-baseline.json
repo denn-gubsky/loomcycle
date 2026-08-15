@@ -1,0 +1,25 @@
+{
+  "recall_tolerance": 0.15,
+  "entries": [
+    {
+      "provider": "ollama-local",
+      "model": "gemma4:latest",
+      "effort": "low",
+      "system_prompt_sha256": "19092c72e1d6703c7ab023fab6405ab92e0700d706569360658fb4b229e32ff9",
+      "corpus_sha256": "d31bcf67b15b61b26cd77ff3db2f332fdd22d35742a0ad3f71adae09f8a62eb6",
+      "measured_at": "2026-08-14T15:51:20Z",
+      "recall": {
+        "entailment": 1,
+        "fabrication": 1,
+        "mistyping": 0.5,
+        "partial": 0.5
+      },
+      "violations": {
+        "entailment": 0,
+        "fabrication": 0,
+        "mistyping": 0,
+        "partial": 0
+      }
+    }
+  ]
+}
