@@ -3051,6 +3051,11 @@ func (s *Server) Mux() http.Handler {
 	// AND document-chunk bodies. Admin-only via the /v1/_* catch-all (a later
 	// phase re-gates the /v1/_memory/* family to the tenant axis).
 	mux.Handle("POST /v1/_memory/search", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemorySearch))))
+	// RFC CD Part C — the memory/document change-data-capture SSE feed
+	// (substrate:tenant, member-carved-out; only populated when
+	// LOOMCYCLE_MEMORY_CHANGES_ENABLED).
+	mux.Handle("GET /v1/_memory/changes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryChanges))))
+	mux.Handle("GET /v1/_document/changes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentChanges))))
 	mux.Handle("POST /v1/_memory/backfill_embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryBackfillEmbeddings))))
 	// RFC BU phase 4b — generate vision descriptions for image chunks that have
 	// none, then re-embed so they become searchable. Left on the /v1/_* catch-all

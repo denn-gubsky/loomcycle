@@ -110,13 +110,16 @@ func (l *AdvisoryLock) TryRun(ctx context.Context, lockKey int64, fn func(ctx co
 // the var-block size in init(). Never reuse a key for a different
 // sweeper.
 var (
-	LockKeyHeartbeatSweeper    int64
-	LockKeyMemorySweeper       int64
-	LockKeyChannelsSweeper     int64
-	LockKeyInterruptsSweeper   int64
-	LockKeyMetricsSweeper      int64
-	LockKeyDynamicAgentSweeper int64
-	LockKeyReplicasSweeper     int64
+	LockKeyHeartbeatSweeper  int64
+	LockKeyMemorySweeper     int64
+	LockKeyChannelsSweeper   int64
+	LockKeyInterruptsSweeper int64
+	LockKeyMetricsSweeper    int64
+	// LockKeyMemoryChangesSweeper gates the RFC CD Part C change-feed retention
+	// prune so one replica per cluster prunes per tick.
+	LockKeyMemoryChangesSweeper int64
+	LockKeyDynamicAgentSweeper  int64
+	LockKeyReplicasSweeper      int64
 	// LockKeyResumePausedRuns gates the one-shot boot-time re-dispatch of
 	// pause_state='paused' runs (F42 / RFC X Phase 2) so exactly ONE replica
 	// resurrects each paused run's loop in a cluster — not a periodic sweep.
@@ -181,6 +184,7 @@ func init() {
 	LockKeyChannelsSweeper = fnvKey("channels_sweeper")
 	LockKeyInterruptsSweeper = fnvKey("interrupts_sweeper")
 	LockKeyMetricsSweeper = fnvKey("metrics_sweeper")
+	LockKeyMemoryChangesSweeper = fnvKey("memory_changes_sweeper")
 	LockKeyDynamicAgentSweeper = fnvKey("dynamic_agent_sweeper")
 	LockKeyReplicasSweeper = fnvKey("replicas_sweeper")
 	LockKeyResumePausedRuns = fnvKey("resume_paused_runs")

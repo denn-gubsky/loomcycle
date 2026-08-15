@@ -85,6 +85,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/cdc"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/usage"
@@ -139,6 +140,43 @@ var (
 // internal/store/postgres/postgres.go for what gets logged.
 func channelDebugEnabled() bool {
 	return os.Getenv("LOOMCYCLE_CHANNEL_DEBUG") == "1"
+}
+
+// memoryChangesEnabled reports whether the RFC CD Part C change-data-capture
+// feed is on. Default off — when off the store is NOT wrapped by the CDC
+// decorator, so the default deployment is byte-identical and pays nothing.
+func memoryChangesEnabled() bool {
+	return os.Getenv("LOOMCYCLE_MEMORY_CHANGES_ENABLED") == "1"
+}
+
+// memoryChangesRetention is how long change-feed rows are kept before the
+// retention sweeper prunes them. Default 24h; override with
+// LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS.
+func memoryChangesRetention() time.Duration {
+	if h := os.Getenv("LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS"); h != "" {
+		if n, err := strconv.Atoi(h); err == nil && n > 0 {
+			return time.Duration(n) * time.Hour
+		}
+	}
+	return 24 * time.Hour
+}
+
+// asPostgresStore unwraps any store decorators (the CDC wrapper) and returns
+// the concrete *storepostgres.Store when the backend is Postgres. Cluster
+// coordination needs the concrete type, so the CDC wrapper must be transparent
+// to it.
+func asPostgresStore(s store.Store) (*storepostgres.Store, bool) {
+	for s != nil {
+		if pg, ok := s.(*storepostgres.Store); ok {
+			return pg, true
+		}
+		u, ok := s.(interface{ Unwrap() store.Store })
+		if !ok {
+			return nil, false
+		}
+		s = u.Unwrap()
+	}
+	return nil, false
 }
 
 // backfillAgentDefSignFn computes the v0.9.x content_sha256 for an
@@ -1350,6 +1388,14 @@ func main() {
 		log.Fatalf("store: %v", err)
 	}
 	defer storeCloser()
+	// RFC CD Part C — when the change-data-capture feed is enabled, wrap the
+	// store so every memory/document write emits a value-free change row. Off by
+	// default → the store is unwrapped and the path is byte-identical. Cluster
+	// coord below unwraps via asPostgresStore to reach the concrete backend.
+	if memoryChangesEnabled() && storeIface != nil {
+		storeIface = cdc.Wrap(storeIface, log.Printf)
+		log.Printf("memory: change-data-capture feed ENABLED (LOOMCYCLE_MEMORY_CHANGES_ENABLED=1)")
+	}
 
 	// v0.9.x content_sha256 backfill — populate the new column on
 	// every NULL/empty row left over from a pre-v0.9.x upgrade OR
@@ -1431,7 +1477,7 @@ func main() {
 	// the pool fields and the retry behavior is unchanged. The
 	// PoolStatsFn capture lives inside execSubscribe at the case
 	// <-waker: arm — see internal/tools/builtin/channel.go.
-	if pg, ok := storeIface.(*storepostgres.Store); ok && pg != nil {
+	if pg, ok := asPostgresStore(storeIface); ok && pg != nil {
 		channelTool.PoolStatsFn = func() (total, acquired, idle int32) {
 			st := pg.Pool().Stat()
 			return st.TotalConns(), st.AcquiredConns(), st.IdleConns()
@@ -2242,7 +2288,7 @@ func main() {
 	// (only one replica sweeps per tick). v0.12.4 Phase 5.
 	var advisoryLock *coord.AdvisoryLock
 	if cfg.Env.ReplicaID != "" {
-		pgStore, ok := storeIface.(*storepostgres.Store)
+		pgStore, ok := asPostgresStore(storeIface)
 		if !ok {
 			log.Fatalf("coord: REPLICA_ID set but store is not *storepostgres.Store (openStore guard bypassed?)")
 		}
@@ -2552,6 +2598,25 @@ func main() {
 		log.Printf("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
 	}
 
+	// RFC CD Part C — prune the change-feed table so the opt-in feed stays
+	// bounded. Only when the feed is enabled; the DELETE is idempotent and
+	// advisory-gated so one replica prunes per tick.
+	if memoryChangesEnabled() && storeIface != nil {
+		window := memoryChangesRetention()
+		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryChangesSweeper, "memory_changes",
+			func(ctx context.Context) {
+				pruned, err := storeIface.PruneMemoryChanges(ctx, time.Now().Add(-window))
+				if err != nil {
+					log.Printf("memory_changes prune: %v", err)
+					return
+				}
+				if pruned > 0 {
+					log.Printf("memory_changes prune: deleted %d row(s) older than %s", pruned, window)
+				}
+			})
+		log.Printf("memory: change-feed retention sweeper interval=1h window=%s", window)
+	}
+
 	// Dead-link reconciliation: the only layer that actually COLLECTS chunk
 	// references nothing can reach.
 	//
@@ -2667,7 +2732,7 @@ func main() {
 		// mode; single-replica mode keeps the v0.11.x in-process path
 		// byte-identical.
 		if cfg.Env.ReplicaID != "" {
-			pgStoreForPause, ok := storeIface.(*storepostgres.Store)
+			pgStoreForPause, ok := asPostgresStore(storeIface)
 			if !ok {
 				log.Fatalf("coord: pause cluster wiring requires Postgres store (REPLICA_ID set + non-Postgres store — should have been caught by openStore)")
 			}
