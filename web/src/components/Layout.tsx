@@ -1,3 +1,8 @@
+import {
+  canSee,
+  hasTenantScope as principalHasTenantScope,
+  type Visibility,
+} from "../lib/visibility";
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
 import {
@@ -54,7 +59,8 @@ const SIDEBAR_KEY = "loomcycle.sidebar.collapsed";
 // handlers source the tenant from the principal (list filters by tenant; the
 // cross-tenant `global` scope stays admin-only to create), and the routes were
 // re-gated to ScopeTenant — closing the earlier admin-only carve-out.
-type Visibility = "all" | "tenant" | "admin";
+// The type and the predicate live in ../lib/visibility — the Settings tabs use the
+// same two, and a second copy is how the two surfaces drifted apart in the first place.
 interface NavItem {
   to: string;
   label: string;
@@ -92,17 +98,6 @@ const NAV_ITEMS: NavItem[] = [
   // now the primary surface — see SettingsView's routing/limits tabs).
 ];
 
-// canSeeNav gates a nav item by the principal's role (RFC AS §4).
-function canSeeNav(vis: Visibility, isAdmin: boolean, hasTenantScope: boolean): boolean {
-  switch (vis) {
-    case "all":
-      return true;
-    case "tenant":
-      return isAdmin || hasTenantScope;
-    case "admin":
-      return isAdmin;
-  }
-}
 // Refresh the user picker every 30 s. Activity stats (running counts)
 // drift fast on busy deployments; the dropdown is rendered with the
 // most recent counts each time it opens.
@@ -131,9 +126,9 @@ export default function Layout() {
   const isAdmin = principal?.is_admin === true;
   // RFC AS §4: a substrate:tenant operator additionally sees the tenant-scoped
   // surfaces. Admin, legacy, and open-mode principals all report is_admin:true
-  // (handleWhoami), so they already see every item via canSeeNav's admin branch
+  // (handleWhoami), so they already see every item via canSee's admin branch
   // — no open-mode special case needed here.
-  const hasTenantScope = principal?.scopes?.includes("substrate:tenant") === true;
+  const hasTenantScope = principalHasTenantScope(principal?.scopes);
 
   // Super-admin tenant-focus (?tenant=): "" = all tenants (admin's default
   // global view). A tenant principal can't set this — the backend forces
@@ -247,10 +242,10 @@ export default function Layout() {
       <aside className={"sidebar" + (navCollapsed ? " sidebar-collapsed" : "")}>
         {/* Per-surface visibility (RFC AS §4): run/runs for every role; the
             tenant-scoped surfaces for admin OR a substrate:tenant operator;
-            the operator-plane surfaces for admin only. canSeeNav encodes the
+            the operator-plane surfaces for admin only. canSee encodes the
             class → role gate; the server still enforces it (defence in depth). */}
         <nav className="sidebar-nav">
-          {NAV_ITEMS.filter((it) => canSeeNav(it.vis, isAdmin, hasTenantScope)).map(({ to, label, Icon }) => (
+          {NAV_ITEMS.filter((it) => canSee(it.vis, isAdmin, hasTenantScope)).map(({ to, label, Icon }) => (
             <NavLink key={to} to={to} title={label}>
               <Icon size={18} className="sidebar-icon" />
               <span className="sidebar-label">{label}</span>
