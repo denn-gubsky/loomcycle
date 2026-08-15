@@ -22,6 +22,13 @@ never in the YAML you paste into the TrueNAS UI.**
 > ([`../../docs/SANDBOX.md`](../../docs/SANDBOX.md)). Either way pin **≥ v1.6.0** — the
 > first release with the embedded presets (RFC AQ) this app's `LOOMCYCLE_PRESETS`
 > relies on; older tags fail to boot with `no config found`.
+>
+> **Registry.** Every loomcycle image is published to Docker Hub *and* to
+> `ghcr.io/denn-gubsky/…` (same build, same digest). If a pull fails with
+> `toomanyrequests`, swap the prefix — `ghcr.io/denn-gubsky/loomcycle-toolbox:1.23.1`
+> — everywhere in the YAML below. See "Docker Hub rate limits" in Troubleshooting;
+> TrueNAS is unusually exposed to this because it re-checks every installed app for
+> image updates on a timer, and each check spends from the same anonymous quota.
 
 ---
 
@@ -334,3 +341,34 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | Documents fail with `sqlmem: provision scope: ... permission denied to create role` | The SQL-Memory DSN's role lacks `CREATEROLE` (it provisions a per-scope login role). Grant it: `ALTER ROLE loomcycle CREATEROLE;` (Phase 1 now creates the role with it). |
 | `doc/manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
+| `toomanyrequests: You have reached your pull rate limit` | Docker Hub anonymous quota exhausted — see below. |
+
+### Docker Hub rate limits
+
+Docker Hub meters **anonymous** pulls per source IP, and over IPv6 the bucket is
+keyed on the whole **/64 prefix** — so your TrueNAS box, your laptop and everything
+else behind one connection drain a single shared quota. TrueNAS also re-checks every
+installed app for image updates on a timer, and each check spends from it. Check
+what's left, from the box:
+
+```sh
+TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" | jq -r .token)
+curl -sI -H "Authorization: Bearer $TOKEN" \
+  https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit
+```
+
+Three fixes, in order of how well they hold:
+
+1. **Pull from GHCR instead.** Every loomcycle image is mirrored to
+   `ghcr.io/denn-gubsky/…` from the same build, so swapping the registry prefix
+   changes nothing but where the bytes come from. Not metered like Docker Hub.
+   Third-party images (`pinchtab/pinchtab`) still come from Docker Hub.
+2. **Authenticate.** `sudo -i` then `docker login -u <user>` on the TrueNAS host, with
+   a read-only access token — *not* `sudo docker login`, which can write the
+   credential to the calling user's `~/.docker/config.json` while the app middleware
+   reads root's. Authenticated pulls are metered per account, not per source IP.
+   Verify: `cat /root/.docker/config.json` shows an `auths` entry.
+3. **Pull less.** Add `pull_policy: missing` to each service so a restart reuses the
+   image already on disk instead of re-fetching its manifest. Pinning by digest
+   (`image: denngubsky/loomcycle-toolbox@sha256:…`) also halves the requests a
+   multi-arch tag costs, since it skips the manifest-list lookup.

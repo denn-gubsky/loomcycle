@@ -22,6 +22,11 @@
 #   • The config overlay adds an mcp_servers.browser block — copy
 #     loomcycle.overlay.browser.example.yaml (NOT the plain overlay example).
 #
+# Registry: every loomcycle image below is also on GHCR — prefix it with
+# `ghcr.io/denn-gubsky/` (same build, same digest) if a Docker Hub pull fails with
+# `toomanyrequests`. `pinchtab/pinchtab` is third-party and Docker-Hub-only.
+# INSTALL.md → "Docker Hub rate limits".
+#
 # ── BEFORE YOU INSTALL (see INSTALL.md "Browser + sandbox variant") ───────────
 #   Replace `tank` with your pool throughout, then:
 #   1. Datasets (the distroless runtime is uid 65532; PINCHTAB runs as uid 1000):

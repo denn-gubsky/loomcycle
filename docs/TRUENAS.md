@@ -143,6 +143,12 @@ can't run scripts or compile code. To let them, switch both services to the
 bakes in python / go / rust / c++ / node + git/gh/curl/jq/rsync/wget/unzip/sqlite3)
 and enable a shell tool, then grant it to an agent via its `tools:`:
 
+> Either image is also on GHCR as `ghcr.io/denn-gubsky/…` — same build, same digest.
+> Reach for it when a Docker Hub pull fails with `toomanyrequests`: the anonymous
+> quota is per source IP (per /64 on IPv6), so a whole network shares one, and
+> TrueNAS's periodic per-app update checks spend from it.
+> [`deploy/truenas/INSTALL.md`](../deploy/truenas/INSTALL.md) has the full recipe.
+
 - **`LOOMCYCLE_BASH_ENABLED=1`** — the raw `Bash` tool (unsandboxed: the whole
   toolchain, and it can run a compiled `./binary`). Simplest for a trusted box.
 - **`LOOMCYCLE_BASHBOX_ENABLED=1`** + `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=<drivers>`
