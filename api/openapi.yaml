@@ -551,6 +551,8 @@ components:
             - delete_chunk
             - supersede_chunk
             - judge_fact
+            - verbatim_answer
+            - verification_stats
             - graph_recall
             - list_facts
             - move_chunk
