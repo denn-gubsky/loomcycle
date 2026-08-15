@@ -810,13 +810,22 @@ type ParentContext struct {
 	// Distinct from UserTier (loomcycle's resolver policy) — this is the
 	// consumer's own snapshot, carried verbatim.
 	TierAtRun string `json:"tier_at_run,omitempty"`
+	// Board{Scope,ChunkID,DocumentID} correlate a run to a workflow-board task
+	// (a Document chunk) for loomboard (RFC BT P4). A board-bound `TeamDef
+	// op=run` stamps these onto each handler run it spawns, so a client folding
+	// the run-state stream can pin a live agent to its kanban card. Empty for
+	// non-board runs. Not secret — safe to persist and emit like the rest.
+	BoardScope      string `json:"board_scope,omitempty"`
+	BoardChunkID    string `json:"board_chunk_id,omitempty"`
+	BoardDocumentID string `json:"board_document_id,omitempty"`
 }
 
 // IsZero reports whether every field is empty (no meaningful tracking
 // context). Wire entry points normalise a zero struct to nil so
 // back-compat decode paths stay clean.
 func (p *ParentContext) IsZero() bool {
-	return p == nil || (p.RootAgentRunID == "" && p.FunctionKey == "" && p.TierAtRun == "")
+	return p == nil || (p.RootAgentRunID == "" && p.FunctionKey == "" && p.TierAtRun == "" &&
+		p.BoardScope == "" && p.BoardChunkID == "" && p.BoardDocumentID == "")
 }
 
 // Clone returns a deep copy (nil-safe) so a parent's ParentContext can
@@ -827,6 +836,34 @@ func (p *ParentContext) Clone() *ParentContext {
 	}
 	cp := *p
 	return &cp
+}
+
+// BoardTask identifies the workflow-board task (a Document chunk) a board-bound
+// `TeamDef op=run` is driving. It rides the walk context so each handler spawn
+// stamps it onto the child run's ParentContext (see the sub-agent spawn path).
+type BoardTask struct {
+	Scope      string
+	ChunkID    string
+	DocumentID string
+}
+
+type boardTaskCtxKey struct{}
+
+// WithBoardTask returns a context carrying the board task. A zero task (empty
+// ChunkID) CLEARS it — used to stop propagation past the direct handler run so
+// a handler's own sub-agents aren't also pinned onto the card.
+func WithBoardTask(ctx context.Context, t BoardTask) context.Context {
+	return context.WithValue(ctx, boardTaskCtxKey{}, t)
+}
+
+// BoardTaskFromContext returns the board task on ctx. ok=false for a missing or
+// cleared (zero) task.
+func BoardTaskFromContext(ctx context.Context) (BoardTask, bool) {
+	t, _ := ctx.Value(boardTaskCtxKey{}).(BoardTask)
+	if t.ChunkID == "" {
+		return BoardTask{}, false
+	}
+	return t, true
 }
 
 // EncodeParentContext returns the JSON to persist in the runs.parent_context

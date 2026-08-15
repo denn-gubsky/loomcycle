@@ -339,6 +339,13 @@ export interface ParentContext {
   /** The consumer's tier marker captured at root-run time (distinct from
    *  `userTier`, which is loomcycle's resolver policy). */
   tier_at_run?: string;
+  /** Workflow-board correlation (loomboard, RFC BT P4). A board-bound
+   *  `TeamDef op=run` stamps these onto each handler run it spawns, so a client
+   *  folding the run-state stream (RunStateEvent.parent_context) can pin the
+   *  live agent to its kanban card. Absent for non-board runs. */
+  board_scope?: string;
+  board_chunk_id?: string;
+  board_document_id?: string;
 }
 
 export interface ContinueOptions {

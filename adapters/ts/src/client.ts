@@ -1706,13 +1706,27 @@ export class LoomcycleClient {
    *  task handed to the entry state's agent. The walk runs under the same
    *  admission a normal run gets (token budget / operator-key / depth). */
   async runTeam(
-    target: { name?: string; defId?: string; input?: string },
+    target: {
+      name?: string;
+      defId?: string;
+      input?: string;
+      /** Bind the walk to a Document chunk task board (RFC BT P4): each state
+       *  transition persists `chunk.status` = the current team state, and every
+       *  handler run this walk spawns carries the task key on its
+       *  `parent_context` (so a board client can pin the live agent to the
+       *  card). Omit for an ephemeral run. */
+      boardChunkId?: string;
+      /** The Document scope of `boardChunkId` (agent | user, default user). */
+      boardScope?: "agent" | "user";
+    },
     opts?: { signal?: AbortSignal },
   ): Promise<TeamRunResult> {
     const body: Record<string, unknown> = { op: "run" };
     if (target.name !== undefined) body.name = target.name;
     if (target.defId !== undefined) body.def_id = target.defId;
     if (target.input !== undefined) body.input = target.input;
+    if (target.boardChunkId !== undefined) body.board_chunk_id = target.boardChunkId;
+    if (target.boardScope !== undefined) body.board_scope = target.boardScope;
     return postJSON<TeamRunResult>(this.ctx, "/v1/_teamdef", body, opts);
   }
 
