@@ -475,6 +475,36 @@ type Event struct {
 	Payload   []byte    `json:"-"` // raw JSON; emit via custom marshalling at the API edge
 }
 
+// MemoryChangeType names a kind of change in the CDC feed (RFC CD Part C).
+type MemoryChangeType string
+
+const (
+	MemoryChangeSet          MemoryChangeType = "memory.set"
+	MemoryChangeDelete       MemoryChangeType = "memory.delete"
+	MemoryChangeScopeDeleted MemoryChangeType = "memory.scope_deleted"
+	DocumentChangeUpdated    MemoryChangeType = "document.chunk.updated"
+	DocumentChangeDeleted    MemoryChangeType = "document.chunk.deleted"
+)
+
+// MemoryChange is one row in the change-data-capture feed (RFC CD Part C),
+// emitted by the CDC store decorator after a successful memory/document write
+// when LOOMCYCLE_MEMORY_CHANGES_ENABLED. It is VALUE-FREE: it names WHAT
+// changed (the coordinate), not the value — a subscriber pulls the current
+// value via the data API. Seq is a per-store monotonic cursor (the same model
+// as run events / GetRunEventsSince). ChunkID is set for document.* changes
+// (derived from the reserved doc.chunk:<id> key); Key is set for plain memory
+// changes.
+type MemoryChange struct {
+	Seq      int64            `json:"seq"`
+	TenantID string           `json:"tenant,omitempty"`
+	Type     MemoryChangeType `json:"type"`
+	Scope    MemoryScope      `json:"scope"`
+	ScopeID  string           `json:"scope_id"`
+	Key      string           `json:"key,omitempty"`
+	ChunkID  string           `json:"chunk_id,omitempty"`
+	At       time.Time        `json:"at"`
+}
+
 // Usage is one run's aggregated token accounting, computed by the loop and
 // passed to FinishRun.
 type Usage struct {
@@ -1705,6 +1735,22 @@ type Store interface {
 	// resets, on a re-incr) the expiry; ttl <= 0 keeps the existing
 	// expiry untouched (or no expiry on a fresh row).
 	MemoryIncrement(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error)
+
+	// AppendMemoryChange records one change-data-capture row (RFC CD Part C),
+	// emitted by the CDC store decorator after a successful memory/document
+	// write when LOOMCYCLE_MEMORY_CHANGES_ENABLED. Best-effort: a failure must
+	// NOT fail the originating write (the decorator logs and continues). Seq is
+	// store-assigned (monotonic); At is store-stamped.
+	AppendMemoryChange(ctx context.Context, c MemoryChange) error
+
+	// GetMemoryChangesSince returns a tenant's change rows with Seq > afterSeq,
+	// oldest first, capped at limit — the SSE cursor read. Tenant-scoped: a
+	// caller only ever sees its OWN tenant's changes.
+	GetMemoryChangesSince(ctx context.Context, tenantID string, afterSeq int64, limit int) ([]MemoryChange, error)
+
+	// PruneMemoryChanges deletes change rows recorded before olderThan and
+	// returns the count removed — keeps the opt-in feed table bounded.
+	PruneMemoryChanges(ctx context.Context, olderThan time.Time) (int, error)
 
 	// MemoryAtomicUpdate runs `reducer` as an atomic read-modify-write
 	// against (scope, scopeID, key). The reducer receives the current

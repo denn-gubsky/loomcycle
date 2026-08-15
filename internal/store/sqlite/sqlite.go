@@ -197,6 +197,22 @@ func (s *Store) migrate(ctx context.Context) error {
 			payload    BLOB NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, seq)`,
+		// RFC CD Part C: the opt-in memory/document change-data-capture feed.
+		// Populated only when LOOMCYCLE_MEMORY_CHANGES_ENABLED (via the CDC store
+		// decorator); a monotonic seq is the SSE cursor. Mirrors postgres
+		// migration 0070.
+		`CREATE TABLE IF NOT EXISTS memory_changes (
+			seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id   TEXT NOT NULL,
+			change_type TEXT NOT NULL,
+			scope       TEXT NOT NULL,
+			scope_id    TEXT NOT NULL,
+			key         TEXT NOT NULL DEFAULT '',
+			chunk_id    TEXT NOT NULL DEFAULT '',
+			at          INTEGER NOT NULL  -- unix nano
+		)`,
+		`CREATE INDEX IF NOT EXISTS memory_changes_by_tenant ON memory_changes(tenant_id, seq)`,
+		`CREATE INDEX IF NOT EXISTS memory_changes_by_at ON memory_changes(at)`,
 		// v0.8.21 audit view — cross-session queries by ts (descending)
 		// and ts-with-type-equality. Mirrors the postgres
 		// 0014_events_audit_index migration; both stores need the

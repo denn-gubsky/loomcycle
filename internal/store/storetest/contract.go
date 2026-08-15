@@ -77,6 +77,10 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunIdempotent", testFinishRunIdempotent},
 		{"GetTranscriptEmpty", testGetTranscriptEmpty},
 		{"GetRunEventsSince", testGetRunEventsSince},
+		// RFC CD Part C — the memory/document change-data-capture feed
+		// (append / tenant-scoped since-cursor / prune). sqlite always;
+		// Postgres when a DSN is set.
+		{"MemoryChangesFeed", testMemoryChangesFeed},
 		{"CreateSessionUserIDRoundTrip", testCreateSessionUserIDRoundTrip},
 		{"CreateRunIdentityRoundTrip", testCreateRunIdentityRoundTrip},
 		{"CreateRunParentContextRoundTrip", testCreateRunParentContextRoundTrip},
