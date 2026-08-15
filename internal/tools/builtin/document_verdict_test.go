@@ -2,9 +2,16 @@ package builtin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // verdictFixture returns a fact WITH a span (so it can be judged) and one without.
@@ -347,5 +354,150 @@ func TestVerdict_MistypedStillNeedsASpan(t *testing.T) {
 		`","verdict":"mistyped","reason":"r"}`)
 	if !r.IsError || !strings.Contains(r.Text, "no source span") {
 		t.Errorf("a span-less fact was judged mistyped: err=%v %s", r.IsError, r.Text)
+	}
+}
+
+// TestVerdict_MigratesAScopeThatPredatesTheColumns.
+//
+// ensureSchema's CREATE TABLE IF NOT EXISTS leaves an EXISTING table untouched, so a
+// store provisioned before these columns would never gain them and every verdict write
+// would fail — on exactly the deployments that already have facts worth judging. The
+// migration is what makes this shippable, and dropping the columns back off is the only
+// honest way to test it.
+func TestVerdict_MigratesAScopeThatPredatesTheColumns(t *testing.T) {
+	d, ctx, withSpan, _ := verdictFixture(t)
+	key, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatalf("resolveScope: %v", err)
+	}
+	for _, col := range []string{"judged_at", "judge_reason"} {
+		if derr := d.exec(ctx, key, `ALTER TABLE chunk_memory_meta DROP COLUMN `+col); derr != nil {
+			t.Skipf("this tier cannot drop a column, so the pre-migration state is unreachable: %v", derr)
+		}
+		if d.tableHasColumn(ctx, key, "chunk_memory_meta", col) {
+			t.Fatalf("%s survived the drop — the test cannot reach the state it is for", col)
+		}
+	}
+
+	// Any op re-runs ensureSchema, which must add both back. judge_fact is the one
+	// that would fail: it UPDATEs the columns directly.
+	out, r := docExec(t, d, ctx, `{"op":"judge_fact","scope":"user","id":"`+withSpan+
+		`","verdict":"unsupported","reason":"the span does not say this"}`)
+	if r.IsError {
+		t.Fatalf("the migration did not run: %s", r.Text)
+	}
+	if w, _ := out["withheld"].(bool); !w {
+		t.Error("the verdict did not take effect after the migration")
+	}
+	got, r := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+withSpan+`"}`)
+	if r.IsError {
+		t.Fatalf("get_chunk: %s", r.Text)
+	}
+	entity, _ := got["entity"].(map[string]any)
+	if entity["judge_reason"] != "the span does not say this" {
+		t.Errorf("the verdict did not persist after the migration: %v", entity)
+	}
+}
+
+// TestVerdict_PostgresTierMigratesAndWithholds.
+//
+// The migration probes for each column with a SELECT that FAILS when it is absent, and on
+// PostgreSQL a failed statement aborts its surrounding transaction — so a probe that is
+// merely "an error we ignore" on sqlite can poison everything after it on Postgres. CI
+// cannot catch that on its own: it always provisions Postgres scopes FRESH, where the
+// CREATE TABLE already carries the columns and the probe never fails. This is the only
+// place the Postgres ALTER path is actually taken.
+//
+// It also covers the nullable BIGINT read: judged_at comes back through the same scan as
+// event_seq, and a tier that returned it differently would surface as a fact that is
+// silently never withheld.
+func TestVerdict_PostgresTierMigratesAndWithholds(t *testing.T) {
+	dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
+	if dsn == "" {
+		t.Skip("set LOOMCYCLE_TEST_SQLMEM_PG_DSN to run the verdict postgres-tier test")
+	}
+	raw, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	dropAllSqlmemScopes(t, raw)
+	mgr, err := sqlmem.NewPostgres(context.Background(), sqlmem.Config{
+		PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000,
+	})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = mgr.Close()
+		dropAllSqlmemScopes(t, raw)
+		_ = raw.Close()
+	})
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	d := &Document{Store: st, SqlMem: mgr, Bus: channels.NewBus()}
+	ctx := tools.WithAgentName(context.Background(), "pg-verdict")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "u1", TenantID: "tnt"})
+
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"PG verdicts"}`)
+	if r.IsError {
+		t.Fatalf("create_document(pg): %s", r.Text)
+	}
+	docID, root := asStr(out["document_id"]), asStr(out["root_chunk_id"])
+	up, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+docID+
+		`","parent_id":"`+root+`","natural_key":"fact:pg","title":"A claim.",`+
+		`"source_quote":"the source said so","body":"x"}`)
+	if r.IsError {
+		t.Fatalf("upsert(pg): %s", r.Text)
+	}
+	chunkID := asStr(up["id"])
+
+	// Back to the pre-migration state, which is the state every existing Postgres
+	// deployment is in.
+	key, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatalf("resolveScope: %v", err)
+	}
+	for _, col := range []string{"judged_at", "judge_reason"} {
+		if derr := d.exec(ctx, key, `ALTER TABLE chunk_memory_meta DROP COLUMN `+col); derr != nil {
+			t.Fatalf("postgres: dropping %s: %v", col, derr)
+		}
+	}
+
+	if _, r := docExec(t, d, ctx, `{"op":"judge_fact","scope":"user","id":"`+chunkID+
+		`","verdict":"unsupported","reason":"nothing in the span says this"}`); r.IsError {
+		t.Fatalf("postgres: the migration did not run: %s", r.Text)
+	}
+	// Withheld by default, readable with include_refuted — the same two answers the
+	// sqlite tier gives, which is what "parity" has to mean.
+	facts, r := docExec(t, d, ctx, `{"op":"list_facts","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("postgres list_facts: %s", r.Text)
+	}
+	if n, _ := facts["count"].(float64); n != 0 {
+		t.Errorf("postgres: a refuted fact was still listed (count %v)", facts["count"])
+	}
+	facts, r = docExec(t, d, ctx, `{"op":"list_facts","scope":"user","include_refuted":true}`)
+	if r.IsError {
+		t.Fatalf("postgres list_facts(include_refuted): %s", r.Text)
+	}
+	if n, _ := facts["count"].(float64); n != 1 {
+		t.Fatalf("postgres: include_refuted did not return the withheld fact (count %v)", facts["count"])
+	}
+	entity, _ := facts["facts"].([]any)[0].(map[string]any)["entity"].(map[string]any)
+	if entity["judge_reason"] != "nothing in the span says this" {
+		t.Errorf("postgres: the reason did not survive the round trip: %v", entity)
+	}
+	// An UNJUDGED fact must stay visible on this tier too — the NULL fail-open is a SQL
+	// predicate, and NULL handling is exactly where tiers differ.
+	if _, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+docID+
+		`","parent_id":"`+root+`","natural_key":"fact:pg2","title":"Another claim.","body":"y"}`); r.IsError {
+		t.Fatalf("upsert(pg) #2: %s", r.Text)
+	}
+	facts, _ = docExec(t, d, ctx, `{"op":"list_facts","scope":"user"}`)
+	if n, _ := facts["count"].(float64); n != 1 {
+		t.Errorf("postgres: an unjudged fact must stay visible, got count %v", facts["count"])
 	}
 }
