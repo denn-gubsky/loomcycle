@@ -58,6 +58,8 @@ func (p *stubDocPeer) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{"chunks": []map[string]any{{"id": "r"}, {"id": "c1"}, {"id": "c2"}, {"id": "c3"}}})
 		case "get_chunk":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": in.ID, "body": p.body(in.ID)})
+		case "get_edges":
+			_ = json.NewEncoder(w).Encode(map[string]any{"edges": []any{}})
 		default:
 			w.WriteHeader(422)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": "tool_refused", "tool": "Document", "error": "unknown op"})
@@ -241,6 +243,18 @@ func (p *statefulPeer) handler() http.Handler {
 			c.body, c.title, c.ctype, c.status = in.Body, in.Title, in.Type, in.Status
 			c.revision++
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": c.id, "revision": c.revision})
+		case "query_chunks":
+			chunks := []map[string]any{{"id": p.rootID}}
+			for id := range p.byID {
+				chunks = append(chunks, map[string]any{"id": id})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"chunks": chunks})
+		case "get_edges":
+			_ = json.NewEncoder(w).Encode(map[string]any{"edges": []any{}})
+		case "move_chunk":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": in.ID})
+		case "link_chunks":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 		default:
 			w.WriteHeader(422)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": "tool_refused", "error": "unknown op"})
@@ -343,6 +357,8 @@ func diffStubPeer() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{"chunks": []map[string]any{{"id": "r"}, {"id": "d1"}, {"id": "d2"}, {"id": "dR"}, {"id": "dU"}}})
 		case "get_chunk":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": in.ID, "body": bodies[in.ID]})
+		case "get_edges":
+			_ = json.NewEncoder(w).Encode(map[string]any{"edges": []any{}})
 		default:
 			w.WriteHeader(422)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": "tool_refused", "error": "unknown op"})
@@ -399,5 +415,107 @@ func TestDocumentDiffRemote_ClassifiesEveryBucket(t *testing.T) {
 	_, r2 := docExec(t, d, ctx, fmt.Sprintf(`{"op":"diff_remote","scope":"user","id":%q}`, out2["document_id"].(string)))
 	if !r2.IsError {
 		t.Errorf("diff_remote on an unbound doc should refuse")
+	}
+}
+
+// treeStubPeer serves a remote document with a keyed HIERARCHY (nkP is the
+// parent of nkC, plus nkS), a tagged parent, and one manual edge nkC->nkS — so
+// a pull test can assert hierarchy + tags + edges reconcile, not just content.
+func treeStubPeer() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Op string `json:"op"`
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		w.Header().Set("Content-Type", "application/json")
+		switch in.Op {
+		case "get_document":
+			_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "remoteDoc", "root_chunk_id": "r"})
+		case "list_facts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"facts": []map[string]any{
+				{"id": "p", "title": "Parent", "type": "note", "entity": map[string]any{"natural_key": "nkP"}},
+				{"id": "c", "title": "Child", "type": "note", "entity": map[string]any{"natural_key": "nkC"}},
+				{"id": "s", "title": "Sibling", "type": "note", "entity": map[string]any{"natural_key": "nkS"}},
+			}})
+		case "get_chunk":
+			switch in.ID {
+			case "p":
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "p", "body": "P", "tags": []string{"alpha", "beta"}})
+			case "c":
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "c", "body": "C", "parent_id": "p", "position": 0})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": in.ID, "body": "S"})
+			}
+		case "query_chunks":
+			_ = json.NewEncoder(w).Encode(map[string]any{"chunks": []map[string]any{{"id": "r"}, {"id": "p"}, {"id": "c"}, {"id": "s"}}})
+		case "get_edges":
+			_ = json.NewEncoder(w).Encode(map[string]any{"edges": []map[string]any{
+				{"from_id": "c", "to_id": "s", "kind": "relates", "auto": false},
+			}})
+		default:
+			w.WriteHeader(422)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "tool_refused", "error": "unknown op"})
+		}
+	})
+}
+
+func TestDocumentSyncPull_ReconcilesHierarchyTagsEdges(t *testing.T) {
+	srv := httptest.NewServer(treeStubPeer())
+	t.Cleanup(srv.Close)
+	d, ctx, _ := documentFixture(t)
+	d.Cfg = &config.Config{DocumentSources: map[string]config.DocumentSource{
+		"peerA": {Config: config.DocumentSourceConfig{BaseURL: srv.URL}},
+	}}
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Local"}`)
+	docID := out["document_id"].(string)
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_remote","scope":"user","id":%q,"source":"peerA","remote_ref":"/docs/tree"}`, docID))
+
+	s, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"sync","scope":"user","id":%q}`, docID))
+	if r.IsError {
+		t.Fatalf("sync: %s", r.Text)
+	}
+	if s["created"].(float64) != 3 || s["edges_added"].(float64) != 1 || s["reparented"].(float64) < 1 {
+		t.Fatalf("pull report = %+v, want created=3 edges_added=1 reparented>=1", s)
+	}
+
+	// Resolve local ids by natural_key.
+	key, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatalf("resolveScope: %v", err)
+	}
+	localP, _ := d.chunkIDByNaturalKey(ctx, key, "nkP")
+	localC, _ := d.chunkIDByNaturalKey(ctx, key, "nkC")
+	localS, _ := d.chunkIDByNaturalKey(ctx, key, "nkS")
+
+	// Hierarchy: nkC's parent is nkP.
+	childChunk, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, localC))
+	if childChunk["parent_id"] != localP {
+		t.Errorf("nkC parent = %v, want nkP (%s)", childChunk["parent_id"], localP)
+	}
+	// Tags: nkP carries alpha,beta.
+	parentChunk, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, localP))
+	tags := parentChunk["tags"]
+	tj, _ := json.Marshal(tags)
+	if string(tj) != `["alpha","beta"]` {
+		t.Errorf("nkP tags = %s, want [alpha beta]", tj)
+	}
+	// Edge: nkC --relates--> nkS present (manual).
+	edges, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_edges","scope":"user","document_id":%q}`, docID))
+	found := false
+	for _, e := range edges["edges"].([]any) {
+		em := e.(map[string]any)
+		if em["from_id"] == localC && em["to_id"] == localS && em["kind"] == "relates" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("edge nkC->nkS not found in %+v", edges["edges"])
+	}
+
+	// Idempotent: a second pull moves nothing.
+	s2, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"sync","scope":"user","id":%q}`, docID))
+	if s2["created"].(float64) != 0 || s2["reparented"].(float64) != 0 || s2["edges_added"].(float64) != 0 || s2["unchanged"].(float64) != 3 {
+		t.Errorf("second pull = %+v, want created=0 reparented=0 edges_added=0 unchanged=3", s2)
 	}
 }

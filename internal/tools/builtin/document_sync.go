@@ -18,14 +18,19 @@ import (
 
 // document_sync.go implements RFC CE document federation: bind a local document
 // to a peer loomcycle (set_remote), then reconcile keyed chunks between them
-// (sync). direction=pull (default) pulls the peer document's keyed chunks into
+// (sync). direction=pull (default) copies the peer document's keyed chunks into
 // the local one; direction=push writes the LOCAL keyed chunks up to the peer.
-// Both reconcile on natural_key and are content-only (new chunks land under the
-// target document's root; full tree reconciliation is a follow-on). A diverged
-// chunk is updated via update_chunk on the LOSING side, so the overwritten body
-// is preserved in chunk_revisions (retire-not-delete via history) — on the local
-// document for pull, on the peer document for push. A chunk without a natural_key
-// is EXCLUDED and counted.
+//
+// Reconciliation keys on natural_key and, per keyed chunk, carries its body +
+// tags (content), its parent + sibling position (hierarchy — the parent is
+// resolved by the parent's natural_key, so a keyed chunk lands under its keyed
+// parent; a chunk whose parent is unkeyed re-homes to the root), and the manual
+// cross-reference edges among keyed chunks (additive; auto [[name]] edges are
+// regenerated from bodies on each side, so they are not synced). A chunk without
+// a natural_key is EXCLUDED and counted (never reconcilable across instances).
+// A diverged chunk is updated via update_chunk on the LOSING side, so the
+// overwritten body is preserved in chunk_revisions (retire-not-delete via
+// history) — the local document for pull, the peer for push.
 
 const remoteDocumentTimeout = 30 * time.Second
 
@@ -120,9 +125,9 @@ func (d *Document) syncDocument(ctx context.Context, key sqlmem.ScopeKey, mscope
 		return *errRes, nil
 	}
 	if direction == "push" {
-		return d.syncPush(ctx, key, mscope, b.client, b.source, b.ref, b.localDocID, b.remoteDocID, b.scope)
+		return d.syncPush(ctx, key, mscope, b)
 	}
-	return d.syncPull(ctx, key, mscope, b.client, b.source, b.ref, b.localDocID, b.remoteDocID, b.remoteRoot, b.scope)
+	return d.syncPull(ctx, key, mscope, b)
 }
 
 // remoteBinding is the resolved connection to a bound peer document, shared by
@@ -189,26 +194,163 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 	}, nil
 }
 
-// syncPull pulls the peer document's keyed chunks into the local document.
-func (d *Document) syncPull(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, client *docremote.Client, source, ref, localDocID, remoteDocID, remoteRootChunkID, scope string) (tools.Result, error) {
-	// The remote document's keyed chunks (list_facts returns only entity-tier
-	// chunks, each carrying its natural_key).
-	rawFacts, err := client.Do(ctx, map[string]any{"op": "list_facts", "document_id": remoteDocID, "scope": scope, "limit": 10000})
+// ---- side snapshots: one document's reconcilable keyed structure ----
+
+// syncChunk is one keyed chunk's full reconcilable state on one side. `id` is
+// side-local (a local UUID or a peer id); `parentNK` is the parent's natural_key
+// ("" when the parent is the root or an unkeyed chunk — the reconcile re-homes
+// such a chunk to the root).
+type syncChunk struct {
+	id       string
+	nk       string
+	title    string
+	ctype    string
+	status   string
+	body     string
+	parentNK string
+	position int
+	revision int
+	tags     []string // sorted
+}
+
+// edgeKey identifies a manual cross-reference edge portably (both endpoints by
+// natural_key). Auto [[name]]-link edges are excluded — each side regenerates
+// them from chunk bodies, so syncing them would duplicate.
+type edgeKey struct{ fromNK, toNK, kind string }
+
+// sideSnapshot is one document's keyed chunks + manual edges + a count of the
+// unkeyed (non-root) chunks that cannot be reconciled.
+type sideSnapshot struct {
+	chunks  map[string]syncChunk
+	edges   map[edgeKey]bool
+	unkeyed int
+}
+
+// loadLocalSnapshot reads the local document's keyed structure.
+func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID string) (*sideSnapshot, error) {
+	keyed, err := d.localKeyedChunks(ctx, key, docID)
 	if err != nil {
-		return errResult("sync: list remote facts: " + err.Error()), nil
+		return nil, err
+	}
+	idToNK := make(map[string]string, len(keyed))
+	for _, kc := range keyed {
+		idToNK[kc.ID] = kc.NaturalKey
+	}
+	snap := &sideSnapshot{chunks: make(map[string]syncChunk, len(keyed)), edges: map[edgeKey]bool{}}
+	for _, kc := range keyed {
+		row, ok, rerr := d.getChunkRow(ctx, key, kc.ID)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if !ok {
+			continue
+		}
+		cb, berr := d.readBody(ctx, mscope, key.ScopeID, kc.ID)
+		if berr != nil {
+			return nil, berr
+		}
+		tags, terr := d.listChunkTags(ctx, key, kc.ID)
+		if terr != nil {
+			return nil, terr
+		}
+		sort.Strings(tags)
+		snap.chunks[kc.NaturalKey] = syncChunk{
+			id: kc.ID, nk: kc.NaturalKey, title: kc.Title, ctype: kc.Type, status: kc.Status,
+			body: cb.Body, parentNK: idToNK[row.ParentID], position: row.Position, revision: row.Revision, tags: tags,
+		}
+	}
+	rows, err := d.query(ctx, key, `SELECT from_id, to_id, kind, auto FROM chunk_edges
+		WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID, docID)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows.Rows {
+		if asInt(r[3]) == 1 {
+			continue // auto [[name]] edge — regenerated from bodies, not synced
+		}
+		fromNK, ok1 := idToNK[asStr(r[0])]
+		toNK, ok2 := idToNK[asStr(r[1])]
+		if ok1 && ok2 {
+			snap.edges[edgeKey{fromNK: fromNK, toNK: toNK, kind: asStr(r[2])}] = true
+		}
+	}
+	total, err := d.documentChunkCount(ctx, key, docID)
+	if err != nil {
+		return nil, err
+	}
+	snap.unkeyed = total - 1 - len(keyed)
+	if snap.unkeyed < 0 {
+		snap.unkeyed = 0
+	}
+	return snap, nil
+}
+
+// loadRemoteSnapshot reads the peer document's keyed structure over the client.
+func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Client, docID, rootID, scope string) (*sideSnapshot, error) {
+	rawFacts, err := client.Do(ctx, map[string]any{"op": "list_facts", "document_id": docID, "scope": scope, "limit": 10000})
+	if err != nil {
+		return nil, fmt.Errorf("list remote facts: %w", err)
 	}
 	facts, err := decodeRemoteFacts(rawFacts)
 	if err != nil {
-		return errResult("sync: decode remote facts: " + err.Error()), nil
+		return nil, fmt.Errorf("decode remote facts: %w", err)
 	}
-
-	// All remote chunk ids, to report how many were excluded (unkeyed). The keyed
-	// ids (reconciled below) and the document ROOT chunk are structural, not
-	// excluded content — every document has exactly one root, so counting it as
-	// "unkeyed content" would over-report by one on every sync.
-	rawAll, err := client.Do(ctx, map[string]any{"op": "query_chunks", "document_id": remoteDocID, "scope": scope, "limit": 10000})
+	idToNK := map[string]string{}
+	for _, f := range facts {
+		if f.Entity.NaturalKey != "" {
+			idToNK[f.ID] = f.Entity.NaturalKey
+		}
+	}
+	snap := &sideSnapshot{chunks: make(map[string]syncChunk, len(facts)), edges: map[edgeKey]bool{}}
+	for _, f := range facts {
+		nk := f.Entity.NaturalKey
+		if nk == "" {
+			continue
+		}
+		rawChunk, cerr := client.Do(ctx, map[string]any{"op": "get_chunk", "id": f.ID, "scope": scope})
+		if cerr != nil {
+			return nil, fmt.Errorf("fetch remote chunk %s: %w", f.ID, cerr)
+		}
+		var rc struct {
+			Body     string   `json:"body"`
+			ParentID string   `json:"parent_id"`
+			Position int      `json:"position"`
+			Revision int      `json:"revision"`
+			Tags     []string `json:"tags"`
+		}
+		_ = json.Unmarshal(rawChunk, &rc)
+		sort.Strings(rc.Tags)
+		snap.chunks[nk] = syncChunk{
+			id: f.ID, nk: nk, title: f.Title, ctype: f.Type, status: f.Status,
+			body: rc.Body, parentNK: idToNK[rc.ParentID], position: rc.Position, revision: rc.Revision, tags: rc.Tags,
+		}
+	}
+	rawEdges, err := client.Do(ctx, map[string]any{"op": "get_edges", "document_id": docID, "scope": scope})
 	if err != nil {
-		return errResult("sync: count remote chunks: " + err.Error()), nil
+		return nil, fmt.Errorf("list remote edges: %w", err)
+	}
+	var ge struct {
+		Edges []struct {
+			FromID string `json:"from_id"`
+			ToID   string `json:"to_id"`
+			Kind   string `json:"kind"`
+			Auto   bool   `json:"auto"`
+		} `json:"edges"`
+	}
+	_ = json.Unmarshal(rawEdges, &ge)
+	for _, e := range ge.Edges {
+		if e.Auto {
+			continue
+		}
+		fromNK, ok1 := idToNK[e.FromID]
+		toNK, ok2 := idToNK[e.ToID]
+		if ok1 && ok2 {
+			snap.edges[edgeKey{fromNK: fromNK, toNK: toNK, kind: e.Kind}] = true
+		}
+	}
+	rawAll, err := client.Do(ctx, map[string]any{"op": "query_chunks", "document_id": docID, "scope": scope, "limit": 10000})
+	if err != nil {
+		return nil, fmt.Errorf("count remote chunks: %w", err)
 	}
 	var all struct {
 		Chunks []struct {
@@ -216,187 +358,268 @@ func (d *Document) syncPull(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		} `json:"chunks"`
 	}
 	_ = json.Unmarshal(rawAll, &all)
-
-	created, updated, unchanged := 0, 0, 0
-	keyedIDs := map[string]bool{}
-	for _, f := range facts {
-		nk := f.Entity.NaturalKey
-		if nk == "" {
-			continue // an entity chunk without a natural_key is not reconcilable
-		}
-		keyedIDs[f.ID] = true
-
-		rawChunk, cerr := client.Do(ctx, map[string]any{"op": "get_chunk", "id": f.ID, "scope": scope})
-		if cerr != nil {
-			return errResult("sync: fetch remote chunk " + f.ID + ": " + cerr.Error()), nil
-		}
-		var rc struct {
-			Body string `json:"body"`
-		}
-		_ = json.Unmarshal(rawChunk, &rc)
-
-		title := f.Title
-		if title == "" {
-			title = nk
-		}
-
-		localID, lerr := d.chunkIDByNaturalKey(ctx, key, nk)
-		if lerr != nil {
-			return errResult("sync: local lookup: " + lerr.Error()), nil
-		}
-		if localID == "" {
-			// New: create the keyed chunk under the local document root.
-			res, _ := d.upsertChunk(ctx, key, mscope, docInput{
-				NaturalKey: nk, DocumentID: localDocID, Title: title, Type: f.Type, Status: f.Status, Body: rc.Body,
-			})
-			if res.IsError {
-				return errResult("sync: create " + nk + ": " + res.Text), nil
-			}
-			created++
-			continue
-		}
-		// Existing: no-op if identical, else update in place (history-preserving).
-		lb, berr := d.readBody(ctx, mscope, key.ScopeID, localID)
-		if berr != nil {
-			return errResult("sync: read local " + nk + ": " + berr.Error()), nil
-		}
-		if lb.Body == rc.Body {
-			unchanged++
-			continue
-		}
-		rev, rerr := d.chunkRevision(ctx, key, localID)
-		if rerr != nil {
-			return errResult("sync: " + rerr.Error()), nil
-		}
-		raw, _ := json.Marshal(map[string]any{"id": localID, "revision": rev, "body": rc.Body, "title": title, "type": f.Type, "status": f.Status})
-		res, _ := d.updateChunk(ctx, key, mscope, docInput{
-			ID: localID, Revision: &rev, Body: rc.Body, Title: title, Type: f.Type, Status: f.Status,
-		}, raw)
-		if res.IsError {
-			return errResult("sync: update " + nk + ": " + res.Text), nil
-		}
-		updated++
-	}
-
-	excludedUnkeyed := 0
 	for _, ch := range all.Chunks {
-		if ch.ID == remoteRootChunkID || keyedIDs[ch.ID] {
-			continue // the root is structural; keyed chunks were reconciled above
+		if ch.ID == rootID || idToNK[ch.ID] != "" {
+			continue
 		}
-		excludedUnkeyed++
+		snap.unkeyed++
 	}
-	return okJSON(map[string]any{
-		"direction":          "pull",
-		"source":             source,
-		"remote_ref":         ref,
-		"remote_document_id": remoteDocID,
-		"local_document_id":  localDocID,
-		"created":            created,
-		"updated":            updated,
-		"unchanged":          unchanged,
-		"excluded_unkeyed":   excludedUnkeyed,
-	})
+	return snap, nil
 }
 
-// syncPush writes the LOCAL document's keyed chunks up to the peer document. It
-// mirrors syncPull inverted: a new key is created on the peer (upsert_chunk), a
-// diverged one is updated on the peer via update_chunk so the peer keeps the
-// overwritten body in its history, and a local chunk without a natural_key is
-// excluded and counted. Local always wins here — this is a push.
-func (d *Document) syncPush(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, client *docremote.Client, source, ref, localDocID, remoteDocID, scope string) (tools.Result, error) {
-	// The local document's keyed chunks.
-	local, err := d.localKeyedChunks(ctx, key, localDocID)
+// ---- side writers: apply a reconcile to one side (local store or peer) ----
+
+// sideWriter mutates one side during a reconcile. Its methods are id-level; the
+// direction-agnostic applyReconcile resolves natural_keys to ids.
+type sideWriter interface {
+	createKeyed(ctx context.Context, sc syncChunk) (id string, err error)
+	updateKeyed(ctx context.Context, id string, sc syncChunk, revision int) error
+	move(ctx context.Context, id, parentID string, position int) error
+	ensureEdge(ctx context.Context, fromID, toID, kind string) error
+}
+
+// localWriter applies a reconcile to the local document store.
+type localWriter struct {
+	d      *Document
+	key    sqlmem.ScopeKey
+	mscope store.MemoryScope
+	docID  string
+}
+
+func (w localWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
+	res, err := w.d.upsertChunk(ctx, w.key, w.mscope, docInput{
+		NaturalKey: sc.nk, DocumentID: w.docID, Title: sc.title, Type: sc.ctype, Status: sc.status, Body: sc.body, Tags: sc.tags,
+	})
 	if err != nil {
-		return errResult("sync push: list local facts: " + err.Error()), nil
+		return "", err
+	}
+	if res.IsError {
+		return "", fmt.Errorf("%s", res.Text)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal([]byte(res.Text), &out)
+	return out.ID, nil
+}
+
+func (w localWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int) error {
+	raw, _ := json.Marshal(map[string]any{"id": id, "revision": revision, "body": sc.body, "title": sc.title, "type": sc.ctype, "status": sc.status, "tags": nonNilTags(sc.tags)})
+	rev := revision
+	res, err := w.d.updateChunk(ctx, w.key, w.mscope, docInput{
+		ID: id, Revision: &rev, Body: sc.body, Title: sc.title, Type: sc.ctype, Status: sc.status, Tags: nonNilTags(sc.tags),
+	}, raw)
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return fmt.Errorf("%s", res.Text)
+	}
+	return nil
+}
+
+func (w localWriter) move(ctx context.Context, id, parentID string, position int) error {
+	pos := position
+	res, err := w.d.moveChunk(ctx, w.key, docInput{ID: id, NewParentID: parentID, Position: &pos})
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return fmt.Errorf("%s", res.Text)
+	}
+	return nil
+}
+
+func (w localWriter) ensureEdge(ctx context.Context, fromID, toID, kind string) error {
+	res, err := w.d.linkChunks(ctx, w.key, docInput{FromID: fromID, ToID: toID, Kind: kind})
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return fmt.Errorf("%s", res.Text)
+	}
+	return nil
+}
+
+// remoteWriter applies a reconcile to the peer document over the client.
+type remoteWriter struct {
+	client *docremote.Client
+	docID  string
+	scope  string
+}
+
+func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
+	raw, err := w.client.Do(ctx, map[string]any{
+		"op": "upsert_chunk", "document_id": w.docID, "scope": w.scope,
+		"natural_key": sc.nk, "title": sc.title, "type": sc.ctype, "status": sc.status, "body": sc.body, "tags": nonNilTags(sc.tags),
+	})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out.ID, nil
+}
+
+func (w remoteWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int) error {
+	_, err := w.client.Do(ctx, map[string]any{
+		"op": "update_chunk", "id": id, "revision": revision, "scope": w.scope,
+		"body": sc.body, "title": sc.title, "type": sc.ctype, "status": sc.status, "tags": nonNilTags(sc.tags),
+	})
+	return err
+}
+
+func (w remoteWriter) move(ctx context.Context, id, parentID string, position int) error {
+	_, err := w.client.Do(ctx, map[string]any{"op": "move_chunk", "id": id, "new_parent_id": parentID, "position": position, "scope": w.scope})
+	return err
+}
+
+func (w remoteWriter) ensureEdge(ctx context.Context, fromID, toID, kind string) error {
+	_, err := w.client.Do(ctx, map[string]any{"op": "link_chunks", "from_id": fromID, "to_id": toID, "kind": kind, "scope": w.scope})
+	return err
+}
+
+// ---- the direction-agnostic reconcile ----
+
+type reconcileCounts struct {
+	created, updated, unchanged, reparented, edgesAdded int
+}
+
+// applyReconcile reconciles `source` INTO the writer's side, using `target` as
+// the writer side's current state. Three passes: (1) content + tags, (2)
+// hierarchy (parent + position, resolving parents by natural_key), (3) manual
+// edges (additive). It never deletes — a chunk/edge present only on the target
+// is left in place (mirroring the content reconcile's create-or-update posture).
+func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnapshot) (reconcileCounts, error) {
+	var c reconcileCounts
+	// idByNK maps a natural_key to its id on the writer's side; seeded from the
+	// target snapshot and extended as pass 1 creates chunks.
+	idByNK := make(map[string]string, len(target.chunks))
+	for nk, tc := range target.chunks {
+		idByNK[nk] = tc.id
 	}
 
-	// The peer's existing keyed chunks (natural_key -> peer chunk id), so a
-	// divergent push updates in place rather than creating a duplicate.
-	rawPeer, err := client.Do(ctx, map[string]any{"op": "list_facts", "document_id": remoteDocID, "scope": scope, "limit": 10000})
-	if err != nil {
-		return errResult("sync push: list remote facts: " + err.Error()), nil
-	}
-	peerFacts, err := decodeRemoteFacts(rawPeer)
-	if err != nil {
-		return errResult("sync push: decode remote facts: " + err.Error()), nil
-	}
-	peerByNK := map[string]string{}
-	for _, f := range peerFacts {
-		if f.Entity.NaturalKey != "" {
-			peerByNK[f.Entity.NaturalKey] = f.ID
-		}
-	}
-
-	created, updated, unchanged := 0, 0, 0
-	for _, lc := range local {
-		lb, berr := d.readBody(ctx, mscope, key.ScopeID, lc.ID)
-		if berr != nil {
-			return errResult("sync push: read local " + lc.NaturalKey + ": " + berr.Error()), nil
-		}
-		title := lc.Title
-		if title == "" {
-			title = lc.NaturalKey
-		}
-
-		peerID, exists := peerByNK[lc.NaturalKey]
+	// Pass 1 — content + tags.
+	for _, nk := range sortedChunkKeys(source.chunks) {
+		sc := source.chunks[nk]
+		tc, exists := target.chunks[nk]
 		if !exists {
-			// New on the peer: upsert_chunk creates it under the remote doc root
-			// and writes its natural_key meta.
-			if _, cerr := client.Do(ctx, map[string]any{
-				"op": "upsert_chunk", "document_id": remoteDocID, "scope": scope,
-				"natural_key": lc.NaturalKey, "title": title, "type": lc.Type, "status": lc.Status, "body": lb.Body,
-			}); cerr != nil {
-				return errResult("sync push: create " + lc.NaturalKey + ": " + cerr.Error()), nil
+			id, err := w.createKeyed(ctx, sc)
+			if err != nil {
+				return c, fmt.Errorf("create %s: %w", nk, err)
 			}
-			created++
-			continue
+			idByNK[nk] = id
+			c.created++
+		} else if sc.body != tc.body || !sameTags(sc.tags, tc.tags) {
+			if err := w.updateKeyed(ctx, tc.id, sc, tc.revision); err != nil {
+				return c, fmt.Errorf("update %s: %w", nk, err)
+			}
+			c.updated++
+		} else {
+			c.unchanged++
 		}
-		// Existing on the peer: no-op if identical, else update in place so the
-		// peer preserves the overwritten body in its own chunk history.
-		rawPeerChunk, gerr := client.Do(ctx, map[string]any{"op": "get_chunk", "id": peerID, "scope": scope})
-		if gerr != nil {
-			return errResult("sync push: fetch remote chunk " + lc.NaturalKey + ": " + gerr.Error()), nil
-		}
-		var pc struct {
-			Body     string `json:"body"`
-			Revision int    `json:"revision"`
-		}
-		_ = json.Unmarshal(rawPeerChunk, &pc)
-		if pc.Body == lb.Body {
-			unchanged++
-			continue
-		}
-		if _, uerr := client.Do(ctx, map[string]any{
-			"op": "update_chunk", "id": peerID, "revision": pc.Revision, "scope": scope,
-			"body": lb.Body, "title": title, "type": lc.Type, "status": lc.Status,
-		}); uerr != nil {
-			return errResult("sync push: update " + lc.NaturalKey + ": " + uerr.Error()), nil
-		}
-		updated++
 	}
 
-	// Local non-root chunks without a natural_key can't be pushed. Every document
-	// has exactly one root chunk (counted in the total), so subtract it plus the
-	// keyed chunks reconciled above.
-	total, err := d.documentChunkCount(ctx, key, localDocID)
+	// Pass 2 — hierarchy. Place each keyed chunk under its keyed parent at the
+	// source position. A parent that isn't keyed (or isn't present on the target)
+	// re-homes the child to the root — a deliberate hole, not an error. A chunk
+	// created in pass 1 is ALWAYS placed here: create assigns its own position, so
+	// setting the source position explicitly is what makes a sync converge in one
+	// pass (and stay idempotent) rather than drift on the next run.
+	for _, nk := range sortedChunkKeys(source.chunks) {
+		sc := source.chunks[nk]
+		wantParentNK := ""
+		if sc.parentNK != "" {
+			if _, ok := idByNK[sc.parentNK]; ok {
+				wantParentNK = sc.parentNK
+			}
+		}
+		if tc, existed := target.chunks[nk]; existed && wantParentNK == tc.parentNK && sc.position == tc.position {
+			continue // an existing chunk already in its source-matching place
+		}
+		parentID := ""
+		if wantParentNK != "" {
+			parentID = idByNK[wantParentNK]
+		}
+		if err := w.move(ctx, idByNK[nk], parentID, sc.position); err != nil {
+			return c, fmt.Errorf("move %s: %w", nk, err)
+		}
+		c.reparented++
+	}
+
+	// Pass 3 — manual edges, additive (both endpoints must be keyed + present).
+	for ek := range source.edges {
+		if target.edges[ek] {
+			continue
+		}
+		fromID, ok1 := idByNK[ek.fromNK]
+		toID, ok2 := idByNK[ek.toNK]
+		if !ok1 || !ok2 {
+			continue
+		}
+		if err := w.ensureEdge(ctx, fromID, toID, ek.kind); err != nil {
+			return c, fmt.Errorf("edge %s->%s: %w", ek.fromNK, ek.toNK, err)
+		}
+		c.edgesAdded++
+	}
+	return c, nil
+}
+
+// syncPull copies the peer document's keyed structure into the local document.
+func (d *Document) syncPull(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, b *remoteBinding) (tools.Result, error) {
+	source, err := d.loadRemoteSnapshot(ctx, b.client, b.remoteDocID, b.remoteRoot, b.scope)
+	if err != nil {
+		return errResult("sync: " + err.Error()), nil
+	}
+	target, err := d.loadLocalSnapshot(ctx, key, mscope, b.localDocID)
+	if err != nil {
+		return errResult("sync: " + err.Error()), nil
+	}
+	w := localWriter{d: d, key: key, mscope: mscope, docID: b.localDocID}
+	c, err := applyReconcile(ctx, w, source, target)
+	if err != nil {
+		return errResult("sync: " + err.Error()), nil
+	}
+	return okJSON(reconcileReport("pull", b, source.unkeyed, c))
+}
+
+// syncPush writes the local document's keyed structure up to the peer document.
+func (d *Document) syncPush(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, b *remoteBinding) (tools.Result, error) {
+	source, err := d.loadLocalSnapshot(ctx, key, mscope, b.localDocID)
 	if err != nil {
 		return errResult("sync push: " + err.Error()), nil
 	}
-	excludedUnkeyed := total - 1 - len(local)
-	if excludedUnkeyed < 0 {
-		excludedUnkeyed = 0
+	target, err := d.loadRemoteSnapshot(ctx, b.client, b.remoteDocID, b.remoteRoot, b.scope)
+	if err != nil {
+		return errResult("sync push: " + err.Error()), nil
 	}
-	return okJSON(map[string]any{
-		"direction":          "push",
-		"source":             source,
-		"remote_ref":         ref,
-		"remote_document_id": remoteDocID,
-		"local_document_id":  localDocID,
-		"created":            created,
-		"updated":            updated,
-		"unchanged":          unchanged,
+	w := remoteWriter{client: b.client, docID: b.remoteDocID, scope: b.scope}
+	c, err := applyReconcile(ctx, w, source, target)
+	if err != nil {
+		return errResult("sync push: " + err.Error()), nil
+	}
+	return okJSON(reconcileReport("push", b, source.unkeyed, c))
+}
+
+// reconcileReport is the shared sync envelope. excludedUnkeyed is the SOURCE's
+// unkeyed count — the chunks the reconcile could not carry (remote's for pull,
+// local's for push).
+func reconcileReport(direction string, b *remoteBinding, excludedUnkeyed int, c reconcileCounts) map[string]any {
+	return map[string]any{
+		"direction":          direction,
+		"source":             b.source,
+		"remote_ref":         b.ref,
+		"remote_document_id": b.remoteDocID,
+		"local_document_id":  b.localDocID,
+		"created":            c.created,
+		"updated":            c.updated,
+		"unchanged":          c.unchanged,
+		"reparented":         c.reparented,
+		"edges_added":        c.edgesAdded,
 		"excluded_unkeyed":   excludedUnkeyed,
-	})
+	}
 }
 
 // ---- diff_remote: dry-run change set between the local document and its peer ----
@@ -410,106 +633,63 @@ type diffEntry struct {
 // diffRemote reports what a sync WOULD change, without touching either side. It
 // aligns keyed chunks by natural_key into only_local (a push would create these
 // on the peer), only_remote (a pull would create these locally), diverged (the
-// same key with different bodies — pull would overwrite local, push the peer),
-// and same. Unkeyed chunks on each side are counted (never reconcilable).
+// same key with different bodies), same, retagged (present both, tags differ),
+// and reparented (present both, parent/position differ). Manual edges present on
+// only one side are counted. Unkeyed chunks on each side are counted (never
+// reconcilable).
 func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	b, errRes := d.resolveRemoteBinding(ctx, key, mscope, in, "diff_remote")
 	if errRes != nil {
 		return *errRes, nil
 	}
-
-	// Local keyed chunks (natural_key -> body).
-	localChunks, err := d.localKeyedChunks(ctx, key, b.localDocID)
-	if err != nil {
-		return errResult("diff_remote: list local facts: " + err.Error()), nil
-	}
-	type kv struct{ title, body string }
-	localByNK := make(map[string]kv, len(localChunks))
-	for _, lc := range localChunks {
-		lb, berr := d.readBody(ctx, mscope, key.ScopeID, lc.ID)
-		if berr != nil {
-			return errResult("diff_remote: read local " + lc.NaturalKey + ": " + berr.Error()), nil
-		}
-		localByNK[lc.NaturalKey] = kv{title: lc.Title, body: lb.Body}
-	}
-
-	// Remote keyed chunks (natural_key -> body), plus the ids to exclude the root
-	// and the keyed chunks from the unkeyed count.
-	rawFacts, err := b.client.Do(ctx, map[string]any{"op": "list_facts", "document_id": b.remoteDocID, "scope": b.scope, "limit": 10000})
-	if err != nil {
-		return errResult("diff_remote: list remote facts: " + err.Error()), nil
-	}
-	facts, err := decodeRemoteFacts(rawFacts)
-	if err != nil {
-		return errResult("diff_remote: decode remote facts: " + err.Error()), nil
-	}
-	remoteByNK := make(map[string]kv, len(facts))
-	keyedRemoteIDs := map[string]bool{}
-	for _, f := range facts {
-		if f.Entity.NaturalKey == "" {
-			continue
-		}
-		keyedRemoteIDs[f.ID] = true
-		rawChunk, cerr := b.client.Do(ctx, map[string]any{"op": "get_chunk", "id": f.ID, "scope": b.scope})
-		if cerr != nil {
-			return errResult("diff_remote: fetch remote chunk " + f.ID + ": " + cerr.Error()), nil
-		}
-		var rc struct {
-			Body string `json:"body"`
-		}
-		_ = json.Unmarshal(rawChunk, &rc)
-		remoteByNK[f.Entity.NaturalKey] = kv{title: f.Title, body: rc.Body}
-	}
-
-	onlyLocal, onlyRemote, diverged := []diffEntry{}, []diffEntry{}, []diffEntry{}
-	same := 0
-	for nk, lv := range localByNK {
-		rv, ok := remoteByNK[nk]
-		if !ok {
-			onlyLocal = append(onlyLocal, diffEntry{NaturalKey: nk, Title: lv.title})
-			continue
-		}
-		if rv.body == lv.body {
-			same++
-		} else {
-			diverged = append(diverged, diffEntry{NaturalKey: nk, Title: lv.title})
-		}
-	}
-	for nk, rv := range remoteByNK {
-		if _, ok := localByNK[nk]; !ok {
-			onlyRemote = append(onlyRemote, diffEntry{NaturalKey: nk, Title: rv.title})
-		}
-	}
-	sortDiff := func(s []diffEntry) { sort.Slice(s, func(i, j int) bool { return s[i].NaturalKey < s[j].NaturalKey }) }
-	sortDiff(onlyLocal)
-	sortDiff(onlyRemote)
-	sortDiff(diverged)
-
-	// Unkeyed (non-root) chunks on each side — never reconcilable.
-	localTotal, err := d.documentChunkCount(ctx, key, b.localDocID)
+	local, err := d.loadLocalSnapshot(ctx, key, mscope, b.localDocID)
 	if err != nil {
 		return errResult("diff_remote: " + err.Error()), nil
 	}
-	excludedLocal := localTotal - 1 - len(localChunks)
-	if excludedLocal < 0 {
-		excludedLocal = 0
-	}
-	rawAll, err := b.client.Do(ctx, map[string]any{"op": "query_chunks", "document_id": b.remoteDocID, "scope": b.scope, "limit": 10000})
+	remote, err := d.loadRemoteSnapshot(ctx, b.client, b.remoteDocID, b.remoteRoot, b.scope)
 	if err != nil {
-		return errResult("diff_remote: count remote chunks: " + err.Error()), nil
+		return errResult("diff_remote: " + err.Error()), nil
 	}
-	var all struct {
-		Chunks []struct {
-			ID string `json:"id"`
-		} `json:"chunks"`
-	}
-	_ = json.Unmarshal(rawAll, &all)
-	excludedRemote := 0
-	for _, ch := range all.Chunks {
-		if ch.ID == b.remoteRoot || keyedRemoteIDs[ch.ID] {
+
+	onlyLocal, onlyRemote, diverged, retagged, reparented := []diffEntry{}, []diffEntry{}, []diffEntry{}, []diffEntry{}, []diffEntry{}
+	same := 0
+	for _, nk := range sortedChunkKeys(local.chunks) {
+		lc := local.chunks[nk]
+		rc, ok := remote.chunks[nk]
+		if !ok {
+			onlyLocal = append(onlyLocal, diffEntry{NaturalKey: nk, Title: lc.title})
 			continue
 		}
-		excludedRemote++
+		if lc.body == rc.body {
+			same++
+		} else {
+			diverged = append(diverged, diffEntry{NaturalKey: nk, Title: lc.title})
+		}
+		if !sameTags(lc.tags, rc.tags) {
+			retagged = append(retagged, diffEntry{NaturalKey: nk, Title: lc.title})
+		}
+		// Effective parent on each side (a parent absent on the other side is a
+		// hole that resolves to the root), plus sibling position.
+		if effectiveParentNK(lc, remote) != effectiveParentNK(rc, local) || lc.position != rc.position {
+			reparented = append(reparented, diffEntry{NaturalKey: nk, Title: lc.title})
+		}
+	}
+	for _, nk := range sortedChunkKeys(remote.chunks) {
+		if _, ok := local.chunks[nk]; !ok {
+			onlyRemote = append(onlyRemote, diffEntry{NaturalKey: nk, Title: remote.chunks[nk].title})
+		}
+	}
+
+	edgesOnlyLocal, edgesOnlyRemote := 0, 0
+	for ek := range local.edges {
+		if !remote.edges[ek] {
+			edgesOnlyLocal++
+		}
+	}
+	for ek := range remote.edges {
+		if !local.edges[ek] {
+			edgesOnlyRemote++
+		}
 	}
 
 	return okJSON(map[string]any{
@@ -520,13 +700,62 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		"only_local":              onlyLocal,
 		"only_remote":             onlyRemote,
 		"diverged":                diverged,
+		"retagged":                retagged,
+		"reparented":              reparented,
 		"same":                    same,
-		"excluded_unkeyed_local":  excludedLocal,
-		"excluded_unkeyed_remote": excludedRemote,
+		"edges_only_local":        edgesOnlyLocal,
+		"edges_only_remote":       edgesOnlyRemote,
+		"excluded_unkeyed_local":  local.unkeyed,
+		"excluded_unkeyed_remote": remote.unkeyed,
 	})
 }
 
+// effectiveParentNK is a chunk's parent natural_key AS IT WOULD RESOLVE against
+// `other` — a parent that isn't keyed on the other side is a hole that resolves
+// to the root (""), so the two sides are compared on the same footing.
+func effectiveParentNK(sc syncChunk, other *sideSnapshot) string {
+	if sc.parentNK == "" {
+		return ""
+	}
+	if _, ok := other.chunks[sc.parentNK]; ok {
+		return sc.parentNK
+	}
+	return ""
+}
+
 // ---- helpers ----
+
+func sortedChunkKeys(m map[string]syncChunk) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sameTags compares two ALREADY-SORTED tag slices as sets.
+func sameTags(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// nonNilTags returns []string{} for a nil slice so a replace-set clears the tag
+// set (update_chunk's present-key rule treats null and [] alike, but a concrete
+// empty slice is unambiguous across the wire).
+func nonNilTags(t []string) []string {
+	if t == nil {
+		return []string{}
+	}
+	return t
+}
 
 // remoteFact is one entity-tier chunk as list_facts returns it on either side.
 type remoteFact struct {
@@ -549,14 +778,14 @@ func decodeRemoteFacts(raw json.RawMessage) ([]remoteFact, error) {
 	return facts.Facts, nil
 }
 
-// keyedChunk is one local entity-tier chunk push reconciles from.
+// keyedChunk is one local entity-tier chunk the snapshot loader reads from.
 type keyedChunk struct {
 	ID, NaturalKey, Title, Type, Status string
 }
 
 // localKeyedChunks returns the document's entity-tier chunks (those with a
 // natural_key), excluding refuted ones — the same withhold floor list_facts
-// applies, so push propagates only the facts the local store itself surfaces.
+// applies, so sync propagates only the facts the local store itself surfaces.
 func (d *Document) localKeyedChunks(ctx context.Context, key sqlmem.ScopeKey, docID string) ([]keyedChunk, error) {
 	where := "c.document_id = ?"
 	args := []any{docID}
