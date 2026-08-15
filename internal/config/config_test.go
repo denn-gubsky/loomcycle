@@ -175,6 +175,41 @@ func TestChangeSubscriptionsValidation(t *testing.T) {
 	}
 }
 
+// RFC CE (remote documents) — document_sources validation.
+func TestDocumentSourcesValidation(t *testing.T) {
+	const base = "defaults: { provider: anthropic, model: x }\n"
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{"valid minimal", "document_sources:\n  peerA: { config: { base_url: \"https://peer.example.com\" } }", false},
+		{"valid key_per_tenant", "document_sources:\n  peerA: { config: { base_url: \"https://peer.example.com\", api_key_env: LOOMCYCLE_PEERA_KEY }, tenancy_strategy: { kind: key_per_tenant, env_pattern: \"LOOMCYCLE_PEERA_{tenant_id}_KEY\" } }", false},
+		{"missing base_url", "document_sources:\n  peerA: { config: {} }", true},
+		{"non-http base_url", "document_sources:\n  peerA: { config: { base_url: \"ftp://peer\" } }", true},
+		{"infra-secret api_key_env", "document_sources:\n  peerA: { config: { base_url: \"https://peer\", api_key_env: LOOMCYCLE_AUTH_TOKEN } }", true},
+		{"unlisted api_key_env", "document_sources:\n  peerA: { config: { base_url: \"https://peer\", api_key_env: RANDOM_SECRET } }", true},
+		{"bad tenancy kind", "document_sources:\n  peerA: { config: { base_url: \"https://peer\" }, tenancy_strategy: { kind: shared_key } }", true},
+		{"key_per_tenant env_pattern missing token", "document_sources:\n  peerA: { config: { base_url: \"https://peer\" }, tenancy_strategy: { kind: key_per_tenant, env_pattern: \"LOOMCYCLE_PEER_KEY\" } }", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			p := filepath.Join(tmp, "c.yaml")
+			if err := os.WriteFile(p, []byte(base+c.yaml+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(p)
+			if c.wantErr && err == nil {
+				t.Errorf("expected a validation error, got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // v0.8.6 system-channels validation rules.
 
 func TestValidationRejectsPeriodWithoutPublisherSystem(t *testing.T) {

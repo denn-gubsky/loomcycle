@@ -194,6 +194,12 @@ type Config struct {
 	// Empty / nil = no push delivery (the SSE feed still works).
 	ChangeSubscriptions map[string]ChangeSubscription `yaml:"change_subscriptions"`
 
+	// DocumentSources is the RFC CE registry of remote DOCUMENT sources — peer
+	// loomcycle instances whose documents a local document can be bound to
+	// (set_remote) and pulled from (Document op=sync). Peer creds mirror
+	// memory_backends (base_url + api_key_env + tenancy). Empty / nil = none.
+	DocumentSources map[string]DocumentSource `yaml:"document_sources"`
+
 	// Volumes is the RFC AH registry of named filesystem volumes — the
 	// universe of ro/rw roots an AgentDef may bind to (the filesystem
 	// analog of "registered tools" for tools). Each entry's `path`
@@ -2230,6 +2236,29 @@ type MemoryBackendTenancy struct {
 	Kind          string `json:"kind,omitempty" yaml:"kind"`
 	EnvPattern    string `json:"env_pattern,omitempty" yaml:"env_pattern"`
 	PrefixPattern string `json:"prefix_pattern,omitempty" yaml:"prefix_pattern"`
+}
+
+// DocumentSource declares a remote DOCUMENT source — a peer loomcycle whose
+// /v1/_document a local document syncs from (RFC CE). Mirrors MemoryBackend's
+// connection shape; api_key_env is an env-var NAME resolved (allowlist-gated)
+// at use time, never at config load.
+type DocumentSource struct {
+	Config          DocumentSourceConfig  `json:"config,omitempty" yaml:"config"`
+	TenancyStrategy DocumentSourceTenancy `json:"tenancy_strategy,omitempty" yaml:"tenancy_strategy"`
+}
+
+type DocumentSourceConfig struct {
+	BaseURL    string `json:"base_url,omitempty" yaml:"base_url"`
+	APIVersion string `json:"api_version,omitempty" yaml:"api_version"`
+	APIKeyEnv  string `json:"api_key_env,omitempty" yaml:"api_key_env"`
+}
+
+// DocumentSourceTenancy: key_per_tenant resolves a distinct peer key per local
+// tenant via EnvPattern (interpolating {tenant_id}). shared_key_with_prefix is
+// NOT supported (no key-prefix semantics for the document proxy).
+type DocumentSourceTenancy struct {
+	Kind       string `json:"kind,omitempty" yaml:"kind"`
+	EnvPattern string `json:"env_pattern,omitempty" yaml:"env_pattern"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".
@@ -5881,6 +5910,29 @@ func validate(c *Config) error {
 			if !changeKindValid[k] {
 				return fmt.Errorf("change_subscriptions.%s: unknown kind %q (want a change type or the family \"memory\"/\"document\")", sname, k)
 			}
+		}
+	}
+	// Static document sources (RFC CE): a misconfigured peer can never sync, so
+	// fail fast at load. base_url is dialed and api_key_env is SENT to it.
+	for dname, ds := range c.DocumentSources {
+		if ds.Config.BaseURL == "" {
+			return fmt.Errorf("document_sources.%s: config.base_url is required", dname)
+		}
+		if u, uerr := url.Parse(ds.Config.BaseURL); uerr != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("document_sources.%s: config.base_url %q must be an http(s) URL", dname, ds.Config.BaseURL)
+		}
+		if ds.Config.APIKeyEnv != "" && !EnvNameCredentialSafe(ds.Config.APIKeyEnv) {
+			return fmt.Errorf("document_sources.%s: config.api_key_env %q is not an allowed credential env var "+
+				"(must be LOOMCYCLE_-prefixed or a known third-party key, and not an infra secret)", dname, ds.Config.APIKeyEnv)
+		}
+		switch ds.TenancyStrategy.Kind {
+		case "":
+		case "key_per_tenant":
+			if ds.TenancyStrategy.EnvPattern != "" && !strings.Contains(ds.TenancyStrategy.EnvPattern, "{tenant_id}") {
+				return fmt.Errorf("document_sources.%s: tenancy_strategy.env_pattern %q must contain {tenant_id}", dname, ds.TenancyStrategy.EnvPattern)
+			}
+		default:
+			return fmt.Errorf("document_sources.%s: tenancy_strategy.kind %q must be \"\" or key_per_tenant", dname, ds.TenancyStrategy.Kind)
 		}
 	}
 	// Static webhooks: a misconfigured delivery target can never fire (F24).

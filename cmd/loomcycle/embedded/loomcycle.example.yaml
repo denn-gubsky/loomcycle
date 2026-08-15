@@ -491,6 +491,26 @@ change_subscriptions: {}
   #   allow_private_host: false                  # true to deliver to a private-network callback (SSRF opt-in)
   #   disabled: false
 
+# ─── Document sources — remote/federated documents (RFC CE) ───────────
+# Named peer loomcycle instances a local document can be BOUND to and pulled
+# from. An agent (or operator) calls Document op=set_remote (source + remote_ref)
+# to bind a local document to a peer document, then op=sync to pull the peer
+# document's KEYED chunks (fact-tier, addressed by natural_key) into the local
+# one — reconciling by natural_key: a new key is created, a diverged body is
+# updated in place (the old body kept in chunk history — retire-not-delete), and
+# a chunk WITHOUT a natural_key is excluded and counted. CE-1 is content-only +
+# PULL-direction (push + full-tree reconciliation are follow-ons). Auth + SSRF
+# mirror memory_backends: api_key_env is a credential-allowlisted env-var NAME
+# resolved at use time, and the peer host is dialed through the SSRF guard.
+document_sources: {}
+  # peerA:
+  #   config:
+  #     base_url: "https://peer.example:8787"     # the peer loomcycle instance's /v1/_document
+  #     api_key_env: LOOMCYCLE_PEERA_DOC_KEY       # env NAME of the peer bearer (allowlisted)
+  #   tenancy_strategy:                            # optional; "" = one shared credential
+  #     kind: key_per_tenant                       # a distinct peer credential per local tenant
+  #     env_pattern: LOOMCYCLE_PEERA_{tenant_id}_KEY
+
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit
 # `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents
