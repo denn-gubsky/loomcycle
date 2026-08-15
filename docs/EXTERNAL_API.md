@@ -72,3 +72,36 @@ generated client covers the whole surface below.
   with a diagnostic `code`.
 - The spec is kept honest by a drift test that fails if a `Document` / `Path`
   tool op is added or removed without updating the contract.
+
+## Change feed — react to changes instead of polling
+
+When the change-data-capture feed is enabled (`LOOMCYCLE_MEMORY_CHANGES_ENABLED=1`), loomcycle emits a **value-free** change event on every memory/document write — the coordinate of *what* changed (`{seq, type, tenant, scope, scope_id, key|chunk_id, at}`), not the value. A consumer reads the current value via the data API above. Off by default: when off there is zero overhead and no table growth.
+
+**Subscribe (pull, SSE).** `GET /v1/_memory/changes?since=<seq>` and `GET /v1/_document/changes?since=<seq>` stream events as they happen; `seq` is a monotonic cursor to resume from. `substrate:tenant` scope; each stream is your own tenant's changes only (not member-accessible — the feed is operator observability).
+
+**Push (webhook).** Declare a `change_subscriptions:` entry in operator yaml and loomcycle POSTs signed batches to your callback:
+
+```yaml
+change_subscriptions:
+  my-consumer:
+    callback_url: "https://consumer.example/loomcycle-changes"
+    secret_env: LOOMCYCLE_CHANGE_SUB_SECRET   # env NAME of the HMAC key (allowlisted)
+    tenant_id: ""                             # which tenant's feed ("" = shared/default)
+    kinds: [memory, document.chunk.updated]   # optional (scope, kinds) filter
+    # allow_private_host: true                # to deliver to a private-network callback
+```
+
+Each POST carries `X-Loomcycle-Signature: hex(hmac-sha256(secret, body))` — verify it with the secret to authenticate the sender. Delivery is **at-least-once** (a persisted cursor resumes across restarts); dedupe on the `seq`.
+
+**Environment flags:**
+
+- `LOOMCYCLE_MEMORY_CHANGES_ENABLED=1` — turn the feed on.
+- `LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS` — how long change rows are kept (default 24).
+- `LOOMCYCLE_CHANGE_SUB_INTERVAL_MS` — push delivery poll interval (default 5000).
+
+## loomcycle → loomcycle, and the gRPC/Python twin
+
+Two more ways to consume the same memory surface:
+
+- **A peer as a memory backend.** A `kind: remote` memory backend proxies an agent's memory to *another* loomcycle instance's `/v1/_memory/*` — one loomcycle uses another's memory as a backend (the peer embeds server-side). See [MEMORY-BACKENDS.md](MEMORY-BACKENDS.md).
+- **gRPC / Python.** The memory surface is also a gRPC RPC (`Memory`), so the Python client reaches it the same way it reaches documents and paths: `await client.memory({"op": "get", "scope": "user", "key": "tone"})`. The TypeScript client uses the HTTP surface above.

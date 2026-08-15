@@ -213,6 +213,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS memory_changes_by_tenant ON memory_changes(tenant_id, seq)`,
 		`CREATE INDEX IF NOT EXISTS memory_changes_by_at ON memory_changes(at)`,
+		// RFC CD Part C (push): the persisted per-subscription delivery cursor,
+		// so outbound change delivery resumes at-least-once across a restart.
+		// Mirrors postgres migration 0071.
+		`CREATE TABLE IF NOT EXISTS change_subscription_cursors (
+			name       TEXT PRIMARY KEY,
+			last_seq   INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL  -- unix nano
+		)`,
 		// v0.8.21 audit view — cross-session queries by ts (descending)
 		// and ts-with-type-equality. Mirrors the postgres
 		// 0014_events_audit_index migration; both stores need the

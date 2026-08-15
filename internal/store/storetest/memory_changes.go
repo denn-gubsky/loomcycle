@@ -72,4 +72,27 @@ func testMemoryChangesFeed(t *testing.T, s store.Store) {
 	if left, _ := s.GetMemoryChangesSince(ctx, "acme", 0, 100); len(left) != 0 {
 		t.Errorf("after prune acme has %d rows, want 0", len(left))
 	}
+
+	// RFC CD Part C push — the persisted delivery cursor: 0 before any delivery,
+	// then upserts.
+	cur, err := s.GetChangeSubscriptionCursor(ctx, "sub-a")
+	if err != nil || cur != 0 {
+		t.Fatalf("initial cursor = %d (err %v), want 0", cur, err)
+	}
+	if err := s.SetChangeSubscriptionCursor(ctx, "sub-a", 42); err != nil {
+		t.Fatalf("SetChangeSubscriptionCursor: %v", err)
+	}
+	if cur, err = s.GetChangeSubscriptionCursor(ctx, "sub-a"); err != nil || cur != 42 {
+		t.Errorf("cursor after set = %d (err %v), want 42", cur, err)
+	}
+	if err := s.SetChangeSubscriptionCursor(ctx, "sub-a", 99); err != nil {
+		t.Fatalf("SetChangeSubscriptionCursor(update): %v", err)
+	}
+	if cur, _ = s.GetChangeSubscriptionCursor(ctx, "sub-a"); cur != 99 {
+		t.Errorf("cursor after update = %d, want 99", cur)
+	}
+	// A different subscription is independent.
+	if cur, _ = s.GetChangeSubscriptionCursor(ctx, "sub-b"); cur != 0 {
+		t.Errorf("independent sub-b cursor = %d, want 0", cur)
+	}
 }

@@ -21,6 +21,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -75,6 +76,8 @@ import (
 	// Deterministic stub embedder for runtime tests; its init() registers the
 	// "stub" provider ONLY when LOOMCYCLE_EMBEDDER_STUB=1, so it is invisible
 	// to a production binary that never sets the flag.
+	"github.com/denn-gubsky/loomcycle/internal/changesub"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/stubembedder"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/retention"
@@ -159,6 +162,65 @@ func memoryChangesRetention() time.Duration {
 		}
 	}
 	return 24 * time.Hour
+}
+
+// changeSubDeliveryTimeout bounds each outbound change-subscription POST.
+const changeSubDeliveryTimeout = 30 * time.Second
+
+// resolveChangeSubSecret resolves a subscription's secret_env NAME to its value,
+// gated by the same credential allowlist config-load validation uses — so a
+// callback signing key can never be one of loomcycle's own infra secrets.
+// Returns only the env-var NAME in errors, never the value.
+func resolveChangeSubSecret(name string) (string, error) {
+	if !config.EnvNameCredentialSafe(name) {
+		return "", fmt.Errorf("secret_env %q is not an allowed credential env var", name)
+	}
+	v := os.Getenv(name)
+	if v == "" {
+		return "", fmt.Errorf("secret_env %q is not set", name)
+	}
+	return v, nil
+}
+
+// changeSubDeliveryInterval is how often the RFC CD Part C push engine tails the
+// feed. Default 5s; override with LOOMCYCLE_CHANGE_SUB_INTERVAL_MS.
+func changeSubDeliveryInterval() time.Duration {
+	if s := os.Getenv("LOOMCYCLE_CHANGE_SUB_INTERVAL_MS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return 5 * time.Second
+}
+
+// resolveChangeSubscriptions turns the static change_subscriptions config into
+// deliverable subscriptions, each with its OWN SSRF-guarded client — the
+// callback host is private-allowlisted only when allow_private_host is set, so
+// one subscription's opt-in never widens another's dial reach. Disabled entries
+// are skipped.
+func resolveChangeSubscriptions(cfg *config.Config) []changesub.Subscription {
+	var out []changesub.Subscription
+	for name, sub := range cfg.ChangeSubscriptions {
+		if sub.Disabled {
+			continue
+		}
+		var allow []string
+		if sub.AllowPrivateHost {
+			if u, err := url.Parse(sub.CallbackURL); err == nil && u.Hostname() != "" {
+				allow = []string{u.Hostname()}
+			}
+		}
+		out = append(out, changesub.Subscription{
+			Name:        name,
+			CallbackURL: sub.CallbackURL,
+			TenantID:    sub.TenantID,
+			Scope:       sub.Scope,
+			Kinds:       sub.Kinds,
+			SecretEnv:   sub.SecretEnv,
+			Client:      netguard.NewGuardedClient(changeSubDeliveryTimeout, allow),
+		})
+	}
+	return out
 }
 
 // asPostgresStore unwraps any store decorators (the CDC wrapper) and returns
@@ -2615,6 +2677,22 @@ func main() {
 				}
 			})
 		log.Printf("memory: change-feed retention sweeper interval=1h window=%s", window)
+	}
+
+	// RFC CD Part C (push) — deliver change events to operator-declared HTTP
+	// callbacks. Only when the feed is enabled AND subscriptions are declared;
+	// advisory-gated so ONE replica delivers per tick (the persisted cursor is
+	// shared). Each subscription's callback is dialed through its own
+	// SSRF-guarded client (private hosts blocked unless allow_private_host).
+	if memoryChangesEnabled() && storeIface != nil && len(cfg.ChangeSubscriptions) > 0 {
+		subs := resolveChangeSubscriptions(cfg)
+		if len(subs) > 0 {
+			deliverer := changesub.New(storeIface, resolveChangeSubSecret, log.Printf)
+			interval := changeSubDeliveryInterval()
+			go runAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyChangeSubDelivery, "change_subscriptions",
+				func(ctx context.Context) { deliverer.RunOnce(ctx, subs) })
+			log.Printf("memory: change-subscription push engine — %d subscription(s), interval=%s", len(subs), interval)
+		}
 	}
 
 	// Dead-link reconciliation: the only layer that actually COLLECTS chunk
