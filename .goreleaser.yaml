@@ -132,7 +132,24 @@ brews:
 # further config changes.
 #
 # Note on registry naming: Docker Hub strips hyphens from usernames.
-# `denn-gubsky` on GitHub becomes `denngubsky` on Docker Hub.
+# `denn-gubsky` on GitHub becomes `denngubsky` on Docker Hub. GHCR keeps
+# the hyphen, so the two namespaces are spelled DIFFERENTLY:
+#   docker.io/denngubsky/loomcycle   ·   ghcr.io/denn-gubsky/loomcycle
+#
+# Every image is published to BOTH registries. Docker Hub stays the
+# documented default (existing installs pin it); GHCR is a byte-identical
+# mirror that exists because Docker Hub meters anonymous pulls per source
+# IP — and for IPv6 that bucket is keyed on the whole /64, so one home
+# network or NAT egress shares a single quota across every host behind it.
+# An operator who hits `toomanyrequests` swaps the registry prefix and is
+# unblocked. Same manifest digests, no rebuild: goreleaser tags one built
+# image with both names, so the mirror costs an extra push, not a build.
+#
+# ⚠️ First publish only: GHCR creates each package PRIVATE. Flip each to
+# public once at github.com/users/denn-gubsky/packages → <package> →
+# Package settings → Change visibility. There is no REST endpoint for it,
+# so it cannot be automated here. Until then anonymous pulls 401 and the
+# mirror is useless — verify with `docker pull` from a logged-out client.
 #
 # Uses Dockerfile.release (the goreleaser-specific variant that copies
 # the already-built binary in instead of running the multi-stage build
@@ -144,7 +161,9 @@ dockers:
       - loomcycle
     image_templates:
       - "denngubsky/loomcycle:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}-amd64"
       - "denngubsky/loomcycle:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle:latest-amd64"
     dockerfile: Dockerfile.release
     use: buildx
     build_flag_templates:
@@ -162,7 +181,9 @@ dockers:
       - loomcycle
     image_templates:
       - "denngubsky/loomcycle:{{ .Version }}-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}-arm64"
       - "denngubsky/loomcycle:latest-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle:latest-arm64"
     dockerfile: Dockerfile.release
     use: buildx
     build_flag_templates:
@@ -193,7 +214,9 @@ dockers:
       - loomcycle
     image_templates:
       - "denngubsky/loomcycle-toolbox:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-toolbox:{{ .Version }}-amd64"
       - "denngubsky/loomcycle-toolbox:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-toolbox:latest-amd64"
     dockerfile: Dockerfile.toolbox
     use: buildx
     build_flag_templates:
@@ -211,7 +234,9 @@ dockers:
       - loomcycle
     image_templates:
       - "denngubsky/loomcycle-toolbox:{{ .Version }}-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-toolbox:{{ .Version }}-arm64"
       - "denngubsky/loomcycle-toolbox:latest-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-toolbox:latest-arm64"
     dockerfile: Dockerfile.toolbox
     use: buildx
     build_flag_templates:
@@ -236,7 +261,9 @@ dockers:
       - loomcycle
     image_templates:
       - "denngubsky/loomcycle-browser:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-browser:{{ .Version }}-amd64"
       - "denngubsky/loomcycle-browser:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-browser:latest-amd64"
     dockerfile: Dockerfile.browser
     use: buildx
     build_flag_templates:
@@ -254,7 +281,9 @@ dockers:
       - loomcycle
     image_templates:
       - "denngubsky/loomcycle-browser:{{ .Version }}-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-browser:{{ .Version }}-arm64"
       - "denngubsky/loomcycle-browser:latest-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-browser:latest-arm64"
     dockerfile: Dockerfile.browser
     use: buildx
     build_flag_templates:
@@ -271,6 +300,11 @@ dockers:
 # docker_manifests joins per-arch images into one multi-arch manifest
 # the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
 # regardless of their host arch.
+#
+# A manifest list is registry-local — it can only reference per-arch
+# images in its OWN registry — so the GHCR mirror needs its own six
+# entries rather than a second name on the Docker Hub ones. The per-arch
+# images they join are the same builds, pushed twice (see `dockers:`).
 docker_manifests:
   - name_template: "denngubsky/loomcycle:{{ .Version }}"
     image_templates:
@@ -296,3 +330,29 @@ docker_manifests:
     image_templates:
       - "denngubsky/loomcycle-browser:latest-amd64"
       - "denngubsky/loomcycle-browser:latest-arm64"
+
+  # ── GHCR mirror ──
+  - name_template: "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle:latest"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle:latest-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-toolbox:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-toolbox:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-toolbox:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-toolbox:latest"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-toolbox:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-toolbox:latest-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-browser:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-browser:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-browser:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-browser:latest"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-browser:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-browser:latest-arm64"

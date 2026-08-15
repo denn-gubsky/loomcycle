@@ -21,6 +21,13 @@ name: Publish sandbox images
 # on the repo VARIABLE `DOCKER_PUBLISH_ENABLED == 'true'` and logs in with the
 # `DOCKER_USERNAME` / `DOCKER_PASSWORD` secrets. When the operator hasn't enabled
 # docker publishing the job is SKIPPED cleanly (no failure).
+#
+# Registries: every image goes to Docker Hub AND to the ghcr.io/denn-gubsky
+# mirror, from one build (see .goreleaser.yaml's `dockers:` comment for why, and
+# for the one-time "make the GHCR package public" step). The var name still says
+# DOCKER_PUBLISH_ENABLED but now gates BOTH registries — it is deliberately not
+# renamed, since that would silently disable publishing until the operator
+# created a new repo variable.
 
 on:
   push:
@@ -38,6 +45,7 @@ env:
 
 permissions:
   contents: read
+  packages: write  # push the GHCR mirror with the built-in GITHUB_TOKEN
 
 jobs:
   # FULL vs LEAN, mirroring release.yml: the sandbox images are FULL-build-only.
@@ -114,6 +122,14 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+      # GHCR mirror — no new secret (GITHUB_TOKEN + packages:write above).
+      # Rationale in .goreleaser.yaml's dockers: comment.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # ── Builder sidecar — rootless podman base (deploy/builder/Dockerfile) ──
       - name: Build + push loomcycle-builder (rootless)
@@ -125,9 +141,13 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ steps.ver.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle
           tags: |
             denngubsky/loomcycle-builder:${{ steps.ver.outputs.version }}
             denngubsky/loomcycle-builder:latest
+            ghcr.io/denn-gubsky/loomcycle-builder:${{ steps.ver.outputs.version }}
+            ghcr.io/denn-gubsky/loomcycle-builder:latest
 
       # ── Builder sidecar — host-Docker-socket base (deploy/builder/Dockerfile.docker) ──
       - name: Build + push loomcycle-builder-docker (docker socket)
@@ -139,9 +159,13 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ steps.ver.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle
           tags: |
             denngubsky/loomcycle-builder-docker:${{ steps.ver.outputs.version }}
             denngubsky/loomcycle-builder-docker:latest
+            ghcr.io/denn-gubsky/loomcycle-builder-docker:${{ steps.ver.outputs.version }}
+            ghcr.io/denn-gubsky/loomcycle-builder-docker:latest
 
       # ── Session toolchain image (deploy/builder/session/Dockerfile) ──
       # NOTE: the arm64 build runs apt + Go/Rust/gh downloads under QEMU emulation
@@ -156,6 +180,10 @@ jobs:
           file: deploy/builder/session/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle
           tags: |
             denngubsky/loomcycle-sandbox-session:${{ steps.ver.outputs.version }}
             denngubsky/loomcycle-sandbox-session:latest
+            ghcr.io/denn-gubsky/loomcycle-sandbox-session:${{ steps.ver.outputs.version }}
+            ghcr.io/denn-gubsky/loomcycle-sandbox-session:latest
