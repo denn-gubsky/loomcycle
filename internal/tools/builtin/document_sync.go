@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -107,9 +108,6 @@ func (d *Document) setRemote(ctx context.Context, key sqlmem.ScopeKey, mscope st
 // ---- sync: reconcile keyed chunks between the local document and its peer ----
 
 func (d *Document) syncDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
-	if d.Cfg == nil {
-		return errResult("sync: document sources are not configured"), nil
-	}
 	direction := in.Direction
 	if direction == "" {
 		direction = "pull"
@@ -117,48 +115,78 @@ func (d *Document) syncDocument(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if direction != "pull" && direction != "push" {
 		return errResult(fmt.Sprintf("sync: direction must be \"pull\" (default) or \"push\", got %q", direction)), nil
 	}
+	b, errRes := d.resolveRemoteBinding(ctx, key, mscope, in, "sync")
+	if errRes != nil {
+		return *errRes, nil
+	}
+	if direction == "push" {
+		return d.syncPush(ctx, key, mscope, b.client, b.source, b.ref, b.localDocID, b.remoteDocID, b.scope)
+	}
+	return d.syncPull(ctx, key, mscope, b.client, b.source, b.ref, b.localDocID, b.remoteDocID, b.remoteRoot, b.scope)
+}
+
+// remoteBinding is the resolved connection to a bound peer document, shared by
+// sync and diff_remote: an authed client, the source/ref, and the local + remote
+// document ids (the remote root distinguishes structural chunks from content).
+type remoteBinding struct {
+	client      *docremote.Client
+	source, ref string
+	localDocID  string
+	remoteDocID string
+	remoteRoot  string
+	scope       string
+}
+
+// resolveRemoteBinding runs the prologue both sync and diff_remote need: resolve
+// the local document, read its _remote binding, build the peer client, and fetch
+// the peer document id. On any user-facing error it returns a non-nil *Result to
+// return verbatim (op names the caller so the message reads right).
+func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, op string) (*remoteBinding, *tools.Result) {
+	fail := func(msg string) (*remoteBinding, *tools.Result) {
+		r := errResult(op + ": " + msg)
+		return nil, &r
+	}
+	if d.Cfg == nil {
+		return fail("document sources are not configured")
+	}
 	localDocID, err := d.docIDFromInput(ctx, key, in)
 	if err != nil {
-		return errResult("sync: " + err.Error()), nil
+		return fail(err.Error())
 	}
 	source, ref, err := d.readRemoteBinding(ctx, key, mscope, localDocID)
 	if err != nil {
-		return errResult("sync: " + err.Error()), nil
+		return fail(err.Error())
 	}
 	if source == "" {
-		return errResult("sync: this document is not bound to a remote (call set_remote first)"), nil
+		return fail("this document is not bound to a remote (call set_remote first)")
 	}
 	ds, ok := d.Cfg.DocumentSources[source]
 	if !ok {
-		return errResult(fmt.Sprintf("sync: unknown document source %q (was it removed from document_sources:?)", source)), nil
+		return fail(fmt.Sprintf("unknown document source %q (was it removed from document_sources:?)", source))
 	}
 	client, err := newRemoteDocumentClient(ds)
 	if err != nil {
-		return errResult("sync: " + err.Error()), nil
+		return fail(err.Error())
 	}
-
 	scope := in.Scope
 	if scope == "" {
 		scope = "user"
 	}
-
-	// Resolve the peer document id (both directions target it).
 	rawDoc, err := client.Do(ctx, map[string]any{"op": "get_document", "path": ref, "scope": scope})
 	if err != nil {
-		return errResult("sync: fetch remote document: " + err.Error()), nil
+		return fail("fetch remote document: " + err.Error())
 	}
 	var remoteDoc struct {
 		DocumentID  string `json:"document_id"`
 		RootChunkID string `json:"root_chunk_id"`
 	}
 	if uerr := json.Unmarshal(rawDoc, &remoteDoc); uerr != nil || remoteDoc.DocumentID == "" {
-		return errResult("sync: remote document not found at " + ref), nil
+		return fail("remote document not found at " + ref)
 	}
-
-	if direction == "push" {
-		return d.syncPush(ctx, key, mscope, client, source, ref, localDocID, remoteDoc.DocumentID, scope)
-	}
-	return d.syncPull(ctx, key, mscope, client, source, ref, localDocID, remoteDoc.DocumentID, remoteDoc.RootChunkID, scope)
+	return &remoteBinding{
+		client: client, source: source, ref: ref, localDocID: localDocID,
+		remoteDocID: remoteDoc.DocumentID, remoteRoot: remoteDoc.RootChunkID, scope: scope,
+	}, nil
 }
 
 // syncPull pulls the peer document's keyed chunks into the local document.
@@ -368,6 +396,133 @@ func (d *Document) syncPush(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		"updated":            updated,
 		"unchanged":          unchanged,
 		"excluded_unkeyed":   excludedUnkeyed,
+	})
+}
+
+// ---- diff_remote: dry-run change set between the local document and its peer ----
+
+// diffEntry names one keyed chunk in a diff bucket.
+type diffEntry struct {
+	NaturalKey string `json:"natural_key"`
+	Title      string `json:"title"`
+}
+
+// diffRemote reports what a sync WOULD change, without touching either side. It
+// aligns keyed chunks by natural_key into only_local (a push would create these
+// on the peer), only_remote (a pull would create these locally), diverged (the
+// same key with different bodies — pull would overwrite local, push the peer),
+// and same. Unkeyed chunks on each side are counted (never reconcilable).
+func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	b, errRes := d.resolveRemoteBinding(ctx, key, mscope, in, "diff_remote")
+	if errRes != nil {
+		return *errRes, nil
+	}
+
+	// Local keyed chunks (natural_key -> body).
+	localChunks, err := d.localKeyedChunks(ctx, key, b.localDocID)
+	if err != nil {
+		return errResult("diff_remote: list local facts: " + err.Error()), nil
+	}
+	type kv struct{ title, body string }
+	localByNK := make(map[string]kv, len(localChunks))
+	for _, lc := range localChunks {
+		lb, berr := d.readBody(ctx, mscope, key.ScopeID, lc.ID)
+		if berr != nil {
+			return errResult("diff_remote: read local " + lc.NaturalKey + ": " + berr.Error()), nil
+		}
+		localByNK[lc.NaturalKey] = kv{title: lc.Title, body: lb.Body}
+	}
+
+	// Remote keyed chunks (natural_key -> body), plus the ids to exclude the root
+	// and the keyed chunks from the unkeyed count.
+	rawFacts, err := b.client.Do(ctx, map[string]any{"op": "list_facts", "document_id": b.remoteDocID, "scope": b.scope, "limit": 10000})
+	if err != nil {
+		return errResult("diff_remote: list remote facts: " + err.Error()), nil
+	}
+	facts, err := decodeRemoteFacts(rawFacts)
+	if err != nil {
+		return errResult("diff_remote: decode remote facts: " + err.Error()), nil
+	}
+	remoteByNK := make(map[string]kv, len(facts))
+	keyedRemoteIDs := map[string]bool{}
+	for _, f := range facts {
+		if f.Entity.NaturalKey == "" {
+			continue
+		}
+		keyedRemoteIDs[f.ID] = true
+		rawChunk, cerr := b.client.Do(ctx, map[string]any{"op": "get_chunk", "id": f.ID, "scope": b.scope})
+		if cerr != nil {
+			return errResult("diff_remote: fetch remote chunk " + f.ID + ": " + cerr.Error()), nil
+		}
+		var rc struct {
+			Body string `json:"body"`
+		}
+		_ = json.Unmarshal(rawChunk, &rc)
+		remoteByNK[f.Entity.NaturalKey] = kv{title: f.Title, body: rc.Body}
+	}
+
+	onlyLocal, onlyRemote, diverged := []diffEntry{}, []diffEntry{}, []diffEntry{}
+	same := 0
+	for nk, lv := range localByNK {
+		rv, ok := remoteByNK[nk]
+		if !ok {
+			onlyLocal = append(onlyLocal, diffEntry{NaturalKey: nk, Title: lv.title})
+			continue
+		}
+		if rv.body == lv.body {
+			same++
+		} else {
+			diverged = append(diverged, diffEntry{NaturalKey: nk, Title: lv.title})
+		}
+	}
+	for nk, rv := range remoteByNK {
+		if _, ok := localByNK[nk]; !ok {
+			onlyRemote = append(onlyRemote, diffEntry{NaturalKey: nk, Title: rv.title})
+		}
+	}
+	sortDiff := func(s []diffEntry) { sort.Slice(s, func(i, j int) bool { return s[i].NaturalKey < s[j].NaturalKey }) }
+	sortDiff(onlyLocal)
+	sortDiff(onlyRemote)
+	sortDiff(diverged)
+
+	// Unkeyed (non-root) chunks on each side — never reconcilable.
+	localTotal, err := d.documentChunkCount(ctx, key, b.localDocID)
+	if err != nil {
+		return errResult("diff_remote: " + err.Error()), nil
+	}
+	excludedLocal := localTotal - 1 - len(localChunks)
+	if excludedLocal < 0 {
+		excludedLocal = 0
+	}
+	rawAll, err := b.client.Do(ctx, map[string]any{"op": "query_chunks", "document_id": b.remoteDocID, "scope": b.scope, "limit": 10000})
+	if err != nil {
+		return errResult("diff_remote: count remote chunks: " + err.Error()), nil
+	}
+	var all struct {
+		Chunks []struct {
+			ID string `json:"id"`
+		} `json:"chunks"`
+	}
+	_ = json.Unmarshal(rawAll, &all)
+	excludedRemote := 0
+	for _, ch := range all.Chunks {
+		if ch.ID == b.remoteRoot || keyedRemoteIDs[ch.ID] {
+			continue
+		}
+		excludedRemote++
+	}
+
+	return okJSON(map[string]any{
+		"source":                  b.source,
+		"remote_ref":              b.ref,
+		"remote_document_id":      b.remoteDocID,
+		"local_document_id":       b.localDocID,
+		"only_local":              onlyLocal,
+		"only_remote":             onlyRemote,
+		"diverged":                diverged,
+		"same":                    same,
+		"excluded_unkeyed_local":  excludedLocal,
+		"excluded_unkeyed_remote": excludedRemote,
 	})
 }
 

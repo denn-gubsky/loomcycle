@@ -316,3 +316,88 @@ func TestDocumentSync_RejectsBadDirection(t *testing.T) {
 		t.Errorf("sync with a bad direction should refuse")
 	}
 }
+
+// diffStubPeer serves a fixed remote document with three KEYED chunks (nk1 body
+// "same-body", nk2 body "remote-2", nkR body "remote-only") plus one unkeyed
+// chunk — enough to exercise every diff bucket against a crafted local doc.
+func diffStubPeer() http.Handler {
+	bodies := map[string]string{"d1": "same-body", "d2": "remote-2", "dR": "remote-only"}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Op string `json:"op"`
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		w.Header().Set("Content-Type", "application/json")
+		switch in.Op {
+		case "get_document":
+			_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "remoteDoc", "root_chunk_id": "r"})
+		case "list_facts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"facts": []map[string]any{
+				{"id": "d1", "title": "One", "type": "note", "entity": map[string]any{"natural_key": "nk1"}},
+				{"id": "d2", "title": "Two", "type": "note", "entity": map[string]any{"natural_key": "nk2"}},
+				{"id": "dR", "title": "RemoteOnly", "type": "note", "entity": map[string]any{"natural_key": "nkR"}},
+			}})
+		case "query_chunks":
+			// root + 3 keyed + 1 unkeyed → excluded_unkeyed_remote = 1
+			_ = json.NewEncoder(w).Encode(map[string]any{"chunks": []map[string]any{{"id": "r"}, {"id": "d1"}, {"id": "d2"}, {"id": "dR"}, {"id": "dU"}}})
+		case "get_chunk":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": in.ID, "body": bodies[in.ID]})
+		default:
+			w.WriteHeader(422)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "tool_refused", "error": "unknown op"})
+		}
+	})
+}
+
+func TestDocumentDiffRemote_ClassifiesEveryBucket(t *testing.T) {
+	srv := httptest.NewServer(diffStubPeer())
+	t.Cleanup(srv.Close)
+	d, ctx, _ := documentFixture(t)
+	d.Cfg = &config.Config{DocumentSources: map[string]config.DocumentSource{
+		"peerA": {Config: config.DocumentSourceConfig{BaseURL: srv.URL}},
+	}}
+
+	// Local: nk1 matches the peer, nk2 diverges, nkL is local-only, plus 1 unkeyed.
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Local"}`)
+	docID := out["document_id"].(string)
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"nk1","title":"One","type":"note","body":"same-body"}`, docID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"nk2","title":"Two","type":"note","body":"local-2"}`, docID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"nkL","title":"LocalOnly","type":"note","body":"local-only"}`, docID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"title":"Plain","body":"unkeyed"}`, docID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_remote","scope":"user","id":%q,"source":"peerA","remote_ref":"/docs/remote"}`, docID))
+
+	diff, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"diff_remote","scope":"user","id":%q}`, docID))
+	if r.IsError {
+		t.Fatalf("diff_remote: %s", r.Text)
+	}
+	nks := func(field string) []string {
+		var out []string
+		for _, e := range diff[field].([]any) {
+			out = append(out, e.(map[string]any)["natural_key"].(string))
+		}
+		return out
+	}
+	if got := nks("only_local"); len(got) != 1 || got[0] != "nkL" {
+		t.Errorf("only_local = %v, want [nkL]", got)
+	}
+	if got := nks("only_remote"); len(got) != 1 || got[0] != "nkR" {
+		t.Errorf("only_remote = %v, want [nkR]", got)
+	}
+	if got := nks("diverged"); len(got) != 1 || got[0] != "nk2" {
+		t.Errorf("diverged = %v, want [nk2]", got)
+	}
+	if diff["same"].(float64) != 1 {
+		t.Errorf("same = %v, want 1 (nk1)", diff["same"])
+	}
+	if diff["excluded_unkeyed_local"].(float64) != 1 || diff["excluded_unkeyed_remote"].(float64) != 1 {
+		t.Errorf("excluded = local %v / remote %v, want 1 / 1", diff["excluded_unkeyed_local"], diff["excluded_unkeyed_remote"])
+	}
+
+	// A doc that isn't bound refuses.
+	out2, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Unbound"}`)
+	_, r2 := docExec(t, d, ctx, fmt.Sprintf(`{"op":"diff_remote","scope":"user","id":%q}`, out2["document_id"].(string)))
+	if !r2.IsError {
+		t.Errorf("diff_remote on an unbound doc should refuse")
+	}
+}
