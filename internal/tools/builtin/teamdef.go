@@ -674,6 +674,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	var opts []teamrun.Option
 	resumedFrom := ""
 	if boardBound {
+		// Tag every handler run this walk spawns with the board task, so a client
+		// folding the run-state stream can pin the live agent to this chunk's card
+		// (RFC BT P4). Only the DIRECT handler run is tagged — the sub-agent spawn
+		// path clears it so a handler's own sub-agents aren't pinned onto the card.
+		walkCtx = store.WithBoardTask(walkCtx, store.BoardTask{Scope: boardScope, ChunkID: in.BoardChunkID})
 		// Resume: continue from the chunk's persisted status when it names a state
 		// still in the current graph (a graph edit that dropped that state falls
 		// back to the entry — start over rather than resume into a hole).

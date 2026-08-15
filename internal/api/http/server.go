@@ -5686,6 +5686,18 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
 		Isolated: parentIdentity.Isolated,
 	}
+	// RFC BT P4: a board-bound `TeamDef op=run` puts the task key on ctx; stamp it
+	// onto this handler run's ParentContext so a client folding the run-state
+	// stream can pin the live agent to its kanban card. Cleared from subRunCtx
+	// below, so only the DIRECT handler is tagged (not its own sub-agents).
+	if bt, ok := store.BoardTaskFromContext(ctx); ok {
+		if subIdentity.ParentContext == nil {
+			subIdentity.ParentContext = &store.ParentContext{}
+		}
+		subIdentity.ParentContext.BoardScope = bt.Scope
+		subIdentity.ParentContext.BoardChunkID = bt.ChunkID
+		subIdentity.ParentContext.BoardDocumentID = bt.DocumentID
+	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, parentIdentity.TenantID, parentIdentity.UserID, subIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("create sub-session for %q: %w", name, err)
@@ -5722,6 +5734,9 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 	// the registry entry lets the cascade walk in Cancel() find this
 	// sub explicitly (belt-and-braces against grandchild races).
 	subRunCtx, subCancelFn := context.WithCancelCause(ctx)
+	// Board task tags only the DIRECT handler run; clear it on the handler's own
+	// execution ctx so its sub-agents aren't also pinned onto the card (RFC BT P4).
+	subRunCtx = store.WithBoardTask(subRunCtx, store.BoardTask{})
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)
@@ -5778,7 +5793,10 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		TenantID:      parentIdentity.TenantID, // sub-agent inherits the parent run's tenant
 		ParentAgentID: parentIdentity.AgentID,
 		otelSpan:      subRunSpan,
-		ParentContext: parentIdentity.ParentContext, // v0.12.x: sub-agent's run-state events carry the root's lineage
+		// v0.12.x root lineage + RFC BT P4 board task (subIdentity's is the clone
+		// of the parent's plus any board stamp above), echoed on this sub-run's
+		// run-state events so a board client can pin it to its card.
+		ParentContext: subIdentity.ParentContext,
 	}
 	s.publishRunState(subMeta, "running", "", "")
 
