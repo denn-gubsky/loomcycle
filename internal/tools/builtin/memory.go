@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +16,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/fallback"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/remote"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -159,10 +164,71 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	switch def.Kind {
 	case "", "inprocess":
 		return inprocess.New(m.Store, m.Embedder)
+	case "remote":
+		rb, err := m.newRemoteBackend(def)
+		if err != nil {
+			// A misconfigured remote def must not fail the agent's run: log and
+			// serve locally (same degrade posture as the unknown-kind arm).
+			log.Printf("memory: memory_backend %q (kind=remote) is misconfigured: %v — using in-process fallback", name, err)
+			return m.defaultBackend()
+		}
+		// fallback_on_error: inprocess wraps the remote so an unreachable peer
+		// degrades to local memory per-op instead of failing the run.
+		if def.FallbackOnError == "inprocess" {
+			return fallback.New(rb, m.defaultBackend(), log.Printf)
+		}
+		return rb
 	default:
 		log.Printf("memory: memory_backend %q has unknown kind %q — using in-process fallback", name, def.Kind)
 		return m.defaultBackend()
 	}
+}
+
+// remoteBackendTimeout bounds each proxied call to a peer instance.
+const remoteBackendTimeout = 30 * time.Second
+
+// newRemoteBackend builds a remote memory backend from a resolved def. The
+// SSRF-guarded HTTP client and the credential-env allowlist are supplied here
+// (the remote package stays free of config/netguard/os coupling). The peer's
+// own host is added to the guarded client's private-host allowlist — the
+// operator authored this base_url, so reaching it on a private network
+// (sibling replica / tailnet) is an explicit trust decision; redirects to any
+// OTHER private address stay blocked.
+func (m *Memory) newRemoteBackend(def config.MemoryBackend) (memrank.Backend, error) {
+	host := ""
+	if u, err := url.Parse(def.Config.BaseURL); err == nil {
+		host = u.Hostname()
+	}
+	var allowlist []string
+	if host != "" {
+		allowlist = []string{host}
+	}
+	client := netguard.NewGuardedClient(remoteBackendTimeout, allowlist)
+	return remote.New(remote.Options{
+		BaseURL:          def.Config.BaseURL,
+		APIVersion:       def.Config.APIVersion,
+		DefaultAPIKeyEnv: def.Config.APIKeyEnv,
+		TenancyKind:      def.TenancyStrategy.Kind,
+		EnvPattern:       def.TenancyStrategy.EnvPattern,
+		KeyResolver:      resolveCredentialEnv,
+		HTTPClient:       client,
+	})
+}
+
+// resolveCredentialEnv resolves an env-var NAME to its value, gated by the SAME
+// allowlist the def validator uses — so a remote backend can never be pointed
+// at one of loomcycle's own infrastructure secrets (e.g. LOOMCYCLE_AUTH_TOKEN),
+// even if a def author named one. Returns only the env-var NAME in errors,
+// never the value (the fallback wrapper logs these).
+func resolveCredentialEnv(name string) (string, error) {
+	if !config.EnvNameCredentialSafe(name) {
+		return "", fmt.Errorf("api_key_env %q is not an allowed credential env var", name)
+	}
+	v := os.Getenv(name)
+	if v == "" {
+		return "", fmt.Errorf("api_key_env %q is not set", name)
+	}
+	return v, nil
 }
 
 // memoryLayer resolves the MemoryLayer capability for the agent's configured
