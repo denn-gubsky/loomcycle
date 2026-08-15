@@ -187,6 +187,9 @@ func (m *httpMockConnector) WebhookDef(context.Context, json.RawMessage) (connec
 func (m *httpMockConnector) MemoryBackendDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) DocumentSourceDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
 func (m *httpMockConnector) OperatorTokenDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }

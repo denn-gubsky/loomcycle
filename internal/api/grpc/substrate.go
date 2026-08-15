@@ -104,6 +104,12 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
 	})
+	// DocumentSourceDef: same operator-trust posture; "any" scope lets the
+	// gRPC-admin call create/fork/retire any document-source name (RFC CE).
+	ctx = tools.WithDocumentSourceDefPolicy(ctx, tools.DocumentSourceDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: grpcSubstrateAdminAgentName,
+	})
 	// OperatorTokenDef: gRPC substrate admin is operator-trust → grant
 	// admin (RFC L).
 	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
@@ -270,6 +276,18 @@ func (s *Server) WebhookDef(ctx context.Context, req *loomcyclepb.SubstrateReque
 func (s *Server) MemoryBackendDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPC(ctx, "MemoryBackendDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.MemoryBackendDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// DocumentSourceDef serves the RFC CE DocumentSourceDef gRPC RPC —
+// remote-document-source substrate. Same shape as the other substrate RPCs.
+func (s *Server) DocumentSourceDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "DocumentSourceDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.DocumentSourceDef(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}

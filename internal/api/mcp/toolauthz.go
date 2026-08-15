@@ -59,17 +59,18 @@ var tenantConfinableTools = map[string]bool{
 
 	// Def authoring — each stamps the row's tenant from ctx and opaque-404s
 	// cross-tenant reads.
-	"agentdef":         true,
-	"skilldef":         true,
-	"teamdef":          true, // RFC AP — tenant-confined team-workflow substrate
-	"mcpserverdef":     true,
-	"scheduledef":      true,
-	"a2aservercarddef": true,
-	"a2aagentdef":      true,
-	"webhookdef":       true,
-	"memorybackenddef": true,
-	"volumedef":        true,
-	"credentialdef":    true, // RFC AR — tenant/user-confined secure credential store
+	"agentdef":          true,
+	"skilldef":          true,
+	"teamdef":           true, // RFC AP — tenant-confined team-workflow substrate
+	"mcpserverdef":      true,
+	"scheduledef":       true,
+	"a2aservercarddef":  true,
+	"a2aagentdef":       true,
+	"webhookdef":        true,
+	"memorybackenddef":  true,
+	"documentsourcedef": true, // RFC CE — tenant-confined remote-document-source substrate
+	"volumedef":         true,
+	"credentialdef":     true, // RFC AR — tenant/user-confined secure credential store
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,

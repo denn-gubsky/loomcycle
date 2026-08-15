@@ -162,6 +162,20 @@ func (s *Server) handleListMemoryBackendDefNames(w http.ResponseWriter, r *http.
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
+// handleListDocumentSourceDefNames serves GET /v1/_documentsourcedef/names —
+// the RFC CE DocumentSourceDef introspection surface. Same tenant-scoping as
+// the other def-name listings.
+func (s *Server) handleListDocumentSourceDefNames(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.DocumentSourceDefListNames(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.DocumentSourceDefNameSummary) string { return x.TenantID })
+	writeJSONOK(w, map[string]any{"names": rows})
+}
+
 // handleListOperatorTokenDefNames serves GET /v1/_operatortokendef/names.
 // RFC L. Returns one summary per token name — NO secret material. Tenant-scoped
 // (RFC AS Phase 1): a substrate:tenant principal sees only its own tenant's

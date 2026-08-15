@@ -2674,6 +2674,29 @@ type Store interface {
 	MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (MemoryBackendDefRow, error)
 	MemoryBackendDefSetRetired(ctx context.Context, defID string, retired bool) error
 
+	// DocumentSourceDef is a faithful structural mirror of MemoryBackendDef
+	// (same content-addressed identity + lineage + promotion shape, no
+	// sweeper run_state table). A DocumentSourceDef declares a named
+	// external document source (kind, connection config, tenancy strategy,
+	// fallback); the Definition payload schema is owned by the tool layer.
+	DocumentSourceDefCreate(ctx context.Context, row DocumentSourceDefRow) (DocumentSourceDefRow, error)
+	DocumentSourceDefGet(ctx context.Context, defID string) (DocumentSourceDefRow, error)
+	DocumentSourceDefGetByNameVersion(ctx context.Context, name string, version int) (DocumentSourceDefRow, error)
+	DocumentSourceDefListByName(ctx context.Context, name string) ([]DocumentSourceDefRow, error)
+	DocumentSourceDefListChildren(ctx context.Context, parentDefID string) ([]DocumentSourceDefRow, error)
+	DocumentSourceDefListNames(ctx context.Context) ([]DocumentSourceDefNameSummary, error)
+	// DocumentSourceDefSetActive UPSERTs the document_source_def_active
+	// pointer for (tenantID, name). RFC N: the active pointer is per-tenant,
+	// and a def can only be promoted within its own tenant — implementations
+	// refuse if the def's tenant_id ≠ tenantID. tenantID "" = the shared/
+	// operator/legacy tenant.
+	DocumentSourceDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// DocumentSourceDefGetActive returns the active row for (tenantID, name).
+	// Returns *ErrNotFound when no active pointer exists. RFC N: tenantID
+	// "" = the shared/operator/legacy tenant.
+	DocumentSourceDefGetActive(ctx context.Context, tenantID, name string) (DocumentSourceDefRow, error)
+	DocumentSourceDefSetRetired(ctx context.Context, defID string, retired bool) error
+
 	// ---- OperatorTokenDef (RFC L OSS multi-tenant authorization) ----
 	//
 	// Bearer tokens bound to an authoritative principal (tenant_id +
@@ -4250,6 +4273,44 @@ type MemoryBackendDefNameSummary struct {
 	TenantID string `json:"tenant_id,omitempty"`
 }
 
+// DocumentSourceDefRow is a faithful structural mirror of
+// MemoryBackendDefRow — same identity + lineage + retire flag shape. The
+// Definition payload carries the JSON-encoded document-source body (kind,
+// connection config, tenancy strategy, fallback); the schema is owned by
+// the tool layer.
+type DocumentSourceDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. The UNIQUE constraint is (tenant_id, name,
+	// version), so two tenants own the same name+version independently. Set
+	// from the authoritative principal at the write site; never from the
+	// wire. (DocumentSourceDef has no content hash, so there is no
+	// content-hash exclusion concern — unlike AgentDefRow.)
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// DocumentSourceDefNameSummary mirrors MemoryBackendDefNameSummary.
+type DocumentSourceDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. A name owned by N tenants yields
+	// N summary rows (one per tenant). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
 // OperatorTokenDefRow is one auth-token row (RFC L). The token plaintext
 // is NEVER stored — only TokenHash = SHA-256(pepper‖token). AllowedScopes
 // is persisted as a JSON array. RotatedFrom links a rotated token to its
@@ -4442,6 +4503,10 @@ var ErrWebhookDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg:
 // ErrMemoryBackendDefParentNotFound mirrors the WebhookDef pattern for
 // the v1.x RFC I MR-3a MemoryBackendDef substrate.
 var ErrMemoryBackendDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "memory_backend_def: parent_def_id does not exist"}
+
+// ErrDocumentSourceDefParentNotFound mirrors the MemoryBackendDef pattern
+// for the DocumentSourceDef substrate.
+var ErrDocumentSourceDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "document_source_def: parent_def_id does not exist"}
 
 // ErrAgentDefImmutable is returned by store-layer assertions if
 // someone tries to UPDATE an agent_defs row's definition column.

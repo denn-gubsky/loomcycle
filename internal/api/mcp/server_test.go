@@ -289,6 +289,9 @@ func (m *mockConnector) WebhookDef(context.Context, json.RawMessage) (connector.
 func (m *mockConnector) MemoryBackendDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) DocumentSourceDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) OperatorTokenDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
@@ -436,8 +439,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 51 {
-		t.Errorf("got %d tools, want 51 (+directory on top of the erasure/history/teamdef/credentialdef/path/document/volumedef list)", len(result.Tools))
+	if len(result.Tools) != 52 {
+		t.Errorf("got %d tools, want 52 (+directory on top of the erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {

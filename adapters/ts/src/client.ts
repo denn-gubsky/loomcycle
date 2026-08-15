@@ -1580,6 +1580,18 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_memorybackenddef", input, opts);
   }
 
+  /** DocumentSourceDef substrate ops (create/fork/get/list/retire) — RFC CE
+   *  remote-document-source registration. Operator-admin only. Authors + forks
+   *  named peer document sources the Document tool's set_remote/sync consume.
+   *  Static document_sources.<name>: yaml stays immutable ground truth; this
+   *  produces the derived layer. Mirrors POST /v1/_documentsourcedef. */
+  async documentSourceDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_documentsourcedef", input, opts);
+  }
+
   /** OperatorTokenDef substrate ops (create/rotate/retire/get/list) —
    *  RFC L OSS multi-tenant authorization. Operator-admin only. The
    *  token plaintext is returned ONCE in the create/rotate response.

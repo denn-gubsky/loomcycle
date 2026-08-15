@@ -646,15 +646,16 @@ var grpcConsumerScopes = map[string]string{
 	// authors ONLY its own surface. OperatorTokenDef is DELIBERATELY absent — it
 	// defaults to ScopeAdmin (token minting stays operator-only), mirroring the
 	// HTTP /v1/_operatortokendef exclusion.
-	"AgentDef":         auth.ScopeTenant,
-	"SkillDef":         auth.ScopeTenant,
-	"MCPServerDef":     auth.ScopeTenant,
-	"ScheduleDef":      auth.ScopeTenant,
-	"A2AServerCardDef": auth.ScopeTenant,
-	"A2AAgentDef":      auth.ScopeTenant,
-	"WebhookDef":       auth.ScopeTenant,
-	"MemoryBackendDef": auth.ScopeTenant,
-	"VolumeDef":        auth.ScopeTenant,
+	"AgentDef":          auth.ScopeTenant,
+	"SkillDef":          auth.ScopeTenant,
+	"MCPServerDef":      auth.ScopeTenant,
+	"ScheduleDef":       auth.ScopeTenant,
+	"A2AServerCardDef":  auth.ScopeTenant,
+	"A2AAgentDef":       auth.ScopeTenant,
+	"WebhookDef":        auth.ScopeTenant,
+	"MemoryBackendDef":  auth.ScopeTenant,
+	"DocumentSourceDef": auth.ScopeTenant,
+	"VolumeDef":         auth.ScopeTenant,
 	// RFC AP TeamDef — team-workflow substrate. Same ScopeTenant posture as the
 	// other def families; the HTTP /v1/_teamdef route is tenant-confined too.
 	"TeamDef": auth.ScopeTenant,

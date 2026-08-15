@@ -1989,6 +1989,17 @@ func main() {
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	})
+	// RFC CE — wire the DocumentSourceDef substrate tool (runtime-authored peer
+	// document sources). Same operator-admin-only posture as MemoryBackendDef;
+	// reached via Connector.DocumentSourceDef + the admin endpoint + the
+	// LoomCycle MCP meta-tool, and consumed by the Document tool's
+	// set_remote/sync via lookup.DocumentSource.
+	srv.SetDocumentSourceDefTool(&builtin.DocumentSourceDef{
+		Store:               storeIface,
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
 	// RFC L OSS multi-tenant authorization — wire the OperatorTokenDef
 	// substrate tool (auth-token minting/rotation/retirement). Audit sink
 	// is a file when LOOMCYCLE_AUDIT_LOG_PATH is set, else a NopSink. The

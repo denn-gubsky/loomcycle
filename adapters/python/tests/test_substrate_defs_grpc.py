@@ -46,6 +46,7 @@ _CASES = [
     ("a2a_agent_def", "A2AAgentDef"),
     ("webhook_def", "WebhookDef"),
     ("memory_backend_def", "MemoryBackendDef"),
+    ("document_source_def", "DocumentSourceDef"),
     ("operator_token_def", "OperatorTokenDef"),
     ("volume_def", "VolumeDef"),
     ("team_def", "TeamDef"),

@@ -253,6 +253,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.DocumentSourceDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DocumentSourceDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.OperatorTokenDef = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/OperatorTokenDef',
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
@@ -845,6 +850,17 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DocumentSourceDef(self, request, context):
+        """DocumentSourceDef dispatches to the RFC CE remote-document-source
+        substrate. Mirrors POST /v1/_documentsourcedef. Operator-admin-only.
+        Same SubstrateRequest body shape — op-discriminated input_json
+        (create / fork / get / list / retire) + is_error tool refusals in the
+        response. Consumed by the Document tool's set_remote/sync.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def OperatorTokenDef(self, request, context):
         """OperatorTokenDef dispatches to the RFC L OSS multi-tenant
         authorization substrate (auth-token minting/rotation/retirement).
@@ -1224,6 +1240,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'MemoryBackendDef': grpc.unary_unary_rpc_method_handler(
                     servicer.MemoryBackendDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'DocumentSourceDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.DocumentSourceDef,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -2466,6 +2487,33 @@ class Loomcycle(object):
             request,
             target,
             '/loomcycle.v1.Loomcycle/MemoryBackendDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DocumentSourceDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DocumentSourceDef',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,

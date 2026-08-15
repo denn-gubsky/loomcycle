@@ -640,6 +640,20 @@ func (s *Server) MemoryBackendDef(ctx context.Context, input json.RawMessage) (c
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
 }
 
+// DocumentSourceDef dispatches to the RFC CE remote-document-source
+// substrate tool. Same operator-admin-only posture as MemoryBackendDef. See
+// SetDocumentSourceDefTool for wiring.
+func (s *Server) DocumentSourceDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.documentSourceDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("DocumentSourceDef: not configured (no tool wired via SetDocumentSourceDefTool)")
+	}
+	res, err := s.documentSourceDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
 // OperatorTokenDef dispatches to the RFC L OperatorTokenDef substrate
 // tool. Operator-admin-only. See SetOperatorTokenDefTool for wiring.
 func (s *Server) OperatorTokenDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
