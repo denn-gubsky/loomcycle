@@ -472,6 +472,33 @@ memory_backends: {}
   #   #  search API has no key-prefix param, so a namespaced search can't be
   #   #  tenant-scoped; use key_per_tenant.)
 
+# ─── Memory: consolidation + verified writes ────────────────────────────────
+# The background consolidation pass distils chats into durable facts. Both
+# blocks below are OPTIONAL and both default to the values shown.
+memory:
+  consolidation:
+    # DUPLICATE-DETECTION BANDS. These are a property of your EMBEDDING MODEL,
+    # not of the procedure — the same paraphrase pair measured 0.7675 on one
+    # embedder and 0.9005 on another. Do not carry numbers between models;
+    # measure yours with `loomcycle memory-calibrate`.
+    merge_threshold: 0.95     # >= this ⇒ the same fact reworded — merge in place
+    related_threshold: 0.85   # this..merge ⇒ same subject, different claim — add
+
+    # VERIFIED WRITES (off by default). Every fact already carries the span of
+    # source text it came from; turning this on adds a judge that checks the
+    # claim against that span, and withholds — never deletes — one that fails.
+    #
+    # Costs about one model call per 8 facts written, on a cheaper tier than the
+    # extractor, plus up to 6 calls per pass working through older unjudged
+    # facts. The judge runs AFTER the watermark advances, so nothing it does can
+    # cost a fact, block a pass, or make a chat be re-read.
+    #
+    # A fact with no verdict stays fully visible, so a judge outage degrades
+    # verification rather than emptying memory. Read your coverage with
+    # `Document op=verification_stats`; measure the judge itself with
+    # `loomcycle memory-eval-judge`. See docs/VERIFIED-WRITES.md.
+    verify_writes: false
+
 # ─── Change subscriptions — push memory/document change events (RFC CD Part C) ─
 # Deliver value-free change events (the coordinate of WHAT changed, never the
 # value) to an HTTP callback, HMAC-signed. REQUIRES the change feed to be on:

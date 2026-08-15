@@ -613,6 +613,24 @@ It prints each class's `n / min / p05 / median / p95 / max`, the two class gaps,
 
 **Exit codes.** `0` — the duplicate and related classes separate, so a merge threshold exists. `1` — they overlap (no threshold both merges every duplicate and spares every distinct fact: either the model cannot tell these facts apart or a probe is mislabelled), or `--check` found the configured bands inert/destructive. `2` — invocation error.
 
+##### Verified writes — spans, a judge, and verbatim answers
+
+Every fact the pass stores also carries **the span of source text it was drawn from**, and a judge can be asked whether that span actually carries the claim. A fact that fails stops being returned by the fact surfaces without being deleted.
+
+```yaml
+memory:
+  consolidation:
+    verify_writes: true   # off by default; costs ~1 model call per 8 facts written
+```
+
+Read at runtime from `Context op=capabilities` → `consolidation`, exactly like the bands above, so it takes effect on the next pass. Unset, false, or an older runtime that does not report it all mean **off**, and a deployment that never enables it behaves as it did before.
+
+The verdict sets the fact's `confidence` (`supported` 0.9 / `unclear` 0.5 / `mistyped` 0.4 / `unsupported` 0.0); anything below **0.25** is withheld from `list_facts` and `graph_recall` and readable again with `include_refuted: true`. A fact with **no** verdict has a NULL confidence and stays visible — which is what makes a judge outage degrade verification rather than empty memory.
+
+`Document op=verification_stats` reports how much of a scope is verified; `Document op=verbatim_answer` answers a lookup question with a stored fact quoted next to its span, and refuses — with a reason — whenever the best match is unverified, below the similarity floor, or tied with another fact. `loomcycle memory-eval-judge` scores the judge against a corpus that measures false refusals and false admissions in both directions.
+
+**→ [docs/VERIFIED-WRITES.md](VERIFIED-WRITES.md)** covers the whole line: what each verdict means, where verification is and is not visible (`Memory.recall` deliberately still returns a refuted claim's text), how to measure your own judge, and the known limits.
+
 **What it measured on `embeddinggemma`.** 768-dim, served by `ollama-local`; the bundled corpus of 12 facts and 24 labelled probes, reading raw cosine (`Memory op=search`'s `score` is raw cosine — an exact self-match returns 1.0):
 
 | class | n | min | p05 | median | p95 | max |
