@@ -761,6 +761,44 @@ func (s *Store) migrate(ctx context.Context) error {
 			tenant_id             TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY(tenant_id, name)
 		)`,
+		// DocumentSourceDef substrate — a faithful structural mirror of
+		// memory_backend_defs (identity + lineage + promotion), minus the
+		// sweeper-only run_state table. document_source_defs declares a
+		// named external document source (kind, connection config, tenancy
+		// strategy, fallback). See
+		// internal/store/postgres/migrations/0072_document_source_defs.up.sql
+		// for the full design rationale.
+		`CREATE TABLE IF NOT EXISTS document_source_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES document_source_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS document_source_defs_by_name   ON document_source_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS document_source_defs_by_parent ON document_source_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS document_source_defs_by_run    ON document_source_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// on a FRESH DB; an UPGRADED DB keeps PK(name) (SQLite can't rewrite a
+		// PK in place) and gets the (tenant_id, name) UNIQUE INDEX in
+		// addIndexes below as the ON CONFLICT target. See the agent_def_active
+		// note above for the full SQLite upgrade caveat.
+		`CREATE TABLE IF NOT EXISTS document_source_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES document_source_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)`,
 		// RFC AH Phase 2a — persistent dynamic volumes. FLAT (tenant_id,
 		// name) table, NOT the versioned Def shape: a Volume points at
 		// mutable on-disk state outside the def, so there is no version,
@@ -1322,6 +1360,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// dynamic_* table to cover.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_backend_def_active_tenant_name   ON memory_backend_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_backend_defs_tenant_name_version ON memory_backend_defs(tenant_id, name, version)`,
+		// DocumentSource plane — same in-place-upgrade gap as the
+		// MemoryBackend plane above (document_source_def_active ON
+		// CONFLICT(tenant_id, name) + document_source_defs UNIQUE(tenant_id,
+		// name, version)). No dynamic_* table to cover.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_document_source_def_active_tenant_name   ON document_source_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_document_source_defs_tenant_name_version ON document_source_defs(tenant_id, name, version)`,
 		// A2A agent plane (RFC N completion) — same in-place-upgrade gap.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_agent_def_active_tenant_name   ON a2a_agent_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_agent_defs_tenant_name_version ON a2a_agent_defs(tenant_id, name, version)`,
@@ -8272,6 +8316,272 @@ func (s *Store) scanMemoryBackendDefRows(rows *sql.Rows) ([]store.MemoryBackendD
 	for rows.Next() {
 		var (
 			r          store.MemoryBackendDefRow
+			definition string
+			createdAt  int64
+			retired    int
+			bootstrap  int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&createdAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&retired, &bootstrap,
+			&r.TenantID,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		r.Retired = retired != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- DocumentSourceDef substrate ----
+//
+// Faithful structural mirror of MemoryBackendDef* (which itself mirrors
+// WebhookDef* without the sweeper run_state table).
+
+func (s *Store) DocumentSourceDefCreate(ctx context.Context, row store.DocumentSourceDefRow) (store.DocumentSourceDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def: def_id + name required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return store.DocumentSourceDefRow{}, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return store.DocumentSourceDefRow{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM document_source_defs WHERE def_id = ?`, row.ParentDefID).Scan(&n); err != nil {
+			return store.DocumentSourceDefRow{}, err
+		}
+		if n == 0 {
+			return store.DocumentSourceDefRow{}, store.ErrDocumentSourceDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM document_source_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
+	).Scan(&maxVer); err != nil {
+		return store.DocumentSourceDefRow{}, err
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now()
+
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO document_source_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
+		string(row.Definition), nilIfEmpty(row.Description),
+		row.CreatedAt.UnixNano(),
+		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic), row.TenantID,
+	); err != nil {
+		return store.DocumentSourceDefRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.DocumentSourceDefRow{}, err
+	}
+	committed = true
+	return row, nil
+}
+
+func (s *Store) DocumentSourceDefGet(ctx context.Context, defID string) (store.DocumentSourceDefRow, error) {
+	row, err := s.scanDocumentSourceDef(s.db.QueryRowContext(ctx, documentSourceDefSelect+` WHERE def_id = ?`, defID))
+	if err == sql.ErrNoRows {
+		return store.DocumentSourceDefRow{}, &store.ErrNotFound{Kind: "document_source_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) DocumentSourceDefGetByNameVersion(ctx context.Context, name string, version int) (store.DocumentSourceDefRow, error) {
+	row, err := s.scanDocumentSourceDef(s.db.QueryRowContext(ctx, documentSourceDefSelect+` WHERE name = ? AND version = ?`, name, version))
+	if err == sql.ErrNoRows {
+		return store.DocumentSourceDefRow{}, &store.ErrNotFound{Kind: "document_source_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) DocumentSourceDefListByName(ctx context.Context, name string) ([]store.DocumentSourceDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, documentSourceDefSelect+` WHERE name = ? ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanDocumentSourceDefRows(rows)
+}
+
+func (s *Store) DocumentSourceDefListChildren(ctx context.Context, parentDefID string) ([]store.DocumentSourceDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, documentSourceDefSelect+` WHERE parent_def_id = ? ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanDocumentSourceDefRows(rows)
+}
+
+func (s *Store) DocumentSourceDefListNames(ctx context.Context) ([]store.DocumentSourceDefNameSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.tenant_id,
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM document_source_defs d
+		LEFT JOIN document_source_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.DocumentSourceDefNameSummary
+	for rows.Next() {
+		var ns store.DocumentSourceDefNameSummary
+		var updatedAt int64
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		ns.LastUpdated = time.Unix(0, updatedAt)
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+// DocumentSourceDefSetActive UPSERTs the document_source_def_active pointer
+// for (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// source AND the supplied tenant — a def can only be promoted within its
+// own tenant.
+func (s *Store) DocumentSourceDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM document_source_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
+	if err == sql.ErrNoRows {
+		return &store.ErrNotFound{Kind: "document_source_def", ID: defID}
+	}
+	if err != nil {
+		return err
+	}
+	if rowName != name {
+		return fmt.Errorf("document_source_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("document_source_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO document_source_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
+		    def_id               = excluded.def_id,
+		    promoted_at          = excluded.promoted_at,
+		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+	)
+	return err
+}
+
+func (s *Store) DocumentSourceDefGetActive(ctx context.Context, tenantID, name string) (store.DocumentSourceDefRow, error) {
+	var defID string
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM document_source_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
+	if err == sql.ErrNoRows {
+		return store.DocumentSourceDefRow{}, &store.ErrNotFound{Kind: "document_source_def_active", ID: name}
+	}
+	if err != nil {
+		return store.DocumentSourceDefRow{}, err
+	}
+	return s.DocumentSourceDefGet(ctx, defID)
+}
+
+func (s *Store) DocumentSourceDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE document_source_defs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "document_source_def", ID: defID}
+	}
+	return nil
+}
+
+const documentSourceDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static,
+	tenant_id
+FROM document_source_defs`
+
+func (s *Store) scanDocumentSourceDef(row *sql.Row) (store.DocumentSourceDefRow, error) {
+	var (
+		out        store.DocumentSourceDefRow
+		definition string
+		createdAt  int64
+		retired    int
+		bootstrap  int
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&createdAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&retired, &bootstrap,
+		&out.TenantID,
+	)
+	if err != nil {
+		return store.DocumentSourceDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	out.CreatedAt = time.Unix(0, createdAt)
+	out.Retired = retired != 0
+	out.BootstrappedFromStatic = bootstrap != 0
+	return out, nil
+}
+
+func (s *Store) scanDocumentSourceDefRows(rows *sql.Rows) ([]store.DocumentSourceDefRow, error) {
+	var out []store.DocumentSourceDefRow
+	for rows.Next() {
+		var (
+			r          store.DocumentSourceDefRow
 			definition string
 			createdAt  int64
 			retired    int

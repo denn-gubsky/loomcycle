@@ -716,6 +716,12 @@ class LoomcycleClient:
         backend registration. Mirror of :meth:`agent_def`."""
         return await self._dispatch_substrate("MemoryBackendDef", input)
 
+    async def document_source_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the DocumentSourceDef substrate tool — remote-document-source
+        registration (RFC CE). Authors + forks named peer document sources the
+        Document tool's set_remote/sync consume. Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("DocumentSourceDef", input)
+
     async def operator_token_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the OperatorTokenDef substrate tool — mint/list/revoke
         per-principal bearer tokens (RFC L multi-tenant auth). Mirror of

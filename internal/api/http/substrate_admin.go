@@ -102,6 +102,13 @@ func (s *Server) handleSubstrateMemoryBackendDef(w http.ResponseWriter, r *http.
 	s.dispatchSubstrate(w, r, "MemoryBackendDef", s.MemoryBackendDef)
 }
 
+// handleSubstrateDocumentSourceDef serves POST /v1/_documentsourcedef.
+// RFC CE DocumentSourceDef substrate. Bearer-authed; same dispatch shape as
+// the other substrate endpoints.
+func (s *Server) handleSubstrateDocumentSourceDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "DocumentSourceDef", s.DocumentSourceDef)
+}
+
 // handleSubstrateVolumeDef serves POST /v1/_volumedef.
 // RFC AH Phase 2a dynamic-volume substrate. Bearer-authed; same dispatch
 // shape as the other substrate endpoints. The capability gate is the
@@ -377,6 +384,12 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	// MemoryBackendDef: same operator-trust posture; "any" scope lets the
 	// HTTP-admin call create/fork/retire any backend name (RFC I MR-3a).
 	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: substrateAdminAgentName,
+	})
+	// DocumentSourceDef: same operator-trust posture; "any" scope lets the
+	// HTTP-admin call create/fork/retire any document-source name (RFC CE).
+	ctx = tools.WithDocumentSourceDefPolicy(ctx, tools.DocumentSourceDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: substrateAdminAgentName,
 	})

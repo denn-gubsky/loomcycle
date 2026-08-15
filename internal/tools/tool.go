@@ -1285,6 +1285,29 @@ func MemoryBackendDefPolicy(ctx context.Context) MemoryBackendDefPolicyValue {
 	return v
 }
 
+type ctxKeyDocumentSourceDefPolicy struct{}
+
+// DocumentSourceDefPolicyValue is the per-agent DocumentSourceDef-tool
+// access policy (RFC CE). Same shape as MemoryBackendDefPolicyValue +
+// same "self / descendants / named:<n> / any" closed scope set.
+// Default-deny when Scopes is empty.
+type DocumentSourceDefPolicyValue struct {
+	Scopes   []string
+	SelfName string
+}
+
+// WithDocumentSourceDefPolicy attaches the policy to ctx.
+func WithDocumentSourceDefPolicy(ctx context.Context, p DocumentSourceDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyDocumentSourceDefPolicy{}, p)
+}
+
+// DocumentSourceDefPolicy returns the policy from ctx. Zero value =
+// default-deny.
+func DocumentSourceDefPolicy(ctx context.Context) DocumentSourceDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyDocumentSourceDefPolicy{}).(DocumentSourceDefPolicyValue)
+	return v
+}
+
 type ctxKeyOperatorTokenDefPolicy struct{}
 
 // OperatorTokenDefPolicyValue is the per-caller OperatorTokenDef-tool

@@ -307,6 +307,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("memorybackenddef"),
 		},
 		{
+			Name:        "documentsourcedef",
+			Description: "DocumentSourceDef tool ops (create/fork/get/list/retire). The remote-document-source substrate. Operator-admin-only — author + fork named peer document sources at runtime; the Document tool's set_remote/sync consume them. Static document_sources.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
+			InputSchema: builtinSchema("documentsourcedef"),
+		},
+		{
 			Name:        "operatortokendef",
 			Description: "OperatorTokenDef tool ops (create/rotate/retire/get/list). Multi-tenant authorization. Operator-admin-only — mint, rotate, and retire bearer tokens each bound to an authoritative principal {tenant_id, subject, allowed_scopes}. The token plaintext is shown ONCE on create/rotate. Pass-through.",
 			InputSchema: builtinSchema("operatortokendef"),

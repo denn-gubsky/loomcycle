@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/docremote"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -62,14 +63,14 @@ func newRemoteDocumentClient(ds config.DocumentSource) (*docremote.Client, error
 // ---- set_remote: bind a local document to a peer source ----
 
 func (d *Document) setRemote(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
-	if d.Cfg == nil {
-		return errResult("set_remote: document sources are not configured (no document_sources: in operator yaml)"), nil
-	}
 	if in.Source == "" {
 		return errResult("set_remote: missing required field: source (a document_sources name)"), nil
 	}
-	if _, ok := d.Cfg.DocumentSources[in.Source]; !ok {
-		return errResult(fmt.Sprintf("set_remote: unknown document source %q (declare it under document_sources:)", in.Source)), nil
+	// Resolve against BOTH static document_sources: yaml AND the tenant-scoped
+	// DocumentSourceDef substrate (dynamic, runtime-authored).
+	tenantID := tools.RunIdentity(ctx).TenantID
+	if _, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, in.Source); !ok {
+		return errResult(fmt.Sprintf("set_remote: unknown document source %q (declare it under document_sources: or author a DocumentSourceDef)", in.Source)), nil
 	}
 	if in.RemoteRef == "" {
 		return errResult("set_remote: missing required field: remote_ref (the remote document's path or id)"), nil
@@ -151,9 +152,6 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 		r := errResult(op + ": " + msg)
 		return nil, &r
 	}
-	if d.Cfg == nil {
-		return fail("document sources are not configured")
-	}
 	localDocID, err := d.docIDFromInput(ctx, key, in)
 	if err != nil {
 		return fail(err.Error())
@@ -165,9 +163,12 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 	if source == "" {
 		return fail("this document is not bound to a remote (call set_remote first)")
 	}
-	ds, ok := d.Cfg.DocumentSources[source]
+	// Resolve against BOTH static document_sources: yaml AND the tenant-scoped
+	// DocumentSourceDef substrate (dynamic, runtime-authored).
+	tenantID := tools.RunIdentity(ctx).TenantID
+	ds, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, source)
 	if !ok {
-		return fail(fmt.Sprintf("unknown document source %q (was it removed from document_sources:?)", source))
+		return fail(fmt.Sprintf("unknown document source %q (was it removed from document_sources: / retired?)", source))
 	}
 	client, err := newRemoteDocumentClient(ds)
 	if err != nil {

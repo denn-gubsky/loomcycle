@@ -164,6 +164,7 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
+	ctx = tools.WithDocumentSourceDefPolicy(ctx, tools.DocumentSourceDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
 
 	if isAdmin {

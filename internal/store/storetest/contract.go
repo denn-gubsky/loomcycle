@@ -337,6 +337,14 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryBackendDefParentNotFound", testMemoryBackendDefParentNotFound},
 		{"MemoryBackendDefListByName", testMemoryBackendDefListByName},
 		{"MemoryBackendDefListChildren", testMemoryBackendDefListChildren},
+		{"DocumentSourceDefCreateAndGet", testDocumentSourceDefCreateAndGet},
+		{"DocumentSourceDefVersionMonotonic", testDocumentSourceDefVersionMonotonic},
+		{"DocumentSourceDefActivePointerIdempotent", testDocumentSourceDefActivePointerIdempotent},
+		{"DocumentSourceDefTenantIsolation", testDocumentSourceDefTenantIsolation},
+		{"DocumentSourceDefRetireReversible", testDocumentSourceDefRetireReversible},
+		{"DocumentSourceDefParentNotFound", testDocumentSourceDefParentNotFound},
+		{"DocumentSourceDefListByName", testDocumentSourceDefListByName},
+		{"DocumentSourceDefListChildren", testDocumentSourceDefListChildren},
 		// RFC AH Phase 2a VolumeDef substrate — flat (tenant, name) table.
 		{"VolumeDefCreateAndGet", testVolumeDefCreateAndGet},
 		{"VolumeDefTenantIsolation", testVolumeDefTenantIsolation},
@@ -8769,6 +8777,198 @@ func testMemoryBackendDefListChildren(t *testing.T, s store.Store) {
 		}
 	}
 	children, err := s.MemoryBackendDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Errorf("children len = %d, want 2", len(children))
+	}
+}
+
+// ---- DocumentSourceDef substrate ----
+//
+// Faithful structural mirror of the MemoryBackendDef round-trip contract
+// tests.
+
+func mkDocumentSourceDef(id, name string, parent string) store.DocumentSourceDefRow {
+	return store.DocumentSourceDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"kind":"inprocess","config":{"base_url":"https://source.example.com","api_version":"v1","api_key_env":"LOOMCYCLE_SOURCE_KEY"},"tenancy_strategy":{"kind":"shared_key_with_prefix","prefix_pattern":"tenant/{tenant_id}/"},"fallback_on_error":"inprocess"}`),
+		Description: "test row",
+	}
+}
+
+func testDocumentSourceDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.DocumentSourceDefCreate(ctx, mkDocumentSourceDef("ds-1", "source-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.DocumentSourceDefGet(ctx, "ds-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "source-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func testDocumentSourceDefVersionMonotonic(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		row := mkDocumentSourceDef(fmt.Sprintf("ds-mono-%d", i), "source-mono", "")
+		written, err := s.DocumentSourceDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if want := i + 1; written.Version != want {
+			t.Errorf("create #%d: version = %d, want %d", i, written.Version, want)
+		}
+	}
+}
+
+func testDocumentSourceDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r1, _ := s.DocumentSourceDefCreate(ctx, mkDocumentSourceDef("ds-active-1", "source-active", ""))
+	r2, _ := s.DocumentSourceDefCreate(ctx, mkDocumentSourceDef("ds-active-2", "source-active", ""))
+
+	if err := s.DocumentSourceDefSetActive(ctx, "", "source-active", r1.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.DocumentSourceDefGetActive(ctx, "", "source-active")
+	if got.DefID != r1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
+	}
+	if err := s.DocumentSourceDefSetActive(ctx, "", "source-active", r2.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.DocumentSourceDefGetActive(ctx, "", "source-active")
+	if got.DefID != r2.DefID {
+		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testDocumentSourceDefTenantIsolation mirrors testMemoryBackendDefTenantIsolation:
+// two tenants own the same name with distinct bodies, each GetActive returns
+// its own, and cross-tenant promote is refused.
+func testDocumentSourceDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-source"
+
+	aDef := mkDocumentSourceDef("dsti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"kind":"inprocess","v":"A"}`)
+	aRow, err := s.DocumentSourceDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkDocumentSourceDef("dsti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"kind":"inprocess","v":"B"}`)
+	bRow, err := s.DocumentSourceDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.DocumentSourceDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.DocumentSourceDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.DocumentSourceDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"kind":"inprocess","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.DocumentSourceDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"kind":"inprocess","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	// A def can only be promoted within its own tenant.
+	if err := s.DocumentSourceDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
+	}
+}
+
+func testDocumentSourceDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, _ := s.DocumentSourceDefCreate(ctx, mkDocumentSourceDef("ds-retire", "source-retire", ""))
+	if row.Retired {
+		t.Error("freshly created row should not be retired")
+	}
+	if err := s.DocumentSourceDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.DocumentSourceDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("after retire(true): row should be retired")
+	}
+	if err := s.DocumentSourceDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.DocumentSourceDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("after retire(false): row should NOT be retired")
+	}
+}
+
+func testDocumentSourceDefParentNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkDocumentSourceDef("ds-orphan", "source-orphan", "ds-nonexistent")
+	_, err := s.DocumentSourceDefCreate(ctx, row)
+	if err == nil {
+		t.Fatal("expected ErrDocumentSourceDefParentNotFound, got nil")
+	}
+	if !errors.Is(err, store.ErrDocumentSourceDefParentNotFound) {
+		t.Errorf("got %v, want ErrDocumentSourceDefParentNotFound", err)
+	}
+}
+
+func testDocumentSourceDefListByName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := s.DocumentSourceDefCreate(ctx, mkDocumentSourceDef(fmt.Sprintf("ds-list-%d", i), "source-list", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.DocumentSourceDefListByName(ctx, "source-list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("len = %d, want 3", len(rows))
+	}
+	// version DESC ordering
+	if rows[0].Version != 3 || rows[1].Version != 2 || rows[2].Version != 1 {
+		t.Errorf("ordering wrong; versions = %d/%d/%d, want 3/2/1",
+			rows[0].Version, rows[1].Version, rows[2].Version)
+	}
+}
+
+func testDocumentSourceDefListChildren(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, _ := s.DocumentSourceDefCreate(ctx, mkDocumentSourceDef("ds-parent", "source-tree", ""))
+	for i := 0; i < 2; i++ {
+		_, err := s.DocumentSourceDefCreate(ctx, mkDocumentSourceDef(fmt.Sprintf("ds-child-%d", i), fmt.Sprintf("source-child-%d", i), parent.DefID))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	children, err := s.DocumentSourceDefListChildren(ctx, parent.DefID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -81,6 +81,7 @@ const (
 	Loomcycle_A2AAgentDef_FullMethodName         = "/loomcycle.v1.Loomcycle/A2AAgentDef"
 	Loomcycle_WebhookDef_FullMethodName          = "/loomcycle.v1.Loomcycle/WebhookDef"
 	Loomcycle_MemoryBackendDef_FullMethodName    = "/loomcycle.v1.Loomcycle/MemoryBackendDef"
+	Loomcycle_DocumentSourceDef_FullMethodName   = "/loomcycle.v1.Loomcycle/DocumentSourceDef"
 	Loomcycle_OperatorTokenDef_FullMethodName    = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
 	Loomcycle_VolumeDef_FullMethodName           = "/loomcycle.v1.Loomcycle/VolumeDef"
 	Loomcycle_TeamDef_FullMethodName             = "/loomcycle.v1.Loomcycle/TeamDef"
@@ -368,6 +369,12 @@ type LoomcycleClient interface {
 	// (create / fork / get / list / retire) + is_error tool refusals
 	// in the response. (RFC I MR-3a / mirrors WebhookDef.)
 	MemoryBackendDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// DocumentSourceDef dispatches to the RFC CE remote-document-source
+	// substrate. Mirrors POST /v1/_documentsourcedef. Operator-admin-only.
+	// Same SubstrateRequest body shape — op-discriminated input_json
+	// (create / fork / get / list / retire) + is_error tool refusals in the
+	// response. Consumed by the Document tool's set_remote/sync.
+	DocumentSourceDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// OperatorTokenDef dispatches to the RFC L OSS multi-tenant
 	// authorization substrate (auth-token minting/rotation/retirement).
 	// Mirrors POST /v1/_operatortokendef. Operator-admin-only. Same
@@ -925,6 +932,16 @@ func (c *loomcycleClient) MemoryBackendDef(ctx context.Context, in *SubstrateReq
 	return out, nil
 }
 
+func (c *loomcycleClient) DocumentSourceDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_DocumentSourceDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) OperatorTokenDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubstrateResponse)
@@ -1354,6 +1371,12 @@ type LoomcycleServer interface {
 	// (create / fork / get / list / retire) + is_error tool refusals
 	// in the response. (RFC I MR-3a / mirrors WebhookDef.)
 	MemoryBackendDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// DocumentSourceDef dispatches to the RFC CE remote-document-source
+	// substrate. Mirrors POST /v1/_documentsourcedef. Operator-admin-only.
+	// Same SubstrateRequest body shape — op-discriminated input_json
+	// (create / fork / get / list / retire) + is_error tool refusals in the
+	// response. Consumed by the Document tool's set_remote/sync.
+	DocumentSourceDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// OperatorTokenDef dispatches to the RFC L OSS multi-tenant
 	// authorization substrate (auth-token minting/rotation/retirement).
 	// Mirrors POST /v1/_operatortokendef. Operator-admin-only. Same
@@ -1582,6 +1605,9 @@ func (UnimplementedLoomcycleServer) WebhookDef(context.Context, *SubstrateReques
 }
 func (UnimplementedLoomcycleServer) MemoryBackendDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MemoryBackendDef not implemented")
+}
+func (UnimplementedLoomcycleServer) DocumentSourceDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DocumentSourceDef not implemented")
 }
 func (UnimplementedLoomcycleServer) OperatorTokenDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method OperatorTokenDef not implemented")
@@ -2402,6 +2428,24 @@ func _Loomcycle_MemoryBackendDef_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_DocumentSourceDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).DocumentSourceDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_DocumentSourceDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).DocumentSourceDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_OperatorTokenDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubstrateRequest)
 	if err := dec(in); err != nil {
@@ -2831,6 +2875,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MemoryBackendDef",
 			Handler:    _Loomcycle_MemoryBackendDef_Handler,
+		},
+		{
+			MethodName: "DocumentSourceDef",
+			Handler:    _Loomcycle_DocumentSourceDef_Handler,
 		},
 		{
 			MethodName: "OperatorTokenDef",

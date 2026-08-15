@@ -263,6 +263,16 @@ type Connector interface {
 	// dispatch through this single Connector method.
 	MemoryBackendDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// DocumentSourceDef — RFC CE remote-document-source registration
+	// substrate. Op-discriminated (create / fork / get / list / retire).
+	// Same operator-admin-only posture as MemoryBackendDef. Reachable via
+	// POST /v1/_documentsourcedef, the LoomCycle MCP meta-tool
+	// `documentsourcedef`, the gRPC DocumentSourceDef RPC, and the TS
+	// adapter's client.documentSourceDef() method — all four dispatch
+	// through this single Connector method. Consumed by the Document tool's
+	// set_remote/sync (runtime-authored peer document sources).
+	DocumentSourceDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// OperatorTokenDef — RFC L OSS multi-tenant authorization. Mints,
 	// rotates, retires, and inspects the bearer tokens that replace the
 	// single LOOMCYCLE_AUTH_TOKEN shared secret, each bound to an

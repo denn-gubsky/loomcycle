@@ -370,6 +370,13 @@ type Server struct {
 	// "not configured" errors. Set via SetMemoryBackendDefTool.
 	memoryBackendDefTool tools.Tool
 
+	// documentSourceDefTool is the RFC CE DocumentSourceDef substrate tool
+	// (runtime-authored peer document sources). Kept in a dedicated slot (NOT
+	// in s.tools), reached via Connector.DocumentSourceDef + the admin
+	// endpoint + the LoomCycle MCP meta-tool. Nil = the surface returns "not
+	// configured" errors. Set via SetDocumentSourceDefTool.
+	documentSourceDefTool tools.Tool
+
 	// operatorTokenDefTool is the RFC L OperatorTokenDef substrate tool
 	// (auth-token minting/rotation/retirement). Operator-admin-only — NOT
 	// in s.tools; reached via Connector.OperatorTokenDef + the admin
@@ -933,6 +940,15 @@ func (s *Server) SetWebhookDefTool(t tools.Tool) {
 // constructed alongside the other substrate tools in main.go.
 func (s *Server) SetMemoryBackendDefTool(t tools.Tool) {
 	s.memoryBackendDefTool = t
+}
+
+// SetDocumentSourceDefTool wires the RFC CE DocumentSourceDef substrate tool.
+// Without this call, Connector.DocumentSourceDef + POST /v1/_documentsourcedef
+// + the LoomCycle MCP meta-tool all refuse with "not configured". The tool only
+// needs the store + cfg, so it is constructed alongside the other substrate
+// tools in main.go.
+func (s *Server) SetDocumentSourceDefTool(t tools.Tool) {
+	s.documentSourceDefTool = t
 }
 
 // SetOperatorTokenDefTool wires the RFC L OperatorTokenDef substrate
@@ -2950,6 +2966,9 @@ func (s *Server) Mux() http.Handler {
 	// RFC I MR-3a MemoryBackendDef substrate. Same operator-admin-only
 	// dispatch shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_memorybackenddef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMemoryBackendDef))))
+	// RFC CE DocumentSourceDef substrate. Same operator-admin-only dispatch
+	// shape as the other substrate admin endpoints.
+	mux.Handle("POST /v1/_documentsourcedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocumentSourceDef))))
 	// RFC L OSS multi-tenant authorization — OperatorTokenDef admin.
 	mux.Handle("POST /v1/_operatortokendef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateOperatorTokenDef))))
 	// Whoami — the Web UI's role source (any authenticated principal).
@@ -2988,6 +3007,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_a2aagentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AAgentDefNames))))
 	mux.Handle("GET /v1/_webhookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListWebhookDefNames))))
 	mux.Handle("GET /v1/_memorybackenddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryBackendDefNames))))
+	mux.Handle("GET /v1/_documentsourcedef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListDocumentSourceDefNames))))
 	mux.Handle("GET /v1/_operatortokendef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListOperatorTokenDefNames))))
 	// RFC AQ — read-only embedded preset/bundle + env-template introspection
 	// (the `loomcycle presets` / `env-template` CLI, web-reachable for the

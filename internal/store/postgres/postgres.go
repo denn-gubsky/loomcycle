@@ -7464,6 +7464,255 @@ func (s *Store) scanMemoryBackendDefRows(rows pgx.Rows) ([]store.MemoryBackendDe
 	return out, rows.Err()
 }
 
+// ---- DocumentSourceDef substrate ----
+//
+// Faithful structural mirror of MemoryBackendDef* (which itself mirrors
+// WebhookDef* without the sweeper run_state table).
+
+func (s *Store) DocumentSourceDefCreate(ctx context.Context, row store.DocumentSourceDefRow) (store.DocumentSourceDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def: def_id + name required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def create begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// RFC N: tenant is part of the version-allocation lock scope so two
+	// tenants' v1 of the same name don't collide on UNIQUE(tenant_id, name,
+	// version).
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		"document_source_def:"+row.TenantID+":"+row.Name,
+	); err != nil {
+		return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def create lock: %w", err)
+	}
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM document_source_defs WHERE def_id = $1`, row.ParentDefID).Scan(&n); err != nil {
+			return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def create parent check: %w", err)
+		}
+		if n == 0 {
+			return store.DocumentSourceDefRow{}, store.ErrDocumentSourceDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM document_source_defs WHERE tenant_id = $1 AND name = $2`, row.TenantID, row.Name).Scan(&maxVer); err != nil {
+		return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def create max version: %w", err)
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now().UTC()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO document_source_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)`,
+		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
+		string(row.Definition), nullableString(row.Description),
+		row.CreatedAt,
+		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
+		row.Retired, row.BootstrappedFromStatic, row.TenantID,
+	); err != nil {
+		return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def commit: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Store) DocumentSourceDefGet(ctx context.Context, defID string) (store.DocumentSourceDefRow, error) {
+	row, err := s.scanDocumentSourceDef(s.pool.QueryRow(ctx, documentSourceDefSelect+` WHERE def_id = $1`, defID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.DocumentSourceDefRow{}, &store.ErrNotFound{Kind: "document_source_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) DocumentSourceDefGetByNameVersion(ctx context.Context, name string, version int) (store.DocumentSourceDefRow, error) {
+	row, err := s.scanDocumentSourceDef(s.pool.QueryRow(ctx, documentSourceDefSelect+` WHERE name = $1 AND version = $2`, name, version))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.DocumentSourceDefRow{}, &store.ErrNotFound{Kind: "document_source_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) DocumentSourceDefListByName(ctx context.Context, name string) ([]store.DocumentSourceDefRow, error) {
+	rows, err := s.pool.Query(ctx, documentSourceDefSelect+` WHERE name = $1 ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("document_source_def list by name: %w", err)
+	}
+	defer rows.Close()
+	return s.scanDocumentSourceDefRows(rows)
+}
+
+func (s *Store) DocumentSourceDefListChildren(ctx context.Context, parentDefID string) ([]store.DocumentSourceDefRow, error) {
+	rows, err := s.pool.Query(ctx, documentSourceDefSelect+` WHERE parent_def_id = $1 ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, fmt.Errorf("document_source_def list children: %w", err)
+	}
+	defer rows.Close()
+	return s.scanDocumentSourceDefRows(rows)
+}
+
+func (s *Store) DocumentSourceDefListNames(ctx context.Context) ([]store.DocumentSourceDefNameSummary, error) {
+	// RFC N: group by tenant_id so a name owned by N tenants yields N rows.
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			d.tenant_id,
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM document_source_defs d
+		LEFT JOIN document_source_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
+	if err != nil {
+		return nil, fmt.Errorf("document_source_def list names: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.DocumentSourceDefNameSummary
+	for rows.Next() {
+		var ns store.DocumentSourceDefNameSummary
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+// DocumentSourceDefSetActive UPSERTs the document_source_def_active pointer
+// for (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// source AND the supplied tenant — a def can only be promoted within its
+// own tenant.
+func (s *Store) DocumentSourceDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.pool.QueryRow(ctx, `SELECT name, tenant_id FROM document_source_defs WHERE def_id = $1`, defID).Scan(&rowName, &rowTenant)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &store.ErrNotFound{Kind: "document_source_def", ID: defID}
+	}
+	if err != nil {
+		return fmt.Errorf("document_source_def_active check: %w", err)
+	}
+	if rowName != name {
+		return fmt.Errorf("document_source_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("document_source_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO document_source_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, name) DO UPDATE SET
+		    def_id               = EXCLUDED.def_id,
+		    promoted_at          = EXCLUDED.promoted_at,
+		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
+		tenantID, name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+	)
+	if err != nil {
+		return fmt.Errorf("document_source_def_active upsert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DocumentSourceDefGetActive(ctx context.Context, tenantID, name string) (store.DocumentSourceDefRow, error) {
+	var defID string
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM document_source_def_active WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&defID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.DocumentSourceDefRow{}, &store.ErrNotFound{Kind: "document_source_def_active", ID: name}
+	}
+	if err != nil {
+		return store.DocumentSourceDefRow{}, fmt.Errorf("document_source_def_active lookup: %w", err)
+	}
+	return s.DocumentSourceDefGet(ctx, defID)
+}
+
+func (s *Store) DocumentSourceDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE document_source_defs SET retired = $1 WHERE def_id = $2`, retired, defID)
+	if err != nil {
+		return fmt.Errorf("document_source_def set retired: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "document_source_def", ID: defID}
+	}
+	return nil
+}
+
+const documentSourceDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition::text,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static,
+	tenant_id
+FROM document_source_defs`
+
+func (s *Store) scanDocumentSourceDef(row pgx.Row) (store.DocumentSourceDefRow, error) {
+	var (
+		out        store.DocumentSourceDefRow
+		definition string
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&out.CreatedAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&out.Retired, &out.BootstrappedFromStatic,
+		&out.TenantID,
+	)
+	if err != nil {
+		return store.DocumentSourceDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	return out, nil
+}
+
+func (s *Store) scanDocumentSourceDefRows(rows pgx.Rows) ([]store.DocumentSourceDefRow, error) {
+	var out []store.DocumentSourceDefRow
+	for rows.Next() {
+		var (
+			r          store.DocumentSourceDefRow
+			definition string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&r.CreatedAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&r.Retired, &r.BootstrappedFromStatic,
+			&r.TenantID,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
 
 func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunAt time.Time) error {

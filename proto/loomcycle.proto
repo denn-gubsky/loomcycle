@@ -363,6 +363,13 @@ service Loomcycle {
   // in the response. (RFC I MR-3a / mirrors WebhookDef.)
   rpc MemoryBackendDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // DocumentSourceDef dispatches to the RFC CE remote-document-source
+  // substrate. Mirrors POST /v1/_documentsourcedef. Operator-admin-only.
+  // Same SubstrateRequest body shape — op-discriminated input_json
+  // (create / fork / get / list / retire) + is_error tool refusals in the
+  // response. Consumed by the Document tool's set_remote/sync.
+  rpc DocumentSourceDef(SubstrateRequest) returns (SubstrateResponse);
+
   // OperatorTokenDef dispatches to the RFC L OSS multi-tenant
   // authorization substrate (auth-token minting/rotation/retirement).
   // Mirrors POST /v1/_operatortokendef. Operator-admin-only. Same

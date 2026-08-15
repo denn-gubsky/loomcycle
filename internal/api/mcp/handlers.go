@@ -113,6 +113,12 @@ var handlersByName = map[string]toolHandler{
 	"memorybackenddef": wrapBuiltin("memorybackenddef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.MemoryBackendDef(ctx, in)
 	}),
+	// documentsourcedef: RFC CE remote-document-source substrate. Same
+	// operator-admin-only posture as memorybackenddef; author + fork peer
+	// document sources over MCP that the Document tool's set_remote/sync consume.
+	"documentsourcedef": wrapBuiltin("documentsourcedef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.DocumentSourceDef(ctx, in)
+	}),
 	// operatortokendef: RFC L OSS multi-tenant authorization. Mint /
 	// rotate / retire / inspect operator auth tokens. MCP stdio is
 	// single-operator by construction, so operatorCtx grants admin.
