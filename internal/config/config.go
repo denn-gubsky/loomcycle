@@ -5918,8 +5918,12 @@ func validate(c *Config) error {
 		if ds.Config.BaseURL == "" {
 			return fmt.Errorf("document_sources.%s: config.base_url is required", dname)
 		}
-		if u, uerr := url.Parse(ds.Config.BaseURL); uerr != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("document_sources.%s: config.base_url %q must be an http(s) URL", dname, ds.Config.BaseURL)
+		// Require scheme AND host — an empty host (e.g. "http:///v1") is a
+		// non-dialable URL. This matches the DocumentSourceDef overlay validator
+		// (requireHTTPURL), so a value accepted at boot is also accepted for a
+		// runtime fork and vice-versa.
+		if u, uerr := url.Parse(ds.Config.BaseURL); uerr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("document_sources.%s: config.base_url %q must be an http(s) URL with a host", dname, ds.Config.BaseURL)
 		}
 		if ds.Config.APIKeyEnv != "" && !EnvNameCredentialSafe(ds.Config.APIKeyEnv) {
 			return fmt.Errorf("document_sources.%s: config.api_key_env %q is not an allowed credential env var "+

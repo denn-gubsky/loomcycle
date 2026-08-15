@@ -60,6 +60,14 @@ func resolveDocumentSourceSubstrate(ctx context.Context, s DocumentSourceStore, 
 	if err != nil {
 		return config.DocumentSource{}, false
 	}
+	// A retired def that is still the active pointer must NOT resolve — retiring
+	// the active source deactivates it (set_remote/sync then report "unknown
+	// source" until a live version is promoted), rather than silently dialing a
+	// peer the operator retired. (The store keeps the pointer for lineage; the
+	// resolver is where "retired means unusable" is enforced.)
+	if activeRow.Retired {
+		return config.DocumentSource{}, false
+	}
 	var sd SubstrateDocumentSourceDef
 	if uerr := json.Unmarshal(activeRow.Definition, &sd); uerr != nil {
 		return config.DocumentSource{}, false

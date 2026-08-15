@@ -243,6 +243,7 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/_scheduledef", auth.ScopeTenant},
 		{"POST", "/v1/_webhookdef", auth.ScopeTenant},
 		{"POST", "/v1/_memorybackenddef", auth.ScopeTenant},
+		{"POST", "/v1/_documentsourcedef", auth.ScopeTenant},
 		{"POST", "/v1/_a2aagentdef", auth.ScopeTenant},
 		{"POST", "/v1/_a2aservercarddef", auth.ScopeTenant},
 		{"GET", "/v1/_a2aservercarddef/names", auth.ScopeTenant},
@@ -307,6 +308,11 @@ func TestRequiredScopeFor(t *testing.T) {
 		// NOT via the /v1/_memory/ prefix (no slash after "memory").
 		{"POST", "/v1/_memorybackenddef", auth.ScopeTenant},
 		{"GET", "/v1/_memorybackenddef/names", auth.ScopeTenant},
+		// RFC CE: the DocumentSourceDef def family is ScopeTenant via
+		// isTenantConfinedDefPath (mirrors _memorybackenddef) — gRPC/MCP already
+		// grant ScopeTenant, so the HTTP route must not be stricter.
+		{"POST", "/v1/_documentsourcedef", auth.ScopeTenant},
+		{"GET", "/v1/_documentsourcedef/names", auth.ScopeTenant},
 		// RFC AF: hooks are tenant-confined now that the registry is
 		// tenant-isolated (stamp on register, tenant-filtered Match, scoped
 		// List/Delete). substrate:admin still satisfies.
