@@ -1752,6 +1752,16 @@ type Store interface {
 	// returns the count removed — keeps the opt-in feed table bounded.
 	PruneMemoryChanges(ctx context.Context, olderThan time.Time) (int, error)
 
+	// GetChangeSubscriptionCursor returns the last seq delivered to a
+	// change-subscription (RFC CD Part C push), or 0 if it has never delivered.
+	// The persisted cursor makes push delivery resume at-least-once across a
+	// restart (the subscriber dedupes on the monotonic seq).
+	GetChangeSubscriptionCursor(ctx context.Context, name string) (int64, error)
+
+	// SetChangeSubscriptionCursor upserts the last delivered seq for a
+	// change-subscription.
+	SetChangeSubscriptionCursor(ctx context.Context, name string, seq int64) error
+
 	// MemoryAtomicUpdate runs `reducer` as an atomic read-modify-write
 	// against (scope, scopeID, key). The reducer receives the current
 	// value (empty json.RawMessage when the row doesn't exist) and

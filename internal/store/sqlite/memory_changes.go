@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -61,4 +63,22 @@ func (s *Store) PruneMemoryChanges(ctx context.Context, olderThan time.Time) (in
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+func (s *Store) GetChangeSubscriptionCursor(ctx context.Context, name string) (int64, error) {
+	var seq int64
+	err := s.db.QueryRowContext(ctx, `SELECT last_seq FROM change_subscription_cursors WHERE name = ?`, name).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return seq, err
+}
+
+func (s *Store) SetChangeSubscriptionCursor(ctx context.Context, name string, seq int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO change_subscription_cursors(name, last_seq, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET last_seq = excluded.last_seq, updated_at = excluded.updated_at`,
+		name, seq, time.Now().UnixNano(),
+	)
+	return err
 }

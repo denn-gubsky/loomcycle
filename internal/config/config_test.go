@@ -141,6 +141,40 @@ mcp_servers:
 	}
 }
 
+// RFC CD Part C (push) — change_subscriptions validation.
+func TestChangeSubscriptionsValidation(t *testing.T) {
+	const base = "defaults: { provider: anthropic, model: x }\n"
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{"valid", "change_subscriptions:\n  s1: { callback_url: \"https://example.com/hook\", secret_env: LOOMCYCLE_SUB_SECRET, scope: user, kinds: [memory, document.chunk.updated] }", false},
+		{"missing callback_url", "change_subscriptions:\n  s1: { secret_env: LOOMCYCLE_SUB_SECRET }", true},
+		{"non-http callback", "change_subscriptions:\n  s1: { callback_url: \"ftp://example.com\" }", true},
+		{"bad secret_env (not allowlisted)", "change_subscriptions:\n  s1: { callback_url: \"https://example.com\", secret_env: SOME_RANDOM_SECRET }", true},
+		{"bad scope", "change_subscriptions:\n  s1: { callback_url: \"https://example.com\", scope: cluster }", true},
+		{"unknown kind", "change_subscriptions:\n  s1: { callback_url: \"https://example.com\", kinds: [bogus] }", true},
+		{"disabled skips validation", "change_subscriptions:\n  s1: { disabled: true }", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			p := filepath.Join(tmp, "c.yaml")
+			if err := os.WriteFile(p, []byte(base+c.yaml+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(p)
+			if c.wantErr && err == nil {
+				t.Errorf("expected a validation error, got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // v0.8.6 system-channels validation rules.
 
 func TestValidationRejectsPeriodWithoutPublisherSystem(t *testing.T) {

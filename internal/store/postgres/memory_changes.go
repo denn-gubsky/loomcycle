@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -60,4 +63,22 @@ func (s *Store) PruneMemoryChanges(ctx context.Context, olderThan time.Time) (in
 		return 0, err
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+func (s *Store) GetChangeSubscriptionCursor(ctx context.Context, name string) (int64, error) {
+	var seq int64
+	err := s.pool.QueryRow(ctx, `SELECT last_seq FROM change_subscription_cursors WHERE name = $1`, name).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return seq, err
+}
+
+func (s *Store) SetChangeSubscriptionCursor(ctx context.Context, name string, seq int64) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO change_subscription_cursors(name, last_seq, updated_at) VALUES ($1, $2, now())
+		 ON CONFLICT(name) DO UPDATE SET last_seq = EXCLUDED.last_seq, updated_at = now()`,
+		name, seq,
+	)
+	return err
 }

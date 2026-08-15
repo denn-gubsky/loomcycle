@@ -187,6 +187,13 @@ type Config struct {
 	// factory land in MR-3b.
 	MemoryBackends map[string]MemoryBackend `yaml:"memory_backends"`
 
+	// ChangeSubscriptions is the RFC CD Part C (push) registry of outbound
+	// change-feed subscriptions — where to POST value-free memory/document
+	// change events (HMAC-signed), and the (scope, kinds) filter. Delivered by
+	// the change-subscription engine only when LOOMCYCLE_MEMORY_CHANGES_ENABLED.
+	// Empty / nil = no push delivery (the SSE feed still works).
+	ChangeSubscriptions map[string]ChangeSubscription `yaml:"change_subscriptions"`
+
 	// Volumes is the RFC AH registry of named filesystem volumes — the
 	// universe of ro/rw roots an AgentDef may bind to (the filesystem
 	// analog of "registered tools" for tools). Each entry's `path`
@@ -2071,6 +2078,38 @@ type A2AExpectedSkill struct {
 // A 3-way drift test (yaml ↔ lookup.SubstrateWebhookDef ↔ json) pins
 // parity. on_complete reuses ScheduledRunHook — the same hook shape
 // ScheduleDef uses — rather than a parallel type.
+// ChangeSubscription declares one outbound memory/document change-feed
+// subscription (RFC CD Part C push). The engine tails the tenant's change feed,
+// filters by (scope, kinds), and POSTs value-free batches to CallbackURL,
+// HMAC-signed with the key named by SecretEnv. Delivery is at-least-once (a
+// persisted per-subscription cursor resumes across restarts; the subscriber
+// dedupes on the monotonic seq).
+type ChangeSubscription struct {
+	// CallbackURL is the HTTP(S) endpoint that receives the signed batch POST.
+	CallbackURL string `json:"callback_url,omitempty" yaml:"callback_url"`
+	// SecretEnv is the env-var NAME of the HMAC signing key (allowlist-gated,
+	// like a credential env). The value is sent to no one — it signs the body,
+	// carried as X-Loomcycle-Signature = hex(hmac-sha256(secret, body)), the
+	// same scheme loomcycle's inbound webhook verifier checks. Empty = unsigned.
+	SecretEnv string `json:"secret_env,omitempty" yaml:"secret_env"`
+	// TenantID is WHICH tenant's change feed to deliver. "" = the shared/default
+	// tenant. A subscription only ever sees its own tenant's changes.
+	TenantID string `json:"tenant_id,omitempty" yaml:"tenant_id"`
+	// Scope, when set, filters to changes in that memory scope (agent/user/tenant).
+	Scope string `json:"scope,omitempty" yaml:"scope"`
+	// Kinds, when non-empty, filters to these change types. Accepts exact types
+	// (memory.set, document.chunk.updated, …) OR the family shorthands "memory"
+	// / "document". Empty = all changes.
+	Kinds []string `json:"kinds,omitempty" yaml:"kinds"`
+	// AllowPrivateHost opts this subscription's callback in to a private-network
+	// address (a sibling service on the same host/tailnet). Off by default: the
+	// delivery client blocks private/loopback/metadata dials (SSRF) unless the
+	// operator vouches for the host here.
+	AllowPrivateHost bool `json:"allow_private_host,omitempty" yaml:"allow_private_host"`
+	// Disabled turns the subscription off without removing it.
+	Disabled bool `json:"disabled,omitempty" yaml:"disabled"`
+}
+
 type Webhook struct {
 	Enabled  bool   `json:"enabled,omitempty" yaml:"enabled"`
 	Delivery string `json:"delivery,omitempty" yaml:"delivery"`
@@ -5809,6 +5848,38 @@ func validate(c *Config) error {
 			}
 			if mb.TenancyStrategy.Kind == "shared_key_with_prefix" {
 				return fmt.Errorf("memory_backends.%s: kind=remote does not support tenancy_strategy=shared_key_with_prefix (use key_per_tenant)", bname)
+			}
+		}
+	}
+	// Static change subscriptions (RFC CD Part C push): a misconfigured callback
+	// can never deliver, so fail fast at load.
+	changeKindValid := map[string]bool{
+		"memory": true, "document": true,
+		"memory.set": true, "memory.delete": true, "memory.scope_deleted": true,
+		"document.chunk.updated": true, "document.chunk.deleted": true,
+	}
+	for sname, sub := range c.ChangeSubscriptions {
+		if sub.Disabled {
+			continue
+		}
+		if sub.CallbackURL == "" {
+			return fmt.Errorf("change_subscriptions.%s: callback_url is required", sname)
+		}
+		if u, uerr := url.Parse(sub.CallbackURL); uerr != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("change_subscriptions.%s: callback_url %q must be an http(s) URL", sname, sub.CallbackURL)
+		}
+		if sub.SecretEnv != "" && !EnvNameCredentialSafe(sub.SecretEnv) {
+			return fmt.Errorf("change_subscriptions.%s: secret_env %q is not an allowed credential env var "+
+				"(must be LOOMCYCLE_-prefixed or a known third-party key, and not an infra secret)", sname, sub.SecretEnv)
+		}
+		switch sub.Scope {
+		case "", "agent", "user", "tenant":
+		default:
+			return fmt.Errorf("change_subscriptions.%s: scope %q must be agent, user, or tenant", sname, sub.Scope)
+		}
+		for _, k := range sub.Kinds {
+			if !changeKindValid[k] {
+				return fmt.Errorf("change_subscriptions.%s: unknown kind %q (want a change type or the family \"memory\"/\"document\")", sname, k)
 			}
 		}
 	}
