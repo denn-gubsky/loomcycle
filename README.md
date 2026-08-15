@@ -80,6 +80,12 @@ brew install denn-gubsky/loomcycle/loomcycle
 # Docker (v0.11.2+; pull works on amd64 + arm64 including Apple Silicon)
 docker pull denngubsky/loomcycle:latest
 
+# …or the same image from GHCR, if Docker Hub rate-limits your pulls.
+# Byte-identical, published by the same release job. Docker Hub meters
+# anonymous pulls per source IP — and for IPv6 per /64, so every host on
+# one network shares a quota. Swap the prefix on any loomcycle image.
+docker pull ghcr.io/denn-gubsky/loomcycle:latest
+
 # go install from source (skips Web UI embedding — for dev only)
 go install github.com/denn-gubsky/loomcycle/cmd/loomcycle@latest
 

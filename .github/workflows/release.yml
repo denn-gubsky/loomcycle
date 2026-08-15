@@ -59,6 +59,7 @@ env:
 
 permissions:
   contents: write  # needed for goreleaser to upload release assets
+  packages: write  # push the GHCR mirror with the built-in GITHUB_TOKEN
 
 jobs:
   # Decide FULL vs LEAN from the tag shape (the release-cadence rule):
@@ -165,6 +166,19 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+      # GHCR mirror (see .goreleaser.yaml's dockers: comment for WHY —
+      # Docker Hub meters anonymous pulls per source IP / IPv6 /64).
+      # No new secret: GITHUB_TOKEN + the job's packages:write permission.
+      # Gated on the SAME var as Docker Hub because goreleaser tags one
+      # built image with both registries — it cannot push half of them, so
+      # a login failure on either registry fails the whole dockers stage.
+      - name: Log in to GHCR
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pre-create GitHub release with annotated tag body
         # Why this step exists: goreleaser's `release.mode: keep-existing`
@@ -263,7 +277,10 @@ jobs:
     if: needs.classify.outputs.full == 'false'
     runs-on: ubuntu-latest
     permissions:
+      # A job-level block REPLACES the workflow-level one, so packages:write
+      # has to be restated here — otherwise the GHCR push 403s on a patch tag.
       contents: write # pre-create the GitHub release from the annotated tag
+      packages: write # push the GHCR mirror of loomcycle-browser
     steps:
       - uses: actions/checkout@v5
         with:
@@ -341,7 +358,18 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Log in to GHCR
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Pushed to BOTH registries from one build — buildx uploads the same
+      # image twice, so the digests match and an operator can switch the
+      # registry prefix without a version change. The source label is what
+      # links the GHCR package to this repo in the UI.
       - name: Build + push loomcycle-browser (linux/amd64)
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         uses: docker/build-push-action@v6
@@ -350,6 +378,10 @@ jobs:
           file: Dockerfile.browser
           platforms: linux/amd64
           push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle
           tags: |
             denngubsky/loomcycle-browser:${{ needs.classify.outputs.version }}
             denngubsky/loomcycle-browser:latest
+            ghcr.io/denn-gubsky/loomcycle-browser:${{ needs.classify.outputs.version }}
+            ghcr.io/denn-gubsky/loomcycle-browser:latest

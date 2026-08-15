@@ -31,6 +31,10 @@
 #     a locked-down / multi-tenant deploy, switch BOTH images to this and DELETE the
 #     "code execution" env block below. For ISOLATED untrusted code execution, keep
 #     distroless and add the builder sidecar (docs/SANDBOX.md).
+#
+#   Registry: whichever you pick is also on GHCR — prefix it with
+#   `ghcr.io/denn-gubsky/` (same build, same digest) if a Docker Hub pull fails
+#   with `toomanyrequests`. INSTALL.md → "Docker Hub rate limits".
 
 name: loomcycle
 
