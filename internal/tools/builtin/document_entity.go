@@ -187,12 +187,16 @@ type chunkMetaRow struct {
 	// state from judged-and-refuted and the one withholding depends on.
 	JudgedAt    *int64
 	JudgeReason string
+	// JudgedBy is "operator" or the agent's name — server-stamped, never supplied by
+	// the caller. NULL on a verdict recorded before the column existed, which reads as
+	// unknown rather than as either party.
+	JudgedBy string
 }
 
 // readChunkMeta returns the chunk's sidecar row, or found=false when it has none.
 func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (row chunkMetaRow, found bool, err error) {
 	res, err := d.query(ctx, key,
-		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, coalesce(source_quote, ''), coalesce(subject, ''), judged_at, coalesce(judge_reason, '')
+		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, coalesce(source_quote, ''), coalesce(subject, ''), judged_at, coalesce(judge_reason, ''), coalesce(judged_by, '')
 		   FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID)
 	if err != nil || len(res.Rows) == 0 {
 		return chunkMetaRow{}, false, err
@@ -204,7 +208,7 @@ func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunk
 		Class: asStr(r[4]), Origin: asStr(r[5]), Confidence: asFloat64Ptr(r[6]),
 		SessionID: asStr(r[7]), RunID: asStr(r[8]), EventSeq: asInt64Ptr(r[9]),
 		NaturalKey: asStr(r[10]), SourceQuote: asStr(r[11]), Subject: asStr(r[12]),
-		JudgedAt: asInt64Ptr(r[13]), JudgeReason: asStr(r[14]),
+		JudgedAt: asInt64Ptr(r[13]), JudgeReason: asStr(r[14]), JudgedBy: asStr(r[15]),
 	}, true, nil
 }
 
@@ -268,6 +272,9 @@ func chunkMetaToJSON(m chunkMetaRow) map[string]any {
 	if m.JudgeReason != "" {
 		out["judge_reason"] = m.JudgeReason
 	}
+	if m.JudgedBy != "" {
+		out["judged_by"] = m.JudgedBy
+	}
 	return out
 }
 
@@ -325,7 +332,7 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	stmt := `SELECT c.id, c.document_id, c.parent_id, c.position, c.title, c.type, c.status, c.revision,
 	                m.valid_at, m.invalid_at, m.created_at, m.expired_at, m.class, m.origin, m.confidence,
 	                m.session_id, m.run_id, m.event_seq, m.natural_key, coalesce(m.source_quote, ''), coalesce(m.subject, ''),
-	                m.judged_at, coalesce(m.judge_reason, '')
+	                m.judged_at, coalesce(m.judge_reason, ''), coalesce(m.judged_by, '')
 	           FROM chunks c JOIN chunk_memory_meta m ON m.chunk_id = c.id`
 	if len(where) > 0 {
 		stmt += " WHERE " + strings.Join(where, " AND ")
@@ -354,7 +361,7 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			Class: asStr(r[12]), Origin: asStr(r[13]), Confidence: asFloat64Ptr(r[14]),
 			SessionID: asStr(r[15]), RunID: asStr(r[16]), EventSeq: asInt64Ptr(r[17]),
 			NaturalKey: asStr(r[18]), SourceQuote: asStr(r[19]), Subject: asStr(r[20]),
-			JudgedAt: asInt64Ptr(r[21]), JudgeReason: asStr(r[22]),
+			JudgedAt: asInt64Ptr(r[21]), JudgeReason: asStr(r[22]), JudgedBy: asStr(r[23]),
 		}
 		fact := map[string]any{
 			"id":          asStr(r[0]),
@@ -499,14 +506,15 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 	// operator the verdict may be stale.
 	judgedAt := int64Arg(prev.JudgedAt)
 	judgeReason := prev.JudgeReason
+	judgedBy := prev.JudgedBy
 
 	if err := d.exec(ctx, key, `DELETE FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID); err != nil {
 		return err
 	}
 	return d.exec(ctx, key,
 		`INSERT INTO chunk_memory_meta
-		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason, judged_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		chunkID, validAt, invalidAt, createdAt, expiredAt, class,
 		originForEntityWrite(ctx), confidence,
 		// session_id has no writer yet: it is not on the run ctx, only the run id is.
@@ -514,7 +522,7 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 		// when it relays a drained pending row — does not lose it to the next upsert.
 		nullIfEmpty(prev.SessionID), nullIfEmpty(runID), int64Arg(prev.EventSeq),
 		nullIfEmpty(naturalKey), nullIfEmpty(sourceQuote), nullIfEmpty(subject),
-		judgedAt, nullIfEmpty(judgeReason))
+		judgedAt, nullIfEmpty(judgeReason), nullIfEmpty(judgedBy))
 }
 
 // int64Arg / float64Arg turn a nullable read back into a bind arg that round-trips

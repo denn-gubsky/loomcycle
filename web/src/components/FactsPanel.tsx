@@ -7,7 +7,7 @@ import {
   type BrowseScope,
   type FactRow,
 } from "../api";
-import { factActions, factVerdict, operatorReason } from "../lib/factVerdict";
+import { factActions, factVerdict } from "../lib/factVerdict";
 
 // The facts a scope holds, with the evidence each was drawn from and whatever verdict it
 // carries — and the two controls that let a person overrule the judge.
@@ -56,9 +56,9 @@ export default function FactsPanel({ browse }: { browse?: BrowseScope }) {
     if (!reason.trim()) return;
     setBusy(true);
     try {
-      // The operator marker travels in the reason (see the lib module for why it is a
-      // prefix and not a column).
-      await judgeFact(id, good ? "supported" : "unsupported", operatorReason(reason), "user", browse);
+      // No marker in the reason: the server stamps who judged from the call's own
+      // context, so an off-run call like this one records "operator" without asking.
+      await judgeFact(id, good ? "supported" : "unsupported", reason, "user", browse);
       setArming(null);
       setReason("");
       await load();
@@ -136,7 +136,8 @@ export default function FactsPanel({ browse }: { browse?: BrowseScope }) {
 
             {v.reason && (
               <div className="settings-muted fact-reason">
-                {v.byOperator ? "an operator said" : "the judge said"}: {v.reason}
+                {v.byOperator ? "an operator" : v.judgedBy || "an earlier verdict"} said:{" "}
+                {v.reason}
               </div>
             )}
 

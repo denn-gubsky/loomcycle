@@ -129,8 +129,8 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 
 	now := time.Now().UnixNano()
 	if err := d.exec(ctx, key,
-		`UPDATE chunk_memory_meta SET confidence = ?, judged_at = ?, judge_reason = ? WHERE chunk_id = ?`,
-		confidence, now, in.Reason, chunkID); err != nil {
+		`UPDATE chunk_memory_meta SET confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE chunk_id = ?`,
+		confidence, now, in.Reason, judgedByForVerdict(ctx), chunkID); err != nil {
 		return errResult("judge_fact: " + err.Error()), nil
 	}
 	return jsonResult(map[string]any{
@@ -140,6 +140,30 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		"judged_at":  now,
 		"withheld":   confidence < withholdBelowConfidence,
 	})
+}
+
+// judgedByForVerdict records WHO reached a verdict, derived from the context rather than
+// accepted from the caller.
+//
+// SERVER-STAMPED FOR THE REASON `origin` IS: a writer must not get to label its own
+// provenance. An agent asked to record "an operator decided this" would be one prompt
+// injection away from laundering a machine's verdict into a human's, and the whole value
+// of the distinction is that an operator reading a refusal months later can tell which
+// it was.
+//
+// The presence of a run id is the discriminator, exactly as originForEntityWrite uses it:
+// no run means the call came from the off-run console, which only an authenticated
+// operator can reach. An agent's verdict records the AGENT'S NAME rather than a generic
+// marker — "memory/judge" and some other agent that happened to hold the Document tool
+// are different claims, and the second is worth being able to see.
+func judgedByForVerdict(ctx context.Context) string {
+	if tools.RunID(ctx) == "" {
+		return "operator"
+	}
+	if name := tools.AgentName(ctx); name != "" {
+		return name
+	}
+	return "agent"
 }
 
 // withholdClause is the SQL the fact surfaces apply, plus whether it applies at all.

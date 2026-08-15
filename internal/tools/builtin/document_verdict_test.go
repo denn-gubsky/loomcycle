@@ -501,3 +501,88 @@ func TestVerdict_PostgresTierMigratesAndWithholds(t *testing.T) {
 		t.Errorf("postgres: an unjudged fact must stay visible, got count %v", facts["count"])
 	}
 }
+
+// TestVerdict_JudgedByIsServerStampedFromTheContext.
+//
+// A writer must not label its own provenance. An agent able to record "an operator
+// decided this" would be one injected instruction away from laundering a machine's
+// verdict into a human's — and the entire value of the distinction is that someone
+// reading a refusal months later can tell which it was.
+//
+// The presence of a run id is the discriminator, exactly as `origin` uses it: no run
+// means the call arrived through the off-run console, which only an authenticated
+// operator reaches.
+func TestVerdict_JudgedByIsServerStampedFromTheContext(t *testing.T) {
+	d, ctx, withSpan, _ := verdictFixture(t)
+
+	// The fixture's ctx carries no run id → the console.
+	if _, r := docExec(t, d, ctx, `{"op":"judge_fact","scope":"user","id":"`+withSpan+
+		`","verdict":"unsupported","reason":"an operator said so"}`); r.IsError {
+		t.Fatalf("judge: %s", r.Text)
+	}
+	got, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+withSpan+`"}`)
+	entity, _ := got["entity"].(map[string]any)
+	if entity["judged_by"] != "operator" {
+		t.Errorf("judged_by = %v, want \"operator\" for an off-run call", entity["judged_by"])
+	}
+
+	// Now the same op from inside a run: it records the AGENT, and cannot claim to be
+	// the operator however it asks.
+	runCtx := tools.WithRunID(ctx, "r_1")
+	runCtx = tools.WithAgentName(runCtx, "memory/judge")
+	if _, r := docExec(t, d, runCtx, `{"op":"judge_fact","scope":"user","id":"`+withSpan+
+		`","verdict":"supported","reason":"the span carries it","judged_by":"operator"}`); r.IsError {
+		t.Fatalf("judge(run): %s", r.Text)
+	}
+	got, _ = docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+withSpan+`"}`)
+	entity, _ = got["entity"].(map[string]any)
+	if entity["judged_by"] != "memory/judge" {
+		t.Errorf("judged_by = %v, want the agent's name — a run must not be able to "+
+			"record itself as the operator", entity["judged_by"])
+	}
+}
+
+// TestVerdict_JudgedBySurvivesAnEditOfTheClaim, like the rest of the verdict. Editing a
+// fact's text must not silently reattribute who judged it.
+func TestVerdict_JudgedBySurvivesAnEditOfTheClaim(t *testing.T) {
+	d, ctx, withSpan, _ := verdictFixture(t)
+	if _, r := docExec(t, d, ctx, `{"op":"judge_fact","scope":"user","id":"`+withSpan+
+		`","verdict":"unsupported","reason":"r"}`); r.IsError {
+		t.Fatalf("judge: %s", r.Text)
+	}
+	if _, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","natural_key":"f:spanned",`+
+		`"title":"The user lives somewhere else now."}`); r.IsError {
+		t.Fatalf("edit: %s", r.Text)
+	}
+	got, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+withSpan+`"}`)
+	entity, _ := got["entity"].(map[string]any)
+	if entity["judged_by"] != "operator" {
+		t.Errorf("judged_by was lost by an edit: %v", entity)
+	}
+}
+
+// TestVerdict_MigratesAScopeThatPredatesJudgedBy. Same argument as the other verdict
+// columns: CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a store
+// provisioned before this column would never gain it and every verdict write would fail.
+func TestVerdict_MigratesAScopeThatPredatesJudgedBy(t *testing.T) {
+	d, ctx, withSpan, _ := verdictFixture(t)
+	key, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatalf("resolveScope: %v", err)
+	}
+	if derr := d.exec(ctx, key, `ALTER TABLE chunk_memory_meta DROP COLUMN judged_by`); derr != nil {
+		t.Skipf("this tier cannot drop a column: %v", derr)
+	}
+	if d.tableHasColumn(ctx, key, "chunk_memory_meta", "judged_by") {
+		t.Fatal("the column survived the drop — the test cannot reach the state it is for")
+	}
+	if _, r := docExec(t, d, ctx, `{"op":"judge_fact","scope":"user","id":"`+withSpan+
+		`","verdict":"unsupported","reason":"after the migration"}`); r.IsError {
+		t.Fatalf("the migration did not run: %s", r.Text)
+	}
+	got, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+withSpan+`"}`)
+	entity, _ := got["entity"].(map[string]any)
+	if entity["judged_by"] != "operator" {
+		t.Errorf("judged_by not recorded after the migration: %v", entity)
+	}
+}
