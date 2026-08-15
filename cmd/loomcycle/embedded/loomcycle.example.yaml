@@ -446,6 +446,51 @@ hooks:
     # bare owner = shared tenant ""; "tenant:owner" = that tenant only.
     owners: []                    # e.g. ["jobember:jobs-search-web"] — empty default-denies for all
 
+# ─── Memory backends (RFC CD Part B) ──────────────────────────────────
+# Named memory backends an agent selects with `memory_backend: <name>`. With no
+# entry (or kind: inprocess) an agent uses loomcycle's own store — the default.
+#
+# kind: remote proxies an agent's memory to ANOTHER loomcycle instance's
+# /v1/_memory/* — one loomcycle uses another's memory as a backend. The peer
+# embeds server-side (this instance needs no embedder for it); get/set/list/
+# search/stats all round-trip. Auth is api_key_env: a credential-allowlisted
+# env-var NAME (LOOMCYCLE_*-prefixed or a known third-party key — never one of
+# loomcycle's own infra secrets), resolved at use time. The peer host is dialed
+# through an SSRF guard; a private-network peer (sibling replica / tailnet) is
+# reached because the operator declared its base_url. See docs/MEMORY-BACKENDS.md.
+memory_backends: {}
+  # peer:
+  #   kind: remote
+  #   config:
+  #     base_url: "https://peer.example:8787"    # the peer loomcycle instance
+  #     api_key_env: LOOMCYCLE_PEER_MEMORY_KEY   # env NAME of the peer bearer (allowlisted)
+  #   fallback_on_error: inprocess               # degrade to LOCAL memory when the peer is unreachable
+  #   tenancy_strategy:                          # optional; "" = one shared credential
+  #     kind: key_per_tenant                     # a distinct peer credential per local tenant
+  #     env_pattern: LOOMCYCLE_PEER_{tenant_id}_KEY
+  #   # (shared_key_with_prefix is NOT supported for kind: remote — the peer
+  #   #  search API has no key-prefix param, so a namespaced search can't be
+  #   #  tenant-scoped; use key_per_tenant.)
+
+# ─── Change subscriptions — push memory/document change events (RFC CD Part C) ─
+# Deliver value-free change events (the coordinate of WHAT changed, never the
+# value) to an HTTP callback, HMAC-signed. REQUIRES the change feed to be on:
+# LOOMCYCLE_MEMORY_CHANGES_ENABLED=1 (see docs/CONFIGURATION.md). Delivery is
+# at-least-once — a persisted per-subscription cursor resumes across restarts,
+# and the subscriber dedupes on the monotonic seq. The signature is
+# X-Loomcycle-Signature = hex(hmac-sha256(secret, body)), the same scheme
+# loomcycle's inbound webhook verifier checks. (The SSE pull feed —
+# GET /v1/_memory/changes — needs no subscription; see docs/EXTERNAL_API.md.)
+change_subscriptions: {}
+  # my-consumer:
+  #   callback_url: "https://consumer.example/loomcycle-changes"
+  #   secret_env: LOOMCYCLE_CHANGE_SUB_SECRET    # env NAME of the HMAC key (allowlisted); omit = unsigned
+  #   tenant_id: ""                              # which tenant's feed ("" = shared/default)
+  #   scope: user                                # optional filter: agent | user | tenant
+  #   kinds: [memory, document.chunk.updated]    # optional; family "memory"/"document" or exact types
+  #   allow_private_host: false                  # true to deliver to a private-network callback (SSRF opt-in)
+  #   disabled: false
+
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit
 # `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents

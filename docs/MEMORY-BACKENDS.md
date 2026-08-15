@@ -40,11 +40,18 @@ named backend; absent, the agent uses the operator-default (in-process).
 The backend NAME is operator-resolved and stamped onto the run — it is
 **never** model/tool input (same trust posture as the memory scope).
 
-One backend kind ships today:
+Two backend kinds ship today:
 
 | kind        | where state lives                        | when to use |
 |-------------|------------------------------------------|-------------|
 | `inprocess` | loomcycle's own store + embedder (default) | single binary, no external dependency, lowest latency |
+| `remote`    | **another loomcycle instance's** `/v1/_memory/*` (RFC CD Part B) | share or centralize memory across instances; the peer embeds server-side |
+
+A `remote` backend proxies an agent's memory to a peer loomcycle. Unlike the
+external LLM-extract memory *products* the earlier `mem9` slot targeted, a peer
+loomcycle is a **faithful** flat KV+vector store — synchronous `set`→`get`, real
+`stats`, real vector `search` — so it plugs in behind the same six-method
+`memory.Backend` with no paradigm mismatch. See **`kind: remote`** below.
 
 An external REST backend (`mem9`) shipped between v0.15.0 and the removal
 below. It was retired once the in-process backend became a native memory
@@ -67,16 +74,12 @@ memory_backends:
     kind: inprocess
 ```
 
-That is the whole live surface. The persisted definition shape also carries
-`config` (`base_url` / `api_version` / `api_key_env`), `tenancy_strategy`,
-`fallback_on_error`, and `health_check_interval_seconds`. **No shipped kind
-reads any of them** — they are retained because the shape is content-addressed
-and mirrored three ways (operator yaml, the substrate write shape, the
-substrate read shape), so removing them is a storage change rather than a
-docs change. Treat them as **reserved**: set them and nothing happens.
-
-Two are still *validated* at authoring time, deliberately, so the persisted
-shape can never hold a state a future external kind would act on unsafely:
+For `inprocess` that is the whole surface. The definition also carries `config`
+(`base_url` / `api_version` / `api_key_env`), `tenancy_strategy`,
+`fallback_on_error`, and `health_check_interval_seconds` — **inert for
+`inprocess`** (set them and nothing happens) but **consumed by `kind: remote`**
+(below). They are validated at authoring time regardless of kind, so the
+persisted shape can never hold a state a backend would act on unsafely:
 
 - `tenancy_strategy.kind: shared_key_with_prefix` requires a
   `prefix_pattern` containing `{tenant_id}`. An empty or token-less prefix
@@ -86,6 +89,47 @@ shape can never hold a state a future external kind would act on unsafely:
   to contain `{tenant_id}`.
 
 `api_key_env` is an env-var **name**, never a plaintext key.
+
+## `kind: remote` — a peer loomcycle (RFC CD Part B)
+
+A `remote` backend HTTP-proxies the six memory ops to another loomcycle
+instance's `/v1/_memory/*`. The peer embeds server-side, so this instance needs
+no embedder for it; `get`/`set`/`delete`/`list`/`search`/`stats` all round-trip.
+
+```yaml
+memory_backends:
+  peer:
+    kind: remote
+    config:
+      base_url: "https://peer.example:8787"    # the peer loomcycle instance
+      api_key_env: LOOMCYCLE_PEER_MEMORY_KEY    # env NAME of the peer bearer
+    fallback_on_error: inprocess                # degrade to LOCAL memory if the peer is down
+    tenancy_strategy:                           # optional; omit = one shared credential
+      kind: key_per_tenant
+      env_pattern: LOOMCYCLE_PEER_{tenant_id}_KEY
+```
+
+- **`config.base_url`** (required) — the peer's origin. Dialed through an SSRF
+  guard; a private-network peer (a sibling replica, a tailnet host) is reached
+  because the operator declared it, while a redirect to any *other* private
+  address is still refused.
+- **`config.api_key_env`** — the env-var **name** of the bearer minted on the
+  *peer* (a `substrate:tenant` or non-isolated member token). Credential-
+  allowlisted (`LOOMCYCLE_*`-prefixed or a known third-party key) and resolved
+  at use time, so it can never be pointed at one of loomcycle's own infra
+  secrets. Sent as `Authorization: Bearer`; never logged.
+- **`fallback_on_error: inprocess`** — wrap the remote so an unreachable peer
+  **degrades to local memory per-op** instead of failing the run. A genuine
+  "key absent" from the peer is a valid answer and does *not* fall back (it
+  would mask a remote deletion).
+- **`tenancy_strategy`** — `key_per_tenant` maps each local tenant to its own
+  peer credential (env name from `env_pattern`). `shared_key_with_prefix` is
+  **not supported** for `kind: remote`: the peer search API has no key-prefix
+  parameter, so a namespaced search could not be tenant-scoped. Use
+  `key_per_tenant`, or one shared credential (no strategy).
+
+The peer's `/v1/_memory/*` is the same surface published in the OpenAPI contract
+(`GET /v1/openapi.json`, `/v1/docs`) — see [EXTERNAL_API.md](EXTERNAL_API.md).
 
 ## Memory layer: add / recall
 
