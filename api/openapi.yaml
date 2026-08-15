@@ -581,6 +581,7 @@ components:
             - unlinked_mentions
             - set_remote
             - sync
+            - diff_remote
         scope: { type: string, enum: [agent, user, tenant] }
         id: { type: string, description: "Document id or chunk id (op-dependent)." }
         path: { type: string }

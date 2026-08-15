@@ -1458,7 +1458,8 @@ export type DocumentToolInput = {
     | "search"
     // Remote document sources (RFC CE).
     | "set_remote"
-    | "sync";
+    | "sync"
+    | "diff_remote";
   scope?: "agent" | "user" | "tenant";
   /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
   id?: string;
