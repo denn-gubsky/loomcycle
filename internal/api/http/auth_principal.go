@@ -964,6 +964,13 @@ func isTenantConfinedDefPath(path string) bool {
 	for _, fam := range []string{
 		"/v1/_agentdef", "/v1/_skilldef", "/v1/_teamdef", "/v1/_mcpserverdef", "/v1/_scheduledef",
 		"/v1/_webhookdef", "/v1/_memorybackenddef", "/v1/_a2aagentdef", "/v1/_a2aservercarddef",
+		// RFC CE — the DocumentSourceDef substrate write-stamps the caller's
+		// tenant + opaque-404s cross-tenant, exactly like _memorybackenddef, so
+		// it joins the ScopeTenant set. Without this it fell through to the
+		// /v1/_* ScopeAdmin catch-all, making the HTTP transport stricter than
+		// the gRPC/MCP ones (both grant ScopeTenant) and leaving the
+		// tenant-scoping in handleListDocumentSourceDefNames dead for tenant tokens.
+		"/v1/_documentsourcedef",
 		// RFC AH Phase 2a — the dynamic-volume substrate is tenant-confined
 		// (write-stamps the caller's tenant + opaque-404s cross-tenant), so
 		// it joins the ScopeTenant set. No /names sub-path: the list op

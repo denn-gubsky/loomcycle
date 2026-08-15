@@ -519,3 +519,105 @@ func TestDocumentSyncPull_ReconcilesHierarchyTagsEdges(t *testing.T) {
 		t.Errorf("second pull = %+v, want created=0 reparented=0 edges_added=0 unchanged=3", s2)
 	}
 }
+
+// oneFactStubPeer serves a remote document with a single visible keyed chunk
+// (nk1) whose title + body are configurable — used by the convergence (#1) and
+// title-propagation (#3) regression tests.
+func oneFactStubPeer(title, body string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Op string `json:"op"`
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		w.Header().Set("Content-Type", "application/json")
+		switch in.Op {
+		case "get_document":
+			_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "remoteDoc", "root_chunk_id": "r"})
+		case "list_facts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"facts": []map[string]any{
+				{"id": "c1", "title": title, "type": "note", "entity": map[string]any{"natural_key": "nk1", "withheld": false}},
+			}})
+		case "get_chunk":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": in.ID, "body": body})
+		case "query_chunks":
+			_ = json.NewEncoder(w).Encode(map[string]any{"chunks": []map[string]any{{"id": "r"}, {"id": "c1"}}})
+		case "get_edges":
+			_ = json.NewEncoder(w).Encode(map[string]any{"edges": []any{}})
+		default:
+			w.WriteHeader(422)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "tool_refused", "error": "unknown op"})
+		}
+	})
+}
+
+// TestDocumentSync_ConvergesOnWithheldLocalChunk is the #1 regression: a keyed
+// chunk that is REFUTED locally (confidence below the withhold floor) but
+// visible on the peer must NOT be re-"created" on every pull. Before the fix,
+// localKeyedChunks excluded the refuted chunk from the target snapshot, so pass
+// 1 took the create branch every run and churned the chunk's revision.
+func TestDocumentSync_ConvergesOnWithheldLocalChunk(t *testing.T) {
+	srv := httptest.NewServer(oneFactStubPeer("One", "shared-body"))
+	t.Cleanup(srv.Close)
+	d, ctx, _ := documentFixture(t)
+	d.Cfg = &config.Config{DocumentSources: map[string]config.DocumentSource{
+		"peerA": {Config: config.DocumentSourceConfig{BaseURL: srv.URL}},
+	}}
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Local"}`)
+	docID := out["document_id"].(string)
+	// nk1 exists locally but is REFUTED (confidence 0.1 < 0.25 floor) → withheld.
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"nk1","title":"One","type":"note","body":"shared-body","confidence":0.1}`, docID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_remote","scope":"user","id":%q,"source":"peerA","remote_ref":"/docs/x"}`, docID))
+
+	s1, r1 := docExec(t, d, ctx, fmt.Sprintf(`{"op":"sync","scope":"user","id":%q}`, docID))
+	if r1.IsError {
+		t.Fatalf("sync: %s", r1.Text)
+	}
+	// The refuted local chunk EXISTS, so the pull must NOT create it (the churn bug).
+	if s1["created"].(float64) != 0 {
+		t.Errorf("first pull created = %v, want 0 (the withheld local chunk already exists — must not be re-created)", s1["created"])
+	}
+	// Second pull is idempotent (the churn bug re-created every run).
+	s2, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"sync","scope":"user","id":%q}`, docID))
+	if s2["created"].(float64) != 0 {
+		t.Errorf("second pull created = %v, want 0 (sync must converge on a withheld chunk)", s2["created"])
+	}
+}
+
+// TestDocumentSync_PropagatesTitleChange is the #3 regression: a source chunk
+// whose ONLY difference is title (body + tags identical) must still propagate,
+// and diff_remote must report it as diverged. Before the fix, pass 1's change
+// detection was body/tags only, so a rename was silently dropped.
+func TestDocumentSync_PropagatesTitleChange(t *testing.T) {
+	srv := httptest.NewServer(oneFactStubPeer("RemoteTitle", "same-body"))
+	t.Cleanup(srv.Close)
+	d, ctx, _ := documentFixture(t)
+	d.Cfg = &config.Config{DocumentSources: map[string]config.DocumentSource{
+		"peerA": {Config: config.DocumentSourceConfig{BaseURL: srv.URL}},
+	}}
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Local"}`)
+	docID := out["document_id"].(string)
+	// nk1 locally: same body as the peer, but a DIFFERENT title.
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"nk1","title":"LocalTitle","type":"note","body":"same-body"}`, docID))
+	docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_remote","scope":"user","id":%q,"source":"peerA","remote_ref":"/docs/x"}`, docID))
+
+	// diff_remote must SEE the title divergence (not report "same").
+	diff, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"diff_remote","scope":"user","id":%q}`, docID))
+	if n := len(diff["diverged"].([]any)); n != 1 {
+		t.Errorf("diff diverged = %d, want 1 (a title-only change must show as diverged)", n)
+	}
+
+	s, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"sync","scope":"user","id":%q}`, docID))
+	if r.IsError {
+		t.Fatalf("sync: %s", r.Text)
+	}
+	if s["updated"].(float64) != 1 {
+		t.Errorf("pull updated = %v, want 1 (a title-only change must propagate)", s["updated"])
+	}
+	key, _, _ := d.resolveScope(ctx, "user")
+	localID, _ := d.chunkIDByNaturalKey(ctx, key, "nk1")
+	got, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, localID))
+	if got["title"] != "RemoteTitle" {
+		t.Errorf("local title = %v, want RemoteTitle (title change must land)", got["title"])
+	}
+}

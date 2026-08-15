@@ -212,6 +212,12 @@ type syncChunk struct {
 	position int
 	revision int
 	tags     []string // sorted
+	// withheld is true when this keyed chunk is a REFUTED fact (confidence below
+	// the withhold floor). It stays in the snapshot for EXISTENCE (so the
+	// reconcile never spuriously "creates" a chunk that already exists and would
+	// churn its revision every run), but a withheld SOURCE chunk is not
+	// propagated — the reconcile skips it, mirroring list_facts' withhold floor.
+	withheld bool
 }
 
 // edgeKey identifies a manual cross-reference edge portably (both endpoints by
@@ -258,6 +264,7 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 		snap.chunks[kc.NaturalKey] = syncChunk{
 			id: kc.ID, nk: kc.NaturalKey, title: kc.Title, ctype: kc.Type, status: kc.Status,
 			body: cb.Body, parentNK: idToNK[row.ParentID], position: row.Position, revision: row.Revision, tags: tags,
+			withheld: kc.Withheld,
 		}
 	}
 	rows, err := d.query(ctx, key, `SELECT from_id, to_id, kind, auto FROM chunk_edges
@@ -288,7 +295,11 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 
 // loadRemoteSnapshot reads the peer document's keyed structure over the client.
 func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Client, docID, rootID, scope string) (*sideSnapshot, error) {
-	rawFacts, err := client.Do(ctx, map[string]any{"op": "list_facts", "document_id": docID, "scope": scope, "limit": 10000})
+	// include_refuted:true so the snapshot carries EVERY keyed chunk for
+	// existence — a refuted remote chunk that matches a local key must be seen as
+	// "exists" (else the reconcile churns it). Refuted chunks are skipped as a
+	// propagation SOURCE by applyReconcile, keyed on the per-fact `withheld` flag.
+	rawFacts, err := client.Do(ctx, map[string]any{"op": "list_facts", "document_id": docID, "scope": scope, "include_refuted": true, "limit": 10000})
 	if err != nil {
 		return nil, fmt.Errorf("list remote facts: %w", err)
 	}
@@ -324,6 +335,7 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 		snap.chunks[nk] = syncChunk{
 			id: f.ID, nk: nk, title: f.Title, ctype: f.Type, status: f.Status,
 			body: rc.Body, parentNK: idToNK[rc.ParentID], position: rc.Position, revision: rc.Revision, tags: rc.Tags,
+			withheld: f.Entity.Withheld,
 		}
 	}
 	rawEdges, err := client.Do(ctx, map[string]any{"op": "get_edges", "document_id": docID, "scope": scope})
@@ -485,7 +497,7 @@ func (w remoteWriter) ensureEdge(ctx context.Context, fromID, toID, kind string)
 // ---- the direction-agnostic reconcile ----
 
 type reconcileCounts struct {
-	created, updated, unchanged, reparented, edgesAdded int
+	created, updated, unchanged, reparented, edgesAdded, excludedWithheld int
 }
 
 // applyReconcile reconciles `source` INTO the writer's side, using `target` as
@@ -502,9 +514,17 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		idByNK[nk] = tc.id
 	}
 
-	// Pass 1 — content + tags.
+	// Pass 1 — content (body, title, type, status) + tags.
 	for _, nk := range sortedChunkKeys(source.chunks) {
 		sc := source.chunks[nk]
+		if sc.withheld {
+			// A refuted SOURCE fact is not propagated (it exists in the snapshot
+			// only so the target's copy isn't spuriously re-created). Skipping it
+			// here — rather than filtering it out of the snapshot — is what keeps
+			// sync convergent when the same key is refuted on one side.
+			c.excludedWithheld++
+			continue
+		}
 		tc, exists := target.chunks[nk]
 		if !exists {
 			id, err := w.createKeyed(ctx, sc)
@@ -513,7 +533,7 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 			}
 			idByNK[nk] = id
 			c.created++
-		} else if sc.body != tc.body || !sameTags(sc.tags, tc.tags) {
+		} else if contentDiffers(sc, tc) {
 			if err := w.updateKeyed(ctx, tc.id, sc, tc.revision); err != nil {
 				return c, fmt.Errorf("update %s: %w", nk, err)
 			}
@@ -531,6 +551,9 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 	// pass (and stay idempotent) rather than drift on the next run.
 	for _, nk := range sortedChunkKeys(source.chunks) {
 		sc := source.chunks[nk]
+		if sc.withheld {
+			continue // not propagated (see pass 1)
+		}
 		wantParentNK := ""
 		if sc.parentNK != "" {
 			if _, ok := idByNK[sc.parentNK]; ok {
@@ -620,7 +643,20 @@ func reconcileReport(direction string, b *remoteBinding, excludedUnkeyed int, c 
 		"reparented":         c.reparented,
 		"edges_added":        c.edgesAdded,
 		"excluded_unkeyed":   excludedUnkeyed,
+		"excluded_withheld":  c.excludedWithheld,
 	}
+}
+
+// contentDiffers reports whether a source keyed chunk's content — body, title,
+// type, status, or tags — differs from the target's. Title/type/status are
+// included so a rename or a status change on the source actually propagates (and
+// diff_remote reports it), not only a body/tag edit.
+func contentDiffers(sc, tc syncChunk) bool {
+	return sc.body != tc.body ||
+		sc.title != tc.title ||
+		sc.ctype != tc.ctype ||
+		sc.status != tc.status ||
+		!sameTags(sc.tags, tc.tags)
 }
 
 // ---- diff_remote: dry-run change set between the local document and its peer ----
@@ -656,12 +692,16 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	same := 0
 	for _, nk := range sortedChunkKeys(local.chunks) {
 		lc := local.chunks[nk]
+		if lc.withheld {
+			continue // refuted local fact — sync won't propagate it, so it's not in the diff
+		}
 		rc, ok := remote.chunks[nk]
-		if !ok {
+		if !ok || rc.withheld { // a refuted remote fact reads as "not present" for the diff
 			onlyLocal = append(onlyLocal, diffEntry{NaturalKey: nk, Title: lc.title})
 			continue
 		}
-		if lc.body == rc.body {
+		// diverged = body/title/type/status differs; same = all of those identical.
+		if lc.body == rc.body && lc.title == rc.title && lc.ctype == rc.ctype && lc.status == rc.status {
 			same++
 		} else {
 			diverged = append(diverged, diffEntry{NaturalKey: nk, Title: lc.title})
@@ -676,8 +716,12 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 	}
 	for _, nk := range sortedChunkKeys(remote.chunks) {
-		if _, ok := local.chunks[nk]; !ok {
-			onlyRemote = append(onlyRemote, diffEntry{NaturalKey: nk, Title: remote.chunks[nk].title})
+		rc := remote.chunks[nk]
+		if rc.withheld {
+			continue
+		}
+		if lc, ok := local.chunks[nk]; !ok || lc.withheld {
+			onlyRemote = append(onlyRemote, diffEntry{NaturalKey: nk, Title: rc.title})
 		}
 	}
 
@@ -766,6 +810,7 @@ type remoteFact struct {
 	Status string `json:"status"`
 	Entity struct {
 		NaturalKey string `json:"natural_key"`
+		Withheld   bool   `json:"withheld"`
 	} `json:"entity"`
 }
 
@@ -782,21 +827,21 @@ func decodeRemoteFacts(raw json.RawMessage) ([]remoteFact, error) {
 // keyedChunk is one local entity-tier chunk the snapshot loader reads from.
 type keyedChunk struct {
 	ID, NaturalKey, Title, Type, Status string
+	Withheld                            bool
 }
 
-// localKeyedChunks returns the document's entity-tier chunks (those with a
-// natural_key), excluding refuted ones — the same withhold floor list_facts
-// applies, so sync propagates only the facts the local store itself surfaces.
+// localKeyedChunks returns ALL of the document's entity-tier chunks (those with
+// a natural_key), each flagged `Withheld` when it is a refuted fact (confidence
+// below the withhold floor). It deliberately does NOT filter refuted chunks out:
+// the snapshot needs every keyed chunk for EXISTENCE (chunkIDByNaturalKey sees
+// refuted rows, so filtering them here made the reconcile "create" an existing
+// chunk on every run and churn its revision). A refuted SOURCE chunk is instead
+// skipped by the reconcile itself, so it is still not propagated.
 func (d *Document) localKeyedChunks(ctx context.Context, key sqlmem.ScopeKey, docID string) ([]keyedChunk, error) {
-	where := "c.document_id = ?"
-	args := []any{docID}
-	if wc := withholdClause("m.confidence", false); wc != "" {
-		where += " AND " + wc
-	}
-	stmt := `SELECT c.id, coalesce(c.title,''), coalesce(c.type,''), coalesce(c.status,''), m.natural_key
+	stmt := `SELECT c.id, coalesce(c.title,''), coalesce(c.type,''), coalesce(c.status,''), m.natural_key, m.confidence
 	           FROM chunks c JOIN chunk_memory_meta m ON m.chunk_id = c.id
-	          WHERE ` + where
-	res, err := d.query(ctx, key, stmt, args...)
+	          WHERE c.document_id = ?`
+	res, err := d.query(ctx, key, stmt, docID)
 	if err != nil {
 		return nil, err
 	}
@@ -805,6 +850,9 @@ func (d *Document) localKeyedChunks(ctx context.Context, key sqlmem.ScopeKey, do
 		kc := keyedChunk{ID: asStr(r[0]), Title: asStr(r[1]), Type: asStr(r[2]), Status: asStr(r[3]), NaturalKey: asStr(r[4])}
 		if kc.NaturalKey == "" {
 			continue
+		}
+		if conf := asFloat64Ptr(r[5]); conf != nil && *conf < withholdBelowConfidence {
+			kc.Withheld = true
 		}
 		out = append(out, kc)
 	}
