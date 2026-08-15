@@ -5814,6 +5814,32 @@ button.primary:disabled {
   color: var(--lc-running);
 }
 
+/* Verification coverage (Settings → Memory). A definition list rather than a table:
+   there is no row/column relationship here, just six labelled counts, and a table would
+   make an operator hunt for a header that says nothing. Auto-fit so it reflows from six
+   across on a wide panel to two on a narrow one without a breakpoint per width. */
+.settings-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--lc-space-2);
+  margin: var(--lc-space-2) 0;
+}
+.settings-stats > div {
+  background: var(--lc-surface-2);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-2);
+}
+.settings-stats dt {
+  color: var(--lc-text-faint);
+  font-size: var(--lc-text-sm);
+}
+.settings-stats dd {
+  margin: 0;
+  font-size: var(--lc-text-lg);
+  font-variant-numeric: tabular-nums;
+}
+
 .settings-row-actions {
   display: flex;
   gap: var(--lc-space-1);

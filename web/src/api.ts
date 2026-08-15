@@ -1087,6 +1087,35 @@ export function documentQueryChunks(
   );
 }
 
+// VerificationStats is `Document op=verification_stats` — how much of a scope's fact
+// store carries evidence and a verdict.
+//
+// Every count except `facts` is OPTIONAL because the server omits `verified_share`
+// entirely on an empty store rather than reporting 0/0: a 0.00 share would read as
+// "nothing is verified", which is a different claim from "there is nothing to verify".
+export interface VerificationStats {
+  facts: number;
+  with_span?: number;
+  judged?: number;
+  supported?: number;
+  withheld?: number;
+  /** Facts with no span — they can never be verified by anyone, not merely not yet. */
+  unverifiable_no_span?: number;
+  awaiting_judge?: number;
+  /** supported / facts. Absent when there are no facts at all. */
+  verified_share?: number;
+}
+
+// getVerificationStats reads one scope's coverage. `browse.scopeId` targets another
+// subject, which is how the Settings panel reports on the user picked in the topbar
+// rather than on the operator reading the page.
+export function getVerificationStats(
+  scope: DocScope = "user",
+  browse?: BrowseScope,
+): Promise<VerificationStats> {
+  return substratePost("/v1/_document", { op: "verification_stats", scope }, browse);
+}
+
 export function documentGetChunk(id: string, scope: DocScope, browse?: BrowseScope): Promise<ChunkDetail> {
   return substratePost("/v1/_document", { op: "get_chunk", id, scope }, browse);
 }
