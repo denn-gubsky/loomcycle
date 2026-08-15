@@ -2,7 +2,9 @@ package builtin
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -60,6 +62,46 @@ func mkFact(t *testing.T, d *Document, ctx context.Context, doc, root, nk, body,
 		}
 	}
 	return id
+}
+
+// pgVerbatimFixture is verbatimFixture on the postgres SQL-Memory tier. No embedder and
+// no vector store: the ops that need those are exercised on sqlite, and what this tier is
+// here to prove is the COUNTING query.
+func pgVerbatimFixture(t *testing.T) (*Document, context.Context, string, string) {
+	t.Helper()
+	dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
+	if dsn == "" {
+		t.Skip("set LOOMCYCLE_TEST_SQLMEM_PG_DSN to run the verification-stats postgres-tier test")
+	}
+	raw, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	dropAllSqlmemScopes(t, raw)
+	mgr, err := sqlmem.NewPostgres(context.Background(), sqlmem.Config{
+		PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000,
+	})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = mgr.Close()
+		dropAllSqlmemScopes(t, raw)
+		_ = raw.Close()
+	})
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	d := &Document{Store: st, SqlMem: mgr, Bus: channels.NewBus()}
+	ctx := tools.WithAgentName(context.Background(), "pg-verbatim")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "u1", TenantID: "tnt"})
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"PG facts"}`)
+	if r.IsError {
+		t.Fatalf("create_document(pg): %s", r.Text)
+	}
+	return d, ctx, asStr(out["document_id"]), asStr(out["root_chunk_id"])
 }
 
 // TestVerbatim_QuotesAVerifiedFactWithItsCitation is the feature: a lookup question
@@ -272,5 +314,86 @@ func TestVerificationStats_ReportsTheGateNumber(t *testing.T) {
 	}
 	if got, _ := out["verified_share"].(float64); got != 0.25 {
 		t.Errorf("verified_share = %v, want 0.25", got)
+	}
+}
+
+// TestVerificationStats_EmptyStoreReportsZerosNotNulls.
+//
+// `sum()` over zero rows is NULL, not 0, on both tiers — so a scope with no facts is
+// exactly where a counting query returns a shape nobody expected. An operator checking
+// the gate on a fresh deployment must get zeros and no division by zero.
+func TestVerificationStats_EmptyStoreReportsZerosNotNulls(t *testing.T) {
+	d, ctx, _, _ := verbatimFixture(t)
+
+	out, r := docExec(t, d, ctx, `{"op":"verification_stats","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("verification_stats on an empty store: %s", r.Text)
+	}
+	if got, _ := out["facts"].(float64); got != 0 {
+		t.Errorf("facts = %v, want 0", out["facts"])
+	}
+	for _, field := range []string{"with_span", "judged", "supported", "withheld"} {
+		if v, ok := out[field]; ok {
+			if n, isNum := v.(float64); !isNum || n != 0 {
+				t.Errorf("%s = %v on an empty store, want 0 or absent", field, v)
+			}
+		}
+	}
+	// No share at all rather than 0/0. A reported 0.00 would read as "nothing is
+	// verified", which is a different claim from "there is nothing to verify".
+	if _, has := out["verified_share"]; has {
+		t.Errorf("an empty store reported a verified_share (%v); there is no share of nothing",
+			out["verified_share"])
+	}
+}
+
+// TestVerbatim_EmptyStoreSaysSoRatherThanFailing. The first thing a consumer will do is
+// call this against a store that has nothing yet.
+func TestVerbatim_EmptyStoreSaysSoRatherThanFailing(t *testing.T) {
+	d, ctx, _, _ := verbatimFixture(t)
+
+	out, r := docExec(t, d, ctx, `{"op":"verbatim_answer","scope":"user","query":"github username"}`)
+	if r.IsError {
+		t.Fatalf("verbatim_answer on an empty store errored: %s", r.Text)
+	}
+	if ok, _ := out["answered"].(bool); ok {
+		t.Fatalf("an empty store produced an answer: %v", out)
+	}
+	if reason, _ := out["reason"].(string); !strings.Contains(reason, "no stored fact") {
+		t.Errorf("the refusal does not say the store is empty: %q", reason)
+	}
+}
+
+// TestVerificationStats_PostgresTier.
+//
+// The counting query is where the tiers diverge without saying so. `sum(CASE WHEN ...)`
+// comes back as a different SQL type on Postgres than on sqlite, and a scan that quietly
+// failed to read it would report ZEROS — not an error, a plausible-looking gate number
+// saying nothing in the store is verified. A decision gets made on that number.
+//
+// The float literals in the CASE arms are the second reason: they are rendered from the
+// confidence constants into SQL text, and Postgres compares a double against a numeric
+// literal by its own rules.
+func TestVerificationStats_PostgresTier(t *testing.T) {
+	d, ctx, docID, root := pgVerbatimFixture(t)
+	mkFact(t, d, ctx, docID, root, "f:1", "Claim one.", "quote one", "supported")
+	mkFact(t, d, ctx, docID, root, "f:2", "Claim two.", "quote two", "unsupported")
+	mkFact(t, d, ctx, docID, root, "f:3", "Claim three.", "quote three", "")
+	mkFact(t, d, ctx, docID, root, "f:4", "Claim four.", "", "")
+
+	out, r := docExec(t, d, ctx, `{"op":"verification_stats","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("verification_stats(pg): %s", r.Text)
+	}
+	for field, want := range map[string]float64{
+		"facts": 4, "with_span": 3, "judged": 2, "supported": 1, "withheld": 1,
+		"unverifiable_no_span": 1, "awaiting_judge": 1,
+	} {
+		if got, _ := out[field].(float64); got != want {
+			t.Errorf("postgres: %s = %v, want %v (full report: %v)", field, out[field], want, out)
+		}
+	}
+	if got, _ := out["verified_share"].(float64); got != 0.25 {
+		t.Errorf("postgres: verified_share = %v, want 0.25", got)
 	}
 }
