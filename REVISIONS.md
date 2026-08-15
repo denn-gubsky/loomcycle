@@ -4,6 +4,36 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.54.0
+
+**External data access, document federation, and verified writes.** Minor — three feature lines land together: any app reaches loomcycle's memory + documents over a documented HTTP contract or a peer loomcycle (RFC CD), a document is replicated to and reconciled with a peer instance in both directions (RFC CE), and a fact records the source it came from and is checked against it before it is trusted (RFC CC). Plus the loomboard saved-views scaffold (RFC BT) and a memory/facts Web-UI surface.
+
+### RFC CD — external data-access channels
+
+- **OpenAPI 3.1 contract + Swagger UI.** A hand-authored `api/openapi.yaml` documents the whole data surface — the memory REST family + `POST /v1/_memory/search`, the `/v1/_document` and `/v1/_path` op-dispatch (modeled as a `oneOf` on `op`), and the asset GET — served at `GET /v1/openapi.{yaml,json}` with a self-contained Swagger UI console at `/v1/docs` (vendored, no CDN). Any language gets a generated SDK; the contract is public, the data still bearer-gated. A drift test pins the spec's op enums to the tool op sets.
+- **A peer as a memory backend (`kind: remote`).** A memory backend can now proxy an agent's memory to *another* loomcycle instance's `/v1/_memory/*` — the peer embeds server-side; get/set/list/delete/search/stats all round-trip. Auth is a credential-allowlisted `api_key_env` (never an infra secret, never `${...}`-interpolated), resolved at use time; the peer host is dialed through the SSRF guard; `fallback_on_error` degrades to local.
+- **Change feed (CDC), pull + push.** An opt-in, value-free change feed (`LOOMCYCLE_MEMORY_CHANGES_ENABLED`) emits at the store write choke point so both in-run and external CRUD land in one stream. Consumers subscribe over SSE (`GET /v1/_memory/changes`, `/v1/_document/changes`) or register a config-declared `change_subscriptions:` HMAC-signed webhook with a persisted at-least-once cursor. Tenant-scoped, SSRF-allowlisted; the feed is operator observability (`substrate:tenant`, not member-accessible).
+- **Python gRPC memory parity.** A generic `Memory` RPC + `client.memory()` gives the Python adapter the memory surface it lacked, riding the same op-dispatch shape as documents and paths.
+- **Ops:** every published image is mirrored to `ghcr.io` so a Docker-Hub-rate-limited operator has a fallback.
+
+### RFC CE — remote document backend + federation
+
+- **Bind + reconcile a document with a peer.** Declare a peer under `document_sources:` (or author one at runtime — see the substrate below), bind a local document to a peer document with `Document op=set_remote`, and reconcile with `op=sync`. `direction:pull` (default) copies the peer's chunks in; `direction:push` writes this document's chunks up to the peer. Reconciliation keys on `natural_key` and carries each keyed chunk's **body, tags, hierarchy** (it lands under its keyed parent at its sibling position) and its **manual cross-reference links**; a diverged body is updated in place with the overwritten body kept in the *losing side's* chunk history (retire-not-delete); a chunk without a `natural_key` is excluded and counted.
+- **`op=diff_remote`** — a read-only dry-run that classifies keyed chunks into `only_local` / `only_remote` / `diverged` / `retagged` / `reparented` / `same` (plus unkeyed + edge-drift counts) without touching either side, so you see exactly what a sync would change first.
+- **`DocumentSourceDef` substrate** — a source can be authored, forked, and retired at runtime as a versioned, tenant-scoped substrate Def over every transport (HTTP / gRPC / MCP / TS / Python), a faithful mirror of `MemoryBackendDef`; `set_remote`/`sync` resolve a name tenant-substrate → static yaml → shared substrate.
+- **Reviewed + hardened.** A whole-line adversarial code review surfaced eight findings, all fixed with fail-before regression tests: sync now converges on a refuted chunk (no create-churn), the `DocumentSourceDef` HTTP route is `substrate:tenant` in parity with gRPC/MCP, title/type/status edits propagate, `diff_remote`'s reparent prediction matches what a sync does, a retired source stops resolving, a tags-only sync no longer writes a duplicate-body revision, and the runtime + static source validators accept the same values.
+
+### RFC CC — verified writes
+
+- **A fact records where it came from and is checked against it.** A fact now stores the exact `source_quote` span it was derived from (RFC CC P1); the subject becomes structured data the ontology gates entity writes against (P2); a write-time judge checks each fact against its own quote and **withholds** what fails (a refuted fact is retained but hidden from `list_facts`/`graph_recall`, readable with `include_refuted`), rather than deleting it. `verbatim_answer` answers a lookup question with a stored fact quoted verbatim plus its span and no generated text; a backfill sweep judges facts that predate the feature; `judged_at` records *who* judged a fact in a column the caller cannot set.
+- **Web UI.** A Memory tab surfaces verification coverage and lets an operator start a pass; a facts surface shows evidence, verdicts, and a way to overrule the judge; semantic search over memory is the front door to the facts panel.
+
+### Adapters + packages
+
+- **`@loomcycle/client` 1.54.0** (npm) — adds `documentSourceDef()` and the accumulated substrate/memory surface.
+- **`loomcycle` 1.54.0** (PyPI) — adds `memory()` (gRPC) and `document_source_def()`.
+- **RFC BT** — the `@loomcycle/loomboard` saved-views scaffold (P1) + the board-bound `TeamDef op=run` task-key tagging (P4); loomboard versions on its own `loomboard-v*` tags. The React `explorer`/`library`/`memory-view` packages version independently.
+
 ## What's in v1.53.2
 
 **Tenant-member access: a non-isolated user reads and writes the tenant plane (RFC CB).** Patch (Go, auth only). A delegated per-user token that is not isolated is now a full tenant *member* over HTTP.
