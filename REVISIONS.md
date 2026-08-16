@@ -58,6 +58,16 @@ peer-federation substrates that shipped headless in v1.54.0.
   refuses the operation; `erase_result` follows with the planes deleted and retained. A
   crash between them still leaves evidence that an erasure was attempted, by whom, against
   which subject. Dry runs write nothing.
+- **The console: report before execute, always.** The erase control does not lift until a
+  report has been shown for the SAME subject — otherwise an operator could read what would
+  go for one person and confirm the deletion of another, which no confirmation dialog
+  catches. Confirmation is the subject id typed back and compared exactly: a modal with a
+  red button is dismissed by reflex, and the failure mode here is erasing the WRONG
+  subject rather than erasing accidentally. The three tiers are never summed — they are
+  degrees of REACH, so each is labelled by what it does ("will be deleted" / "held, but
+  NOT deleted" / "cannot be reached") — and a residue of zero across zero sessions reads
+  as UNKNOWN rather than none, since with no sessions examined there was nothing to trace
+  derived data from.
 
 ### Web UI — the peer-federation substrates
 
