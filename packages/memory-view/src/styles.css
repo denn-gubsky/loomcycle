@@ -1292,3 +1292,13 @@
   font-size: 12px;
   color: var(--accent);
 }
+
+/* Shown when the fact being judged has no span: the operator is vouching, not checking,
+   and the two should not look identical at the moment their name goes on it. */
+.loomcycle-memory-view .fact-verdict-vouch {
+  font-size: 12px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--running);
+  opacity: 0.9;
+}

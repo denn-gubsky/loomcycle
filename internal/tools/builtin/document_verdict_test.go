@@ -136,8 +136,8 @@ func TestVerdict_SupportedAndUnclearStayVisible(t *testing.T) {
 func TestVerdict_RefusesWhatItCannotCheck(t *testing.T) {
 	d, ctx, withSpan, noSpan := verdictFixture(t)
 	cases := []struct{ name, req, want string }{
-		{"no span to check against",
-			`{"op":"judge_fact","scope":"user","id":"` + noSpan + `","verdict":"supported","reason":"r"}`,
+		{"a span-less fact judged MISTYPED — a claim about a span that does not exist",
+			`{"op":"judge_fact","scope":"user","id":"` + noSpan + `","verdict":"mistyped","reason":"r"}`,
 			"no source span"},
 		{"a number instead of a verdict",
 			`{"op":"judge_fact","scope":"user","id":"` + withSpan + `","verdict":"0.9","reason":"r"}`,
@@ -584,5 +584,70 @@ func TestVerdict_MigratesAScopeThatPredatesJudgedBy(t *testing.T) {
 	entity, _ := got["entity"].(map[string]any)
 	if entity["judged_by"] != "operator" {
 		t.Errorf("judged_by not recorded after the migration: %v", entity)
+	}
+}
+
+// TestVerdict_AnOperatorMayVouchForASpanlessFact.
+//
+// The reported bug: an operator opened a fact stored before spans existed, wrote "User
+// confirmed", and was refused — the console offered a control the server would never
+// accept, and BOTH controls failed, since only `unclear` was allowed without a span.
+//
+// The rule's own justification had expired. It refused because such a verdict "would be
+// indistinguishable from one that was checked" — which stopped being true once
+// `judged_by` recorded whether a machine or a human reached it. A person putting their
+// name to a fact is not claiming to have checked it against a source; they are supplying
+// their own authority, and the store now says which happened.
+func TestVerdict_AnOperatorMayVouchForASpanlessFact(t *testing.T) {
+	d, ctx, _, noSpan := verdictFixture(t)
+
+	out, r := docExec(t, d, ctx, `{"op":"judge_fact","scope":"user","id":"`+noSpan+
+		`","verdict":"supported","reason":"User confirmed"}`)
+	if r.IsError {
+		t.Fatalf("an operator was refused a verdict on a span-less fact: %s", r.Text)
+	}
+	if w, _ := out["withheld"].(bool); w {
+		t.Error("vouching for a fact withheld it")
+	}
+
+	got, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+noSpan+`"}`)
+	entity, _ := got["entity"].(map[string]any)
+	if entity["judged_by"] != "operator" {
+		t.Errorf("judged_by = %v, want operator — the record of WHOSE authority this is "+
+			"is what makes an evidence-free verdict honest", entity["judged_by"])
+	}
+	if entity["judge_reason"] != "User confirmed" {
+		t.Errorf("the operator's stated ground was not kept: %v", entity["judge_reason"])
+	}
+	// The fact still has no span, and nothing pretends otherwise. Vouching is not
+	// fabricating evidence.
+	if q, _ := entity["source_quote"].(string); q != "" {
+		t.Errorf("vouching invented a source span: %q", q)
+	}
+}
+
+// TestVerdict_AnAgentStillCannotVouch.
+//
+// The laundering guard, unchanged. A run affirming what it cannot check is exactly the
+// claim a span exists to substantiate — and an agent that could do it would turn "no
+// evidence" into "verified" by asserting it.
+func TestVerdict_AnAgentStillCannotVouch(t *testing.T) {
+	d, ctx, _, noSpan := verdictFixture(t)
+	runCtx := tools.WithRunID(ctx, "r_1")
+	runCtx = tools.WithAgentName(runCtx, "memory/judge")
+
+	_, r := docExec(t, d, runCtx, `{"op":"judge_fact","scope":"user","id":"`+noSpan+
+		`","verdict":"supported","reason":"looks right to me"}`)
+	if !r.IsError {
+		t.Fatal("an agent affirmed a fact it had no evidence for")
+	}
+	if !strings.Contains(r.Text, "operator may still vouch") {
+		t.Errorf("the refusal does not distinguish who may: %s", r.Text)
+	}
+
+	// And `unclear` remains open to anyone — it asserts nothing.
+	if _, r := docExec(t, d, runCtx, `{"op":"judge_fact","scope":"user","id":"`+noSpan+
+		`","verdict":"unclear","reason":"cannot tell"}`); r.IsError {
+		t.Errorf("an agent was refused `unclear` on a span-less fact: %s", r.Text)
 	}
 }

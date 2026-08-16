@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ChunkDetail, DocEdge, FactEntity, MemoryScope } from "../types";
 import { useMemoryData } from "../lib/dataLayer";
-import { factActions, factVerdict } from "../lib/factVerdict";
+import { factActions, factVerdict, vouchNotice } from "../lib/factVerdict";
 
 // ChunkDetailPanel — the fact/chunk inspector shared by the FactViewer and the
 // SearchPanel (a document hit opens the same detail). Given a (scope, chunkId)
@@ -293,6 +293,9 @@ function VerdictBlock({
           </button>
         )}
       </div>
+      {arming && vouchNotice(entity) && (
+        <div className="fact-verdict-vouch">{vouchNotice(entity)}</div>
+      )}
       {arming && (
         <div className="fact-verdict-form">
           <input
