@@ -22,7 +22,8 @@ export type IntegrationKind =
   | "webhook"
   | "a2a-server-card"
   | "a2a-agent"
-  | "memory-backend";
+  | "memory-backend"
+  | "document-source";
 export type ModalMode = "create" | "fork";
 
 export interface IntegrationEditModalProps {
@@ -108,6 +109,18 @@ export interface MemoryBackendFormState {
   healthCheckIntervalSeconds: string;
 }
 
+// RFC CE — a remote document source (peer loomcycle). Simpler than a memory
+// backend: no kind (a source is always a remote peer), no fallback/health-check;
+// tenancy is "" or key_per_tenant (no shared_key_with_prefix — the document
+// proxy has no key-prefix semantics).
+export interface DocumentSourceFormState {
+  baseUrl: string;
+  apiVersion: string;
+  apiKeyEnv: string;
+  tenancyKind: "" | "key_per_tenant";
+  envPattern: string;
+}
+
 export default function IntegrationEditModal({
   kind,
   mode,
@@ -145,6 +158,11 @@ export default function IntegrationEditModal({
       kind === "memory-backend" ? forkSource?.definition : undefined,
     ),
   );
+  const [docSource, setDocSource] = useState<DocumentSourceFormState>(() =>
+    initDocumentSource(
+      kind === "document-source" ? forkSource?.definition : undefined,
+    ),
+  );
 
   const titlePrefix = mode === "create" ? "Create" : "Edit (fork)";
   const titleLabel = INTEGRATION_LABEL[kind];
@@ -178,6 +196,8 @@ export default function IntegrationEditModal({
         return validateA2AAgent(a2aAgent);
       case "memory-backend":
         return validateMemoryBackend(memBackend);
+      case "document-source":
+        return validateDocumentSource(docSource);
     }
   };
 
@@ -191,6 +211,8 @@ export default function IntegrationEditModal({
         return buildA2AAgentOverlay(a2aAgent, description);
       case "memory-backend":
         return buildMemoryBackendOverlay(memBackend, description);
+      case "document-source":
+        return buildDocumentSourceOverlay(docSource, description);
     }
   };
 
@@ -287,6 +309,13 @@ export default function IntegrationEditModal({
           <MemoryBackendFields
             state={memBackend}
             set={setMemBackend}
+            submitting={submitting}
+          />
+        )}
+        {kind === "document-source" && (
+          <DocumentSourceFields
+            state={docSource}
+            set={setDocSource}
             submitting={submitting}
           />
         )}
@@ -1542,6 +1571,148 @@ export function buildMemoryBackendOverlay(
   return ov;
 }
 
+// ===================== Document Source (RFC CE) =====================
+
+function DocumentSourceFields(props: {
+  state: DocumentSourceFormState;
+  set: (v: DocumentSourceFormState) => void;
+  submitting: boolean;
+}) {
+  const { state: s, set, submitting } = props;
+  const patch = (p: Partial<DocumentSourceFormState>) => set({ ...s, ...p });
+  return (
+    <>
+      <div className="library-form-row">
+        <label htmlFor="int-ds-baseurl">config.base_url</label>
+        <input
+          id="int-ds-baseurl"
+          type="text"
+          value={s.baseUrl}
+          onChange={(e) => patch({ baseUrl: e.target.value })}
+          disabled={submitting}
+          placeholder="https://peer.example:8787"
+        />
+      </div>
+      <div className="library-form-row">
+        <label htmlFor="int-ds-apikeyenv">
+          config.api_key_env
+          <span className="library-modal-field-hint">
+            {" "}
+            — env-var NAME of the peer bearer (LOOMCYCLE_-prefixed or a known key;
+            never a secret value)
+          </span>
+        </label>
+        <input
+          id="int-ds-apikeyenv"
+          type="text"
+          value={s.apiKeyEnv}
+          onChange={(e) => patch({ apiKeyEnv: e.target.value })}
+          disabled={submitting}
+          placeholder="LOOMCYCLE_PEER_DOC_KEY"
+        />
+      </div>
+      <div className="library-form-row">
+        <label htmlFor="int-ds-apiversion">config.api_version</label>
+        <input
+          id="int-ds-apiversion"
+          type="text"
+          value={s.apiVersion}
+          onChange={(e) => patch({ apiVersion: e.target.value })}
+          disabled={submitting}
+          placeholder="(optional)"
+        />
+      </div>
+      <div className="library-form-row">
+        <label htmlFor="int-ds-tenancy">tenancy_strategy.kind</label>
+        <select
+          id="int-ds-tenancy"
+          value={s.tenancyKind}
+          onChange={(e) =>
+            patch({
+              tenancyKind: e.target
+                .value as DocumentSourceFormState["tenancyKind"],
+            })
+          }
+          disabled={submitting}
+        >
+          <option value="">(default)</option>
+          <option value="key_per_tenant">key_per_tenant</option>
+        </select>
+      </div>
+      {s.tenancyKind === "key_per_tenant" && (
+        <div className="library-form-row">
+          <label htmlFor="int-ds-envpat">
+            tenancy_strategy.env_pattern
+            <span className="library-modal-field-hint">
+              {" "}
+              — must contain {"{tenant_id}"} if set
+            </span>
+          </label>
+          <input
+            id="int-ds-envpat"
+            type="text"
+            value={s.envPattern}
+            onChange={(e) => patch({ envPattern: e.target.value })}
+            disabled={submitting}
+            placeholder="LOOMCYCLE_PEER_{tenant_id}_KEY"
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+export function initDocumentSource(def: unknown): DocumentSourceFormState {
+  const config = pickObject(def, "config");
+  const tenancy = pickObject(def, "tenancy_strategy");
+  return {
+    baseUrl: pickString(config, "base_url"),
+    apiVersion: pickString(config, "api_version"),
+    apiKeyEnv: pickString(config, "api_key_env"),
+    tenancyKind:
+      pickString(tenancy, "kind") === "key_per_tenant" ? "key_per_tenant" : "",
+    envPattern: pickString(tenancy, "env_pattern"),
+  };
+}
+
+export function validateDocumentSource(s: DocumentSourceFormState): string | null {
+  const url = s.baseUrl.trim();
+  if (!url) return "config.base_url is required (the peer loomcycle).";
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "config.base_url must be a valid http(s) URL with a host.";
+  }
+  if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.host)
+    return "config.base_url must be an http(s) URL with a host.";
+  if (
+    s.tenancyKind === "key_per_tenant" &&
+    s.envPattern.trim() &&
+    !s.envPattern.includes("{tenant_id}")
+  )
+    return "tenancy_strategy.env_pattern must contain {tenant_id}.";
+  return null;
+}
+
+export function buildDocumentSourceOverlay(
+  s: DocumentSourceFormState,
+  description: string,
+): Record<string, unknown> {
+  const ov: Record<string, unknown> = {};
+  if (description.trim()) ov.description = description.trim();
+  const config: Record<string, unknown> = { base_url: s.baseUrl.trim() };
+  if (s.apiVersion.trim()) config.api_version = s.apiVersion.trim();
+  if (s.apiKeyEnv.trim()) config.api_key_env = s.apiKeyEnv.trim();
+  ov.config = config;
+  if (s.tenancyKind) {
+    const ten: Record<string, unknown> = { kind: s.tenancyKind };
+    if (s.envPattern.trim()) ten.env_pattern = s.envPattern.trim();
+    ov.tenancy_strategy = ten;
+  }
+  return ov;
+}
+
 // ===================== shared KV-rows editor =====================
 
 function KVRows(props: {
@@ -1613,6 +1784,7 @@ const INTEGRATION_LABEL: Record<IntegrationKind, string> = {
   "a2a-server-card": "A2A server card",
   "a2a-agent": "A2A agent",
   "memory-backend": "memory backend",
+  "document-source": "document source",
 };
 
 const INTEGRATION_NAME_PLACEHOLDER: Record<IntegrationKind, string> = {
@@ -1620,6 +1792,7 @@ const INTEGRATION_NAME_PLACEHOLDER: Record<IntegrationKind, string> = {
   "a2a-server-card": "my-card",
   "a2a-agent": "peer-researcher",
   "memory-backend": "team-memory",
+  "document-source": "peer-docs",
 };
 
 const KIND_TO_SUBSTRATE: Record<IntegrationKind, SubstrateKind> = {
@@ -1627,6 +1800,7 @@ const KIND_TO_SUBSTRATE: Record<IntegrationKind, SubstrateKind> = {
   "a2a-server-card": "a2aservercarddef",
   "a2a-agent": "a2aagentdef",
   "memory-backend": "memorybackenddef",
+  "document-source": "documentsourcedef",
 };
 
 function pickString(def: unknown, key: string): string {

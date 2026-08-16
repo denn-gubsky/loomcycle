@@ -1683,6 +1683,10 @@ export function listMemoryBackendDefNames(): Promise<DefNamesResponse> {
   return jsonFetch<DefNamesResponse>("/v1/_memorybackenddef/names");
 }
 
+export function listDocumentSourceDefNames(): Promise<DefNamesResponse> {
+  return jsonFetch<DefNamesResponse>("/v1/_documentsourcedef/names");
+}
+
 // ---- Teams (RFC AP / BD) ----
 //
 // TeamDefs are the agent-team workflow graphs. The Teams view lists them
@@ -1838,6 +1842,9 @@ export type SubstrateKind =
   | "a2aservercarddef"
   | "a2aagentdef"
   | "memorybackenddef"
+  // RFC CE remote-document-source substrate — create/fork/promote/retire, like
+  // memorybackenddef.
+  | "documentsourcedef"
   // RFC AH dynamic volume substrate. Flat (no versioning): the only ops are
   | "volumedef"; // create / delete / purge — not the create/fork/promote/retire lifecycle.
 

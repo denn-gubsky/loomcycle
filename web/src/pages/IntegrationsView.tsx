@@ -7,6 +7,7 @@ import {
   type SubstrateKind,
   listA2AAgentDefNames,
   listA2AServerCardDefNames,
+  listDocumentSourceDefNames,
   listMemoryBackendDefNames,
   listWebhookDefNames,
   retireDef,
@@ -17,7 +18,7 @@ import IntegrationEditModal, {
   type ModalMode,
 } from "../components/IntegrationEditModal";
 
-// IntegrationsView — v0.24.0 manual-management surface for the four
+// IntegrationsView — v0.24.0 manual-management surface for the five
 // substrate families that connect loomcycle to the outside world:
 // inbound Webhooks, A2A Server Cards (what we expose), A2A Agents (peers
 // we call), and pluggable Memory Backends. Sibling of LibraryView, same
@@ -36,13 +37,19 @@ import IntegrationEditModal, {
 
 const REFRESH_MS = 10_000;
 
-type SubKey = "webhooks" | "a2a-server-cards" | "a2a-agents" | "memory-backends";
+type SubKey =
+  | "webhooks"
+  | "a2a-server-cards"
+  | "a2a-agents"
+  | "memory-backends"
+  | "document-sources";
 
 export default function IntegrationsView() {
   const [webhooks, setWebhooks] = useState<LibraryEntry[]>([]);
   const [serverCards, setServerCards] = useState<LibraryEntry[]>([]);
   const [a2aAgents, setA2AAgents] = useState<LibraryEntry[]>([]);
   const [memBackends, setMemBackends] = useState<LibraryEntry[]>([]);
+  const [docSources, setDocSources] = useState<LibraryEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const refreshNow = useCallback(() => setRefreshKey((k) => k + 1), []);
@@ -57,17 +64,19 @@ export default function IntegrationsView() {
     let cancelled = false;
     const fetchAll = async () => {
       try {
-        const [wh, sc, ag, mb] = await Promise.all([
+        const [wh, sc, ag, mb, ds] = await Promise.all([
           listWebhookDefNames(),
           listA2AServerCardDefNames(),
           listA2AAgentDefNames(),
           listMemoryBackendDefNames(),
+          listDocumentSourceDefNames(),
         ]);
         if (cancelled) return;
         setWebhooks(toEntries(wh.names));
         setServerCards(toEntries(sc.names));
         setA2AAgents(toEntries(ag.names));
         setMemBackends(toEntries(mb.names));
+        setDocSources(toEntries(ds.names));
         setErr(null);
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
@@ -89,7 +98,9 @@ export default function IntegrationsView() {
       ? "a2a-agents"
       : path.startsWith("/integrations/memory-backends")
         ? "memory-backends"
-        : "webhooks";
+        : path.startsWith("/integrations/document-sources")
+          ? "document-sources"
+          : "webhooks";
 
   const cfg = TAB_CONFIG[sub];
   const tabEntries =
@@ -99,7 +110,9 @@ export default function IntegrationsView() {
         ? a2aAgents
         : sub === "memory-backends"
           ? memBackends
-          : webhooks;
+          : sub === "document-sources"
+            ? docSources
+            : webhooks;
 
   const handleCreate = () => setModal({ kind: cfg.kind, mode: "create" });
   const handleEdit = (row: DefRow) =>
@@ -138,6 +151,10 @@ export default function IntegrationsView() {
         <NavLink to="/integrations/memory-backends" end className={subtabClass}>
           Memory Backends{" "}
           <span className="library-subtab-count">{memBackends.length}</span>
+        </NavLink>
+        <NavLink to="/integrations/document-sources" end className={subtabClass}>
+          Document Sources{" "}
+          <span className="library-subtab-count">{docSources.length}</span>
         </NavLink>
       </div>
       {err && (
@@ -223,6 +240,12 @@ const TAB_CONFIG: Record<SubKey, TabCfg> = {
     substrate: "memorybackenddef",
     label: "memory backends",
     render: renderMemoryBackend,
+  },
+  "document-sources": {
+    kind: "document-source",
+    substrate: "documentsourcedef",
+    label: "document sources",
+    render: renderDocumentSource,
   },
 };
 
@@ -348,6 +371,26 @@ function renderMemoryBackend(row: DefRow) {
           ["tenancy_strategy.prefix_pattern", str(tenancy.prefix_pattern)],
           ["fallback_on_error", str(d.fallback_on_error)],
           ["health_check_interval_seconds", numStr(d.health_check_interval_seconds)],
+        ]}
+      />
+    </div>
+  );
+}
+
+function renderDocumentSource(row: DefRow) {
+  const d = (row.definition as Record<string, unknown>) ?? {};
+  const config = obj(d.config);
+  const tenancy = obj(d.tenancy_strategy);
+  return (
+    <div className="def-body">
+      {str(d.description) && <Field label="description" value={str(d.description)} />}
+      <MetaRow
+        items={[
+          ["config.base_url", str(config.base_url)],
+          ["config.api_version", str(config.api_version)],
+          ["config.api_key_env", str(config.api_key_env)],
+          ["tenancy_strategy.kind", str(tenancy.kind)],
+          ["tenancy_strategy.env_pattern", str(tenancy.env_pattern)],
         ]}
       />
     </div>
