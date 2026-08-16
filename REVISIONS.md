@@ -4,6 +4,34 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.55.1
+
+**An operator may vouch for a fact that has no span.** Patch — one reported bug, its root
+cause, and two pieces of copy that were saying something untrue.
+
+- **The bug.** Opening a fact stored before spans existed, writing "User confirmed", and
+  being refused. Both controls failed there — only `unclear` was allowed without a span —
+  so the console offered two buttons the server would never accept.
+- **The rule's own justification had expired.** `judge_fact` refused because a verdict
+  without evidence "would be indistinguishable from one that was checked". That stopped
+  being true when `judged_by` landed in v1.54.0: the store now records whether a machine
+  or a human reached a verdict, so an operator putting their name to a fact is no longer
+  mistakable for an entailment check. **An operator** may now record `supported` or
+  `unsupported` on a span-less fact — no span is invented, it still counts as span-less in
+  coverage, and the reason plus `judged_by` carry whose word it is. **An agent still
+  cannot**: a run affirming what it cannot check is exactly the claim a span exists to
+  substantiate. **`mistyped` is excluded for anyone** — it says the span carries the claim
+  but the filing is wrong, so with no span there is nothing for it to be about.
+- **Copy.** The console now distinguishes CHECKING from VOUCHING at the moment your name
+  goes on a verdict; and the coverage strip no longer describes span-less facts as ones
+  that "can never be verified by anyone" — they cannot be checked against a source, but a
+  person can still vouch.
+
+Built FULL via a `force_full` dispatch despite the patch tag: the fix is in the Go runtime,
+and the lean patch tier builds only the `loomcycle-browser` image, which would have left
+the change unable to reach a deployment. The Web-UI half lives in
+`@loomcycle/memory-view`, which publishes on its own `memory-view-v*` tag.
+
 ## What's in v1.55.0
 
 **One memory console, and an erasure you cannot perform unrecorded.** Minor — the memory
