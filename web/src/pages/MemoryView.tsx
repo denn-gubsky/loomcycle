@@ -1,4 +1,6 @@
+import { useNavigate } from "react-router-dom";
 import { MemoryView } from "@loomcycle/memory-view";
+import { consolidationRunHref } from "../lib/ontologyEditHref";
 import "@loomcycle/memory-view/styles.css";
 
 // MemoryView is the operator Memory console (/memory) — the scope/scope_id/key
@@ -24,5 +26,16 @@ const cookieFetch: typeof fetch = async (input, init) => {
 };
 
 export default function MemoryViewPage() {
-  return <MemoryView connection={{ baseUrl: "", fetch: cookieFetch }} />;
+  const navigate = useNavigate();
+  return (
+    <MemoryView
+      connection={{ baseUrl: "", fetch: cookieFetch }}
+      // Starting a consolidation pass is the HOST's business: the package cannot know
+      // about /run, and an embedder does not have it. This stages the agent and prompt
+      // in the terminal rather than starting anything — a click that spends tokens with
+      // no preview is a surprise, and a pass is the most expensive thing this console
+      // can begin.
+      onRunConsolidation={(scopeId) => navigate(consolidationRunHref(scopeId || undefined))}
+    />
+  );
 }

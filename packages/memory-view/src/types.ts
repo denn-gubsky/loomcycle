@@ -97,6 +97,26 @@ export interface FactEntity {
   session_id?: string;
   run_id?: string;
   event_seq?: number;
+
+  // ---- verified writes (RFC CC) --------------------------------------------
+  /** The span of source text the claim was drawn from — the evidence a verdict is
+   *  checked against. Absent on a fact stored before spans existed, which can then
+   *  never be verified by anyone. */
+  source_quote?: string;
+  /** What the claim is about, paired with the chunk's type. */
+  subject?: string;
+  /** When a verdict was reached (unix-nanos). Its ABSENCE is what distinguishes
+   *  "never assessed" from "assessed and refused" — the confidence cannot, since a
+   *  fact may carry one nobody decided. */
+  judged_at?: number;
+  judge_reason?: string;
+  /** Who judged: "operator", or the agent's name. Server-stamped from the call's
+   *  own context — a writer does not label its own provenance. */
+  judged_by?: string;
+  /** True when the fact is withheld from the fact surfaces. Reported by the server
+   *  rather than derived from the confidence, so a client never needs a second copy
+   *  of the withholding floor. */
+  withheld?: boolean;
 }
 
 // FactRow is one row from Document `list_facts` — a fact's METADATA only (no
@@ -163,4 +183,22 @@ export interface DocEdge {
 // touch the fact it is showing.
 export interface DocEdgesResponse {
   edges: DocEdge[];
+}
+
+// VerificationStats is `Document op=verification_stats` — how much of a scope's fact
+// store carries evidence and a verdict (RFC CC).
+//
+// Every count but `facts` is optional because the server omits `verified_share` entirely
+// on an empty store rather than dividing by zero: a reported 0.00 would read as "nothing
+// here is verified", which is a different claim from "there is nothing to verify".
+export interface VerificationStats {
+  facts: number;
+  with_span?: number;
+  judged?: number;
+  supported?: number;
+  withheld?: number;
+  /** Facts with no span — unverifiable by anyone, ever, not merely not yet. */
+  unverifiable_no_span?: number;
+  awaiting_judge?: number;
+  verified_share?: number;
 }

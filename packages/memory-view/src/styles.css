@@ -1188,3 +1188,89 @@
   margin: 0;
   color: var(--fg);
 }
+
+/* ---- verified writes (RFC CC): evidence, verdicts, coverage ---------------- */
+
+/* Coverage above the fact list. One line of counts rather than a chart: the numbers
+   are read against each other ("190 verified of 412, 32 unverifiable"), and a chart
+   would make the two unverified populations look like one slice. */
+.loomcycle-memory-view .fact-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+  opacity: 0.85;
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-memory-view .fact-coverage-note {
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.loomcycle-memory-view .fact-verdict {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.loomcycle-memory-view .fact-verdict-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.loomcycle-memory-view .fact-verdict-badge {
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 5px;
+  opacity: 0.9;
+}
+.loomcycle-memory-view .fact-verdict-withheld {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.loomcycle-memory-view .fact-verdict-checked {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* The span is quoted and set apart, because it is what the claim is checked AGAINST —
+   not a note about the claim. */
+.loomcycle-memory-view .fact-span {
+  margin: 6px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  opacity: 0.85;
+  font-size: 12px;
+}
+.loomcycle-memory-view .fact-span-missing {
+  font-style: italic;
+}
+.loomcycle-memory-view .fact-verdict-reason {
+  font-size: 12px;
+  opacity: 0.8;
+  margin-bottom: 6px;
+}
+.loomcycle-memory-view .fact-verdict-actions,
+.loomcycle-memory-view .fact-verdict-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.loomcycle-memory-view .fact-verdict-form input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+/* The consolidation affordance, when the host supplies one. Deliberately quiet: it is
+   the most expensive thing this console can start, so it reads as an offer rather than
+   a primary action. */
+.loomcycle-memory-view .fact-consolidate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  opacity: 0.85;
+  border-bottom: 1px solid var(--border);
+}

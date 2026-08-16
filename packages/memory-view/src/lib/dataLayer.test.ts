@@ -148,6 +148,52 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
     expect(s.memorySearch).toHaveBeenCalledWith(input);
   });
 
+  it("listFacts sends include_refuted ONLY when asked, alongside include_retired", async () => {
+    // The two are independent axes — retired means a later fact corrected this one,
+    // refused means a verdict rejected it — so one must never imply the other on the
+    // wire. An earlier edit here dropped include_retired entirely while adding its
+    // neighbour, which this pins.
+    const s = stubClient();
+    await dataLayerFromClient(s.client).listFacts("user", {
+      includeRetired: true,
+      includeRefuted: true,
+    });
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "list_facts", scope: "user", include_retired: true, include_refuted: true },
+      undefined,
+    );
+
+    const q = stubClient();
+    await dataLayerFromClient(q.client).listFacts("user", { includeRefuted: true });
+    expect(q.document).toHaveBeenCalledWith(
+      { op: "list_facts", scope: "user", include_refuted: true },
+      undefined,
+    );
+  });
+
+  it("judgeFact sends the verdict WORD and a reason, and nothing else", async () => {
+    // The server maps the word to a confidence, stamps the time, and stamps who judged
+    // from the call's own context. A client that sent any of those would be claiming
+    // authority it does not have.
+    const s = stubClient();
+    await dataLayerFromClient(s.client).judgeFact("user", "c1", "unsupported", "no city named", {
+      scopeId: "bob",
+    });
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "judge_fact", scope: "user", id: "c1", verdict: "unsupported", reason: "no city named" },
+      { scopeId: "bob" },
+    );
+  });
+
+  it("verificationStats asks for the scope's coverage", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).verificationStats("user", { scopeId: "bob" });
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "verification_stats", scope: "user" },
+      { scopeId: "bob" },
+    );
+  });
+
   it("listFacts maps every filter to list_facts snake_case + threads the scopeId override", async () => {
     const s = stubClient();
     await dataLayerFromClient(s.client).listFacts("user", {

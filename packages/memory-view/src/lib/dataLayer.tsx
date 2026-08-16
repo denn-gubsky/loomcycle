@@ -18,6 +18,7 @@ import type {
   FactListResponse,
   MemoryEntriesResponse,
   MemoryScope,
+  VerificationStats,
 } from "../types";
 
 // FactListOptions are the browse filters `listFacts` forwards to the Document
@@ -34,6 +35,8 @@ export interface FactListOptions {
   documentId?: string;
   /** Include superseded (retired) facts; default false hides them. */
   includeRetired?: boolean;
+  /** Also return facts a judge refused — withheld by default, never deleted. */
+  includeRefuted?: boolean;
   /** As-of world time (unix-nanos) for a point-in-time view. */
   asOf?: number;
   /** Page size cap. */
@@ -113,6 +116,20 @@ export interface MemoryDataLayer {
   // One chunk's full body + (when the chunk is a fact) its `entity` block.
   // `scopeId` is the browse-by-subject override.
   getChunk(scope: MemoryScope, id: string, opts?: { scopeId?: string }): Promise<ChunkDetail>;
+  // judgeFact records a verdict against a fact's stored span. The caller supplies only
+  // the WORD and a reason: the server maps the word to a confidence, stamps the time,
+  // and stamps who judged from the call's own context. A wrong verdict is corrected by
+  // judging again, never by deleting anything.
+  judgeFact(
+    scope: MemoryScope,
+    id: string,
+    verdict: "supported" | "unclear" | "unsupported" | "mistyped",
+    reason: string,
+    opts?: { scopeId?: string },
+  ): Promise<unknown>;
+  // verificationStats reports how much of a scope's fact store carries evidence and a
+  // verdict — the number that says whether verification is doing anything at all.
+  verificationStats(scope: MemoryScope, opts?: { scopeId?: string }): Promise<VerificationStats>;
 
   // Every cross-reference edge with an endpoint in a DOCUMENT (get_edges is
   // document-scoped, not chunk-scoped — the caller passes the fact's
@@ -165,6 +182,11 @@ export function dataLayerFromClient(client: LoomcycleClient): MemoryDataLayer {
       // Only send include_retired when true — false is the server default, so
       // omitting it keeps the wire body minimal (and the test assertions exact).
       if (opts?.includeRetired) input.include_retired = true;
+      // Refused facts are withheld from this list by default, exactly as they are from
+      // an agent's recall. Asking for them is how an operator reads what was refused AND
+      // why, which is the entire point of withholding rather than deleting. Same
+      // send-only-when-true rule as its neighbour.
+      if (opts?.includeRefuted) input.include_refuted = true;
       if (opts?.asOf !== undefined) input.as_of = opts.asOf;
       if (opts?.limit !== undefined) input.limit = opts.limit;
       return client
@@ -175,6 +197,15 @@ export function dataLayerFromClient(client: LoomcycleClient): MemoryDataLayer {
       client
         .document(toDocInput({ op: "get_chunk", scope, id }), docOpts(opts?.scopeId))
         .then((r) => r as ChunkDetail),
+    judgeFact: (scope, id, verdict, reason, opts) =>
+      client.document(
+        toDocInput({ op: "judge_fact", scope, id, verdict, reason }),
+        docOpts(opts?.scopeId),
+      ),
+    verificationStats: (scope, opts) =>
+      client
+        .document(toDocInput({ op: "verification_stats", scope }), docOpts(opts?.scopeId))
+        .then((r) => r as VerificationStats),
     getEdges: (scope, documentId, opts) =>
       client
         .document(
