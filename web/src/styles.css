@@ -5814,6 +5814,20 @@ button.primary:disabled {
   color: var(--lc-running);
 }
 
+/* The one irreversible control in the console. Weighted so it cannot be mistaken for
+   the ordinary buttons beside it, and DISABLED by default — it only lifts once a report
+   for this exact subject has been read and the identifier typed back. */
+.danger-btn {
+  background: var(--lc-danger);
+  border-color: var(--lc-danger);
+  color: #fff;
+}
+.danger-btn:disabled {
+  background: transparent;
+  border-color: var(--lc-rule);
+  color: var(--lc-text-faint);
+}
+
 /* Memory search (Settings → Memory). Hits are looser than facts — a note has no span
    and no verdict — so the row is lighter than a fact card and does not pretend to the
    same structure. */
