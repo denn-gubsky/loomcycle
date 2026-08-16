@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
@@ -77,6 +78,10 @@ type Server struct {
 	// are nil-safe). Wired at boot via SetProviderGates.
 	providerGates *concurrency.ProviderGates
 	store         store.Store // optional; nil means "don't persist"
+	// eraseAudit records subject erasures. Unlike every other audit consumer, a nil or
+	// failing sink here REFUSES the operation rather than proceeding unrecorded — see
+	// SetEraseAudit.
+	eraseAudit audit.Sink
 
 	// sqlMem is the RFC AA SQL Memory manager (per-scope sqlite databases
 	// backing the Memory tool's sql_query/sql_exec). Nil when the subsystem
@@ -957,6 +962,16 @@ func (s *Server) SetDocumentSourceDefTool(t tools.Tool) {
 // with "not configured".
 func (s *Server) SetOperatorTokenDefTool(t tools.Tool) {
 	s.operatorTokenDefTool = t
+}
+
+// SetEraseAudit wires the sink subject erasure records to.
+//
+// NIL IS NOT "no audit" HERE — it is "erasure is unavailable". Every other consumer of
+// this sink treats recording as best-effort observability, which is right for them;
+// erasure is the one operation nothing can undo, so a deployment that cannot write the
+// record does not get to perform the deletion. handleErasureExecute enforces that.
+func (s *Server) SetEraseAudit(sink audit.Sink) {
+	s.eraseAudit = sink
 }
 
 // SetSqlMem wires the RFC AA SQL Memory manager so the server can drop a

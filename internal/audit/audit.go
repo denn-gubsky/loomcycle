@@ -42,6 +42,25 @@ type Event struct {
 	SqlRows       int64  `json:"sql_rows,omitempty"`      // rows returned (query) or affected (exec)
 	SqlDurationMs int64  `json:"sql_duration_ms,omitempty"`
 	SqlError      string `json:"sql_error,omitempty"`
+
+	// --- RFC CF §7 subject erasure (Action = "erase_intent" | "erase_result") ---
+	//
+	// TWO RECORDS, and the pair is the point. `erase_intent` is written BEFORE any
+	// deletion and its failure REFUSES the erasure; `erase_result` is written after and
+	// carries what actually went. A crash between them still leaves evidence that an
+	// erasure was attempted, by whom, against which subject — which a single
+	// after-the-fact record cannot promise for an operation nothing can undo.
+	//
+	// The subject and tenant travel in TargetSubject / TargetTenant above; these add
+	// only what is specific to an erasure.
+	EraseDryRun bool `json:"erase_dry_run,omitempty"`
+	// ErasePlanes is plane → rows removed. Recorded rather than a total because
+	// "which planes were touched" is the question an auditor actually has.
+	ErasePlanes map[string]int `json:"erase_planes,omitempty"`
+	// EraseRetained is plane → why it was kept. An erasure record listing only its
+	// deletions would read as complete when it is not.
+	EraseRetained map[string]string `json:"erase_retained,omitempty"`
+	EraseErrors   []string          `json:"erase_errors,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

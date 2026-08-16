@@ -285,16 +285,32 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 // should leave them standing. The residue is measured FIRST, from session ids
 // captured up front — see Result.Notes for why that number can never be
 // recovered afterwards.
-func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, error) {
+// Validate applies the guards that decide whether an erasure may proceed, WITHOUT
+// touching anything.
+//
+// Extracted from Execute so a caller can ask "would this be accepted?" before doing
+// something irreversible on the strength of it — the HTTP layer writes an audit record
+// between the two, and a record written for a request that was about to be rejected
+// would be noise in the one log an auditor needs to trust. Execute still calls this, so
+// the rule has one home and every transport inherits it.
+func (s *Service) Validate(req ExecuteRequest) error {
 	subject := strings.TrimSpace(req.Subject)
 	if subject == "" {
-		return Result{}, ErrNoSubject
+		return ErrNoSubject
 	}
-	// Enforced HERE so every transport inherits it. A subject id matching nothing
-	// is harmless; one matching the wrong person is irreversible.
+	// A subject id matching nothing is harmless; one matching the wrong person is
+	// irreversible.
 	if !req.DryRun && req.Confirm != subject {
-		return Result{}, ErrConfirmMismatch
+		return ErrConfirmMismatch
 	}
+	return nil
+}
+
+func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, error) {
+	if err := s.Validate(req); err != nil {
+		return Result{}, err
+	}
+	subject := strings.TrimSpace(req.Subject)
 	tenant := req.Tenant
 	res := Result{
 		Tenant: tenant, Subject: subject, DryRun: req.DryRun,

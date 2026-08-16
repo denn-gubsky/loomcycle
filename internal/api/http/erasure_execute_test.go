@@ -126,6 +126,9 @@ func TestErasureExecute_LiveRunRequiresMatchingConfirm(t *testing.T) {
 // orphan, and must not delete it.
 func TestErasureExecute_ReportsResidueItIsAboutToMakeUnfindable(t *testing.T) {
 	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
+	// A LIVE erasure refuses without somewhere to record who asked for it, so every
+	// test that performs one has to supply a sink (see erasure_audit_test.go).
+	srv.SetEraseAudit(&recordingSink{})
 	ctx := context.Background()
 	const tenant, subject = "acme", "alice"
 	seedSubject(t, srv, tenant, subject)
@@ -179,6 +182,7 @@ func TestErasureExecute_ReportsResidueItIsAboutToMakeUnfindable(t *testing.T) {
 // result, and says the number is undeterminable instead.
 func TestErasureExecute_ResidueBecomesUnfindableAfterwards(t *testing.T) {
 	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
+	srv.SetEraseAudit(&recordingSink{})
 	ctx := context.Background()
 	const tenant, subject = "acme", "alice"
 	seedSubject(t, srv, tenant, subject)
