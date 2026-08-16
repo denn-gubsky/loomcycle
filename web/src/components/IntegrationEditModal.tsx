@@ -94,8 +94,13 @@ interface A2AAgentFormState {
   verifySignedCard: boolean;
 }
 
-interface MemoryBackendFormState {
-  kind: "inprocess";
+export interface MemoryBackendFormState {
+  kind: "inprocess" | "remote";
+  // remote (kind:remote) — the peer loomcycle's connection. Only read when
+  // kind === "remote".
+  baseUrl: string;
+  apiVersion: string;
+  apiKeyEnv: string;
   tenancyKind: "" | "key_per_tenant" | "shared_key_with_prefix";
   envPattern: string;
   prefixPattern: string;
@@ -1278,8 +1283,9 @@ function MemoryBackendFields(props: {
   const patch = (p: Partial<MemoryBackendFormState>) => set({ ...s, ...p });
   return (
     <>
-      {/* `inprocess` is the only kind the server accepts — the external
-          backend kind was removed — so this group has a single option. */}
+      {/* inprocess = this instance's own store; remote = proxy an agent's
+          memory to a PEER loomcycle's /v1/_memory/* (the peer embeds
+          server-side). RFC CD Part B. */}
       <div className="library-form-row">
         <label>kind</label>
         <div className="library-radio-group">
@@ -1287,14 +1293,79 @@ function MemoryBackendFields(props: {
             <input
               type="radio"
               name="int-mb-kind"
-              checked
-              readOnly
+              checked={s.kind === "inprocess"}
+              onChange={() => patch({ kind: "inprocess" })}
               disabled={submitting}
             />{" "}
             inprocess
           </label>
+          <label>
+            <input
+              type="radio"
+              name="int-mb-kind"
+              checked={s.kind === "remote"}
+              onChange={() =>
+                patch({
+                  kind: "remote",
+                  // shared_key_with_prefix is not valid for a remote peer (the
+                  // peer search API has no key-prefix param), so drop it.
+                  tenancyKind:
+                    s.tenancyKind === "shared_key_with_prefix"
+                      ? ""
+                      : s.tenancyKind,
+                })
+              }
+              disabled={submitting}
+            />{" "}
+            remote (peer loomcycle)
+          </label>
         </div>
       </div>
+
+      {s.kind === "remote" && (
+        <>
+          <div className="library-form-row">
+            <label htmlFor="int-mb-baseurl">config.base_url</label>
+            <input
+              id="int-mb-baseurl"
+              type="text"
+              value={s.baseUrl}
+              onChange={(e) => patch({ baseUrl: e.target.value })}
+              disabled={submitting}
+              placeholder="https://peer.example:8787"
+            />
+          </div>
+          <div className="library-form-row">
+            <label htmlFor="int-mb-apikeyenv">
+              config.api_key_env
+              <span className="library-modal-field-hint">
+                {" "}
+                — env-var NAME of the peer bearer (LOOMCYCLE_-prefixed or a known
+                key; never a secret value)
+              </span>
+            </label>
+            <input
+              id="int-mb-apikeyenv"
+              type="text"
+              value={s.apiKeyEnv}
+              onChange={(e) => patch({ apiKeyEnv: e.target.value })}
+              disabled={submitting}
+              placeholder="LOOMCYCLE_PEER_MEMORY_KEY"
+            />
+          </div>
+          <div className="library-form-row">
+            <label htmlFor="int-mb-apiversion">config.api_version</label>
+            <input
+              id="int-mb-apiversion"
+              type="text"
+              value={s.apiVersion}
+              onChange={(e) => patch({ apiVersion: e.target.value })}
+              disabled={submitting}
+              placeholder="(optional)"
+            />
+          </div>
+        </>
+      )}
 
       <div className="library-form-row">
         <label htmlFor="int-mb-tenancy">tenancy_strategy.kind</label>
@@ -1310,7 +1381,11 @@ function MemoryBackendFields(props: {
         >
           <option value="">(default)</option>
           <option value="key_per_tenant">key_per_tenant</option>
-          <option value="shared_key_with_prefix">shared_key_with_prefix</option>
+          {/* shared_key_with_prefix has no meaning for a remote peer (its
+              search API takes no key-prefix), so offer it only for inprocess. */}
+          {s.kind !== "remote" && (
+            <option value="shared_key_with_prefix">shared_key_with_prefix</option>
+          )}
         </select>
       </div>
       {s.tenancyKind === "key_per_tenant" && (
@@ -1385,15 +1460,19 @@ function MemoryBackendFields(props: {
   );
 }
 
-function initMemoryBackend(def: unknown): MemoryBackendFormState {
+export function initMemoryBackend(def: unknown): MemoryBackendFormState {
   const tenancy = pickObject(def, "tenancy_strategy");
   const tenancyRaw = pickString(tenancy, "kind");
   const fallbackRaw = pickString(def, "fallback_on_error");
+  const config = pickObject(def, "config");
+  // A def persisted by an older build may say kind:mem9 (removed) — anything
+  // that is not the peer-proxy "remote" normalises to the local "inprocess".
+  const kind = pickString(def, "kind") === "remote" ? "remote" : "inprocess";
   return {
-    // A def persisted by an older build may still say kind:mem9. That kind
-    // was removed, so editing normalises it to the only accepted value —
-    // saving the form is how an operator retires the stale kind.
-    kind: "inprocess",
+    kind,
+    baseUrl: pickString(config, "base_url"),
+    apiVersion: pickString(config, "api_version"),
+    apiKeyEnv: pickString(config, "api_key_env"),
     tenancyKind:
       tenancyRaw === "key_per_tenant"
         ? "key_per_tenant"
@@ -1407,7 +1486,21 @@ function initMemoryBackend(def: unknown): MemoryBackendFormState {
   };
 }
 
-function validateMemoryBackend(s: MemoryBackendFormState): string | null {
+export function validateMemoryBackend(s: MemoryBackendFormState): string | null {
+  if (s.kind === "remote") {
+    const url = s.baseUrl.trim();
+    if (!url) return "kind=remote requires config.base_url (the peer loomcycle).";
+    let u: URL;
+    try {
+      u = new URL(url);
+    } catch {
+      return "config.base_url must be a valid http(s) URL with a host.";
+    }
+    if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.host)
+      return "config.base_url must be an http(s) URL with a host.";
+    if (s.tenancyKind === "shared_key_with_prefix")
+      return "shared_key_with_prefix is not supported for kind=remote (the peer search API has no key-prefix param); use key_per_tenant.";
+  }
   if (
     s.tenancyKind === "key_per_tenant" &&
     s.envPattern.trim() &&
@@ -1422,13 +1515,19 @@ function validateMemoryBackend(s: MemoryBackendFormState): string | null {
   return null;
 }
 
-function buildMemoryBackendOverlay(
+export function buildMemoryBackendOverlay(
   s: MemoryBackendFormState,
   description: string,
 ): Record<string, unknown> {
   const ov: Record<string, unknown> = {};
   if (description.trim()) ov.description = description.trim();
   ov.kind = s.kind;
+  if (s.kind === "remote") {
+    const config: Record<string, unknown> = { base_url: s.baseUrl.trim() };
+    if (s.apiVersion.trim()) config.api_version = s.apiVersion.trim();
+    if (s.apiKeyEnv.trim()) config.api_key_env = s.apiKeyEnv.trim();
+    ov.config = config;
+  }
   if (s.tenancyKind) {
     const ten: Record<string, unknown> = { kind: s.tenancyKind };
     if (s.tenancyKind === "key_per_tenant" && s.envPattern.trim())
