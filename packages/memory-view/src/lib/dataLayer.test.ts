@@ -171,6 +171,31 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
     );
   });
 
+  it("remember sends the statement ONCE — the server writes the span from it", async () => {
+    // A client that also sent source_quote could point a claim at text that does not
+    // contain it. The self-citation is the server's guarantee, not a client convention.
+    const s = stubClient();
+    await dataLayerFromClient(s.client).remember("user", "The user deploys on Fridays.", {
+      scopeId: "bob",
+    });
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "remember", scope: "user", text: "The user deploys on Fridays." },
+      { scopeId: "bob" },
+    );
+  });
+
+  it("remember forwards a type/subject only when given", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).remember("user", "Ada runs platform.", {
+      type: "person",
+      subject: "Ada",
+    });
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "remember", scope: "user", text: "Ada runs platform.", type: "person", subject: "Ada" },
+      undefined,
+    );
+  });
+
   it("judgeFact sends the verdict WORD and a reason, and nothing else", async () => {
     // The server maps the word to a confidence, stamps the time, and stamps who judged
     // from the call's own context. A client that sent any of those would be claiming

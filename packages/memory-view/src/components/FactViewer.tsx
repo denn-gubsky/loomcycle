@@ -4,6 +4,7 @@ import { useMemoryData } from "../lib/dataLayer";
 import Splitter from "./Splitter";
 import ChunkDetailPanel from "./ChunkDetailPanel";
 import CoverageBar from "./CoverageBar";
+import RememberBox from "./RememberBox";
 import { factVerdict } from "../lib/factVerdict";
 
 // FactViewer — a browse LIST + a detail panel over a scope's entity-tier FACTS
@@ -114,6 +115,7 @@ export default function FactViewer({ scope = "user", scopeId, onRunConsolidation
         </label>
       </div>
       <CoverageBar scope={scope} scopeId={scopeId} reloadKey={reloadKey} />
+      <RememberBox scope={scope} scopeId={scopeId} onRemembered={() => setReloadKey((n) => n + 1)} />
       {onRunConsolidation && (
         <div className="fact-consolidate">
           <button type="button" onClick={() => onRunConsolidation(scopeId ?? "")}>

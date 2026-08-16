@@ -127,6 +127,14 @@ export interface MemoryDataLayer {
     reason: string,
     opts?: { scopeId?: string },
   ): Promise<unknown>;
+  // remember stores a statement a PERSON supplied. The text becomes both the claim and
+  // its own source span — the server writes both from this one field, so a client cannot
+  // point a claim at evidence that does not contain it.
+  remember(
+    scope: MemoryScope,
+    text: string,
+    opts?: { scopeId?: string; type?: string; subject?: string },
+  ): Promise<unknown>;
   // verificationStats reports how much of a scope's fact store carries evidence and a
   // verdict — the number that says whether verification is doing anything at all.
   verificationStats(scope: MemoryScope, opts?: { scopeId?: string }): Promise<VerificationStats>;
@@ -202,6 +210,12 @@ export function dataLayerFromClient(client: LoomcycleClient): MemoryDataLayer {
         toDocInput({ op: "judge_fact", scope, id, verdict, reason }),
         docOpts(opts?.scopeId),
       ),
+    remember: (scope, text, opts) => {
+      const input: Record<string, unknown> = { op: "remember", scope, text };
+      if (opts?.type) input.type = opts.type;
+      if (opts?.subject) input.subject = opts.subject;
+      return client.document(toDocInput(input), docOpts(opts?.scopeId));
+    },
     verificationStats: (scope, opts) =>
       client
         .document(toDocInput({ op: "verification_stats", scope }), docOpts(opts?.scopeId))

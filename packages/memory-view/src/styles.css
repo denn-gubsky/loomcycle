@@ -1274,3 +1274,21 @@
   opacity: 0.85;
   border-bottom: 1px solid var(--border);
 }
+
+/* The remember box sits with the coverage strip, above the list it adds to — writing a
+   fact and seeing what is already there are the same activity. */
+.loomcycle-memory-view .fact-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-memory-view .fact-remember input {
+  flex: 1;
+  min-width: 12rem;
+}
+.loomcycle-memory-view .fact-remember-flash {
+  font-size: 12px;
+  color: var(--accent);
+}

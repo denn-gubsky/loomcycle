@@ -1461,6 +1461,7 @@ export type DocumentToolInput = {
     | "judge_fact"
     | "verbatim_answer"
     | "verification_stats"
+    | "remember"
     | "propose_entity"
     | "search"
     // Remote document sources (RFC CE).
@@ -1537,6 +1538,10 @@ export type DocumentToolInput = {
    *  They are withheld by default and never deleted, so this is how to read what
    *  was refused, and why. */
   include_refuted?: boolean;
+  /** remember: a statement to store as a fact that cites ITSELF — the text becomes both
+   *  the claim and its source span, so write what you want recorded rather than an
+   *  instruction about it. Additive only; it is never a way to delete. */
+  text?: string;
   /** verbatim_answer: how close a match must be before it can be quoted as an
    *  answer (default 0.6 server-side). Cosine scale is a property of the
    *  EMBEDDING MODEL, so tune this against your own — the response reports the
