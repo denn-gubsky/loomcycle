@@ -50,6 +50,8 @@
  *     memorySearch(input): Promise<MemorySearchResponse>          // unified k/v + document-chunk search
  *     memoryEmbedStats(scope): Promise<MemoryEmbedStatsResponse>
  *     reembedMemory(scope, scopeId, opts?): Promise<MemoryReembedResponse>  // dry_run defaults true
+ *     backfillEmbeddings(scope, scopeId, opts?): Promise<MemoryBackfillResponse>   // embeds rows that have none
+ *     purgeStaleEmbeddings(scope, scopeId, opts?): Promise<MemoryPurgeResponse>    // DELETES; dry_run defaults true
  *
  *     // Interruption (v0.8.16; decline RFC BH)
  *     listUserInterrupts(userId, opts?): Promise<InterruptListResponse>

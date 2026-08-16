@@ -6,6 +6,7 @@ import {
   type Visibility,
 } from "../lib/visibility";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
+import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
 import {
   CredentialMeta,
   CredentialScope,
@@ -21,6 +22,7 @@ import {
   getEnvTemplate,
   getHealth,
   getOntology,
+  getRetentionReport,
   getRuntimeState,
   listCredentials,
   listPresets,
@@ -31,6 +33,7 @@ import {
   setOntologyStatus,
   showPreset,
   OntologyTerm,
+  RetentionReport,
 } from "../api";
 import { usePrincipal, useUserId } from "../components/Layout";
 import LimitsView from "./LimitsView";
@@ -55,6 +58,7 @@ type Section =
   | "limits"
   | "routing"
   | "ontology"
+  | "retention"
   | "tokens"
   | "presets"
   | "runtime"
@@ -88,6 +92,7 @@ const SECTIONS: SectionDef[] = [
   { id: "limits", label: "Limits", vis: "tenant" },
   { id: "routing", label: "Routing", vis: "tenant" },
   { id: "ontology", label: "Ontology", vis: "tenant" },
+  { id: "retention", label: "Retention", vis: "tenant" },
   // ScopeAdmin: token minting has no tenant axis and is deliberately excluded from
   // the tenant-confined def set; presets/runtime/health fall through to the /v1/_*
   // catch-all; and repair-tenant is explicitly admin because it rewrites rows across
@@ -154,6 +159,7 @@ export default function SettingsView() {
         {active === "limits" && <LimitsView />}
         {active === "routing" && <RoutingView />}
         {active === "ontology" && <OntologySection />}
+        {active === "retention" && <RetentionSection />}
         {active === "tokens" && <TokenManager />}
         {active === "presets" && <PresetsSection />}
         {active === "runtime" && <RuntimeSection />}
@@ -959,6 +965,108 @@ function OntologySection() {
               </tbody>
             </table>
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Retention ───────────────────────────────────────────────────────────────
+//
+// What the sweeper is configured to delete, and — for an admin — how much the current
+// settings would match right now.
+//
+// READ-ONLY BY DESIGN. Retention is config: changing it here would mean an operator
+// deleting data through a form whose effect they cannot preview, and the preview IS this
+// page. The report is the instrument; the yaml is the control.
+function RetentionSection() {
+  const [rep, setRep] = useState<RetentionReport | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    getRetentionReport()
+      .then((r) => {
+        setRep(r);
+        setErr(null);
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  const days = (ms: number) => (ms > 0 ? `${Math.round(ms / 86_400_000)}d` : "—");
+
+  const families = rep
+    ? [
+        { key: "defs", label: "definition versions", mode: rep.defs_mode, age: rep.defs_max_age_ms },
+        { key: "chats", label: "chats", mode: rep.chats_mode, age: rep.chats_max_age_ms },
+        {
+          key: "chats_internal",
+          label: "chats (internal agents)",
+          mode: rep.chats_mode,
+          age: rep.chats_internal_max_age_ms,
+        },
+        { key: "mem", label: "retired agents' memory", mode: rep.mem_mode, age: rep.mem_max_age_ms },
+        {
+          key: "mem_content",
+          label: "superseded memory content",
+          mode: rep.mem_content_mode,
+          age: rep.mem_content_max_age_ms,
+        },
+      ]
+    : [];
+
+  return (
+    <div className="settings-panel">
+      <h2>Retention</h2>
+      <p className="settings-help">
+        What the background sweeper is configured to remove, and when. This page reports;
+        the settings themselves live in the operator&rsquo;s yaml — a form that deleted
+        data without a preview would be the wrong control, and this is the preview.
+      </p>
+      {err && <div className="settings-error">{err}</div>}
+      {rep && (
+        <>
+          <div className="settings-muted">
+            {rep.enabled
+              ? `sweeper on, every ${Math.round(rep.interval_ms / 60_000)} min`
+              : "sweeper OFF — nothing is removed on any schedule, whatever the families below say"}
+          </div>
+          <dl className="settings-stats">
+            {families.map((f) => {
+              const effect = familyEffect(f.mode);
+              const count = rep.purgeable?.[f.key];
+              return (
+                <div key={f.key}>
+                  <dt>{f.label}</dt>
+                  <dd>
+                    <code>{f.mode}</code>
+                    {effect !== "inert" && <> · older than {days(f.age)}</>}
+                  </dd>
+                  {/* The count NEVER stands alone — see lib/retention for why a bare
+                      number beside an `off` family reads as a countdown. */}
+                  {count !== undefined && (
+                    <dd className="settings-muted">{countMeaning(f.mode, count)}</dd>
+                  )}
+                  {exportMisconfigured(f.mode, rep.export_dir) && (
+                    <dd className="settings-error">
+                      exports nowhere — no export directory is configured, so the sweeper
+                      refuses this family and nothing is removed
+                    </dd>
+                  )}
+                </div>
+              );
+            })}
+          </dl>
+          {!rep.admin && (
+            <div className="settings-muted">
+              Counts are admin-only, so this shows the configuration without them — an
+              absent number here means &ldquo;not shown to you&rdquo;, never zero.
+            </div>
+          )}
+          {rep.export_dir && (
+            <div className="settings-muted">
+              exports to <code>{rep.export_dir}</code>
+            </div>
+          )}
         </>
       )}
     </div>
