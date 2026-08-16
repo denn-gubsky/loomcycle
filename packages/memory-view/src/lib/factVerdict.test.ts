@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { factActions, factVerdict, OPERATOR } from "./factVerdict";
+import { factActions, factVerdict, OPERATOR, vouchNotice } from "./factVerdict";
 import type { FactEntity } from "../types";
 
 // ent fills the one field every entity carries so a case can state only what it is
@@ -93,5 +93,20 @@ describe("factActions", () => {
     const a = factActions(factVerdict(ent()));
     expect(a.canMarkWrong).toBe(true);
     expect(a.canMarkGood).toBe(true);
+  });
+});
+
+describe("vouchNotice", () => {
+  it("warns when there is no span to check against", () => {
+    // Confirming a fact against a recorded quote is CHECKING; confirming one with no
+    // quote is VOUCHING. An operator should know which they just did — their name goes
+    // on it either way.
+    const n = vouchNotice(ent());
+    expect(n).toContain("vouch");
+    expect(n).toContain("YOU");
+  });
+
+  it("says nothing when the fact carries its evidence", () => {
+    expect(vouchNotice(ent({ source_quote: "I live in Cluj-Napoca" }))).toBe("");
   });
 });

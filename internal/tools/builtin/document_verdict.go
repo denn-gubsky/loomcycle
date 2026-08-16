@@ -118,19 +118,39 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		// check it against.
 		return errResult("judge_fact: that chunk is not a fact (it carries no entity metadata)"), nil
 	}
-	// A fact with NO span cannot be judged against anything. Refusing is the honest
-	// answer: a verdict reached without evidence is the failure this RFC exists to stop,
-	// and it would be indistinguishable from one that was checked.
-	if prev.SourceQuote == "" && verdict != "unclear" {
+	// A fact with no span cannot be CHECKED against anything — but a person can still
+	// vouch for it, and that is a different act with a different authority.
+	//
+	// THIS RULE USED TO REFUSE EVERYONE, and its stated reason was that such a verdict
+	// "would be indistinguishable from one that was checked". That justification stopped
+	// being true when `judged_by` landed: the store now records whether a machine or a
+	// human reached a verdict, so an operator's evidence-free affirmation is no longer
+	// mistakable for an entailment check. The refusal outlived its own argument, and in
+	// the meantime it made a legitimate operator action impossible — confirming a fact
+	// stored before spans existed, which is most of what an older store holds.
+	//
+	// AN AGENT IS STILL REFUSED. It cannot vouch: its "I checked this" is exactly the
+	// claim the span exists to substantiate, and letting a run affirm what it cannot
+	// check is the laundering this line is built against. An operator supplying no span
+	// is not making that claim — they are putting their own name to it, which the reason
+	// and `judged_by` record.
+	// `mistyped` is excluded from that relaxation, by anyone. It is not a claim about
+	// whether the fact is TRUE — it says the span carries the claim but the filing is
+	// wrong — so without a span there is nothing for it to be about. An operator who
+	// wants to correct a filing retypes the fact, which is an edit, not a verdict.
+	judgedBy := judgedByForVerdict(ctx)
+	mayVouch := judgedBy == "operator" && verdict != "mistyped"
+	if prev.SourceQuote == "" && verdict != "unclear" && !mayVouch {
 		return errResult("judge_fact: that fact records no source span, so there is nothing to " +
-			"check it against. Leave it unjudged (which reads as unverified) rather than " +
-			"recording a verdict with no evidence"), nil
+			"check it against. An operator may still vouch for it from the console — a run " +
+			"may not, because affirming what you cannot check is the failure a span exists " +
+			"to prevent. Leave it unjudged, which reads as unverified"), nil
 	}
 
 	now := time.Now().UnixNano()
 	if err := d.exec(ctx, key,
 		`UPDATE chunk_memory_meta SET confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE chunk_id = ?`,
-		confidence, now, in.Reason, judgedByForVerdict(ctx), chunkID); err != nil {
+		confidence, now, in.Reason, judgedBy, chunkID); err != nil {
 		return errResult("judge_fact: " + err.Error()), nil
 	}
 	return jsonResult(map[string]any{

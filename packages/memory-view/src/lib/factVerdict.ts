@@ -49,6 +49,22 @@ export function factVerdict(entity: FactEntity | undefined): FactVerdict {
 // Both directions are available on a judged fact, deliberately: the reason this surface
 // exists is to correct a verdict the judge got WRONG, and a panel that only offered
 // "mark wrong" would let an operator withhold but never restore.
+//
+// A SPAN-LESS FACT STILL OFFERS BOTH. An operator may vouch for a fact with no recorded
+// evidence — their name on it IS the authority, and the store records that it was a
+// person rather than a machine. What they are asserting is different, though, so the
+// form says so; see vouchNotice.
 export function factActions(v: FactVerdict): { canMarkWrong: boolean; canMarkGood: boolean } {
   return { canMarkWrong: v.state !== "withheld", canMarkGood: v.state !== "checked" };
+}
+
+// vouchNotice is what to tell an operator about to judge a fact that has no span.
+//
+// Without it the two cases look identical, and they are not: confirming a fact against a
+// recorded quote is checking, while confirming one with no quote is vouching. An operator
+// should know which they just did — it is their name that ends up on it.
+export function vouchNotice(entity: FactEntity | undefined): string {
+  if (entity?.source_quote) return "";
+  return "This fact records no source span, so there is nothing to check it against — " +
+    "your verdict records that YOU vouch for it, under your own name.";
 }

@@ -73,7 +73,7 @@ export default function CoverageBar({
         </span>
       )}
       {(stats.unverifiable_no_span ?? 0) > 0 && (
-        <span title="no source span — these can never be verified by anyone, not merely not yet">
+        <span title="no source span — nothing can check these against a source; only a person can vouch for them">
           <strong>{stats.unverifiable_no_span}</strong> unverifiable
         </span>
       )}
