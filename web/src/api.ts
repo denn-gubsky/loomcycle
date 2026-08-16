@@ -3,8 +3,6 @@
 // operator visits `/ui?token=...` — fetch() includes it
 // automatically because we're same-origin. No bearer header needed.
 
-import type { FactEntity } from "./lib/factVerdict";
-
 export interface UserSummary {
   user_id: string;
   running_count: number;
@@ -1087,127 +1085,6 @@ export function documentQueryChunks(
     },
     browse,
   );
-}
-
-// VerificationStats is `Document op=verification_stats` — how much of a scope's fact
-// store carries evidence and a verdict.
-//
-// Every count except `facts` is OPTIONAL because the server omits `verified_share`
-// entirely on an empty store rather than reporting 0/0: a 0.00 share would read as
-// "nothing is verified", which is a different claim from "there is nothing to verify".
-export interface VerificationStats {
-  facts: number;
-  with_span?: number;
-  judged?: number;
-  supported?: number;
-  withheld?: number;
-  /** Facts with no span — they can never be verified by anyone, not merely not yet. */
-  unverifiable_no_span?: number;
-  awaiting_judge?: number;
-  /** supported / facts. Absent when there are no facts at all. */
-  verified_share?: number;
-}
-
-// getVerificationStats reads one scope's coverage. `browse.scopeId` targets another
-// subject, which is how the Settings panel reports on the user picked in the topbar
-// rather than on the operator reading the page.
-export function getVerificationStats(
-  scope: DocScope = "user",
-  browse?: BrowseScope,
-): Promise<VerificationStats> {
-  return substratePost("/v1/_document", { op: "verification_stats", scope }, browse);
-}
-
-// MemorySearchHit is one hit from POST /v1/_memory/search.
-//
-// `kind` is the server's own classification — "fact" (a consolidator distilled it),
-// "note" (an agent wrote it directly) or "document" (a Document chunk body) — and a
-// document hit carries the chunk_id its entity block hangs off. The console does not
-// re-derive any of that from the key.
-export interface MemorySearchHit {
-  key: string;
-  value?: unknown;
-  score: number;
-  rank_score: number;
-  kind: string;
-  chunk_id?: string;
-}
-
-export interface MemorySearchResponse {
-  scope: string;
-  scope_id: string;
-  entries: MemorySearchHit[];
-  truncated?: boolean;
-}
-
-// searchMemory runs a semantic search across a scope's remembered things.
-//
-// `scopeId` is a REQUEST FIELD here, not the ?scope_id= browse override the substrate
-// endpoints take — this is a different endpoint with its own shape, and the tenant is
-// still stamped server-side from the authenticated principal.
-export function searchMemory(
-  query: string,
-  scope: "agent" | "user" | "tenant",
-  scopeId: string,
-  opts?: { sources?: string[]; topK?: number },
-): Promise<MemorySearchResponse> {
-  return jsonFetch<MemorySearchResponse>("/v1/_memory/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query,
-      scope,
-      scope_id: scopeId,
-      ...(opts?.sources ? { sources: opts.sources } : {}),
-      ...(opts?.topK ? { top_k: opts.topK } : {}),
-    }),
-  });
-}
-
-// FactRow is one row of `Document op=list_facts`.
-//
-// `title` is the claim, TRUNCATED by the writer at 80 characters — the consolidator
-// stores the sentence as the chunk body and a shortened form as its title. The span in
-// `entity.source_quote` is NOT truncated, so a row can show full evidence next to a
-// possibly-clipped claim; the body is fetched per row on demand rather than for every
-// row up front.
-export interface FactRow {
-  id: string;
-  document_id: string;
-  title: string;
-  revision: number;
-  entity?: FactEntity;
-}
-
-// listFacts reads a scope's facts, newest first. `includeRefuted` surfaces the ones a
-// judge withheld, each carrying the reason it was refused.
-export function listFacts(
-  scope: DocScope = "user",
-  opts?: { includeRefuted?: boolean; limit?: number },
-  browse?: BrowseScope,
-): Promise<{ facts: FactRow[]; count: number }> {
-  return substratePost(
-    "/v1/_document",
-    {
-      op: "list_facts",
-      scope,
-      ...(opts?.includeRefuted ? { include_refuted: true } : {}),
-      ...(opts?.limit ? { limit: opts.limit } : {}),
-    },
-    browse,
-  );
-}
-
-// judgeFact records a verdict against a fact's stored span. The server maps the word to
-// a confidence and stamps the time; a caller supplies only the word and the reason.
-export function judgeFact(
-  id: string,
-  verdict: "supported" | "unclear" | "unsupported" | "mistyped",
-  reason: string,
-  scope: DocScope = "user",
-  browse?: BrowseScope,
-): Promise<{ chunk_id: string; verdict: string; confidence: number; withheld: boolean }> {
-  return substratePost("/v1/_document", { op: "judge_fact", scope, id, verdict, reason }, browse);
 }
 
 export function documentGetChunk(id: string, scope: DocScope, browse?: BrowseScope): Promise<ChunkDetail> {

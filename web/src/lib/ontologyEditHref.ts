@@ -28,16 +28,13 @@ export function ontologistRunHref(userId?: string): string {
 
 // consolidationRunHref stages a consolidation pass in the run terminal.
 //
-// A LINK, for the same reason the curation one is: a settings click that spends tokens
-// is a surprise, and a consolidation pass is the most expensive thing this UI can start
-// — one extractor call per chat read, plus the judge's calls when verification is on.
-// The operator should see the agent and the prompt before any of that runs.
+// A LINK TARGET, not a request: a click that spends tokens with no preview is a
+// surprise, and a pass is the most expensive thing the console can start — one extractor
+// call per chat read, plus the judge's. The operator sees the agent and prompt first.
 //
-// THE USER ID IS THE SCOPE, not decoration. The pass consolidates whichever user the RUN
-// belongs to (its scope is "user"), and the run form seeds that from the same topbar
-// picker this href reads — so the prompt naming a user and the run targeting one cannot
-// disagree. The prompt still names them, because an operator reviewing a staged run
-// should be able to see the target without inspecting the form.
+// Kept as a function with a test for the reason its neighbour is: a query param is
+// exactly what disappears from a template literal without anyone noticing, and this one
+// carries the TARGET — a dropped user id silently consolidates the wrong person.
 export function consolidationRunHref(userId?: string): string {
   const prompt = userId
     ? `Run one consolidation pass for ${userId}.`

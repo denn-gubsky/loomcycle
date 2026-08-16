@@ -24,14 +24,22 @@ export interface MemoryViewProps extends MemoryDataSource {
   theme?: "light" | "dark";
   /** Initial tab. Default "entries" — the landing view is unchanged from P4a. */
   defaultTab?: MemoryTab;
+  /** Offer a "run consolidation" affordance on the facts tab, calling this with the
+   *  scope_id in view.
+   *
+   *  A CALLBACK RATHER THAN A URL, because starting a pass is the host's business: in
+   *  the loomcycle console it stages a run at /run, a route an embedder of this package
+   *  does not have. Omitting it hides the affordance entirely rather than rendering a
+   *  link to nowhere. */
+  onRunConsolidation?: (scopeId: string) => void;
 }
 
 export default function MemoryView(props: MemoryViewProps) {
-  const { theme, defaultTab } = props;
+  const { theme, defaultTab, onRunConsolidation } = props;
   const resolved = useResolvedDataLayer(props);
   return (
     <MemoryViewRoot theme={theme} dataLayer={resolved}>
-      <MemoryTabs defaultTab={defaultTab ?? "entries"} />
+      <MemoryTabs defaultTab={defaultTab ?? "entries"} onRunConsolidation={onRunConsolidation} />
     </MemoryViewRoot>
   );
 }
@@ -41,7 +49,13 @@ export default function MemoryView(props: MemoryViewProps) {
 // useMemoryData(). The Facts/Search panels default to scope "user"; the console
 // owns its own scope selection internally, so nothing is threaded down (the
 // panels are independent browse surfaces, not a shared selection).
-function MemoryTabs({ defaultTab }: { defaultTab: MemoryTab }) {
+function MemoryTabs({
+  defaultTab,
+  onRunConsolidation,
+}: {
+  defaultTab: MemoryTab;
+  onRunConsolidation?: (scopeId: string) => void;
+}) {
   const [tab, setTab] = useState<MemoryTab>(defaultTab);
   return (
     <>
@@ -58,7 +72,7 @@ function MemoryTabs({ defaultTab }: { defaultTab: MemoryTab }) {
       </div>
       <div className="memory-view-tabpanel">
         {tab === "entries" && <MemoryConsole />}
-        {tab === "facts" && <FactViewer />}
+        {tab === "facts" && <FactViewer onRunConsolidation={onRunConsolidation} />}
         {tab === "search" && <SearchPanel />}
       </div>
     </>

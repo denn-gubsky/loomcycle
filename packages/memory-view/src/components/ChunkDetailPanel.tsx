@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ChunkDetail, DocEdge, FactEntity, MemoryScope } from "../types";
 import { useMemoryData } from "../lib/dataLayer";
+import { factActions, factVerdict } from "../lib/factVerdict";
 
 // ChunkDetailPanel — the fact/chunk inspector shared by the FactViewer and the
 // SearchPanel (a document hit opens the same detail). Given a (scope, chunkId)
@@ -21,14 +22,55 @@ export interface ChunkDetailPanelProps {
   chunkId: string;
   /** Navigate the detail to another chunk (a supersession/relation target). */
   onNavigate?: (chunkId: string) => void;
+  /** Called after a verdict is recorded, so a list showing this fact can refresh —
+   *  withholding one removes it from the default view. */
+  onVerdictRecorded?: () => void;
 }
 
-export default function ChunkDetailPanel({ scope, scopeId, chunkId, onNavigate }: ChunkDetailPanelProps) {
+export default function ChunkDetailPanel({
+  scope,
+  scopeId,
+  chunkId,
+  onNavigate,
+  onVerdictRecorded,
+}: ChunkDetailPanelProps) {
   const data = useMemoryData();
   const [chunk, setChunk] = useState<ChunkDetail | null>(null);
   const [edges, setEdges] = useState<DocEdge[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // A verdict needs a stated ground — the server refuses one without a reason, and it
+  // should: a withheld fact whose reason nobody recorded is indistinguishable from a bug.
+  const [arming, setArming] = useState<null | { good: boolean }>(null);
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const judge = async (good: boolean) => {
+    if (!reason.trim()) return;
+    setSaving(true);
+    try {
+      await data.judgeFact(
+        scope,
+        chunkId,
+        good ? "supported" : "unsupported",
+        reason.trim(),
+        scopeId ? { scopeId } : undefined,
+      );
+      setArming(null);
+      setReason("");
+      // Re-read rather than patching local state: the server owns the confidence the
+      // word maps to and stamps who judged, so anything reconstructed here would be a
+      // guess at what it decided.
+      const c = await data.getChunk(scope, chunkId, scopeId ? { scopeId } : undefined);
+      setChunk(c);
+      onVerdictRecorded?.();
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -171,8 +213,102 @@ export default function ChunkDetailPanel({ scope, scopeId, chunkId, onNavigate }
         </div>
       )}
 
+      <VerdictBlock
+        entity={chunk.entity}
+        arming={arming}
+        reason={reason}
+        saving={saving}
+        onArm={(good) => {
+          setArming({ good });
+          setReason("");
+        }}
+        onReason={setReason}
+        onCancel={() => setArming(null)}
+        onSave={judge}
+      />
+
       <div className="fact-body-label">body</div>
       <pre className="fact-body">{chunk.body || ""}</pre>
+    </div>
+  );
+}
+
+// VerdictBlock — the evidence a fact was drawn from, whatever verdict it carries, and
+// the two controls that let a person overrule the judge (RFC CC).
+//
+// THE SPAN IS SHOWN, NOT TUCKED AWAY. It is the thing the claim is checked against; a
+// panel that hides it invites judging a claim on how plausible it reads, which is the
+// failure the whole verified-writes line exists to prevent. A fact with no span says so
+// in place of the quote — that fact can never be verified by anyone, which is a
+// different state from merely unjudged.
+function VerdictBlock({
+  entity,
+  arming,
+  reason,
+  saving,
+  onArm,
+  onReason,
+  onCancel,
+  onSave,
+}: {
+  entity?: FactEntity;
+  arming: null | { good: boolean };
+  reason: string;
+  saving: boolean;
+  onArm: (good: boolean) => void;
+  onReason: (s: string) => void;
+  onCancel: () => void;
+  onSave: (good: boolean) => void;
+}) {
+  if (!entity) return null;
+  const v = factVerdict(entity);
+  const a = factActions(v);
+  return (
+    <div className="fact-verdict" data-state={v.state}>
+      <div className="fact-verdict-head">
+        <span className="fact-body-label">evidence</span>
+        <span className={"fact-verdict-badge fact-verdict-" + v.state}>{v.state}</span>
+      </div>
+      {entity.source_quote ? (
+        <blockquote className="fact-span">{entity.source_quote}</blockquote>
+      ) : (
+        <div className="fact-span fact-span-missing">
+          no source span — this fact cannot be verified by anyone
+        </div>
+      )}
+      {v.reason && (
+        <div className="fact-verdict-reason">
+          {v.byOperator ? "an operator" : v.judgedBy || "an earlier verdict"} said: {v.reason}
+        </div>
+      )}
+      <div className="fact-verdict-actions">
+        {a.canMarkWrong && (
+          <button type="button" disabled={saving} onClick={() => onArm(false)}>
+            mark wrong
+          </button>
+        )}
+        {a.canMarkGood && (
+          <button type="button" disabled={saving} onClick={() => onArm(true)}>
+            {v.state === "withheld" ? "restore" : "mark good"}
+          </button>
+        )}
+      </div>
+      {arming && (
+        <div className="fact-verdict-form">
+          <input
+            autoFocus
+            value={reason}
+            placeholder={arming.good ? "why is this right?" : "why is this wrong?"}
+            onChange={(e) => onReason(e.target.value)}
+          />
+          <button type="button" disabled={saving || !reason.trim()} onClick={() => onSave(arming.good)}>
+            save verdict
+          </button>
+          <button type="button" onClick={onCancel}>
+            cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }
