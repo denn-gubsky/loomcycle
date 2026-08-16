@@ -1087,6 +1087,34 @@ export function documentQueryChunks(
   );
 }
 
+// RetentionReport is GET /v1/_retention — what the sweeper is configured to do, and
+// (for an admin) how much the current settings would match right now.
+//
+// A tenant operator sees the configuration without the `purgeable` preview; the handler
+// strips it. Absent counts therefore mean "not shown to you", never "zero".
+export interface RetentionReport {
+  admin: boolean;
+  enabled: boolean;
+  interval_ms: number;
+  defs_mode: string;
+  defs_max_age_ms: number;
+  defs_keep_last_n: number;
+  chats_mode: string;
+  chats_max_age_ms: number;
+  chats_internal_max_age_ms: number;
+  mem_mode: string;
+  mem_max_age_ms: number;
+  mem_content_mode: string;
+  mem_content_max_age_ms: number;
+  export_dir?: string;
+  purgeable?: Record<string, number>;
+  sqlmem_gc?: Record<string, unknown>;
+}
+
+export function getRetentionReport(): Promise<RetentionReport> {
+  return jsonFetch<RetentionReport>("/v1/_retention");
+}
+
 export function documentGetChunk(id: string, scope: DocScope, browse?: BrowseScope): Promise<ChunkDetail> {
   return substratePost("/v1/_document", { op: "get_chunk", id, scope }, browse);
 }

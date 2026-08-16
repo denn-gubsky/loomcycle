@@ -108,6 +108,8 @@ import type {
   MemoryEmbedStatsResponse,
   MemoryEntriesResponse,
   MemoryEntryResponse,
+  MemoryBackfillResponse,
+  MemoryPurgeResponse,
   MemoryReembedResponse,
   MemoryScopeIDsResponse,
   MemoryScopesResponse,
@@ -1146,6 +1148,55 @@ export class LoomcycleClient {
    *  rows processed per call (server default 1000). The response is a
    *  discriminated union on `dry_run` — narrow before reading its
    *  arm-specific fields. */
+  // backfillEmbeddings embeds rows that carry none — what an embedder added AFTER the
+  // rows were written leaves behind.
+  //
+  // dry_run defaults TRUE server-side and this only ever sends `false` to commit, the
+  // same posture as reembedMemory: an omitted flag cannot accidentally spend thousands
+  // of embedder calls.
+  async backfillEmbeddings(
+    scope: string,
+    scopeId: string,
+    opts?: { dryRun?: boolean; limit?: number; prefix?: string; tenant?: string; signal?: AbortSignal },
+  ): Promise<MemoryBackfillResponse> {
+    const query: Record<string, string> = { scope, scope_id: scopeId };
+    if (opts?.dryRun === false) query.dry_run = "false";
+    if (opts?.limit !== undefined && opts.limit > 0) query.limit = String(opts.limit);
+    if (opts?.prefix) query.prefix = opts.prefix;
+    // An ADMIN token must name the tenant: memory rows are keyed on it, so omitting it
+    // silently targets the default tenant and reports a truthful-looking zero.
+    if (opts?.tenant !== undefined) query.tenant = opts.tenant;
+    return postJSON<MemoryBackfillResponse>(
+      this.ctx,
+      "/v1/_memory/backfill_embeddings",
+      undefined,
+      { query, signal: opts?.signal },
+    );
+  }
+
+  // purgeStaleEmbeddings drops embeddings from rows that have no indexable text.
+  //
+  // THIS ONE DELETES, so the dry-run default matters more than on its siblings — and a
+  // zero `stale` with `truncated: true` means the scan was cut short, not that the scope
+  // is clean.
+  async purgeStaleEmbeddings(
+    scope: string,
+    scopeId: string,
+    opts?: { dryRun?: boolean; limit?: number; prefix?: string; tenant?: string; signal?: AbortSignal },
+  ): Promise<MemoryPurgeResponse> {
+    const query: Record<string, string> = { scope, scope_id: scopeId };
+    if (opts?.dryRun === false) query.dry_run = "false";
+    if (opts?.limit !== undefined && opts.limit > 0) query.limit = String(opts.limit);
+    if (opts?.prefix) query.prefix = opts.prefix;
+    if (opts?.tenant !== undefined) query.tenant = opts.tenant;
+    return postJSON<MemoryPurgeResponse>(
+      this.ctx,
+      "/v1/_memory/purge_stale_embeddings",
+      undefined,
+      { query, signal: opts?.signal },
+    );
+  }
+
   async reembedMemory(
     scope: string,
     scopeId: string,

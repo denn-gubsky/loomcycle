@@ -2675,3 +2675,47 @@ export interface SetTokenLimitRequest {
   soft_limit?: number;
   hard_limit?: number;
 }
+
+// MemoryBackfillResponse — POST /v1/_memory/backfill_embeddings.
+//
+// `skipped_empty` is reported rather than folded into a failure count because those rows
+// have NO text to embed (a document root, a section heading) and therefore remain
+// candidates permanently. Without it an operator watches `candidates` stop falling with
+// `embedded` at 0 and no stated reason.
+export interface MemoryBackfillResponse {
+  scope: string;
+  scope_id: string;
+  prefix?: string;
+  dry_run: boolean;
+  /** Unembedded rows this call SAW, bounded by limit. */
+  candidates: number;
+  embedded?: number;
+  failed?: number;
+  skipped_empty?: number;
+  /** The limit was reached with candidates outstanding — another call has work. */
+  more?: boolean;
+  failed_keys?: string[];
+  sample_keys?: string[];
+  notes?: string[];
+}
+
+// MemoryPurgeResponse — POST /v1/_memory/purge_stale_embeddings.
+//
+// `truncated` means the scan stopped at the limit, so a zero `stale` does NOT mean the
+// scope is clean — a distinction worth keeping because this op deletes.
+export interface MemoryPurgeResponse {
+  scope: string;
+  scope_id: string;
+  prefix?: string;
+  dry_run: boolean;
+  scanned: number;
+  /** Rows with no indexable text that nonetheless carry an embedding. */
+  stale: number;
+  purged: number;
+  failed?: number;
+  truncated: boolean;
+  sample_keys?: string[];
+  failed_keys?: string[];
+  first_failure?: string;
+  notes?: string[];
+}
