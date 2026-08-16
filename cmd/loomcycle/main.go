@@ -2015,6 +2015,18 @@ func main() {
 		tokenAudit = fs
 		log.Printf("audit: OperatorTokenDef mutations → %s", cfg.Env.AuditLogPath)
 	}
+	// Subject erasure shares the same sink — but NOT the same posture: with no audit
+	// path configured, erasure REFUSES rather than proceeding unrecorded. It is the one
+	// operation nothing can undo, so "we cannot say who did this" is a reason not to do
+	// it. Wiring the sink even when it is a NopSink would defeat that, so this passes
+	// nil when there is no file to write to.
+	if cfg.Env.AuditLogPath != "" {
+		srv.SetEraseAudit(tokenAudit)
+		log.Printf("audit: subject erasures → %s", cfg.Env.AuditLogPath)
+	} else {
+		log.Printf("audit: no LOOMCYCLE_AUDIT_LOG_PATH — subject erasure is DISABLED " +
+			"(it will not delete without a durable record of who asked)")
+	}
 	graceSecs := 0
 	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {
 		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 {
