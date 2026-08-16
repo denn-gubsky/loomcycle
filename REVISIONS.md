@@ -4,6 +4,76 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.55.0
+
+**One memory console, and an erasure you cannot perform unrecorded.** Minor — the memory
+surfaces built over the previous release are consolidated into a single console, an
+operator can write a fact down themselves, retention is finally readable, and subject
+erasure grows a durable record of who asked for it. Plus Web-UI authoring for the two
+peer-federation substrates that shipped headless in v1.54.0.
+
+### RFC CF — the memory console
+
+- **One console, not two.** v1.54.0 added a facts panel and a search panel to the Web UI
+  beside `/memory` — which is a thin wrapper around `@loomcycle/memory-view`, a published
+  package that already shipped `entries` | `facts` | `search` tabs. The duplicates are
+  removed and the genuinely new capability folded into the package: **spans, verdicts,
+  `include_refuted`, and the two controls that let a person overrule the judge**, plus a
+  coverage strip over the fact list. The line drawn: the package owns views over one
+  scope's data, the app owns the operator plane — so starting a consolidation pass is a
+  host-supplied callback rather than a URL the package knows.
+- **The safety valve exists now.** Verified writes shipped with "a wrong verdict is always
+  recoverable by re-judging" as its argument for withholding rather than deleting, and
+  that recovery was reachable only by API. An operator can now see the claim, the span it
+  was drawn from, and the verdict — and overrule it in either direction.
+- **`judged_by`** records WHO reached a verdict, server-stamped from the call's own
+  context exactly as `origin` is. There is no wire field to set it: an agent able to
+  record "an operator decided this" would be one injected instruction away from laundering
+  a machine's verdict into a human's. An agent's verdict carries the agent's NAME; a
+  verdict predating the column reads as unknown rather than as either party.
+- **`Document op=remember`** stores a statement a person supplied as a fact that **cites
+  itself** — the text becomes both the claim and its source span, filed `evidential`. An
+  operator's instruction is a source, not a claim; storing it self-citing makes
+  operator-authored memory the best-evidenced kind rather than the worst. Additive only:
+  there is no "forget", because an instruction that deletes on a fuzzy match is how data
+  disappears quietly.
+- **Retention is readable.** `GET /v1/_retention` gets a Settings surface: what the sweeper
+  is configured to remove, per family, with the sweeper's own on/off state stated first.
+  A `purgeable` count is never rendered alone — it is computed regardless of mode, so
+  beside an `off` family a bare number reads as a countdown to a deletion that never
+  happens.
+- **Settings tabs get the three-tier role class** the left nav already had. The binary
+  `admin` boolean could not express a tenant operator, so a delegated user reaching
+  `/settings` directly was shown five tabs whose every call 403s.
+
+### Subject erasure — audited, or refused
+
+- **An erasure now writes its own durable record, and refuses without one.** The audit sink
+  says recording "must never block the caller's primary operation"; erasure is the
+  deliberate exception, because it is the one operation nothing can undo. A deployment
+  that cannot say who erased which subject does not get to perform the deletion — refusing
+  is recoverable, an unrecorded erasure is not. With no `LOOMCYCLE_AUDIT_LOG_PATH`,
+  erasure is disabled and boot says so.
+- **Two records, ordered.** `erase_intent` is written BEFORE any deletion and its failure
+  refuses the operation; `erase_result` follows with the planes deleted and retained. A
+  crash between them still leaves evidence that an erasure was attempted, by whom, against
+  which subject. Dry runs write nothing.
+
+### Web UI — the peer-federation substrates
+
+- **Remote memory backends** (RFC CD Part B) are authorable from Integrations: a kind
+  selector reveals the peer connection — `base_url`, `api_key_env` (an env-var NAME, never
+  a secret) and an optional `api_version`.
+- **Document Sources** (RFC CE) join them as a fifth Integrations family, so a peer
+  `DocumentSourceDef` can be authored, forked and retired from the Web UI rather than only
+  from yaml, the substrate API or MCP.
+
+### Adapters
+
+- `@loomcycle/client` gains **`backfillEmbeddings()`** and **`purgeStaleEmbeddings()`** —
+  the two embedding-maintenance ops that had no client method. `@loomcycle/memory-view`
+  will surface them once it can depend on this release.
+
 ## What's in v1.54.0
 
 **External data access, document federation, and verified writes.** Minor — three feature lines land together: any app reaches loomcycle's memory + documents over a documented HTTP contract or a peer loomcycle (RFC CD), a document is replicated to and reconciled with a peer instance in both directions (RFC CE), and a fact records the source it came from and is checked against it before it is trusted (RFC CC). Plus the loomboard saved-views scaffold (RFC BT) and a memory/facts Web-UI surface.
