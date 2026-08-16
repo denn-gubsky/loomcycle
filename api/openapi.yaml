@@ -553,6 +553,7 @@ components:
             - judge_fact
             - verbatim_answer
             - verification_stats
+            - remember
             - graph_recall
             - list_facts
             - move_chunk
