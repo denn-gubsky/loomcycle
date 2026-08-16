@@ -6,6 +6,7 @@ import {
   type Visibility,
 } from "../lib/visibility";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
+import { erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
 import {
   CredentialMeta,
@@ -22,6 +23,8 @@ import {
   getEnvTemplate,
   getHealth,
   getOntology,
+  executeErasure,
+  getErasureReport,
   getRetentionReport,
   getRuntimeState,
   listCredentials,
@@ -33,6 +36,8 @@ import {
   setOntologyStatus,
   showPreset,
   OntologyTerm,
+  ErasureReportResponse,
+  ErasureResult,
   RetentionReport,
 } from "../api";
 import { usePrincipal, useUserId } from "../components/Layout";
@@ -59,6 +64,7 @@ type Section =
   | "routing"
   | "ontology"
   | "retention"
+  | "erasure"
   | "tokens"
   | "presets"
   | "runtime"
@@ -93,6 +99,7 @@ const SECTIONS: SectionDef[] = [
   { id: "routing", label: "Routing", vis: "tenant" },
   { id: "ontology", label: "Ontology", vis: "tenant" },
   { id: "retention", label: "Retention", vis: "tenant" },
+  { id: "erasure", label: "Erasure", vis: "tenant" },
   // ScopeAdmin: token minting has no tenant axis and is deliberately excluded from
   // the tenant-confined def set; presets/runtime/health fall through to the /v1/_*
   // catch-all; and repair-tenant is explicitly admin because it rewrites rows across
@@ -160,6 +167,7 @@ export default function SettingsView() {
         {active === "routing" && <RoutingView />}
         {active === "ontology" && <OntologySection />}
         {active === "retention" && <RetentionSection />}
+        {active === "erasure" && <ErasureSection />}
         {active === "tokens" && <TokenManager />}
         {active === "presets" && <PresetsSection />}
         {active === "runtime" && <RuntimeSection />}
@@ -1071,6 +1079,206 @@ function RetentionSection() {
       )}
     </div>
   );
+}
+
+// ─── Erasure ─────────────────────────────────────────────────────────────────
+//
+// The most consequential control in this console, and the only one nothing can undo.
+//
+// REPORT BEFORE EXECUTE, ALWAYS. The execute path does not exist until a report has been
+// shown for the SAME subject: changing the field invalidates it, because otherwise an
+// operator could read what would go for one person and confirm the deletion of another.
+//
+// TYPED CONFIRMATION, NOT A DIALOG. A modal with a red button is dismissed by reflex;
+// typing the identifier is the smallest gesture that cannot be made absent-mindedly —
+// and the identifier is what matters, since the failure mode is erasing the WRONG
+// subject rather than erasing accidentally. The server enforces the same rule.
+function ErasureSection() {
+  const [subject, setSubject] = useState("");
+  const [tenant, setTenant] = useState("");
+  const [report, setReport] = useState<ErasureReportResponse | null>(null);
+  const [reportedSubject, setReportedSubject] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [result, setResult] = useState<ErasureResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const gate = erasureGate({ subject, reportedSubject, confirm });
+
+  const runReport = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const rep = await getErasureReport(subject.trim(), tenant);
+      setReport(rep);
+      setReportedSubject(subject.trim());
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setReport(null);
+      setReportedSubject("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runErase = async () => {
+    if (!gate.canExecute) return;
+    setBusy(true);
+    try {
+      const res = await executeErasure(subject.trim(), {
+        dryRun: false,
+        confirm,
+        tenant,
+      });
+      setResult(res);
+      // The report described a state that no longer exists. Clearing it forces a fresh
+      // one before anything else can be erased.
+      setReport(null);
+      setReportedSubject("");
+      setConfirm("");
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-panel">
+      <h2>Erasure</h2>
+      <p className="settings-help">
+        Report what this deployment holds about one subject, and — after reading it —
+        delete what can be deleted. <strong>An erasure cannot be undone.</strong> Nothing
+        else in this console is irreversible; this is.
+      </p>
+
+      <div className="settings-row">
+        <label>
+          Subject
+          <input
+            value={subject}
+            placeholder="user id"
+            onChange={(e) => setSubject(e.target.value)}
+          />
+        </label>
+        <label>
+          Tenant
+          <input value={tenant} placeholder="(admin: required)" onChange={(e) => setTenant(e.target.value)} />
+        </label>
+        <button type="button" onClick={() => void runReport()} disabled={busy || !subject.trim()}>
+          {busy ? "reading…" : "Report"}
+        </button>
+      </div>
+      <p className="settings-help settings-muted">
+        A subject id is only meaningful inside a tenant — the same string in two tenants
+        is two different people — so an admin token must name one. A tenant operator&rsquo;s
+        own tenant is used when this is blank.
+      </p>
+
+      {err && <div className="settings-error">{err}</div>}
+
+      {report && (
+        <>
+          <h3 className="settings-subhead">
+            What is held about <code>{report.subject}</code>
+          </h3>
+          {/* The three tiers are degrees of REACH, not of confidence, and they are never
+              summed: a total would announce a deletion far larger than the one that
+              happens. */}
+          <dl className="settings-stats">
+            <div>
+              <dt>will be deleted</dt>
+              <dd>{report.tier1_covered.total}</dd>
+              <dd className="settings-muted">
+                {Object.entries(report.tier1_covered.counts)
+                  .filter(([, n]) => n > 0)
+                  .map(([k, n]) => `${k} ${n}`)
+                  .join(" · ") || "nothing"}
+              </dd>
+            </div>
+            <div>
+              <dt>held, but NOT deleted</dt>
+              <dd>{report.tier2_uncovered.total}</dd>
+              <dd className="settings-muted">
+                subject-keyed data no primitive removes yet — it stays after an erasure
+              </dd>
+            </div>
+            <div>
+              <dt>cannot be reached</dt>
+              <dd>{report.tier3_residue.rows}</dd>
+              <dd className="settings-muted">{residueMeaning(report.tier3_residue)}</dd>
+            </div>
+          </dl>
+          {report.errors && report.errors.length > 0 && (
+            <div className="settings-error">
+              some planes could not be read, so this report is incomplete:{" "}
+              {report.errors.join("; ")}
+            </div>
+          )}
+
+          <div className="settings-row">
+            <label>
+              Type <code>{report.subject}</code> to confirm
+              <input value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+            </label>
+            <button
+              type="button"
+              className="danger-btn"
+              disabled={busy || !gate.canExecute}
+              title={gate.canExecute ? undefined : gateHint(gate.reason)}
+              onClick={() => void runErase()}
+            >
+              Erase permanently
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* A report for a DIFFERENT subject than the one in the field is stale, and saying
+          so is more useful than silently disabling the button. */}
+      {reportedSubject && reportedSubject !== subject.trim() && (
+        <div className="settings-muted">
+          the report above is for <code>{reportedSubject}</code>; report again for{" "}
+          <code>{subject.trim() || "…"}</code> before erasing
+        </div>
+      )}
+
+      {result && (
+        <>
+          <h3 className="settings-subhead">Erased</h3>
+          <div className="settings-flash">
+            {Object.entries(result.deleted)
+              .map(([k, n]) => `${k} ${n}`)
+              .join(" · ")}
+          </div>
+          {Object.keys(result.retained).length > 0 && (
+            <div className="settings-muted">
+              kept: {Object.entries(result.retained).map(([k, why]) => `${k} (${why})`).join("; ")}
+            </div>
+          )}
+          {result.errors && result.errors.length > 0 && (
+            <div className="settings-error">{result.errors.join("; ")}</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// gateHint explains a disabled erase button. Silence would read as a broken control.
+function gateHint(reason: string): string {
+  switch (reason) {
+    case "no-subject":
+      return "name a subject first";
+    case "no-report":
+      return "run the report first — nothing is erased from this console unsighted";
+    case "report-is-for-another-subject":
+      return "the report shown is for a different subject; report again";
+    default:
+      return "type the subject id exactly to confirm";
+  }
 }
 
 function MaintenanceSection() {

@@ -1111,6 +1111,69 @@ export interface RetentionReport {
   sqlmem_gc?: Record<string, unknown>;
 }
 
+// ErasureReport is GET /v1/_erasure — what the deployment holds about one subject,
+// in three tiers.
+//
+// The tiers are not degrees of confidence, they are degrees of REACH: tier 1 is what an
+// erasure deletes, tier 2 is subject-keyed data nothing deletes yet, and tier 3 is what
+// a subject-keyed delete cannot reach at all. A UI that summed them would report a
+// deletion far larger than the one it performs.
+export interface ErasureTier {
+  counts: Record<string, number>;
+  total: number;
+}
+
+export interface ErasureReportResponse {
+  tenant: string;
+  subject: string;
+  tier1_covered: ErasureTier;
+  tier2_uncovered: ErasureTier;
+  tier3_residue: {
+    rows: number;
+    scopes?: string[];
+    sessions_examined: number;
+    truncated?: boolean;
+  };
+  notes?: string[];
+  errors?: string[];
+}
+
+export interface ErasureResult {
+  tenant: string;
+  subject: string;
+  dry_run: boolean;
+  deleted: Record<string, number>;
+  retained: Record<string, string>;
+  residue?: ErasureReportResponse["tier3_residue"];
+  errors?: string[];
+  notes?: string[];
+}
+
+export function getErasureReport(subject: string, tenant?: string): Promise<ErasureReportResponse> {
+  const q = new URLSearchParams({ subject });
+  // An ADMIN token must name the tenant: a subject id is only meaningful within one, and
+  // the same string in two tenants is two different people. The server refuses rather
+  // than defaulting, so this forwards an explicitly empty value when asked to.
+  if (tenant !== undefined) q.set("tenant", tenant);
+  return jsonFetch<ErasureReportResponse>(`/v1/_erasure?${q.toString()}`);
+}
+
+// executeErasure runs (or previews) the deletion. `confirm` must equal the subject for a
+// live run — enforced by the server, mirrored by the console.
+export function executeErasure(
+  subject: string,
+  opts: { dryRun: boolean; confirm?: string; tenant?: string },
+): Promise<ErasureResult> {
+  const q = new URLSearchParams();
+  if (opts.tenant !== undefined) q.set("tenant", opts.tenant);
+  const qs = q.toString();
+  return jsonFetch<ErasureResult>(`/v1/_erasure${qs ? "?" + qs : ""}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subject, dry_run: opts.dryRun, confirm: opts.confirm ?? "" }),
+  });
+}
+
 export function getRetentionReport(): Promise<RetentionReport> {
   return jsonFetch<RetentionReport>("/v1/_retention");
 }
