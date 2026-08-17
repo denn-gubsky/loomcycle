@@ -64,14 +64,9 @@ func runAgentsList(args []string, stdout, stderr io.Writer) int {
 	// chatty column we truncate to keep things readable.
 	for _, name := range names {
 		def := cfg.Agents[name]
-		provider, model, pattern, err := cfg.ResolveAgentModel(name)
+		provider, model, err := agentModelForDisplay(cfg, name)
 		if err != nil {
 			return fail(stderr, "agent %q: %v", name, err)
-		}
-		// RFC BG: a model_pattern alias has no concrete model until run time;
-		// show the glob so the operator sees what the alias points at.
-		if pattern != "" {
-			model = pattern
 		}
 		tools := strings.Join(def.Tools, ",")
 		if tools == "" {
@@ -110,18 +105,22 @@ func runAgentsListJSON(stdout, stderr io.Writer, cfg *config.Config, names []str
 	fmt.Fprintln(stdout, "[")
 	for i, name := range names {
 		def := cfg.Agents[name]
-		provider, model, pattern, err := cfg.ResolveAgentModel(name)
+		provider, model, err := agentModelForDisplay(cfg, name)
 		if err != nil {
 			return fail(stderr, "agent %q: %v", name, err)
 		}
-		// RFC BG: surface the glob for a model_pattern alias (resolved at run time).
-		if pattern != "" {
-			model = pattern
+		// The table form prints "(by tier)" for an agent routed at run time; JSON
+		// must NOT, because a consumer reading .provider would take that
+		// placeholder for a provider id. Both fields stay empty and the additive
+		// `tier` field carries the answer.
+		if provider == byTierProvider {
+			provider, model = "", ""
 		}
 		fmt.Fprintln(stdout, "  {")
 		fmt.Fprintf(stdout, "    \"name\": %s,\n", jsonString(name))
 		fmt.Fprintf(stdout, "    \"provider\": %s,\n", jsonString(provider))
 		fmt.Fprintf(stdout, "    \"model\": %s,\n", jsonString(model))
+		fmt.Fprintf(stdout, "    \"tier\": %s,\n", jsonString(def.Tier))
 		fmt.Fprintf(stdout, "    \"max_tokens\": %d,\n", def.MaxTokens)
 		fmt.Fprintf(stdout, "    \"system_prompt_file\": %s,\n", jsonString(def.SystemPromptFile))
 		fmt.Fprintf(stdout, "    \"tools\": %s,\n", jsonStringArray(def.Tools))
