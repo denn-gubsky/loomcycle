@@ -203,16 +203,22 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 //
 // WHOLE-STORE, unlike the consolidation pass's per-run figure, which is bounded by its
 // scan window and says so. This is one aggregate query and is the number to quote.
+//
+// CLAIMS ONLY, always — see identityNodeExclusion. Unlike list_facts, this surface has
+// no legitimate reading in which an entity identity node belongs: it answers "how much
+// of what we believe is actually evidenced", and a subject node is not something the
+// store believes. So the exclusion is unconditional here rather than opt-in.
 func (d *Document) verificationStats(ctx context.Context, key sqlmem.ScopeKey) (tools.Result, error) {
 	res, err := d.query(ctx, key, `
 		SELECT count(*),
-		       sum(CASE WHEN source_quote IS NOT NULL AND source_quote <> '' THEN 1 ELSE 0 END),
-		       sum(CASE WHEN judged_at IS NOT NULL THEN 1 ELSE 0 END),
-		       sum(CASE WHEN judged_at IS NOT NULL AND confidence >= `+
+		       sum(CASE WHEN m.source_quote IS NOT NULL AND m.source_quote <> '' THEN 1 ELSE 0 END),
+		       sum(CASE WHEN m.judged_at IS NOT NULL THEN 1 ELSE 0 END),
+		       sum(CASE WHEN m.judged_at IS NOT NULL AND m.confidence >= `+
 		sqlFloat(verbatimMinConfidence)+` THEN 1 ELSE 0 END),
-		       sum(CASE WHEN confidence IS NOT NULL AND confidence < `+
+		       sum(CASE WHEN m.confidence IS NOT NULL AND m.confidence < `+
 		sqlFloat(withholdBelowConfidence)+` THEN 1 ELSE 0 END)
-		  FROM chunk_memory_meta`)
+		  FROM chunk_memory_meta m
+		 WHERE `+identityNodeExclusion)
 	if err != nil {
 		return errResult("verification_stats: " + err.Error()), nil
 	}

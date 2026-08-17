@@ -397,3 +397,147 @@ func TestVerificationStats_PostgresTier(t *testing.T) {
 		t.Errorf("postgres: verified_share = %v, want 0.25", got)
 	}
 }
+
+// mkIdentityNode writes an entity IDENTITY node — the subject a fact is about — and
+// links a fact to it with the `about` edge the consolidation pass uses. It carries no
+// span, because a subject is a name and there is nothing in it for a quote to support.
+func mkIdentityNode(t *testing.T, d *Document, ctx context.Context, doc, root, factID, nk, title string) string {
+	t.Helper()
+	out, r := docExec(t, d, ctx, fmt.Sprintf(
+		`{"op":"upsert_chunk","scope":"user","document_id":%q,"parent_id":%q,`+
+			`"natural_key":%q,"title":%q,"type":"object","subject":%q}`, doc, root, nk, title, title))
+	if r.IsError {
+		t.Fatalf("upsert identity %s: %s", nk, r.Text)
+	}
+	id := out["id"].(string)
+	if _, lr := docExec(t, d, ctx, fmt.Sprintf(
+		`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"about"}`,
+		factID, id)); lr.IsError {
+		t.Fatalf("link about %s: %s", nk, lr.Text)
+	}
+	return id
+}
+
+// TestVerificationStats_IgnoresEntityIdentityNodes.
+//
+// The consolidation pass writes an identity node beside each fact, and both carry entity
+// metadata, so both landed in the count. Because an identity node can NEVER carry a span,
+// every new subject permanently lowered the reported share — the number got worse as the
+// store got richer. Measured on a live store before the fix: 0.579 reported where 0.846
+// was true, and 7 facts called impossible to verify where the answer was 1.
+func TestVerificationStats_IgnoresEntityIdentityNodes(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	f1 := mkFact(t, d, ctx, doc, root, "memory/fact/1", "Claim one.", "quote one", "supported")
+	f2 := mkFact(t, d, ctx, doc, root, "memory/fact/2", "Claim two.", "quote two", "")
+	mkIdentityNode(t, d, ctx, doc, root, f1, "object:thing-one", "thing one")
+	mkIdentityNode(t, d, ctx, doc, root, f2, "object:thing-two", "thing two")
+
+	out, r := docExec(t, d, ctx, `{"op":"verification_stats","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("verification_stats: %s", r.Text)
+	}
+	for field, want := range map[string]float64{
+		"facts": 2, "with_span": 2, "judged": 1, "supported": 1,
+		// The number the bug inflated most: both identity nodes looked like facts whose
+		// evidence had been lost.
+		"unverifiable_no_span": 0, "awaiting_judge": 1,
+	} {
+		if got, _ := out[field].(float64); got != want {
+			t.Errorf("%s = %v, want %v (full report: %v)", field, out[field], want, out)
+		}
+	}
+	if got, _ := out["verified_share"].(float64); got != 0.5 {
+		t.Errorf("verified_share = %v, want 0.5 (1 of 2 claims, not 1 of 4 rows)", got)
+	}
+}
+
+// TestVerificationStats_CountsAFactWhoseChunkTypeIsNotFact.
+//
+// The trap that makes the obvious fix wrong, pinned as a test. A distilled fact's chunk
+// type is the constant "fact", so `type = 'fact'` reads like the natural way to exclude
+// identity nodes — but `remember` stamps the CALLER's type, and one operator-remembered
+// fact on a live store landed as type `object` while carrying a span. Filtering on the
+// type would have dropped a verified fact out of the coverage figure, which is the error
+// direction that loses data rather than the one that merely dilutes.
+func TestVerificationStats_CountsAFactWhoseChunkTypeIsNotFact(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	// A remembered fact: typed by its caller, cites itself, and nothing is `about` it.
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(
+		`{"op":"upsert_chunk","scope":"user","document_id":%q,"parent_id":%q,`+
+			`"natural_key":"memory/operator/remembered","title":"Remembered.","body":"Remembered.",`+
+			`"source_quote":"Remembered.","type":"object","class":"evidential"}`, doc, root)); r.IsError {
+		t.Fatalf("upsert remembered fact: %s", r.Text)
+	}
+	out, r := docExec(t, d, ctx, `{"op":"verification_stats","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("verification_stats: %s", r.Text)
+	}
+	if got, _ := out["facts"].(float64); got != 1 {
+		t.Errorf("facts = %v, want 1 — a remembered fact typed `object` is still a fact (report: %v)",
+			out["facts"], out)
+	}
+	if got, _ := out["with_span"].(float64); got != 1 {
+		t.Errorf("with_span = %v, want 1 — it cites itself", out["with_span"])
+	}
+}
+
+// TestListFacts_ClaimsOnlyIsOptInAndTheDefaultStaysWIDE.
+//
+// Both directions in one test on purpose. list_facts' contract is "chunks that carry
+// entity metadata", and the document-federation reconcile depends on that breadth — it
+// syncs identity nodes too — so narrowing the DEFAULT would silently stop federating
+// them. The opt-in is for the surfaces that read facts to a person or count coverage.
+func TestListFacts_ClaimsOnlyIsOptInAndTheDefaultStaysWIDE(t *testing.T) {
+	d, ctx, doc, root := verbatimFixture(t)
+	f1 := mkFact(t, d, ctx, doc, root, "memory/fact/1", "Claim one.", "quote one", "supported")
+	mkIdentityNode(t, d, ctx, doc, root, f1, "object:thing-one", "thing one")
+
+	out, r := docExec(t, d, ctx, `{"op":"list_facts","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("list_facts: %s", r.Text)
+	}
+	if got := len(out["facts"].([]any)); got != 2 {
+		t.Errorf("default list_facts returned %d rows, want 2 (the claim AND the identity node — sync needs both)", got)
+	}
+
+	out, r = docExec(t, d, ctx, `{"op":"list_facts","scope":"user","claims_only":true}`)
+	if r.IsError {
+		t.Fatalf("list_facts claims_only: %s", r.Text)
+	}
+	rows := out["facts"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("claims_only returned %d rows, want 1", len(rows))
+	}
+	if title, _ := rows[0].(map[string]any)["title"].(string); title != "Claim one." {
+		t.Errorf("claims_only kept %q, want the claim", title)
+	}
+}
+
+// TestVerificationStats_PostgresTier_IgnoresEntityIdentityNodes.
+//
+// The exclusion is a correlated NOT EXISTS subquery, which is exactly the kind of SQL
+// that can behave differently per tier — and the failure mode is a plausible number, not
+// an error: an anti-join that matched nothing would report the pre-fix figure and an
+// anti-join that matched everything would report zero facts on a full store.
+func TestVerificationStats_PostgresTier_IgnoresEntityIdentityNodes(t *testing.T) {
+	d, ctx, docID, root := pgVerbatimFixture(t)
+	f1 := mkFact(t, d, ctx, docID, root, "memory/fact/1", "Claim one.", "quote one", "supported")
+	f2 := mkFact(t, d, ctx, docID, root, "memory/fact/2", "Claim two.", "quote two", "")
+	mkIdentityNode(t, d, ctx, docID, root, f1, "object:thing-one", "thing one")
+	mkIdentityNode(t, d, ctx, docID, root, f2, "object:thing-two", "thing two")
+
+	out, r := docExec(t, d, ctx, `{"op":"verification_stats","scope":"user"}`)
+	if r.IsError {
+		t.Fatalf("verification_stats(pg): %s", r.Text)
+	}
+	for field, want := range map[string]float64{
+		"facts": 2, "with_span": 2, "judged": 1, "supported": 1, "unverifiable_no_span": 0,
+	} {
+		if got, _ := out[field].(float64); got != want {
+			t.Errorf("postgres: %s = %v, want %v (full report: %v)", field, out[field], want, out)
+		}
+	}
+	if got, _ := out["verified_share"].(float64); got != 0.5 {
+		t.Errorf("postgres: verified_share = %v, want 0.5", got)
+	}
+}
