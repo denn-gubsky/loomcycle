@@ -104,6 +104,7 @@ type Agent struct {
 	CoreBlocks            []CoreBlock
 	InheritCoreBlocks     bool
 	MemoryInjectMaxTokens int
+	InjectToolGuide       bool
 	MemoryProtocol        bool
 	MemoryConsolidation   bool
 	MemoryIndexMaxBytes   int
@@ -342,6 +343,7 @@ type frontmatter struct {
 	CoreBlocks            []CoreBlock                `yaml:"core_blocks"`              // RFC BL P1
 	InheritCoreBlocks     bool                       `yaml:"inherit_core_blocks"`      // RFC BL P1
 	MemoryInjectMaxTokens int                        `yaml:"memory_inject_max_tokens"` // RFC BL P1
+	InjectToolGuide       bool                       `yaml:"inject_tool_guide"`        // auto tool-guide/capabilities injection
 	MemoryProtocol        bool                       `yaml:"memory_protocol"`          // RFC BL P1
 	MemoryConsolidation   bool                       `yaml:"memory_consolidation"`     // RFC BL P2
 	MemoryIndexMaxBytes   int                        `yaml:"memory_index_max_bytes"`   // RFC BL P1
@@ -418,6 +420,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.CoreBlocks = fm.CoreBlocks
 	a.InheritCoreBlocks = fm.InheritCoreBlocks
 	a.MemoryInjectMaxTokens = fm.MemoryInjectMaxTokens
+	a.InjectToolGuide = fm.InjectToolGuide
 	a.MemoryProtocol = fm.MemoryProtocol
 	a.MemoryConsolidation = fm.MemoryConsolidation
 	a.MemoryIndexMaxBytes = fm.MemoryIndexMaxBytes

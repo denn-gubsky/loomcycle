@@ -304,6 +304,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"inherit_core_blocks":      true,
 		"internal":                 true,
 		"memory_inject_max_tokens": true,
+		"inject_tool_guide":        true, // auto tool-guide/capabilities injection (content-identifying; mirror mergedDef)
 		"memory_protocol":          true,
 		"memory_consolidation":     true, // RFC BL P2 — consolidation control-ops grant (content-identifying)
 		"memory_index_max_bytes":   true, // RFC BL P1 — /memory/index soft cap surfaced to the agent
@@ -352,6 +353,17 @@ func TestSubstrateAgentDef_UnboundedIterations_ToConfigDef(t *testing.T) {
 	got := lookup.SubstrateAgentDef{UnboundedIterations: true}.ToConfigDef()
 	if !got.UnboundedIterations {
 		t.Error("ToConfigDef dropped UnboundedIterations")
+	}
+}
+
+// TestSubstrateAgentDef_InjectToolGuide_ToConfigDef pins the read-side
+// projection: a substrate def opting into auto tool-guide injection resolves to
+// a config.AgentDef carrying the flag (catches a dropped ToConfigDef line, which
+// would leave a runtime-authored agent silently starting blind on reload).
+func TestSubstrateAgentDef_InjectToolGuide_ToConfigDef(t *testing.T) {
+	got := lookup.SubstrateAgentDef{InjectToolGuide: true}.ToConfigDef()
+	if !got.InjectToolGuide {
+		t.Error("ToConfigDef dropped InjectToolGuide")
 	}
 }
 

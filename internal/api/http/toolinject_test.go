@@ -301,6 +301,64 @@ func TestToolCapabilities_RendersAvailabilityAndNoSecrets(t *testing.T) {
 	}
 }
 
+// TestInjectToolGuide_ImplicitlyAppendsBlocks: an agent that opts in via
+// inject_tool_guide gets the capabilities + guide blocks without hand-placing any
+// placeholder — the automatic-delivery contract the flag exists for.
+func TestInjectToolGuide_ImplicitlyAppendsBlocks(t *testing.T) {
+	s := &Server{}
+	def := config.AgentDef{SystemPrompt: "You are helpful.", InjectToolGuide: true}
+	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "a", Tools: []tools.Tool{guideTool{}}}
+
+	got, _ := s.applyMemoryInjection(context.Background(), def, mi)
+
+	for _, want := range []string{
+		"You are helpful.",
+		`<tool-result tool="Context" op="capabilities">`,
+		`<tool-result tool="Context" op="guide">`,
+		"- Widget",
+	} {
+		if !strings.Contains(got.SystemPrompt, want) {
+			t.Errorf("missing %q in assembled prompt:\n%s", want, got.SystemPrompt)
+		}
+	}
+	if strings.Contains(got.SystemPrompt, "{{tool:") {
+		t.Errorf("placeholder left unexpanded:\n%s", got.SystemPrompt)
+	}
+}
+
+// TestInjectToolGuide_OffIsByteIdentical: the flag defaults OFF, and an agent
+// that never sets it must come back byte-identical — no injection, no tool
+// dispatch — so every existing custom agent's prompt-cache prefix is preserved.
+func TestInjectToolGuide_OffIsByteIdentical(t *testing.T) {
+	s := &Server{}
+	const base = "A plain prompt with no placeholders."
+	def := config.AgentDef{SystemPrompt: base} // InjectToolGuide defaults false
+	got, _ := s.applyMemoryInjection(context.Background(), def, memInject{
+		Tenant: "t1", UserID: "u1", Tools: []tools.Tool{guideTool{}},
+	})
+	if got.SystemPrompt != base {
+		t.Fatalf("flag-OFF agent changed:\ngot  %q\nwant %q", got.SystemPrompt, base)
+	}
+}
+
+// TestInjectToolGuide_DoesNotDuplicateHandPlacedRef: an agent that opts in AND
+// hand-places one of the refs must not get a second copy of it.
+func TestInjectToolGuide_DoesNotDuplicateHandPlacedRef(t *testing.T) {
+	s := &Server{}
+	def := config.AgentDef{SystemPrompt: "Base.\n\n{{tool:Context.guide}}", InjectToolGuide: true}
+	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "a", Tools: []tools.Tool{guideTool{}}}
+
+	got, _ := s.applyMemoryInjection(context.Background(), def, mi)
+
+	if n := strings.Count(got.SystemPrompt, `op="guide"`); n != 1 {
+		t.Errorf("guide frame appears %d times, want 1:\n%s", n, got.SystemPrompt)
+	}
+	// capabilities was NOT hand-placed, so it is still implicitly appended.
+	if !strings.Contains(got.SystemPrompt, `op="capabilities"`) {
+		t.Errorf("capabilities not appended alongside the hand-placed guide:\n%s", got.SystemPrompt)
+	}
+}
+
 func TestFirstSentence_CutsAtLineAndSentence(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"Write a file. Overwrites if it exists.", "Write a file."},

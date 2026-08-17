@@ -65,6 +65,48 @@ func TestReferencesToolRefs_NoneWhenNoPlaceholder(t *testing.T) {
 	}
 }
 
+// TestToolGuideRefs_AreAllowlisted: every ref auto-appended by inject_tool_guide
+// must be on the read-only allowlist, or the appended placeholder would render to
+// nothing (and slip past boot validation, which only sees operator-written text).
+func TestToolGuideRefs_AreAllowlisted(t *testing.T) {
+	for _, ref := range ToolGuideRefs {
+		if _, ok := ParseToolRef(ref.String()); !ok {
+			t.Errorf("ToolGuideRef %s is not on the allowlist", ref)
+		}
+	}
+}
+
+// TestAppendToolGuideRefs_AppendsOnlyMissing: the implicit-append mirrors
+// core_blocks — it appends the refs the prompt did not place, never a duplicate,
+// and is a no-op when both are already present.
+func TestAppendToolGuideRefs_AppendsOnlyMissing(t *testing.T) {
+	// Neither present → both appended, capabilities first (budget order).
+	got := AppendToolGuideRefs("Base.")
+	for _, want := range []string{"{{tool:Context.capabilities}}", "{{tool:Context.guide}}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("AppendToolGuideRefs did not append %s:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "capabilities") > strings.Index(got, "{{tool:Context.guide}}") {
+		t.Errorf("capabilities must be appended before guide (budget order):\n%s", got)
+	}
+
+	// guide already placed → only capabilities is added, guide not duplicated.
+	got = AppendToolGuideRefs("Base.\n{{tool:Context.guide}}")
+	if strings.Count(got, "{{tool:Context.guide}}") != 1 {
+		t.Errorf("guide duplicated:\n%s", got)
+	}
+	if !strings.Contains(got, "{{tool:Context.capabilities}}") {
+		t.Errorf("capabilities not appended when only guide was placed:\n%s", got)
+	}
+
+	// Both already placed → unchanged (no-op).
+	base := "Base.\n{{tool:Context.guide}}\n{{tool:Context.capabilities}}"
+	if got := AppendToolGuideRefs(base); got != base {
+		t.Errorf("AppendToolGuideRefs mutated a prompt that already placed both:\ngot  %q\nwant %q", got, base)
+	}
+}
+
 // TestUnknownToolRefs_FlagsDisallowedAndTypos is the boot-validation contract:
 // every non-allowlisted ref is reported so config load fails loud. Without it a
 // {{tool:Bash}} would render to nothing at run time and the operator would be

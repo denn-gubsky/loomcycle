@@ -75,15 +75,24 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	parentInheritable := tools.CoreBlocksPolicy(ctx).Blocks
 	blocks := effectiveCoreBlocks(agentDef.CoreBlocks, agentDef.InheritCoreBlocks, parentInheritable)
 
+	// inject_tool_guide implicitly appends the runtime-knowledge refs the agent did
+	// not hand-place — mirroring core_blocks' implicit append. Done on a LOCAL copy
+	// of the prompt so a flag-OFF agent stays byte-identical (AppendToolGuideRefs is
+	// a no-op when the refs are already present, and is never called when off).
+	promptSrc := agentDef.SystemPrompt
+	if agentDef.InjectToolGuide {
+		promptSrc = meminject.AppendToolGuideRefs(promptSrc)
+	}
+
 	forceRoots := agentDef.MemoryRoots == "force"
 	suppressRoots := agentDef.MemoryRoots == "suppress"
-	wantUserInfo := meminject.ReferencesVariant(agentDef.SystemPrompt, meminject.VariantUserInfo)
-	toolRefs := meminject.ReferencesToolRefs(agentDef.SystemPrompt)
+	wantUserInfo := meminject.ReferencesVariant(promptSrc, meminject.VariantUserInfo)
+	toolRefs := meminject.ReferencesToolRefs(promptSrc)
 
 	// Fast path: no core blocks, no placeholder of either family, no protocol, no
 	// forced provisioning → return byte-identical with no store reads and no tool
 	// dispatch. Keeps every non-memory agent exactly as before.
-	if len(blocks) == 0 && !meminject.References(agentDef.SystemPrompt) && len(toolRefs) == 0 &&
+	if len(blocks) == 0 && !meminject.References(promptSrc) && len(toolRefs) == 0 &&
 		!agentDef.MemoryProtocol && !forceRoots {
 		return agentDef, blocks
 	}
@@ -116,7 +125,7 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// document, and a prompt that never mentions it must not create one.
 	// suppressRoots covers it too: `memory_roots: suppress` means an agent wants no
 	// root documents injected, and the tenant root is one.
-	if !suppressRoots && meminject.ReferencesVariant(agentDef.SystemPrompt, meminject.VariantTenantInfo) {
+	if !suppressRoots && meminject.ReferencesVariant(promptSrc, meminject.VariantTenantInfo) {
 		if body := s.renderTenantInfo(ctx, mi); body != "" {
 			sections[meminject.VariantTenantInfo] = body
 		}
@@ -127,7 +136,7 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// ontology: gated on an actual reference, like user_info, because rendering it
 	// PROVISIONS the tenant's ontology document. A prompt that never mentions the
 	// ontology must not create one as a side effect of being assembled.
-	if meminject.ReferencesVariant(agentDef.SystemPrompt, meminject.VariantOntology) {
+	if meminject.ReferencesVariant(promptSrc, meminject.VariantOntology) {
 		if body := s.renderOntology(ctx, mi); body != "" {
 			sections[meminject.VariantOntology] = body
 		}
@@ -145,7 +154,7 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	sections[meminject.VariantConsolidationBands] = meminject.ConsolidationBands(mergeBand, relatedBand)
 
 	out := agentDef
-	out.SystemPrompt = meminject.Expand(agentDef.SystemPrompt, meminject.ExpandInput{
+	out.SystemPrompt = meminject.Expand(promptSrc, meminject.ExpandInput{
 		Sections:      sections,
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
 		MaxTokens:     maxTokens,

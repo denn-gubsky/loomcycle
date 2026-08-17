@@ -93,6 +93,9 @@ func TestAgentDefTool_ForkInteractiveConfigMovesHash(t *testing.T) {
 		"channels":          `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","channels":{"publish":["alerts"]}}}`,
 		"evaluation_scopes": `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","evaluation_scopes":["submit_self"]}}`,
 		"interruption":      `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","interruption":{"enabled":true,"max_pending":2}}}`,
+		// inject_tool_guide is behaviour-bearing (it changes what every run of the
+		// def is told), so a fork that flips it must mint a distinct content hash.
+		"inject_tool_guide": `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","inject_tool_guide":true}}`,
 	}
 	for field, overlay := range cases {
 		res, _ := tool.Execute(ctx, json.RawMessage(overlay))

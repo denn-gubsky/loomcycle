@@ -87,6 +87,49 @@ var allowedToolRefs = map[ToolRef]bool{
 	{Tool: "Context", Op: "capabilities"}: true,
 }
 
+// ToolGuideRefs are the runtime-knowledge refs an agent opts into as a set (the
+// inject_tool_guide flag): the deployment capabilities and the per-tool call
+// guide. Capabilities is listed FIRST so that, sharing the tool budget
+// left-to-right, the small fixed capabilities block renders before the larger
+// guide — a truncation, if any, falls on the guide's tail rather than dropping
+// capabilities wholesale. Every entry MUST also be on allowedToolRefs (pinned by
+// TestToolGuideRefs_AreAllowlisted), or the appended placeholder would render to
+// nothing.
+var ToolGuideRefs = []ToolRef{
+	{Tool: "Context", Op: "capabilities"},
+	{Tool: "Context", Op: "guide"},
+}
+
+// AppendToolGuideRefs appends a {{tool:...}} placeholder for each ToolGuideRef the
+// prompt does not ALREADY reference, each on its own line below the base prompt.
+// It is the implicit-append path for the opt-in flag, mirroring core_blocks:
+// an agent that opts in gets the runtime-knowledge blocks without hand-placing
+// them, while a prompt that already placed one is not given a duplicate.
+//
+// Deterministic — fixed order, fixed text, only appends refs — so the assembled
+// prompt stays byte-stable for provider prompt-caching. Returns prompt unchanged
+// when every ref is already placed.
+func AppendToolGuideRefs(prompt string) string {
+	present := make(map[ToolRef]bool)
+	for _, r := range ReferencesToolRefs(prompt) {
+		present[r] = true
+	}
+	add := make([]string, 0, len(ToolGuideRefs))
+	for _, r := range ToolGuideRefs {
+		if !present[r] {
+			add = append(add, "{{tool:"+r.Tool+"."+r.Op+"}}")
+		}
+	}
+	if len(add) == 0 {
+		return prompt
+	}
+	out := prompt
+	if out != "" {
+		out = strings.TrimRight(out, "\n") + "\n\n"
+	}
+	return out + strings.Join(add, "\n")
+}
+
 // canonicalToolNames maps a lower-cased tool name to its canonical spelling, so
 // {{tool:context.tools}} resolves rather than failing boot on a capital letter.
 // Derived from the allowlist, which stays the single source of truth.
