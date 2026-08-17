@@ -67,6 +67,14 @@ export default function MemoryConsole() {
   const [embedStats, setEmbedStats] = useState<MemoryEmbedModelStats[] | null>(null);
   const [reembedBanner, setReembedBanner] = useState<MemoryReembedResponse | null>(null);
   const [reembedBusy, setReembedBusy] = useState(false);
+  // The two other embedding-maintenance ops. One `maint` slot rather than a banner each:
+  // they are alternatives, and two open at once would invite committing the wrong one.
+  const [maint, setMaint] = useState<
+    | { kind: "backfill"; resp: Awaited<ReturnType<typeof data.backfillEmbeddings>> }
+    | { kind: "purge"; resp: Awaited<ReturnType<typeof data.purgeStaleEmbeddings>> }
+    | null
+  >(null);
+  const [maintBusy, setMaintBusy] = useState(false);
 
   // CRUD state.
   const [modalState, setModalState] = useState<
@@ -230,6 +238,35 @@ export default function MemoryConsole() {
     return embedStats.some((m) => m.row_count > 0);
   }, [embedStats]);
 
+  const runMaint = async (kind: "backfill" | "purge", dryRun: boolean) => {
+    if (!scope || !scopeID) return;
+    if (kind === "purge" && !dryRun) {
+      if (!window.confirm(
+        `Drop the embeddings of rows under ${scopeLabel} that have no indexable text? ` +
+          `This deletes vectors; the rows themselves are untouched.`,
+      )) {
+        return;
+      }
+    }
+    setMaintBusy(true);
+    setMaint(null);
+    try {
+      const resp =
+        kind === "backfill"
+          ? await data.backfillEmbeddings(scope, scopeID, { dryRun })
+          : await data.purgeStaleEmbeddings(scope, scopeID, { dryRun });
+      setMaint(
+        kind === "backfill"
+          ? { kind, resp: resp as Awaited<ReturnType<typeof data.backfillEmbeddings>> }
+          : { kind, resp: resp as Awaited<ReturnType<typeof data.purgeStaleEmbeddings>> },
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMaintBusy(false);
+    }
+  };
+
   const handleReembedDryRun = async () => {
     if (!scope || !scopeID) return;
     setReembedBusy(true);
@@ -363,6 +400,26 @@ export default function MemoryConsole() {
                 {reembedBusy ? "…" : "reembed plan"}
               </button>
             )}
+            {scopeID && (
+              <>
+                <button
+                  className="embed-reembed-btn"
+                  disabled={maintBusy}
+                  onClick={() => void runMaint("backfill", true)}
+                  title="See which rows carry NO embedding — what enabling an embedder after the rows were written leaves behind"
+                >
+                  {maintBusy ? "…" : "backfill plan"}
+                </button>
+                <button
+                  className="embed-reembed-btn"
+                  disabled={maintBusy}
+                  onClick={() => void runMaint("purge", true)}
+                  title="See which rows carry an embedding but have no indexable text to justify one"
+                >
+                  {maintBusy ? "…" : "purge plan"}
+                </button>
+              </>
+            )}
           </div>
         )}
         {scope && embedStats === null && (
@@ -378,6 +435,14 @@ export default function MemoryConsole() {
             busy={reembedBusy}
             onCommit={handleReembedCommit}
             onDismiss={() => setReembedBanner(null)}
+          />
+        )}
+        {maint && (
+          <MaintenanceBanner
+            state={maint}
+            busy={maintBusy}
+            onCommit={() => void runMaint(maint.kind, false)}
+            onDismiss={() => setMaint(null)}
           />
         )}
         {scopeID && (
@@ -561,4 +626,92 @@ function prettyJSON(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+// MaintenanceBanner — the plan (or outcome) of a backfill / stale-purge, with the two
+// numbers each response carries that a bare count would misrepresent.
+//
+// BACKFILL: `skipped_empty` rows have NO text to embed — a document root, a section
+// heading — so they remain candidates permanently. Without saying so, an operator watches
+// `candidates` stop falling with `embedded` at 0 and no stated reason. `more` means the
+// limit was reached with work outstanding, which is the honest replacement for "run it
+// until candidates hits 0" — a target unembeddable rows make unreachable.
+//
+// PURGE: `truncated` means the scan stopped at the limit, so a zero `stale` does NOT mean
+// the scope is clean. This op deletes, and "we looked at some of it and found nothing" is
+// a different statement from "there is nothing".
+function MaintenanceBanner({
+  state,
+  busy,
+  onCommit,
+  onDismiss,
+}: {
+  state:
+    | { kind: "backfill"; resp: { dry_run: boolean; candidates: number; embedded?: number; failed?: number; skipped_empty?: number; more?: boolean; sample_keys?: string[]; notes?: string[] } }
+    | { kind: "purge"; resp: { dry_run: boolean; scanned: number; stale: number; purged: number; failed?: number; truncated: boolean; sample_keys?: string[]; notes?: string[] } };
+  busy: boolean;
+  onCommit: () => void;
+  onDismiss: () => void;
+}) {
+  const dry = state.resp.dry_run;
+  return (
+    <div className={"reembed-banner " + (dry ? "reembed-dryrun" : "")}>
+      <div className="reembed-summary">
+        {state.kind === "backfill" ? (
+          <>
+            <strong>{state.resp.candidates}</strong> row
+            {state.resp.candidates === 1 ? "" : "s"} carry no embedding
+            {dry ? " and would be embedded" : ` · embedded ${state.resp.embedded ?? 0}`}
+            {(state.resp.failed ?? 0) > 0 && <> · failed {state.resp.failed}</>}
+            {(state.resp.skipped_empty ?? 0) > 0 && (
+              <>
+                {" "}
+                · <strong>{state.resp.skipped_empty}</strong> have no text to embed and stay
+                candidates permanently
+              </>
+            )}
+            {state.resp.more && <> · the limit was reached, so another run has work</>}
+          </>
+        ) : (
+          <>
+            <strong>{state.resp.stale}</strong> of {state.resp.scanned} scanned row
+            {state.resp.scanned === 1 ? "" : "s"} carry an embedding with no text to justify it
+            {!dry && <> · purged {state.resp.purged}</>}
+            {(state.resp.failed ?? 0) > 0 && <> · failed {state.resp.failed}</>}
+            {state.resp.truncated && (
+              <>
+                {" "}
+                · <strong>the scan stopped at the limit</strong>, so this is not the whole
+                scope
+              </>
+            )}
+          </>
+        )}
+      </div>
+      {state.resp.sample_keys && state.resp.sample_keys.length > 0 && (
+        <ul className="reembed-samples">
+          {state.resp.sample_keys.slice(0, 8).map((k) => (
+            <li key={k}>
+              <code>{k}</code>
+            </li>
+          ))}
+        </ul>
+      )}
+      {state.resp.notes?.map((n) => (
+        <div key={n} className="meta">
+          {n}
+        </div>
+      ))}
+      <div className="reembed-actions">
+        {dry && (
+          <button className="reembed-commit-btn" disabled={busy} onClick={onCommit}>
+            {state.kind === "backfill" ? "embed them" : "purge them"}
+          </button>
+        )}
+        <button className="reembed-dismiss-btn" disabled={busy} onClick={onDismiss}>
+          dismiss
+        </button>
+      </div>
+    </div>
+  );
 }

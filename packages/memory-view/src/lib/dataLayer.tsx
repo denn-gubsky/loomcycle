@@ -21,6 +21,18 @@ import type {
   VerificationStats,
 } from "../types";
 
+// The two embedding-maintenance response types are DERIVED from the client's method
+// signatures rather than imported by name.
+//
+// @loomcycle/client 1.55.0 ships the methods but does not re-export their response
+// interfaces from its entry point — they are defined in its types module and missing from
+// the `export type {...}` list, so a consumer cannot name them. That is fixed in the
+// adapter for the next release; deriving them here is drift-free in the meantime (the
+// type IS the client's, not a second copy of it) and does not make this package wait on
+// a release to use methods that already exist.
+type MemoryBackfillResponse = Awaited<ReturnType<LoomcycleClient["backfillEmbeddings"]>>;
+type MemoryPurgeResponse = Awaited<ReturnType<LoomcycleClient["purgeStaleEmbeddings"]>>;
+
 // FactListOptions are the browse filters `listFacts` forwards to the Document
 // tool's list_facts op. All optional — an empty bag lists the whole scope's
 // facts (newest first). `scopeId` is the RFC AS browse-by-subject override (a
@@ -98,6 +110,21 @@ export interface MemoryDataLayer {
     scopeId: string,
     opts: { dryRun?: boolean; limit?: number },
   ): Promise<MemoryReembedResponse>;
+  // Embed rows that carry NO embedding — what enabling an embedder AFTER the rows were
+  // written leaves behind. Same dry-run posture as reembed: plan, then commit.
+  backfillEmbeddings(
+    scope: MemoryScope,
+    scopeId: string,
+    opts: { dryRun?: boolean; limit?: number },
+  ): Promise<MemoryBackfillResponse>;
+  // Drop embeddings from rows that have no indexable text. THIS ONE DELETES, so the plan
+  // matters more than on its siblings — and `truncated` must be read, because a zero
+  // `stale` from a scan cut short at the limit does not mean the scope is clean.
+  purgeStaleEmbeddings(
+    scope: MemoryScope,
+    scopeId: string,
+    opts: { dryRun?: boolean; limit?: number },
+  ): Promise<MemoryPurgeResponse>;
 
   // ---- P4b: unified search + the entity/fact tier -------------------------
 
@@ -179,6 +206,9 @@ export function dataLayerFromClient(client: LoomcycleClient): MemoryDataLayer {
       client.deleteMemoryEntry(scope, scopeId, key),
     embedStats: (scope) => client.memoryEmbedStats(scope),
     reembed: (scope, scopeId, opts) => client.reembedMemory(scope, scopeId, opts),
+    backfillEmbeddings: (scope, scopeId, opts) => client.backfillEmbeddings(scope, scopeId, opts),
+    purgeStaleEmbeddings: (scope, scopeId, opts) =>
+      client.purgeStaleEmbeddings(scope, scopeId, opts),
 
     // ---- P4b -----------------------------------------------------------
     search: (input) => client.memorySearch(input),

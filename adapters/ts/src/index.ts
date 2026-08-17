@@ -222,6 +222,8 @@ export type {
   MemoryEmbedStatsResponse,
   MemoryReembedConfigured,
   MemoryReembedResponse,
+  MemoryBackfillResponse,
+  MemoryPurgeResponse,
   // Interruption
   InterruptListResponse,
   InterruptRow,
