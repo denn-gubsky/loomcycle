@@ -298,6 +298,19 @@ agents:
         // and every fact loses its evidence; too low and a fact gets handed an
         // unrelated sentence, which is worse than none because it looks like proof.
         min_span_overlap: 0.25,
+        // The share of ASCII punctuation above which a candidate span is CODE rather than
+        // a sentence, so it cannot be evidence. Like merge_min_subject_overlap and unlike
+        // the cosine bands, this is a property of prose rather than of a deployment's
+        // embedder, so it is a shipped constant and not a `memory.consolidation.*` key.
+        //
+        // 0.20 is MEASURED, on the spans of one live store: real prose ran 0.009 to 0.150
+        // (the top is a markdown bold heading, legitimate evidence), while the two
+        // pattern lines that each cost a true fact measured 0.259 and 0.382. Biased toward
+        // the LOW end of that window because the errors are not symmetric — too high
+        // admits a regex as evidence and the judge then withholds a TRUE fact, which loses
+        // data; too low leaves a fact with no span, which reads as unverified and stays
+        // fully visible.
+        max_span_punctuation: 0.20,
         // The SECOND signal an in-place rewrite has to clear, alongside the
         // similarity band — see mergeRefusal for why one number is not enough
         // authority to destroy a fact. It is the Dice overlap between the two
@@ -1194,9 +1207,56 @@ agents:
         var out = [];
         for (var i = 0; i < raw.length; i++) {
           var t = raw[i].trim();
-          if (t.length >= 12) { out.push(t); }
+          if (t.length >= 12 && !notProse(t)) { out.push(t); }
         }
         return out;
+      }
+
+      // notProse reports a candidate line that cannot be evidence for a claim, because
+      // there is no assertion in it: a line that is only TAGS (`<Grep pattern="…"/>`,
+      // `<tool_search>`, `</think>`), or one dense enough in punctuation to be CODE — a
+      // regex, a glob, a pattern — rather than a sentence.
+      //
+      // OBSERVED TWICE, on the first two passes run with verification enabled, and the
+      // second one is why this is not simply a tag check. A local chat model wrote its
+      // tool calls as prose instead of using the tool-use protocol, so the transcript
+      // carried both `<Grep pattern="tier.?test|postgres.*17|postgres.*14"/>` and, in a
+      // later reply, ``Try: `(?i)soak[-_]?suite|threadripper|soak[-_]*log[s]?` ``. Each
+      // became the span of a TRUE fact, and the judge then refused both — "the quote only
+      // shows a grep pattern", "the quote shows a search regex, not confirmation of the
+      // run" — so a true claim was withheld over mis-attached evidence, the direction
+      // that loses data.
+      //
+      // Both won because Dice overlap divides by the sizes of BOTH bags: a long
+      // supporting utterance is penalised while a short candidate whose every token hits
+      // is rewarded, and a pattern is a dense bag of exactly the claim's keywords with
+      // none of its meaning. A 6-token regex beat a 30-token sentence that said the thing
+      // outright.
+      //
+      // TAGS COME OFF FIRST, then density is measured on WHAT IS LEFT. The other order
+      // rejects a SHORT marked-up sentence, where the tags are a large share of the line:
+      // `<b>I live in Cluj-Napoca.</b>` measures 0.241 whole — over the threshold — and
+      // 0.091 stripped. The order is what keeps a real sentence that happens to wear a tag.
+      //
+      // ONLY ASCII PUNCTUATION COUNTS — a letter in any script, a digit and a space all
+      // read as prose. The obvious alternative, "anything that is not an ASCII letter is
+      // punctuation", scores Romanian at 0.42 and Japanese near 1.0, so it would call them
+      // code. This costs nothing and keeps the rule about punctuation rather than alphabet.
+      //
+      // It is not, today, load-bearing: `rawWords` tokenises on /[^a-z0-9]+/, so a
+      // non-Latin sentence yields almost no tokens and can never win a span in the first
+      // place ("Я запускаю loomcycle на TrueNAS" reduces to loomcycle+truenas). Widening
+      // the span pipeline past ASCII is a separate change, and this test is written so it
+      // will not have to be revisited as part of it.
+      //
+      // ⚠️ A prose-shaped COMMAND can still slip through: `$ psql -X -q -d loomcycle …`
+      // measures 0.188. The judge remains the backstop for what this misses, which is
+      // the arrangement everywhere else in this pipeline.
+      function notProse(s) {
+        var text = s.replace(/<[^>]*>/g, "").trim();
+        if (text === "") { return true; }
+        var punct = text.replace(/[^!-\/:-@\[-`{-~]/g, "").length;
+        return punct / text.length > CONFIG.max_span_punctuation;
       }
 
       // wordSet collapses a word list to a presence map. `=== true` on lookup

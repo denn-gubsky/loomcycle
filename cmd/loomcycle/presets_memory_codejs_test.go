@@ -2966,6 +2966,149 @@ func TestConsolidator_NoSupportingSentenceMeansNoSpan(t *testing.T) {
 	}
 }
 
+// TestConsolidator_APseudoToolCallLineIsNotEvidence.
+//
+// The exact failure observed on the first pass run with verification enabled, reduced to
+// a fixture. A local chat model wrote its tool calls as PROSE rather than using the
+// tool-use protocol, so the transcript legitimately carried
+// `<Grep pattern="tier.?test|postgres.*17|postgres.*14"/>` — and against a claim about
+// Postgres 17 that line BEAT the user's own sentence, because Dice overlap rewards a
+// short candidate where nearly every token hits and a regex pattern is a dense bag of the
+// claim's keywords with none of its meaning.
+//
+// The judge then refused the fact ("the quote only shows a grep pattern"), correctly, so
+// a TRUE claim was withheld over mis-attached evidence — the direction that loses data.
+// The user's sentence is present here and must win; nothing in the assertion depends on
+// the pattern being absent from the transcript.
+func TestConsolidator_APseudoToolCallLineIsNotEvidence(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	// The user's sentence is the LONG one it really was. That matters: Dice overlap
+	// divides by the sizes of both bags, so a long supporting sentence is penalised
+	// while a short dense one is rewarded — which is precisely how a 6-token regex
+	// pattern beat a 30-token utterance. Shortening this sentence makes the fix
+	// unnecessary and the test vacuous, which is what the first draft of it did.
+	// SHAPED LIKE THE REAL RENDERING (### speaker on its own line), not "user: <text>".
+	// The prefix form is not cosmetic: it hands the user's sentence the token "user",
+	// which this claim contains, so the sentence wins on a word the fixture invented and
+	// the test passes with the filter removed. The real renderer puts the label on its
+	// own line, where it is below the candidate length floor and joins nobody's bag.
+	f.transcript = "### user\n\n" +
+		"One more thing about my setup: I keep the loomcycle test database on Postgres 17 " +
+		"rather than 14, and I always verify the Postgres tier tests locally instead of " +
+		"trusting CI to run them.\n\n" +
+		"### assistant\n\n" +
+		"Looking at your workspace to see how the test database is configured...\n" +
+		"<tool_search>\n" +
+		"<Grep pattern=\"tier.?test|postgres.*17|postgres.*14\"/>\n" +
+		"</tool_search>\n\n"
+	f.factsJSON = `[{"text":"The user keeps the loomcycle test database on Postgres 17.",` +
+		`"class":"fact","type":"object","subject":"test database"}]`
+
+	runConsolidator(t, f)
+
+	var span, key string
+	for k, v := range f.chunkSpans {
+		if strings.Contains(k, "fact") && v != "" {
+			span, key = v, k
+		}
+	}
+	if span == "" {
+		t.Fatalf("no fact node carries a span (spans=%v)", f.chunkSpans)
+	}
+	if strings.Contains(span, "Grep") || strings.Contains(span, "pattern=") {
+		t.Errorf("chunk %q was handed a tool-call line as its evidence: %q — a query asserts "+
+			"nothing, and a judge shown this refuses a true fact", key, span)
+	}
+	if !strings.Contains(span, "Postgres 17") {
+		t.Errorf("span = %q, want the user's own sentence", span)
+	}
+	if !strings.Contains(f.transcript, span) {
+		t.Errorf("span %q is not in the transcript verbatim", span)
+	}
+}
+
+// TestConsolidator_NonProseLinesAreDroppedButMarkedUpProseIsNot.
+//
+// The filter strips tags and then asks whether what is LEFT reads as prose, rather than
+// testing whether the line looks tag-shaped — so a sentence wearing markup stays available
+// as evidence. Asserted because the cheap version of this fix (drop anything starting with
+// `<`) passes the test above while quietly costing spans for any transcript carrying HTML,
+// and because measuring density BEFORE stripping rejects this very sentence: a SHORT
+// marked-up line is mostly tag, so `<b>I live in Cluj-Napoca.</b>` measures 0.241 whole —
+// over the threshold — against 0.091 once the tags come off.
+func TestConsolidator_NonProseLinesAreDroppedButMarkedUpProseIsNot(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	// The ONLY line supporting the claim wears a tag on both ends.
+	// SHORT on purpose: the tags are a large share of the line, so this is the case that
+	// separates strip-then-measure from measure-then-strip (0.091 against 0.241).
+	f.transcript = "<tool_search>\n" +
+		"<b>I live in Cluj-Napoca.</b>\n" +
+		"</tool_search>"
+	f.factsJSON = `[{"text":"The user lives in Cluj-Napoca.","class":"fact",` +
+		`"type":"location","subject":"Cluj-Napoca"}]`
+
+	runConsolidator(t, f)
+
+	var span string
+	for k, v := range f.chunkSpans {
+		if strings.Contains(k, "fact") && v != "" {
+			span = v
+		}
+	}
+	if span == "" {
+		t.Fatalf("marked-up prose was dropped as if it were markup — the only supporting "+
+			"sentence in the transcript lost its span (spans=%v)", f.chunkSpans)
+	}
+	if !strings.Contains(span, "Cluj-Napoca") {
+		t.Errorf("span = %q, want the marked-up sentence", span)
+	}
+}
+
+// TestConsolidator_ARegexInProseIsNotEvidence.
+//
+// The SECOND live failure, and the reason this filter is not merely a tag check. On a
+// later pass the assistant replied with “Try: `(?i)soak[-_]?suite|threadripper|…` “ —
+// prose plus a regex, so tag-stripping leaves it untouched — and it still beat the user's
+// own sentence, because a dense pattern carrying the claim's keywords is exactly what Dice
+// overlap rewards. The judge refused the fact ("the quote shows a search regex, not
+// confirmation of the run"), withholding a true claim for the second time.
+//
+// The transcript here is the observed one, keeping the user's LONG utterance for the same
+// reason as its sibling above: shorten it and the user's sentence wins unaided.
+func TestConsolidator_ARegexInProseIsNotEvidence(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\n" +
+		"One more note on my tooling: I run the loomcycle soak suite on a Threadripper box " +
+		"rather than on the laptop, and I always keep the soak logs for a week " +
+		"afterwards.\n\n" +
+		"### assistant\n\n" +
+		"Try: `(?i)soak[-_]?suite|threadripper|soak[-_]*log[s]?`\n\n"
+	f.factsJSON = `[{"text":"The user runs the loomcycle soak suite on a Threadripper box.",` +
+		`"class":"fact","type":"object","subject":"soak suite"}]`
+
+	runConsolidator(t, f)
+
+	var span, key string
+	for k, v := range f.chunkSpans {
+		if strings.Contains(k, "fact") && v != "" {
+			span, key = v, k
+		}
+	}
+	if span == "" {
+		t.Fatalf("no fact node carries a span (spans=%v)", f.chunkSpans)
+	}
+	if strings.Contains(span, "(?i)") || strings.Contains(span, "[-_]") {
+		t.Errorf("chunk %q was handed a regex as its evidence: %q — a search pattern asserts "+
+			"nothing, and a judge shown this refuses a true fact", key, span)
+	}
+	if !strings.Contains(span, "Threadripper") {
+		t.Errorf("span = %q, want the user's own sentence", span)
+	}
+}
+
 // --------------------------------------------------------------- the judge
 //
 // Every scenario below drives the SHIPPED body. The judge is opt-in, so each one
