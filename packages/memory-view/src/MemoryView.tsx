@@ -7,16 +7,18 @@ import {
 import MemoryConsole from "./components/MemoryConsole";
 import FactViewer from "./components/FactViewer";
 import SearchPanel from "./components/SearchPanel";
+import ChangeFeedPanel from "./components/ChangeFeedPanel";
 
 // MemoryView is the standalone, self-styling root for the Memory view. It hosts
 // three tabs over one injected data layer:
 //   - Entries : the k/v Vector Memory console (scope/scope_id/key browser + editor).
 //   - Facts   : the entity-tier fact browser (bi-temporal, supersession chain).
 //   - Search  : off-run unified semantic search across k/v + document chunks.
+//   - Activity: a live tail of the value-free change feed — coordinates only.
 // Mount it on its own page; it resolves its own data layer + wraps in the
 // themeable `.loomcycle-memory-view` root. Styles ship separately:
 // `import "@loomcycle/memory-view/styles.css"`.
-export type MemoryTab = "entries" | "facts" | "search";
+export type MemoryTab = "entries" | "facts" | "search" | "activity";
 
 export interface MemoryViewProps extends MemoryDataSource {
   /** Theming. Set → the root carries data-theme; omit → inherit an ancestor's
@@ -69,11 +71,15 @@ function MemoryTabs({
         <TabButton tab="search" active={tab} onSelect={setTab}>
           Search
         </TabButton>
+        <TabButton tab="activity" active={tab} onSelect={setTab}>
+          Activity
+        </TabButton>
       </div>
       <div className="memory-view-tabpanel">
         {tab === "entries" && <MemoryConsole />}
         {tab === "facts" && <FactViewer onRunConsolidation={onRunConsolidation} />}
         {tab === "search" && <SearchPanel />}
+        {tab === "activity" && <ChangeFeedPanel />}
       </div>
     </>
   );

@@ -16,6 +16,32 @@ export { default as SearchPanel } from "./components/SearchPanel";
 export type { SearchPanelProps } from "./components/SearchPanel";
 export { default as ChunkDetailPanel } from "./components/ChunkDetailPanel";
 export type { ChunkDetailPanelProps } from "./components/ChunkDetailPanel";
+export { default as ChangeFeedPanel } from "./components/ChangeFeedPanel";
+export type { ChangeFeedPanelProps } from "./components/ChangeFeedPanel";
+
+// The change-feed tail's transport + pure helpers, exported because a host with its
+// own layout still wants the framing rules (a status frame that cannot be read is NOT
+// enabled; a bounded buffer reports what it dropped) rather than a looser second copy.
+export {
+  tailChanges,
+  classifyFrame,
+  appendChange,
+  matchesFilter,
+  describeChange,
+  emptyBuffer,
+  isDocumentChange,
+  CHANGE_BUFFER_CAP,
+  CHANGE_FEED_ENV,
+  CHANGE_FEED_PATHS,
+} from "./lib/changeFeed";
+export type {
+  ChangeFamily,
+  ChangeFeedFrame,
+  ChangeFeedStatus,
+  ChangeFilter,
+  ChangeBuffer,
+  MemoryChangeRow,
+} from "./lib/changeFeed";
 
 // Public data types (the shapes the console renders / the data layer produces).
 export type {
@@ -53,7 +79,7 @@ export type { Connection } from "./lib/createClient";
 
 // The data-layer seam: inject a custom implementation, or build one from a
 // @loomcycle/client instance.
-export { dataLayerFromClient } from "./lib/dataLayer";
+export { dataLayerFromClient, dataLayerFromConnection } from "./lib/dataLayer";
 export type { MemoryDataLayer, FactListOptions } from "./lib/dataLayer";
 
 // The shared data-source contract (connection | client | dataLayer), for hosts

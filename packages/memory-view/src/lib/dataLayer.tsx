@@ -20,6 +20,12 @@ import type {
   MemoryScope,
   VerificationStats,
 } from "../types";
+import {
+  tailChanges,
+  type ChangeFamily,
+  type ChangeFeedConnection,
+  type ChangeFeedFrame,
+} from "./changeFeed";
 
 // The two embedding-maintenance response types are DERIVED from the client's method
 // signatures rather than imported by name.
@@ -162,6 +168,18 @@ export interface MemoryDataLayer {
     text: string,
     opts?: { scopeId?: string; type?: string; subject?: string },
   ): Promise<unknown>;
+  // ---- The change-feed tail (OPTIONAL) ---------------------------------
+  // Tail one family of the value-free change feed. OPTIONAL because only a data
+  // layer holding a raw CONNECTION can implement it: consuming SSE needs the base
+  // URL and the host's fetch, which a bare @loomcycle/client instance does not
+  // expose. A data layer without it makes the Activity tab say so, which is a
+  // DIFFERENT statement from "the feed is disabled" and must not be confused with
+  // it — see ChangeFeedPanel.
+  streamChanges?(
+    family: ChangeFamily,
+    opts?: { since?: number; signal?: AbortSignal },
+  ): AsyncIterable<ChangeFeedFrame>;
+
   // verificationStats reports how much of a scope's fact store carries evidence and a
   // verdict — the number that says whether verification is doing anything at all.
   verificationStats(scope: MemoryScope, opts?: { scopeId?: string }): Promise<VerificationStats>;
@@ -331,4 +349,22 @@ export function useMemoryData(): MemoryDataLayer {
     );
   }
   return v;
+}
+
+// dataLayerFromConnection is dataLayerFromClient PLUS the change-feed tail.
+//
+// The split is not cosmetic. Everything else this console does is a request/response
+// call @loomcycle/client models; the tail is a long-lived SSE GET, which needs the
+// base URL and the host's configured fetch. A connection has those, a prebuilt client
+// does not expose them — so the capability lives on exactly the path that can honestly
+// provide it, rather than being faked everywhere and failing at runtime on two paths
+// out of three.
+export function dataLayerFromConnection(
+  conn: ChangeFeedConnection,
+  client: LoomcycleClient,
+): MemoryDataLayer {
+  return {
+    ...dataLayerFromClient(client),
+    streamChanges: (family, opts) => tailChanges(conn, family, opts),
+  };
 }
