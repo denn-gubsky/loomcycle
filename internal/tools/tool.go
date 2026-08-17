@@ -42,6 +42,26 @@ func Spec(t Tool) providers.ToolSpec {
 	}
 }
 
+// HintedTool is an OPTIONAL interface a Tool may implement to supply a short,
+// hand-written usage hint — one line on the op to prefer, a common mistake to
+// avoid, or a non-obvious call requirement. Context op=guide surfaces it (via a
+// type assertion) next to the schema-derived op/required digest, so an agent
+// gets curated guidance for its highest-error tools without the operator
+// hand-writing (and drifting) a whole tool narrative. The hint is model-visible
+// prompt text: keep it terse, imperative, and free of internal design-doc
+// citations.
+type HintedTool interface {
+	UsageHint() string
+}
+
+// UsageHintOf returns t's usage hint if it implements HintedTool, else "".
+func UsageHintOf(t Tool) string {
+	if h, ok := t.(HintedTool); ok {
+		return h.UsageHint()
+	}
+	return ""
+}
+
 // Dispatcher resolves tool names to Tool implementations and invokes them.
 // A new Dispatcher is built per run with the run's allowed-tools list so
 // off-policy calls fail fast.

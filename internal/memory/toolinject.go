@@ -73,8 +73,18 @@ func (r ToolRef) String() string { return r.Tool + "." + r.Op }
 // path, with an explicit "was this resolved?" discriminator so an unstamped
 // policy omits the key instead of asserting a false one — its own change, with
 // its own test for the sub-agent path.
+// Context op=guide and op=capabilities join op=tools as injectable refs: all
+// three are pure reads with no store mutation / network / spawn, resolvable at
+// prompt-assembly time from the already-resolved tool list + static config.
+//   - guide renders the per-tool call digest (op enum + required + usage hint)
+//     from each tool's own schema — no secret-adjacent or per-iteration field.
+//   - capabilities renders what the deployment supports; its execCapabilities
+//     already forbids secrets AND infrastructure topology (enforced by test), so
+//     unlike op=self it is safe to bake into a prompt.
 var allowedToolRefs = map[ToolRef]bool{
-	{Tool: "Context", Op: "tools"}: true,
+	{Tool: "Context", Op: "tools"}:        true,
+	{Tool: "Context", Op: "guide"}:        true,
+	{Tool: "Context", Op: "capabilities"}: true,
 }
 
 // canonicalToolNames maps a lower-cased tool name to its canonical spelling, so

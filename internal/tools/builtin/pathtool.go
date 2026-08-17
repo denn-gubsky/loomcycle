@@ -28,6 +28,11 @@ type Path struct {
 
 func (p *Path) Name() string { return "Path" }
 
+// UsageHint implements tools.HintedTool — surfaced by Context op=guide.
+func (p *Path) UsageHint() string {
+	return "Paths are absolute; segments are [A-Za-z0-9._-] with no '..'. op=mkdir is a no-op (directories are implicit) — just write to the path."
+}
+
 func (p *Path) Description() string {
 	return "A Unix-like filesystem over your Memory, Volumes, and Documents. Address resources by human-readable paths (e.g. /docs/launch). Ops: resolve, ls, stat, mkdir (create an empty directory), mv, rm. Paths are scoped (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\"."
 }

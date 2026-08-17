@@ -32,6 +32,21 @@ func toolFixtures() []tools.Tool {
 	}
 }
 
+// guideTool is an op-dispatched fixture carrying a usage hint, so the
+// guide-rendering tests can assert the op enum, the required list AND the
+// hand-written hint all reach the assembled prompt.
+type guideTool struct{}
+
+func (guideTool) Name() string        { return "Widget" }
+func (guideTool) Description() string { return "A widget tool." }
+func (guideTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"op":{"enum":["poke","prod"]}},"required":["op","target"]}`)
+}
+func (guideTool) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	return tools.Result{}, nil
+}
+func (guideTool) UsageHint() string { return "poke reads, prod writes; always pass target." }
+
 // TestToolInject_InventoryReachesTheAssembledPrompt is the WIRING test: the
 // expander, the renderer and applyMemoryInjection have to be connected, not
 // merely each correct. A previous feature in this subsystem shipped built and
@@ -193,6 +208,95 @@ func TestToolInject_MatchesContextToolsOp(t *testing.T) {
 	for _, tool := range parsed.Tools {
 		if !strings.Contains(got.SystemPrompt, "- "+tool.Name) {
 			t.Errorf("Context op=tools reports %q but the injected inventory omits it:\n%s", tool.Name, got.SystemPrompt)
+		}
+	}
+}
+
+// TestToolGuide_ReachesTheAssembledPrompt is the WIRING test for the guide ref:
+// the op enum, the required list and the hand-written hint must all land in the
+// prompt the run actually gets, framed as reference data.
+func TestToolGuide_ReachesTheAssembledPrompt(t *testing.T) {
+	s := &Server{}
+	def := config.AgentDef{SystemPrompt: "Base.\n\n{{tool:Context.guide}}"}
+	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "a", Tools: []tools.Tool{guideTool{}}}
+
+	got, _ := s.applyMemoryInjection(context.Background(), def, mi)
+
+	for _, want := range []string{
+		`<tool-result tool="Context" op="guide">`,
+		"- Widget",
+		"ops poke|prod",
+		"requires op, target",
+		"poke reads, prod writes; always pass target.",
+		"</tool-result>",
+	} {
+		if !strings.Contains(got.SystemPrompt, want) {
+			t.Errorf("missing %q in assembled prompt:\n%s", want, got.SystemPrompt)
+		}
+	}
+	if strings.Contains(got.SystemPrompt, "{{tool:") {
+		t.Errorf("placeholder left unexpanded:\n%s", got.SystemPrompt)
+	}
+}
+
+// TestToolGuide_MatchesContextGuideOp: the injected guide must agree with what
+// Context op=guide reports, because an agent can call the tool and compare — two
+// implementations of "how do I call my tools" would drift silently.
+func TestToolGuide_MatchesContextGuideOp(t *testing.T) {
+	fixtures := []tools.Tool{guideTool{}, describedTool{"Read", "Read a file."}}
+	ctx := tools.WithAgentTools(context.Background(), toolNames(fixtures))
+	ct := &builtin.Context{Tools: fixtures}
+	req, _ := json.Marshal(map[string]any{"op": "guide"})
+	res, err := ct.Execute(ctx, req)
+	if err != nil || res.IsError {
+		t.Fatalf("Context op=guide failed: err=%v isErr=%v text=%s", err, res.IsError, res.Text)
+	}
+	var parsed struct {
+		Tools []struct{ Name string } `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	s := &Server{}
+	got, _ := s.applyMemoryInjection(context.Background(),
+		config.AgentDef{SystemPrompt: "{{tool:Context.guide}}"},
+		memInject{Tenant: "t1", UserID: "u1", Tools: fixtures})
+
+	for _, tool := range parsed.Tools {
+		if !strings.Contains(got.SystemPrompt, "- "+tool.Name) {
+			t.Errorf("op=guide reports %q but the injected guide omits it:\n%s", tool.Name, got.SystemPrompt)
+		}
+	}
+}
+
+// TestToolCapabilities_RendersAvailabilityAndNoSecrets: the capabilities block
+// must carry the availability lists + numeric limits, framed as data, and never a
+// secret-adjacent field or infrastructure address. A bare Server reports
+// everything unavailable (no cfg/store), which is enough to exercise the shape
+// and the no-leak guarantee.
+func TestToolCapabilities_RendersAvailabilityAndNoSecrets(t *testing.T) {
+	s := &Server{}
+	def := config.AgentDef{SystemPrompt: "Base.\n\n{{tool:Context.capabilities}}"}
+	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "a", Tools: toolFixtures()}
+
+	got, _ := s.applyMemoryInjection(context.Background(), def, mi)
+
+	for _, want := range []string{
+		`<tool-result tool="Context" op="capabilities">`,
+		"Not available:",
+		"bash",
+		"</tool-result>",
+	} {
+		if !strings.Contains(got.SystemPrompt, want) {
+			t.Errorf("missing %q in assembled prompt:\n%s", want, got.SystemPrompt)
+		}
+	}
+	// No secret-adjacent field, and no topology (a base URL / host would betray the
+	// operator's network) — the same posture the capabilities probe itself enforces.
+	for _, banned := range []string{"token_suffix", "bearer", "api_key", "_dsn", "http://", "https://"} {
+		if strings.Contains(strings.ToLower(got.SystemPrompt), strings.ToLower(banned)) {
+			t.Errorf("capabilities body contains %q:\n%s", banned, got.SystemPrompt)
 		}
 	}
 }

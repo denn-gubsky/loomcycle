@@ -488,6 +488,11 @@ func clampField(v string) string {
 // Name implements tools.Tool.
 func (m *Memory) Name() string { return "Memory" }
 
+// UsageHint implements tools.HintedTool — surfaced by Context op=guide.
+func (m *Memory) UsageHint() string {
+	return "add is ASYNCHRONOUS — a later recall may not see it yet; recall/get/list read, add/set/delete write. Pass op + scope on every call."
+}
+
 // Description implements tools.Tool.
 func (m *Memory) Description() string { return memoryDescription }
 

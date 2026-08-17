@@ -105,7 +105,8 @@ const contextDescription = `Read-only runtime introspection. ` +
 	`Answers "what tools do I have? who am I? what permissions apply to me? ` +
 	`what other agents exist? what's my def's lineage and evaluation history? ` +
 	`what runtime concepts and recipes does loomcycle document? what time is it / how long have I been running?". ` +
-	`Operations: self, tools, doc, permissions, agents, lineage, evaluations, channels, help, time, capabilities. ` +
+	`Operations: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, capabilities. ` +
+	`op=guide is a compact "how to call your tools" digest — per tool the op enum + required args + a usage hint — the fast way to avoid tool-call mistakes. ` +
 	`Use op=capabilities to find out what this deployment actually supports (vector/full-text memory, SQL memory, ` +
 	`documents, bash, sandbox, scheduler, webhooks, search providers, consolidation) BEFORE calling something that ` +
 	`would only refuse. ` +
@@ -120,7 +121,7 @@ const contextDescription = `Read-only runtime introspection. ` +
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","help","time","compact","capabilities"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","guide","doc","permissions","agents","lineage","evaluations","channels","help","time","compact","capabilities"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
     "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
@@ -165,6 +166,8 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execSelf(ctx)
 	case "tools":
 		return c.execTools(ctx)
+	case "guide":
+		return c.execGuide(ctx)
 	case "doc":
 		return c.execDoc(ctx, in)
 	case "permissions":
@@ -188,7 +191,7 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, capabilities)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, capabilities)", in.Op)), nil
 	}
 }
 

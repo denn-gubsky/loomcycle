@@ -15,7 +15,11 @@ var contextTools = ToolRef{Tool: "Context", Op: "tools"}
 // spawn and resume, so an entry with a side effect fires on all of them — so it
 // must fail this test and be argued for rather than slip in.
 func TestAllowedToolRefs_ExactlySet(t *testing.T) {
-	want := []string{"Context.tools"}
+	// Sorted (AllToolRefs sorts). All three are Context read-ops resolvable at
+	// prompt-assembly time from the run's tool list + static config: tools (name
+	// inventory), guide (per-tool call digest), capabilities (deployment features,
+	// already secrets-free / topology-free by construction).
+	want := []string{"Context.capabilities", "Context.guide", "Context.tools"}
 	if got := AllToolRefs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("allowlist changed: got %v, want %v\n"+
 			"Adding a ref means asserting it is a PURE READ (no store write, no network, no spawn) "+
