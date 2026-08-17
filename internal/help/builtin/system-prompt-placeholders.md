@@ -43,7 +43,16 @@ These are the tools you can call right now. Call one directly when a task needs 
 </tool-result>
 ```
 
-**Allowlisted refs:** `Context.tools` only.
+**Allowlisted refs:** `Context.tools`, `Context.guide`, `Context.capabilities`.
+
+- `Context.tools` — a one-line-per-tool inventory (name, side-effect class, a
+  short summary): *what* you can call.
+- `Context.guide` — a per-tool call digest (the `op` enum, the required
+  arguments, and a one-line usage hint): *how* to call each one. The high-signal
+  subset for avoiding tool-call mistakes.
+- `Context.capabilities` — what the deployment supports right now (memory,
+  documents, search, sandbox, …) plus its numeric limits: what to rely on before
+  you attempt it. Carries no secrets and no infrastructure detail.
 
 The allowlist is the point. Prompt assembly runs on every run entry, sub-agent
 spawn and resume, so a placeholder naming a mutating tool would write on each of
@@ -63,6 +72,16 @@ enumerate them correctly. Restating a compact inventory as text closes that gap.
 It also replaces a hand-written tool list, which cannot be kept in sync with the
 `tools:` list beside it. Keep the *guidance* hand-written (which tool to prefer,
 when to reach for one); let the *inventory* be generated.
+
+### `inject_tool_guide` — automatic delivery
+
+Rather than hand-place `{{tool:Context.capabilities}}` and `{{tool:Context.guide}}`,
+set `inject_tool_guide: true` on the agent. When set, prompt assembly appends
+whichever of those two refs the prompt does not already place — so the agent gets
+the deployment capabilities and the per-tool call digest without editing the
+prompt. It defaults **off**, so an agent that never sets it is byte-identical to
+before (prompt cache intact). The refs it appends are the same allowlisted
+read-only calls above, framed the same way.
 
 ## `{{memory:<variant>}}` — stored memory
 

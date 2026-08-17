@@ -816,6 +816,8 @@ A `system_prompt` may contain placeholders the server expands at run start, befo
 | Placeholder | Expands to |
 |---|---|
 | `{{tool:Context.tools}}` | the framed result of calling `Context op=tools` — the agent's own resolved tool inventory, one compact line per tool |
+| `{{tool:Context.guide}}` | the framed result of `Context op=guide` — a per-tool call digest (the `op` enum, required arguments, and a one-line usage hint) for the agent's resolved tools: *how* to call each one |
+| `{{tool:Context.capabilities}}` | the framed result of `Context op=capabilities` — what the deployment supports (memory, documents, search, sandbox, …) plus its numeric limits; carries no secrets or infrastructure detail |
 | `{{memory:core_blocks}}` | every attached core memory block's value (auto-appended if blocks are attached and no placeholder is placed) |
 | `{{memory:user_info}}` | the operator-authored user-root document + the learned `human` block |
 | `{{memory:search_request}}` | an LLM-free retrieval against the run's initial user input |
@@ -835,9 +837,11 @@ agents:
       - Files: Grep to locate first, then Read.
 ```
 
-**`{{tool:...}}` is limited to an allowlist of read-only calls — `Context.tools` today.** Prompt assembly runs at every run entry, sub-agent spawn and resume, so a placeholder naming a mutating tool would write on each one, one naming `Agent` would spawn during its own parent's assembly, and one naming a network tool would put a call on the critical path of every run. A runtime-authored agent's system prompt is model-writable, so what may be called from a prompt is deliberately not model-chosen. `{{tool:Bash.run}}` is a boot error that lists what is allowed.
+**`{{tool:...}}` is limited to an allowlist of read-only calls — `Context.tools`, `Context.guide`, `Context.capabilities`.** Prompt assembly runs at every run entry, sub-agent spawn and resume, so a placeholder naming a mutating tool would write on each one, one naming `Agent` would spawn during its own parent's assembly, and one naming a network tool would put a call on the critical path of every run. A runtime-authored agent's system prompt is model-writable, so what may be called from a prompt is deliberately not model-chosen. `{{tool:Bash.run}}` is a boot error that lists what is allowed.
 
-Use it in place of a hand-written tool list, which cannot be kept in sync with the `tools:` list beside it — the bundled `chat/*` agents had drifted to naming 12 of their 17 tools. Keep the *guidance* hand-written (which tool to prefer, when to reach for one); let the *inventory* be generated. Note this adds no capability: the full schemas are already sent on every request. It exists because smaller local models under-attend to that array and act as though they have no tools until asked to check.
+Use them in place of a hand-written tool list, which cannot be kept in sync with the `tools:` list beside it — the bundled `chat/*` agents had drifted to naming 12 of their 17 tools. Keep the *guidance* hand-written (which tool to prefer, when to reach for one); let the *inventory*, the *call digest*, and the *capabilities* be generated. Note these add no capability: the full schemas are already sent on every request. They exist because smaller local models under-attend to that array and act as though they have no tools — starting "blind" on which op to call and which fields are required — until asked to check.
+
+**`inject_tool_guide: true`** on an agent delivers the runtime knowledge automatically: prompt assembly appends whichever of `{{tool:Context.capabilities}}` and `{{tool:Context.guide}}` the prompt does not already place (mirroring how `core_blocks` auto-appends). It defaults **off**, so an agent that never sets it is byte-identical to before. The bundled `chat/*` and `doc/manager` agents enable it.
 
 Shared rules: a leading backslash escapes (`\{{tool:Context.tools}}` renders literally); names are case-insensitive; expanded content is framed as reference data and cannot forge its own delimiter; a placeholder appearing *inside* expanded content stays literal; each family has an independent token budget (memory's is `memory_inject_max_tokens`, default 1024) so the two never compete on prompt order; expansion is deterministic, so provider prompt-caching still hits. Agents can read the same reference at runtime via `Context op=help topic=system-prompt-placeholders`.
 
