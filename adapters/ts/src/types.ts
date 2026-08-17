@@ -1538,6 +1538,13 @@ export type DocumentToolInput = {
    *  They are withheld by default and never deleted, so this is how to read what
    *  was refused, and why. */
   include_refuted?: boolean;
+  /** list_facts: return only CLAIMS, dropping the entity identity nodes (the subject
+   *  a fact is about — "Ollama", "the user"). A claim carries a sentence and can carry
+   *  a source span; an identity node is a name and never can. Off by default because
+   *  the plain listing is every chunk carrying entity metadata, which is what document
+   *  sync reconciles — so a reading or coverage surface wants this on, and a
+   *  federation one does not. */
+  claims_only?: boolean;
   /** remember: a statement to store as a fact that cites ITSELF — the text becomes both
    *  the claim and its source span, so write what you want recorded rather than an
    *  instruction about it. Additive only; it is never a way to delete. */

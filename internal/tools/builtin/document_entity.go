@@ -278,6 +278,39 @@ func chunkMetaToJSON(m chunkMetaRow) map[string]any {
 	return out
 }
 
+// identityNodeExclusion drops entity IDENTITY nodes from a fact population. It
+// expects chunk_memory_meta aliased `m`.
+//
+// The consolidation pass mirrors one extracted fact as TWO chunks: the claim, and
+// an identity node for the subject the claim is about, joined by an `about` edge
+// pointing FROM the claim TO the subject. Both carry entity metadata — a
+// natural_key is what makes either upsert idempotent — so both land in
+// chunk_memory_meta. But an identity node can never carry a source span, and not
+// for want of trying: a subject is not a claim, and there is nothing about
+// "Ollama" for a quote to support. The pass says so where it writes them.
+//
+// Counting them as facts made verification_stats understate coverage by a margin
+// that GROWS with the graph, since every new subject adds another permanently
+// span-less row. Measured on a live store: 0.579 reported against 0.846 true, and
+// 7 facts reported as impossible to check where the real answer was 1. An operator
+// watching that number would read a healthy store as a failing one.
+//
+// WHY THE EDGE, AND NOT THE CHUNK TYPE. A distilled fact's type is the constant
+// "fact", which makes `type = 'fact'` look like the obvious test — but `remember`
+// stamps the CALLER's type, so that filter drops operator-remembered facts.
+// Measured on the same store: one remembered fact landed as type `object` while
+// CARRYING a span. Dropping verified facts from the coverage figure is the error
+// direction that loses data, which is the one this whole line exists to avoid. A
+// body test is not available either — the chunks table has no body column, because
+// bodies live in the Memory k/v plane where SQL cannot reach them.
+//
+// Being the target of an `about` edge is what an identity node structurally IS. It
+// needs no schema change and no re-stamping, so it holds for stores that already
+// exist. An orphan subject whose edge write failed still counts, which is exactly
+// today's behaviour — the over-counting direction, not the data-losing one.
+const identityNodeExclusion = `NOT EXISTS (SELECT 1 FROM chunk_edges e ` +
+	`WHERE e.to_id = m.chunk_id AND e.kind = 'about')`
+
 // listFacts returns the scope's facts — chunks that HAVE a chunk_memory_meta
 // sidecar — as metadata only, no bodies. It is the browse surface behind the
 // human-facing memory view: a viewer fetches a fact's body via get_chunk on
@@ -315,6 +348,9 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if in.Class != "" {
 		where = append(where, "m.class = ?")
 		args = append(args, in.Class)
+	}
+	if in.ClaimsOnly {
+		where = append(where, identityNodeExclusion)
 	}
 	if in.DocumentID != "" {
 		where = append(where, "c.document_id = ?")

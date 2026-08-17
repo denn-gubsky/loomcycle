@@ -169,14 +169,14 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
       includeRefuted: true,
     });
     expect(s.document).toHaveBeenCalledWith(
-      { op: "list_facts", scope: "user", include_retired: true, include_refuted: true },
+      { op: "list_facts", scope: "user", claims_only: true, include_retired: true, include_refuted: true },
       undefined,
     );
 
     const q = stubClient();
     await dataLayerFromClient(q.client).listFacts("user", { includeRefuted: true });
     expect(q.document).toHaveBeenCalledWith(
-      { op: "list_facts", scope: "user", include_refuted: true },
+      { op: "list_facts", scope: "user", claims_only: true, include_refuted: true },
       undefined,
     );
   });
@@ -261,6 +261,9 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
       {
         op: "list_facts",
         scope: "user",
+        // Sent on every listing — this surface reads facts to a person, and an entity
+        // identity node is a name with no body. See the data layer for why.
+        claims_only: true,
         type: "person",
         class: "evidential",
         document_id: "doc-1",
@@ -275,7 +278,10 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
   it("listFacts omits include_retired when falsy + sends no browse opts without a scopeId", async () => {
     const s = stubClient();
     await dataLayerFromClient(s.client).listFacts("agent");
-    expect(s.document).toHaveBeenCalledWith({ op: "list_facts", scope: "agent" }, undefined);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "list_facts", scope: "agent", claims_only: true },
+      undefined,
+    );
   });
 
   it("getChunk addresses the chunk by id + threads the scopeId override", async () => {

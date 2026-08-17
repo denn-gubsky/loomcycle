@@ -1473,7 +1473,15 @@ agents:
         var listed;
         try {
           listed = JSON.parse(Document({
-            op: "list_facts", scope: CONFIG.scope, limit: CONFIG.backfill_scan
+            // claims_only, because the scan's job is to find facts that CAN still be
+            // judged and to count the ones that never can. The default listing also
+            // returns the entity identity nodes this pass writes beside each fact —
+            // subjects, which carry no span by design — and counting those as
+            // unjudgeable facts inflated `backfill_no_span` on every pass forever. On
+            // one live pass it reported 7 of 17 scanned as impossible to judge where
+            // the real answer was 1 of 13.
+            op: "list_facts", scope: CONFIG.scope, limit: CONFIG.backfill_scan,
+            claims_only: true
           }));
         } catch (e) {
           // NOT judge_failed: nothing was asked of the judge. Counting a listing
