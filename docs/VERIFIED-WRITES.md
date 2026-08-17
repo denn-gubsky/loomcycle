@@ -111,6 +111,12 @@ Entailment against a supplied span rewards a literal reader, and a stronger mode
 
 The two unverified populations are counted separately because they mean different things: a fact with **no span** can never be verified by anyone — the transcript it came from may be gone — while one merely **awaiting a judge** can. `verified_share` is the number to quote when deciding whether to trust the verbatim path.
 
+**It counts CLAIMS, not every entity row.** The consolidation pass mirrors each fact as two chunks: the claim, and an identity node for the subject it is about (`Ollama`, `the user`), joined by an `about` edge. Both carry entity metadata, so both live in the same table — but an identity node can never carry a span, because a subject is a name and there is nothing in it for a quote to support. Counting those as facts made the reported share *fall as the store got richer*: measured on a live store, `0.579` reported where `0.846` was true, and 7 facts called impossible to verify where the answer was 1. The identity nodes are excluded here, always.
+
+`list_facts` keeps returning them by default — its contract is "chunks that carry entity metadata", and the document-federation reconcile syncs identity nodes too — so a surface that lists facts for a person to read should pass **`claims_only: true`** to match what this figure counts.
+
+An empty store reports **no** `verified_share` rather than `0`: "nothing here is verified" and "there is nothing to verify" are different claims, and only one of them is a problem.
+
 ## Answering verbatim
 
 ```json

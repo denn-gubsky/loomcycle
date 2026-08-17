@@ -213,7 +213,15 @@ export function dataLayerFromClient(client: LoomcycleClient): MemoryDataLayer {
     // ---- P4b -----------------------------------------------------------
     search: (input) => client.memorySearch(input),
     listFacts: (scope, opts) => {
-      const input: Record<string, unknown> = { op: "list_facts", scope };
+      // claims_only, ALWAYS. The consolidation pass writes an entity identity node
+      // beside each fact — the subject it is about, "Ollama", "the user" — and the
+      // plain listing returns those too, as rows with a name and no body. They are
+      // not facts a person can read or check, and counting them is what made the
+      // coverage strip disagree with the list beneath it: on a live store the strip
+      // said 0.579 verified where the claims alone were 0.846. Not exposed as an
+      // option because this surface has no reading in which a viewer wants them;
+      // document sync, which does, calls the server directly.
+      const input: Record<string, unknown> = { op: "list_facts", scope, claims_only: true };
       if (opts?.type) input.type = opts.type;
       if (opts?.class) input.class = opts.class;
       if (opts?.documentId) input.document_id = opts.documentId;
