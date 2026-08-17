@@ -59,7 +59,6 @@ channels:
 
 agents:
   agent/assistant:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     tier: middle
     max_iterations: 24
     max_tokens: 8192
@@ -100,7 +99,6 @@ agents:
       workflow.
 
   team/assistant:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     tier: middle
     max_iterations: 32
     max_tokens: 8192
@@ -147,7 +145,6 @@ agents:
       state what you'd run to test it.
 
   team/orchestrator:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     # Run this agent INTERACTIVELY (the operator starts it with interactive:true
     # from the /run terminal) so it parks for human input between turns — that's a
     # per-run flag, not an agent field. unbounded_iterations lifts the loop cap so a

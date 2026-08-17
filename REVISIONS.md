@@ -4,6 +4,36 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.56.1
+
+**A tool-call regression on qwen-via-Ollama, and the v1.56.0 bundle change that caused
+it.** Patch — one runtime fix and one config revert; no wire, schema, or adapter change.
+
+### qwen on Ollama stopped calling tools
+
+A `chat/medium` run on a local qwen3.6 model wanted to search but emitted its call as
+TEXT, copying the framing of loomcycle's own injected `{{tool:Context.*}}` reference
+blocks — `<tool_result> {"type":"function","function":{"name":"WebSearch", …}} </tool_result>`.
+Ollama's extractor expects `<tool_call>`, so it recovered nothing, and the existing
+text-recovery parser only understood a flat `{name, arguments}` object. The wrapped,
+OpenAI-nested shape fell through, and the run ended with the un-executed block as its
+"answer" — no search ran.
+
+- The Ollama driver's `tryParseToolCallsFromText` now peels one wrapper tag
+  (`<tool_call>` / `<tool_result>` / `<function_call>`, hyphen or underscore, with or
+  without attributes) and accepts the OpenAI-nested `{"function":{name,arguments}}`
+  envelope, with arguments as an object or a JSON-encoded string. Same strict,
+  tools-gated contract — prose and non-tool JSON still recover nothing.
+
+### inject_tool_guide is no longer a bundle default
+
+Making `inject_tool_guide` a bundle default in v1.56.0 was premature: its target is
+small local models, and that is exactly where the three injected `<tool-result>`-framed
+blocks both bloat the prompt and get copied by the model as its tool-call format. The
+flag is removed from every bundled agent; the mechanism — `Context op=guide`, the
+`HintedTool` hints, the injectable refs, and the per-agent flag — stays intact for
+explicit opt-in on a strong-model agent.
+
 ## What's in v1.56.0
 
 **Agents that know how to call their tools, a live view of the memory pipeline, and

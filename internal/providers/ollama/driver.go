@@ -964,29 +964,43 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 }
 
 // tryParseToolCallsFromText attempts to parse the raw text content as
-// one or more Ollama-shaped tool-call objects. Two shapes covered:
+// one or more Ollama-shaped tool-call objects. Shapes covered:
 //
 //  1. JSON-shape (PR #26):
 //     {"name":"...","arguments":{...}}
 //     or an array of such objects, optionally wrapped in a ```json fence.
 //
-//  2. Markdown-bracket shape (this function's fallback path, v0.7.x):
-//     [tool_use: <name>]\n{"...": ...}
-//     [tool_use: <name> {"...": ...}]
-//     [tool_use: <name>]
-//     Some chat templates produce this form instead of structured
-//     tool_calls — observed on a few hermes / mistral fine-tunes.
+//  2. OpenAI-nested envelope:
+//     {"type":"function","function":{"name":"...","arguments":{...}}}
+//     (arguments may be an object OR a JSON-encoded string). Small local
+//     models copy this envelope from their training when they emit a call as
+//     text instead of via native tool_calls.
 //
-// Returns the parsed ToolUse list when either shape matches, nil
-// otherwise. Strict matching prevents false positives from text that
-// happens to look JSON-ish or contains the literal phrase "tool_use" in
-// prose: we require the ENTIRE trimmed content to deserialise into the
+//  3. Any of the above wrapped in a single <tool_call>/<tool_result>/
+//     <function_call> tag. qwen3 on Ollama copies whatever call/result FRAMING
+//     it sees in the system prompt — including loomcycle's own injected
+//     <tool-result …> reference blocks — and emits its call inside that tag
+//     rather than as structured tool_calls. Ollama's extractor expects
+//     <tool_call>, so it recovers nothing; without this, the run silently ends
+//     with the call sitting in the text as an un-executed <tool_result> block.
+//
+//  4. Markdown-bracket shape (v0.7.x fallback):
+//     [tool_use: <name>]\n{"...": ...} / [tool_use: <name> {...}] / [tool_use: <name>]
+//     Observed on a few hermes / mistral fine-tunes.
+//
+// Returns the parsed ToolUse list when a shape matches, nil otherwise. Strict
+// matching prevents false positives from text that happens to look JSON-ish or
+// contains the literal phrase "tool_use" in prose: we require the ENTIRE trimmed
+// content (after peeling one wrapper tag / fence) to deserialise into a
 // tool-call shape.
 func tryParseToolCallsFromText(text string) []*providers.ToolUse {
 	s := strings.TrimSpace(text)
 	if s == "" {
 		return nil
 	}
+	// Peel ONE tool-call wrapper tag before anything else, so a fenced or bare
+	// JSON body inside <tool_result>…</tool_result> is reached (shape 3).
+	s = stripToolWrapperTag(s)
 	// Strip a single markdown fence pair if present. qwen3's chat
 	// template sometimes wraps tool-call output in ```json ... ```.
 	if strings.HasPrefix(s, "```") {
@@ -1000,25 +1014,17 @@ func tryParseToolCallsFromText(text string) []*providers.ToolUse {
 		s = strings.TrimSpace(s)
 	}
 
-	type rawCall struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-	}
-
 	// Try array first — qwen3 occasionally batches multiple calls.
 	if strings.HasPrefix(s, "[") && !strings.HasPrefix(s, "[tool_use:") {
-		var arr []rawCall
+		var arr []rawToolCall
 		if err := json.Unmarshal([]byte(s), &arr); err == nil && len(arr) > 0 {
 			out := make([]*providers.ToolUse, 0, len(arr))
 			for _, r := range arr {
-				if r.Name == "" {
+				tu := r.toToolUse()
+				if tu == nil {
 					return nil // any malformed entry → bail; treat as prose
 				}
-				args := r.Arguments
-				if len(args) == 0 {
-					args = json.RawMessage("{}")
-				}
-				out = append(out, &providers.ToolUse{Name: r.Name, Input: args})
+				out = append(out, tu)
 			}
 			return out
 		}
@@ -1036,19 +1042,97 @@ func tryParseToolCallsFromText(text string) []*providers.ToolUse {
 		return nil
 	}
 
-	// Try single JSON object.
-	var r rawCall
+	// Try single JSON object (flat or OpenAI-nested).
+	var r rawToolCall
 	if err := json.Unmarshal([]byte(s), &r); err != nil {
 		return nil
 	}
-	if r.Name == "" {
+	if tu := r.toToolUse(); tu != nil {
+		return []*providers.ToolUse{tu}
+	}
+	return nil
+}
+
+// rawToolCall is the union of the flat and OpenAI-nested tool-call shapes a
+// text-emitting model produces. toToolUse normalises whichever is present.
+type rawToolCall struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+	// OpenAI-style nesting: {"type":"function","function":{"name":…,"arguments":…}}.
+	Function *struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	} `json:"function"`
+}
+
+// toToolUse normalises a rawToolCall to a ToolUse, preferring the nested
+// `function` envelope when present. Returns nil when no name is set (the caller
+// treats nil as "this isn't a tool call, leave it as text").
+func (r rawToolCall) toToolUse() *providers.ToolUse {
+	name, args := r.Name, r.Arguments
+	if r.Function != nil && r.Function.Name != "" {
+		name, args = r.Function.Name, r.Function.Arguments
+	}
+	if name == "" {
 		return nil
 	}
-	args := r.Arguments
-	if len(args) == 0 {
-		args = json.RawMessage("{}")
+	return &providers.ToolUse{Name: name, Input: normalizeToolArgs(args)}
+}
+
+// normalizeToolArgs returns a JSON object for a call's arguments. Absent → "{}".
+// A JSON-STRING (the OpenAI wire form often double-encodes arguments, e.g.
+// "{\"q\":\"x\"}") is unquoted to the object it encodes so the dispatcher sees an
+// object either way; anything else passes through untouched.
+func normalizeToolArgs(args json.RawMessage) json.RawMessage {
+	a := bytes.TrimSpace(args)
+	if len(a) == 0 {
+		return json.RawMessage("{}")
 	}
-	return []*providers.ToolUse{{Name: r.Name, Input: args}}
+	if a[0] == '"' {
+		var str string
+		if err := json.Unmarshal(a, &str); err == nil {
+			if t := strings.TrimSpace(str); t != "" {
+				return json.RawMessage(t)
+			}
+			return json.RawMessage("{}")
+		}
+	}
+	return a
+}
+
+// toolWrapperTags are the call/result framing tags a text-emitting model may put
+// around its call. Underscore and hyphen spellings both occur; loomcycle's own
+// injected reference blocks use <tool-result …>.
+var toolWrapperTags = []string{"tool_call", "tool-call", "tool_result", "tool-result", "function_call", "function-call"}
+
+// stripToolWrapperTag removes ONE surrounding wrapper tag (with or without
+// attributes) and returns the trimmed inner text; returns s unchanged when it is
+// not wrapped. The plural <tool_calls> is deliberately NOT matched (the attribute
+// guard rejects the trailing "s"), so a genuine tool_calls container is left for
+// the JSON parser rather than mis-peeled.
+func stripToolWrapperTag(s string) string {
+	lower := strings.ToLower(s)
+	for _, tag := range toolWrapperTags {
+		if !strings.HasPrefix(lower, "<"+tag) {
+			continue
+		}
+		gt := strings.IndexByte(s, '>')
+		if gt < 0 {
+			continue
+		}
+		// Between the tag name and '>' must be nothing, a self-close, or an
+		// attribute run (leading space) — otherwise "<tool_calls>" would match
+		// the "tool_call" tag.
+		if after := s[len("<"+tag):gt]; after != "" && after != "/" && !strings.HasPrefix(after, " ") {
+			continue
+		}
+		inner := s[gt+1:]
+		if li := strings.LastIndex(strings.ToLower(inner), "</"+tag+">"); li >= 0 {
+			inner = inner[:li]
+		}
+		return strings.TrimSpace(inner)
+	}
+	return s
 }
 
 // parseMarkdownToolCall recognises the bracketed-markdown tool-call

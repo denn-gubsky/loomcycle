@@ -275,3 +275,103 @@ func TestTryParseToolCallsFromText_DefaultsEmptyArguments(t *testing.T) {
 		t.Errorf("default arguments = %q, want {}", string(calls[0].Input))
 	}
 }
+
+// ---- Wrapper-tag + OpenAI-nested envelope recovery (the 2026-08-17 regression) ----
+
+func TestTryParseToolCallsFromText_ToolResultWrapperFunctionEnvelope(t *testing.T) {
+	// The exact live shape: chat/medium on qwen3.6 copied loomcycle's injected
+	// <tool-result …> framing and emitted its call as text inside <tool_result>,
+	// using the OpenAI-nested {"function":{…}} envelope.
+	calls := tryParseToolCallsFromText(
+		`<tool_result> {"type": "function", "function": {"name": "WebSearch", "arguments": {"query": "agentic memory architectures LLMs survey 2023 2024"}}} </tool_result>`)
+	if len(calls) != 1 || calls[0].Name != "WebSearch" {
+		t.Fatalf("parse = %+v, want one call name=WebSearch", calls)
+	}
+	if !strings.Contains(string(calls[0].Input), `"query"`) {
+		t.Errorf("arguments lost: %s", calls[0].Input)
+	}
+}
+
+func TestTryParseToolCallsFromText_ToolCallWrapperWithAttributes(t *testing.T) {
+	// Attribute-bearing open tag — the exact form loomcycle injects
+	// (<tool-result tool="Context" op="tools">) and a small model may copy.
+	calls := tryParseToolCallsFromText(
+		`<tool-result tool="Context" op="tools">{"name":"foo","arguments":{"x":1}}</tool-result>`)
+	if len(calls) != 1 || calls[0].Name != "foo" {
+		t.Errorf("parse = %+v, want one call name=foo", calls)
+	}
+}
+
+func TestTryParseToolCallsFromText_FunctionEnvelopeUnwrapped(t *testing.T) {
+	calls := tryParseToolCallsFromText(`{"type":"function","function":{"name":"foo","arguments":{"x":1}}}`)
+	if len(calls) != 1 || calls[0].Name != "foo" {
+		t.Fatalf("parse = %+v, want one call name=foo", calls)
+	}
+}
+
+func TestTryParseToolCallsFromText_FunctionEnvelopeStringArgs(t *testing.T) {
+	// The OpenAI wire form double-encodes arguments as a JSON STRING — normalise
+	// back to an object so the dispatcher sees {"x":1}, not a quoted string.
+	calls := tryParseToolCallsFromText(`{"type":"function","function":{"name":"foo","arguments":"{\"x\":1}"}}`)
+	if len(calls) != 1 || calls[0].Name != "foo" {
+		t.Fatalf("parse = %+v, want one call name=foo", calls)
+	}
+	var args map[string]any
+	if err := json.Unmarshal(calls[0].Input, &args); err != nil {
+		t.Fatalf("arguments not an object: %s (%v)", calls[0].Input, err)
+	}
+	if args["x"] != float64(1) {
+		t.Errorf("arguments = %v, want x=1", args)
+	}
+}
+
+func TestTryParseToolCallsFromText_WrapperDoesNotRescueProse(t *testing.T) {
+	// A wrapper around non-tool-call text must still yield nil — the tag alone
+	// is not license to recover; the inner content must be a tool-call shape.
+	if got := tryParseToolCallsFromText(`<tool_result>the answer is 42</tool_result>`); got != nil {
+		t.Errorf("parse = %v, want nil (inner isn't a tool call)", got)
+	}
+}
+
+func TestToolTextRecovery_RecoversToolResultWrappedFunctionEnvelope(t *testing.T) {
+	// End-to-end through Call(): the live regression must now synthesise a real
+	// EventToolCall and remap the stop reason so the loop iterates instead of
+	// ending with the un-executed <tool_result> block as the "answer".
+	content := `<tool_result> {"type": "function", "function": {"name": "WebSearch", "arguments": {"query": "agentic memory architectures LLMs survey 2023 2024"}}} </tool_result>`
+	fb, _ := json.Marshal(map[string]any{
+		"model":       "qwen3.6:latest",
+		"message":     map[string]any{"role": "assistant", "content": content},
+		"done":        true,
+		"done_reason": "stop",
+	})
+	srv := fakeStream(t, []string{string(fb) + "\n"})
+	defer srv.Close()
+
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
+	ch, _ := d.Call(context.Background(), providers.Request{
+		Model:    "qwen3.6:latest",
+		Tools:    []providers.ToolSpec{{Name: "WebSearch", InputSchema: json.RawMessage(`{}`)}},
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "digest agentic memory"}}}},
+	})
+	var got *providers.ToolUse
+	var done providers.Event
+	for ev := range ch {
+		if ev.Type == providers.EventToolCall && ev.ToolUse != nil {
+			got = ev.ToolUse
+		}
+		if ev.Type == providers.EventDone {
+			done = ev
+		}
+	}
+	if got == nil || got.Name != "WebSearch" {
+		t.Fatalf("recovered tool_use = %+v, want name=WebSearch", got)
+	}
+	var args map[string]any
+	_ = json.Unmarshal(got.Input, &args)
+	if q, _ := args["query"].(string); !strings.Contains(q, "agentic memory") {
+		t.Errorf("recovered arguments = %v, want query containing 'agentic memory'", args)
+	}
+	if done.StopReason != "tool_use" {
+		t.Errorf("done.StopReason = %q, want tool_use (recovery remaps)", done.StopReason)
+	}
+}
