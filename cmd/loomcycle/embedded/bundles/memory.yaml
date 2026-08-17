@@ -2325,7 +2325,6 @@ agents:
       cannot judge rather than guessing at it.
 
   memory/ontologist:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     # An ONTOLOGY CURATOR: it reads the entity types in force, looks at what types
     # the stored facts actually carry, and FILES SUGGESTIONS. It cannot change the
     # type system — the propose op only ever writes an inert entity, and resolving

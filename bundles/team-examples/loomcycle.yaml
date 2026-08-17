@@ -31,7 +31,6 @@
 agents:
   # ---- software (SDLC) handlers — operate the shared ephemeral `work` volume ----
   sdlc/architect:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     tier: middle
     max_tokens: 8192
     effort: high
@@ -44,7 +43,6 @@ agents:
       one-line "ready to implement?" so the orchestrator can gate on approval.
 
   sdlc/coder:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     tier: middle
     max_tokens: 16384
     effort: medium
@@ -58,7 +56,6 @@ agents:
       commit or push; the orchestrator opens the PR.
 
   sdlc/reviewer:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     tier: middle
     max_tokens: 8192
     effort: high
@@ -72,7 +69,6 @@ agents:
 
   # ---- marketing handlers — Documents only, no volume/repo ----
   marketing/writer:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     tier: middle
     max_tokens: 8192
     effort: medium
@@ -87,7 +83,6 @@ agents:
       and no PR; the Document is the deliverable.
 
   marketing/editor:
-    inject_tool_guide: true   # auto-inject tool call-digest + runtime capabilities
     tier: middle
     max_tokens: 8192
     effort: high

@@ -29,10 +29,6 @@ agents:
     memory_scopes: [user]
     sql_scopes: [user]
     skills: [doc/*]
-    # Auto-inject the deployment capabilities + a per-tool call digest (op enum +
-    # required args + usage hints) so the manager picks the right Document op and
-    # required fields instead of learning them from refusals.
-    inject_tool_guide: true
     system_prompt: |
       You are DOC-MANAGER, a co-author of chunked-graph Documents (see Context op=help topic=document). You
       turn an operator's plain-text instructions into Document tool calls — the

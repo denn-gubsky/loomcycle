@@ -27,10 +27,6 @@ agents:
   chat/medium:
     tier: middle
     effort: medium
-    # Auto-inject the deployment capabilities + a per-tool call digest (op enum +
-    # required args + usage hints) so the agent knows what it can do and how to
-    # call its tools without the operator hand-pointing it at help topics.
-    inject_tool_guide: true
     # max_tokens intentionally OMITTED — each provider applies its own default
     # (Anthropic defaults to 8192; ollama generates until the context fills).
     # Pinning a value would only IMPOSE a per-reply cap, not add headroom.
@@ -102,9 +98,6 @@ agents:
   chat/local:
     model: local-medium                     # → ollama-local; local-only, no cloud fallback
     effort: medium
-    # Local models under-attend to the tool schemas the loop already sends, so the
-    # runtime-knowledge injection matters most here — see chat/medium above.
-    inject_tool_guide: true
     # max_tokens OMITTED — ollama-local generates until the context window fills
     # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
     unbounded_iterations: true
@@ -158,9 +151,6 @@ agents:
   chat/local-small:
     model: local-small                     # → ollama-local; local-only, no cloud fallback
     effort: medium
-    # A small local model needs the runtime-knowledge injection most — see
-    # chat/medium above.
-    inject_tool_guide: true
     # max_tokens OMITTED — ollama-local generates until the context window fills
     # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
     unbounded_iterations: true
