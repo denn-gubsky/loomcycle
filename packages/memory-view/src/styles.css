@@ -1302,3 +1302,98 @@
   border-left: 2px solid var(--running);
   opacity: 0.9;
 }
+
+/* ---- Activity: the change-feed tail (RFC CF §9) ------------------------- */
+.loomcycle-memory-view .change-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 0;
+}
+.loomcycle-memory-view .change-feed-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.loomcycle-memory-view .change-feed-filters {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.loomcycle-memory-view .change-feed-scopeid {
+  width: 14rem;
+}
+.loomcycle-memory-view .change-feed-btn {
+  padding: 0.2rem 0.6rem;
+}
+/* The badge is the panel's whole point: three non-live states that would
+   otherwise all read as "nothing happening". */
+.loomcycle-memory-view .change-feed-badge {
+  font-size: var(--lc-text-sm);
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.loomcycle-memory-view .change-feed-badge-live {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.loomcycle-memory-view .change-feed-badge-disabled,
+.loomcycle-memory-view .change-feed-badge-unsupported {
+  color: var(--fg-soft);
+}
+.loomcycle-memory-view .change-feed-badge-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.loomcycle-memory-view .change-feed-note {
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  padding: 0.5rem 0.7rem;
+  font-size: var(--lc-text-sm);
+  line-height: 1.45;
+}
+.loomcycle-memory-view .change-feed-counters {
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+}
+.loomcycle-memory-view .change-feed-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-memory-view .change-feed-table th {
+  text-align: left;
+  color: var(--fg-soft);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  padding: 0.25rem 0.5rem 0.25rem 0;
+}
+.loomcycle-memory-view .change-feed-table td {
+  padding: 0.2rem 0.5rem 0.2rem 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.loomcycle-memory-view .change-feed-seq,
+.loomcycle-memory-view .change-feed-at,
+.loomcycle-memory-view .change-feed-coord {
+  font-family: var(--lc-font-mono);
+}
+.loomcycle-memory-view .change-feed-coord {
+  word-break: break-all;
+}
+.loomcycle-memory-view .change-feed-type {
+  font-family: var(--lc-font-mono);
+  color: var(--fg-muted);
+}
+.loomcycle-memory-view .change-feed-type-doc {
+  color: var(--accent);
+}
+.loomcycle-memory-view .change-feed-type-delete {
+  color: var(--danger);
+}

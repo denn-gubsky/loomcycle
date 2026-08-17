@@ -4,6 +4,7 @@ import { createLoomcycleClient, type Connection } from "../lib/createClient";
 import {
   MemoryDataProvider,
   dataLayerFromClient,
+  dataLayerFromConnection,
   type MemoryDataLayer,
 } from "../lib/dataLayer";
 
@@ -28,7 +29,9 @@ export function useResolvedDataLayer(src: MemoryDataSource): MemoryDataLayer | n
   return useMemo<MemoryDataLayer | null>(() => {
     if (dataLayer) return dataLayer;
     if (client) return dataLayerFromClient(client);
-    if (connection) return dataLayerFromClient(createLoomcycleClient(connection));
+    // The connection path gets the change-feed tail too — it is the only path
+    // holding the base URL + fetch that SSE needs (see dataLayerFromConnection).
+    if (connection) return dataLayerFromConnection(connection, createLoomcycleClient(connection));
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataLayer, client, connection?.baseUrl, connection?.token, connection?.fetch]);

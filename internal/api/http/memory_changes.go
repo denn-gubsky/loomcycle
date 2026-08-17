@@ -21,6 +21,19 @@ import (
 
 const memoryChangesPollInterval = 250 * time.Millisecond
 
+// changeFeedCapturer is implemented by the CDC store decorator, which is in the
+// write path exactly when LOOMCYCLE_MEMORY_CHANGES_ENABLED. Asking the store is
+// what makes the answer below true by construction rather than by a second
+// reading of the env var — the two could disagree, and the one that matters is
+// whether writes are actually being captured.
+type changeFeedCapturer interface{ CapturesChanges() bool }
+
+// changeFeedEnabled reports whether writes to this store land in the feed.
+func (s *Server) changeFeedEnabled() bool {
+	c, ok := s.store.(changeFeedCapturer)
+	return ok && c.CapturesChanges()
+}
+
 func (s *Server) handleMemoryChanges(w http.ResponseWriter, r *http.Request) {
 	s.streamMemoryChanges(w, r, false)
 }
@@ -53,6 +66,26 @@ func (s *Server) streamMemoryChanges(w http.ResponseWriter, r *http.Request, doc
 		return
 	}
 	stream.start()
+
+	// THE OPENING FRAME SAYS WHETHER THE FEED IS ON, and it is here because of what
+	// this stream does otherwise. With LOOMCYCLE_MEMORY_CHANGES_ENABLED unset the
+	// table is never written, so the connection succeeds, keepalives flow, and no
+	// change frame ever arrives — which is indistinguishable from a healthy feed over
+	// a quiet store. A reader watching for "is the pass doing anything" would wait
+	// forever on a misconfiguration and conclude nothing is happening.
+	//
+	// Sent on the channel that would otherwise idle rather than added to a separate
+	// report, so a client cannot hold a stale answer while connected, and so the
+	// statement comes from the code that would be doing the capturing.
+	//
+	// Additive: an existing subscriber switches on the change TYPE and ignores an
+	// event name it does not know (the payload deliberately carries no `type`, so a
+	// client that backfills from the event name sees `feed`).
+	stream.sendRaw("feed", map[string]any{
+		"enabled": s.changeFeedEnabled(),
+		"since":   cursor,
+	})
+
 	stream.startKeepalive(r.Context(), s.cfg.Env.SSEKeepaliveInterval)
 
 	ticker := time.NewTicker(memoryChangesPollInterval)
