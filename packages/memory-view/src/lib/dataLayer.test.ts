@@ -181,17 +181,21 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
     );
   });
 
-  it("backfillEmbeddings and purgeStaleEmbeddings pass the dry-run flag straight through", async () => {
-    // Both default to dry_run=true SERVER-side, and the client only ever sends `false` to
-    // commit. The console always states it explicitly, so a plan can never be mistaken
-    // for a commit by an omitted flag.
-    const s = stubClient();
-    await dataLayerFromClient(s.client).backfillEmbeddings("user", "bob", { dryRun: true });
-    expect(s.backfillEmbeddings).toHaveBeenCalledWith("user", "bob", { dryRun: true });
+  it("backfillEmbeddings and purgeStaleEmbeddings pass the dry-run flag through in BOTH directions", async () => {
+    // Asserted both ways per op, deliberately. Checking only the `true` case cannot
+    // detect a layer that hardcodes true, and checking only `false` cannot detect one
+    // that hardcodes false — and the two failures are not equally bad: a commit that
+    // silently became a plan does nothing, while a PLAN that silently became a commit
+    // changes data with no preview. Neither is caught by a one-directional assertion.
+    for (const dryRun of [true, false]) {
+      const s = stubClient();
+      await dataLayerFromClient(s.client).backfillEmbeddings("user", "bob", { dryRun });
+      expect(s.backfillEmbeddings).toHaveBeenCalledWith("user", "bob", { dryRun });
 
-    const q = stubClient();
-    await dataLayerFromClient(q.client).purgeStaleEmbeddings("user", "bob", { dryRun: false });
-    expect(q.purgeStaleEmbeddings).toHaveBeenCalledWith("user", "bob", { dryRun: false });
+      const q = stubClient();
+      await dataLayerFromClient(q.client).purgeStaleEmbeddings("user", "bob", { dryRun });
+      expect(q.purgeStaleEmbeddings).toHaveBeenCalledWith("user", "bob", { dryRun });
+    }
   });
 
   it("remember sends the statement ONCE — the server writes the span from it", async () => {
