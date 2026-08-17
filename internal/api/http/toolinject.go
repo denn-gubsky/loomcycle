@@ -28,21 +28,30 @@ import (
 )
 
 const (
-	// toolInjectMaxTokens caps the TOTAL injected tool-result content. Separate
-	// from the memory budget so the two families cannot starve each other by
-	// prompt ORDER (see meminject.ExpandInput).
+	// toolInjectMaxTokens caps the TOTAL injected tool-result content across ALL
+	// {{tool:...}} refs a prompt names (inventory + guide + capabilities). It is
+	// separate from the memory budget so the two FAMILIES cannot starve each other
+	// by prompt ORDER (see meminject.ExpandInput); WITHIN the tool family the refs
+	// still share it, consumed in prompt order (meminject.takeBudget).
 	//
-	// Sized for the inventory it exists to carry: a broad agent holds ~20 builtins
-	// plus its MCP tools and toolSummaryMaxDesc bounds each line, so ~60 tools
-	// still fit. It is a backstop against an agent mounting hundreds of MCP tools,
-	// not a routine trim.
-	toolInjectMaxTokens = 1024
+	// The shared total is generous enough to carry all three at once because each
+	// renderer already self-bounds (toolSummaryMaxDesc / toolGuideMaxHint per line;
+	// capabilities is a fixed feature list), and the bundles place the small
+	// capabilities block BEFORE the larger guide so a truncation, if any, falls on
+	// the tail of the guide rather than dropping capabilities wholesale. It is a
+	// backstop against an agent mounting hundreds of MCP tools, not a routine trim.
+	toolInjectMaxTokens = 4096
 
 	// toolSummaryMaxDesc caps each tool's one-line summary. The full schemas are
 	// ALREADY in the provider request's tools array — this text exists only to make
 	// the model attend to them, so restating whole descriptions would double the
 	// token cost of every request to say nothing new.
 	toolSummaryMaxDesc = 120
+
+	// toolGuideMaxHint caps each per-tool usage hint in the guide. Hints are
+	// hand-written and already short; this is a backstop against a long one, and
+	// keeps the guide's per-line cost predictable for the shared budget above.
+	toolGuideMaxHint = 200
 )
 
 // renderToolResults dispatches each allowlisted ref the prompt names and returns
@@ -70,6 +79,10 @@ func (s *Server) renderToolResult(ctx context.Context, mi memInject, ref meminje
 	switch ref {
 	case meminject.ToolRef{Tool: "Context", Op: "tools"}:
 		return s.renderContextTools(ctx, mi)
+	case meminject.ToolRef{Tool: "Context", Op: "guide"}:
+		return s.renderContextGuide(ctx, mi)
+	case meminject.ToolRef{Tool: "Context", Op: "capabilities"}:
+		return s.renderContextCapabilities(ctx, mi)
 	default:
 		return ""
 	}
@@ -123,6 +136,182 @@ func (s *Server) renderContextTools(ctx context.Context, mi memInject) string {
 	sort.Strings(lines)
 	return toolInventoryPreamble + "\n\n" + strings.Join(lines, "\n")
 }
+
+// renderContextGuide dispatches Context op=guide against the run's resolved tool
+// list and renders the per-tool call digest (op enum + required args + usage
+// hint) as one compact line per tool. Where op=tools answers "what can I call",
+// the guide answers "how do I call it" — the high-signal subset a model needs to
+// stop guessing op names and required fields.
+//
+// Same drift-safe posture as renderContextTools: it dispatches the REAL op=guide
+// (so the digest cannot diverge from what the tool reports) and projects the
+// result through a shape-whitelist, so a new field in the guide output does not
+// silently start landing in every prompt.
+func (s *Server) renderContextGuide(ctx context.Context, mi memInject) string {
+	if len(mi.Tools) == 0 {
+		return ""
+	}
+	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
+	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg}
+	req, _ := json.Marshal(map[string]any{"op": "guide"})
+	res, err := ct.Execute(tctx, req)
+	if err != nil || res.IsError {
+		return ""
+	}
+	var parsed struct {
+		Tools []struct {
+			Name            string   `json:"name"`
+			SideEffectClass string   `json:"side_effect_class"`
+			Ops             []string `json:"ops"`
+			Required        []string `json:"required"`
+			Hint            string   `json:"hint"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &parsed); err != nil {
+		return ""
+	}
+	lines := make([]string, 0, len(parsed.Tools))
+	for _, t := range parsed.Tools {
+		if t.Name == "" {
+			continue
+		}
+		lines = append(lines, formatGuideLine(t.Name, t.SideEffectClass, t.Ops, t.Required, t.Hint))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	// Sorted for the same byte-stability reason as renderContextTools: the prompt
+	// is re-derived at run-start/resume and must cache-match.
+	sort.Strings(lines)
+	return toolGuidePreamble + "\n\n" + strings.Join(lines, "\n")
+}
+
+// formatGuideLine renders `- Name (class): ops a|b|c; requires x, y — hint`. The
+// op enum and required list come straight from the tool's own schema; the hint is
+// the hand-written one-liner (empty for tools without one).
+func formatGuideLine(name, class string, ops, required []string, hint string) string {
+	line := "- " + name
+	if class != "" && class != "unknown" {
+		line += " (" + class + ")"
+	}
+	line += ":"
+	if len(ops) > 0 {
+		line += " ops " + strings.Join(ops, "|")
+	}
+	if len(required) > 0 {
+		if len(ops) > 0 {
+			line += ";"
+		}
+		line += " requires " + strings.Join(required, ", ")
+	}
+	if h := firstSentence(hint, toolGuideMaxHint); h != "" {
+		line += " — " + h
+	}
+	return line
+}
+
+// toolGuidePreamble frames the digest as a call reference. It deliberately does
+// NOT restate the full schemas (already in the request's tools array) — it points
+// the model at the two things it most often gets wrong: the op and the required
+// fields.
+//
+// HOUSE RULE: model-visible text — no internal RFC citations.
+const toolGuidePreamble = "How to call your tools — the op to pass and the required arguments for each. " +
+	"Use this to pick the right op and fields; the full schema for each tool is already available to you."
+
+// renderContextCapabilities dispatches Context op=capabilities and renders the
+// deployment's supported features as two short lists (available / not available)
+// plus the numeric limits. It tells an agent what it can rely on BEFORE it tries
+// — so it does not, for instance, attempt a document write on a deployment with
+// no SQL Memory and discover it only from the refusal.
+//
+// op=capabilities is already secrets-free and topology-free by construction
+// (enforced by tests in internal/capabilities + the tool), so its whole output is
+// safe to bake into a prompt — unlike op=self. This renderer builds the fuller
+// Context tool (Store/SqlMem/Embedder) the probe needs, which the server holds.
+func (s *Server) renderContextCapabilities(ctx context.Context, mi memInject) string {
+	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
+	ct := &builtin.Context{
+		Tools:    mi.Tools,
+		Cfg:      s.cfg,
+		Store:    s.store,
+		SqlMem:   s.sqlMem,
+		Embedder: s.embedder,
+	}
+	req, _ := json.Marshal(map[string]any{"op": "capabilities"})
+	res, err := ct.Execute(tctx, req)
+	if err != nil || res.IsError {
+		return ""
+	}
+	// The capabilities output is a flat map of feature → {available: bool, …} plus
+	// a numeric `limits` map. Parse loosely (map[string]json.RawMessage) rather than
+	// pinning each feature key: features come and go, and this renderer's contract
+	// is "the available ones, by name" — a new feature should appear automatically,
+	// while a non-{available:…} key (storage, limits) is handled explicitly below.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(res.Text), &top); err != nil {
+		return ""
+	}
+	var available, unavailable []string
+	for key, raw := range top {
+		var feat struct {
+			Available *bool `json:"available"`
+		}
+		if err := json.Unmarshal(raw, &feat); err != nil || feat.Available == nil {
+			continue // not a feature entry (limits, storage) — handled separately
+		}
+		if *feat.Available {
+			available = append(available, key)
+		} else {
+			unavailable = append(unavailable, key)
+		}
+	}
+	sort.Strings(available)
+	sort.Strings(unavailable)
+
+	var b strings.Builder
+	b.WriteString(toolCapabilitiesPreamble)
+	if len(available) > 0 {
+		b.WriteString("\nAvailable: " + strings.Join(available, ", "))
+	}
+	if len(unavailable) > 0 {
+		b.WriteString("\nNot available: " + strings.Join(unavailable, ", "))
+	}
+	if lim := formatCapabilityLimits(top["limits"]); lim != "" {
+		b.WriteString("\nLimits: " + lim)
+	}
+	if len(available) == 0 && len(unavailable) == 0 {
+		return "" // nothing worth injecting
+	}
+	return b.String()
+}
+
+// formatCapabilityLimits renders the numeric limits map as sorted `key=value`
+// pairs. Values are numbers (JSON), rendered verbatim so an int stays an int.
+func formatCapabilityLimits(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var lim map[string]json.Number
+	if err := json.Unmarshal(raw, &lim); err != nil || len(lim) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(lim))
+	for k := range lim {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+lim[k].String())
+	}
+	return strings.Join(parts, ", ")
+}
+
+// toolCapabilitiesPreamble frames the capability lists as deployment facts.
+//
+// HOUSE RULE: model-visible text — no internal RFC citations.
+const toolCapabilitiesPreamble = "What this deployment supports right now — rely on the available features and do not attempt the unavailable ones."
 
 // toolInventoryPreamble tells the model what the list IS and what to do with it.
 // Without it the framed body is just names; the observed failure mode is not

@@ -379,6 +379,11 @@ const agentDescription = `Spawn or drive named sub-agents, each with its own too
 // Name implements tools.Tool.
 func (a *AgentTool) Name() string { return "Agent" }
 
+// UsageHint implements tools.HintedTool — surfaced by Context op=guide.
+func (a *AgentTool) UsageHint() string {
+	return "Spawn only REGISTERED agent names; use op=parallel_spawn for a fan-out. A sub-agent can never widen your own tool ceiling."
+}
+
 // Description implements tools.Tool.
 func (a *AgentTool) Description() string { return agentDescription }
 

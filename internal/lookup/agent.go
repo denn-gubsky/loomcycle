@@ -238,6 +238,7 @@ type SubstrateAgentDef struct {
 	CoreBlocks            []config.CoreBlock `json:"core_blocks,omitempty"`
 	InheritCoreBlocks     bool               `json:"inherit_core_blocks,omitempty"`
 	MemoryInjectMaxTokens int                `json:"memory_inject_max_tokens,omitempty"`
+	InjectToolGuide       bool               `json:"inject_tool_guide,omitempty"` // auto tool-guide/capabilities injection; content-identifying
 	MemoryProtocol        bool               `json:"memory_protocol,omitempty"`
 	Internal              bool               `json:"internal,omitempty"`             // maintenance plumbing; content-identifying
 	MemoryConsolidation   bool               `json:"memory_consolidation,omitempty"` // RFC BL P2 grant
@@ -308,6 +309,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		CoreBlocks:            s.CoreBlocks,
 		InheritCoreBlocks:     s.InheritCoreBlocks,
 		MemoryInjectMaxTokens: s.MemoryInjectMaxTokens,
+		InjectToolGuide:       s.InjectToolGuide,
 		MemoryProtocol:        s.MemoryProtocol,
 		Internal:              s.Internal,
 		MemoryConsolidation:   s.MemoryConsolidation,

@@ -146,6 +146,11 @@ type channelInput struct {
 // Name implements tools.Tool.
 func (c *Channel) Name() string { return "Channel" }
 
+// UsageHint implements tools.HintedTool — surfaced by Context op=guide.
+func (c *Channel) UsageHint() string {
+	return "Address a channel by name + scope; op=publish sends, subscribe/peek/ack read. A channel must be operator-declared or ACL-granted before use."
+}
+
 // Description implements tools.Tool.
 func (c *Channel) Description() string { return channelDescription }
 

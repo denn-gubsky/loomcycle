@@ -1143,6 +1143,20 @@ type AgentDef struct {
 	// default (applied at use-time so 0 stays byte-stable in the content hash).
 	MemoryInjectMaxTokens int `yaml:"memory_inject_max_tokens"`
 
+	// InjectToolGuide opts the agent into automatic runtime-knowledge injection:
+	// when set, prompt assembly implicitly appends the {{tool:Context.capabilities}}
+	// and {{tool:Context.guide}} placeholders it does not already place, so the
+	// agent's system prompt carries what the deployment supports and how to call
+	// its own tools — without the operator hand-placing the refs. It exists because
+	// small/local models under-attend to the tool schemas the loop already sends
+	// and start "blind," making avoidable tool-call errors.
+	//
+	// Behaviour-bearing (it changes what the runtime injects into every run of this
+	// def), so content-identifying — like memory_protocol/internal, and unlike the
+	// *_def_scopes authority gates which are excluded from the hash. `omitempty` on
+	// the false default keeps every existing agent row byte-stable.
+	InjectToolGuide bool `yaml:"inject_tool_guide,omitempty"`
+
 	// Internal marks the agent as loomcycle's own MAINTENANCE plumbing rather
 	// than something a person talks to. A run of an internal agent still records
 	// a session like any other, but that session is runtime bookkeeping, not a
@@ -4941,6 +4955,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		// RFC BL P1 core memory blocks (mirrors MemoryScopes' MD round-trip).
 		InheritCoreBlocks:     d.InheritCoreBlocks,
 		MemoryInjectMaxTokens: d.MemoryInjectMaxTokens,
+		InjectToolGuide:       d.InjectToolGuide,
 		MemoryProtocol:        d.MemoryProtocol,
 		MemoryConsolidation:   d.MemoryConsolidation,
 		MemoryIndexMaxBytes:   d.MemoryIndexMaxBytes,
@@ -5106,6 +5121,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MemoryInjectMaxTokens != 0 {
 		out.MemoryInjectMaxTokens = override.MemoryInjectMaxTokens
+	}
+	if override.InjectToolGuide {
+		out.InjectToolGuide = true
 	}
 	if override.MemoryProtocol {
 		out.MemoryProtocol = true

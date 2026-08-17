@@ -136,6 +136,15 @@ type AgentContent struct {
 	// byte-identical. Tag "inherit_core_blocks" sorts between evaluation_scopes
 	// and interruption.
 	InheritCoreBlocks bool `json:"inherit_core_blocks,omitempty"`
+	// InjectToolGuide opts the agent into automatic runtime-knowledge injection
+	// (the {{tool:Context.capabilities}} + {{tool:Context.guide}} placeholders are
+	// implicitly appended at prompt assembly). It changes what every run of this
+	// def is TOLD — behaviour, not authority — so it is content-identifying, like
+	// memory_protocol/internal and unlike the *_def_scopes gates. Its tag sorts
+	// between inherit_core_blocks and internal, so it is declared here to keep the
+	// alphabetical invariant (declaration order = JSON emit order = the hash
+	// input); omitempty keeps every pre-feature row byte-identical.
+	InjectToolGuide bool `json:"inject_tool_guide,omitempty"`
 	// Internal marks the agent as the runtime's own maintenance plumbing, which
 	// changes what happens to every run's SESSION (excluded from memory
 	// consolidation, hidden from the chat listing). That is behaviour, not
@@ -381,6 +390,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		// RFC BL P1: core-block config is content-identifying (see AgentContent).
 		CoreBlocks:            a.CoreBlocks,
 		InheritCoreBlocks:     a.InheritCoreBlocks,
+		InjectToolGuide:       a.InjectToolGuide,
 		MemoryInjectMaxTokens: a.MemoryInjectMaxTokens,
 		MemoryProtocol:        a.MemoryProtocol,
 		MemoryConsolidation:   a.MemoryConsolidation,

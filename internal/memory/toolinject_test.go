@@ -15,7 +15,11 @@ var contextTools = ToolRef{Tool: "Context", Op: "tools"}
 // spawn and resume, so an entry with a side effect fires on all of them — so it
 // must fail this test and be argued for rather than slip in.
 func TestAllowedToolRefs_ExactlySet(t *testing.T) {
-	want := []string{"Context.tools"}
+	// Sorted (AllToolRefs sorts). All three are Context read-ops resolvable at
+	// prompt-assembly time from the run's tool list + static config: tools (name
+	// inventory), guide (per-tool call digest), capabilities (deployment features,
+	// already secrets-free / topology-free by construction).
+	want := []string{"Context.capabilities", "Context.guide", "Context.tools"}
 	if got := AllToolRefs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("allowlist changed: got %v, want %v\n"+
 			"Adding a ref means asserting it is a PURE READ (no store write, no network, no spawn) "+
@@ -58,6 +62,48 @@ func TestReferencesToolRefs_DistinctUnescapedOnly(t *testing.T) {
 func TestReferencesToolRefs_NoneWhenNoPlaceholder(t *testing.T) {
 	if got := ReferencesToolRefs("a plain prompt with {{memory:core_blocks}} only"); len(got) != 0 {
 		t.Fatalf("got %v, want none — a prompt with no {{tool:...}} must dispatch nothing", got)
+	}
+}
+
+// TestToolGuideRefs_AreAllowlisted: every ref auto-appended by inject_tool_guide
+// must be on the read-only allowlist, or the appended placeholder would render to
+// nothing (and slip past boot validation, which only sees operator-written text).
+func TestToolGuideRefs_AreAllowlisted(t *testing.T) {
+	for _, ref := range ToolGuideRefs {
+		if _, ok := ParseToolRef(ref.String()); !ok {
+			t.Errorf("ToolGuideRef %s is not on the allowlist", ref)
+		}
+	}
+}
+
+// TestAppendToolGuideRefs_AppendsOnlyMissing: the implicit-append mirrors
+// core_blocks — it appends the refs the prompt did not place, never a duplicate,
+// and is a no-op when both are already present.
+func TestAppendToolGuideRefs_AppendsOnlyMissing(t *testing.T) {
+	// Neither present → both appended, capabilities first (budget order).
+	got := AppendToolGuideRefs("Base.")
+	for _, want := range []string{"{{tool:Context.capabilities}}", "{{tool:Context.guide}}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("AppendToolGuideRefs did not append %s:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "capabilities") > strings.Index(got, "{{tool:Context.guide}}") {
+		t.Errorf("capabilities must be appended before guide (budget order):\n%s", got)
+	}
+
+	// guide already placed → only capabilities is added, guide not duplicated.
+	got = AppendToolGuideRefs("Base.\n{{tool:Context.guide}}")
+	if strings.Count(got, "{{tool:Context.guide}}") != 1 {
+		t.Errorf("guide duplicated:\n%s", got)
+	}
+	if !strings.Contains(got, "{{tool:Context.capabilities}}") {
+		t.Errorf("capabilities not appended when only guide was placed:\n%s", got)
+	}
+
+	// Both already placed → unchanged (no-op).
+	base := "Base.\n{{tool:Context.guide}}\n{{tool:Context.capabilities}}"
+	if got := AppendToolGuideRefs(base); got != base {
+		t.Errorf("AppendToolGuideRefs mutated a prompt that already placed both:\ngot  %q\nwant %q", got, base)
 	}
 }
 

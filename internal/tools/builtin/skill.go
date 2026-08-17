@@ -95,6 +95,11 @@ type skillInput struct {
 // Name implements tools.Tool.
 func (s *SkillTool) Name() string { return "Skill" }
 
+// UsageHint implements tools.HintedTool — surfaced by Context op=guide.
+func (s *SkillTool) UsageHint() string {
+	return "Load a skill by name to pull its guidance into context; you can only load skills your agent's skills allowlist permits."
+}
+
 // Description implements tools.Tool.
 func (s *SkillTool) Description() string { return skillDescription }
 

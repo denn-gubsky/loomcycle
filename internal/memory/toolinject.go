@@ -73,8 +73,61 @@ func (r ToolRef) String() string { return r.Tool + "." + r.Op }
 // path, with an explicit "was this resolved?" discriminator so an unstamped
 // policy omits the key instead of asserting a false one — its own change, with
 // its own test for the sub-agent path.
+// Context op=guide and op=capabilities join op=tools as injectable refs: all
+// three are pure reads with no store mutation / network / spawn, resolvable at
+// prompt-assembly time from the already-resolved tool list + static config.
+//   - guide renders the per-tool call digest (op enum + required + usage hint)
+//     from each tool's own schema — no secret-adjacent or per-iteration field.
+//   - capabilities renders what the deployment supports; its execCapabilities
+//     already forbids secrets AND infrastructure topology (enforced by test), so
+//     unlike op=self it is safe to bake into a prompt.
 var allowedToolRefs = map[ToolRef]bool{
-	{Tool: "Context", Op: "tools"}: true,
+	{Tool: "Context", Op: "tools"}:        true,
+	{Tool: "Context", Op: "guide"}:        true,
+	{Tool: "Context", Op: "capabilities"}: true,
+}
+
+// ToolGuideRefs are the runtime-knowledge refs an agent opts into as a set (the
+// inject_tool_guide flag): the deployment capabilities and the per-tool call
+// guide. Capabilities is listed FIRST so that, sharing the tool budget
+// left-to-right, the small fixed capabilities block renders before the larger
+// guide — a truncation, if any, falls on the guide's tail rather than dropping
+// capabilities wholesale. Every entry MUST also be on allowedToolRefs (pinned by
+// TestToolGuideRefs_AreAllowlisted), or the appended placeholder would render to
+// nothing.
+var ToolGuideRefs = []ToolRef{
+	{Tool: "Context", Op: "capabilities"},
+	{Tool: "Context", Op: "guide"},
+}
+
+// AppendToolGuideRefs appends a {{tool:...}} placeholder for each ToolGuideRef the
+// prompt does not ALREADY reference, each on its own line below the base prompt.
+// It is the implicit-append path for the opt-in flag, mirroring core_blocks:
+// an agent that opts in gets the runtime-knowledge blocks without hand-placing
+// them, while a prompt that already placed one is not given a duplicate.
+//
+// Deterministic — fixed order, fixed text, only appends refs — so the assembled
+// prompt stays byte-stable for provider prompt-caching. Returns prompt unchanged
+// when every ref is already placed.
+func AppendToolGuideRefs(prompt string) string {
+	present := make(map[ToolRef]bool)
+	for _, r := range ReferencesToolRefs(prompt) {
+		present[r] = true
+	}
+	add := make([]string, 0, len(ToolGuideRefs))
+	for _, r := range ToolGuideRefs {
+		if !present[r] {
+			add = append(add, "{{tool:"+r.Tool+"."+r.Op+"}}")
+		}
+	}
+	if len(add) == 0 {
+		return prompt
+	}
+	out := prompt
+	if out != "" {
+		out = strings.TrimRight(out, "\n") + "\n\n"
+	}
+	return out + strings.Join(add, "\n")
 }
 
 // canonicalToolNames maps a lower-cased tool name to its canonical spelling, so
