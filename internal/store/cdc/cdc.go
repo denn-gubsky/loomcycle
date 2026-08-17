@@ -42,6 +42,17 @@ func Wrap(base store.Store, logf func(format string, args ...any)) *Store {
 
 var _ store.Store = (*Store)(nil)
 
+// CapturesChanges reports that writes through this store land in the change
+// feed. It exists so a reader of the feed can be TOLD the feed is on, rather
+// than inferring it from an empty stream.
+//
+// Asked of the store rather than re-read from LOOMCYCLE_MEMORY_CHANGES_ENABLED,
+// because this decorator IS the mechanism: it is in the path exactly when the
+// feed is on, so its presence cannot disagree with reality the way a second
+// reading of an env var can. A plain store answers false by not implementing
+// the method at all.
+func (c *Store) CapturesChanges() bool { return true }
+
 // Unwrap returns the wrapped store. Call sites that need a CONCRETE backend
 // (e.g. the postgres cluster-coordination wiring type-asserts *postgres.Store)
 // must unwrap through this — see cmd/loomcycle's asPostgresStore.
