@@ -4,6 +4,114 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.56.0
+
+**Agents that know how to call their tools, a live view of the memory pipeline, and
+three defects the first live verified-writes run turned up.** Minor — two feature
+lines and three fixes, two of which change numbers an operator may be watching.
+
+### Agents start with runtime knowledge instead of blind
+
+The loop already sends every tool's full JSON schema on each request, but small and
+local models under-attend to that array: they guess which op to call and which fields
+are required, then learn from refusals. The system-prompt injector could restate tool
+NAMES and nothing about how to use them.
+
+- **`Context op=guide`** returns, for this run's resolved tools, `{name,
+  side_effect_class, ops[], required[], hint}`. The ops and required fields are parsed
+  from each tool's OWN input schema, so the digest cannot drift from the schema the
+  model is being sent; the hint comes from a new optional `tools.HintedTool`,
+  implemented on the builtins that produce the most call errors — Memory, Document,
+  Path, Channel, Agent, Skill.
+- **`{{tool:Context.guide}}` and `{{tool:Context.capabilities}}`** are now injectable
+  prompt references (both pure reads, resolvable at assembly time), sorted for
+  byte-stable prompt caching.
+- **A per-agent `inject_tool_guide`** appends both refs automatically, so an operator
+  need not hand-place placeholders. **Default OFF** — every existing custom agent stays
+  byte-identical until it opts in, and a flag-OFF agent takes the unchanged fast path.
+  Round-tripped through the AgentDef create/fork overlay, the read adapter, the
+  MD-frontmatter loader and `content_sha256`, mirroring `memory_protocol`.
+- **The bundled LLM agents opt in**: `chat/*`, `doc/manager`, the agent-teams and
+  team-examples agents, and `memory/ontologist`. Deliberately not flagged: the doc/team
+  sub-agents are SKILLS injected into the flagged agents (the field has no meaning on a
+  skill), the `code-js` agents run no prompt, and `memory/extractor` / `memory/judge`
+  hold no tools so the guide would render nothing.
+
+### The memory console can watch the pipeline work
+
+RFC CF's last phase. A consolidation pass takes minutes and reports only at the end, so
+there was nothing to look at in between.
+
+- **Both change feeds now open with a `feed` frame** stating whether writes are actually
+  being captured, plus the cursor in force. This closes a real trap: with
+  `LOOMCYCLE_MEMORY_CHANGES_ENABLED` unset nothing writes the change table, so the
+  stream connects, keepalives flow, and no frame ever arrives — indistinguishable from a
+  healthy feed over a quiet store. The answer comes from the STORE (a new
+  `cdc.Store.CapturesChanges()`), because the CDC decorator is in the write path exactly
+  when the feed is on and therefore cannot disagree with reality the way a second reading
+  of an env var can. Additive: a subscriber that switches on the change type ignores an
+  event name it does not know.
+- **An Activity tab** in `@loomcycle/memory-view` 0.3.0 tails both families, showing
+  coordinates and never values (the feed is value-free by design). It keeps three
+  non-live states apart — this build cannot tail / the runtime says the feed is off /
+  connected-and-quiet — because collapsing them into "no rows yet" makes two
+  misconfigurations look like "the pass is doing nothing".
+
+### Three fixes, from running verified writes on real data for the first time
+
+The verified-writes line shipped in v1.54.0 and had never been enabled anywhere. Turning
+it on against real chats, with a local extractor and judge, worked — and exposed three
+defects that only appear on real data.
+
+- **`verification_stats` counted entity IDENTITY nodes as facts.** The pass mirrors each
+  fact as two chunks — the claim, and an identity node for the subject it is about — and
+  both carry entity metadata. An identity node can never carry a span (a subject is a
+  name), so every new subject added a permanently unverifiable row and the reported share
+  FELL as the store got richer. Measured on a live store: `0.579` reported where `0.846`
+  was true, and 7 facts called impossible to verify where the answer was 1.
+  **⚠️ Your numbers will move on upgrade** — the verified share rises and
+  `unverifiable_no_span` falls, with no data change behind it. `list_facts` gains an
+  opt-in **`claims_only`**; the default listing stays wide because document federation
+  reconciles identity nodes too. The obvious fix was wrong and measurement caught it:
+  filtering `type = 'fact'` drops operator-`remember`ed facts, one of which landed as
+  type `object` while carrying a span.
+- **Span derivation attached SEARCH PATTERNS as evidence.** Two consecutive passes each
+  withheld a TRUE fact whose recorded span was a tool-call line or a regex — a local chat
+  model had written its tool calls as prose, and Dice overlap rewards a short candidate
+  whose every token hits, so a 6-token pattern beat a 30-token sentence that stated the
+  fact outright. The judge was right to refuse both; the evidence was mis-attached
+  upstream. `splitSentences` now drops a candidate with no assertion in it — one that is
+  only tags, or dense enough in punctuation to be code. Such a fact gets NO span
+  (unverified and visible) rather than a false one. Does not re-derive spans already
+  stored.
+- **`loomcycle validate` exited 2 on every bundled agent preset.** It applied the pin-path
+  rule to agents that name a `tier:`, so it named agents the running server resolves
+  fine — and because it returns at the first agent, MCP servers and everything after went
+  unchecked. `agents list --json` bailed mid-array, leaving unparseable output. The tier
+  is now checked first, mirroring the runtime; an agent with neither a pin nor a tier
+  still fails, which the resolver also refuses.
+
+### Adapters
+
+- **`@loomcycle/client` 1.56.0** — carries `claims_only` on the Document tool input.
+- **`loomcycle` (PyPI) 1.56.0** — no functional change; realigned so the python tag
+  publishes (PyPI was left at 1.54.0 when v1.55.x shipped without a python tag).
+- **`@loomcycle/memory-view` 0.2.0 → 0.3.0**, published on its own tags: the facts and
+  verdict surface, the coverage strip, `remember`, the two embedding-maintenance ops, the
+  claims-only fact list, and the Activity tab.
+
+### Upgrading
+
+Nothing to migrate. The change feed stays opt-in (`LOOMCYCLE_MEMORY_CHANGES_ENABLED=1`),
+`inject_tool_guide` is off unless an agent sets it, and `verify_writes` is still off by
+default. The one visible difference on an existing store is the corrected coverage
+arithmetic described above.
+
+**Known issue:** facts whose text is in a non-Latin script all slug to one memory key and
+overwrite each other ([#1047](https://github.com/denn-gubsky/loomcycle/issues/1047)) —
+pre-existing since the deterministic-key consolidator, unaffected for Latin-script
+deployments.
+
 ## What's in v1.55.1
 
 **An operator may vouch for a fact that has no span.** Patch — one reported bug, its root
