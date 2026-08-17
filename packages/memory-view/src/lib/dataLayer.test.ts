@@ -21,6 +21,12 @@ function stubClient() {
     .fn()
     .mockResolvedValue({ scope: "user", models: [], total_embedding_bytes: 0 });
   const reembedMemory = vi.fn().mockResolvedValue({ scope: "user", scope_id: "alice", dry_run: true });
+  const backfillEmbeddings = vi
+    .fn()
+    .mockResolvedValue({ scope: "user", scope_id: "bob", dry_run: true, candidates: 0 });
+  const purgeStaleEmbeddings = vi
+    .fn()
+    .mockResolvedValue({ scope: "user", scope_id: "bob", dry_run: true, scanned: 0, stale: 0, purged: 0, truncated: false });
   // P4b — the unified search + Document (list_facts / get_chunk / get_edges) legs.
   const memorySearch = vi
     .fn()
@@ -47,6 +53,8 @@ function stubClient() {
     deleteMemoryEntry,
     memoryEmbedStats,
     reembedMemory,
+    backfillEmbeddings,
+    purgeStaleEmbeddings,
     memorySearch,
     document,
     whoami,
@@ -63,6 +71,8 @@ function stubClient() {
     deleteMemoryEntry,
     memoryEmbedStats,
     reembedMemory,
+    backfillEmbeddings,
+    purgeStaleEmbeddings,
     memorySearch,
     document,
     whoami,
@@ -169,6 +179,23 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
       { op: "list_facts", scope: "user", include_refuted: true },
       undefined,
     );
+  });
+
+  it("backfillEmbeddings and purgeStaleEmbeddings pass the dry-run flag through in BOTH directions", async () => {
+    // Asserted both ways per op, deliberately. Checking only the `true` case cannot
+    // detect a layer that hardcodes true, and checking only `false` cannot detect one
+    // that hardcodes false — and the two failures are not equally bad: a commit that
+    // silently became a plan does nothing, while a PLAN that silently became a commit
+    // changes data with no preview. Neither is caught by a one-directional assertion.
+    for (const dryRun of [true, false]) {
+      const s = stubClient();
+      await dataLayerFromClient(s.client).backfillEmbeddings("user", "bob", { dryRun });
+      expect(s.backfillEmbeddings).toHaveBeenCalledWith("user", "bob", { dryRun });
+
+      const q = stubClient();
+      await dataLayerFromClient(q.client).purgeStaleEmbeddings("user", "bob", { dryRun });
+      expect(q.purgeStaleEmbeddings).toHaveBeenCalledWith("user", "bob", { dryRun });
+    }
   });
 
   it("remember sends the statement ONCE — the server writes the span from it", async () => {
