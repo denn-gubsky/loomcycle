@@ -55,7 +55,11 @@ agents:
   doc-agent:
     tier: middle
     max_iterations: 30
-    max_tokens: 4096
+    # Headroom matters: a single assistant turn that emits dozens of tool
+    # calls (e.g. 30 Memory op=set) can hit the output-token cap mid-batch;
+    # the run then ends with stop_reason=max_tokens and the pending calls of
+    # that turn are NEVER executed (observed live during exp11 verification).
+    max_tokens: 16384
     tools: [Context, Memory, "mcp__skybits__*"]
     memory_scopes: [user, agent]
     system_prompt: |
@@ -96,6 +100,11 @@ agents:
         Keep values short (a few lines each). Overwrite a key when the fact
         changes. Optionally Memory op=add scope=user for freeform narrative
         notes, but the keyed op=set entries are the canonical store.
+        When saving MANY facts at once (a register, a table), store them as
+        ONE JSON value under a single key (e.g. skybits:doc:<slug>:register)
+        instead of dozens of parallel op=set calls in one turn — an oversized
+        same-turn tool-call batch can hit the output-token cap and be dropped
+        unexecuted.
 
       RULES:
       - Never print .env*, *_KEY, *_TOKEN, *_SECRET values or the contents of

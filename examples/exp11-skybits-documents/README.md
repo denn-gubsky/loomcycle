@@ -157,6 +157,14 @@ rm /tmp/exp11-run3.json    # the body file holds a token — don't leave it arou
 - **Edits are direct, not suggested.** Skybits has no suggestions tool — every
   `edit_document` lands immediately (attributed + revertible). Review in the
   Skybits UI or via `mcp__skybits__diff_document` if a run surprises you.
+- **Batched tool calls vs `max_tokens` (observed live).** A single assistant
+  turn emitting dozens of tool calls (e.g. 30 `Memory op=set`) can hit the
+  output-token cap mid-batch: the run ends with `stop_reason: max_tokens` and
+  the pending tool calls of that turn are NEVER executed — no error, the keys
+  just never land. That is why `max_tokens` is 16384 here and the prompt tells
+  the agent to store many-fact payloads as ONE JSON value under a single key.
+  Watch for `stop_reason: max_tokens` in the SSE stream when a run "succeeds"
+  but its writes are missing.
 
 ## Teardown
 Ctrl-C the server; delete `./data` for a clean slate (memory included);
