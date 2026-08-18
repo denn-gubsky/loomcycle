@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MemorySearchEntry, MemoryScope, MemorySource } from "../types";
 import { useMemoryData } from "../lib/dataLayer";
+import { searchHitLabel } from "../lib/searchLabels";
 import Splitter from "./Splitter";
 import ChunkDetailPanel from "./ChunkDetailPanel";
 
@@ -218,8 +219,14 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
                       <span className={`search-kind-badge search-kind-${hit.kind}`}>
                         {hit.kind}
                       </span>
-                      <span className="search-hit-key">
-                        {isDoc ? hit.chunk_id ?? hit.key : hit.key}
+                      {/* A document hit is named by its document + heading when the
+                          server could resolve them; the opaque id stays on the
+                          tooltip so it is still readable and copyable. */}
+                      <span
+                        className="search-hit-key"
+                        title={isDoc ? hit.chunk_id ?? hit.key : hit.key}
+                      >
+                        {searchHitLabel(hit)}
                       </span>
                       <span className="search-hit-scores" title="cosine similarity · hybrid rank score">
                         {hit.score.toFixed(3)} · {hit.rank_score.toFixed(3)}

@@ -1011,7 +1011,9 @@ export type MemorySource = "facts" | "notes" | "documents";
  *  `kind` is the row's class: `"fact"` (a consolidator distilled it),
  *  `"note"` (an agent wrote it directly) or `"document"` (a Document chunk
  *  body). A document hit also carries `chunk_id` so the viewer can fetch its
- *  entity block via document({ op: "get_chunk" }).
+ *  entity block via document({ op: "get_chunk" }), plus `document` and `title`
+ *  — the document it came from and the heading it sits under — so a page of
+ *  hits can be attributed without one fetch per row.
  *
  *  **Changed in 1.49.0 (RFC BW):** this was `"memory" | "document"`. Code
  *  switching on `"document"` is unaffected; code comparing against
@@ -1029,6 +1031,12 @@ export interface MemorySearchEntry {
   embedded_with: { provider: string; model: string };
   kind: "fact" | "note" | "document";
   chunk_id?: string;
+  /** The document this chunk belongs to, by title. Document hits only, and
+   *  best-effort: the titles live in SQL Memory, a different plane from the
+   *  bodies, so a deployment without it omits the field. */
+  document?: string;
+  /** The chunk's own heading. Same conditions as {@link document}. */
+  title?: string;
 }
 
 export interface MemorySearchResponse {
