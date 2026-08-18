@@ -343,3 +343,43 @@ func TestContextTool_CapabilitiesShapeIsCompleteWithoutConfig(t *testing.T) {
 		}
 	}
 }
+
+// TestCapabilities_ReportsDetectConflicts.
+//
+// The consolidation pass reads whether to detect conflicts from HERE, not from a
+// constant in its own body — the same arrangement the similarity bands and
+// verify_writes use, so that turning it on never requires an operator to restate a
+// code body in their own config. Which means an unreported field is not a cosmetic
+// omission: the pass would read `undefined`, resolve it to off, and a deployment that
+// set the key would silently get nothing.
+//
+// The band it draws candidates from needs no new key — related_threshold has been
+// reported all along — so this asserts both halves arrive together.
+func TestCapabilities_ReportsDetectConflicts(t *testing.T) {
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1"})
+	cfg := capabilitiesCfg()
+	cfg.Memory.Consolidation.DetectConflicts = true
+	cfg.Memory.Consolidation.RelatedThreshold = 0.62
+
+	tool := &Context{Cfg: cfg}
+	out := capabilitiesOut(t, tool, ctx)
+	cons, ok := out["consolidation"].(map[string]any)
+	if !ok {
+		t.Fatalf("consolidation block missing: %v", out["consolidation"])
+	}
+	if cons["detect_conflicts"] != true {
+		t.Errorf("detect_conflicts = %v, want true — the pass reads its opt-in here", cons["detect_conflicts"])
+	}
+	if got, _ := cons["related_threshold"].(float64); got != 0.62 {
+		t.Errorf("related_threshold = %v, want the configured 0.62 (the conflict band's lower edge)", cons["related_threshold"])
+	}
+
+	// Unset must report false rather than absent: the pass treats a missing field and
+	// an explicit false as the same thing, and an operator reading the report should
+	// see the same answer the pass acts on.
+	off := &Context{Cfg: capabilitiesCfg()}
+	consOff, _ := capabilitiesOut(t, off, ctx)["consolidation"].(map[string]any)
+	if v, present := consOff["detect_conflicts"]; !present || v != false {
+		t.Errorf("unset detect_conflicts = %v (present=%v), want an explicit false", v, present)
+	}
+}

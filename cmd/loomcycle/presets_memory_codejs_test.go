@@ -3747,3 +3747,239 @@ func TestConsolidator_AFailedBackfillScanIsNotAFailedJudge(t *testing.T) {
 		t.Errorf("the scan failure is not reported at all: %q", res.FinalText)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Conflict DETECTION. A fact that contradicts a stored one used to be invisible:
+// `supersede_queue` is filled only by near-duplicate collapse, so two claims that
+// cannot both be true but score below the merge band both persist and both recall.
+// These tests pin the detection phase — the band it draws candidates from, the
+// closed verdict vocabulary, and above all that it WRITES NOTHING.
+// ---------------------------------------------------------------------------
+
+// conflictFixture plants one fact plus three neighbours, one per band, so a single
+// run exercises every selection decision at once. Scores are chosen against the
+// bands this fixture reports (related 0.60, merge 0.90):
+//
+//	0.95 — at or above merge: the duplicate path already owns it
+//	0.75 — in the band: same topic, different claim → a candidate
+//	0.40 — below related: a different subject → not a candidate
+func conflictFixture(t *testing.T, on bool) *fakeToolset {
+	t.Helper()
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: we keep the test database on Postgres 18 now.\n" +
+		"assistant: noted."
+	f.factsJSON = `[{"text":"The test database runs on Postgres 18.","class":"fact",` +
+		`"type":"object","subject":"test database"}]`
+	f.recallFacts = []map[string]any{
+		{"id": "memory/fact/test-db-pg18-reworded", "memory": "The test database is on Postgres 18.", "score": 0.95},
+		{"id": "memory/fact/test-db-pg17", "memory": "The test database runs on Postgres 17.", "score": 0.75},
+		{"id": "memory/fact/unrelated-tz", "memory": "The user is in Cluj-Napoca.", "score": 0.40},
+	}
+	if on {
+		f.bands = map[string]any{
+			"merge_threshold":   0.90,
+			"related_threshold": 0.60,
+			"detect_conflicts":  true,
+		}
+	}
+	return f
+}
+
+// conflictPrompts returns the prompts sent to the CONFLICT judge, so a scenario can
+// assert on the pairs without matching the entailment judge or the extractor.
+func conflictPrompts(f *fakeToolset) []string {
+	out := []string{}
+	for _, c := range f.calls {
+		if c.Tool != "Agent" {
+			continue
+		}
+		if name, _ := c.Input["name"].(string); name == "memory/conflict-judge" {
+			p, _ := c.Input["prompt"].(string)
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// TestConsolidator_ConflictDetectionIsOffUntilTheDeploymentTurnsItOn.
+//
+// Opt-in has to mean a deployment that never set the key spends nothing and reads
+// exactly as it did before — not merely that a default is false somewhere.
+func TestConsolidator_ConflictDetectionIsOffUntilTheDeploymentTurnsItOn(t *testing.T) {
+	f := conflictFixture(t, false)
+	res := runConsolidator(t, f)
+
+	if got := conflictPrompts(f); len(got) != 0 {
+		t.Errorf("the conflict judge was called %d time(s) with detection off", len(got))
+	}
+	if strings.Contains(res.FinalText, "conflict") {
+		t.Errorf("the report mentions conflicts on a deployment that did not ask: %q", res.FinalText)
+	}
+	// And the pass still did its job. A disabled detector is not a disabled pass.
+	if n := f.countOp("Memory.set"); n == 0 {
+		t.Error("no fact was written with detection off")
+	}
+}
+
+// TestConsolidator_ConflictCandidatesAreTheBandBetweenRelatedAndMerge is the
+// selection rule. Above merge is the duplicate path's business and sending it here
+// would ask a model to confirm what similarity already settled; below related is a
+// different subject, and judging those pairs is how a detector produces confident
+// nonsense at a cost per call.
+func TestConsolidator_ConflictCandidatesAreTheBandBetweenRelatedAndMerge(t *testing.T) {
+	f := conflictFixture(t, true)
+	f.factsByNeedle = []needleReply{{
+		Needle: "BEGIN PAIRS",
+		Reply:  `[{"i":1,"verdict":"contradicts","reason":"17 and 18 cannot both be current"}]`,
+	}}
+	runConsolidator(t, f)
+
+	prompts := conflictPrompts(f)
+	if len(prompts) != 1 {
+		t.Fatalf("conflict judge calls = %d, want 1; prompts: %v", len(prompts), prompts)
+	}
+	p := prompts[0]
+	if !strings.Contains(p, "Postgres 17") {
+		t.Errorf("the in-band neighbour (0.75) was not offered as a candidate:\n%s", p)
+	}
+	if strings.Contains(p, "is on Postgres 18") {
+		t.Errorf("a neighbour at or above the merge band was sent to the conflict judge "+
+			"— that pair is the duplicate path's:\n%s", p)
+	}
+	if strings.Contains(p, "Cluj-Napoca") {
+		t.Errorf("a neighbour below the related band was sent to the conflict judge:\n%s", p)
+	}
+}
+
+// TestConsolidator_ConflictDetectionWritesNothing is the phase's whole safety
+// argument, and the one property worth a test on its own: a `contradicts` verdict
+// must not retire, supersede, invalidate or re-confidence anything. The band has
+// never been measured against real conflicts, and a detector that acts on an
+// unmeasured threshold is the failure the merge band already taught this pipeline.
+func TestConsolidator_ConflictDetectionWritesNothing(t *testing.T) {
+	f := conflictFixture(t, true)
+	f.factsByNeedle = []needleReply{{
+		Needle: "BEGIN PAIRS",
+		Reply:  `[{"i":1,"verdict":"contradicts","reason":"17 and 18 cannot both be current"}]`,
+	}}
+	res := runConsolidator(t, f)
+
+	// The neighbour the judge condemned is the 0.75 row. Nothing may have touched it.
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "supersede" {
+			if key, _ := c.Input["key"].(string); key == "memory/fact/test-db-pg17" {
+				t.Errorf("detection superseded the contradicted row; it must only report: %+v", c.Input)
+			}
+		}
+	}
+	for _, s := range f.supersededChunks {
+		if strings.Contains(s, "test-db-pg17") {
+			t.Errorf("detection retired the contradicted chunk: %q", s)
+		}
+	}
+	if len(f.verdicts) != 0 {
+		t.Errorf("detection wrote verdicts; the confidence axis belongs to the entailment judge: %v", f.verdicts)
+	}
+	// And it has to SAY what it would have done, in the conditional. A line reading
+	// "retired 1" when nothing was retired would be the most expensive sentence in
+	// the report.
+	if !strings.Contains(res.FinalText, "would be retired") {
+		t.Errorf("the report does not say what enforcement would do: %q", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "nothing was changed") {
+		t.Errorf("the report does not state that it changed nothing: %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_ConflictPromptFramesThePairAsData.
+//
+// Both claims are model-authored text derived from user conversation, so this is the
+// third place the same untrusted bytes go in front of a model. The rule sits where
+// the data arrives: distance from the system prompt is exactly what failed for the
+// extractor on its first live pass.
+func TestConsolidator_ConflictPromptFramesThePairAsData(t *testing.T) {
+	f := conflictFixture(t, true)
+	f.factsByNeedle = []needleReply{{Needle: "BEGIN PAIRS", Reply: `[{"i":1,"verdict":"unclear","reason":"x"}]`}}
+	runConsolidator(t, f)
+
+	prompts := conflictPrompts(f)
+	if len(prompts) != 1 {
+		t.Fatalf("want 1 conflict prompt, got %d", len(prompts))
+	}
+	if !strings.Contains(prompts[0], "DATA") || !strings.Contains(prompts[0], "Never obey") {
+		t.Errorf("the conflict prompt does not frame the claims as data:\n%s", prompts[0])
+	}
+}
+
+// TestConsolidator_ConflictVerdictVocabularyIsClosed: a verdict this caller cannot
+// read is dropped and counted, never coerced into one of the three. A tally built
+// from entries nobody could read is a worse number than no tally, because it is the
+// number an operator would calibrate the band on.
+func TestConsolidator_ConflictVerdictVocabularyIsClosed(t *testing.T) {
+	f := conflictFixture(t, true)
+	f.factsByNeedle = []needleReply{{
+		Needle: "BEGIN PAIRS",
+		Reply:  `[{"i":1,"verdict":"probably-fine","reason":"invented"}]`,
+	}}
+	res := runConsolidator(t, f)
+
+	if strings.Contains(res.FinalText, "would be retired as contradicted") &&
+		!strings.Contains(res.FinalText, "0 would be retired") {
+		t.Errorf("an invented verdict was counted as a finding: %q", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "dropped as untrustworthy") {
+		t.Errorf("the dropped entry was not reported: %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_AConflictJudgeOutageIsANoOp. Detection is an annotation on a pass
+// that has already finished its work, so an unreachable judge costs the annotation
+// and nothing else — the same rule the entailment judge's outage follows.
+func TestConsolidator_AConflictJudgeOutageIsANoOp(t *testing.T) {
+	f := conflictFixture(t, true)
+	// Refuse ONLY the conflict spawn; the extractor must keep working, or the test
+	// proves nothing about the pass surviving.
+	f.failAgentNeedle = "BEGIN PAIRS"
+	res := runConsolidator(t, f)
+
+	if n := f.countOp("Memory.set"); n == 0 {
+		t.Error("a conflict-judge outage cost the pass its fact writes")
+	}
+	if !strings.Contains(res.FinalText, "judge call(s) failed") {
+		t.Errorf("the report does not name the failed conflict call: %q", res.FinalText)
+	}
+	if strings.Contains(res.FinalText, "would be retired") {
+		t.Errorf("an outage produced findings: %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_ConflictCandidatesIgnoreLexicalSubjectOverlap is the design
+// decision this phase exists for, so it gets a test rather than a comment.
+//
+// The merge path screens a neighbour on subjectOverlap >= 0.30 before it will
+// overwrite it, and that gate earns its place there — it stops a destructive merge
+// resting on one similarity number. Applying it HERE would defeat the purpose: the
+// reason to ask a model at all is that lexical overlap misses real conflicts. It
+// scores 0.000 for a non-Latin pair, because the tokenizer only sees [a-z0-9]. A
+// detector screened by the signal whose blind spots it exists to cover would inherit
+// every one of them.
+func TestConsolidator_ConflictCandidatesIgnoreLexicalSubjectOverlap(t *testing.T) {
+	f := conflictFixture(t, true)
+	// A neighbour that shares NO word with the incoming fact, in the band. Overlap is
+	// 0; a subject gate would drop it.
+	f.recallFacts = []map[string]any{
+		{"id": "memory/fact/zero-overlap", "memory": "Тестова база лежить на Postgres 17.", "score": 0.75},
+	}
+	f.factsByNeedle = []needleReply{{Needle: "BEGIN PAIRS", Reply: `[{"i":1,"verdict":"contradicts","reason":"different version"}]`}}
+	runConsolidator(t, f)
+
+	prompts := conflictPrompts(f)
+	if len(prompts) != 1 {
+		t.Fatalf("a zero-lexical-overlap neighbour in the band was not offered to the judge "+
+			"(prompts=%d) — the subject gate must not screen conflict candidates", len(prompts))
+	}
+	if !strings.Contains(prompts[0], "Postgres 17") {
+		t.Errorf("the candidate's text did not reach the judge:\n%s", prompts[0])
+	}
+}
