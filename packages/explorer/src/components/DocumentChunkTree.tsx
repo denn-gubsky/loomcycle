@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ChunkRow } from "../types";
 import { chunkColor, effectiveScheme, tintStyle, type ColorScheme } from "../lib/colorScheme";
+import IdCopy from "./IdCopy";
 
 // DocumentChunkTree renders a document's chunk hierarchy (RFC AK), built from
 // the flat query_chunks list by parent_id + position. Mirrors PathTree: a single
@@ -192,6 +193,10 @@ function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintSchem
             </span>
           )}
         </button>
+        {/* Per-chunk copy id — a sibling of the tile button (not nested, which
+            would be invalid), so any chunk's id can be grabbed for an external
+            workflow without selecting it first. */}
+        <IdCopy value={node.row.id} compact title={`Copy chunk id: ${node.row.id}`} />
       </div>
       {hasChildren && isOpen && (
         <ul className="children chunk-children">

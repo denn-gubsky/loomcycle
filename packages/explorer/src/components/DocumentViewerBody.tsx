@@ -23,6 +23,7 @@ import DocumentChunkTree, {
 } from "./DocumentChunkTree";
 import ChunkEditorModal from "./ChunkEditorModal";
 import ColorSchemeEditor from "./ColorSchemeEditor";
+import IdCopy from "./IdCopy";
 import Connections from "./Connections";
 import CrossReferences from "./CrossReferences";
 import HistoryModal from "./HistoryModal";
@@ -523,6 +524,10 @@ export default function DocumentViewerBody({
         <strong className="doc-title" title={rootTitle}>
           {rootTitle}
         </strong>
+        {/* The document id — surfaced + copyable so it can be wired into an
+            external workflow (e.g. n8n over the MCP/HTTP API), which the viewer
+            otherwise only uses internally. */}
+        <IdCopy value={documentId} label="doc" />
         <div className="doc-toolbar-actions">
           {canCreate && (
             <>
@@ -631,6 +636,8 @@ export default function DocumentViewerBody({
                       {t}
                     </span>
                   ))}
+                  {/* The selected chunk's id — copyable for external workflows. */}
+                  <IdCopy value={selectedDetail.id} label="chunk" />
                 </div>
                 <div className="doc-content-controls">
                   {/* The chunk/markdown switch is per-selected-chunk: markdown
