@@ -817,6 +817,50 @@ mcp_servers: {}
   #   headers:
   #     Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_N8N_FALLBACK_TOKEN}}"
 
+  # ─ Skybits shared document workspace (remote MCP) ───────────────────
+  # Skybits (https://skybits.ai) is a shared document workspace for
+  # people + AI agents. It exposes a single remote Streamable-HTTP MCP
+  # endpoint at https://skybits.ai/mcp with 59 tools: outline_document,
+  # read_document, find_in_document, edit_document (atomic batch ops:
+  # replace / insert_before / insert_after / remove / move), create_doc,
+  # find_documents, comment threads, document_history / diff_document /
+  # restore_document, tags, sharing, sync graph, export jobs. Documents
+  # are addressed by doc_url; edits apply directly and are attributed,
+  # versioned, and revertible. Full catalog: GET https://skybits.ai/v1/tools
+  #
+  # AUTH — loomcycle's MCP client has no OAuth client flow, so tokens
+  # are provisioned OUT-OF-BAND:
+  #   - Autonomous agents: use a Skybits CONNECTOR API KEY (plain Bearer).
+  #     Mint one with their helper (`python scripts/skybits.py login <name>`
+  #     from https://skybits.ai/skill) or via POST /v1/mcp/connectors with
+  #     scopes ["mcp.connect","agent.tools.read","agent.tools.write"].
+  #   - Interactive clients: Skybits runs OAuth 2.1 (DCR + PKCE S256 +
+  #     device-code grant; auth server https://auth.skybits.ai, discovery at
+  #     https://skybits.ai/.well-known/oauth-protected-resource/mcp) — that
+  #     flow happens outside loomcycle; only the resulting access token
+  #     lands here as a Bearer.
+  #
+  # Bearer resolution order below: ${run.credentials.skybits} substitutes
+  # the per-run named credential `skybits` passed on POST /v1/runs, so
+  # different end-users / triggers can present different Skybits tokens;
+  # the :- fallback expands LOOMCYCLE_SKYBITS_TOKEN from the parent env
+  # (set it in .env.local) for runs without a named credential. Same
+  # naming constraint as the jobs block: the env var MUST be
+  # LOOMCYCLE_*-prefixed or expansion passes the literal string through
+  # and every call 401s. $cred:skybits is the alternative — it resolves
+  # from the tenant-scoped CredentialDef store instead of env.
+  #
+  # skybits:
+  #   transport: http
+  #   url: https://skybits.ai/mcp
+  #   headers:
+  #     Authorization: "Bearer ${run.credentials.skybits:-${LOOMCYCLE_SKYBITS_TOKEN}}"
+  #   # Optional operator-level allowlist — narrows what the server
+  #   # exposes BEFORE any agent's tools is consulted:
+  #   # tools: [outline_document, read_document, edit_document, find_documents]
+  # Agents opt in per-agent with e.g. tools: ["mcp__skybits__*"].
+  # See docs/SKYBITS.md and examples/exp11-skybits-documents/.
+
 # ─── Local API MCP gateway (v0.4.0+) ─────────────────────────────────
 # Reads an OpenAPI 3.0 spec at boot and exposes one typed tool per
 # operation, named `<prefix>__<operationId>`. Forwards calls to
