@@ -977,6 +977,15 @@ func main() {
 	}
 	if embedder != nil {
 		log.Printf("embedder: %s/%s (dim=%d)", embedder.Provider(), embedder.Model(), embedder.Dimension())
+		// Wrapped ONCE, here, before any consumer takes a reference: the Memory
+		// tool, the Document tool and the HTTP server all share this instance, so
+		// the observed health covers every embedding the process performs rather
+		// than one subsystem's slice of them. ObserveEmbedder(nil) returns nil, so
+		// the `if Embedder == nil` checks downstream keep working.
+		//
+		// Only reachable when an embedder is configured — an unconfigured
+		// deployment stays byte-identical, holding a nil embedder as before.
+		embedder = providers.ObserveEmbedder(embedder)
 	}
 
 	memoryTool := &builtin.Memory{

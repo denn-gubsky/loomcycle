@@ -7,6 +7,8 @@ import {
   matchesFilter,
   describeChange,
   tailChanges,
+  embedderNotice,
+  type EmbedderHealth,
   type MemoryChangeRow,
 } from "./changeFeed";
 
@@ -230,5 +232,78 @@ describe("tailChanges (transport)", () => {
     ))
       void _;
     expect(seen.Authorization).toBeUndefined();
+  });
+});
+
+describe("embedderNotice", () => {
+  const h = (o: Partial<EmbedderHealth>): EmbedderHealth => ({
+    state: "ok",
+    calls: 10,
+    failures: 0,
+    ...o,
+  });
+
+  // The count is the actionable part — it is roughly how many rows need a backfill
+  // to become searchable again — so a notice without it is not worth showing.
+  it("names the failure count and the remedy when failing", () => {
+    const n = embedderNotice(
+      h({
+        state: "failing",
+        failures: 47,
+        calls: 312,
+        last_failure_kind: "timeout",
+      }),
+    );
+    expect(n).toContain("47");
+    expect(n).toContain("312");
+    expect(n).toContain("timeout");
+    expect(n.toLowerCase()).toContain("backfill");
+    // The distinction that matters: writes are FINE, searchability is not.
+    expect(n.toLowerCase()).toContain("not searchable");
+  });
+
+  it("says so when no embedder is configured", () => {
+    expect(embedderNotice(h({ state: "absent" })).toLowerCase()).toContain(
+      "no embedder",
+    );
+  });
+
+  // `untried` is the normal state of a freshly booted runtime. Warning about it
+  // would train an operator to ignore this line, which is the only thing that would
+  // be showing when it matters.
+  it("is silent for untried and ok", () => {
+    expect(embedderNotice(h({ state: "untried", calls: 0 }))).toBe("");
+    expect(embedderNotice(h({ state: "ok" }))).toBe("");
+  });
+
+  // An older runtime does not send the field at all. Inventing "healthy" for it
+  // would be the same unchecked claim the opening frame exists to prevent.
+  it("is silent when the runtime reported nothing", () => {
+    expect(embedderNotice(undefined)).toBe("");
+  });
+});
+
+describe("classifyFrame — embedder health rides the status frame", () => {
+  it("carries the embedder block through", () => {
+    const f = classifyFrame(
+      "feed",
+      '{"enabled":true,"since":0,"embedder":{"state":"failing","calls":5,"failures":5,"provider":"ollama-local","model":"embeddinggemma:latest"}}',
+    );
+    expect(f).toEqual({
+      kind: "status",
+      status: expect.objectContaining({
+        enabled: true,
+        embedder: expect.objectContaining({ state: "failing", failures: 5 }),
+      }),
+    });
+  });
+
+  // A runtime that predates the field still yields a usable status frame.
+  it("still reads a status frame with no embedder block", () => {
+    const f = classifyFrame("feed", '{"enabled":true,"since":0}');
+    expect(f?.kind).toBe("status");
+    expect(
+      (f as { status: { embedder?: unknown } }).status.embedder,
+    ).toBeUndefined();
   });
 });
