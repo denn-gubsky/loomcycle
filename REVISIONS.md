@@ -4,6 +4,114 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.57.0
+
+**Two defects that reached an operator, and a signal for the failure neither of them
+could report.** Minor rather than a patch for two reasons: the change feed gains a new
+wire field, and a `vX.Y.Z` patch tag builds only the browser sidecar — the fix that
+matters here is embedded in the runtime binary, so it needs a full build to ship at all.
+
+### The console's Backfill and Purge buttons threw (#1052)
+
+Pressing either in the Memory console produced `e.backfillEmbeddings is not a function`.
+Both methods landed in `@loomcycle/client` at 1.55.0; `web/package.json` depended on
+`^1.49.0`.
+
+**Why nothing caught it** is the part worth knowing. `@loomcycle/memory-view` compiles
+from SOURCE through a Vite alias, and `web/vite.config.ts` lists `@loomcycle/client` in
+`resolve.dedupe` — added, per its own comment, "for good measure — a duplicate is
+wasteful even if not fatal". Dedupe makes web's copy the one that lands in the BUNDLE,
+which turned a wasteful duplicate into a version DOWNGRADE. Both plausible guards are
+structurally blind to it: `tsc --noEmit` (which web's build does run) resolves the
+client from the memory-view source file — the package's own, correct copy — and
+typechecks clean against a version the bundle will not contain; `vite build` strips
+types and checks nothing. Green in CI and in `make build-ui`, broken only in a browser
+at the moment a button was pressed.
+
+`reembed` kept working throughout, because `reembedMemory` has existed since 1.49.0 —
+which is why three buttons failed in two ways and looked like three unrelated bugs.
+
+Fixed by bumping web to `^1.56.0`, verified by asserting the built bundle contains the
+methods rather than by inference. A new **`TestWebDedupedDeps_SatisfySourcePackagePeers`**
+makes it non-recurring: for every package web consumes from source, a peer dependency
+that is also in vite's dedupe list must be satisfied by web's own range. It is a Go test
+because `go test ./...` is the gate everyone runs and it needs no `node_modules`, and it
+parses the dedupe list from the real `vite.config.ts` so removing a name there relaxes
+the test honestly.
+
+Also fixed alongside: `purge_stale_embeddings` advertised `agent, user, tenant` in its
+validator and then demanded `scope_id` unconditionally, refusing the tenant scope its
+siblings accept (the tenant keyspace is one partition with an empty store scope_id).
+**Latent** — the client never had the method, so that request never reached the server.
+
+### Non-Latin facts collided on one memory key (#1047, #1053)
+
+`rawWords` tokenises on `/[^a-z0-9]+/`, so a fact in Cyrillic, Greek, Hebrew or any CJK
+script reduced to no words and `slug()` fell back to the constant `"unnamed"`. `factKey`
+is the consolidation pass's idempotency mechanism and the write path upserts on it, so
+the SECOND such fact silently overwrote the first: a scope's entire non-Latin population
+collapsed onto ONE row. Confirmed against the real engine — two different Ukrainian facts
+both keyed `memory/fact/unnamed`. The entity-tier mirror used the same string as its
+`natural_key` and collided identically.
+
+An empty slug now appends a fingerprint of the text: a pure function of it (or a re-run
+of the pass would duplicate rather than converge), two 32-bit hashes rather than one (a
+single space collides at roughly a percent by ten thousand facts, and a collision is the
+failure being fixed), shift-and-add only (the engine is ES5.1-era: no `Math.imul`, and a
+32-bit multiply loses precision past 2^53), and base36 so the key stays inside
+`[a-z0-9-]` — it is interpolated into SQL by the lookup path.
+
+**It does not widen the tokeniser.** A non-Latin fact still derives no source span, so it
+stores unverified-and-visible rather than verified. That change redefines what a "word"
+is and needs the `merge_min_subject_overlap` floor re-measured against its labelled
+pairs; it is deliberately separate. This stops the data loss.
+
+⚠️ **It cannot recover what was already overwritten.** On a store that held several
+non-Latin facts, only the last survives, and this release prevents further loss rather
+than restoring the earlier ones.
+
+### The change feed says what the embedder is doing (#1051)
+
+An embedder outage is invisible at every call site, by design: a failed embedding on a
+content write is not fatal — the body is stored and the embedding skipped with a log line
+— because losing an author's text to an unreachable embedder is worse than losing its
+searchability. The consequence is that writes succeed, change frames keep arriving, and
+search quietly stops finding anything written during the outage. A reader watching the
+Activity tab to answer "is the memory pipeline healthy" saw a busy feed and concluded yes.
+
+The opening `feed` frame now carries an additive `embedder` block: `state`
+(`absent` | `untried` | `ok` | `failing`), provider, model, calls, failures,
+`last_failure_kind`, and the last ok/failure stamps. Not a probe — a probe would cost a
+model call per reader and describe one instant; a new `providers.ObservedEmbedder`
+decorator records what the traffic that already went through actually did, so the answer
+cannot disagree with reality (the same argument as `cdc.Store.CapturesChanges()`).
+
+Four decisions with a plausible wrong answer, each pinned by a test: `untried` is its own
+state, because a configured-but-never-called embedder must not report `ok` — that is the
+state a freshly booted deployment is in; the failure COUNT is reported, not a boolean,
+because it is roughly how many rows need `backfill_embeddings`; no error TEXT escapes,
+since a transport failure reads `dial tcp 192.168.0.77:11434: …`, a map of the operator's
+network, so failures are a classified kind matched by `errors.Is`; and it is separate from
+`enabled`, because capture being on and the embedder working are independent failures.
+
+`@loomcycle/memory-view` **0.3.1** surfaces it as one sentence for a failing or absent
+embedder, and stays silent for `untried`, `ok`, and a runtime too old to send the field —
+warning about the normal boot state would train an operator to ignore the only line that
+matters when it fires.
+
+### Adapters
+
+`@loomcycle/client` and `loomcycle` (PyPI) go to **1.57.0** as version-aligned lockstep
+releases; no client-surface change (the `embedder` block rides an SSE frame the TS client
+already forwards, and the fixes are runtime-side). `@loomcycle/memory-view` **0.3.1**
+publishes on its own tag.
+
+### Upgrading
+
+Nothing to migrate, and the two operator-visible notes are above: the console fix is
+embedded in the binary so it arrives only with this build, and the keyspace fix prevents
+further collisions without recovering earlier ones.
+
 ## What's in v1.56.1
 
 **A tool-call regression on qwen-via-Ollama, and the v1.56.0 bundle change that caused
