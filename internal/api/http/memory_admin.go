@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"net/http"
 	"strconv"
 	"strings"
@@ -215,9 +216,37 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	// RFC BL: tenant from the authenticated principal, reused for the read +
-	// the write-back below so the reembed stays within one tenant partition.
-	tenantID := tenantFromCtx(r.Context())
+	// ?tenant= IS HONOURED FOR AN ADMIN, and an admin who names none is REFUSED.
+	//
+	// This route took the tenant from the caller's principal alone, which is the same
+	// defect already fixed in embed_stats and guarded in purge_stale_embeddings — and
+	// it was the worst of the three places to have it. An operator migrating another
+	// tenant's scope after an embedder change swept their OWN partition, found nothing
+	// to re-embed, and got `rows_total: 0` — indistinguishable from "already migrated".
+	// The store then keeps serving that tenant's rows to a vector search that silently
+	// excludes them, because nothing errors once any row of the new dimension exists.
+	//
+	// Refused rather than defaulted, like purge: a reembed WRITES (and spends one
+	// embedder call per row), so sweeping a partition the operator never named is not
+	// merely a misleading count. Has() distinguishes an explicit `?tenant=` — the
+	// default partition, i.e. the whole deployment on a single-tenant install — from an
+	// omitted one, so a single-tenant admin can still ask.
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	// Scoped to an AUTHENTICATED ADMIN, deliberately narrower than the sibling guard on
+	// backfill_embeddings. principalTenantScope reports all=true for a request with NO
+	// principal at all, which is every request on an open-mode deployment — and an
+	// open-mode install has no tenants, so demanding one there is friction with no
+	// safety to buy. The hazard is specifically a multi-tenant admin sweeping a
+	// partition they did not name.
+	pr, authed := auth.PrincipalFromContext(r.Context())
+	adminMustName := authed && auth.HasScope(pr.Scopes, auth.ScopeAdmin)
+	if all && adminMustName && !r.URL.Query().Has("tenant") {
+		writeJSONError(w, http.StatusBadRequest, "tenant_required",
+			"an admin token must name the tenant: memory rows are keyed on it, and this "+
+				"operation re-embeds them at one model call per row. Pass ?tenant=<id>, or "+
+				"?tenant= for the default tenant.")
+		return
+	}
 	// tenant scope reembeds the single tenant-wide keyspace (store scope_id "");
 	// the placeholder is dropped. Reused for the read + write-back below.
 	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
