@@ -30,6 +30,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -75,8 +76,14 @@ func (s *Server) handleMemoryPurgeStaleEmbeddings(w http.ResponseWriter, r *http
 		return
 	}
 	scopeID := r.URL.Query().Get("scope_id")
-	if scopeID == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing_scope_id", "scope_id is required")
+	// The tenant keyspace is ONE tenant-wide partition with an empty store scope_id,
+	// so a tenant-scope call legitimately has none — which is what
+	// adminMemoryScopeIDRequired exists to express, and what reembed and
+	// backfill_embeddings both use. Demanding it unconditionally here made this route
+	// advertise `tenant` in its own validator above and then refuse it.
+	if adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_scope_id",
+			"scope_id is required for scope="+scope+" (tenant is a single keyspace and needs none)")
 		return
 	}
 	// dry_run defaults TRUE. This one DELETES, so the default matters more than on the
