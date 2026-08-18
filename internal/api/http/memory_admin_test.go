@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -43,34 +44,34 @@ func newVectorAdminStore(s store.Store, supports bool) *vectorAdminStore {
 
 func (v *vectorAdminStore) SupportsVectors() bool { return v.supports }
 
-func (v *vectorAdminStore) MemoryEmbedSet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
+func (v *vectorAdminStore) MemoryEmbedSet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
 	if !v.supports {
 		return store.ErrVectorUnsupported
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.embeds[string(scope)+"|"+scopeID+"|"+key] = e
+	v.embeds[embedKey(tenantID, scope, scopeID, key)] = e
 	return nil
 }
 
-func (v *vectorAdminStore) MemoryEmbedGet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
+func (v *vectorAdminStore) MemoryEmbedGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	e, ok := v.embeds[string(scope)+"|"+scopeID+"|"+key]
+	e, ok := v.embeds[embedKey(tenantID, scope, scopeID, key)]
 	if !ok {
 		return store.MemoryEmbedding{}, &store.ErrNotFound{Kind: "memory_embedding", ID: key}
 	}
 	return e, nil
 }
 
-func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, _ string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
+func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
 	if !v.supports {
 		return nil, store.ErrVectorUnsupported
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	out := []store.MemoryEntry{}
-	prefix := string(scope) + "|" + scopeID + "|"
+	prefix := embedKey(tenantID, scope, scopeID, "")
 	for k, e := range v.embeds {
 		if !strings.HasPrefix(k, prefix) {
 			continue
@@ -79,7 +80,7 @@ func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, _ string,
 			continue
 		}
 		key := strings.TrimPrefix(k, prefix)
-		entry, err := v.Store.MemoryGet(ctx, "", scope, scopeID, key)
+		entry, err := v.Store.MemoryGet(ctx, tenantID, scope, scopeID, key)
 		if err != nil {
 			continue
 		}
@@ -95,7 +96,7 @@ func (v *vectorAdminStore) MemoryEmbedSearch(ctx context.Context, _ string, scop
 	return nil, errors.New("MemoryEmbedSearch not implemented in admin fake")
 }
 
-func (v *vectorAdminStore) MemoryEmbedStats(ctx context.Context, _ string, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
+func (v *vectorAdminStore) MemoryEmbedStats(ctx context.Context, tenantID string, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
 	if !v.supports {
 		return store.MemoryEmbedStats{}, store.ErrVectorUnsupported
 	}
@@ -106,7 +107,7 @@ func (v *vectorAdminStore) MemoryEmbedStats(ctx context.Context, _ string, scope
 	defer v.mu.Unlock()
 	counts := map[string]int{}
 	dims := map[string]int{}
-	prefix := string(scope) + "|"
+	prefix := tenantID + "|" + string(scope) + "|"
 	var totalBytes int64
 	for k, e := range v.embeds {
 		if !strings.HasPrefix(k, prefix) {
@@ -186,6 +187,15 @@ func vectorAdminFixture(t *testing.T, supportsVectors bool) (*Server, *adminFake
 	return srv, emb, vs
 }
 
+// embedKey is the fake store's row address. IT INCLUDES THE TENANT, and that is the
+// point: this double previously dropped the tenant argument (`_ string`) and keyed on
+// scope|scope_id alone, so every tenant's rows shared one address. A double blind to the
+// tenant cannot fail a tenant bug — which is exactly how the reembed handler shipped
+// resolving the tenant from the caller's principal instead of ?tenant=.
+func embedKey(tenantID string, scope store.MemoryScope, scopeID, key string) string {
+	return tenantID + "|" + string(scope) + "|" + scopeID + "|" + key
+}
+
 // Pre-load: write k/v rows + matching embeddings under (user, alice).
 // Two rows are on the OLD embedder (provider+model differ from
 // current); one row is on the CURRENT embedder.
@@ -203,9 +213,131 @@ func preloadReembedFixture(t *testing.T, srv *Server, vs *vectorAdminStore) {
 	// (we want explicit control).
 	old := store.MemoryEmbedding{Provider: "openai", Model: "text-embedding-3-small", Dimension: 4, Vector: []float32{1, 0, 0, 0}, EmbedText: "x", CreatedAt: time.Now().UTC()}
 	current := store.MemoryEmbedding{Provider: "openai", Model: "text-embedding-3-large", Dimension: 4, Vector: []float32{0, 1, 0, 0}, EmbedText: "x", CreatedAt: time.Now().UTC()}
-	vs.embeds["user|alice|old1"] = old
-	vs.embeds["user|alice|old2"] = old
-	vs.embeds["user|alice|current"] = current
+	vs.embeds[embedKey("", store.MemoryScopeUser, "alice", "old1")] = old
+	vs.embeds[embedKey("", store.MemoryScopeUser, "alice", "old2")] = old
+	vs.embeds[embedKey("", store.MemoryScopeUser, "alice", "current")] = current
+}
+
+// preloadReembedFixtureForTenant is preloadReembedFixture keyed on a NAMED tenant, so a
+// test can prove which partition a sweep actually read.
+func preloadReembedFixtureForTenant(t *testing.T, srv *Server, vs *vectorAdminStore, tenant string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, k := range []string{"old1", "old2"} {
+		if err := srv.store.MemorySet(ctx, tenant, store.MemoryScopeUser, "alice", k, []byte(`"x"`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := store.MemoryEmbedding{Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+		Vector: []float32{1, 0, 0, 0}, EmbedText: "x", CreatedAt: time.Now().UTC()}
+	vs.embeds[embedKey(tenant, store.MemoryScopeUser, "alice", "old1")] = old
+	vs.embeds[embedKey(tenant, store.MemoryScopeUser, "alice", "old2")] = old
+}
+
+// TestReembed_AdminMustNameATenant.
+//
+// Memory rows are keyed on the tenant, and this route took it from the caller's
+// principal ALONE — so an admin migrating another tenant's scope after an embedder
+// change swept their OWN partition and got `rows_total: 0`, indistinguishable from
+// "already migrated". Observed on a live three-tenant deployment: an operator ran the
+// sweep for a tenant holding thousands of stale embeddings and was told there was
+// nothing to do, while vector search kept silently excluding those rows.
+//
+// The same defect was already fixed in embed_stats and guarded in backfill_embeddings,
+// purge_stale_embeddings, erasure, directory and orphan-repair. This route was the one
+// sibling that got neither treatment.
+func TestReembed_AdminMustNameATenant(t *testing.T) {
+	srv, _, vs := vectorAdminFixture(t, true)
+	preloadReembedFixture(t, srv, vs)
+
+	adminReq := func(qs string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/_memory/reembed?scope=user&scope_id=alice"+qs, nil).
+			WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
+				Subject: "root", Scopes: []string{auth.ScopeAdmin},
+			}))
+		srv.handleMemoryReembed(rec, req)
+		return rec
+	}
+
+	rec := adminReq("")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 when an authenticated admin names no tenant; body: %s",
+			rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tenant_required") {
+		t.Errorf("body = %s, want code tenant_required", rec.Body.String())
+	}
+
+	// An EXPLICIT empty tenant is a legitimate target — the default partition, i.e. the
+	// whole deployment on a single-tenant install. Refusing it would make that partition
+	// unsweepable.
+	if rec2 := adminReq("&tenant="); rec2.Code != http.StatusOK {
+		t.Errorf("explicit ?tenant= (the default partition) got %d, want 200; body: %s",
+			rec2.Code, rec2.Body.String())
+	}
+}
+
+// TestReembed_OpenModeNeedsNoTenant.
+//
+// The refusal above is scoped to an AUTHENTICATED ADMIN on purpose.
+// principalTenantScope reports all=true for a request with NO principal, which is every
+// request on an open-mode deployment — and an open-mode install has no tenants, so
+// demanding one there would break a route that has worked since v0.9.0 to buy no safety.
+func TestReembed_OpenModeNeedsNoTenant(t *testing.T) {
+	srv, _, vs := vectorAdminFixture(t, true)
+	preloadReembedFixture(t, srv, vs)
+
+	rec := httptest.NewRecorder()
+	// No principal in context at all.
+	req := httptest.NewRequest("POST", "/v1/_memory/reembed?scope=user&scope_id=alice", nil)
+	srv.handleMemoryReembed(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open mode got %d, want 200 — the guard must not fire without a principal; body: %s",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// TestReembed_HonoursTheNamedTenant.
+//
+// The refusal is only half the fix; this is the half that was actually blocking a
+// migration. `?tenant=` has to REACH the store read, or an admin can name the right
+// tenant and still sweep the wrong partition — a confident zero, which is the failure
+// mode being removed.
+//
+// Two tenants hold stale rows under the same (scope, scope_id). Naming one must find
+// exactly its own.
+func TestReembed_HonoursTheNamedTenant(t *testing.T) {
+	srv, _, vs := vectorAdminFixture(t, true)
+	preloadReembedFixtureForTenant(t, srv, vs, "acme")
+
+	plan := func(tenant string) memoryReembedDryRunResponse {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST",
+			"/v1/_memory/reembed?scope=user&scope_id=alice&tenant="+tenant, nil).
+			WithContext(auth.WithPrincipal(context.Background(), auth.Principal{
+				Subject: "root", Scopes: []string{auth.ScopeAdmin},
+			}))
+		srv.handleMemoryReembed(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("tenant %q: status=%d body=%s", tenant, rec.Code, rec.Body.String())
+		}
+		var resp memoryReembedDryRunResponse
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	if got := plan("acme").RowsToReembed; got != 2 {
+		t.Errorf("tenant=acme found %d stale rows, want 2 — ?tenant= did not reach the store read, "+
+			"so an admin naming the right tenant still sweeps the wrong partition", got)
+	}
+	// A tenant that holds nothing must report zero — otherwise the first assertion
+	// could pass by reading every tenant at once.
+	if got := plan("other").RowsToReembed; got != 0 {
+		t.Errorf("tenant=other found %d stale rows, want 0 — the sweep is not tenant-scoped", got)
+	}
 }
 
 // ---- /v1/_memory/embed_stats tests ----

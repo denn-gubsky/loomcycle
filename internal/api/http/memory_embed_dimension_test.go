@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"testing"
 )
 
@@ -45,7 +46,10 @@ func TestMemoryEmbed_StoresObservedWidthWhenEmbedderReportsZero(t *testing.T) {
 		t.Fatalf("embedMemoryEntry: %v", err)
 	}
 
-	got, ok := vs.embeds["user|alice|k"]
+	// Addressed through embedKey, not a hand-written literal: the fake's row address
+	// includes the tenant, and a string typed out here silently stops matching the
+	// moment that changes.
+	got, ok := vs.embeds[embedKey("", store.MemoryScopeUser, "alice", "k")]
 	if !ok {
 		t.Fatal("no embedding row was written")
 	}
