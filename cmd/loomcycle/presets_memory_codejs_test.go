@@ -3109,6 +3109,131 @@ func TestConsolidator_ARegexInProseIsNotEvidence(t *testing.T) {
 	}
 }
 
+// TestConsolidator_NonLatinFactsGetDistinctKeys (#1047).
+//
+// rawWords tokenises on /[^a-z0-9]+/, so a fact written in a non-Latin script reduces
+// to no words and slug() fell back to the constant "unnamed". factKey is the pass's
+// idempotency mechanism and write() upserts on it, so the SECOND such fact silently
+// overwrote the first: a scope's entire non-Latin population collapsed onto one row.
+// Verified against the real engine before the fix — two different Ukrainian facts both
+// keyed memory/fact/unnamed.
+func TestConsolidator_NonLatinFactsGetDistinctKeys(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nКористувач живе у Києві і вимкнув нічні резервні копії.\n\n"
+	f.factsJSON = `[` +
+		`{"text":"Користувач живе у Києві.","class":"fact","type":"location","subject":"Київ"},` +
+		`{"text":"Користувач вимкнув нічні резервні копії.","class":"fact","type":"object","subject":"копії"}` +
+		`]`
+
+	runConsolidator(t, f)
+
+	var keys []string
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "set" {
+			if k, _ := c.Input["key"].(string); k != "" {
+				keys = append(keys, k)
+			}
+		}
+	}
+	if len(keys) != 2 {
+		t.Fatalf("expected two writes, got %d: %v", len(keys), keys)
+	}
+	if keys[0] == keys[1] {
+		t.Errorf("two DIFFERENT facts share one key %q — the second overwrites the first", keys[0])
+	}
+	for _, k := range keys {
+		if strings.HasSuffix(k, "/unnamed") {
+			t.Errorf("key %q still uses the colliding constant", k)
+		}
+		// The key is interpolated into SQL by the lookup path, so the fallback must
+		// introduce nothing outside the slug alphabet.
+		for _, r := range strings.TrimPrefix(k, "memory/") {
+			if !(r == '/' || r == '-' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+				t.Errorf("key %q contains %q, outside [a-z0-9-/]", k, r)
+			}
+		}
+	}
+}
+
+// TestConsolidator_NonLatinFactKeyIsStableAcrossPasses.
+//
+// The suffix must be a pure function of the text. If it varied — a counter, a clock, a
+// random — then a re-run of the pass would write a SECOND row for a fact it had already
+// stored, turning a fixed collision bug into an unbounded duplication bug. This is the
+// property that makes the whole pass safe to re-run, so it is asserted directly.
+func TestConsolidator_NonLatinFactKeyIsStableAcrossPasses(t *testing.T) {
+	keyFor := func() string {
+		f := newFakeToolset()
+		f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+		f.transcript = "### user\n\nКористувач живе у Києві.\n\n"
+		f.factsJSON = `[{"text":"Користувач живе у Києві.","class":"fact",` +
+			`"type":"location","subject":"Київ"}]`
+		runConsolidator(t, f)
+		for _, c := range f.calls {
+			if c.Tool == "Memory" && c.Op == "set" {
+				if k, _ := c.Input["key"].(string); k != "" {
+					return k
+				}
+			}
+		}
+		t.Fatal("no write observed")
+		return ""
+	}
+	first, second := keyFor(), keyFor()
+	if first != second {
+		t.Errorf("key is not deterministic: %q then %q — a re-run would duplicate the fact",
+			first, second)
+	}
+	// GOLDEN, and this is the assertion that carries the weight. Comparing two runs
+	// barely tests anything: code-js is replay-pure (no clock, no randomness) so a
+	// varying suffix is already impossible, and each run gets a fresh VM so even a
+	// counter would reset and look stable — verified by probing exactly that.
+	//
+	// The real hazard is someone CHANGING the derivation later. Every non-Latin fact
+	// already stored is addressed by this exact string, so a "better hash" would orphan
+	// all of them and the next pass would rewrite the store under new names. Pinning the
+	// value makes that a failing test rather than a silent migration.
+	const golden = "memory/fact/unnamed-1t8x120hl3n7g"
+	if first != golden {
+		t.Errorf("non-Latin key derivation CHANGED: %q, was %q.\nEvery non-Latin fact in "+
+			"every existing store is addressed by the old string — changing this orphans "+
+			"them. If the change is deliberate, it needs a key migration, not a new golden.",
+			first, golden)
+	}
+}
+
+// TestConsolidator_LatinFactKeysAreUNCHANGED.
+//
+// The fix touches ONLY the empty-slug branch. Any text that already produced a slug must
+// key exactly as before: every fact in every existing store is addressed by these keys,
+// so a changed derivation would orphan the lot and the next pass would rewrite the store
+// under new names. This is the test that makes the fix safe to deploy on live data.
+func TestConsolidator_LatinFactKeysAreUNCHANGED(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nI live in Cluj-Napoca and I run loomcycle at home.\n\n"
+	f.factsJSON = `[{"text":"The user lives in Cluj-Napoca.","class":"fact",` +
+		`"type":"location","subject":"Cluj-Napoca"}]`
+
+	runConsolidator(t, f)
+
+	var key string
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "set" {
+			key, _ = c.Input["key"].(string)
+		}
+	}
+	// The exact pre-fix key for this text: memory/<class>/<first 6 content words>.
+	if key != "memory/fact/user-lives-cluj-napoca" {
+		t.Errorf("Latin key changed to %q — every fact in every existing store is addressed "+
+			"by this derivation, so a change orphans them all", key)
+	}
+	if strings.Contains(key, "unnamed") {
+		t.Errorf("key %q took the fallback branch for text that tokenises fine", key)
+	}
+}
+
 // --------------------------------------------------------------- the judge
 //
 // Every scenario below drives the SHIPPED body. The judge is opt-in, so each one
