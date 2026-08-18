@@ -4,6 +4,33 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.59.0
+
+**The document viewer surfaces the document id and every chunk id, each with a
+copy button.** Minor rather than a patch: the Web UI is embedded in the runtime
+binary, and a `vX.Y.Z` patch tag builds only the browser sidecar — so a patch
+could not ship a UI change.
+
+### Copy document + chunk ids from the viewer (#1060)
+
+Wiring a document or a specific chunk into an external workflow — n8n over the
+MCP/HTTP API — needs the exact `document_id` / chunk id the API expects. The
+viewer used those ids only internally (React keys, data-layer calls) and never
+displayed them, so there was no way to grab one from the UI.
+
+The `@loomcycle/explorer` document viewer now surfaces them, each with a
+click-to-copy button:
+
+- the **document id** in the toolbar,
+- the **selected chunk id** in the content head,
+- a compact copy on **every chunk-tree row** (faint until the row is hovered or
+  selected, so the tree keeps its clean scan-line).
+
+The on-screen id is monospace and ellipsized, but the clipboard always receives
+the FULL id — a long UUID displays compactly yet copies completely. The copy
+click never selects the chunk or toggles the tree, and a failed copy (an
+insecure context with no clipboard API) degrades to a `✗` rather than throwing.
+
 ## What's in v1.58.0
 
 **A search over the document store now says where its results came from, and an
