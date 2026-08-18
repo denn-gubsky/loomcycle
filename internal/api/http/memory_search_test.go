@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -11,8 +12,12 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // searchVectorStore wraps a real Store with an in-memory embedding map and
@@ -226,5 +231,120 @@ func TestMemorySearch_InvalidScope(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &e)
 	if e["code"] != "invalid_scope" {
 		t.Errorf("code = %v, want invalid_scope", e["code"])
+	}
+}
+
+// seedDocumentChunk creates a REAL document + child chunk in the SQL Memory scope
+// the handler will read, through the Document tool so the schema is the shipped one
+// rather than a hand-written copy that could drift from it. Returns the child's id.
+func seedDocumentChunk(t *testing.T, vs *searchVectorStore, mgr *sqlmem.Manager,
+	tenant, user, docTitle, chunkTitle string) string {
+	t.Helper()
+	d := &builtin.Document{Store: vs, SqlMem: mgr, Bus: channels.NewBus()}
+	ctx := tools.WithAgentName(context.Background(), "doc-agent")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: user, TenantID: tenant})
+
+	exec := func(body string) map[string]any {
+		t.Helper()
+		res, err := d.Execute(ctx, json.RawMessage(body))
+		if err != nil {
+			t.Fatalf("Document.Execute: %v", err)
+		}
+		if res.IsError {
+			t.Fatalf("Document op failed: %s", res.Text)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("decode Document result: %v", err)
+		}
+		return out
+	}
+	doc := exec(fmt.Sprintf(`{"op":"create_document","scope":"user","title":%q}`, docTitle))
+	child := exec(fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"parent_id":%q,"title":%q,"body":"the strip counts claims, not identities"}`,
+		doc["document_id"], doc["root_chunk_id"], chunkTitle))
+	id, _ := child["id"].(string)
+	if id == "" {
+		t.Fatalf("create_chunk returned no id: %+v", child)
+	}
+	return id
+}
+
+// TestMemorySearch_DocumentHitCarriesItsDocumentAndHeading: a document hit comes
+// back with the document it belongs to and the heading it sits under, not just an
+// opaque `doc.chunk:<hex>` key. Without them a page of six hits cannot be
+// attributed without one get_chunk per row, which is what made a semantic search
+// over the doc store unciteable.
+//
+// The two fixture titles differ deliberately — equal ones would pass against a
+// projection that swapped the fields.
+func TestMemorySearch_DocumentHitCarriesItsDocumentAndHeading(t *testing.T) {
+	s, vs := memorySearchServer(t)
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	s.sqlMem = mgr
+
+	childID := seedDocumentChunk(t, vs, mgr, "A", "alice", "Verified writes", "Reading your coverage")
+	// The body + embedding the search double reads. The chunk already has a body
+	// from create_chunk; this adds the embedding that makes it findable.
+	seedSearchRow(t, vs, "A", "alice", "doc.chunk:"+childID, `{"body":"the strip counts claims","fields":null}`)
+
+	rec := postMemorySearch(s, "A", `{"query":"claims","scope":"user","scope_id":"alice"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp memorySearchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	var found bool
+	for _, e := range resp.Entries {
+		if e.Kind != "document" {
+			continue
+		}
+		found = true
+		if e.ChunkID != childID {
+			t.Errorf("chunk_id = %q, want %q", e.ChunkID, childID)
+		}
+		if e.Document != "Verified writes" {
+			t.Errorf("document = %q, want the DOCUMENT title %q", e.Document, "Verified writes")
+		}
+		if e.Title != "Reading your coverage" {
+			t.Errorf("title = %q, want the CHUNK heading %q", e.Title, "Reading your coverage")
+		}
+	}
+	if !found {
+		t.Fatalf("no document hit in %+v", resp.Entries)
+	}
+}
+
+// TestMemorySearch_WithoutSqlMemoryTheHitKeepsItsID is the best-effort guarantee.
+// The labels live in SQL Memory, a DIFFERENT plane from the bodies this handler
+// reads, so a deployment without it (or one whose lookup faults) must still return
+// the hit and its address — the label is the only thing that goes missing.
+func TestMemorySearch_WithoutSqlMemoryTheHitKeepsItsID(t *testing.T) {
+	s, vs := memorySearchServer(t) // no s.sqlMem
+	seedSearchRow(t, vs, "A", "alice", "doc.chunk:chunk-1", `{"body":"Ada was a mathematician"}`)
+
+	rec := postMemorySearch(s, "A", `{"query":"ada","scope":"user","scope_id":"alice"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp memorySearchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Entries) != 1 {
+		t.Fatalf("want 1 entry, got %+v", resp.Entries)
+	}
+	e := resp.Entries[0]
+	if e.ChunkID != "chunk-1" {
+		t.Errorf("chunk_id = %q, want chunk-1 — the address must survive a missing label", e.ChunkID)
+	}
+	if e.Document != "" || e.Title != "" {
+		t.Errorf("labels must be ABSENT, not empty strings on the wire: document=%q title=%q", e.Document, e.Title)
 	}
 }

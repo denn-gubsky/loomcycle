@@ -1336,6 +1336,10 @@ func (m *Memory) registerMemoryDirent(ctx context.Context, scope store.MemorySco
 //	{ "entries": [
 //	    { "key": "...", "value": <json>, "score": 0.91,
 //	      "embedded_with": {"provider": "openai", "model": "..."} },
+//	    // a document hit also carries the chunk it is addressed by, plus the
+//	    // document + heading it came from when SQL Memory can supply them:
+//	    { "key": "doc.chunk:8f1e...", "kind": "document", "chunk_id": "8f1e...",
+//	      "document": "Verified writes", "title": "Reading your coverage", ... },
 //	    ...
 //	  ],
 //	  "query_embedding_dim": 1536,
@@ -1400,13 +1404,25 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	}
 
 	entries := make([]map[string]any, 0, len(res.Entries))
+
+	// Collect the document hits' chunk ids up front so their readable labels
+	// resolve in ONE batched query instead of one per row.
+	var docChunkIDs []string
+	for _, r := range res.Entries {
+		if memrank.Class(r) == store.MemoryRowDocument {
+			docChunkIDs = append(docChunkIDs, strings.TrimPrefix(r.Key, memrank.DocumentChunkKeyPrefix))
+		}
+	}
+	labels := ChunkLabelsFor(ctx, m.SqlMem, tools.RunIdentity(ctx).TenantID, scope, scopeID, docChunkIDs)
+
 	for i, r := range res.Entries {
-		entries = append(entries, map[string]any{
+		kind := memrank.Class(r)
+		entry := map[string]any{
 			"key": r.Key,
 			// kind tells a caller WHAT it got: a document hit is prose written down
 			// somewhere, not something the user said, and weighing them alike is how
 			// a fence marker outranks a medication (RFC BW §4b).
-			"kind":       string(memrank.Class(r)),
+			"kind":       string(kind),
 			"value":      r.Value,
 			"score":      r.Score,           // raw cosine similarity — NEVER touched by hybrid fusion or ranking (stable across searches)
 			"rank_score": res.RankScores[i], // computed rank the result was ordered by: fused-semantic (RRF) + recency + frequency
@@ -1415,7 +1431,26 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 				"model":    r.EmbeddedWith.Model,
 			},
 			"expires_at": expiresAtRFC3339(r.ExpiresAt),
-		})
+		}
+		// A document hit is prose the caller may want to CITE, and until now it came
+		// back addressed only by an opaque `doc.chunk:<hex>` key — so a page of hits
+		// could not be attributed without a get_chunk per row. Carry the chunk id it
+		// is addressed by, plus the document and heading it sits under when SQL Memory
+		// can supply them (absent when it cannot; never an error — the bodies and the
+		// titles live on different planes).
+		if kind == store.MemoryRowDocument {
+			chunkID := strings.TrimPrefix(r.Key, memrank.DocumentChunkKeyPrefix)
+			entry["chunk_id"] = chunkID
+			if lb, ok := labels[chunkID]; ok {
+				if lb.Document != "" {
+					entry["document"] = lb.Document
+				}
+				if lb.Title != "" {
+					entry["title"] = lb.Title
+				}
+			}
+		}
+		entries = append(entries, entry)
 	}
 	out := map[string]any{
 		"entries":             entries,

@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // parseMemorySources maps the wire strings onto the typed selector. Unknown values are
@@ -87,6 +88,13 @@ type memorySearchResultEntry struct {
 	// prose read as remembered fact.
 	Kind    string `json:"kind"`
 	ChunkID string `json:"chunk_id,omitempty"`
+	// Document and Title are the hit's READABLE identity — the document title and the
+	// chunk's own heading — for document-kind rows only. Both are best-effort: they
+	// live in SQL Memory, a different plane from the bodies, so a scope with no
+	// document tables or a chunk deleted mid-search simply omits them. ChunkID
+	// remains the address; these annotate it.
+	Document string `json:"document,omitempty"`
+	Title    string `json:"title,omitempty"`
 }
 
 type memorySearchResponse struct {
@@ -181,6 +189,18 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries := make([]memorySearchResultEntry, 0, len(res.Entries))
+
+	// Collect the document hits' chunk ids up front so their labels resolve in ONE
+	// batched query rather than one per row.
+	var docChunkIDs []string
+	for _, e := range res.Entries {
+		if memrank.Class(e) == store.MemoryRowDocument {
+			docChunkIDs = append(docChunkIDs, strings.TrimPrefix(e.Key, docChunkKeyPrefix))
+		}
+	}
+	labels := builtin.ChunkLabelsFor(ctx, s.sqlMem, tenantFromCtx(r.Context()),
+		store.MemoryScope(body.Scope), storeScopeID, docChunkIDs)
+
 	for i, e := range res.Entries {
 		entry := memorySearchResultEntry{
 			Key:       e.Key,
@@ -196,11 +216,15 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 			Kind: string(memrank.Class(e)),
 		}
 		// A doc.chunk hit may be an entity fact OR a plain document chunk; the
-		// viewer calls get_chunk to see its entity block. No per-hit sidecar
-		// lookup here — the sidecar lives in SQL Memory, a different plane; this
-		// handler stays store-only.
+		// viewer calls get_chunk to see its entity block. The ENTITY sidecar is still
+		// not read here — but the chunk's document + heading are, because a page of
+		// opaque `doc.chunk:<hex>` keys cannot be attributed without a fetch per row.
+		// One batched, best-effort query above; a fault costs the labels, not the hit.
 		if entry.Kind == string(store.MemoryRowDocument) {
 			entry.ChunkID = strings.TrimPrefix(e.Key, docChunkKeyPrefix)
+			if lb, ok := labels[entry.ChunkID]; ok {
+				entry.Document, entry.Title = lb.Document, lb.Title
+			}
 		}
 		entries = append(entries, entry)
 	}
