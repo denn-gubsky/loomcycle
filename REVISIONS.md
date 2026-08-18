@@ -4,6 +4,112 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.58.0
+
+**A search over the document store now says where its results came from, and an
+embedder migration runs in batches.** Minor rather than a patch: the search response
+gains two wire fields, and a `vX.Y.Z` patch tag builds only the browser sidecar —
+both changes here live in the runtime binary, so a patch tag could not ship either.
+
+### A document search hit names its document and heading (#1058)
+
+A semantic search that spans the doc store returned prose addressed only by an opaque
+`doc.chunk:<32 hex>` key. The id is the right ADDRESS — stable, unique, what
+`get_chunk` takes — but it is not an identity. A live query for *"the judge withholds
+a fact whose span does not support it"* returned six hits, all six of them the right
+document, and nothing in the response said so:
+
+```
+doc.chunk:2f51f960973ec940301a4d4aebcf35ff
+doc.chunk:f5e7492bc3f2065dad0272c969d8beb0
+…
+```
+
+Anything wanting to cite a result had to fetch each row just to learn its heading.
+
+**Keying by title instead was the tempting fix and is wrong**: titles are not unique,
+not stable under a rename, and not addressable. So the key stays and the hit carries
+its readable identity beside it — `document` (the document's title) and `title` (the
+chunk's own heading), both additive and `omitempty`, on the off-run
+`POST /v1/_memory/search` and the in-band `Memory op=search` alike.
+
+The in-band surface also gains **`chunk_id`**, which it never had. The two projections
+are hand-maintained copies, so an agent could be shown a document body it had no way
+to fetch, while an operator on the HTTP endpoint got the id — a five-release drift
+that only became visible once both were touched at once.
+
+Labels resolve in ONE batched query per search, and are **best-effort by
+construction**: they live in SQL Memory, a different plane from the bodies, so a
+deployment without it, an unkeyable scope, a store fault, or a chunk deleted
+mid-search each cost the label and never the result. The resolver owns the
+Memory→SQL Memory scope mapping so neither caller restates it — the two planes key the
+*tenant* scope differently (`""` against the tenant itself), and a restated rule is
+how that axis drifts. A drift test compares the mapping against
+`Document.resolveScope` directly, because a divergence there resolves against an empty
+schema and the labels simply stop appearing, which is indistinguishable from "no
+labels available".
+
+The Memory console names a hit `document › heading` instead of printing a 32-hex id,
+keeping the id on the tooltip. A document's root chunk carries the document's own
+title, so the two are collapsed rather than rendered as `Verified writes › Verified
+writes`.
+
+One assertion in this change was **found vacuous and replaced**, which is worth
+recording because the failure mode is not the usual one. To prove the resolver
+deduplicates chunk ids, the test asked for each id twice and checked the label count
+— and it passed with the dedup pass deleted, because `WHERE id IN (a,a,b,b)` returns
+one row per DISTINCT id regardless: SQL `IN` has set semantics, so the assertion could
+not see the difference. Nothing about the representation was misread; the layer below
+already provided the property. The replacement pins a consequence only this code
+controls — ids are deduplicated BEFORE the lookup is capped, so a page of hits from
+one document cannot crowd out a different chunk's label.
+
+### reembed embeds in batches, not one call per row (#1057)
+
+A real embedder migration measured **~12 rows/minute**: 3,633 document-chunk rows
+moving from a 768d model to a 1024d one, about five hours, because the loop called
+`Embed` once per row and every row paid a fresh HTTP round trip and prefill setup
+against a local Ollama. The `Embedder` interface has always been batch-shaped (N texts
+in, N vectors out, chunked again by the driver's own batch size), so the per-row call
+was leaving that on the floor.
+
+Rows now reach the embedder in batches of 64 — two orders of magnitude fewer round
+trips — while the STORE WRITE stays per row. That is what keeps the operation
+resumable: a client timeout or a cancelled context mid-sweep costs only the current
+batch, and the next call picks up what is left. It is also how an operator paginates a
+scope too large for one request, so it is preserved deliberately. Not "all of them" in
+one call, either: a single `Embed` over a whole 1000-row page would make one failure
+cost the page, and document bodies can be large.
+
+**A batch error falls back to per row.** One unembeddable row must not cost its
+batch-mates: before batching, a bad row was counted and skipped while the rest
+migrated, and that accounting is what an operator reads to decide whether a sweep is
+done. Retrying singly restores it exactly — and as a side effect a transient one-shot
+fault now recovers instead of stranding a row. The store write moved into one shared
+helper so the batch path and its fallback cannot drift in what they record, and the
+recorded dimension stays the OBSERVED width of the returned vector rather than the
+embedder's advertised one (a driver that cannot know its own dimension answers 0, and
+a row written with 0 makes every later search in that scope report a spurious
+mismatch).
+
+The existing partial-failure test had to be **reworked, not extended**: it asserted
+the handler's CALL PATTERN rather than a guarantee. Its stub failed "the next call",
+which under batching describes exactly the transient fault the fallback now retries,
+so it reported 2 reembedded where it wanted 1 and 1. The stub now models a
+permanently bad ROW and the test asserts the contract — an unembeddable row is
+reported in `failed` and `failed_keys`, never silently dropped.
+
+**Measured on the deployment that prompted it**: the migration that had been running
+at ~12 rows/minute completed a 3,650-row scope, which now reports a single embedder at
+a single width.
+
+### Adapters
+
+`@loomcycle/client` **1.58.0** carries the two new optional fields on
+`MemorySearchEntry`. `@loomcycle/memory-view` **0.4.0** renders them. The Python
+adapter is republished at **1.58.0** to keep the install-name version aligned with the
+runtime; it has no changes this release.
+
 ## What's in v1.57.1
 
 **An embedder migration could not reach the tenant holding the data.** Patch — one
