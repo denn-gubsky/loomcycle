@@ -4,6 +4,58 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.57.1
+
+**An embedder migration could not reach the tenant holding the data.** Patch — one
+server-side fix; no wire, schema or adapter change.
+
+### reembed ignored ?tenant=, and reported a truthful-looking zero
+
+`POST /v1/_memory/reembed` took the tenant from the caller's principal ALONE. An
+operator migrating another tenant's scope after an embedder change therefore swept their
+OWN partition, found nothing, and got `rows_total: 0` — indistinguishable from "already
+migrated".
+
+Observed on a live deployment mid-migration from `embeddinggemma` (768d) to `bge-m3`
+(1024d): a legacy admin token carries no tenant, so every call resolved to the default
+partition and reported zero, while `embed_stats` for the real tenant showed **3,633 rows
+still on the old embedder against 17 on the new**. The console's own reembed plan showed
+the same zero for the same reason.
+
+What makes that worse than a wrong number: once ANY row of the new dimension exists, the
+search-time dimension pre-check (which samples one row) stops firing. Semantic search
+then returns only the post-switch slice, with plausible scores, instead of failing
+loudly — so the operator has no signal that 99.5% of the index has gone unreachable.
+
+`principalTenantScope` now resolves the tenant, so `?tenant=` reaches both the read and
+the write-back, and an authenticated admin who names none is REFUSED rather than
+defaulted — a reembed writes, and spends one embedder call per row, so sweeping an
+unnamed partition is not merely a misleading count.
+
+**The refusal is narrower than its siblings, deliberately.** `principalTenantScope`
+reports all=true for a request with no principal, which is every request on an open-mode
+deployment — and an open-mode install has no tenants, so demanding one there would break
+a route that has worked since v0.9.0 to buy no safety. It fires only for an authenticated
+admin; all five pre-existing reembed tests pass unchanged.
+
+This was the third variant of one defect. `embed_stats` was already fixed to honour
+`?tenant=`, and `backfill_embeddings`, `purge_stale_embeddings`, erasure, directory and
+orphan-repair all guard the unnamed-tenant case. reembed was the one sibling with
+neither.
+
+**Why it survived:** the test double was blind to the tenant in three places —
+`vectorAdminStore` dropped the tenant argument on three embed methods and keyed rows on
+`scope|scope_id` alone, its list method joined the k/v row with a hardcoded empty tenant,
+and its stats method prefixed without one. A double that ignores the dimension under test
+cannot fail a bug in it. All three now carry the tenant through a shared `embedKey`.
+
+### Release mechanics
+
+A `vX.Y.Z` patch tag builds only the browser sidecar, and this fix is in the runtime
+binary — so this release was published with `force_full=true` on the release workflow to
+produce binaries and images. goreleaser's `mode: keep-existing` preserves the
+annotated-tag notes the lean job pre-created.
+
 ## What's in v1.57.0
 
 **Two defects that reached an operator, and a signal for the failure neither of them
