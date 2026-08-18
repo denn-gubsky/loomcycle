@@ -1960,7 +1960,45 @@ agents:
         if (!keep.length) { keep = words.slice(0, 6); }
         var out = keep.join("-");
         if (out.length > 60) { out = out.slice(0, 60).replace(/-+$/, ""); }
-        return out || "unnamed";
+        // A TEXT THAT TOKENISES TO NOTHING STILL NEEDS ITS OWN KEY. rawWords is
+        // ASCII-only (/[^a-z0-9]+/), so a fact written in Cyrillic, Greek, Hebrew, or
+        // any CJK script reduces to no words at all — and the old constant "unnamed"
+        // made every one of them the SAME key. factKey is the pass's idempotency
+        // mechanism and write() upserts on it, so the second such fact silently
+        // OVERWROTE the first and a scope's entire non-Latin population collapsed onto
+        // one row. Measured against the real engine: two different Ukrainian facts both
+        // keyed memory/fact/unnamed.
+        //
+        // The suffix is a pure function of the text, which is the property that matters:
+        // factKey must stay deterministic or a re-run of the pass would write a second
+        // row for a fact it already stored. Two independent 32-bit hashes rather than
+        // one, because a single 32-bit space collides at roughly a percent by ten
+        // thousand facts — and a collision here is the very failure being fixed.
+        //
+        // Base36 keeps the result inside [a-z0-9-]: this key is interpolated into SQL
+        // by the lookup path, so the fallback must never introduce a character the slug
+        // rules exclude.
+        //
+        // This does NOT widen the tokeniser. A non-Latin fact still derives no span
+        // (subjectOverlap sees no shared words), so it stores as unverified-and-visible
+        // rather than verified. That is the separate, larger change; this one stops the
+        // data loss.
+        return out || ("unnamed-" + textFingerprint(text));
+      }
+
+      // textFingerprint is a deterministic, replay-pure 64-bit fingerprint rendered in
+      // base36. Two djb2 variants with different seeds are combined; only 32-bit shift
+      // and add are used, because the engine here is ES5.1-era and Math.imul is not
+      // available (and a plain 32-bit multiply loses precision past 2^53).
+      function textFingerprint(text) {
+        var s = String(text);
+        var a = 5381, b = 52711;
+        for (var i = 0; i < s.length; i++) {
+          var c = s.charCodeAt(i);
+          a = ((a << 5) + a + c) | 0;
+          b = ((b << 5) + b + (c ^ 0x5f)) | 0;
+        }
+        return (a >>> 0).toString(36) + (b >>> 0).toString(36);
       }
 
       // rawWords / contentWords are the ONE tokenisation in this file, shared by
