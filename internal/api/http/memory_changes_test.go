@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/cdc"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -144,3 +146,76 @@ func TestMemoryChanges_OpeningFrameEchoesTheCursor(t *testing.T) {
 		t.Errorf("a rejected cursor must report the cursor in force (0):\n%s", body)
 	}
 }
+
+// TestMemoryChanges_OpeningFrameReportsEmbedderHealth.
+//
+// The reason this rides the change feed rather than a health endpoint: an
+// embedding failure on a content write is deliberately not fatal (the body is
+// stored, the embedding is skipped with a log line), so an embedder outage produces
+// a perfectly busy change feed over a store whose new rows are unsearchable. A
+// reader watching the feed to answer "is the memory pipeline healthy" would
+// otherwise conclude yes.
+//
+// `absent` and `untried` are asserted as distinct because collapsing them is the
+// mistake: one means nothing will ever be embedded, the other means nothing has been
+// yet.
+func TestMemoryChanges_OpeningFrameReportsEmbedderHealth(t *testing.T) {
+	raw, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+
+	t.Run("no embedder configured", func(t *testing.T) {
+		srv := &Server{store: cdc.Wrap(raw, nil), cfg: &config.Config{}}
+		body := runSSEOnce(t, srv.handleMemoryChanges, "/v1/_memory/changes")
+		if !strings.Contains(body, `"state":"absent"`) {
+			t.Errorf("want embedder state absent:\n%s", body)
+		}
+	})
+
+	t.Run("configured and observed", func(t *testing.T) {
+		obs := providers.ObserveEmbedder(&stubEmbedder{})
+		if _, e := obs.Embed(context.Background(), []string{"x"}); e != nil {
+			t.Fatal(e)
+		}
+		srv := &Server{store: cdc.Wrap(raw, nil), cfg: &config.Config{}}
+		srv.SetEmbedder(obs)
+		body := runSSEOnce(t, srv.handleMemoryChanges, "/v1/_memory/changes")
+		for _, want := range []string{`"state":"ok"`, `"provider":"stub"`, `"calls":1`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("opening frame missing %s:\n%s", want, body)
+			}
+		}
+	})
+
+	t.Run("failing is visible and counted", func(t *testing.T) {
+		obs := providers.ObserveEmbedder(&stubEmbedder{err: errors.New("boom")})
+		for i := 0; i < 2; i++ {
+			_, _ = obs.Embed(context.Background(), []string{"x"})
+		}
+		srv := &Server{store: cdc.Wrap(raw, nil), cfg: &config.Config{}}
+		srv.SetEmbedder(obs)
+		body := runSSEOnce(t, srv.handleDocumentChanges, "/v1/_document/changes")
+		// The count is the actionable part: it is how many rows need re-embedding.
+		if !strings.Contains(body, `"state":"failing"`) || !strings.Contains(body, `"failures":2`) {
+			t.Errorf("want failing with a count:\n%s", body)
+		}
+		// And the raw error must not travel — only a classified kind.
+		if strings.Contains(body, "boom") {
+			t.Errorf("the frame leaked the driver's error text:\n%s", body)
+		}
+	})
+}
+
+type stubEmbedder struct{ err error }
+
+func (s *stubEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return [][]float32{{1}}, nil
+}
+func (s *stubEmbedder) Model() string    { return "stub-model" }
+func (s *stubEmbedder) Provider() string { return "stub" }
+func (s *stubEmbedder) Dimension() int   { return 1 }

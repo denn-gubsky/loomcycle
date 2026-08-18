@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -32,6 +34,48 @@ type changeFeedCapturer interface{ CapturesChanges() bool }
 func (s *Server) changeFeedEnabled() bool {
 	c, ok := s.store.(changeFeedCapturer)
 	return ok && c.CapturesChanges()
+}
+
+// embedderHealthReporter is implemented by providers.ObservedEmbedder.
+type embedderHealthReporter interface {
+	Health() providers.EmbedderHealth
+}
+
+// embedderHealth reports what the embedder has actually been doing, for the
+// opening frame.
+//
+// WHY THE CHANGE FEED CARRIES THIS. An embedding failure on a content write is
+// deliberately not fatal — the body is stored and the embedding skipped with a log
+// line, because losing an author's text to an unreachable embedder is worse than
+// losing its searchability. So an embedder outage produces no error anywhere a
+// caller can see: writes succeed, change frames keep arriving, and search quietly
+// stops finding everything written during the outage. A reader watching this feed
+// to answer "is the memory pipeline healthy" would see a perfectly busy feed and
+// conclude yes.
+//
+// `state: failing` plus a failure COUNT is what makes it actionable: the count is
+// how many rows need `backfill_embeddings`, which is the remedy that already
+// exists.
+//
+// A deployment with no embedder reports `absent` rather than nothing at all — the
+// difference between "not configured" and "configured and broken" is the whole
+// point, and an omitted field would collapse them.
+func (s *Server) embedderHealth() providers.EmbedderHealth {
+	if s.embedder == nil {
+		return providers.EmbedderHealth{State: providers.EmbedderAbsent}
+	}
+	if r, ok := s.embedder.(embedderHealthReporter); ok {
+		return r.Health()
+	}
+	// An embedder that is configured but not wrapped (a test fixture, or a future
+	// call site that forgets ObserveEmbedder). Report what is knowable and do NOT
+	// claim health: `untried` says "configured, nothing observed", which is exactly
+	// true here.
+	return providers.EmbedderHealth{
+		State:    providers.EmbedderUntried,
+		Provider: s.embedder.Provider(),
+		Model:    s.embedder.Model(),
+	}
 }
 
 func (s *Server) handleMemoryChanges(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +128,10 @@ func (s *Server) streamMemoryChanges(w http.ResponseWriter, r *http.Request, doc
 	stream.sendRaw("feed", map[string]any{
 		"enabled": s.changeFeedEnabled(),
 		"since":   cursor,
+		// Reported alongside `enabled`, never folded into it: capture being on and
+		// the embedder working are independent failures, and a single boolean would
+		// make "capturing but unsearchable" indistinguishable from healthy.
+		"embedder": s.embedderHealth(),
 	})
 
 	stream.startKeepalive(r.Context(), s.cfg.Env.SSEKeepaliveInterval)

@@ -36,6 +36,58 @@ export interface MemoryChangeRow {
 export interface ChangeFeedStatus {
   enabled: boolean;
   since: number;
+  /** What the embedder has actually been doing. Absent on a runtime older than the
+   *  field — which reads as "this build cannot say", not as healthy. */
+  embedder?: EmbedderHealth;
+}
+
+/** The embedder's observed state, as the runtime reports it.
+ *
+ *  Why this is on a CHANGE feed: an embedding failure on a content write is not
+ *  fatal in loomcycle — the body is stored and the embedding skipped — so an
+ *  embedder outage produces a perfectly busy feed over a store whose new rows are
+ *  unsearchable. Without this, a reader watching the feed to decide "is memory
+ *  healthy" sees activity and concludes yes.
+ *
+ *  `untried` is its own state on purpose: a freshly booted runtime has embedded
+ *  nothing, and reporting that as healthy would be a claim nobody checked. */
+export interface EmbedderHealth {
+  state: "absent" | "untried" | "ok" | "failing";
+  provider?: string;
+  model?: string;
+  calls: number;
+  /** How many embeddings failed since boot. This is the actionable number: it is
+   *  roughly how many rows need `backfill_embeddings` to become searchable. */
+  failures: number;
+  last_failure_kind?: string;
+  last_ok_unix?: number;
+  last_failure_unix?: number;
+}
+
+/** embedderNotice renders the one sentence worth showing for a non-ok embedder, or
+ *  "" when there is nothing to say.
+ *
+ *  Kept as a pure function so the wording is testable and lives in one place — the
+ *  same reason factVerdict exists rather than the components each deciding what a
+ *  confidence means. */
+export function embedderNotice(e: EmbedderHealth | undefined): string {
+  if (!e) return "";
+  switch (e.state) {
+    case "failing":
+      return (
+        `The embedder is failing (${e.failures} of ${e.calls} calls` +
+        (e.last_failure_kind ? `, last: ${e.last_failure_kind}` : "") +
+        `). Content is still being stored, but anything written now is NOT searchable — ` +
+        `run a backfill once it recovers.`
+      );
+    case "absent":
+      return "No embedder is configured, so nothing written is semantically searchable.";
+    case "untried":
+      // NOT a warning. Normal for a runtime that has not embedded yet.
+      return "";
+    default:
+      return "";
+  }
 }
 
 export type ChangeFeedFrame =
@@ -81,10 +133,25 @@ export function classifyFrame(
     // enabled: the whole point of the frame is to stop a disabled feed reading as
     // a quiet one, and a permissive default reinstates exactly that.
     if (typeof p.enabled !== "boolean") return null;
-    return {
-      kind: "status",
-      status: { enabled: p.enabled, since: Number(p.since) || 0 },
+    const status: ChangeFeedStatus = {
+      enabled: p.enabled,
+      since: Number(p.since) || 0,
     };
+    // Carried through rather than rebuilt field by field. `state` is checked because
+    // everything downstream switches on it; the rest is passed as sent, so a newer
+    // runtime adding a field is not silently dropped here. This projection is written
+    // by hand, which is exactly how an added field goes missing — the test beside this
+    // one asserts the block survives, and it caught precisely that mistake.
+    const e = (parsed as { embedder?: Partial<EmbedderHealth> }).embedder;
+    if (e && typeof e.state === "string") {
+      status.embedder = {
+        ...e,
+        state: e.state,
+        calls: Number(e.calls) || 0,
+        failures: Number(e.failures) || 0,
+      } as EmbedderHealth;
+    }
+    return { kind: "status", status };
   }
   if (event === "change") {
     const p = parsed as Partial<MemoryChangeRow>;

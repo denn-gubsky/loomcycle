@@ -8,9 +8,11 @@ import {
   matchesFilter,
   CHANGE_BUFFER_CAP,
   CHANGE_FEED_ENV,
+  embedderNotice,
   type ChangeBuffer,
   type ChangeFamily,
   type ChangeFilter,
+  type EmbedderHealth,
   type MemoryChangeRow,
 } from "../lib/changeFeed";
 
@@ -60,6 +62,10 @@ export default function ChangeFeedPanel({ scopeId }: ChangeFeedPanelProps) {
   );
   const [err, setErr] = useState<string>("");
   const [paused, setPaused] = useState(false);
+  // Held separately from `state`: capture being on and the embedder working are
+  // independent failures, and a store can be busily capturing rows that nothing
+  // can find.
+  const [embedder, setEmbedder] = useState<EmbedderHealth | undefined>();
 
   const [filter, setFilter] = useState<ChangeFilter>({
     family: "",
@@ -86,6 +92,7 @@ export default function ChangeFeedPanel({ scopeId }: ChangeFeedPanelProps) {
         if (cancelled) return;
         if (frame.kind === "status") {
           setState(frame.status.enabled ? "live" : "disabled");
+          if (frame.status.embedder) setEmbedder(frame.status.embedder);
           continue;
         }
         setBuf((b) => appendChange(b, frame.change));
@@ -187,6 +194,8 @@ export default function ChangeFeedPanel({ scopeId }: ChangeFeedPanelProps) {
       )}
       {state === "error" && <div className="err">{err}</div>}
 
+      <EmbedderNote health={embedder} />
+
       <Counters buf={buf} shown={visible.length} state={state} />
 
       {visible.length === 0 ? (
@@ -242,6 +251,31 @@ function ChangeRow({ row }: { row: MemoryChangeRow }) {
       </td>
       <td className="change-feed-coord">{describeChange(row)}</td>
     </tr>
+  );
+}
+
+// EmbedderNote surfaces a failing or absent embedder. Silent when the embedder is
+// fine OR when the runtime did not report one at all — an older runtime cannot say,
+// and inventing "healthy" for it would be the same unchecked claim this panel exists
+// to avoid.
+function EmbedderNote({ health }: { health?: EmbedderHealth }) {
+  const notice = embedderNotice(health);
+  if (!notice) return null;
+  return (
+    <div
+      className={
+        "change-feed-note" +
+        (health?.state === "failing" ? " change-feed-note-warn" : "")
+      }
+    >
+      {notice}
+      {health?.provider && health?.model ? (
+        <span className="change-feed-embedder-id">
+          {" "}
+          ({health.provider}/{health.model})
+        </span>
+      ) : null}
+    </div>
   );
 }
 

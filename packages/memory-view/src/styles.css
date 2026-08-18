@@ -1397,3 +1397,13 @@
 .loomcycle-memory-view .change-feed-type-delete {
   color: var(--danger);
 }
+
+/* A failing embedder is a warning, not an error: writes are still succeeding. */
+.loomcycle-memory-view .change-feed-note-warn {
+  border-color: var(--danger);
+  color: var(--fg);
+}
+.loomcycle-memory-view .change-feed-embedder-id {
+  color: var(--fg-soft);
+  font-family: var(--lc-font-mono);
+}
