@@ -1,14 +1,15 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -150,6 +151,36 @@ func (s *Server) handleMemoryEmbedStats(w http.ResponseWriter, r *http.Request) 
 				"another one (admin only).")
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// reembedEmbedBatch is how many rows are handed to the embedder per call.
+//
+// Not "all of them": a single Embed of a whole 1000-row page would make one failure
+// cost the entire page (see the per-row fallback below), and some rows are large
+// document bodies, so one request can carry a lot of tokens. 64 is two orders of
+// magnitude fewer round trips than per-row while keeping a failure's blast radius
+// small. The driver chunks again by its own EmbedderOptions.BatchSize
+// (LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE), so an operator can still tune the wire size
+// underneath this.
+const reembedEmbedBatch = 64
+
+// writeReembeddedRow stores one row's new embedding, reporting success. Shared by the
+// batch path and its per-row fallback so the two cannot drift in what they record —
+// Dimension in particular is the OBSERVED width of the returned vector, never the
+// embedder's advertised one (a driver that cannot know its own dimension answers 0,
+// and a row written with 0 makes every later search in that scope report a spurious
+// dimension mismatch).
+func (s *Server) writeReembeddedRow(ctx context.Context, tenantID, scope, storeScopeID string,
+	row store.MemoryEntry, vec []float32, currentEmbedder memoryReembedConfigured) bool {
+	return s.store.MemoryEmbedSet(ctx, tenantID, store.MemoryScope(scope), storeScopeID, row.Key,
+		store.MemoryEmbedding{
+			Provider:  currentEmbedder.Provider,
+			Model:     currentEmbedder.Model,
+			Dimension: len(vec),
+			Vector:    vec,
+			EmbedText: string(row.Value),
+			CreatedAt: time.Now().UTC(),
+		}) == nil
 }
 
 // handleMemoryReembed serves POST /v1/_memory/reembed.
@@ -299,29 +330,60 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 		failed     int
 		failedKeys []string
 	)
-	for _, row := range rows {
-		texts := []string{string(row.Value)}
+	// EMBEDDED IN BATCHES, one STORE WRITE PER ROW.
+	//
+	// This loop used to call Embed once per row, which on a real migration is the whole
+	// cost: 3,633 document-chunk rows moving from a 768d model to a 1024d one measured
+	// ~12 rows/minute against a local Ollama — about five hours — because every row paid
+	// a fresh HTTP round trip and prefill setup. The Embedder interface has always been
+	// batch-shaped (N texts in, N vectors out, chunked again by the driver's own
+	// BatchSize), so the per-row call was leaving that on the floor.
+	//
+	// The store write stays PER ROW on purpose: it is what makes this operation
+	// resumable. A client timeout or a cancelled context mid-sweep costs only the rows
+	// in the current batch, and the next call picks up whatever is left — which is how
+	// an operator paginates a scope too large for one request.
+	for start := 0; start < len(rows); start += reembedEmbedBatch {
+		end := start + reembedEmbedBatch
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[start:end]
+		texts := make([]string, len(batch))
+		for i, row := range batch {
+			texts[i] = string(row.Value)
+		}
 		vecs, err := s.embedder.Embed(r.Context(), texts)
-		if err != nil || len(vecs) != 1 {
-			failed++
-			failedKeys = append(failedKeys, row.Key)
+		if err != nil || len(vecs) != len(batch) {
+			// FALL BACK TO PER ROW rather than failing the batch. One unembeddable row
+			// must not cost its batch-mates: before batching, a bad row was counted and
+			// skipped and the rest still migrated, and that accounting is the thing an
+			// operator reads to decide whether a sweep is done. Retrying singly restores
+			// it exactly, at the cost of one extra call per genuinely bad batch.
+			for _, row := range batch {
+				one, oneErr := s.embedder.Embed(r.Context(), []string{string(row.Value)})
+				if oneErr != nil || len(one) != 1 {
+					failed++
+					failedKeys = append(failedKeys, row.Key)
+					continue
+				}
+				if !s.writeReembeddedRow(r.Context(), tenantID, scope, storeScopeID, row, one[0], currentEmbedder) {
+					failed++
+					failedKeys = append(failedKeys, row.Key)
+					continue
+				}
+				reembedded++
+			}
 			continue
 		}
-		emb := store.MemoryEmbedding{
-			Provider:  currentEmbedder.Provider,
-			Model:     currentEmbedder.Model,
-			Dimension: len(vecs[0]),
-			Vector:    vecs[0],
-			EmbedText: string(row.Value),
-			CreatedAt: time.Now().UTC(),
+		for i, row := range batch {
+			if !s.writeReembeddedRow(r.Context(), tenantID, scope, storeScopeID, row, vecs[i], currentEmbedder) {
+				failed++
+				failedKeys = append(failedKeys, row.Key)
+				continue
+			}
+			reembedded++
 		}
-		if err := s.store.MemoryEmbedSet(r.Context(), tenantID,
-			store.MemoryScope(scope), storeScopeID, row.Key, emb); err != nil {
-			failed++
-			failedKeys = append(failedKeys, row.Key)
-			continue
-		}
-		reembedded++
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(memoryReembedRealResponse{

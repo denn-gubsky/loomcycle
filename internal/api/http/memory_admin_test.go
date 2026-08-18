@@ -131,17 +131,39 @@ func (v *vectorAdminStore) MemoryEmbedStats(ctx context.Context, tenantID string
 	return stats, nil
 }
 
-// adminFakeEmbedder is a deterministic embedder for the reembed
-// endpoint tests. Returns 4-dim unit vectors derived from input
-// length. failNext=true causes the next Embed() to error.
+// adminFakeEmbedder is a deterministic embedder for the reembed endpoint tests.
+// Returns dim-wide vectors derived from input length.
+//
+//   - failNext: the NEXT Embed() errors, once. A TRANSIENT fault.
+//   - failText: any Embed() whose batch contains this text errors, always. A
+//     PERMANENTLY bad row.
+//
+// The distinction exists because the handler embeds in batches and falls back to
+// per-row on a batch error. A transient fault is therefore RETRIED and recovers, while
+// a permanently bad row fails its retry too and is reported — and only the second is a
+// guarantee worth asserting. `failNext` alone could not tell the two apart, so a test
+// using it was really asserting the handler's call pattern.
+//
+// calls counts Embed invocations, which is how the batching itself is asserted: a
+// per-row loop and a batched one produce identical rows and differ only here.
 type adminFakeEmbedder struct {
 	provider string
 	model    string
 	dim      int
 	failNext bool
+	failText string
+	calls    int
 }
 
 func (e *adminFakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	e.calls++
+	if e.failText != "" {
+		for _, tx := range texts {
+			if tx == e.failText {
+				return nil, errors.New("fake embedder: permanently bad row in batch")
+			}
+		}
+	}
 	if e.failNext {
 		e.failNext = false
 		return nil, errors.New("fake embedder injected failure")
@@ -526,8 +548,12 @@ func TestReembed_RealRunReembedsRowsAndUpdatesModel(t *testing.T) {
 func TestReembed_PartialFailureCollectsFailedKeys(t *testing.T) {
 	srv, emb, vs := vectorAdminFixture(t, true)
 	preloadReembedFixture(t, srv, vs)
-	// First call will fail; second will succeed.
-	emb.failNext = true
+	// A PERMANENTLY bad row, not "the next call fails". The rows carry the value `"x"`,
+	// so this makes every attempt on them fail — including the per-row retry after the
+	// batch error. Previously this test set failNext, which asserted the handler's
+	// call pattern rather than the guarantee: with batching, a one-shot fault is
+	// retried and recovers, so failNext no longer describes a failed ROW.
+	emb.failText = `"x"`
 
 	req := httptest.NewRequest("POST", "/v1/_memory/reembed?scope=user&scope_id=alice&dry_run=false", nil)
 	rec := httptest.NewRecorder()
@@ -537,12 +563,63 @@ func TestReembed_PartialFailureCollectsFailedKeys(t *testing.T) {
 	}
 	var resp memoryReembedRealResponse
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if resp.RowsReembedded != 1 || resp.RowsFailed != 1 {
-		t.Errorf("counts: reembedded=%d failed=%d, want 1/1: %s",
-			resp.RowsReembedded, resp.RowsFailed, rec.Body.String())
+	// Both stale rows are unembeddable, so both are reported — never silently dropped.
+	if resp.RowsReembedded != 0 || resp.RowsFailed != 2 {
+		t.Errorf("counts: reembedded=%d failed=%d, want 0/2", resp.RowsReembedded, resp.RowsFailed)
 	}
-	if len(resp.FailedKeys) != 1 {
-		t.Errorf("FailedKeys len=%d want 1", len(resp.FailedKeys))
+	if len(resp.FailedKeys) != 2 {
+		t.Errorf("FailedKeys=%v, want both keys named — an operator reads these to decide "+
+			"whether a sweep is done", resp.FailedKeys)
+	}
+}
+
+// TestReembed_TransientEmbedFailureIsRetried.
+//
+// The batch path falls back to per-row on ANY batch error, which means a one-shot fault
+// no longer costs the whole batch its rows. Asserted because the fallback is the only
+// thing standing between "one flaky call" and "63 rows silently left stale" — and a
+// future simplification that drops it would still pass the permanent-failure test above.
+func TestReembed_TransientEmbedFailureIsRetried(t *testing.T) {
+	srv, emb, vs := vectorAdminFixture(t, true)
+	preloadReembedFixture(t, srv, vs)
+	emb.failNext = true // the batch call errors once; the per-row retries succeed
+
+	req := httptest.NewRequest("POST", "/v1/_memory/reembed?scope=user&scope_id=alice&dry_run=false", nil)
+	rec := httptest.NewRecorder()
+	srv.handleMemoryReembed(rec, req)
+
+	var resp memoryReembedRealResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.RowsReembedded != 2 || resp.RowsFailed != 0 {
+		t.Errorf("counts: reembedded=%d failed=%d, want 2/0 — a transient batch error must "+
+			"not cost its batch-mates", resp.RowsReembedded, resp.RowsFailed)
+	}
+}
+
+// TestReembed_EmbedsInBatchesNotOnePerRow.
+//
+// The performance claim, asserted rather than assumed. Per-row calling is what made a
+// real migration take ~12 rows/minute against a local Ollama — 3,633 document chunks,
+// about five hours — because each row paid a fresh round trip and prefill. Rows and
+// vectors are identical either way, so the CALL COUNT is the only observable difference,
+// and without this a revert to the simpler loop would pass every other test here.
+func TestReembed_EmbedsInBatchesNotOnePerRow(t *testing.T) {
+	srv, emb, vs := vectorAdminFixture(t, true)
+	preloadReembedFixture(t, srv, vs) // 2 stale rows
+
+	req := httptest.NewRequest("POST", "/v1/_memory/reembed?scope=user&scope_id=alice&dry_run=false", nil)
+	rec := httptest.NewRecorder()
+	srv.handleMemoryReembed(rec, req)
+
+	var resp memoryReembedRealResponse
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.RowsReembedded != 2 {
+		t.Fatalf("reembedded=%d, want 2", resp.RowsReembedded)
+	}
+	if emb.calls != 1 {
+		t.Errorf("embedder was called %d times for 2 rows, want 1 — the rows are batched "+
+			"(reembedEmbedBatch=%d), and one call per row is the cost this exists to remove",
+			emb.calls, reembedEmbedBatch)
 	}
 }
 
