@@ -100,6 +100,8 @@ mcp_servers:
 
 The bare `${run.credentials.skybits}` form is strict: a run that carries no `skybits` credential gets the header **dropped**, and Skybits' 401 comes back as a typed tool error — far more debuggable than a literal `${...}` string sent downstream. When the token expires mid-session, the caller refreshes it and passes the new one on the next run; loomcycle never refreshes it for you.
 
+Verified end-to-end against the live service (DCR `POST /oauth2/register` → PKCE S256 authorize → code exchange): the OAuth access token is accepted on `https://skybits.ai/mcp` but **not** on the `/v1/tools/*` REST API (that surface is connector-key-only). Access tokens are short-lived (`expires_in: 300`) and the `refresh_token` grant rotates — your app must persist the new refresh token after every refresh. Attribution distinguishes the two credential kinds in `document_history`: connector-key edits show *"(via \<connector name\>)"*, OAuth-token edits show *"(via AI agent)"*.
+
 **Bootstrap caveat (verified live):** per-run credentials substitute per request *at tool-call time only*. The boot handshake and the run-start re-probe (tool enumeration) run before the run identity is stamped on the context (`cmd/loomcycle/main.go` — `candidateTools` runs before `WithRunIdentity`), so a server whose header relies **solely** on `${run.credentials.*}` can never enumerate its tools: boot 401s, every re-probe 401s, and runs see "no mcp tools". Always pair Option B with a static credential for the handshake — i.e. use Option C, where the env/`$cred:` fallback authenticates enumeration and the per-run credential then overrides on each actual call.
 
 ### Option C — combined: per-user credential with an env fallback
