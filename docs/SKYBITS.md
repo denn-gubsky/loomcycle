@@ -100,6 +100,8 @@ mcp_servers:
 
 The bare `${run.credentials.skybits}` form is strict: a run that carries no `skybits` credential gets the header **dropped**, and Skybits' 401 comes back as a typed tool error — far more debuggable than a literal `${...}` string sent downstream. When the token expires mid-session, the caller refreshes it and passes the new one on the next run; loomcycle never refreshes it for you.
 
+**Bootstrap caveat (verified live):** per-run credentials substitute per request *at tool-call time only*. The boot handshake and the run-start re-probe (tool enumeration) run before the run identity is stamped on the context (`cmd/loomcycle/main.go` — `candidateTools` runs before `WithRunIdentity`), so a server whose header relies **solely** on `${run.credentials.*}` can never enumerate its tools: boot 401s, every re-probe 401s, and runs see "no mcp tools". Always pair Option B with a static credential for the handshake — i.e. use Option C, where the env/`$cred:` fallback authenticates enumeration and the per-run credential then overrides on each actual call.
+
 ### Option C — combined: per-user credential with an env fallback
 
 Useful during rollout — users with a linked Skybits account act as themselves, everyone else falls back to a connector key:

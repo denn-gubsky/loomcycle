@@ -143,6 +143,12 @@ rm /tmp/exp11-run3.json    # the body file holds a token — don't leave it arou
   `LOOMCYCLE_SKYBITS_TOKEN` is set, the Authorization header goes out with an
   empty bearer and every Skybits call 401s. The agent is prompted to say so and
   stop — check the SSE stream for "Skybits auth failed".
+- **The env fallback is not optional.** Boot-time tool enumeration and the
+  run-start re-probe run BEFORE the run identity (and its
+  `user_credentials.skybits`) is on the context, so a per-run credential alone
+  can never complete the handshake — with no env/static fallback the server
+  registers 0 tools and every run reports "no mcp tools". The env (or `$cred:`)
+  fallback authenticates enumeration; the per-run credential overrides per call.
 - **`user` scope needs `user_id`.** All verification steps use
   `user_id: "exp11"` — the scope_id is resolved server-side from the run's
   `user_id`, so two runs only share memory when their `user_id` matches.
