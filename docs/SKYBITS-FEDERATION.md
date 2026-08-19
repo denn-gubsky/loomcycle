@@ -101,7 +101,8 @@ Ops in wire order (exact payloads from `internal/tools/builtin/document_sync.go`
    → {"edges":[{"from_id","to_id","kind","auto"}]}
    ```
    `auto:true` edges are never synced (regenerated from `[[name]]` body links per side).
-   MVP returns `{"edges":[]}` (§7, edges are out of MVP scope).
+   Bridge-state edges via `link_chunks`/`get_edges` are implemented (idempotent,
+   `auto:false`, stored in the bridge's own state store).
 
 5. **`query_chunks`** — unkeyed-chunk accounting:
    ```json
@@ -181,8 +182,10 @@ granularity, which the spec accepts; per-chunk history is not reproduced.
 ### 5.5 Hierarchy
 
 Skybits docs are flat (sections are siblings). Federation hierarchy therefore
-degenerates: every chunk's parent is the document root, `get_chunk.parent_id` = the
-root chunk id, and `move_chunk` only ever reorders among siblings (Skybits
+degenerates: every chunk's parent is the document root, so top-level chunks
+report `get_chunk.parent_id` = `""` (empty = root; emitting the root chunk id
+causes perpetual reparenting during loomcycle reconciliation), and
+`move_chunk` only ever reorders among siblings (Skybits
 `edit_document` `move` op) or is a no-op when already in place.
 
 ### 5.6 Out of scope for the data model
