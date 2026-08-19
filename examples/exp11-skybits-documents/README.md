@@ -184,4 +184,5 @@ from the Skybits UI (or `mcp__skybits__*`) if you don't want to keep them.
 | `run.sh` | launcher (sources `.env.local`, sets data dir / listen addr / OAuth dev flag) |
 | `.env.local.example` | secret template (empty values): API bearer, provider key, `LOOMCYCLE_SKYBITS_TOKEN` |
 | `loomcurl.sh` | token-safe loomcycle REST helper |
+| `BENCHMARK.md` | controlled A/B: memory vs no-memory on repeated document work (method + numbers) |
 | `data/` | SQLite state incl. memory (gitignored; delete for a clean slate) |
