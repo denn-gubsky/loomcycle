@@ -576,6 +576,22 @@ type ConsolidationConfig struct {
 	// baked into the bundle: turning verification on must not require restating
 	// a code body, and the pass already reads its similarity bands the same way.
 	VerifyWrites bool `yaml:"verify_writes"`
+	// DetectConflicts turns on conflict DETECTION: for each fact written, the
+	// neighbours in the "related but distinct" band — at or above
+	// RelatedThreshold and below MergeThreshold — are sent to a judge that is
+	// asked whether the pair can both be true of the same subject at once.
+	//
+	// REPORTS ONLY. It writes nothing: no retirement, no confidence change. The
+	// pass counts the verdicts so an operator can read what enforcement WOULD do
+	// before allowing it to, which is the only honest way to calibrate the band
+	// (the same reason the merge threshold is measured per embedder rather than
+	// picked). Acting on a verdict will require its own key, so a deployment that
+	// enables detection today cannot start retiring facts on an upgrade without a
+	// second, separate decision.
+	//
+	// OFF BY DEFAULT, and read through the capabilities report rather than baked
+	// into the bundle, for the same two reasons VerifyWrites is.
+	DetectConflicts bool `yaml:"detect_conflicts"`
 }
 
 // DefaultConsolidationMergeThreshold / DefaultConsolidationRelatedThreshold are
