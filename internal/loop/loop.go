@@ -1044,13 +1044,51 @@ func compactionPrompt(targetPct int) string {
 		"context the assistant can rely on to continue. Output ONLY the summary prose — no preamble.", targetPct)
 }
 
-// Summarize makes ONE provider call to compact msgs into a summary string. The
-// conversation is flattened into a single user message (role-tagged) so the call
-// is valid regardless of how msgs alternates, and the model clearly sees
-// "summarize this". NO tools are offered → the summary call cannot re-enter the
-// tool / compaction machinery. Shared by the loop (auto + self-compact) and the
-// server (manual + terminal compaction). model may be a cheaper same-provider model.
+// RecapMaxChars bounds the History op=recap summary. A recap is a chat-list
+// subtitle a human skims — a couple of lines beside the chat's title — so the
+// length has to be a property of the TEXT, not something each surface clips off
+// whatever came back.
+const RecapMaxChars = 256
+
+// recapMaxTokens caps the recap call so a model that ignores the length
+// instruction still can't bill (or return) a paragraph. Generous next to
+// RecapMaxChars (~64 tokens at 4 chars/token) so a compliant model finishes its
+// sentence well inside the cap rather than being cut off mid-word.
+const recapMaxTokens = 160
+
+// recapPrompt is the op=recap counterpart to compactionPrompt. A recap is NOT a
+// compaction: nothing is being freed and no assistant has to resume from it, so
+// compactionPrompt's "roughly N% of the original length" — which on a long chat
+// means several paragraphs of durable context — is the wrong target entirely.
+// Ask for the two-sentence gist a human reads in a list.
+func recapPrompt() string {
+	return fmt.Sprintf("Summarize this conversation in at most two sentences, under %d characters, "+
+		"to label it in a list of chats: what the user is working on and where it stands. "+
+		"Write plain prose — no preamble, no bullet points, no markdown, no heading. "+
+		"Output ONLY the summary.", RecapMaxChars)
+}
+
+// Summarize makes ONE provider call to compact msgs into a summary string.
+// Shared by the loop (auto + self-compact) and the server (manual + terminal
+// compaction). model may be a cheaper same-provider model.
 func Summarize(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message, targetPct int) (string, error) {
+	return summarizeWith(ctx, provider, model, msgs, compactionPrompt(targetPct), "Conversation to compact:", 0)
+}
+
+// Recap makes ONE provider call to produce the SHORT chat summary behind History
+// op=recap, which the server persists to sessions.summary for the chat list.
+// Same mechanics as Summarize, different prompt and a token cap — see
+// recapPrompt for why a recap can't just reuse the compaction summary.
+func Recap(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message) (string, error) {
+	return summarizeWith(ctx, provider, model, msgs, recapPrompt(), "Conversation to summarize:", recapMaxTokens)
+}
+
+// summarizeWith is the shared body of Summarize and Recap. The conversation is
+// flattened into a single user message (role-tagged) so the call is valid
+// regardless of how msgs alternates, and the model clearly sees "summarize
+// this". NO tools are offered → the summary call cannot re-enter the tool /
+// compaction machinery. maxTokens 0 leaves the provider default.
+func summarizeWith(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message, system, lead string, maxTokens int) (string, error) {
 	var convo strings.Builder
 	for _, m := range msgs {
 		for _, c := range m.Content {
@@ -1067,11 +1105,12 @@ func Summarize(ctx context.Context, provider providers.Provider, model string, m
 		}
 	}
 	ch, err := provider.Call(ctx, providers.Request{
-		Model:  model,
-		System: []providers.ContentBlock{{Type: "text", Text: compactionPrompt(targetPct)}},
+		Model:     model,
+		System:    []providers.ContentBlock{{Type: "text", Text: system}},
+		MaxTokens: maxTokens,
 		Messages: []providers.Message{{
 			Role:    "user",
-			Content: []providers.ContentBlock{{Type: "text", Text: "Conversation to compact:\n\n" + convo.String()}},
+			Content: []providers.ContentBlock{{Type: "text", Text: lead + "\n\n" + convo.String()}},
 		}},
 	})
 	if err != nil {
