@@ -562,6 +562,16 @@ Local models change the economics. A frontier cloud model prefills a 100k-token 
 - **Unset** → the driver asks Ollama what the model is currently loaded with (`/api/ps`) and **sends that back** as `options.num_ctx`, so the window it reports is the window it requested. Echoing the loaded window is a no-op for a model already running at that size.
 - **Unset and the window is unknowable** (model not in VRAM yet, a different model resident, an Ollama too old to report it) → `num_ctx` is omitted, exactly as before, so Ollama still applies the model's Modelfile `num_ctx`; the gauge reports Ollama's documented **4096** default as a floor. One turn later `/api/ps` knows the real window and the case above takes over.
 
+**Per agent — `max_context_tokens`.** The env/provider `num_ctx` above is one window for *every* agent on the registration. Setting `max_context_tokens` on an agent def overrides it for **that agent only** — it is sent as `options.num_ctx` for that agent's runs, winning over both `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` and any `providers.<id>.options.num_ctx`. So a fetch-heavy `researcher` can hold 128K while `chat` stays at 16K on the same host without a second provider registration:
+
+```yaml
+agents:
+  researcher: { model: qwen3.6-local, max_context_tokens: 131072 }
+  chat/local: { model: local-medium }   # unset → env/provider window
+```
+
+On a **cloud** model the window is fixed by the model, so there `max_context_tokens` cannot enlarge it — it instead caps the agent's *effective* window (a compaction budget the gauge + `autocompact_at_pct` use), clamped to the model's maximum (it can only lower). It is distinct from `max_tokens` (the OUTPUT cap). Caveat: a bigger window costs KV-cache memory, and Ollama keeps a separate resident copy per `(model, num_ctx)`, so mixing windows for one model on one host means duplicate residency.
+
 > **What changed (and why you may see a different number).** Before this, an unset `NUM_CTX` meant loomcycle *advertised* the `/api/ps` window while sending **no `num_ctx` at all** — it reported a window the request never asked for. That matters beyond the gauge: `autocompact_at_pct` is a percentage **of the advertised window**, so an over-claim both let Ollama truncate the prompt (it drops the overflow silently — no error, just a model answering from a partial view) and kept compaction from firing. The two numbers are now one number.
 
 **When a prompt doesn't fit**, the server log now says so, once per call:
@@ -570,7 +580,7 @@ Local models change the economics. A frontier cloud model prefills a 100k-token 
 ollama: prompt ~7104 tokens exceeds the 4096-token context window (assumed) for model "glm-4.7-flash" on ollama-local — Ollama silently truncates the overflow; raise the window with LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
 ```
 
-The size is an estimate (bytes/4) and gates nothing. `(assumed)` means the window is the 4096 floor above, `(loaded)` that it came from `/api/ps`, `(pinned)` that you set it. Watch for this after a model pull or a restart: a truncated prompt otherwise looks like a model that has simply gone stupid.
+The size is an estimate (bytes/4) and gates nothing. `(assumed)` means the window is the 4096 floor above, `(loaded)` that it came from `/api/ps`, `(pinned)` that you set it via env/provider, `(request)` that an agent's `max_context_tokens` set it. Watch for this after a model pull or a restart: a truncated prompt otherwise looks like a model that has simply gone stupid.
 
 Pick a value **every** local model you use can handle (it's global), e.g. `131072`. Too low starves long sessions; too high blows up prefill time and VRAM on a slow GPU. ~128K is a sane middle for a 24GB+ card. A model's *training* context (e.g. 256K) is an upper bound, not what you must load — load only what your GPU can prefill in reasonable time.
 
@@ -680,6 +690,7 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 | `models` | `map[tier][]TierCandidate` | Per-agent tier candidate lists | Full replacement of library `tiers[]` for this agent. |
 | `effort` | string | `low` / `medium` / `high` | Reasoning-effort hint. Anthropic + OpenAI honour it; Ollama ignores. |
 | `max_tokens` | int | Per-iteration assistant output cap | 0 = provider default. |
+| `max_context_tokens` | int | Per-agent context WINDOW | RFC CJ. 0 = unset. Local (Ollama) → `options.num_ctx`, winning over the env/provider window. Cloud → caps the effective window (a compaction budget clamped to the model max — can only lower). Distinct from `max_tokens` (output). Content-identifying. |
 | `sampling` | object | LLM sampling params | `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking. |
 | **Tool fields** | | | |
 | `tools` | `[]string` | Tool allowlist (loomcycle form) | Empty list = zero tools. Always wins over `tools:`. |
@@ -784,7 +795,7 @@ Mix of built-in tools (WebSearch, WebFetch) and an MCP tool. Tier-driven resolut
 
 ### Claude-Code compatibility
 
-The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools` (comma-string), `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `sampling`, `skills`, `tools` (list form), `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. Keep your agents portable by including both `tools:` (Claude Code shape) and `tools:` (loomcycle shape) when you want the same file used in both.
+The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools` (comma-string), `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `sampling`, `skills`, `tools` (list form), `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. Keep your agents portable by including both `tools:` (Claude Code shape) and `tools:` (loomcycle shape) when you want the same file used in both.
 
 ### Operator-yaml `agents:` overlay
 
