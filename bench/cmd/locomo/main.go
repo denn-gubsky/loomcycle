@@ -95,7 +95,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		opts.out = DefaultOutDir(time.Now())
 	}
 
-	convs, defects, err := loadConversations(opts)
+	convs, defects, inFile, err := loadConversations(opts)
 	if err != nil {
 		return err
 	}
@@ -118,12 +118,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 		_, err := doIngest(ctx, convs, opts, stdout)
 		return err
 	case "search":
-		return doSearch(ctx, convs, defects, opts, stdout)
+		return doSearch(ctx, convs, defects, inFile, opts, stdout)
 	case "all":
 		if _, err := doIngest(ctx, convs, opts, stdout); err != nil {
 			return err
 		}
-		return doSearch(ctx, convs, defects, opts, stdout)
+		return doSearch(ctx, convs, defects, inFile, opts, stdout)
 	case "purge":
 		return doPurge(ctx, convs, opts, stdout)
 	default:
@@ -131,16 +131,22 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 }
 
-// loadConversations loads and applies the -conversations limit.
-func loadConversations(opts options) ([]Conversation, *Defects, error) {
-	convs, defects, err := Load(opts.data, opts.categories)
+// loadConversations loads and applies the -conversations limit, also returning
+// how many conversations the FILE held.
+//
+// The two differ under -conversations, and the defect counts are computed over
+// the whole file — so the report has to say which population they describe or a
+// smoke run looks like it discarded far more than it did.
+func loadConversations(opts options) (convs []Conversation, defects *Defects, inFile int, err error) {
+	convs, defects, err = Load(opts.data, opts.categories)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
+	inFile = len(convs)
 	if opts.conversations > 0 && opts.conversations < len(convs) {
 		convs = convs[:opts.conversations]
 	}
-	return convs, defects, nil
+	return convs, defects, inFile, nil
 }
 
 func parseCategories(s string) ([]int, error) {
@@ -374,7 +380,7 @@ func doIngest(ctx context.Context, convs []Conversation, opts options, stdout io
 	return st, nil
 }
 
-func doSearch(ctx context.Context, convs []Conversation, defects *Defects, opts options, stdout io.Writer) error {
+func doSearch(ctx context.Context, convs []Conversation, defects *Defects, inFile int, opts options, stdout io.Writer) error {
 	c, id, err := connect(ctx, opts, stdout)
 	if err != nil {
 		return err
@@ -383,7 +389,8 @@ func doSearch(ctx context.Context, convs []Conversation, defects *Defects, opts 
 		Tool: "locomo", StartedAt: time.Now().UTC().Format(time.RFC3339),
 		Instance: opts.instance, Tenant: id.TenantID, Subject: id.Subject,
 		Scope: opts.scope, TopK: opts.topK, Categories: opts.categories,
-		Conversations: len(convs), CorpusRows: countTurns(convs), Defects: defects,
+		Conversations: len(convs), ConversationsInFile: inFile,
+		CorpusRows: countTurns(convs), Defects: defects,
 		Notes: []string{
 			"Rows are embedded from the JSON-encoded value (the PUT endpoint has no embed_text " +
 				"field), so a stored row's embedded text carries surrounding quotes the query text " +

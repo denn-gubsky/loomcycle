@@ -14,23 +14,24 @@ import (
 
 // Report is the whole run, written as report.json alongside matrix.md.
 type Report struct {
-	Tool            string   `json:"tool"`
-	StartedAt       string   `json:"started_at"`
-	Instance        string   `json:"instance"`
-	Tenant          string   `json:"tenant"`
-	Subject         string   `json:"subject"`
-	Scope           string   `json:"scope"`
-	TopK            int      `json:"top_k"`
-	Categories      []int    `json:"categories_included"`
-	Conversations   int      `json:"conversations"`
-	CorpusRows      int      `json:"corpus_rows"`
-	Queries         int      `json:"queries"`
-	EmbeddingDim    int      `json:"query_embedding_dim"`
-	Overall         Stats    `json:"overall"`
-	PerCategory     []Stats  `json:"per_category"`
-	PerConversation []Stats  `json:"per_conversation"`
-	Defects         *Defects `json:"defects,omitempty"`
-	Notes           []string `json:"notes,omitempty"`
+	Tool                string   `json:"tool"`
+	StartedAt           string   `json:"started_at"`
+	Instance            string   `json:"instance"`
+	Tenant              string   `json:"tenant"`
+	Subject             string   `json:"subject"`
+	Scope               string   `json:"scope"`
+	TopK                int      `json:"top_k"`
+	Categories          []int    `json:"categories_included"`
+	Conversations       int      `json:"conversations"`
+	ConversationsInFile int      `json:"conversations_in_file"`
+	CorpusRows          int      `json:"corpus_rows"`
+	Queries             int      `json:"queries"`
+	EmbeddingDim        int      `json:"query_embedding_dim"`
+	Overall             Stats    `json:"overall"`
+	PerCategory         []Stats  `json:"per_category"`
+	PerConversation     []Stats  `json:"per_conversation"`
+	Defects             *Defects `json:"defects,omitempty"`
+	Notes               []string `json:"notes,omitempty"`
 	// Results is the full per-query detail, so a bad number can be traced to
 	// the query that produced it rather than re-run to find out.
 	Results []QueryResult `json:"results,omitempty"`
@@ -96,7 +97,11 @@ func (r Report) Matrix(w io.Writer) {
 		}
 	}
 	if r.Defects != nil && r.Defects.Any() {
-		fmt.Fprintf(w, "\n## Dataset defects (excluded from the numbers above)\n\n")
+		pop := fmt.Sprintf("all %d conversations in the file", r.ConversationsInFile)
+		if r.ConversationsInFile == 0 || r.ConversationsInFile == r.Conversations {
+			pop = "the conversations scored above"
+		}
+		fmt.Fprintf(w, "\n## Dataset defects (counted across %s; excluded from the numbers above)\n\n", pop)
 		fmt.Fprintf(w, "- unreadable evidence fragments: %d\n", r.Defects.MalformedEvidenceFragments)
 		fmt.Fprintf(w, "- evidence ids naming no turn in their own conversation: %d\n", r.Defects.UnresolvedEvidenceIDs)
 		fmt.Fprintf(w, "- questions dropped for having no usable evidence: %d\n", r.Defects.QueriesWithoutEvidence)

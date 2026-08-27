@@ -62,10 +62,13 @@ resolved, and **refuses to run** if that tenant is the default/legacy one.
 `-allow-shared-tenant` overrides this deliberately for single-tenant
 deployments.
 
-Prerequisites on the instance: a vector-capable store
-(`LOOMCYCLE_PGVECTOR_ENABLED=1` on Postgres, or a sqlite-vec build) and a
-configured `memory.embedder`. Without either, ingest aborts on the first embed
-warning rather than writing thousands of un-embedded rows.
+Prerequisites on the instance: **Postgres with pgvector**
+(`LOOMCYCLE_PGVECTOR_ENABLED=1`) and a configured `memory.embedder`. SQLite is
+not an option here whatever the runtime's 503 message suggests: the
+`sqlite_vec` build loads the extension but its `MemoryEmbed*` methods are still
+stubbed and `SupportsVectors()` returns false, so a SQLite instance has no
+vector search at all. Without both, ingest aborts on the first embed warning
+rather than writing thousands of un-embedded rows.
 
 ## Modes
 
