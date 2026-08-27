@@ -52,6 +52,19 @@ func TestSign_MemoryConsolidation_IsContentIdentifying(t *testing.T) {
 	}
 }
 
+func TestSign_MaxContextTokens_IsContentIdentifying(t *testing.T) {
+	base := AgentContent{Name: "researcher", SystemPrompt: "be thorough"}
+	withWindow := base
+	withWindow.MaxContextTokens = 131072
+
+	if Sign(base) == Sign(withWindow) {
+		t.Error("MaxContextTokens not content-identifying: setting it did not change the hash")
+	}
+	if got, want := Sign(base), Sign(AgentContent{Name: "researcher", SystemPrompt: "be thorough", MaxContextTokens: 0}); got != want {
+		t.Errorf("unset MaxContextTokens changed the hash (omitempty broken): %s vs %s", got, want)
+	}
+}
+
 func TestSign_DeterministicAcrossCalls(t *testing.T) {
 	c := AgentContent{
 		Name:         "researcher",

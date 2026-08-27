@@ -4966,6 +4966,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Tools:            d.Tools,
 		Skills:           d.Skills,
 		MaxTokens:        d.MaxTokens,
+		MaxContextTokens: d.MaxContextTokens,
 		MaxIterations:    d.MaxIterations,
 		// MaxConcurrentChildren rounds out the loop-budget trio (with
 		// MaxTokens/MaxIterations) — it lives on agents.Agent + the MD
@@ -5081,6 +5082,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MaxTokens != 0 {
 		out.MaxTokens = override.MaxTokens
+	}
+	if override.MaxContextTokens != 0 {
+		out.MaxContextTokens = override.MaxContextTokens
 	}
 	if override.MaxIterations != 0 {
 		out.MaxIterations = override.MaxIterations
@@ -6112,6 +6116,9 @@ func validate(c *Config) error {
 		}
 		if agent.MemoryInjectMaxTokens < 0 {
 			return fmt.Errorf("agent %q: memory_inject_max_tokens must be >= 0", name)
+		}
+		if agent.MaxContextTokens < 0 {
+			return fmt.Errorf("agent %q: max_context_tokens must be >= 0", name)
 		}
 		if agent.MemoryIndexMaxBytes < 0 {
 			return fmt.Errorf("agent %q: memory_index_max_bytes must be >= 0", name)

@@ -166,6 +166,7 @@ type AgentContent struct {
 	Internal              bool                  `json:"internal,omitempty"`
 	Interruption          *AgentInterruptionACL `json:"interruption,omitempty"`
 	MaxConcurrentChildren int                   `json:"max_concurrent_children,omitempty"`
+	MaxContextTokens      int                   `json:"max_context_tokens,omitempty"` // RFC CJ — per-agent context window; content-identifying
 	MaxIterations         int                   `json:"max_iterations,omitempty"`
 	MaxTokens             int                   `json:"max_tokens,omitempty"`
 	MemoryBackend         string                `json:"memory_backend,omitempty"`
@@ -373,6 +374,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		Tier:                  a.Tier,
 		Effort:                a.Effort,
 		MaxTokens:             a.MaxTokens,
+		MaxContextTokens:      a.MaxContextTokens,
 		MaxIterations:         a.MaxIterations,
 		MaxConcurrentChildren: a.MaxConcurrentChildren,
 		Tools:                 a.Tools,

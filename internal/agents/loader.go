@@ -66,6 +66,8 @@ type Agent struct {
 	Tier      string
 	Effort    string
 	MaxTokens int
+	// MaxContextTokens is the per-agent context window (RFC CJ); content-identifying.
+	MaxContextTokens int
 	// MaxIterations caps the agent loop at this many provider calls
 	// before terminating with stop_reason="max_iterations". 0 means
 	// use the loop default (16). Set higher for discovery-style
@@ -331,6 +333,7 @@ type frontmatter struct {
 	Tier                  string                     `yaml:"tier"`
 	Effort                string                     `yaml:"effort"`
 	MaxTokens             int                        `yaml:"max_tokens"`
+	MaxContextTokens      int                        `yaml:"max_context_tokens"` // RFC CJ
 	MaxIterations         int                        `yaml:"max_iterations"`
 	MaxConcurrentChildren int                        `yaml:"max_concurrent_children"`
 	Skills                []string                   `yaml:"skills"`
@@ -408,6 +411,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Tier = fm.Tier
 	a.Effort = fm.Effort
 	a.MaxTokens = fm.MaxTokens
+	a.MaxContextTokens = fm.MaxContextTokens
 	a.MaxIterations = fm.MaxIterations
 	a.MaxConcurrentChildren = fm.MaxConcurrentChildren
 	a.Skills = fm.Skills

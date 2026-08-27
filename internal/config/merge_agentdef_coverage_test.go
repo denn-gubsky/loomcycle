@@ -81,6 +81,7 @@ func nonZeroAgentDef() AgentDef {
 		Tools:                 []string{"Read"},
 		Skills:                []string{"a/*"},
 		MaxTokens:             111,
+		MaxContextTokens:      65536,
 		MaxIterations:         22,
 		UnboundedIterations:   true,
 		MaxConcurrentChildren: 7,
