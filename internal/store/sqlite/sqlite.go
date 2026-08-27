@@ -5238,6 +5238,31 @@ func (s *Store) MemoryCursorRelease(ctx context.Context, tenantID string, scope 
 	return err
 }
 
+// MemoryCursorReleaseByOwner frees every lease this owner holds. See the
+// interface doc for why it takes no tenant: a run id is globally unique, so
+// matching on it alone cannot reach another run's lease.
+func (s *Store) MemoryCursorReleaseByOwner(ctx context.Context, owner string) (int, error) {
+	// An empty owner would match every unleased row (leased_by = '') and
+	// "release" them all, which is a no-op in effect but a lie in the count —
+	// and it would mask a caller that lost track of its run id.
+	if owner == "" {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memory_cursors SET leased_by = '', lease_expires_at = NULL, updated_at = ?
+		 WHERE leased_by = ?`,
+		time.Now().UnixNano(), owner,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // ---- v0.8.4 Channel tool ----
 //
 // All five methods are single-table operations against

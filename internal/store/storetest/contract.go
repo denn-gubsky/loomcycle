@@ -176,6 +176,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryCursorGetDefault", testMemoryCursorGetDefault},
 		{"MemoryCursorLeaseCAS", testMemoryCursorLeaseCAS},
 		{"MemoryCursorAdvanceMonotonicAndOwner", testMemoryCursorAdvanceMonotonicAndOwner},
+		{"MemoryCursorReleaseByOwner", testMemoryCursorReleaseByOwner},
 		{"MemoryDeleteScopeCleansConsolidationRows", testMemoryDeleteScopeCleansConsolidationRows},
 		{"MemoryOrphanScanSkipsGlobal", testMemoryOrphanScanSkipsGlobal},
 		{"MemoryOrphanRepairMovesAndIsIdempotent", testMemoryOrphanRepairMovesAndIsIdempotent},
@@ -11917,5 +11918,82 @@ func testMemoryEmbedListMissing(t *testing.T, s store.Store) {
 	} else if len(wide) != 2 {
 		t.Errorf("limit=5000 returned %d rows, want 2 — a limit over the cap must clamp "+
 			"to the cap, not fall back to the default page size", len(wide))
+	}
+}
+
+// testMemoryCursorReleaseByOwner: a run that dies without releasing its own lease
+// must not strand the target for the rest of the TTL.
+//
+// The consolidation pass releases its lease in a `finally`, which covers every
+// path its code can take — and none of the paths where the RUN is killed out from
+// under it. Freeing by owner alone is what the terminal-run hook can do, because
+// a dead run cannot say which target it had leased.
+func testMemoryCursorReleaseByOwner(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// One owner, TWO targets, plus a third target held by somebody else — so this
+	// asserts both halves: everything the owner holds is freed, and nothing that
+	// belongs to another owner is touched.
+	for _, scopeID := range []string{"rbo-one", "rbo-two"} {
+		if _, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "run-dead", now, time.Hour); err != nil || !ok {
+			t.Fatalf("lease %s: acquired=%v err=%v", scopeID, ok, err)
+		}
+	}
+	if _, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, "rbo-other", "run-alive", now, time.Hour); err != nil || !ok {
+		t.Fatalf("lease rbo-other: acquired=%v err=%v", ok, err)
+	}
+
+	freed, err := s.MemoryCursorReleaseByOwner(ctx, "run-dead")
+	if err != nil {
+		t.Fatalf("MemoryCursorReleaseByOwner: %v", err)
+	}
+	if freed != 2 {
+		t.Errorf("freed = %d, want 2 (both of the dead run's targets)", freed)
+	}
+
+	// Both of its targets are now acquirable by a fresh run, WITHOUT waiting out
+	// the hour-long TTL. This is the property the fix exists for.
+	for _, scopeID := range []string{"rbo-one", "rbo-two"} {
+		row, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, scopeID, "run-next", time.Now().UTC(), time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok || row.LeasedBy != "run-next" {
+			t.Errorf("%s after release: acquired=%v leasedBy=%q, want true/run-next", scopeID, ok, row.LeasedBy)
+		}
+	}
+
+	// The other owner's lease survived untouched — releasing by owner must not be
+	// a way to steal a live lease.
+	if _, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, "rbo-other", "run-thief", time.Now().UTC(), time.Hour); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Error("another owner's live lease was released too")
+	}
+
+	// Idempotent, and an empty owner is a no-op rather than a mass release: '' is
+	// what an UNLEASED row stores in leased_by, so a naive WHERE would match all
+	// of them.
+	if freed, err := s.MemoryCursorReleaseByOwner(ctx, "run-dead"); err != nil || freed != 0 {
+		t.Errorf("second release: freed=%d err=%v, want 0/nil", freed, err)
+	}
+	// For the empty-owner check to mean anything there must BE an unleased row for
+	// a naive `WHERE leased_by = ''` to match — otherwise the assertion passes
+	// against the unguarded query too. Plant one by leasing and releasing properly.
+	if _, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, "rbo-idle", "run-tidy", time.Now().UTC(), time.Hour); err != nil || !ok {
+		t.Fatalf("lease rbo-idle: acquired=%v err=%v", ok, err)
+	}
+	if err := s.MemoryCursorRelease(ctx, "", store.MemoryScopeAgent, "rbo-idle", "run-tidy"); err != nil {
+		t.Fatalf("release rbo-idle: %v", err)
+	}
+	if freed, err := s.MemoryCursorReleaseByOwner(ctx, ""); err != nil || freed != 0 {
+		t.Errorf("empty owner: freed=%d err=%v, want 0/nil — '' is what an UNLEASED row stores, so a naive WHERE matches every one of them", freed, err)
+	}
+	// And the empty-owner call did not disturb the live lease either.
+	if _, ok, err := s.MemoryCursorLease(ctx, "", store.MemoryScopeAgent, "rbo-other", "run-thief2", time.Now().UTC(), time.Hour); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Error("an empty-owner release freed a live lease")
 	}
 }

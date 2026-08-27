@@ -2022,6 +2022,21 @@ type Store interface {
 	// clean no-op. The watermark is untouched.
 	MemoryCursorRelease(ctx context.Context, tenantID string, scope MemoryScope, scopeID, owner string) error
 
+	// MemoryCursorReleaseByOwner clears every lease held by owner, whatever
+	// target it is on, and reports how many it freed. Called when a run reaches
+	// a terminal state, because the consolidation pass releases its own lease in
+	// a `finally` that a KILLED run never reaches — a pass stopped by its
+	// wall-clock budget, a cancel, or a crash therefore stranded the target
+	// until the lease TTL elapsed, and every pass in between refused to start.
+	//
+	// Owner-only, with no tenant argument, deliberately: a lease owner is a run
+	// id, which is globally unique, so it can match nothing but that run's own
+	// lease. Requiring the tenant would mean the caller had to know which target
+	// the run had leased, which is exactly the thing a dead run cannot tell it.
+	//
+	// Idempotent, and 0 is the ordinary answer: almost no run holds a lease.
+	MemoryCursorReleaseByOwner(ctx context.Context, owner string) (int, error)
+
 	// SupportsVectors reports whether this backend instance can serve
 	// the MemoryEmbed* family. Backends without a vector index loaded
 	// return false; the Memory tool's `search` op + `embed: true`

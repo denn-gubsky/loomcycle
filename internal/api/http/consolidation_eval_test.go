@@ -351,9 +351,8 @@ func TestConsolidationEval_WatermarkAdvancesAndLeaseExcludesASecondPass(t *testi
 	f := seedEvalFixture(t, env)
 	ctx := context.Background()
 
-	// Pass A: a full pass that leases, advances, and then DOES NOT release — the
-	// shape of a pass still in flight (or one whose process died holding the
-	// lease, which is why the lease has a TTL at all).
+	// Pass A: a full pass that leases, advances, and then DOES NOT release its
+	// lease — the shape of a pass that was killed rather than one that finished.
 	scriptsA := f.evalPassScript(nil, f.fullPassWrites()...)
 	// Drop the release leg (second-to-last, before the report).
 	scriptsA = append(scriptsA[:len(scriptsA)-2], scriptsA[len(scriptsA)-1])
@@ -370,8 +369,23 @@ func TestConsolidationEval_WatermarkAdvancesAndLeaseExcludesASecondPass(t *testi
 	if !afterA.WatermarkCompletedAt.Equal(f.last.SettledAt) {
 		t.Fatalf("watermark completed_at = %v, want the chat's settled instant %v", afterA.WatermarkCompletedAt, f.last.SettledAt)
 	}
+	// THE CONCURRENT HOLDER HAS TO BE A LIVE RUN. Pass A's run has reached
+	// terminal, and a terminal run no longer holds a lease: finishRunWithCancel
+	// reclaims it, precisely because a pass killed mid-flight cannot release its
+	// own and used to strand the target for the rest of the TTL. So "a pass that
+	// skipped its release" is no longer a way to simulate a live competitor —
+	// grant the lease to a third-party owner directly instead. That is also the
+	// truer fixture: what this test is about is a NON-OWNER being refused, and the
+	// owner it is compared against should be unambiguously alive.
+	if _, ok, err := env.store.MemoryCursorLease(ctx, "", store.MemoryScopeUser, evalUserID,
+		"r_concurrent_pass", time.Now().UTC(), time.Hour); err != nil || !ok {
+		t.Fatalf("grant the concurrent pass's lease: acquired=%v err=%v", ok, err)
+	}
+	if afterA, err = env.store.MemoryCursorGet(ctx, "", store.MemoryScopeUser, evalUserID); err != nil {
+		t.Fatalf("MemoryCursorGet after granting the concurrent lease: %v", err)
+	}
 	if afterA.LeasedBy == "" {
-		t.Fatal("pass A left no lease held; the exclusion assertion below would be vacuous")
+		t.Fatal("no lease held; the exclusion assertion below would be vacuous")
 	}
 	liveAfterA := len(liveEntries(t, env))
 
