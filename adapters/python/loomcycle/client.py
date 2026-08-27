@@ -1373,6 +1373,7 @@ class LoomcycleClient:
         user_bearer: str = "",
         sampling: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
+        max_context_tokens: int = 0,
         interactive: bool = False,
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
@@ -1429,6 +1430,7 @@ class LoomcycleClient:
             user_bearer=user_bearer,
             sampling=sampling,
             compaction=compaction,
+            max_context_tokens=max_context_tokens,
             interactive=interactive,
         )
         return self._drive_stream(
@@ -1449,6 +1451,7 @@ class LoomcycleClient:
         user_bearer: str = "",
         sampling: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
+        max_context_tokens: int = 0,
         interactive: bool = False,
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
@@ -1475,6 +1478,7 @@ class LoomcycleClient:
             agent_id=agent_id,
             user_tier=user_tier,
             user_bearer=user_bearer,
+            max_context_tokens=max_context_tokens,
             interactive=interactive,
         )
         if allowed_hosts is not None:
@@ -1772,6 +1776,7 @@ def _build_run_request(
     user_bearer: str = "",
     sampling: Optional[Mapping[str, Any]] = None,
     compaction: Optional[Mapping[str, Any]] = None,
+    max_context_tokens: int = 0,
     interactive: bool = False,
 ) -> "pb.RunRequest":
     """Construct a pb.RunRequest from the run params. Shared by
@@ -1789,6 +1794,7 @@ def _build_run_request(
         tenant_id=tenant_id,
         user_tier=user_tier,
         user_bearer=user_bearer,
+        max_context_tokens=max_context_tokens,
         interactive=interactive,
     )
     if allowed_hosts is not None:
@@ -1818,6 +1824,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         user_bearer=spawn.get("user_bearer", ""),
         sampling=spawn.get("sampling"),
         compaction=spawn.get("compaction"),
+        max_context_tokens=spawn.get("max_context_tokens", 0),
     )
 
 

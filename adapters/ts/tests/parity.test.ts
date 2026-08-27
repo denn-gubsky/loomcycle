@@ -196,4 +196,42 @@ describe("per-run sampling + compaction on the run body", () => {
     const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
     expect(body.compaction).toEqual({ keep_first: false, model: "haiku" });
   });
+
+  it("runStreaming maps maxContextTokens to the snake_case body; omitted when unset", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
+      maxContextTokens: 131072,
+    })) {
+      void _;
+    }
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).max_context_tokens).toBe(131072);
+
+    // Unset → the field must be absent from the body (inherit the agent's).
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
+    })) {
+      void _;
+    }
+    expect("max_context_tokens" in JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toBe(false);
+  });
+
+  it("continueSession maps maxContextTokens too", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+    ]);
+    for await (const _ of client.continueSession({
+      sessionId: "s1",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "more" }] }],
+      maxContextTokens: 8192,
+    })) {
+      void _;
+    }
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).max_context_tokens).toBe(8192);
+  });
 });

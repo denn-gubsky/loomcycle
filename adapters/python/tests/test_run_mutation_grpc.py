@@ -205,3 +205,20 @@ async def test_run_streaming_omits_sampling_when_not_supplied():
         pass
     assert not stub.last_run_req.HasField("sampling")
     assert not stub.last_run_req.HasField("compaction")
+
+
+@pytest.mark.asyncio
+async def test_run_streaming_threads_max_context_tokens():
+    """RFC CJ per-run context-window override rides run_streaming through to the
+    RunRequest scalar; unset stays 0 (inherit the agent def)."""
+    stub = _CaptureRunStub()
+    client = _make_client()
+    client._stub = stub  # type: ignore[assignment]
+
+    async for _ in client.run_streaming(agent="default", segments=[], max_context_tokens=131072):
+        pass
+    assert stub.last_run_req.max_context_tokens == 131072
+
+    async for _ in client.run_streaming(agent="default", segments=[]):
+        pass
+    assert stub.last_run_req.max_context_tokens == 0

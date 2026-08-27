@@ -274,6 +274,11 @@ export interface RunOptions {
    *  Omitted = inherit entirely. Trigger compaction mid-run with
    *  {@link LoomcycleClient.compactRun}. */
   compaction?: CompactionOptions;
+  /** Per-run context-WINDOW override in tokens (RFC CJ). Wins over the agent's
+   *  own `max_context_tokens` when > 0; omitted = inherit it (which itself
+   *  defers to the provider/driver default). Distinct from a model's output
+   *  cap; primarily for local inference (Ollama num_ctx). */
+  maxContextTokens?: number;
   /** RFC AI — start a PERSISTENT interactive run that parks at end_turn
    *  awaiting operator steering instead of terminating. The stream emits an
    *  `awaiting_input` frame when it parks; drive it with
@@ -394,6 +399,9 @@ export interface ContinueOptions {
   sampling?: SamplingOptions;
   /** Per-continuation context-compaction override — see {@link RunOptions.compaction}. */
   compaction?: CompactionOptions;
+  /** Per-continuation context-WINDOW override in tokens — see
+   *  {@link RunOptions.maxContextTokens}. */
+  maxContextTokens?: number;
   /** RFC AI — park this continuation at end_turn for operator steering. See
    *  {@link RunOptions.interactive}. */
   interactive?: boolean;
