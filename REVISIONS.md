@@ -4,6 +4,91 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.60.0
+
+**A fact that contradicts a stored one is now noticed.** Minor rather than a patch
+because the change lives in the runtime binary and the embedded bundle, which a
+`vX.Y.Z` patch tag does not build. One feature, and it deliberately writes nothing.
+
+### Conflict detection, report-only (#1062)
+
+A fact that contradicted one already in the store did not retire it. Both persisted,
+both came back from recall, and nothing marked either as suspect — the failure a
+neutral survey of 2026 memory systems calls *hallucinations of the past* and
+attributes specifically to append-only fact stores.
+
+Retirement did exist, but it was reached from exactly **one** place. `applyOne` fills
+`supersede_queue` only from near-duplicate collapse, where a neighbour qualifies on
+cosine similarity plus subject overlap. So the decision to retire a fact was made
+entirely by **similarity**, and nothing anywhere asked whether two claims can both be
+true. That cuts both ways: two facts that genuinely conflict but score below the merge
+band both survive and both recall, while two near-duplicates that do *not* conflict
+risk being collapsed into one.
+
+Now, for each fact written, the neighbours in the "related but distinct" band — at or
+above `related_threshold`, below `merge_threshold` — go to a new tool-less judge as
+**pairs**, which answers `contradicts` / `independent` / `unclear`.
+
+**It writes nothing.** Every verdict is counted, reported and discarded:
+
+```
+conflict candidates 3, judged 3 (1 would be retired as contradicted,
+2 independent, 0 unclear) — reporting only, nothing was changed
+```
+
+That is the design rather than a limitation. The band has never been measured against
+real conflicts, and a detector that retires facts on an unmeasured threshold is the
+failure the merge band already taught this pipeline about once. The report says what
+enforcement *would* do so an operator can calibrate first, and acting on a verdict
+will require **its own key** — a deployment that turns detection on today cannot start
+retiring facts on a later upgrade without a second, separate decision.
+
+Turn it on with `memory.consolidation.detect_conflicts: true`. Off by default, read
+through the capabilities report like `verify_writes` and the similarity bands, and
+bounded at four extra judge calls per pass.
+
+### Three things this needed less of than the design expected
+
+- **No new threshold.** `related_threshold` has been in the operator config *and* the
+  capabilities report all along, documented as exactly this band's lower edge — it
+  outlived the code that used to read it. That code appended `" (related: …)"` to the
+  fact TEXT and was removed because the tails nested into the stored value and
+  therefore into the embedding, defeating the very merge band they were meant to
+  inform. Its epitaph — *"there is nowhere structured to put the linkage"* — is what
+  stopped being true: the entity sidecar carries `invalid_at` / `expired_at` /
+  `judged_by`, and supersede records which chunk replaced which.
+- **No new wire op.** The write path enforcement will need already exists.
+- **One Go field.** `detect_conflicts`, beside `verify_writes`.
+
+### One deliberate asymmetry
+
+The subject-overlap gate is **not** applied to conflict candidates, though the merge
+path uses it two lines above. There it stops a destructive merge resting on a single
+similarity number, and it earns its place. Here it would defeat the purpose: the
+reason to ask a model at all is that lexical overlap misses real conflicts — it scores
+**0.000** for a non-Latin paraphrase pair, because the tokenizer only sees `[a-z0-9]`,
+and around 0.5 for two different-language facts sharing nothing but a brand name.
+Screening candidates with the signal whose blind spots this exists to cover would
+inherit every one of them. A test with a Cyrillic neighbour fails if the gate returns.
+
+The **class** refusal does carry over, including the half that refuses a key the pass
+cannot parse — an opaque row from a remote backend, or one a user wrote themselves.
+Detection writes nothing today, so that half is not load-bearing yet; it is enforced
+from the start so enforcement needs no widening later.
+
+### A separate judge agent
+
+`memory/conflict-judge` is a new tool-less agent on the same tier as the entailment
+judge, not a second question added to it. That judge's system prompt is deliberately
+single-purpose and its tier choice rests on a measured eval; a differently-shaped
+question in the same prompt would put that result in doubt every time either question
+changed. Two single-purpose agents cost one extra def.
+
+### Adapters
+
+None. The flag is yaml, and the capabilities payload is untyped in both adapters, so
+`@loomcycle/client` and the Python package are unchanged at 1.58.0 — as at v1.59.0.
+
 ## What's in v1.59.0
 
 **The document viewer surfaces the document id and every chunk id, each with a
