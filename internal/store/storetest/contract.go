@@ -5844,7 +5844,12 @@ func testChannelReplayFromCursorZero(t *testing.T, s store.Store) {
 
 func testChannelDeferredHiddenUntilVisible(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	deferTo := time.Now().Add(150 * time.Millisecond)
+	// The window must be wide enough that the "hidden now" assertion
+	// below reliably runs BEFORE visible_at elapses even on a loaded
+	// -race CI runner, where a scheduler stall of a few hundred ms
+	// between publish and the immediate subscribe is normal. A 150ms
+	// window flaked (got 1, want 0); 2s leaves ample margin.
+	deferTo := time.Now().Add(2 * time.Second)
 	_, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
 		Channel: "ch", Scope: store.MemoryScopeAgent, ScopeID: "x",
 		Payload:   json.RawMessage(`{"k":"v"}`),
@@ -5861,7 +5866,7 @@ func testChannelDeferredHiddenUntilVisible(t *testing.T, s store.Store) {
 		t.Fatalf("deferred message visible too early: got %d, want 0", len(msgs))
 	}
 	// Wait past visible_at, then verify it shows up.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(2200 * time.Millisecond)
 	msgs, _, err = s.ChannelSubscribe(ctx, "", "ch", store.MemoryScopeAgent, "x", "", 10)
 	if err != nil {
 		t.Fatalf("post-visible subscribe: %v", err)
@@ -5883,7 +5888,10 @@ func testChannelDeferredDeliversAfterProgressedCursor(t *testing.T, s store.Stor
 		Payload: json.RawMessage(`"A"`),
 	}, 0)
 	time.Sleep(time.Microsecond)
-	deferTo := time.Now().Add(150 * time.Millisecond)
+	// Wide window so the page1 assertion (B still hidden) reliably runs
+	// before visible_at on a loaded -race CI runner — see the sibling
+	// testChannelDeferredHiddenUntilVisible for why 150ms flaked.
+	deferTo := time.Now().Add(2 * time.Second)
 	_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{
 		Channel: "ch", Scope: store.MemoryScopeAgent, ScopeID: "x",
 		Payload:   json.RawMessage(`"B"`),
@@ -5910,7 +5918,7 @@ func testChannelDeferredDeliversAfterProgressedCursor(t *testing.T, s store.Stor
 		t.Fatal(err)
 	}
 	// Wait past visible_at for B.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(2200 * time.Millisecond)
 	// Now subscribe again — B should be delivered even though its
 	// msg_id is < C's. This is the (visible_at, id) tuple-ordering
 	// invariant that prevents silent skip-on-progress for deferred
