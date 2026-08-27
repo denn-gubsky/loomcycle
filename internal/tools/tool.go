@@ -1073,6 +1073,30 @@ func ResolvedSampling(ctx context.Context) *config.Sampling {
 	return v
 }
 
+// ctxKeyMaxContextTokens carries the run's RESOLVED per-agent context-WINDOW cap
+// (RFC CJ; per-run > per-agent, already merged) so Context op=self can report the
+// CONFIGURED cap even before the first turn completes (the effective window shows
+// up separately as context.max_tokens once a turn has run). Non-secret
+// introspection, like provider/model/sampling. Stamped per-iteration in loop.Run
+// from opts.MaxContextTokens.
+type ctxKeyMaxContextTokens struct{}
+
+// WithMaxContextTokens attaches the resolved context-window cap to ctx. A
+// non-positive value is a no-op (unset → op=self omits the field, deferring to
+// the provider/driver default).
+func WithMaxContextTokens(ctx context.Context, n int) context.Context {
+	if n <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyMaxContextTokens{}, n)
+}
+
+// MaxContextTokens returns the resolved context-window cap from ctx, or 0.
+func MaxContextTokens(ctx context.Context) int {
+	v, _ := ctx.Value(ctxKeyMaxContextTokens{}).(int)
+	return v
+}
+
 // ctxKeyContextUsage carries the run's CURRENT context footprint (tokens used as
 // of the last completed turn + the model's window ceiling) so Context op=self
 // can report it. An agent reads this alongside its compaction settings to decide

@@ -248,6 +248,13 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	if s := tools.ResolvedSampling(ctx); !s.IsZero() {
 		out["sampling"] = s
 	}
+	// max_context_tokens: the CONFIGURED per-agent context-WINDOW cap in effect
+	// (RFC CJ; per-run > per-agent). Reported even before the first turn (unlike
+	// the effective `context.max_tokens` below, which is only known post-turn).
+	// Omitted when unset (0) — the run defers to the provider/driver default.
+	if mct := tools.MaxContextTokens(ctx); mct > 0 {
+		out["max_context_tokens"] = mct
+	}
 	// compaction: the resolved context-compaction settings in effect for this run
 	// (inherited from the parent + per-run/per-spawn overrides). An agent can read
 	// this to decide whether to self-compact (Context op=compact). Omitted when
