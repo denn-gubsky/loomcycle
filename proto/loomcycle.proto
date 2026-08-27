@@ -553,6 +553,13 @@ message RunRequest {
   // RunInput RPC; re-attach with StreamRun; cancel to end it. Mirrors
   // POST /v1/runs `interactive`.
   bool interactive = 15;
+
+  // max_context_tokens (RFC CJ) is the per-run context-WINDOW override, in
+  // tokens. > 0 wins over the agent's own max_context_tokens; 0 (unset)
+  // inherits it (and 0 there falls through to the provider/driver default).
+  // A plain scalar (not `optional`) because 0 is never a meaningful window,
+  // so absence and "zero" coincide. Mirrors POST /v1/runs `max_context_tokens`.
+  int32 max_context_tokens = 16;
 }
 
 message ContinueRequest {
@@ -581,6 +588,10 @@ message ContinueRequest {
   // interactive (RFC AI) — a continuation can also park at end_turn for
   // operator steering. Mirrors the HTTP continuation `interactive` field.
   bool interactive = 12;
+
+  // max_context_tokens (RFC CJ) — per-continuation context-WINDOW override.
+  // Same semantics as RunRequest.max_context_tokens.
+  int32 max_context_tokens = 13;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.

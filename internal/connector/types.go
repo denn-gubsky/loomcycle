@@ -108,6 +108,13 @@ type SpawnRunRequest struct {
 	// `compaction` field so a gRPC / LoomCycle-MCP spawn_run / fan-out child
 	// reaches the same per-run knob. Carried verbatim to runner.RunInput.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
+
+	// MaxContextTokens is an optional per-RUN context-WINDOW override (RFC CJ) —
+	// wins over the agent's own max_context_tokens when > 0, else inherits it.
+	// Mirrors the HTTP /v1/runs `max_context_tokens` field so a gRPC / LoomCycle-
+	// MCP spawn_run / fan-out child reaches the same per-run knob. Carried
+	// verbatim to runner.RunInput.
+	MaxContextTokens int `json:"max_context_tokens,omitempty"`
 }
 
 // SpawnRunResult is the final outcome of a SpawnRun call (returned

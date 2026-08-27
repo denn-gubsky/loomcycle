@@ -216,6 +216,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
   if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
   if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
+  if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
   if (opts.interactive !== undefined) body.interactive = opts.interactive;
   return body;
 }
@@ -293,6 +294,7 @@ export class LoomcycleClient {
     if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
     if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
     if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
+    if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
     if (opts.interactive !== undefined) body.interactive = opts.interactive;
     yield* this.streamSSE(
       `/v1/sessions/${encodeURIComponent(opts.sessionId)}/messages`,

@@ -274,6 +274,12 @@ type RunInput struct {
 	// FIELD over the agent's own Compaction. nil = inherit the agent's entirely.
 	Compaction *config.Compaction
 
+	// MaxContextTokens is an optional per-RUN context-WINDOW override (RFC CJ).
+	// > 0 wins over the agent's own max_context_tokens; 0 inherits it. The server
+	// resolves the merge (config.MergeMaxContextTokens) and passes the winner to
+	// loop.RunOptions.
+	MaxContextTokens int
+
 	// OperatorKeyRestricted is the RFC AX negative permission bit for the
 	// NON-principal trigger paths (scheduler / webhook / A2A), which have no
 	// auth.Principal on ctx. Those paths capture the creating principal's grant

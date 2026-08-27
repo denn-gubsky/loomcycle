@@ -764,21 +764,22 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		return status.Error(codes.InvalidArgument, errMsg)
 	}
 	in := runInputFromProto(runInputProtoArgs{
-		Agent:           req.GetAgent(),
-		SessionID:       req.GetSessionId(),
-		Segments:        req.GetSegments(),
-		Tools:           req.GetTools(),
-		AllowedHosts:    req.GetAllowedHosts(),
-		WebSearchFilter: req.GetWebSearchFilter(),
-		UserID:          req.GetUserId(),
-		AgentID:         req.GetAgentId(),
-		TenantID:        req.GetTenantId(),
-		UserTier:        req.GetUserTier(),
-		UserBearer:      req.GetUserBearer(),
-		UserCredentials: req.GetUserCredentials(), // v1.x RFC F
-		Sampling:        samplingFromProto(req.GetSampling()),
-		Compaction:      compactionFromProto(req.GetCompaction()),
-		Interactive:     req.GetInteractive(), // RFC AI
+		Agent:            req.GetAgent(),
+		SessionID:        req.GetSessionId(),
+		Segments:         req.GetSegments(),
+		Tools:            req.GetTools(),
+		AllowedHosts:     req.GetAllowedHosts(),
+		WebSearchFilter:  req.GetWebSearchFilter(),
+		UserID:           req.GetUserId(),
+		AgentID:          req.GetAgentId(),
+		TenantID:         req.GetTenantId(),
+		UserTier:         req.GetUserTier(),
+		UserBearer:       req.GetUserBearer(),
+		UserCredentials:  req.GetUserCredentials(), // v1.x RFC F
+		Sampling:         samplingFromProto(req.GetSampling()),
+		Compaction:       compactionFromProto(req.GetCompaction()),
+		Interactive:      req.GetInteractive(),           // RFC AI
+		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -800,18 +801,19 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 	in := runInputFromProto(runInputProtoArgs{
 		// Agent + TenantID + UserID omitted — server inherits from the
 		// existing session per the HTTP wire's messagesRequest contract.
-		SessionID:       req.GetSessionId(),
-		Segments:        req.GetSegments(),
-		Tools:           req.GetTools(),
-		AllowedHosts:    req.GetAllowedHosts(),
-		WebSearchFilter: req.GetWebSearchFilter(),
-		AgentID:         req.GetAgentId(),
-		UserTier:        req.GetUserTier(),
-		UserBearer:      req.GetUserBearer(),
-		UserCredentials: req.GetUserCredentials(), // v1.x RFC F
-		Sampling:        samplingFromProto(req.GetSampling()),
-		Compaction:      compactionFromProto(req.GetCompaction()),
-		Interactive:     req.GetInteractive(), // RFC AI
+		SessionID:        req.GetSessionId(),
+		Segments:         req.GetSegments(),
+		Tools:            req.GetTools(),
+		AllowedHosts:     req.GetAllowedHosts(),
+		WebSearchFilter:  req.GetWebSearchFilter(),
+		AgentID:          req.GetAgentId(),
+		UserTier:         req.GetUserTier(),
+		UserBearer:       req.GetUserBearer(),
+		UserCredentials:  req.GetUserCredentials(), // v1.x RFC F
+		Sampling:         samplingFromProto(req.GetSampling()),
+		Compaction:       compactionFromProto(req.GetCompaction()),
+		Interactive:      req.GetInteractive(),           // RFC AI
+		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-continuation context-window override
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -928,19 +930,20 @@ func replayErrToStatus(err error) error {
 // RunRequest (a pre-existing gRPC gap) so they stay nil.
 func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunRequest {
 	r := connector.SpawnRunRequest{
-		Agent:           req.GetAgent(),
-		SessionID:       req.GetSessionId(),
-		TenantID:        req.GetTenantId(),
-		Segments:        segmentsFromProto(req.GetSegments()),
-		Tools:           req.GetTools(),
-		WebSearchFilter: req.GetWebSearchFilter(),
-		UserID:          req.GetUserId(),
-		AgentID:         req.GetAgentId(),
-		UserTier:        req.GetUserTier(),
-		UserBearer:      req.GetUserBearer(),
-		UserCredentials: req.GetUserCredentials(),
-		Sampling:        samplingFromProto(req.GetSampling()),
-		Compaction:      compactionFromProto(req.GetCompaction()),
+		Agent:            req.GetAgent(),
+		SessionID:        req.GetSessionId(),
+		TenantID:         req.GetTenantId(),
+		Segments:         segmentsFromProto(req.GetSegments()),
+		Tools:            req.GetTools(),
+		WebSearchFilter:  req.GetWebSearchFilter(),
+		UserID:           req.GetUserId(),
+		AgentID:          req.GetAgentId(),
+		UserTier:         req.GetUserTier(),
+		UserBearer:       req.GetUserBearer(),
+		UserCredentials:  req.GetUserCredentials(),
+		Sampling:         samplingFromProto(req.GetSampling()),
+		Compaction:       compactionFromProto(req.GetCompaction()),
+		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 	}
 	if hosts := req.GetAllowedHosts(); hosts != nil {
 		list := hosts.GetList()
@@ -1079,41 +1082,43 @@ func (s *Server) driveStream(ctx context.Context, stream runStreamSink, in runne
 // fields TenantID/UserTier/UserBearer were added when gRPC reached
 // HTTP wire parity).
 type runInputProtoArgs struct {
-	Agent           string
-	SessionID       string
-	Segments        []*loomcyclepb.PromptSegment
-	Tools           []string
-	AllowedHosts    *loomcyclepb.HostAllowlist
-	WebSearchFilter string
-	UserID          string
-	AgentID         string
-	TenantID        string
-	UserTier        string
-	UserBearer      string
-	UserCredentials map[string]string  // v1.x RFC F per-tool named credentials
-	Sampling        *config.Sampling   // v0.28.0 per-run sampling override
-	Compaction      *config.Compaction // v0.32.0 per-run compaction override
-	Interactive     bool               // RFC AI — park at end_turn for steering
+	Agent            string
+	SessionID        string
+	Segments         []*loomcyclepb.PromptSegment
+	Tools            []string
+	AllowedHosts     *loomcyclepb.HostAllowlist
+	WebSearchFilter  string
+	UserID           string
+	AgentID          string
+	TenantID         string
+	UserTier         string
+	UserBearer       string
+	UserCredentials  map[string]string  // v1.x RFC F per-tool named credentials
+	Sampling         *config.Sampling   // v0.28.0 per-run sampling override
+	Compaction       *config.Compaction // v0.32.0 per-run compaction override
+	Interactive      bool               // RFC AI — park at end_turn for steering
+	MaxContextTokens int                // RFC CJ per-run context-window override (0 = inherit agent def)
 }
 
 // runInputFromProto maps the proto request fields into the
 // runner.RunInput shared between Run and Continue.
 func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 	in := runner.RunInput{
-		Agent:           a.Agent,
-		SessionID:       a.SessionID,
-		Segments:        segmentsFromProto(a.Segments),
-		Tools:           a.Tools,
-		WebSearchFilter: a.WebSearchFilter,
-		UserID:          a.UserID,
-		AgentID:         a.AgentID,
-		TenantID:        a.TenantID,
-		UserTier:        a.UserTier,
-		UserBearer:      a.UserBearer,
-		UserCredentials: a.UserCredentials, // v1.x RFC F per-tool named credentials
-		Sampling:        a.Sampling,        // v0.28.0 per-run sampling override
-		Compaction:      a.Compaction,      // v0.32.0 per-run compaction override
-		Interactive:     a.Interactive,     // RFC AI — park at end_turn for steering
+		Agent:            a.Agent,
+		SessionID:        a.SessionID,
+		Segments:         segmentsFromProto(a.Segments),
+		Tools:            a.Tools,
+		WebSearchFilter:  a.WebSearchFilter,
+		UserID:           a.UserID,
+		AgentID:          a.AgentID,
+		TenantID:         a.TenantID,
+		UserTier:         a.UserTier,
+		UserBearer:       a.UserBearer,
+		UserCredentials:  a.UserCredentials,  // v1.x RFC F per-tool named credentials
+		Sampling:         a.Sampling,         // v0.28.0 per-run sampling override
+		Compaction:       a.Compaction,       // v0.32.0 per-run compaction override
+		Interactive:      a.Interactive,      // RFC AI — park at end_turn for steering
+		MaxContextTokens: a.MaxContextTokens, // RFC CJ per-run context-window override
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a

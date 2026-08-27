@@ -378,20 +378,23 @@ func effectiveSpawnTimeoutMS(operatorMS, callerMS int) int {
 // code paths.
 func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
 	in := runner.RunInput{
-		Agent:           req.Agent,
-		SessionID:       req.SessionID,
-		TenantID:        req.TenantID,
-		Segments:        req.Segments,
-		Tools:           req.Tools,
-		AllowedHosts:    req.AllowedHosts,
-		WebSearchFilter: req.WebSearchFilter,
-		UserID:          req.UserID,
-		AgentID:         req.AgentID,
-		UserTier:        req.UserTier,
-		UserBearer:      req.UserBearer,
-		UserCredentials: req.UserCredentials, // v1.x RFC F per-tool named credentials
-		ParentContext:   req.ParentContext,   // v0.12.x opaque tracking lineage
-		Metadata:        req.Metadata,        // non-secret trusted agent metadata
+		Agent:            req.Agent,
+		SessionID:        req.SessionID,
+		TenantID:         req.TenantID,
+		Segments:         req.Segments,
+		Tools:            req.Tools,
+		AllowedHosts:     req.AllowedHosts,
+		WebSearchFilter:  req.WebSearchFilter,
+		UserID:           req.UserID,
+		AgentID:          req.AgentID,
+		UserTier:         req.UserTier,
+		UserBearer:       req.UserBearer,
+		UserCredentials:  req.UserCredentials,  // v1.x RFC F per-tool named credentials
+		ParentContext:    req.ParentContext,    // v0.12.x opaque tracking lineage
+		Metadata:         req.Metadata,         // non-secret trusted agent metadata
+		Sampling:         req.Sampling,         // per-run LLM sampling override (was dropped on this streaming path)
+		Compaction:       req.Compaction,       // per-run context-compaction override (was dropped on this streaming path)
+		MaxContextTokens: req.MaxContextTokens, // RFC CJ per-run context-window override
 	}
 
 	var (

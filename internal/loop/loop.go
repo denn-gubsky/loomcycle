@@ -1502,6 +1502,7 @@ outerLoop:
 		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
 		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
 		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
+		iterCtx = tools.WithMaxContextTokens(iterCtx, opts.MaxContextTokens) // RFC CJ — configured cap for op=self
 		// NB: the context-footprint stamp (tools.WithContextUsage) is applied
 		// LOWER — after drainSteer + auto/self compaction — so a same-turn
 		// op=self never reports a stale pre-compaction footprint.
@@ -1606,10 +1607,10 @@ outerLoop:
 		}
 
 		req := providers.Request{
-			Model:     opts.Model,
-			System:    reqSystem,
-			Messages:  reqMessages,
-			Tools:     toolSpecs,
+			Model:            opts.Model,
+			System:           reqSystem,
+			Messages:         reqMessages,
+			Tools:            toolSpecs,
 			MaxTokens:        opts.MaxTokens,        // 0 → driver default
 			MaxContextTokens: opts.MaxContextTokens, // 0 → driver/provider default (RFC CJ)
 			Effort:           opts.Effort,           // "" → driver default; PR 3 wires per-driver translation

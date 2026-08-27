@@ -120,6 +120,35 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	}
 }
 
+// TestContextTool_SelfReportsMaxContextTokens: the CONFIGURED per-agent context
+// window (RFC CJ, stamped from opts.MaxContextTokens) surfaces in op=self so an
+// agent can read its own cap even before the first turn completes. Decoded JSON
+// numbers are float64.
+func TestContextTool_SelfReportsMaxContextTokens(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	ctx = tools.WithMaxContextTokens(ctx, 131072)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if res.IsError {
+		t.Fatalf("self: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["max_context_tokens"] != float64(131072) {
+		t.Errorf("max_context_tokens = %v (%T), want 131072", out["max_context_tokens"], out["max_context_tokens"])
+	}
+}
+
+// TestContextTool_SelfOmitsMaxContextTokensWhenUnset: with no configured cap
+// (the common case — the run defers to the provider/driver default), op=self
+// omits the key rather than reporting 0.
+func TestContextTool_SelfOmitsMaxContextTokensWhenUnset(t *testing.T) {
+	tool, ctx := contextFixture(t) // fixture stamps no max-context cap
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	if _, ok := out["max_context_tokens"]; ok {
+		t.Errorf("max_context_tokens present (%v), want omitted when unset", out["max_context_tokens"])
+	}
+}
+
 // TestContextTool_SelfReportsNoFilesystemAndNetwork: RFC AH Phase 3 retired
 // the legacy jail, so an agent with no volume bound reports
 // `filesystem: "none …"` (sandbox-by-default — the file/exec tools refuse)
