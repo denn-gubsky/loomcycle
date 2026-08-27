@@ -2584,8 +2584,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,
-		MaxContextTokens:    agentDef.MaxContextTokens, // RFC CJ; 0 → provider/driver default
-		MaxIterations:       agentDef.MaxIterations,    // 0 → loop default (16)
+		MaxContextTokens:    config.MergeMaxContextTokens(agentDef.MaxContextTokens, in.MaxContextTokens), // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:       agentDef.MaxIterations,                                                       // 0 → loop default (16)
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
@@ -3581,6 +3581,12 @@ type runRequest struct {
 	// FIELD over the agent's own compaction block (this wins; unset fields
 	// inherit). nil = inherit the agent's entirely.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
+
+	// MaxContextTokens is an optional per-RUN context-WINDOW override (RFC CJ) —
+	// wins over the agent's own max_context_tokens when > 0, else inherits it
+	// (and 0 there falls through to the provider/driver default). Distinct from
+	// max_tokens (the output cap). Primarily for local (Ollama) inference.
+	MaxContextTokens int `json:"max_context_tokens,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -4186,9 +4192,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Segments:            injectMetadataSegments(req.Segments, provider.Capabilities().MetadataViaInput, req.Metadata, nil),
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           agentDef.MaxTokens,        // 0 → driver default
-		MaxContextTokens:    agentDef.MaxContextTokens, // RFC CJ; 0 → provider/driver default
-		MaxIterations:       agentDef.MaxIterations,    // 0 → loop default (16)
+		MaxTokens:           agentDef.MaxTokens,                                                            // 0 → driver default
+		MaxContextTokens:    config.MergeMaxContextTokens(agentDef.MaxContextTokens, req.MaxContextTokens), // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:       agentDef.MaxIterations,                                                        // 0 → loop default (16)
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
@@ -4350,6 +4356,10 @@ type messagesRequest struct {
 	// Compaction: per-RUN context-compaction override for this continuation,
 	// merged per field over the agent's. Same semantics as runRequest.Compaction.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
+
+	// MaxContextTokens: per-RUN context-WINDOW override for this continuation
+	// turn (RFC CJ). Same semantics as runRequest.MaxContextTokens.
+	MaxContextTokens int `json:"max_context_tokens,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -4768,9 +4778,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		PauseGate:              gate,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
-		MaxTokens:              agentDef.MaxTokens,        // 0 → driver default
-		MaxContextTokens:       agentDef.MaxContextTokens, // RFC CJ; 0 → provider/driver default
-		MaxIterations:          agentDef.MaxIterations,    // 0 → loop default (16)
+		MaxTokens:              agentDef.MaxTokens,                                                             // 0 → driver default
+		MaxContextTokens:       config.MergeMaxContextTokens(agentDef.MaxContextTokens, body.MaxContextTokens), // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:          agentDef.MaxIterations,                                                         // 0 → loop default (16)
 		UnboundedIterations:    agentDef.UnboundedIterations,
 		SteerQueue:             steerQ,
 		OnSteer:                onSteer,

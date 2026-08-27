@@ -108,9 +108,15 @@ type RunRequest struct {
 	// awaiting operator steering instead of terminating. Drive it with the
 	// RunInput RPC; re-attach with StreamRun; cancel to end it. Mirrors
 	// POST /v1/runs `interactive`.
-	Interactive   bool `protobuf:"varint,15,opt,name=interactive,proto3" json:"interactive,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Interactive bool `protobuf:"varint,15,opt,name=interactive,proto3" json:"interactive,omitempty"`
+	// max_context_tokens (RFC CJ) is the per-run context-WINDOW override, in
+	// tokens. > 0 wins over the agent's own max_context_tokens; 0 (unset)
+	// inherits it (and 0 there falls through to the provider/driver default).
+	// A plain scalar (not `optional`) because 0 is never a meaningful window,
+	// so absence and "zero" coincide. Mirrors POST /v1/runs `max_context_tokens`.
+	MaxContextTokens int32 `protobuf:"varint,16,opt,name=max_context_tokens,json=maxContextTokens,proto3" json:"max_context_tokens,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *RunRequest) Reset() {
@@ -248,6 +254,13 @@ func (x *RunRequest) GetInteractive() bool {
 	return false
 }
 
+func (x *RunRequest) GetMaxContextTokens() int32 {
+	if x != nil {
+		return x.MaxContextTokens
+	}
+	return 0
+}
+
 type ContinueRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	SessionId       string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -270,9 +283,12 @@ type ContinueRequest struct {
 	Compaction *Compaction `protobuf:"bytes,11,opt,name=compaction,proto3" json:"compaction,omitempty"`
 	// interactive (RFC AI) — a continuation can also park at end_turn for
 	// operator steering. Mirrors the HTTP continuation `interactive` field.
-	Interactive   bool `protobuf:"varint,12,opt,name=interactive,proto3" json:"interactive,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Interactive bool `protobuf:"varint,12,opt,name=interactive,proto3" json:"interactive,omitempty"`
+	// max_context_tokens (RFC CJ) — per-continuation context-WINDOW override.
+	// Same semantics as RunRequest.max_context_tokens.
+	MaxContextTokens int32 `protobuf:"varint,13,opt,name=max_context_tokens,json=maxContextTokens,proto3" json:"max_context_tokens,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ContinueRequest) Reset() {
@@ -387,6 +403,13 @@ func (x *ContinueRequest) GetInteractive() bool {
 		return x.Interactive
 	}
 	return false
+}
+
+func (x *ContinueRequest) GetMaxContextTokens() int32 {
+	if x != nil {
+		return x.MaxContextTokens
+	}
+	return 0
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -7998,7 +8021,7 @@ var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
-	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbb\x05\n" +
+	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe9\x05\n" +
 	"\n" +
 	"RunRequest\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x1d\n" +
@@ -8020,10 +8043,11 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
 	"compaction\x18\x0e \x01(\v2\x18.loomcycle.v1.CompactionR\n" +
 	"compaction\x12 \n" +
-	"\vinteractive\x18\x0f \x01(\bR\vinteractive\x1aB\n" +
+	"\vinteractive\x18\x0f \x01(\bR\vinteractive\x12,\n" +
+	"\x12max_context_tokens\x18\x10 \x01(\x05R\x10maxContextTokens\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf9\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa7\x05\n" +
 	"\x0fContinueRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x127\n" +
@@ -8041,7 +8065,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
 	"compaction\x18\v \x01(\v2\x18.loomcycle.v1.CompactionR\n" +
 	"compaction\x12 \n" +
-	"\vinteractive\x18\f \x01(\bR\vinteractive\x1aB\n" +
+	"\vinteractive\x18\f \x01(\bR\vinteractive\x12,\n" +
+	"\x12max_context_tokens\x18\r \x01(\x05R\x10maxContextTokens\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x02\n" +

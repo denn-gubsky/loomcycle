@@ -1683,6 +1683,20 @@ func MergeCompaction(base, over *Compaction) *Compaction {
 	return out
 }
 
+// MergeMaxContextTokens resolves the per-agent context WINDOW (RFC CJ) against
+// a per-run override. MaxContextTokens is a plain scalar where 0 means "unset"
+// (fall through to the provider/driver default), so — unlike sampling, where an
+// explicit 0 is meaningful — the merge is a simple "per-run wins when set".
+// A non-positive override (0 or a nonsensical negative) is ignored so a caller
+// can never widen or corrupt the window with a bad value; the agent's own cap
+// (or the provider default when that is 0 too) stands.
+func MergeMaxContextTokens(base, override int) int {
+	if override > 0 {
+		return override
+	}
+	return base
+}
+
 // Validate checks per-field bounds. Returns a descriptive error naming the field.
 func (c *Compaction) Validate() error {
 	if c == nil {

@@ -131,6 +131,19 @@ func TestCompactionFromProto_PreservesPresence(t *testing.T) {
 	}
 }
 
+// TestRunInputFromProto_MapsMaxContextTokens: the shared Run/Continue mapper
+// carries the RFC CJ per-run context-window override int through to
+// runner.RunInput (0 stays 0 = inherit the agent def). Regression for phase 2.
+func TestRunInputFromProto_MapsMaxContextTokens(t *testing.T) {
+	got := runInputFromProto(runInputProtoArgs{Agent: "a", MaxContextTokens: 32768})
+	if got.MaxContextTokens != 32768 {
+		t.Errorf("MaxContextTokens = %d, want 32768", got.MaxContextTokens)
+	}
+	if zero := runInputFromProto(runInputProtoArgs{Agent: "a"}); zero.MaxContextTokens != 0 {
+		t.Errorf("unset MaxContextTokens = %d, want 0 (inherit agent def)", zero.MaxContextTokens)
+	}
+}
+
 func TestSpawnRunBatch_DispatchesAndMaps(t *testing.T) {
 	mc := &parityMock{batchResult: connector.BatchSpawnResult{
 		Spawned: 2,
@@ -145,7 +158,7 @@ func TestSpawnRunBatch_DispatchesAndMaps(t *testing.T) {
 	resp, err := client.SpawnRunBatch(context.Background(), &loomcyclepb.BatchSpawnRequest{
 		Mode: "join",
 		Spawns: []*loomcyclepb.RunRequest{
-			{Agent: "rev", Compaction: &loomcyclepb.Compaction{Enabled: proto.Bool(true), KeepLastN: proto.Int32(8)}},
+			{Agent: "rev", Compaction: &loomcyclepb.Compaction{Enabled: proto.Bool(true), KeepLastN: proto.Int32(8)}, MaxContextTokens: 65536},
 			{Agent: "rev", Sampling: &loomcyclepb.Sampling{Temperature: proto.Float64(0.2)}},
 		},
 	})
@@ -158,6 +171,9 @@ func TestSpawnRunBatch_DispatchesAndMaps(t *testing.T) {
 	}
 	if c := mc.lastBatch.Spawns[0].Compaction; c == nil || c.Enabled == nil || !*c.Enabled || c.KeepLastN == nil || *c.KeepLastN != 8 {
 		t.Errorf("spawn[0] compaction not mapped: %+v", mc.lastBatch.Spawns[0].Compaction)
+	}
+	if mc.lastBatch.Spawns[0].MaxContextTokens != 65536 { // RFC CJ per-run context-window override
+		t.Errorf("spawn[0] max_context_tokens = %d, want 65536", mc.lastBatch.Spawns[0].MaxContextTokens)
 	}
 	if s := mc.lastBatch.Spawns[1].Sampling; s == nil || s.Temperature == nil || *s.Temperature != 0.2 {
 		t.Errorf("spawn[1] sampling not mapped: %+v", mc.lastBatch.Spawns[1].Sampling)

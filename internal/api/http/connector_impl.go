@@ -47,22 +47,23 @@ var _ connector.Connector = (*Server)(nil)
 // runner.Runner field separately and use it directly for that path.
 func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
 	in := runner.RunInput{
-		Agent:           req.Agent,
-		SessionID:       req.SessionID,
-		TenantID:        req.TenantID,
-		Segments:        req.Segments,
-		Tools:           req.Tools,
-		AllowedHosts:    req.AllowedHosts,
-		WebSearchFilter: req.WebSearchFilter,
-		UserID:          req.UserID,
-		AgentID:         req.AgentID,
-		UserTier:        req.UserTier,
-		UserBearer:      req.UserBearer,
-		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
-		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage
-		Metadata:        req.Metadata,        // non-secret trusted agent metadata
-		Sampling:        req.Sampling,        // per-run LLM sampling override
-		Compaction:      req.Compaction,      // per-run context-compaction override
+		Agent:            req.Agent,
+		SessionID:        req.SessionID,
+		TenantID:         req.TenantID,
+		Segments:         req.Segments,
+		Tools:            req.Tools,
+		AllowedHosts:     req.AllowedHosts,
+		WebSearchFilter:  req.WebSearchFilter,
+		UserID:           req.UserID,
+		AgentID:          req.AgentID,
+		UserTier:         req.UserTier,
+		UserBearer:       req.UserBearer,
+		UserCredentials:  req.UserCredentials,  // v1.x RFC F: per-tool named credentials
+		ParentContext:    req.ParentContext,    // v0.12.x: opaque tracking lineage
+		Metadata:         req.Metadata,         // non-secret trusted agent metadata
+		Sampling:         req.Sampling,         // per-run LLM sampling override
+		Compaction:       req.Compaction,       // per-run context-compaction override
+		MaxContextTokens: req.MaxContextTokens, // RFC CJ per-run context-window override
 	}
 
 	// Capture: the OnRegistered callback gives us the resolved IDs;
