@@ -231,11 +231,17 @@ type ctxWindow struct {
 //     keeps today's behaviour and 4096 is a floor we cannot under-deliver on,
 //     so the advertised window is pessimistic but never a lie. One turn later
 //     /api/ps reports the real window and the exact case above takes over.
-func (d *Driver) resolveContext(model string) ctxWindow {
+func (d *Driver) resolveContext(req providers.Request) ctxWindow {
+	// RFC CJ: a per-agent/per-run window resolved by the loop wins over the
+	// construction-time num_ctx (per-provider options / env). Ollama caps it at
+	// the model's trained context, so an over-large value is safe.
+	if req.MaxContextTokens > 0 {
+		return ctxWindow{send: req.MaxContextTokens, advertise: req.MaxContextTokens, source: "request"}
+	}
 	if d.numCtx > 0 {
 		return ctxWindow{send: d.numCtx, advertise: d.numCtx, source: "pinned"}
 	}
-	if n := d.loadedContext(model); n > 0 {
+	if n := d.loadedContext(req.Model); n > 0 {
 		return ctxWindow{send: n, advertise: n, source: "loaded"}
 	}
 	return ctxWindow{send: 0, advertise: defaultNumCtx, source: "assumed"}
@@ -439,7 +445,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	// wire and the usage stamp: resolving twice (e.g. again at the done frame)
 	// would let the cache TTL expire mid-generation and re-open the gap this
 	// closes.
-	window := d.resolveContext(req.Model)
+	window := d.resolveContext(req)
 	d.warnIfPromptOverWindow(req, window)
 
 	body, err := d.buildRequestBody(req, window.send)

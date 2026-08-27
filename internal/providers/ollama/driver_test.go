@@ -309,6 +309,44 @@ func TestRequestBody_NumCtxPropagated(t *testing.T) {
 	}
 }
 
+// TestRequestBody_PerRequestMaxContextTokensOverrides pins RFC CJ: a per-agent
+// window resolved by the loop (Request.MaxContextTokens) wins over the driver's
+// construction-time num_ctx (per-provider options / env). So two agents on the
+// same ollama-local registration can run at different windows.
+func TestRequestBody_PerRequestMaxContextTokensOverrides(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
+	}))
+	defer srv.Close()
+
+	// Driver pinned to 8192 (the shared provider/env default); the request asks
+	// for 131072 — the request must win.
+	d := New("", "", srv.URL, streamhttp.Options{}, nil).WithNumCtx(8192)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:            "glm-4.7-flash:q4_K_M",
+		MaxContextTokens: 131072,
+		Messages:         []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+	if !strings.Contains(string(captured), `"num_ctx":131072`) {
+		t.Errorf("per-request num_ctx=131072 did not override the pinned 8192; body:\n%s", string(captured))
+	}
+	if strings.Contains(string(captured), `"num_ctx":8192`) {
+		t.Errorf("pinned 8192 leaked despite a per-request override; body:\n%s", string(captured))
+	}
+}
+
 // TestRequestBody_NumGpuOmittedByDefault pins that no num_gpu field is sent
 // when the driver was built without WithNumGpu. The omitempty tag is
 // load-bearing: a literal "num_gpu":0 would force Ollama to run CPU-only.

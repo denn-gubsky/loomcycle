@@ -158,6 +158,13 @@ type RunOptions struct {
 	// from cfg.Agents[X].MaxTokens at request time.
 	MaxTokens int
 
+	// MaxContextTokens is the resolved per-agent context WINDOW (RFC CJ; per-run
+	// > per-agent, merged by the caller), distinct from MaxTokens (output). The
+	// loop passes it to the driver (Ollama → options.num_ctx) AND uses it as the
+	// effective window for the auto-compaction threshold + the gauge, clamped to
+	// the provider's real max (a cloud budget can only lower). 0 = no override.
+	MaxContextTokens int
+
 	// Effort is the reasoning-effort hint plumbed through to the
 	// driver. One of "low" / "medium" / "high" or empty (= no hint).
 	// Per-driver translation lands in PR 3 of the resolve-matrix
@@ -1603,8 +1610,9 @@ outerLoop:
 			System:    reqSystem,
 			Messages:  reqMessages,
 			Tools:     toolSpecs,
-			MaxTokens: opts.MaxTokens, // 0 → driver default
-			Effort:    opts.Effort,    // "" → driver default; PR 3 wires per-driver translation
+			MaxTokens:        opts.MaxTokens,        // 0 → driver default
+			MaxContextTokens: opts.MaxContextTokens, // 0 → driver/provider default (RFC CJ)
+			Effort:           opts.Effort,           // "" → driver default; PR 3 wires per-driver translation
 			// OnEvent lets the driver fire pre-channel events (currently
 			// EventRetry during a 429 sleep) directly to the same caller
 			// hook the loop uses for response events. Without this hop
@@ -1941,6 +1949,16 @@ outerLoop:
 			// that and only fall back to the static capability default.
 			if iterUsage.MaxContextTokens == 0 {
 				iterUsage.MaxContextTokens = opts.Provider.Capabilities().MaxContextTokens
+			}
+			// RFC CJ: a per-agent context budget caps the EFFECTIVE window used by
+			// the auto-compaction threshold + the gauge. Clamp to whatever the
+			// provider reported — a budget can only LOWER a fixed cloud window,
+			// never enlarge it (0 = unknown window → adopt the budget). For Ollama
+			// the driver already reported the per-agent num_ctx here, so this is a
+			// no-op unless the budget is smaller still.
+			if opts.MaxContextTokens > 0 &&
+				(iterUsage.MaxContextTokens == 0 || opts.MaxContextTokens < iterUsage.MaxContextTokens) {
+				iterUsage.MaxContextTokens = opts.MaxContextTokens
 			}
 			// RFC AV: stamp the serving provider onto the per-call usage event
 			// too (not just totalUsage) so the token_usage row records which

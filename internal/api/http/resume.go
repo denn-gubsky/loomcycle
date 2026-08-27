@@ -342,6 +342,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,
+		MaxContextTokens:    agentDef.MaxContextTokens, // RFC CJ
 		MaxIterations:       agentDef.MaxIterations,
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,

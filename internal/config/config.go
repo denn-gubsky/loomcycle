@@ -988,6 +988,17 @@ type AgentDef struct {
 	// use, 16384+ for batch scoring agents.
 	MaxTokens int `yaml:"max_tokens"`
 
+	// MaxContextTokens sets the context WINDOW this agent uses (RFC CJ) —
+	// distinct from MaxTokens, which is the OUTPUT cap. 0 = unset → today's
+	// behavior exactly. Local (Ollama): sent as options.num_ctx, sizing the real
+	// KV-cache window (Ollama caps it at the model's trained context). Cloud: the
+	// window is fixed by the model, so this caps the agent's EFFECTIVE/advertised
+	// window — a compaction budget clamped to the model's maximum (it can only
+	// LOWER, never enlarge). Behaviour-bearing (a smaller window truncates the
+	// prompt → different output), so content-identifying like sampling; omitempty
+	// keeps every pre-feature agent row byte-stable in content_sha256.
+	MaxContextTokens int `yaml:"max_context_tokens,omitempty"`
+
 	// MaxIterations caps the agent loop at this many provider calls
 	// before terminating with stop_reason="max_iterations". Zero =
 	// use the loop default (16). Set higher for discovery-style
