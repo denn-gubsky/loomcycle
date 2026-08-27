@@ -857,6 +857,9 @@ type mergedDef struct {
 	Tier      string `json:"tier,omitempty"`
 	Effort    string `json:"effort,omitempty"`
 	MaxTokens int    `json:"max_tokens,omitempty"`
+	// MaxContextTokens: per-agent context WINDOW (RFC CJ; distinct from MaxTokens,
+	// the output cap). Content-identifying, plain int (0 = unset).
+	MaxContextTokens int `json:"max_context_tokens,omitempty"`
 	// Sampling: per-agent LLM sampling params. Round-trips as the `sampling`
 	// object; applyOverlay merges it PER FIELD (a fork that sets only
 	// temperature keeps the parent's top_p). Content-identifying (hashed).
@@ -1001,6 +1004,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.MaxTokens != 0 {
 		d.MaxTokens = ov.MaxTokens
+	}
+	if ov.MaxContextTokens != 0 {
+		d.MaxContextTokens = ov.MaxContextTokens
 	}
 	if ov.MaxIterations != 0 {
 		d.MaxIterations = ov.MaxIterations
@@ -1221,6 +1227,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Sampling:              s.Sampling.Clone(),
 		Compaction:            s.Compaction.Clone(),
 		MaxTokens:             s.MaxTokens,
+		MaxContextTokens:      s.MaxContextTokens,
 		MaxIterations:         s.MaxIterations,
 		UnboundedIterations:   s.UnboundedIterations,
 		MaxConcurrentChildren: s.MaxConcurrentChildren,
@@ -1337,6 +1344,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 		Tier:                  def.Tier,
 		Effort:                def.Effort,
 		MaxTokens:             def.MaxTokens,
+		MaxContextTokens:      def.MaxContextTokens,
 		MaxIterations:         def.MaxIterations,
 		UnboundedIterations:   def.UnboundedIterations,
 		MaxConcurrentChildren: def.MaxConcurrentChildren,

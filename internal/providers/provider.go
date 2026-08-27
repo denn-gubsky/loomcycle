@@ -160,6 +160,14 @@ type Request struct {
 	Temperature *float64       `json:"temperature,omitempty"`
 	Stream      bool           `json:"stream"`
 
+	// MaxContextTokens is the per-agent context WINDOW the loop resolved for
+	// this run (RFC CJ; per-run > per-agent), distinct from MaxTokens (output).
+	// Translate-or-drop, like Effort: the Ollama driver applies it as
+	// options.num_ctx (preferred over its construction-time num_ctx); every
+	// other driver ignores it — the window there is model-fixed and the loop
+	// handles the advertised-window budget itself. 0 = no per-agent override.
+	MaxContextTokens int `json:"max_context_tokens,omitempty"`
+
 	// Per-agent LLM sampling knobs (config.Sampling, resolved per-run >
 	// per-agent and mapped onto these flat fields by the loop). Each driver
 	// applies the ones its provider supports and DROPS the rest (the same

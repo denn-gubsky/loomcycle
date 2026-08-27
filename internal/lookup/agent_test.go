@@ -286,6 +286,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"sampling":                true, // per-agent LLM sampling params (temperature, top_p, …)
 		"compaction":              true, // per-agent context-compaction settings
 		"max_tokens":              true,
+		"max_context_tokens":      true, // RFC CJ — per-agent context window (content-identifying; mirror mergedDef)
 		"max_iterations":          true,
 		"unbounded_iterations":    true, // lift the iteration soft-cap for interactive LLM agents
 		"max_concurrent_children": true,

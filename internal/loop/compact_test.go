@@ -272,6 +272,44 @@ func (p *ctxUsageProvider) Call(ctx context.Context, _ providers.Request) (<-cha
 	return ch, nil
 }
 
+// TestRun_MaxContextTokens_CapsEffectiveWindow pins RFC CJ's budget path: a
+// per-agent MaxContextTokens caps the EFFECTIVE window reported on the usage
+// event (which the auto-compaction threshold + the UI gauge read), clamped to
+// the provider's real max — a budget can only LOWER a fixed window, never
+// enlarge it. (For Ollama the driver reports the per-agent num_ctx directly; on
+// a fixed-window cloud provider this loop clamp is what makes the budget bite.)
+func TestRun_MaxContextTokens_CapsEffectiveWindow(t *testing.T) {
+	reportedWindow := func(budget int) int {
+		prov := &ctxUsageProvider{maxCtx: 128000} // model's fixed window
+		var window int
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = Run(ctx, RunOptions{
+			Provider:         prov,
+			Model:            "x",
+			Tools:            []tools.Tool{noopTool{}},
+			Dispatcher:       tools.NewDispatcher([]tools.Tool{noopTool{}}),
+			Segments:         steerSegs(),
+			MaxContextTokens: budget,
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventUsage && ev.Usage != nil && ev.Usage.MaxContextTokens > 0 {
+					window = ev.Usage.MaxContextTokens
+				}
+			},
+		})
+		return window
+	}
+	if got := reportedWindow(32000); got != 32000 {
+		t.Errorf("budget 32000 below the 128000 model window: reported %d, want 32000 (clamped down)", got)
+	}
+	if got := reportedWindow(0); got != 128000 {
+		t.Errorf("no budget: reported %d, want the model's 128000", got)
+	}
+	if got := reportedWindow(500000); got != 128000 {
+		t.Errorf("budget 500000 above the model window: reported %d, want 128000 (cannot enlarge)", got)
+	}
+}
+
 // A parked interactive run that compacts (steer.KindCompact) must refresh the
 // context footprint so the NEXT operator turn's Context op=self reports the
 // compacted (small) size — not the stale pre-compaction footprint.

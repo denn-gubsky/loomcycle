@@ -2584,7 +2584,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,
-		MaxIterations:       agentDef.MaxIterations, // 0 → loop default (16)
+		MaxContextTokens:    agentDef.MaxContextTokens, // RFC CJ; 0 → provider/driver default
+		MaxIterations:       agentDef.MaxIterations,    // 0 → loop default (16)
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
@@ -4185,8 +4186,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Segments:            injectMetadataSegments(req.Segments, provider.Capabilities().MetadataViaInput, req.Metadata, nil),
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           agentDef.MaxTokens,     // 0 → driver default
-		MaxIterations:       agentDef.MaxIterations, // 0 → loop default (16)
+		MaxTokens:           agentDef.MaxTokens,        // 0 → driver default
+		MaxContextTokens:    agentDef.MaxContextTokens, // RFC CJ; 0 → provider/driver default
+		MaxIterations:       agentDef.MaxIterations,    // 0 → loop default (16)
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
@@ -4766,8 +4768,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		PauseGate:              gate,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
-		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
-		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
+		MaxTokens:              agentDef.MaxTokens,        // 0 → driver default
+		MaxContextTokens:       agentDef.MaxContextTokens, // RFC CJ; 0 → provider/driver default
+		MaxIterations:          agentDef.MaxIterations,    // 0 → loop default (16)
 		UnboundedIterations:    agentDef.UnboundedIterations,
 		SteerQueue:             steerQ,
 		OnSteer:                onSteer,
@@ -6043,8 +6046,9 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		OnEvent:             subEmit,
 		OnHeartbeat:         subHeartbeat,
 		PauseGate:           subGate,
-		MaxTokens:           def.MaxTokens,     // 0 → driver default
-		MaxIterations:       def.MaxIterations, // 0 → loop default (16)
+		MaxTokens:           def.MaxTokens,        // 0 → driver default
+		MaxContextTokens:    def.MaxContextTokens, // RFC CJ; 0 → provider/driver default
+		MaxIterations:       def.MaxIterations,    // 0 → loop default (16)
 		UnboundedIterations: def.UnboundedIterations,
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
