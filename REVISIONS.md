@@ -4,6 +4,109 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.62.0
+
+**Three ways a consolidation pass wasted a deployment's time, all found by running
+one.** Minor: the changes are in the runtime binary and the embedded bundle, neither
+of which a `vX.Y.Z` patch tag builds. No adapter or wire change.
+
+The occasion was a LoCoMo memory benchmark on a local-model deployment. Every item
+below is measured from that run's event log rather than reasoned about.
+
+### A killed pass no longer strands its lease (#1069)
+
+The consolidation pass releases its lease in a `finally`, which covers every path
+its own code can take — and none of the paths where the **run** is killed out from
+under it. The owner of a lease is the run id and `cursor_release` is
+ownership-scoped, so a dead run can never hand its lease back and nothing else is
+permitted to. The target stayed leased until the TTL elapsed.
+
+What that looked like: a pass took the lease at 14:21:46 and spawned an extractor
+child that never returned — neither run emitted a `done` event in the following two
+hours. The parent hung on that one call, exhausted its 25-minute
+`run_timeout_seconds`, and was killed before reaching the `finally`; its 30-minute
+lease then sat until 14:51:46. The harness polls every three minutes, so **ten
+consecutive passes** bailed with "target busy, nothing read, nothing written" across
+a window where nothing was running at all.
+
+Note the shape: `run_timeout_seconds` is deliberately *below* `lease_ttl_ms` so a
+live pass can never be stolen from — which means a killed pass was *guaranteed* to
+leave a stranded lease, every time.
+
+`MemoryCursorReleaseByOwner(owner)` now frees a run's lease from
+`finishRunWithCancel`, the terminal path for every run, as a deferred best-effort
+hook. Owner-only with no tenant argument, because a run id is globally unique and a
+dead run cannot say which target it had leased. An empty owner is a no-op, since
+`''` is what an *unleased* row stores in `leased_by`. The TTL keeps its job as the
+backstop for a process that dies without reaching any cleanup; what is gone is the
+case where the runtime *knew* the run was over and let the lease sit anyway.
+
+### The queue no longer takes a whole pass per batch, and one bad item stops blocking the rest (#1070)
+
+`consolidatePending` took exactly one extractor call's worth of queued items and
+deferred the remainder, so throughput was **one batch per pass** however long the
+queue was — a 419-turn conversation measured ten-to-sixteen passes and about an
+hour. The items are independent; nothing about correctness required stopping after
+one call, only the absence of a loop. Now bounded by `max_pending_calls` (4),
+because a pass still has to finish inside `run_timeout_seconds`.
+
+The second half was a **livelock**, not slowness. An empty extraction left the whole
+batch queued — right in itself, because an ack is the one irreversible step here and
+an empty reply cannot distinguish "these turns hold nothing durable" from "the model
+glitched". But it also meant a batch the extractor keeps answering empty for was
+re-drained every pass, spent a call, acked nothing, and blocked everything behind it
+forever. Observed live as ten consecutive replies of **two output tokens** with the
+queue head never moving, and it is why a pre-ingest drain spent ~70 minutes without
+reaching the run's own data.
+
+The fix does **not** ack on empty. An empty multi-item batch narrows to its head (a
+multi-item batch does not say which item the model could not read), and a single
+item that still yields nothing is **stepped over**: left queued for a later pass
+while this pass continues with what is behind it. The blockage is gone, no input is
+traded for throughput, and a permanently unreadable item settles at one call per
+pass instead of every call forever. It is reported, because a silent step-over looks
+exactly like a pass that spent its budget and moved nothing.
+
+Worth recording: the first version of this *did* ack a single item that came back
+empty, reasoning that the model had examined it alone — the same evidence the chat
+path accepts when it lets an empty chat move the watermark.
+`TestConsolidator_EmptyBatchReplyLeavesTheQueuedItemsQueued` refused it, correctly:
+a transient extractor glitch would have dropped those turns permanently. Step-over
+solves the blocking without that trade, and the test passes unmodified.
+
+### The consolidator's children ask for the window they actually need (#1070)
+
+They ran at whatever window the `ollama-local` registration was pinned to, because
+until v1.61.0 that was the only knob. RFC CJ made it per-agent and the Ollama driver
+prefers `Request.MaxContextTokens` over the construction-time `num_ctx`, so each
+child can now size its own — and on a local deployment the KV cache is allocated per
+request, so a smaller window is a cheaper and faster call.
+
+Sized from observed input tokens: **`memory/extractor` 16384** (a real extraction
+measured 3,826 input tokens; its prompt budget is `max_part_chars`, 12,000 chars ≈
+3–4k tokens, plus the injected ontology), **`memory/judge` and
+`memory/conflict-judge` 8192** (715–731 input tokens across a live batch of eight),
+**`memory/ontologist` 32768** (it surveys the store rather than reading one supplied
+text; a live pass ran 86k across seventeen calls).
+
+The extractor's *window* and its *prompt budget* bound different failures, so raising
+`max_part_chars` to fill the window would be wrong — 12,000 is measured against the
+model, where a 21,635-char prompt came back empty while 15,684 and 15,599 extracted
+cleanly.
+
+### Not changed, deliberately
+
+The `lease_ttl_ms` / `run_timeout_seconds` ratio (30 and 25 minutes against a
+four-minute pass) still looks generous. #1069 removes the wedge that made it hurt,
+and #1070 makes a pass *longer* — up to four extractor calls — so tightening the
+budget now would cause more kills rather than fewer. Worth revisiting once the new
+pass duration has been measured.
+
+### Adapters
+
+None. Both changes are runtime-internal, so `@loomcycle/client` and the Python
+package stay at 1.61.0.
+
 ## What's in v1.61.0
 
 **Size each agent's context window — per agent and per run.** Minor rather than a
