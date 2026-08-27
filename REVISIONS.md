@@ -4,6 +4,75 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.61.0
+
+**Size each agent's context window — per agent and per run.** Minor rather than a
+patch: the changes land in the runtime binary and the adapters, neither of which a
+`vX.Y.Z` patch tag builds. It completes RFC CJ across both phases, adds a
+memory-retrieval benchmark harness, and fixes a load-dependent test flake.
+
+### A context window per agent (#1065)
+
+One Ollama host served every local agent the same context window — the global
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` (or a per-provider `options.num_ctx`), or, unset,
+Ollama's silent 4096-token floor. A fetch-heavy `researcher` that needed 128K and a
+`chat` agent that wanted 16K could not coexist on one registration without standing
+up a second provider.
+
+A per-agent `max_context_tokens` now sizes the window for **that agent only**. On a
+local (Ollama) model it is sent as `options.num_ctx`, winning over both the env knob
+and any per-provider value; the driver reports the source as `(request)`. On a cloud
+model — where the window is fixed by the model — it instead caps the agent's
+*effective* window (the compaction budget the context gauge and `autocompact_at_pct`
+read), clamped to the model's maximum, so it can only lower, never enlarge. It is
+distinct from `max_tokens` (the output cap), content-identifying (a fork that changes
+it mints a new `content_sha256`), and flows down the spawn tree. `0`/unset is
+byte-identical to before.
+
+### Per-run override, op=self visibility, adapter parity (#1067)
+
+The same knob became a per-**run** override, mirroring the existing per-run
+`sampling`/`compaction` overrides exactly: a value on `POST /v1/runs` (or a
+continuation), on the gRPC `RunRequest`/`ContinueRequest`, on the MCP `spawn_run` /
+`spawn_runs` and the HTTP `/v1/runs:batch` fan-out, and on both adapters. A per-run
+value `> 0` wins over the agent's own; `0`/absent inherits it (which itself falls
+through to the provider/driver default). Because a window is never meaningfully `0`,
+absence and zero coincide — so it is a plain scalar (a new `config.MergeMaxContextTokens`
+helper beside `MergeSampling`/`MergeCompaction`) and a plain `int32` on the wire, not
+a proto3 `optional`. Sub-agent spawns and resumed runs deliberately use the agent-def
+value only — a per-run override is neither inherited by children nor snapshotted, the
+same posture per-run sampling takes at those two sites.
+
+An agent can now read its resolved cap for its own run via `Context op=self`
+(`max_context_tokens`), reported even before the first turn; the *effective* window
+after the first turn continues to appear there as `context.max_tokens`.
+
+One pre-existing gap fell out of this: the MCP streaming-spawn path was silently
+dropping per-run `sampling` **and** `compaction` on the way to the run input. It now
+carries all three overrides, like the blocking path.
+
+### A memory-retrieval benchmark harness (#1064)
+
+`bench/cmd/locomo` adds a convert / ingest / search / all / purge harness over the
+LoCoMo long-conversation QA set, so memory-retrieval quality (recall@k) can be
+measured against a fixed corpus rather than by feel — the `qa.evidence` dialogue ids
+give free retrieval ground truth. It needs pgvector (the SQLite tier has no vectors),
+and the corpus is CC BY-NC, so it is never vendored.
+
+### De-flaked the deferred-channel store contract (#1066)
+
+Two deferred-channel store-contract subtests asserted a message was hidden before its
+`visible_at` using a 150 ms window; on a loaded `-race` CI runner the window elapsed
+before the assertion ran, producing a spurious "visible too early" failure. The
+windows are widened to 2 s. Test-only.
+
+### Adapters
+
+Both bump to **1.61.0**. `@loomcycle/client` gains `maxContextTokens` on the run and
+continue options (serialized as `max_context_tokens`); the Python package gains a
+`max_context_tokens` argument mapped onto the gRPC request. Additive — existing
+callers are unchanged.
+
 ## What's in v1.60.0
 
 **A fact that contradicts a stored one is now noticed.** Minor rather than a patch
