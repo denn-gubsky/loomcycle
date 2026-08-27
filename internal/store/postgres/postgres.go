@@ -4530,6 +4530,22 @@ func (s *Store) MemoryCursorRelease(ctx context.Context, tenantID string, scope 
 	return nil
 }
 
+// MemoryCursorReleaseByOwner is the Postgres mirror. See the interface doc.
+func (s *Store) MemoryCursorReleaseByOwner(ctx context.Context, owner string) (int, error) {
+	if owner == "" {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memory_cursors SET leased_by = '', lease_expires_at = NULL, updated_at = $1
+		 WHERE leased_by = $2`,
+		time.Now().UTC(), owner,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("memory cursor release by owner: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // ---- v0.8.4 Channel tool ----
 //
 // Postgres mirror of the SQLite implementation. Reads filter expired

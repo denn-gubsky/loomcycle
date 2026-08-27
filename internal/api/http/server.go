@@ -7249,6 +7249,23 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 	if meta.IsTopLevel {
 		defer s.purgeEphemeralVolumesForRun(meta.RootRunID)
 	}
+	// Free any consolidation lease this run still holds. The pass releases its
+	// own lease in a `finally`, which covers every path the JS can take — but not
+	// the run being KILLED out from under it. A pass stopped by its wall-clock
+	// budget, a cancel, or a crash therefore left the target leased until the TTL
+	// elapsed, and every pass that fired in between refused to start with "target
+	// busy". Measured on a benchmark deployment: one pass wedged on a sub-agent
+	// call that never returned, was killed at its 25-minute budget, and its lease
+	// then blocked ten further passes over the remaining five minutes.
+	//
+	// NOT gated on IsTopLevel, unlike the volume purge above: a lease belongs to
+	// whichever run acquired it, and nothing stops a consolidator from running as
+	// a sub-agent. Keyed on this run's own id for the same reason.
+	//
+	// Best-effort and deferred: it must fire on every terminal branch below, and a
+	// fault here must never fail the run — the TTL is still the backstop it always
+	// was. A run holding no lease frees 0 rows, which is the ordinary case.
+	defer s.releaseConsolidationLease(runID)
 	// RFC BK: close any resident interactive sub-agents this run opened — the
 	// backstop for a parent that completes/errors without closing them itself. A
 	// parent CANCEL already cascades to them (they register with ParentAgentID);
@@ -7374,6 +7391,31 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
 	}
 	s.publishRunState(meta, "cancelled", reason, "")
+}
+
+// releaseConsolidationLease frees the memory-cursor lease owned by runID, if it
+// holds one. See the call site in finishRunWithCancel for why this exists.
+//
+// Logged only when it actually freed something: a line per run would be noise on
+// a deployment where no run consolidates, while a freed lease is worth knowing
+// about because it means a pass did not finish on its own terms.
+func (s *Server) releaseConsolidationLease(runID string) {
+	if s.store == nil || runID == "" {
+		return
+	}
+	// Its own short deadline: the run's context is already cancelled by the time
+	// a killed run reaches here, so inheriting it would guarantee the release is
+	// skipped in exactly the case it exists for.
+	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	n, err := s.store.MemoryCursorReleaseByOwner(bg, runID)
+	if err != nil {
+		log.Printf("consolidation lease release (run=%s): %v", runID, err)
+		return
+	}
+	if n > 0 {
+		log.Printf("consolidation lease released on run end (run=%s targets=%d) — the pass did not release it itself", runID, n)
+	}
 }
 
 // purgeEphemeralVolumesForRun tears down a TOP-LEVEL run tree's ephemeral
