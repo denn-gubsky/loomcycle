@@ -259,6 +259,13 @@ agents:
         lease_ttl_ms: 1800000,
         scan_limit: 10,
         drain_limit: 50,
+        // How many extractor calls ONE pass may spend on the queue. Was
+        // effectively 1: the pass took a single call's worth of items and deferred
+        // the rest, so a 419-turn conversation measured ten-to-sixteen passes and
+        // about an hour of wall clock. Bounded rather than unlimited because a pass
+        // still has to finish inside run_timeout_seconds, and the queue is the one
+        // input whose size an operator does not control.
+        max_pending_calls: 4,
         recall_top_k: 8,
         max_supersedes: 5,
         // ONE extractor call's worth of text. A chat past this is SPLIT on
@@ -463,7 +470,9 @@ agents:
           chats_read: 0,
           written: 0, updated: 0, superseded: 0, supersede_capped: 0,
           dropped: 0, transient: 0, acked: 0, queued_items: 0,
-          queued_deferred: 0,       // drained items left for the next pass (over one call's budget)
+          queued_deferred: 0,       // drained items left for the next pass (over this pass's call budget)
+          queued_calls: 0,          // extractor calls this pass spent on the queue
+          queued_stepped: 0,        // items examined ALONE that yielded nothing durable; left queued, stepped over
           extractions: 0,           // extractor calls, which is now PARTS and not chats
           split_chats: 0,           // chats that needed more than one extractor call
           parts_capped: 0,          // parts dropped by the per-chat cap
@@ -946,43 +955,97 @@ agents:
       // per-item provenance (the facts are written without a source_session_id),
       // and buys one model call instead of up to fifty. Per-item provenance
       // would mean one extractor run per queued item.
+      // consolidatePending drains the queue across SEVERAL extractor calls, and
+      // isolates an item the extractor cannot read instead of retrying it forever.
+      //
+      // WHY MORE THAN ONE CALL. It used to take exactly one call's worth of items
+      // and defer the remainder, so throughput was one batch per pass however long
+      // the queue was — a 419-turn conversation measured ten-to-sixteen passes and
+      // about an hour. The items are independent, so nothing about correctness
+      // required stopping after one; only the absence of a loop did.
+      //
+      // WHY THE HEAD IS ISOLATED. An empty reply left the whole batch queued, which
+      // is right when the model never examined the items — but it also meant a batch
+      // the extractor consistently returns nothing for was re-drained every pass,
+      // spent a call, acked nothing, and blocked everything behind it. That is a
+      // LIVELOCK rather than slowness: full extractor spend, forever, never reaching
+      // newer data. Observed live as ten consecutive replies of two output tokens
+      // while the queue head never moved.
+      //
+      // The resolution does NOT involve acking anything on an empty reply. An ack is
+      // the one irreversible step here, and an empty extraction cannot distinguish
+      // "these turns hold nothing durable" from "the model glitched" — so dropping
+      // the item would trade an input for throughput, which this pipeline does not
+      // do. Instead the head is STEPPED OVER: an empty multi-item batch narrows to
+      // its head to find the culprit, and a single item that still yields nothing is
+      // left queued while the pass moves on to what is behind it. The blockage is
+      // gone, nothing is lost, and the cost of a permanently unreadable item settles
+      // at one call per pass instead of every call forever.
       function consolidatePending(st, pending) {
         if (!pending.length) { return []; }
-        // Only the items that fit ONE extractor call. The rest stay queued and
-        // are drained next pass. The queue is not split the way a chat is,
-        // because the items are independent and re-draining costs nothing —
-        // whereas rendering fifty, cutting the overflow away and then acking all
-        // fifty would drop the cut ones without ever examining them, and an ack
-        // is the one step in this pipeline with no recovery.
-        var taken = takePending(pending, CONFIG.max_part_chars);
-        st.queued_items = taken.length;
-        st.queued_deferred = pending.length - taken.length;
+        var acked = [];
+        var queue = pending;
+        // narrowed: the previous call came back empty, so the next takes the head
+        // ALONE to find out whether that one item is the problem.
+        var narrowed = false;
 
-        // "" marks this as the queued batch rather than a chat: an unreadable
-        // batch extraction leaves its items unacked, so they are re-drained next
-        // pass on their own and nothing about it should hold the CHAT watermark.
-        var pendingText = renderPending(taken);
-        var facts = extract(st, pendingText, "");
-        deriveSpans(facts, pendingText);
-        if (facts === null) { return []; }
-        // An empty reply lets a CHAT through because the cost is bounded — the
-        // watermark moves one row past a chat that had nothing to give. Acking
-        // items the model never examined is not bounded and not recoverable, so
-        // here the same answer means the batch simply stays queued.
-        if (st.batch_empty) { return []; }
-        // Attribute the batch ONLY when it is a single item. Several items are
-        // rendered into one text, so a fact from a multi-item batch cannot honestly
-        // be traced to one of them — and a wrong citation is worse than none. A
-        // compaction banks one span, so the case this exists for is the single one.
-        var attributeTo = (taken.length === 1 && taken[0] && typeof taken[0].id === "string")
-          ? taken[0].id : "";
-        if (!applyFacts(st, facts, "", attributeTo)) { return []; }
+        while (queue.length && st.queued_calls < CONFIG.max_pending_calls) {
+          var taken = narrowed ? [queue[0]] : takePending(queue, CONFIG.max_part_chars);
+          st.queued_calls++;
+          st.queued_items += taken.length;
 
-        var ids = [];
-        for (var i = 0; i < taken.length; i++) {
-          if (taken[i] && typeof taken[i].id === "string") { ids.push(taken[i].id); }
+          // "" marks this as the queued batch rather than a chat: an unreadable
+          // batch extraction leaves its items unacked, so they are re-drained next
+          // pass on their own and nothing about it should hold the CHAT watermark.
+          st.batch_empty = false;
+          var pendingText = renderPending(taken);
+          var facts = extract(st, pendingText, "");
+          deriveSpans(facts, pendingText);
+          // Unreadable is not empty: the call FAILED rather than answered, so stop
+          // spending on this queue and leave the rest for the next pass. Retrying
+          // inside one pass would multiply an outage by the call budget.
+          if (facts === null) { break; }
+
+          if (st.batch_empty) {
+            if (taken.length > 1) {
+              // Narrow to the head: a multi-item batch that came back empty does
+              // not say WHICH item the model could not read, and one item must not
+              // be allowed to speak for the others.
+              narrowed = true;
+              continue;
+            }
+            // Examined alone and still nothing. STEP OVER it — do not ack it.
+            // Acking would drop those turns permanently on what may have been a
+            // transient extractor glitch, and this pipeline never trades an input
+            // for throughput. Stepping over is enough to fix the actual problem:
+            // the item stays queued for a later pass while everything behind it
+            // gets consolidated now, so a single unreadable item costs one call per
+            // pass instead of blocking the queue forever.
+            st.queued_stepped++;
+            queue = queue.slice(1);
+            narrowed = false;
+            continue;
+          }
+
+          // Attribute the batch ONLY when it is a single item. Several items are
+          // rendered into one text, so a fact from a multi-item batch cannot honestly
+          // be traced to one of them — and a wrong citation is worse than none. A
+          // compaction banks one span, so the case this exists for is the single one.
+          var attributeTo = (taken.length === 1 && taken[0] && typeof taken[0].id === "string")
+            ? taken[0].id : "";
+          // A write failure stops the pass and keeps what it already acked: items
+          // are only acked after a successful write, and re-draining costs nothing.
+          if (!applyFacts(st, facts, "", attributeTo)) { break; }
+
+          for (var i = 0; i < taken.length; i++) {
+            if (taken[i] && typeof taken[i].id === "string") { acked.push(taken[i].id); }
+          }
+          queue = queue.slice(taken.length);
+          narrowed = false;
         }
-        return ids;
+
+        st.queued_deferred = queue.length;
+        return acked;
       }
 
       // takePending returns the OLDEST queued items whose rendered text fits the
@@ -1971,7 +2034,17 @@ agents:
         }
         if (st.queued_items > 0) { parts.push("queued items " + st.queued_items + ", acked " + st.acked); }
         if (st.queued_deferred > 0) {
-          parts.push("queued items deferred " + st.queued_deferred + " (over one extractor call's budget; drained again next pass)");
+          parts.push("queued items deferred " + st.queued_deferred + " (over this pass's " +
+            CONFIG.max_pending_calls + "-call queue budget; drained again next pass)");
+        }
+        // The queue head being stepped over is worth a line of its own: nothing is
+        // lost (the item stays queued), but it is the signal that one input cannot
+        // be extracted from, and a rising count means the extractor is returning
+        // empty rather than the turns being empty. Without this the only symptom
+        // was a pass that spent its budget and moved nothing.
+        if (st.queued_stepped > 0) {
+          parts.push("queued items examined alone with nothing durable " + st.queued_stepped +
+            " (left queued and stepped over, so the rest could drain; a rising count means the extractor is returning empty, not that the turns were)");
         }
         if (st.dropped > 0) { parts.push("malformed entries dropped " + st.dropped); }
         if (st.transient > 0) { parts.push("transient entries rejected " + st.transient + " (each named a session or run id)"); }
@@ -2376,6 +2449,22 @@ agents:
     # Both are local here, so this is latency rather than money — on a deployment
     # whose middle tier is a CLOUD model it is money, so retune the tier policy
     # rather than reverting this.
+    # CONTEXT WINDOW, sized to this agent's actual prompt rather than the
+    # deployment's largest. On Ollama this becomes options.num_ctx for THIS agent's
+    # calls only (per-agent > provider options > env > /api/ps > 4096), so a local
+    # deployment no longer pays one agent's window on every other agent's call —
+    # the KV cache is allocated per request and prefill scales with it.
+    #
+    # MEASURED: a real extraction on the benchmark deployment ran 3,826 input
+    # tokens, and this agent's own prompt budget is capped at max_part_chars
+    # (12,000 chars, roughly 3-4k tokens) plus the system prompt and the injected
+    # ontology. 16K leaves better than 3x headroom over anything observed.
+    #
+    # Do NOT raise max_part_chars to fill this: 12,000 is measured against the
+    # model, not the window — a 21,635-char prompt came back EMPTY while 15,684
+    # and 15,599 extracted cleanly. The window and the prompt budget bound
+    # different failures.
+    max_context_tokens: 16384
     tier: middle
     effort: low
     # ⚠️ THIS PROMPT IS A MITIGATION, NOT A GUARANTEE. On the first live pass a
@@ -2501,6 +2590,10 @@ agents:
     #
     # If a deployment's own number is bad, change this in the TIER POLICY — never by
     # pinning a provider or model here.
+    # See memory/extractor for what this knob does. Judge prompts are the smallest
+    # in the pipeline — 715-731 input tokens measured across a live batch of eight
+    # candidates — so 8K is already an order of magnitude of headroom.
+    max_context_tokens: 8192
     tier: low
     effort: low
     # ⚠️ SIZE IS A FEATURE, as it is for the extractor: a tool-less agent doing one
@@ -2569,6 +2662,9 @@ agents:
     skills: [-*]
     disable_context: true
     internal: true
+    # Same shape and size as the entailment judge: a batch of pairs, each two
+    # sentences. Measured alongside it at well under 1K input tokens.
+    max_context_tokens: 8192
     tier: low
     effort: low
     system_prompt: |
@@ -2637,6 +2733,11 @@ agents:
     # (does this group of facts share a narrower kind?) on top of a tool-calling
     # protocol, and the cheap tier is where a small model starts inventing types
     # instead of finding them. Retune in your tier policy, never by pinning a model.
+    # Larger than the other children on purpose: this one SURVEYS the store rather
+    # than reading one supplied text, and a live pass has run 86k input tokens
+    # across seventeen calls. 32K bounds any single call while leaving room for a
+    # wide survey.
+    max_context_tokens: 32768
     tier: middle
     effort: low
     # A pass is a handful of queries and at most three proposals. If it has not

@@ -3983,3 +3983,100 @@ func TestConsolidator_ConflictCandidatesIgnoreLexicalSubjectOverlap(t *testing.T
 		t.Errorf("the candidate's text did not reach the judge:\n%s", prompts[0])
 	}
 }
+
+// TestConsolidator_QueueDrainsAcrossSeveralExtractorCalls: the queue used to get
+// exactly one extractor call per pass, so a long conversation needed a pass per
+// batch — measured at ten-to-sixteen passes and about an hour for one 419-turn
+// LoCoMo conversation. The items are independent, so nothing required stopping
+// after one call.
+func TestConsolidator_QueueDrainsAcrossSeveralExtractorCalls(t *testing.T) {
+	f := newFakeToolset()
+	// No chats: this isolates the QUEUE path from the chat path.
+	f.pending = []map[string]any{}
+	for i := 0; i < 6; i++ {
+		f.pending = append(f.pending, map[string]any{
+			"id": fmt.Sprintf("pend-%d", i),
+			// Each item is large enough that takePending can only fit one per call,
+			// so "items drained" and "calls spent" cannot be confused.
+			"payload": map[string]any{"messages": []any{map[string]any{
+				"role": "user", "content": strings.Repeat("I live in Berlin and I work on loomcycle. ", 320),
+			}}},
+		})
+	}
+	f.factsJSON = `[{"text":"The user lives in Berlin.","class":"fact","type":"location","subject":"Berlin"}]`
+
+	res := runConsolidator(t, f)
+
+	// Four calls is the configured budget; the point is that it is >1 and bounded.
+	extractions := 0
+	for _, c := range f.calls {
+		if c.Tool == "Agent" {
+			if name, _ := c.Input["name"].(string); name == "memory/extractor" {
+				extractions++
+			}
+		}
+	}
+	if extractions < 2 {
+		t.Errorf("queue extractor calls = %d, want more than one per pass; report: %s", extractions, res.FinalText)
+	}
+	if extractions > 4 {
+		t.Errorf("queue extractor calls = %d, want at most the 4-call budget", extractions)
+	}
+	// And the items it did consolidate were acked, so they are not re-drained.
+	if !f.has("Memory.pending_ack") {
+		t.Errorf("nothing was acked after successful extractions; sequence %v", f.ops())
+	}
+	// The remainder is reported as deferred rather than silently dropped.
+	if !strings.Contains(res.FinalText, "queued items deferred") {
+		t.Errorf("report does not account for the items left over: %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_AnUnreadableQueueItemDoesNotBlockTheOnesBehindIt is the
+// livelock fix, and the property worth stating precisely: the bad item is STEPPED
+// OVER, not acked.
+//
+// Before, an empty reply left the whole batch queued — correct in itself, since an
+// ack is irreversible and an empty extraction cannot tell "nothing durable here"
+// from "the model glitched". But it also meant a batch the extractor keeps
+// returning nothing for was re-drained every pass, spent a call, acked nothing and
+// blocked everything behind it, forever. Observed live as ten consecutive replies
+// of two output tokens with the queue head never moving.
+func TestConsolidator_AnUnreadableQueueItemDoesNotBlockTheOnesBehindIt(t *testing.T) {
+	f := newFakeToolset()
+	f.pending = []map[string]any{
+		{"id": "pend-bad", "payload": map[string]any{"messages": []any{map[string]any{"role": "user", "content": "UNREADABLE ITEM"}}}},
+		{"id": "pend-good", "payload": map[string]any{"messages": []any{map[string]any{"role": "user", "content": "I live in Berlin."}}}},
+	}
+	// The extractor answers EMPTY whenever the prompt carries the bad item — both
+	// when it is batched with the good one and when it is examined alone — and
+	// answers normally otherwise. That is the shape that used to livelock.
+	f.factsByNeedle = []needleReply{
+		{Needle: "UNREADABLE ITEM", Reply: ""},
+	}
+	f.factsJSON = `[{"text":"The user lives in Berlin.","class":"fact","type":"location","subject":"Berlin"}]`
+
+	res := runConsolidator(t, f)
+
+	// The good item behind it landed.
+	if !f.has("Memory.set") {
+		t.Errorf("the item behind the unreadable one was never consolidated; sequence %v", f.ops())
+	}
+	// The bad item was NOT acked — an ack is the one irreversible step, and an
+	// empty extraction is not evidence the turns were empty.
+	for _, c := range f.calls {
+		if c.Tool == "Memory" && c.Op == "pending_ack" {
+			ids, _ := c.Input["ids"].([]any)
+			for _, id := range ids {
+				if s, _ := id.(string); s == "pend-bad" {
+					t.Errorf("the unreadable item was acked; those turns are now unrecoverable: %+v", c.Input)
+				}
+			}
+		}
+	}
+	// And the pass says so, because a silent step-over looks exactly like a pass
+	// that spent its budget and moved nothing.
+	if !strings.Contains(res.FinalText, "stepped over") {
+		t.Errorf("report does not name the stepped-over item: %q", res.FinalText)
+	}
+}
