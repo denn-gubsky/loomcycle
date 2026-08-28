@@ -4,6 +4,78 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.64.0
+
+**`recall` could not see an agent's own notes.** Minor rather than a patch for two
+reasons: the fix is in the runtime binary, which a `vX.Y.Z` patch tag does not
+build, and a bare `recall` now returns notes alongside facts — a visible behaviour
+change for anything reading it.
+
+### Two defects, either of which alone empties the result (#1075)
+
+`Memory op=recall` returned NOTHING on a scope holding 419 embedded rows, while
+`op=search` returned three hits for the same query in the same partition:
+
+```
+search sources=[notes]        → 3 results (cosine 0.546, 0.539…)
+recall sources=[notes]        → 0
+recall sources=[facts,notes]  → 0
+recall (no sources)           → 0
+```
+
+**The in-band parser silently dropped `notes`.** `parseSources` had cases for
+facts and documents and none for notes — while the op's OWN input-schema enum
+advertises all three. Unknown values are dropped rather than rejected by design
+(rejecting would break an older runtime against a newer value name, which is the
+right call), so an explicit `sources:["notes"]` became NO selector. One cause, two
+opposite symptoms: `search` widened to everything and looked correct, `recall`
+fell through to its default and returned nothing. The HTTP parser
+(`parseMemorySources`) had always handled notes, so the same selector meant
+different things depending on which surface a caller used.
+
+**Recall's default excluded notes, contradicting its own schema.**
+`inprocess.Recall` defaulted to facts alone; the schema promises "facts+notes". A
+row written with `set` — or with an off-run PUT — carries no provenance, so
+`ClassifyMemoryRow` calls it a NOTE, and the default hid every one of them. The
+facts/notes split landed after that default was written and the line was never
+revisited: before the split, "facts" WAS the whole of an agent's own memory.
+Documents stay excluded, which is the separate and still-correct reason the
+default exists at all (a horizontal rule outranking the fact holding an answer).
+
+The `SourceFacts` doc comment still described facts as including notes; reading it
+that way is what made the default look intentional. Corrected.
+
+### How it surfaced, and what it was costing
+
+The LoCoMo answer axis. An answerer whose prompt says `op=recall` scored **0.0000
+with a 94% abstention rate** over 419 embedded conversation turns — it was finding
+nothing, not answering wrongly. Pointed at `op=search`, which by accident of the
+first defect applied no filter at all, the same store, same embedder and same
+questions scored **0.7353 with zero abstentions**.
+
+So the practical cost was: any agent following the documented advice to read its
+own memory with `recall` saw only what a consolidator had distilled, and nothing
+it had written itself.
+
+### The fixture could not have caught it, which is also fixed
+
+The inprocess test double honoured only `filter.KeyPrefix`. It ignored
+`filter.Provenance` and `filter.ExcludeKeyPrefix` and never populated
+`MemorySearchEntry.Origin`, so NO test in that package could distinguish a fact
+from a note or exclude a document — source filtering was structurally untestable
+there. The double now records each row's origin on the way in (the real stores
+keep it in a column `MemoryEntry` does not expose, so a double reading rows back
+cannot recover it), applies both filter dimensions, and carries `Origin` through.
+
+That mattered immediately: the fail-before for the second defect initially PASSED,
+because the assertion could not observe the thing it named. Making the double
+faithful is what turned it into a regression test.
+
+### Adapters
+
+None. The fix is runtime-internal, so `@loomcycle/client` and the Python package
+stay at 1.61.0 and `@loomcycle/library` at 0.3.0.
+
 ## What's in v1.63.0
 
 **A curator that never ran, and the two agent fields you could not set without
