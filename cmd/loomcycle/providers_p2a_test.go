@@ -123,16 +123,17 @@ func TestResolveProbe_NoProvidersBlock_ExclusionReasons(t *testing.T) {
 	}
 }
 
-// TestRegisteredDrivers_SevenCompiledIn proves the RFC BF P2a blank imports work:
-// every driver's init() ran, so the registry holds exactly the 7 driver names the
-// resolver depends on. A missing name means a dropped blank import → NewDriver
-// would fail at boot for that provider.
-func TestRegisteredDrivers_SevenCompiledIn(t *testing.T) {
+// TestRegisteredDrivers_CompiledIn proves the RFC BF P2a blank imports work:
+// every driver's init() ran, so the registry holds the driver names the resolver
+// depends on. A missing name means a dropped blank import → NewDriver would fail
+// at boot for that provider. Includes the RFC CK dedicated local drivers
+// (vllm / llamacpp), whose blank imports live beside the others in main.go.
+func TestRegisteredDrivers_CompiledIn(t *testing.T) {
 	got := map[string]bool{}
 	for _, d := range providers.RegisteredDrivers() {
 		got[d] = true
 	}
-	for _, want := range []string{"anthropic", "openai", "gemini", "ollama", "deepseek", "mock", "code-js"} {
+	for _, want := range []string{"anthropic", "openai", "gemini", "ollama", "deepseek", "mock", "code-js", "vllm", "llamacpp"} {
 		if !got[want] {
 			t.Errorf("driver %q not registered (blank import missing?); registered=%v", want, providers.RegisteredDrivers())
 		}

@@ -13,17 +13,19 @@ import (
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/llamacpp"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/mock"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/vllm"
 )
 
-// TestRegisteredDrivers_TheSeven locks that exactly the seven LLM drivers
+// TestRegisteredDrivers_TheNine locks that exactly the nine LLM drivers
 // self-register — anthropic-oauth-dev (residual, keeps its own path per RFC BF)
 // and mock-stable (a resolver-side wrapper, not a config-declared driver) do
-// NOT.
-func TestRegisteredDrivers_TheSeven(t *testing.T) {
-	want := []string{"anthropic", "code-js", "deepseek", "gemini", "mock", "ollama", "openai"}
+// NOT. vllm + llamacpp are the RFC CK dedicated local-inference drivers.
+func TestRegisteredDrivers_TheNine(t *testing.T) {
+	want := []string{"anthropic", "code-js", "deepseek", "gemini", "llamacpp", "mock", "ollama", "openai", "vllm"}
 	got := providers.RegisteredDrivers()
 	set := map[string]bool{}
 	for _, d := range got {
