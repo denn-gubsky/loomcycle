@@ -144,6 +144,22 @@ export default function LibraryEditModal({
   const [maxIterations, setMaxIterations] = useState(
     pickNumberAsString(forkSource?.definition, "max_iterations"),
   );
+  // max_context_tokens is the INPUT window, not the output cap — the two are a
+  // step apart in the form and easy to confuse, which is why both inputs carry a
+  // hint. On a local (Ollama) agent this becomes that agent's options.num_ctx, so
+  // it is a real per-agent knob rather than only a budget; on a cloud model it can
+  // lower the effective window but never raise it past the model's own.
+  const [maxContextTokens, setMaxContextTokens] = useState(
+    pickNumberAsString(forkSource?.definition, "max_context_tokens"),
+  );
+  // internal marks an agent as maintenance plumbing: its sessions are kept out of
+  // the chat surfaces, which is also what keeps a consolidation pass from reading
+  // them back as material. ONE-WAY on the substrate — applyOverlay does
+  // `if ov.Internal { d.Internal = true }`, so a fork can set it and cannot clear
+  // it. The checkbox says so rather than pretending unticking works.
+  const [internal, setInternal] = useState(
+    pickBool(forkSource?.definition, "internal"),
+  );
   const [memoryQuotaBytes, setMemoryQuotaBytes] = useState(
     pickNumberAsString(forkSource?.definition, "memory_quota_bytes"),
   );
@@ -317,6 +333,7 @@ export default function LibraryEditModal({
       // edge + the operator who manually typed a negative.
       const numChecks: Array<[string, string]> = [
         ["max_tokens", maxTokens],
+        ["max_context_tokens", maxContextTokens],
         ["max_iterations", maxIterations],
         ["memory_quota_bytes", memoryQuotaBytes],
         ["max_concurrent_children", maxConcurrentChildren],
@@ -418,8 +435,14 @@ export default function LibraryEditModal({
       };
       const mt = intOrSkip(maxTokens);
       if (mt !== null && mt > 0) ov.max_tokens = mt;
+      const mct = intOrSkip(maxContextTokens);
+      if (mct !== null && mct > 0) ov.max_context_tokens = mct;
       const mi = intOrSkip(maxIterations);
       if (mi !== null && mi > 0) ov.max_iterations = mi;
+      // Emitted only when TRUE, mirroring the substrate's one-way merge. Sending
+      // `false` would be a no-op there, so omitting it keeps the request honest
+      // about what it can actually change.
+      if (internal) ov.internal = true;
       const mqb = intOrSkip(memoryQuotaBytes);
       if (mqb !== null && mqb > 0) ov.memory_quota_bytes = mqb;
       const mcc = intOrSkip(maxConcurrentChildren);
@@ -633,8 +656,12 @@ export default function LibraryEditModal({
             setAgentSkills={setAgentSkills}
             maxTokens={maxTokens}
             setMaxTokens={setMaxTokens}
+            maxContextTokens={maxContextTokens}
+            setMaxContextTokens={setMaxContextTokens}
             maxIterations={maxIterations}
             setMaxIterations={setMaxIterations}
+            internal={internal}
+            setInternal={setInternal}
             memoryQuotaBytes={memoryQuotaBytes}
             setMemoryQuotaBytes={setMemoryQuotaBytes}
             maxConcurrentChildren={maxConcurrentChildren}
@@ -769,8 +796,12 @@ interface AgentFieldsProps {
   setAgentSkills: (v: string) => void;
   maxTokens: string;
   setMaxTokens: (v: string) => void;
+  maxContextTokens: string;
+  setMaxContextTokens: (v: string) => void;
   maxIterations: string;
   setMaxIterations: (v: string) => void;
+  internal: boolean;
+  setInternal: (v: boolean) => void;
   memoryQuotaBytes: string;
   setMemoryQuotaBytes: (v: string) => void;
   maxConcurrentChildren: string;
@@ -980,6 +1011,40 @@ function AgentFields(props: AgentFieldsProps) {
           placeholder="0 = default"
         />
       </div>
+
+      <div className="library-form-row library-form-row-quad">
+        <label htmlFor="lib-max-context-tokens">max_context_tokens</label>
+        <input
+          id="lib-max-context-tokens"
+          type="number"
+          min="0"
+          value={props.maxContextTokens}
+          onChange={(e) => props.setMaxContextTokens(e.target.value)}
+          disabled={props.submitting}
+          placeholder="0 = provider default"
+        />
+        <label htmlFor="lib-internal">internal</label>
+        <div className="library-checkbox-group">
+          <label>
+            <input
+              id="lib-internal"
+              type="checkbox"
+              checked={props.internal}
+              onChange={(e) => props.setInternal(e.target.checked)}
+              disabled={props.submitting}
+            />{" "}
+            maintenance plumbing
+          </label>
+        </div>
+      </div>
+      <p className="library-modal-field-hint">
+        <code>max_context_tokens</code> is the INPUT window, not the output cap —
+        on a local model it sets that agent&rsquo;s own <code>num_ctx</code>, so a
+        smaller window is a cheaper, faster call. <code>internal</code> keeps the
+        agent&rsquo;s sessions out of the chat surfaces, which is also what stops a
+        consolidation pass reading them back as material; it can be turned ON here
+        but not off — clearing it needs a new def.
+      </p>
 
       <div className="library-form-row library-form-row-quad">
         <label htmlFor="lib-memory-quota">memory_quota_bytes</label>
@@ -1621,6 +1686,13 @@ function pickNumberAsString(def: unknown, key: string): string {
 // the three fixed tier slots the modal renders. Tier names outside
 // "low"/"middle"/"high" in the source are silently dropped — the
 // operator who needs custom tier names can still edit them via yaml.
+// pickBool reads a boolean overlay field. Absent or non-boolean reads as false,
+// which matches how the substrate treats an unset `internal`.
+function pickBool(def: unknown, key: string): boolean {
+  if (!def || typeof def !== "object") return false;
+  return (def as Record<string, unknown>)[key] === true;
+}
+
 function pickModelsByTier(def: unknown): Record<TierSlot, ModelCandidate[]> {
   const out: Record<TierSlot, ModelCandidate[]> = {
     low: [],
