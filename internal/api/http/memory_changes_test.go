@@ -46,7 +46,7 @@ func TestMemoryChanges_SSEStreamsAndFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := &Server{store: st, cfg: &config.Config{}}
+	srv := &Server{store: st, cfgHolder: config.NewHolder(&config.Config{})}
 
 	mem := runSSEOnce(t, srv.handleMemoryChanges, "/v1/_memory/changes")
 	if !strings.Contains(mem, `"memory.set"`) || !strings.Contains(mem, `"k1"`) {
@@ -105,7 +105,7 @@ func TestMemoryChanges_OpeningFrameSaysWhetherTheFeedIsOn(t *testing.T) {
 		{"feed on", cdc.Wrap(raw, nil), `"enabled":true`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := &Server{store: tc.store, cfg: &config.Config{}}
+			srv := &Server{store: tc.store, cfgHolder: config.NewHolder(&config.Config{})}
 			for path, h := range map[string]http.HandlerFunc{
 				"/v1/_memory/changes":   srv.handleMemoryChanges,
 				"/v1/_document/changes": srv.handleDocumentChanges,
@@ -135,7 +135,7 @@ func TestMemoryChanges_OpeningFrameEchoesTheCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer raw.Close()
-	srv := &Server{store: cdc.Wrap(raw, nil), cfg: &config.Config{}}
+	srv := &Server{store: cdc.Wrap(raw, nil), cfgHolder: config.NewHolder(&config.Config{})}
 
 	if body := runSSEOnce(t, srv.handleMemoryChanges, "/v1/_memory/changes?since=42"); !strings.Contains(body, `"since":42`) {
 		t.Errorf("opening frame did not echo the accepted cursor:\n%s", body)
@@ -167,7 +167,7 @@ func TestMemoryChanges_OpeningFrameReportsEmbedderHealth(t *testing.T) {
 	defer raw.Close()
 
 	t.Run("no embedder configured", func(t *testing.T) {
-		srv := &Server{store: cdc.Wrap(raw, nil), cfg: &config.Config{}}
+		srv := &Server{store: cdc.Wrap(raw, nil), cfgHolder: config.NewHolder(&config.Config{})}
 		body := runSSEOnce(t, srv.handleMemoryChanges, "/v1/_memory/changes")
 		if !strings.Contains(body, `"state":"absent"`) {
 			t.Errorf("want embedder state absent:\n%s", body)
@@ -179,7 +179,7 @@ func TestMemoryChanges_OpeningFrameReportsEmbedderHealth(t *testing.T) {
 		if _, e := obs.Embed(context.Background(), []string{"x"}); e != nil {
 			t.Fatal(e)
 		}
-		srv := &Server{store: cdc.Wrap(raw, nil), cfg: &config.Config{}}
+		srv := &Server{store: cdc.Wrap(raw, nil), cfgHolder: config.NewHolder(&config.Config{})}
 		srv.SetEmbedder(obs)
 		body := runSSEOnce(t, srv.handleMemoryChanges, "/v1/_memory/changes")
 		for _, want := range []string{`"state":"ok"`, `"provider":"stub"`, `"calls":1`} {
@@ -194,7 +194,7 @@ func TestMemoryChanges_OpeningFrameReportsEmbedderHealth(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			_, _ = obs.Embed(context.Background(), []string{"x"})
 		}
-		srv := &Server{store: cdc.Wrap(raw, nil), cfg: &config.Config{}}
+		srv := &Server{store: cdc.Wrap(raw, nil), cfgHolder: config.NewHolder(&config.Config{})}
 		srv.SetEmbedder(obs)
 		body := runSSEOnce(t, srv.handleDocumentChanges, "/v1/_document/changes")
 		// The count is the actionable part: it is how many rows need re-embedding.

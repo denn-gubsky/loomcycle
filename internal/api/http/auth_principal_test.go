@@ -35,7 +35,7 @@ func tokenAuthServer(t *testing.T, legacy string) (*Server, store.Store) {
 	cfg.Env.AuthToken = legacy
 	cfg.Env.OperatorTokenPepper = testTokenPepper
 	s := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,
@@ -592,7 +592,7 @@ func TestApplyPrincipal_LegacyHonorsWireUserID(t *testing.T) {
 // through to legacy (≠ its value) → unresolved.
 func TestResolvePrincipal_DeclaredPrincipal(t *testing.T) {
 	s, st := tokenAuthServer(t, "legacy-secret")
-	s.cfg.ResolvedPrincipals = []auth.DeclaredPrincipal{
+	s.cfg().ResolvedPrincipals = []auth.DeclaredPrincipal{
 		{Secret: "lct_marketing", Principal: auth.Principal{TenantID: "acme", Subject: "marketing", Scopes: []string{auth.ScopeTenant}, TokenDefID: "cfg:marketing"}},
 	}
 	// A minted def whose token value differs from the declared one.

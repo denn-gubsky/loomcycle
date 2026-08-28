@@ -14,7 +14,7 @@ import (
 func TestConsolidationBands_ConfiguredValuesReachTheSystemPrompt(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Memory.Consolidation = config.ConsolidationConfig{MergeThreshold: 0.77, RelatedThreshold: 0.45}
-	s := &Server{cfg: cfg}
+	s := &Server{cfgHolder: config.NewHolder(cfg)}
 	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "consolidator"}
 
 	def := config.AgentDef{SystemPrompt: "Base prompt.\n\n{{memory:consolidation_bands}}"}
@@ -41,7 +41,7 @@ func TestConsolidationBands_ConfiguredValuesReachTheSystemPrompt(t *testing.T) {
 // set the block gets exactly the numbers the pass used before it was
 // configurable.
 func TestConsolidationBands_UnconfiguredRendersTheDefaults(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
+	s := &Server{cfgHolder: config.NewHolder(&config.Config{})}
 	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "consolidator"}
 
 	def := config.AgentDef{SystemPrompt: "{{memory:consolidation_bands}}"}
@@ -56,7 +56,7 @@ func TestConsolidationBands_UnconfiguredRendersTheDefaults(t *testing.T) {
 func TestConsolidationBands_NoPlaceholderIsByteIdentical(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Memory.Consolidation = config.ConsolidationConfig{MergeThreshold: 0.77, RelatedThreshold: 0.45}
-	s := &Server{cfg: cfg}
+	s := &Server{cfgHolder: config.NewHolder(cfg)}
 	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "other"}
 
 	def := config.AgentDef{SystemPrompt: "Base prompt."}

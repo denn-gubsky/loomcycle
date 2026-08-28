@@ -102,9 +102,9 @@ func TestSubAgent_VolumeNarrowOnly_MoreRestrictiveModeWins(t *testing.T) {
 // top-level — its own declared volumes apply (there is no parent volume scope
 // to narrow against, and the child's volumes come from its own AgentDef).
 func TestChildVolumePolicy_InactiveParentResolvesChildAsTopLevel(t *testing.T) {
-	s := &Server{cfg: &config.Config{Volumes: map[string]config.Volume{
+	s := &Server{cfgHolder: config.NewHolder(&config.Config{Volumes: map[string]config.Volume{
 		"repo-a": {Path: "/work/a"},
-	}}}
+	}})}
 	got := s.childVolumePolicy(context.Background(), tools.VolumePolicyValue{}, config.AgentDef{Volumes: []string{"repo-a"}})
 	if !got.Active {
 		t.Fatal("an inactive parent must resolve the child as top-level (its own declared volumes)")
@@ -117,7 +117,7 @@ func TestChildVolumePolicy_InactiveParentResolvesChildAsTopLevel(t *testing.T) {
 // An UNBOUND child of a CONFINED parent inherits the parent's policy verbatim
 // (it works within the parent's scope, like host-allowlist inheritance).
 func TestChildVolumePolicy_ActiveParentUnboundChildInheritsParent(t *testing.T) {
-	s := &Server{cfg: &config.Config{Volumes: map[string]config.Volume{"repo-a": {Path: "/work/a"}}}}
+	s := &Server{cfgHolder: config.NewHolder(&config.Config{Volumes: map[string]config.Volume{"repo-a": {Path: "/work/a"}}})}
 	parent := tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
 		{Name: "repo-a", Root: "/work/a", Default: true},
 	}}
@@ -133,10 +133,10 @@ func TestChildVolumePolicy_ActiveParentUnboundChildInheritsParent(t *testing.T) 
 // legacy jail. Before the fix the empty result was a no-op and the child kept
 // the parent's full bindings.
 func TestChildVolumePolicy_BoundChildSharingNoneDeniedEmpty(t *testing.T) {
-	s := &Server{cfg: &config.Config{Volumes: map[string]config.Volume{
+	s := &Server{cfgHolder: config.NewHolder(&config.Config{Volumes: map[string]config.Volume{
 		"repo-a": {Path: "/work/a"},
 		"repo-b": {Path: "/work/b"},
-	}}}
+	}})}
 	parent := tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
 		{Name: "repo-a", Root: "/work/a", Default: true},
 	}}

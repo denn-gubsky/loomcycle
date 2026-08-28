@@ -58,7 +58,7 @@ func TestRunnableIncludesTenant(t *testing.T) {
 // to an isolated user) must break the isolated case.
 func TestHandleRunnableAgents_TieredCatalog(t *testing.T) {
 	s, st := tokenAuthServer(t, "")
-	s.cfg.Agents = map[string]config.AgentDef{"chat": {Model: "stub"}} // bundled floor
+	s.cfg().Agents = map[string]config.AgentDef{"chat": {Model: "stub"}} // bundled floor
 
 	// A tenant substrate agent for acme, and one for a DIFFERENT tenant.
 	mustSeedAgentDef(t, st, "acme", "tenant-bot")

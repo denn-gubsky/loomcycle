@@ -31,7 +31,7 @@ func clientToolsTestConfig() *config.Config {
 func clientToolsTestServer(t *testing.T, reg *clienttools.Registry, p auth.Principal) *httptest.Server {
 	t.Helper()
 	srv := &Server{}
-	srv.cfg = clientToolsTestConfig()
+	srv.cfgHolder = config.NewHolder(clientToolsTestConfig())
 	srv.clientTools = reg
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(auth.WithPrincipal(r.Context(), p))
@@ -104,7 +104,7 @@ func TestCandidateTools_AdvertisesAndGatesClientTools(t *testing.T) {
 	defer dereg()
 
 	srv := &Server{}
-	srv.cfg = clientToolsTestConfig()
+	srv.cfgHolder = config.NewHolder(clientToolsTestConfig())
 	srv.clientTools = reg
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "t1", Subject: "u1"})
 
@@ -225,7 +225,7 @@ func TestHandleClientTools_RejectsWireUnsafeNames(t *testing.T) {
 
 func TestHandleClientTools_DisabledWhenNoRegistry(t *testing.T) {
 	srv := &Server{}
-	srv.cfg = clientToolsTestConfig()
+	srv.cfgHolder = config.NewHolder(clientToolsTestConfig())
 	// clientTools nil → endpoint refuses.
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/client-tools", nil)

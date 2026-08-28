@@ -42,7 +42,7 @@ func channelFanFixture(t *testing.T) (*Server, func()) {
 	bus := channels.NewBus()
 	sched := channels.NewScheduler(bus, 100)
 	srv := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),

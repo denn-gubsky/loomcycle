@@ -25,7 +25,7 @@ func minimalServer(t *testing.T) *Server {
 	cfg := &config.Config{}
 	hookReg := hooks.NewRegistry()
 	return &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,

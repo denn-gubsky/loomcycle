@@ -6,12 +6,12 @@
 // mutates a long-lived subsystem in place so an operator never has to restart
 // (which would drop in-flight runs) to pick up a config edit.
 //
-// Phase 2 scope (this file): the mechanism + the provider/resolver reloader. A
-// changed `providers` / `models` / `tiers` / `provider_priority` section takes
-// effect on the NEXT run (in-place provider-set rebuild + resolver-policy swap);
-// every other changed section is reported as restart-required. Later phases move
-// more sections from restart-required to applied (they need the s.cfg holder
-// migration — user_tiers, auth, memory, scheduler, skills, concurrency, …).
+// What reloads live: the resolver sections (providers/models/tiers/
+// provider_priority) via an in-place provider-set + resolver-policy rebuild, plus
+// every section read live off s.cfg() (user_tiers, agents, defaults) via the
+// atomic config-holder swap. Everything consumed by a boot-built subsystem
+// (memory, scheduler, skills, concurrency, host allowlists, the listen address,
+// the store DSN) is reported restart_required until a later phase adds its reloader.
 package http
 
 import (
@@ -25,15 +25,32 @@ import (
 )
 
 // reloadableSections are the top-level config sections a reload APPLIES in the
-// current build (Phase 2). A changed section outside this set is reported under
-// restart_required. user_tiers is deliberately absent: it is read live off
-// s.cfg at run admission, so it needs the config-holder migration a later phase
-// adds, not the resolver-policy swap.
+// current build. A changed section outside this set is reported under
+// restart_required. Two mechanisms back it:
+//   - resolverSections need the in-place provider-set + resolver-policy rebuild
+//     (reloadApply); they are also live once the holder swaps.
+//   - the remainder (user_tiers, agents, defaults) are read live off s.cfg() at
+//     run admission, so the atomic holder swap alone makes them take effect on the
+//     next run — no subsystem rebuild.
+//
+// Everything else (memory, scheduler, skills, concurrency, host allowlists, the
+// listen address, the store DSN) is consumed by a boot-built subsystem that this
+// build does not rebuild → restart_required, until a later phase adds its reloader.
+var resolverSections = map[string]bool{
+	"providers":         true,
+	"models":            true,
+	"tiers":             true,
+	"provider_priority": true,
+}
+
 var reloadableSections = map[string]bool{
 	"providers":         true,
 	"models":            true,
 	"tiers":             true,
 	"provider_priority": true,
+	"user_tiers":        true,
+	"agents":            true,
+	"defaults":          true,
 }
 
 // ReloadResult is the POST /v1/_config/reload response (and dry-run diff).
@@ -65,9 +82,8 @@ var errReloadUnavailable = errors.New("config reload not wired on this server")
 func (s *Server) SetConfigReloader(load func() (*config.Config, error), apply func(*config.Config) error) {
 	s.reloadLoad = load
 	s.reloadApply = apply
-	if s.reloadBaseline.Load() == nil {
-		s.reloadBaseline.Store(s.cfg)
-	}
+	// The diff baseline is the holder's current config (set in New) — no separate
+	// baseline pointer to seed.
 }
 
 // ReloadConfig re-loads the layered config and, unless dryRun, applies the
@@ -91,16 +107,20 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
 	}
 
-	// (2) Diff against the last-applied baseline to classify the changes.
-	baseline := s.reloadBaseline.Load()
-	changed, err := config.ChangedSections(baseline, candidate)
+	// (2) Diff against the running config (the holder's current value) to classify
+	// the changes into applied vs restart-required.
+	changed, err := config.ChangedSections(s.cfg(), candidate)
 	if err != nil {
 		return ReloadResult{}, fmt.Errorf("%w: diffing config: %v", config.ErrReloadInvalid, err)
 	}
 	res := ReloadResult{DryRun: dryRun, Applied: []string{}, RestartRequired: []string{}, Warnings: candidate.Warnings}
+	resolverChanged := false
 	for _, sec := range changed {
 		if reloadableSections[sec] {
 			res.Applied = append(res.Applied, sec)
+			if resolverSections[sec] {
+				resolverChanged = true
+			}
 		} else {
 			res.RestartRequired = append(res.RestartRequired, sec)
 		}
@@ -111,19 +131,22 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 		return res, nil
 	}
 
-	// (4) Apply the reloadable subsystems only when a reloadable section actually
-	// changed (an apply rebuilds the provider set + re-probes, so skip it when
-	// only restart-required sections moved — no churn). On apply failure the
-	// baseline is NOT advanced, so the running subsystems keep the old config.
-	if len(res.Applied) > 0 {
+	// (4) Rebuild the provider set + resolver policy in place, but ONLY when a
+	// resolver-relevant section changed (that apply re-probes — skip the churn
+	// otherwise). On apply failure NOTHING is swapped, so both the subsystems AND
+	// s.cfg() keep the old config — a consistent rollback.
+	if resolverChanged {
 		if err := s.reloadApply(candidate); err != nil {
 			return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadApply, err)
 		}
 	}
-	// Advance the baseline to the candidate regardless of whether a reloadable
-	// section changed: a subsequent reload should diff against what the operator
-	// most recently loaded, so an unchanged-then-changed sequence is detected.
-	s.reloadBaseline.Store(candidate)
+	// (5) Swap the holder so every live-read section (user_tiers, agents, defaults,
+	// and the resolver sections too) reflects the candidate on the next read, and
+	// the baseline advances for the next diff. Done last so a failed resolver apply
+	// above leaves s.cfg() on the old config too. Restart-required sections are
+	// reflected here for display/intent, but their boot-built subsystems still run
+	// the old values until a restart — that is exactly what restart_required says.
+	s.cfgHolder.Store(candidate)
 	return res, nil
 }
 

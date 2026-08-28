@@ -36,7 +36,7 @@ func libraryFixture(t *testing.T) (*Server, store.Store, func()) {
 	}
 	hookReg := hooks.NewRegistry()
 	srv := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),

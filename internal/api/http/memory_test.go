@@ -44,7 +44,7 @@ func memoryAdminFixture(t *testing.T) *Server {
 	cfg := &config.Config{}
 	hookReg := hooks.NewRegistry()
 	return &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          st,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
@@ -523,7 +523,7 @@ func memoryAdminAuthedFixture(t *testing.T) *Server {
 	cfg := &config.Config{Env: config.Env{AuthToken: "test-token"}}
 	hookReg := hooks.NewRegistry()
 	return &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          st,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
@@ -566,7 +566,7 @@ func TestHandleListMemoryEntries_StoreUnavailable(t *testing.T) {
 	cfg := &config.Config{}
 	hookReg := hooks.NewRegistry()
 	s := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,

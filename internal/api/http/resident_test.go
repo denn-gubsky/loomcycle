@@ -114,7 +114,7 @@ func TestResidentChild_OpenSendClose(t *testing.T) {
 // opener holds the configured maximum resident children.
 func TestResidentChild_PerRunCapErrors(t *testing.T) {
 	srv := newResidentTestServer(t)
-	srv.cfg.Env.MaxInteractiveChildren = 1
+	srv.cfg().Env.MaxInteractiveChildren = 1
 	ctx := residentParentCtx("parent-agent", "")
 
 	runID, _, _, err := srv.openResidentChild(ctx, "child", "one", "", 0)

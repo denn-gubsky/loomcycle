@@ -18,7 +18,7 @@ import (
 // admin / open mode. isolatedOrCaptured additionally honours a bit CAPTURED on a
 // trigger def when no principal is present (scheduler/webhook/A2A fire path).
 func TestIsolatedForCtx_Matrix(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
+	s := &Server{cfgHolder: config.NewHolder(&config.Config{})}
 	ctxWith := func(scopes ...string) context.Context {
 		return auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "x", Scopes: scopes})
 	}

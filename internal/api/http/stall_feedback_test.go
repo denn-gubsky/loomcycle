@@ -47,7 +47,7 @@ func TestStallFeedbackClosures_UseLoopProvidedArgsNotConstructionPin(t *testing.
 		// and uses the resolver's hardcoded 30s default. The
 		// per-tier substitution path is covered by
 		// TestMarkRateLimitedFn_SubstitutesTierCooldown below.
-		cfg: &config.Config{},
+		cfgHolder: config.NewHolder(&config.Config{}),
 	}
 
 	t.Run("markRateLimitedFn uses loop args", func(t *testing.T) {
@@ -150,7 +150,7 @@ func TestMarkRateLimitedFn_SubstitutesTierCooldown(t *testing.T) {
 	r.SetProviderReachable("anthropic", true)
 	srv := &Server{
 		resolver: r,
-		cfg: &config.Config{
+		cfgHolder: config.NewHolder(&config.Config{
 			UserTiers: map[string]config.UserTier{
 				// 5 s cooldown — under the resolver's 30 s default
 				// so a re-Resolve right after the closure call still
@@ -161,7 +161,7 @@ func TestMarkRateLimitedFn_SubstitutesTierCooldown(t *testing.T) {
 				// 0 = use the resolver's hardcoded default.
 				"unset": {},
 			},
-		},
+		}),
 	}
 
 	t.Run("operator cooldown substitutes when loop passes zero", func(t *testing.T) {

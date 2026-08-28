@@ -22,14 +22,14 @@ func TestResolveChannelScope_StaticRuntimeAndPrecedence(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	srv := &Server{
-		cfg: &config.Config{
+		cfgHolder: config.NewHolder(&config.Config{
 			Channels: map[string]config.Channel{
 				"static-global": {Scope: "global", Semantic: "queue"},
 				"static-user":   {Scope: "user", Semantic: "queue"},
 				// Same name as a runtime row below — yaml must win.
 				"shared": {Scope: "global", Semantic: "queue"},
 			},
-		},
+		}),
 		store: st,
 	}
 

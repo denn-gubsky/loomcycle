@@ -36,8 +36,8 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 		}{st.MessageCount, st.OldestVisibleAt, st.NewestVisibleAt}
 	}
 
-	out := make([]connector.ChannelDescriptor, 0, len(s.cfg.Channels))
-	for name, ch := range s.cfg.Channels {
+	out := make([]connector.ChannelDescriptor, 0, len(s.cfg().Channels))
+	for name, ch := range s.cfg().Channels {
 		desc := connector.ChannelDescriptor{
 			Name:        name,
 			Description: ch.Description,
@@ -75,7 +75,7 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 		if !all && r.TenantID != tenantID {
 			continue
 		}
-		if _, yaml := s.cfg.Channels[r.Name]; yaml {
+		if _, yaml := s.cfg().Channels[r.Name]; yaml {
 			continue
 		}
 		desc := connector.ChannelDescriptor{
@@ -108,7 +108,7 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 		runtimeNames[r.Name] = true
 	}
 	for name, st := range statsByName {
-		if _, declared := s.cfg.Channels[name]; declared {
+		if _, declared := s.cfg().Channels[name]; declared {
 			continue
 		}
 		if runtimeNames[name] {

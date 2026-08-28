@@ -36,7 +36,7 @@ func userChannelFixture(t *testing.T) *Server {
 	hookReg := hooks.NewRegistry()
 	bus := channels.NewBus()
 	srv := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          st,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),

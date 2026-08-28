@@ -336,7 +336,7 @@ func TestOperatorKeyScope_GatewayRefusesRestrictedPrincipal(t *testing.T) {
 		{Type: providers.EventDone, StopReason: "end_turn"},
 	}}}
 	srv, _ := makeServer(t, prov, makeBaseConfig())
-	srv.cfg.Env.OperatorKeyRestriction = true
+	srv.cfg().Env.OperatorKeyRestriction = true
 
 	body := `{"model":"km","messages":[{"role":"user","content":"hi"}],"loomcycle_provider":"scripted"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -365,7 +365,7 @@ func TestOperatorKeyScope_GatewayAllowsScopedPrincipal(t *testing.T) {
 		{Type: providers.EventDone, StopReason: "end_turn"},
 	}}}
 	srv, _ := makeServer(t, prov, makeBaseConfig())
-	srv.cfg.Env.OperatorKeyRestriction = true
+	srv.cfg().Env.OperatorKeyRestriction = true
 
 	scoped := auth.Principal{TenantID: "acme", Subject: "alice",
 		Scopes: []string{auth.ScopeRunsCreate, auth.ScopeProvidersOperatorKey}}

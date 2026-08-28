@@ -23,7 +23,7 @@ func newMetricsPromServer(t *testing.T, withPerUserCap bool) *Server {
 	}
 	hookReg := hooks.NewRegistry()
 	return &Server{
-		cfg:            &config.Config{},
+		cfgHolder:      config.NewHolder(&config.Config{}),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,
@@ -94,7 +94,7 @@ func TestMetricsProm_PerUserSeriesOnlyWhenCapEnabled(t *testing.T) {
 // missing the semaphore (early init, certain test fixtures) emits
 // concurrency=0 rather than 500-ing.
 func TestMetricsProm_NilSemReturnsZeros(t *testing.T) {
-	srv := &Server{cfg: &config.Config{}, sem: nil}
+	srv := &Server{cfgHolder: config.NewHolder(&config.Config{}), sem: nil}
 	rec := httptest.NewRecorder()
 	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
 

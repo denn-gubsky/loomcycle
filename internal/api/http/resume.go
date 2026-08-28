@@ -145,7 +145,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// can't take the endsWithPendingTurn path (it ends on an assistant turn) but
 	// IS resumable: the goroutine below reconciles the children into the
 	// envelope. Flag-gated — off ⇒ (_, false) ⇒ the byte-identical normal path.
-	fanout, isFanout := detectFanoutParent(s.cfg.Env.ResumeFanout, runEvents)
+	fanout, isFanout := detectFanoutParent(s.cfg().Env.ResumeFanout, runEvents)
 	if isFanout && !lastTurnIsSoleToolUse(priorMessages, fanout.toolUseID) {
 		// A parked fan-out that shared its turn with other in-flight tools (a
 		// mixed tool iteration) isn't auto-reconcilable: synthesizing only the
@@ -351,7 +351,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		MarkStalled:         s.markStalledFn(providerID, model),
 		MarkRateLimited:     s.markRateLimitedFn(run.UserTier),
 		ClearStall:          s.clearStallFn(providerID, model),
-		ToolParallelism:     s.cfg.Env.ToolParallelism,
+		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           run.Agent,
 		CodeBody:            agentDef.Code,
 		RunTimeoutSeconds:   agentDef.RunTimeoutSeconds, // per-run override not snapshotted

@@ -17,7 +17,7 @@ import (
 // AW token budget, and the RFC AX operator-key restriction before a team walk.
 
 func TestAdmitTeamRun_RefusesAtMaxDepth(t *testing.T) {
-	s := &Server{cfg: &config.Config{}, limits: limits.New(nil)}
+	s := &Server{cfgHolder: config.NewHolder(&config.Config{}), limits: limits.New(nil)}
 	ctx := context.Background()
 	for i := 0; i < builtin.MaxAgentDepth; i++ {
 		ctx = builtin.IncrementAgentDepth(ctx)
@@ -28,7 +28,7 @@ func TestAdmitTeamRun_RefusesAtMaxDepth(t *testing.T) {
 }
 
 func TestAdmitTeamRun_AllowsAndIncrementsDepth(t *testing.T) {
-	s := &Server{cfg: &config.Config{}, limits: limits.New(nil)} // no-op tracker → always allowed
+	s := &Server{cfgHolder: config.NewHolder(&config.Config{}), limits: limits.New(nil)} // no-op tracker → always allowed
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme", UserID: "u1"})
 
 	out, err := s.admitTeamRun(ctx)

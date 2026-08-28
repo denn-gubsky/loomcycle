@@ -182,7 +182,7 @@ func extractBearer(r *http.Request) (string, bool) {
 // token can't be bootstrapped — the admin endpoints that create tokens
 // require auth — so the admin-count check is sufficient in practice.)
 func (s *Server) authConfigured(ctx context.Context) bool {
-	if s.cfg.Env.AuthToken != "" {
+	if s.cfg().Env.AuthToken != "" {
 		return true
 	}
 	if s.store == nil {
@@ -193,7 +193,7 @@ func (s *Server) authConfigured(ctx context.Context) bool {
 }
 
 func (s *Server) authVerbose() bool {
-	return s.cfg.Env.AuthVerbose
+	return s.cfg().Env.AuthVerbose
 }
 
 // resolvePrincipal maps a raw bearer to a principal, with a short-TTL
@@ -205,7 +205,7 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if bearer == "" {
 		return auth.Principal{}, false
 	}
-	hash := auth.HashToken(s.cfg.Env.OperatorTokenPepper, bearer)
+	hash := auth.HashToken(s.cfg().Env.OperatorTokenPepper, bearer)
 	if p, found, ok := s.tokenCache.get(hash); ok {
 		return p, found
 	}
@@ -260,11 +260,11 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash stri
 	// `principals:` block, matched constant-time. Tried AFTER the minted
 	// substrate (a minted def wins a value clash) and BEFORE the legacy
 	// fallback. A definitive, cacheable outcome.
-	if p, ok := auth.MatchDeclared(bearer, s.cfg.ResolvedPrincipals); ok {
+	if p, ok := auth.MatchDeclared(bearer, s.cfg().ResolvedPrincipals); ok {
 		return p, true, true
 	}
 	// Legacy shared-secret fallback.
-	if s.cfg.Env.AuthToken != "" && auth.CompareBearer(bearer, s.cfg.Env.AuthToken) {
+	if s.cfg().Env.AuthToken != "" && auth.CompareBearer(bearer, s.cfg().Env.AuthToken) {
 		if s.legacyFallbackDisabled(ctx) {
 			return auth.Principal{}, false, true
 		}
@@ -334,7 +334,7 @@ func (s *Server) applyPrincipal(ctx context.Context, wireTenant, wireUser string
 // yield false (operator key allowed). See auth.OperatorKeyRestricted.
 func (s *Server) operatorKeyRestrictedForCtx(ctx context.Context) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	return auth.OperatorKeyRestricted(p, ok, s.cfg.Env.OperatorKeyRestriction)
+	return auth.OperatorKeyRestricted(p, ok, s.cfg().Env.OperatorKeyRestriction)
 }
 
 // isolatedForCtx computes the RFC BX P2b isolation bit from the LIVE principal on
@@ -380,7 +380,7 @@ func (s *Server) isolatedOrCaptured(ctx context.Context, captured bool) bool {
 // captured grant must ride the trigger def since no token is present at fire time.
 func (s *Server) operatorKeyRestrictedOrCaptured(ctx context.Context, captured bool) bool {
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
-		return auth.OperatorKeyRestricted(p, ok, s.cfg.Env.OperatorKeyRestriction)
+		return auth.OperatorKeyRestricted(p, ok, s.cfg().Env.OperatorKeyRestriction)
 	}
 	return captured
 }
@@ -457,11 +457,11 @@ func (s *Server) serverCapabilities() map[string]any {
 		// Whether the MCPServerDef substrate accepts a dynamically-registered
 		// stdio server (LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO). The UI enables the
 		// stdio import path only when true, with a loud RCE warning.
-		"mcp_allow_dynamic_stdio": s.cfg.Env.MCPAllowDynamicStdio,
+		"mcp_allow_dynamic_stdio": s.cfg().Env.MCPAllowDynamicStdio,
 		// Whether ANY http host allowlist is configured — so the UI can warn
 		// that an imported http MCP server will 422 unless its host is listed.
 		// Presence only; never the entries themselves.
-		"http_host_allowlist_configured": len(s.cfg.Env.HTTPHostAllowlist)+len(s.cfg.Env.HTTPPrivateHostAllowlist) > 0,
+		"http_host_allowlist_configured": len(s.cfg().Env.HTTPHostAllowlist)+len(s.cfg().Env.HTTPPrivateHostAllowlist) > 0,
 	}
 }
 

@@ -87,46 +87,46 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 
 	// Effective config, applying the same fallbacks retention.New does, so the
 	// report shows what the sweeper actually runs with.
-	interval := s.cfg.Env.RetentionInterval
+	interval := s.cfg().Env.RetentionInterval
 	if interval <= 0 {
 		interval = time.Hour
 	}
-	mode := s.cfg.Env.RetentionDefsMode
+	mode := s.cfg().Env.RetentionDefsMode
 	if mode == "" {
 		mode = "off"
 	}
-	chatsMode := s.cfg.Env.RetentionChatsMode
+	chatsMode := s.cfg().Env.RetentionChatsMode
 	if chatsMode == "" {
 		chatsMode = "off"
 	}
-	memMode := s.cfg.Env.RetentionMemMode
+	memMode := s.cfg().Env.RetentionMemMode
 	if memMode == "" {
 		memMode = "off"
 	}
-	memContentMode := s.cfg.Env.RetentionMemContentMode
+	memContentMode := s.cfg().Env.RetentionMemContentMode
 	if memContentMode == "" {
 		memContentMode = "off"
 	}
 	// 0 = inherit the global chat age (never "delete immediately"), resolved the
 	// same way retention.New resolves it.
-	chatsInternalMaxAge := s.cfg.Env.RetentionChatsInternalMaxAge
+	chatsInternalMaxAge := s.cfg().Env.RetentionChatsInternalMaxAge
 	if chatsInternalMaxAge == 0 {
-		chatsInternalMaxAge = s.cfg.Env.RetentionChatsMaxAge
+		chatsInternalMaxAge = s.cfg().Env.RetentionChatsMaxAge
 	}
 	resp := retentionReportResponse{
 		Admin:                 admin,
-		Enabled:               s.cfg.Env.RetentionEnabled,
+		Enabled:               s.cfg().Env.RetentionEnabled,
 		IntervalMS:            interval.Milliseconds(),
 		DefsMode:              mode,
-		DefsMaxAgeMS:          s.cfg.Env.RetentionDefsMaxAge.Milliseconds(),
-		DefsKeepLastN:         s.cfg.Env.RetentionDefsKeepLastN,
+		DefsMaxAgeMS:          s.cfg().Env.RetentionDefsMaxAge.Milliseconds(),
+		DefsKeepLastN:         s.cfg().Env.RetentionDefsKeepLastN,
 		ChatsMode:             chatsMode,
-		ChatsMaxAgeMS:         s.cfg.Env.RetentionChatsMaxAge.Milliseconds(),
+		ChatsMaxAgeMS:         s.cfg().Env.RetentionChatsMaxAge.Milliseconds(),
 		ChatsInternalMaxAgeMS: chatsInternalMaxAge.Milliseconds(),
 		MemMode:               memMode,
-		MemMaxAgeMS:           s.cfg.Env.RetentionMemMaxAge.Milliseconds(),
+		MemMaxAgeMS:           s.cfg().Env.RetentionMemMaxAge.Milliseconds(),
 		MemContentMode:        memContentMode,
-		MemContentMaxAgeMS:    s.cfg.Env.RetentionMemContentMaxAge.Milliseconds(),
+		MemContentMaxAgeMS:    s.cfg().Env.RetentionMemContentMaxAge.Milliseconds(),
 	}
 
 	if s.store == nil {
@@ -140,21 +140,21 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	// Admin-only global detail: the export dir (infra path) + the cross-tenant
 	// purgeable counts.
 	if admin {
-		resp.ExportDir = s.cfg.Env.RetentionExportDir
+		resp.ExportDir = s.cfg().Env.RetentionExportDir
 		rCfg := retention.Config{
 			DefsMode:      mode,
-			DefsMaxAge:    s.cfg.Env.RetentionDefsMaxAge,
-			DefsKeepLastN: s.cfg.Env.RetentionDefsKeepLastN,
+			DefsMaxAge:    s.cfg().Env.RetentionDefsMaxAge,
+			DefsKeepLastN: s.cfg().Env.RetentionDefsKeepLastN,
 			ChatsMode:     chatsMode,
-			ChatsMaxAge:   s.cfg.Env.RetentionChatsMaxAge,
+			ChatsMaxAge:   s.cfg().Env.RetentionChatsMaxAge,
 			MemMode:       memMode,
-			MemMaxAge:     s.cfg.Env.RetentionMemMaxAge,
-			ExportDir:     s.cfg.Env.RetentionExportDir,
+			MemMaxAge:     s.cfg().Env.RetentionMemMaxAge,
+			ExportDir:     s.cfg().Env.RetentionExportDir,
 			// The preview splits chats by authoring agent exactly as the sweep
 			// does, so "chats" vs "chats_internal" in the counts below reflect the
 			// two cutoffs an operator actually gets.
-			ChatsInternalMaxAge: s.cfg.Env.RetentionChatsInternalMaxAge,
-			InternalAgents:      s.cfg.InternalAgentNames(),
+			ChatsInternalMaxAge: s.cfg().Env.RetentionChatsInternalMaxAge,
+			InternalAgents:      s.cfg().InternalAgentNames(),
 		}
 		// Feed the SQL-Memory manager so the "mem" preview can see which agents
 		// have an SQL-Memory scope. Typed-nil guard (nil pointer → nil interface).
@@ -170,15 +170,15 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 		resp.Purgeable = counts
 
 		// Surface the separate SQL-Memory GC (RFC AA) as infra context.
-		gcInterval := s.cfg.Storage.SqlMemGCIntervalMS
-		if gcInterval == 0 && (s.cfg.Storage.SqlMemScopeTTLMS > 0 || s.cfg.Storage.SqlMemTotalMaxBytes > 0) {
+		gcInterval := s.cfg().Storage.SqlMemGCIntervalMS
+		if gcInterval == 0 && (s.cfg().Storage.SqlMemScopeTTLMS > 0 || s.cfg().Storage.SqlMemTotalMaxBytes > 0) {
 			gcInterval = int(time.Hour.Milliseconds()) // the sqlmem default
 		}
 		resp.SQLMemGC = &sqlMemGCInfo{
-			Enabled:       s.cfg.Storage.SqlMemScopeTTLMS > 0 || s.cfg.Storage.SqlMemTotalMaxBytes > 0,
-			ScopeTTLMS:    s.cfg.Storage.SqlMemScopeTTLMS,
+			Enabled:       s.cfg().Storage.SqlMemScopeTTLMS > 0 || s.cfg().Storage.SqlMemTotalMaxBytes > 0,
+			ScopeTTLMS:    s.cfg().Storage.SqlMemScopeTTLMS,
 			IntervalMS:    gcInterval,
-			TotalMaxBytes: s.cfg.Storage.SqlMemTotalMaxBytes,
+			TotalMaxBytes: s.cfg().Storage.SqlMemTotalMaxBytes,
 		}
 	}
 
