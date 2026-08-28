@@ -150,7 +150,10 @@ may instead extract facts server-side with its own LLM.
 
 // recall stored memories by meaning
 {"op": "recall", "scope": "user", "query": "ui preferences", "top_k": 5}
-// → {"facts": [{"id": "mem_ab12…", "memory": "user prefers dark mode", "score": 0.91}]}
+// → {"memories": [{"id": "mem_ab12…", "memory": "user prefers dark mode",
+//                  "score": 0.91, "kind": "fact"}]}
+// kind is "fact" (a consolidator distilled it), "note" (an agent wrote it
+// directly) or absent when the backend cannot classify its own rows.
 ```
 
 `recall` needs the vector stack (an embedder + a vector-capable store);

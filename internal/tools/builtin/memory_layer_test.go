@@ -223,3 +223,82 @@ func TestMemoryTool_Add_RejectsEmptyMessages(t *testing.T) {
 		t.Errorf("empty messages should be refused with a messages error; got %s", res.Text)
 	}
 }
+
+// TestMemoryTool_Recall_RendersMemoriesNotFacts pins the projection the model reads.
+//
+// Recall's default admits notes as well as distilled facts, so on a corpus of raw
+// ingested turns EVERY row is a note — and the array was called "facts", asserting
+// of each result a status most of them did not have. Measured on the LoCoMo answer
+// axis, an answerer reading the IDENTICAL retrieved rows scored 0.6692 through this
+// projection against 0.6906 through `search`'s (same keys, same order, same scores),
+// and the gap was concentrated in temporal questions, where the model reported the
+// timestamp of the utterance as the date of the event.
+//
+// So this test guards two things at once: the honest container name, and a per-row
+// kind for the classes the backend can distinguish.
+func TestMemoryTool_Recall_RendersMemoriesNotFacts(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	tool.Backend = &fakeLayerBackend{recallOut: []memrank.RecallFact{
+		{ID: "turn-1", Memory: "[8 May 2023] I went yesterday", Score: 0.91, Kind: store.MemoryRowNote},
+		{ID: "f-1", Memory: "user prefers dark mode", Score: 0.77, Kind: store.MemoryRowFact},
+	}}
+
+	res, err := tool.Execute(ctx, json.RawMessage(
+		`{"op":"recall","scope":"user","query":"anything"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("recall failed: err=%v res=%+v", err, res)
+	}
+	var out struct {
+		Memories []struct {
+			ID   string `json:"id"`
+			Kind string `json:"kind"`
+		} `json:"memories"`
+		Facts []json.RawMessage `json:"facts"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("recall output is not JSON: %v\n%s", err, res.Text)
+	}
+	if len(out.Facts) != 0 {
+		t.Errorf("recall still renders a \"facts\" array; the key is \"memories\": %s", res.Text)
+	}
+	if len(out.Memories) != 2 {
+		t.Fatalf("got %d memories, want 2: %s", len(out.Memories), res.Text)
+	}
+	byID := map[string]string{}
+	for _, m := range out.Memories {
+		byID[m.ID] = m.Kind
+	}
+	if byID["turn-1"] != string(store.MemoryRowNote) || byID["f-1"] != string(store.MemoryRowFact) {
+		t.Errorf("per-row kind not rendered (turn-1=%q f-1=%q): %s",
+			byID["turn-1"], byID["f-1"], res.Text)
+	}
+}
+
+// A backend that cannot classify its own rows — a remote memory layer handing back
+// opaque server-side ids — must yield NO kind rather than a guessed one. Defaulting
+// to "fact" here would recreate the defect the field exists to close.
+func TestMemoryTool_Recall_OmitsKindWhenBackendCannotClassify(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+	tool.Backend = &fakeLayerBackend{recallOut: []memrank.RecallFact{
+		{ID: "mem_ab12", Memory: "user prefers dark mode", Score: 0.91}, // no Kind
+	}}
+
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"recall","scope":"user","query":"x"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("recall failed: err=%v res=%+v", err, res)
+	}
+	var out struct {
+		Memories []map[string]any `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("recall output is not JSON: %v\n%s", err, res.Text)
+	}
+	if len(out.Memories) != 1 {
+		t.Fatalf("got %d memories, want 1: %s", len(out.Memories), res.Text)
+	}
+	if k, present := out.Memories[0]["kind"]; present {
+		t.Errorf("kind = %v, but an unclassified row must omit the field entirely: %s", k, res.Text)
+	}
+}

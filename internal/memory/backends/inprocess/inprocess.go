@@ -523,6 +523,9 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 			ID:     e.Key,
 			Memory: recallText(e.Value),
 			Score:  e.Score,
+			// Classified by the SAME function the source selector filtered on, so the
+			// rendered kind cannot disagree with what `sources` admitted.
+			Kind: memory.Class(e),
 		})
 	}
 	if len(facts) > topK {

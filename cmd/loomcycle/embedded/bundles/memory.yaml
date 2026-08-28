@@ -2015,7 +2015,13 @@ agents:
           st.recall_unavailable = true;
           return [];
         }
-        return (res && res.facts) ? res.facts : [];
+        // `memories` is the current key; `facts` is what recall emitted before the
+        // rename. Both are read because a code-js body REPLAYS against tool results
+        // recorded earlier in the same run, so a pass that survives a version change
+        // would otherwise read undefined and silently recall nothing — and a
+        // consolidator that recalls nothing writes a duplicate instead of merging.
+        var rows = res ? (res.memories || res.facts) : null;
+        return rows ? rows : [];
       }
 
       // --------------------------------------------------------------- report

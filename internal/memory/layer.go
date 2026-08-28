@@ -157,9 +157,23 @@ type RecallQuery struct {
 // (a UUID, NOT a caller key) — it is opaque to loomcycle and only meaningful
 // to the backend.
 type RecallFact struct {
-	ID       string            `json:"id"`
-	Memory   string            `json:"memory"`
-	Score    float64           `json:"score"`
+	ID     string  `json:"id"`
+	Memory string  `json:"memory"`
+	Score  float64 `json:"score"`
+
+	// Kind is the row's class — "fact" (a consolidator distilled it), "note" (an
+	// agent wrote it directly) or "document" (Document chunk prose). The Memory
+	// tool's own input schema has always promised that "each result carries a
+	// matching kind", and for `search` it does; recall rendered no kind at all, so
+	// a caller could not tell a distilled fact from a raw note it had jotted down
+	// — while the surrounding array called every one of them a fact.
+	//
+	// EMPTY MEANS UNKNOWN, NOT "fact". Only a backend that classifies its own rows
+	// can fill this in; a remote memory layer returning opaque server-side ids
+	// cannot, and the tool omits the field rather than assert a class it does not
+	// know. Guessing here would recreate the exact defect this closes.
+	Kind store.MemoryRowClass `json:"kind,omitempty"`
+
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
