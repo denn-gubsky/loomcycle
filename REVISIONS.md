@@ -84,14 +84,64 @@ of merging.
 
 `Document op=list_facts` is untouched and still returns `facts` — those are facts.
 
-### Not yet demonstrated
+### Measured after the fact — it held
 
-The accuracy figures above are measured on the OLD projection. That the new one
-recovers the gap is the hypothesis this change rests on, not a result: the check is to
-re-run the answer axis with `op=recall` and compare against 0.6692 overall / 0.5727
-temporal. Worth stating because the retrieval-identity finding overturned the first
-hypothesis here — that recall's dedup was collapsing near-duplicate dated rows — and
-the replacement deserves the same measurement before it is believed.
+The figures above are from the OLD projection; this section originally said the
+recovery was a hypothesis, not a result. It has since been run. Same corpus, same
+answerer def, same judge, same model — only the projection differs:
+
+| slice | `op=search` | recall (old) | **recall (v1.65.0)** | vs old | vs search |
+|---|---|---|---|---|---|
+| **overall** | 0.6906 | 0.6692 | **0.6915** | **+0.0224** | +0.0009 |
+| single-hop | 0.7873 | 0.7873 | 0.7860 | -0.0013 | -0.0013 |
+| multi-hop | 0.5344 | 0.5283 | 0.5356 | +0.0073 | +0.0012 |
+| **temporal** | 0.6589 | 0.5727 | **0.6701** | **+0.0974** | +0.0112 |
+| open-domain | 0.3571 | 0.3258 | 0.3678 | +0.0420 | +0.0107 |
+
+1,535 questions, 1,454 graded. `recall` went from 2.2pp behind `search` to level with
+it, and every category is now within about one question of `search` — the gap is
+closed, not narrowed.
+
+The recovery landed where the diagnosis said it would. Temporal gained 9.7pp;
+single-hop, which does not depend on resolving a date against an utterance time,
+stayed flat at -0.13pp. A uniform lift across categories would have been WEAKER
+evidence — it would have suggested some general effect rather than the specific
+mechanism claimed. Of the 43 temporal questions that `search` answered correctly and
+the old projection got wrong, 30 are now correct, 12 still wrong, 1 unparsed.
+Abstentions fell 0.167 to 0.158.
+
+### What the remaining 12 are, and they are not this bug
+
+Investigated, because "mostly fixed" is not a finding. They split in two, neither of
+which the projection can reach:
+
+**Five are the deictic step failing at the last inch.** The model now demonstrably
+UNDERSTANDS the offset and still answers the wrong date — one reply reads *"8 May 2023
+(she went 'yesterday,' stated 8 May)"*, which states the correct reasoning and then
+emits the speaking date anyway. Nothing about the row's framing is misleading it any
+more; it is an instruction-following failure at the final-answer step, and it belongs
+to whatever prompt is asking the question.
+
+**Seven need a time PREDICATE, which this memory plane does not have.** They ask
+things like *"which city was Calvin at on October 3, 2023"* or *"what was Dave doing
+in the first weekend of October 2023"*. Cosine similarity over prose cannot answer
+that: the embedding of a date-constrained question does not retrieve the turn that
+happens to carry that timestamp, because dates are not semantically encoded. Five
+abstained and two answered confidently wrong, which is the worse failure.
+
+That splits cleanly in the aggregate, across all 294 graded temporal questions and not
+just the 12:
+
+| temporal question shape | n | accuracy | abstention |
+|---|---|---|---|
+| carries an absolute date / window constraint | 31 | 0.5484 | 0.323 |
+| topic-shaped | 263 | 0.6844 | 0.171 |
+
+So a date-constrained question is roughly 14pp harder and abstains about twice as
+often. The machinery for it already exists elsewhere in the runtime — the bi-temporal
+entity sidecar's `valid_at` / `invalid_at` and `graph_recall`'s `as_of` predicate — but
+the k/v memory plane's `recall` and `search` expose no date filter at all. Closing
+that is a feature, not a fix, and wants its own RFC.
 
 ## What's in v1.64.0
 
