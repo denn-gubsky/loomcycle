@@ -13,7 +13,9 @@ import (
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/llamacpp"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/mock"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/vllm"
 )

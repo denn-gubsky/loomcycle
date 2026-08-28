@@ -68,10 +68,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/llamacpp"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/mock"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/vllm"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	// Deterministic stub embedder for runtime tests; its init() registers the
 	// "stub" provider ONLY when LOOMCYCLE_EMBEDDER_STUB=1, so it is invisible
@@ -3547,9 +3549,16 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 	switch id {
 	case "ollama-local":
 		// The loader defaults OLLAMA_BASE_URL to http://localhost:11434; the opt-out
-		// is the "disabled" sentinel. Read the RESOLVED value (cfg.Env), not
-		// os.Getenv, so the getenvDefault behaviour is preserved exactly.
-		return cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled"
+		// is the "disabled" sentinel, which always wins. Read the RESOLVED value
+		// (cfg.Env), not os.Getenv, so the getenvDefault behaviour is preserved.
+		// RFC CK: a YAML `providers.ollama-local.base_url` ALSO enables it, so a
+		// `local` preset/bundle can carry the endpoint without relying on the env
+		// var (the env still defaults to localhost, so existing deployments are
+		// unchanged).
+		if cfg.Env.OllamaBaseURL == "disabled" {
+			return false
+		}
+		return cfg.Env.OllamaBaseURL != "" || pc.BaseURL != ""
 	case "mock", "mock-stable":
 		return os.Getenv("LOOMCYCLE_MOCK_ENABLED") == "1"
 	case "code-js":
