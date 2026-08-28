@@ -1128,6 +1128,17 @@ func parseSources(in []string) []memrank.Source {
 		switch memrank.Source(strings.ToLower(strings.TrimSpace(s))) {
 		case memrank.SourceFacts:
 			out = append(out, memrank.SourceFacts)
+		case memrank.SourceNotes:
+			// WAS MISSING, and the failure was silent in two opposite directions.
+			// "notes" is in this op's own input-schema enum, so a caller had every
+			// reason to pass it — and an unknown value is DROPPED by design (see the
+			// doc above), which turned an explicit selector into no selector. On
+			// `search` that widened the result set to everything and looked like it
+			// worked; on `recall` it fell through to the facts-only default and
+			// returned nothing at all. Measured: a scope holding 419 embedded notes
+			// answered `recall sources=["notes"]` with zero rows while
+			// `search sources=["notes"]` returned three.
+			out = append(out, memrank.SourceNotes)
 		case memrank.SourceDocuments:
 			out = append(out, memrank.SourceDocuments)
 		}

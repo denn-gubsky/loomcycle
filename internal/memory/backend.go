@@ -132,7 +132,10 @@ type SearchQuery struct {
 type Source string
 
 const (
-	// SourceFacts is the agent's own memory: consolidated facts and notes it wrote.
+	// SourceFacts is memory a consolidator DISTILLED — it has provenance, so a
+	// server-known writer stands behind it. It does NOT include notes; that
+	// predates the facts/notes split and reading it that way is what let recall's
+	// default drop every directly-written row.
 	SourceFacts Source = "facts"
 	// SourceNotes is memory an agent wrote directly with `set` — no provenance, so no
 	// server-known writer distilled it.

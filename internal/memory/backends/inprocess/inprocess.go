@@ -496,7 +496,17 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 	// record this" across both planes.
 	sources := q.Sources
 	if len(sources) == 0 {
-		sources = []memory.Source{memory.SourceFacts}
+		// FACTS **AND NOTES** — the agent's own memory, both halves. Documents stay
+		// out, which is the whole point of the paragraph above.
+		//
+		// This used to be facts alone, which contradicted the op's own input schema
+		// ("recall defaults to facts+notes") and silently hid every row an agent had
+		// written with `set`: those carry no provenance, so ClassifyMemoryRow calls
+		// them notes. A scope holding 419 such rows answered a bare recall with
+		// nothing. The facts/notes split arrived after this default was written and
+		// this line was never revisited — before the split, "facts" WAS the whole of
+		// the agent's own memory.
+		sources = []memory.Source{memory.SourceFacts, memory.SourceNotes}
 	}
 	res, err := b.Search(ctx, scope, scopeID,
 		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources},
