@@ -122,6 +122,21 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 	for k, v := range pc.Options {
 		opts[k] = v
 	}
+	// RFC CK: per-provider stream timeouts are settable via `options:`
+	// (header_timeout_ms / idle_timeout_ms) so a `local` preset/bundle can tune a
+	// slow local backend's cold-load window in YAML — previously env-only. These
+	// are CONSUMED here (folded into StreamOpts + deleted) so they never reach the
+	// driver's Options map, which would otherwise WarnUnknownOptions on them. A
+	// YAML value overrides the env/global default; an absent/invalid entry leaves
+	// the env-derived timeout in place.
+	if ms, ok := optionMillis(opts, "header_timeout_ms"); ok {
+		stream.HeaderTimeout = ms
+		delete(opts, "header_timeout_ms")
+	}
+	if ms, ok := optionMillis(opts, "idle_timeout_ms"); ok {
+		stream.IdleTimeout = ms
+		delete(opts, "idle_timeout_ms")
+	}
 	return providers.DriverOptions{
 		ID:           id,
 		Dialect:      pc.Dialect,
@@ -133,6 +148,33 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		Capabilities: CapabilityPatch(pc.Capabilities),
 		Logf:         log.Printf,
 	}
+}
+
+// optionMillis coerces an `options:` value expressed in milliseconds (a YAML/JSON
+// number, which round-trips through config layering as int / int64 / float64) into
+// a time.Duration. Returns false for a missing key, a non-numeric value, or a
+// non-positive one — so a bad or absent entry falls back to the env/global default
+// rather than silently installing a zero (i.e. immediate-timeout) client.
+func optionMillis(opts map[string]any, key string) (time.Duration, bool) {
+	v, ok := opts[key]
+	if !ok {
+		return 0, false
+	}
+	var ms int64
+	switch n := v.(type) {
+	case int:
+		ms = int64(n)
+	case int64:
+		ms = n
+	case float64:
+		ms = int64(n)
+	default:
+		return 0, false
+	}
+	if ms <= 0 {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 // CapabilityPatch translates a config.CapabilityOverride (the `capabilities:`
