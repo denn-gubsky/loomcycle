@@ -723,7 +723,13 @@ func main() {
 		resolvedCfg, found := resolveConfigPath("loomcycle.yaml")
 		switch {
 		case found:
-			cfgFiles = []string{resolvedCfg}
+			// RFC CK section-per-file: the base loomcycle.yaml + any loomcycle.*.yaml
+			// section siblings beside it (e.g. loomcycle.providers.yaml), deep-merged.
+			cfgFiles = append([]string{resolvedCfg}, siblingSectionFiles(resolvedCfg)...)
+			if len(cfgFiles) > 1 {
+				log.Printf("config: + %d section file(s) beside %s: %s",
+					len(cfgFiles)-1, resolvedCfg, strings.Join(cfgFiles[1:], ", "))
+			}
 		case len(presetLayers) > 0:
 			// Presets-only: the embedded base IS the config (RFC AQ §2.2).
 			log.Printf("config: no operator config file — running from embedded presets only")

@@ -78,6 +78,38 @@ func userOverrodeConfigFlag() bool {
 	return overrode
 }
 
+// siblingSectionFiles returns the loomcycle.<section>.yaml (/.yml) files sitting
+// NEXT TO the resolved base loomcycle.yaml, sorted lexically, excluding the base
+// itself. This is the RFC CK section-per-file split: an operator can move
+// `providers:` into loomcycle.providers.yaml and `memory:` into
+// loomcycle.memory.yaml beside loomcycle.yaml, and they auto-layer (deep-merged,
+// after the base, so a section file overrides the base for that section) with no
+// LOOMCYCLE_CONFIG_DIR / LOOMCYCLE_CONFIG_FILES plumbing. Only the auto-discovery
+// path picks these up; an explicit --config stays literal (list them or use a dir).
+func siblingSectionFiles(basePath string) []string {
+	return sectionFilesIn(filepath.Dir(basePath), basePath)
+}
+
+// sectionFilesIn globs loomcycle.*.yaml / loomcycle.*.yml directly in dir
+// (sorted, deduped, excluding `exclude`). loomcycle.yaml itself does not match
+// loomcycle.*.yaml (no middle segment), but `exclude` guards it regardless.
+func sectionFilesIn(dir, exclude string) []string {
+	seen := map[string]bool{}
+	var files []string
+	for _, pat := range []string{"loomcycle.*.yaml", "loomcycle.*.yml"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, pat))
+		for _, f := range matches {
+			if f == exclude || seen[f] {
+				continue
+			}
+			seen[f] = true
+			files = append(files, f)
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
 // configDirLayers returns the *.yaml / *.yml files directly under dir, sorted
 // lexically — the LOOMCYCLE_CONFIG_DIR layer group (RFC AQ §4). The directory
 // must exist and be readable (a set-but-missing dir is the operator's typo →
