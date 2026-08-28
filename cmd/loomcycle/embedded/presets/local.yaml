@@ -1,22 +1,71 @@
 # RFC AQ embedded preset: local
 #
-# Local-first (Ollama on your workstation / LAN). ONE PROVIDER PER FILE — it adds
-# the local models and PREPENDS ollama-local (RFC AQ §3 !prepend), so it composes
-# onto `base` without restating the matrix. The two intended uses:
+# Local-first inference (Ollama / vLLM / llama.cpp on your workstation or LAN).
+# It adds the local models and PREPENDS the local providers (RFC AQ §3 !prepend),
+# so it composes onto `base` without restating the matrix. Two intended uses:
 #   LOOMCYCLE_PRESETS=base,local   → local on top of base's full matrix, so cloud
 #                                    providers remain as fallback (recommended).
-#   LOOMCYCLE_PRESETS=local        → pure local: ollama-local only, no cloud.
+#   LOOMCYCLE_PRESETS=local        → pure local: local providers only, no cloud.
 #
-# Set OLLAMA_BASE_URL to your Ollama host (default http://localhost:11434). NO
-# secrets here.
+# CONFIG HOME (RFC CK). Local-provider settings live HERE, in YAML, rather than
+# in environment variables. Precedence, highest first:
+#   loomcycle.yaml  >  this preset  >  the LOOMCYCLE_OLLAMA_* env vars (legacy).
+# So a value set here overrides the matching env var, and your own loomcycle.yaml
+# overrides this preset. Ollama's endpoint still defaults to the OLLAMA_BASE_URL
+# env (http://localhost:11434) unless you set base_url below. NO secrets here.
+
+providers:
+  # ollama-local is already declared (keyless) in the embedded default providers,
+  # driven by OLLAMA_BASE_URL / LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX / _NUM_GPU /
+  # _*_TIMEOUT_MS. To move that off env and into YAML, uncomment and edit — these
+  # OVERRIDE the env vars (and loomcycle.yaml overrides these in turn):
+  #
+  # ollama-local:
+  #   base_url: http://truenas.local:11434   # else OLLAMA_BASE_URL (default localhost)
+  #   options:
+  #     num_ctx: 32768            # else LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX (unset → Ollama's 4096 floor)
+  #     num_gpu: 999              # force full GPU offload; else LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
+  #     header_timeout_ms: 600000 # first-token budget for a cold model load
+  #     idle_timeout_ms: 600000
+
+  # vLLM — an OpenAI-compatible local server (default :8000). Keyless by default;
+  # for a secured endpoint (--api-key) set api_key_env to the env-var NAME holding
+  # the key (e.g. VLLM_API_KEY). Uncomment to enable, then wire a model + tier below.
+  # vllm-local:
+  #   driver: vllm
+  #   base_url: http://localhost:8000/v1
+  #   options:
+  #     header_timeout_ms: 600000   # cold model load can be slow to first token
+  #     idle_timeout_ms: 600000
+  #   capabilities:
+  #     # vLLM fixes the context window at launch (--max-model-len); advertise it
+  #     # so compaction + the context gauge + Context op=self are accurate. Set
+  #     # this to YOUR served model's window.
+  #     max_context_tokens: 32768
+
+  # llama.cpp (llama-server) — an OpenAI-compatible local server (default :8080).
+  # llamacpp-local:
+  #   driver: llamacpp
+  #   base_url: http://localhost:8080/v1
+  #   options:
+  #     header_timeout_ms: 600000
+  #     idle_timeout_ms: 600000
+  #   capabilities:
+  #     # llama-server fixes the window at launch (-c / --ctx-size).
+  #     max_context_tokens: 32768
 
 models:
   local-fast:  { provider: ollama-local, model: gemma4:9b }        # quick / low-context
   local-chat:  { provider: ollama-local, model: qwen3.6:27b }      # general reasoning
   local-coder: { provider: ollama-local, model_pattern: "qwen3-coder*" } # coding / review
+  # vLLM / llama.cpp model examples — uncomment the provider above, then set the
+  # served model id (as vLLM/llama-server reports it on GET /v1/models):
+  # vllm-chat:     { provider: vllm-local,     model: Qwen/Qwen3-8B }
+  # llamacpp-chat: { provider: llamacpp-local, model: qwen3-8b }
 
 # !prepend → ollama-local goes on top; with `base` its cloud providers follow as
-# fallback (dedup keeps ollama-local's promoted position).
+# fallback (dedup keeps the promoted position). To prefer vLLM / llama.cpp, list
+# them first, e.g. !prepend [vllm-local, llamacpp-local, ollama-local].
 provider_priority: !prepend [ollama-local]
 
 tiers:
