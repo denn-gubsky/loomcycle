@@ -676,7 +676,28 @@ func (r *Resolver) priorityFor(req AgentRequest) (order []string, refused bool) 
 	case req.UserTier != nil && len(req.UserTier.ProviderPriority) > 0:
 		return req.UserTier.ProviderPriority, false
 	}
+	// Library fallback — read under the lock so a concurrent ReloadPolicy
+	// (RFC CK config reload) can swap it safely. Mirrors candidatesFor's
+	// libraryTiers read above; the earlier return paths touch only req fields.
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.libraryPriority, false
+}
+
+// ReloadPolicy atomically replaces the library-wide provider priority + tier
+// candidates (RFC CK config reload) WITHOUT disturbing the availability matrix
+// or the probe wiring — reachability persists across a policy reload, and the
+// forceProbe hook the probe loop installed stays intact. The next Resolve sees
+// the new policy; an in-flight resolution already past candidatesFor/priorityFor
+// is unaffected. Empty priority falls back to the default, matching NewResolver.
+func (r *Resolver) ReloadPolicy(libraryPriority []string, libraryTiers map[string][]Candidate) {
+	if len(libraryPriority) == 0 {
+		libraryPriority = defaultLibraryPriority
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.libraryPriority = libraryPriority
+	r.libraryTiers = libraryTiers
 }
 
 // isAvailableLocked checks whether a (provider, model) is currently
