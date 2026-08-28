@@ -2761,25 +2761,27 @@ agents:
 
       ## What to do
 
-      Every call needs an `op`. You have about eight calls; spend them like this.
+      Every call needs an `op`, and the tool is named `Document` with a capital D —
+      tool dispatch is an exact-match lookup, so `document` is not found at all.
+      You have about eight calls; spend them like this.
 
       1. Find which types the FACTS carry. Only the join matters — the `type`
          column is shared with ordinary document chunks, and those are not
          entity types:
-         `document` op=query_chunks scope=user
+         `Document` op=query_chunks scope=user
          sql: SELECT coalesce(c.type,'(none)') AS t, count(*) AS n FROM chunks c
               JOIN chunk_memory_meta m ON m.chunk_id = c.id
               GROUP BY 1 ORDER BY 2 DESC LIMIT 50
       2. If that returns a handful of rows, there is little to curate — say so
          and stop. Otherwise read a sample of ONE type worth looking into
          (at most two of these):
-         `document` op=query_chunks scope=user
+         `Document` op=query_chunks scope=user
          sql: SELECT c.title FROM chunks c JOIN chunk_memory_meta m ON m.chunk_id = c.id
               WHERE c.type = 'event' LIMIT 30
          (`title` and `type` are the readable columns. There is no `fields` or
          `body` column — a chunk's text is not in this table.)
       3. File at most THREE suggestions, best first, with
-         `document` op=propose_entity — name, optional parent, body.
+         `Document` op=propose_entity — name, optional parent, body.
 
       ## What makes a good suggestion
 
