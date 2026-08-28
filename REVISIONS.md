@@ -4,6 +4,69 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.63.0
+
+**A curator that never ran, and the two agent fields you could not set without
+curl.** Minor: the changes are in the runtime binary and the embedded Web UI,
+neither of which a `vX.Y.Z` patch tag builds.
+
+### memory/ontologist named its own tool in lowercase and never ran (#1072)
+
+It failed its FIRST tool call on every run, then spent the rest of its budget
+reasoning about which tools it had. A live pass: `tool not found: document`,
+followed by 1,937 output tokens concluding — wrongly — that the Document tool was
+missing from its environment, and inventing two tools
+(`generate_tool_suggestion`, `search`) that exist nowhere in loomcycle.
+
+The def was fine. It grants `tools: [Document]`. The PROMPT told the model to call
+`document` — lowercase, three times — and tool dispatch is an exact-match map
+lookup (`tools.Dispatcher.Execute` does `d.tools[name]`), so the call never
+reached the tool and never could.
+
+Nothing caught it because the two halves are checked by different things and
+neither checks the pair: the ACL is validated at config load, the prose is not
+validated at all. The agent looked correctly configured in every listing, and the
+only symptom was a curator producing confident nonsense.
+
+`TestBundlePrompts_NameToolsExactly` now scans every bundle agent's system prompt
+for the backticked `` `name` op=… `` form the bundles use to teach a tool call and
+asserts the name is one that agent is granted. Scoped to that form rather than to
+every mention of a word, because "ordinary document chunks" is legitimate prose in
+the same paragraph — and it fails when the pattern matches nothing, so it cannot
+pass by examining zero instructions.
+
+### The agent modal can set max_context_tokens and internal (#1073)
+
+Both round-trip the AgentDef create/fork overlay and neither was reachable from
+the Library modal, so setting either meant hand-rolling an API call.
+
+`max_context_tokens` sits one row from `max_tokens` and they are trivially
+confusable with different consequences — one truncates the reply, the other
+truncates the prompt — so both inputs carry a hint. The hint leads with what
+decides whether you want it: on a local model this becomes THAT agent's own
+`num_ctx`, so a smaller window is a cheaper and faster call; on a cloud model it
+can only lower the effective window, never raise it.
+
+`internal` is a checkbox that says ONE-WAY, because `applyOverlay` does
+`if ov.Internal { d.Internal = true }`. A plain checkbox would let an operator
+untick it, fork, and get an agent that is still internal with nothing saying so.
+The overlay emits the key only when true, mirroring that merge instead of sending
+a `false` the server ignores.
+
+Also fixed the text that hid both: the overlay's own schema `description` listed
+neither, so an MCP caller reading the tool schema could not discover them either.
+That description still documents only 24 of the overlay's 46 fields — the 22 it
+omits include `sampling`, `compaction`, `volumes`, `sql_scopes`,
+`memory_consolidation` and the four `*_def_scopes` gates. Left for its own change,
+because a coverage test would fail on twenty fields unrelated to this one.
+
+### Packages
+
+`@loomcycle/library` 0.3.0 (the modal change), published from its own
+`library-v0.3.0` tag. The Web UI embedded in the binary compiles that source
+directly, so the runtime carries the change either way. `@loomcycle/client` and
+the Python adapter are unchanged at 1.61.0.
+
 ## What's in v1.62.0
 
 **Three ways a consolidation pass wasted a deployment's time, all found by running
