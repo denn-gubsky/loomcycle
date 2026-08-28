@@ -108,6 +108,11 @@ type vectorStore struct {
 	store.Store
 	mu     sync.Mutex
 	embeds map[string]store.MemoryEmbedding
+	// origins is the row provenance the REAL stores keep in the memory table's
+	// origin column and return on MemorySearchEntry.Origin. MemoryEntry does not
+	// expose it, so a double reading rows back cannot recover it — it has to be
+	// recorded on the way in. Absent = a NOTE, which is what a plain `set` writes.
+	origins map[string]string
 	// extra, when non-nil, is appended to every MemoryEmbedSearch result verbatim
 	// — a hook for the dead-link tests to inject an ORPHAN hit (an embedding row
 	// whose backing k/v body is gone, surfaced as an empty Value) that the real
@@ -116,7 +121,8 @@ type vectorStore struct {
 }
 
 func newVectorStore(s store.Store) *vectorStore {
-	return &vectorStore{Store: s, embeds: map[string]store.MemoryEmbedding{}}
+	return &vectorStore{Store: s, embeds: map[string]store.MemoryEmbedding{},
+		origins: map[string]string{}}
 }
 
 func vsKey(scope store.MemoryScope, id, key string) string {
@@ -165,7 +171,27 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 		if err != nil {
 			continue
 		}
+		// HONOUR THE TWO FILTER DIMENSIONS BEYOND KeyPrefix. Without these the
+		// double silently ignores every source selector, so a test could not tell
+		// facts from notes or exclude documents — which is exactly how a
+		// facts-only recall default survived unnoticed while the schema promised
+		// facts+notes. The real stores apply both in SQL.
+		origin := v.origins[vsKey(scope, id, r.key)]
+		switch filter.Provenance {
+		case store.ProvenanceRequired:
+			if strings.TrimSpace(origin) == "" {
+				continue // a note: no known writer distilled it
+			}
+		case store.ProvenanceAbsent:
+			if strings.TrimSpace(origin) != "" {
+				continue // a fact
+			}
+		}
+		if filter.ExcludeKeyPrefix != "" && strings.HasPrefix(r.key, filter.ExcludeKeyPrefix) {
+			continue
+		}
 		se := store.MemorySearchEntry{MemoryEntry: entry, Score: r.s}
+		se.Origin = origin
 		se.EmbeddedWith.Provider = r.emb.Provider
 		se.EmbeddedWith.Model = r.emb.Model
 		// Hand back the stored vector so the in-process backend's MR-5 dedup
@@ -762,5 +788,77 @@ func TestInprocess_Recall_RefusesWithoutVectorStack(t *testing.T) {
 	_, err := b.Recall(context.Background(), store.MemoryScopeUser, "u1", memory.RecallQuery{Query: "x"})
 	if !errors.Is(err, store.ErrVectorUnsupported) {
 		t.Fatalf("Recall on a no-vector store: err = %v, want ErrVectorUnsupported (fail honest, not empty)", err)
+	}
+}
+
+// seedEmbeddedNote writes one row straight to the k/v plane with an embedding and
+// NO origin — which is what makes it a NOTE rather than a fact. Deliberately not
+// via Backend.Add: that path stamps store.PendingOriginAgentExplicit, so a row
+// planted through it classifies as a fact and could not exercise the notes filter
+// at all.
+func seedEmbeddedNote(t *testing.T, st *vectorStore, emb *fakeEmbedder, scope store.MemoryScope, id, key, text string) {
+	t.Helper()
+	ctx := context.Background()
+	raw, err := json.Marshal(text)
+	if err != nil {
+		t.Fatalf("marshal note: %v", err)
+	}
+	if err := st.MemorySet(ctx, "", scope, id, key, raw, 0); err != nil {
+		t.Fatalf("MemorySet(%s): %v", key, err)
+	}
+	vecs, err := emb.Embed(ctx, []string{text})
+	if err != nil || len(vecs) != 1 {
+		t.Fatalf("embed note: %v", err)
+	}
+	if err := st.MemoryEmbedSet(ctx, "", scope, id, key, store.MemoryEmbedding{
+		Provider: emb.Provider(), Model: emb.Model(), Dimension: len(vecs[0]), Vector: vecs[0],
+	}); err != nil {
+		t.Fatalf("MemoryEmbedSet(%s): %v", key, err)
+	}
+}
+
+// TestInprocess_Recall_DefaultIncludesNotes is the bug the LoCoMo answer axis hit:
+// a scope holding 419 directly-written rows answered a bare recall with NOTHING.
+//
+// A row written with `set` carries no provenance, so ClassifyMemoryRow calls it a
+// NOTE. Recall's default source set was facts alone, which excluded every one of
+// them — while the op's own input schema promised "recall defaults to facts+notes".
+// The facts/notes split landed after that default was written and the line was
+// never revisited: before the split, "facts" WAS the whole of the agent's memory.
+//
+// Documents stay excluded, which is the separate and still-correct reason the
+// default exists at all (a horizontal rule outranking the fact holding an answer).
+func TestInprocess_Recall_DefaultIncludesNotes(t *testing.T) {
+	b, st, emb, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeUser, "u1"
+
+	// A NOTE: written straight to the k/v plane with an embedding and no origin,
+	// exactly as an off-run PUT or an agent's own `set` does.
+	seedEmbeddedNote(t, st, emb, scope, id, "turn-1", "alice bought a clay pot")
+
+	res, err := b.Recall(ctx, scope, id, memory.RecallQuery{Query: "clay pot", TopK: 5})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if len(res.Facts) == 0 {
+		t.Fatal("a bare recall returned nothing for a scope of notes — this is the defect: " +
+			"the schema promises facts+notes, and a row written with `set` is a note")
+	}
+	if !strings.Contains(res.Facts[0].Memory, "clay pot") {
+		t.Errorf("recalled %q, want the seeded note", res.Facts[0].Memory)
+	}
+
+	// And an EXPLICIT notes selector reaches it too — the other half of the same
+	// bug lived in the tool's parseSources, which dropped "notes" outright.
+	res, err = b.Recall(ctx, scope, id, memory.RecallQuery{
+		Query: "clay pot", TopK: 5, Sources: []memory.Source{memory.SourceNotes},
+	})
+	if err != nil {
+		t.Fatalf("Recall(sources=[notes]): %v", err)
+	}
+	if len(res.Facts) == 0 {
+		t.Error("recall with an explicit sources=[notes] returned nothing")
 	}
 }
