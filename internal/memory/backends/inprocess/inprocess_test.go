@@ -862,3 +862,47 @@ func TestInprocess_Recall_DefaultIncludesNotes(t *testing.T) {
 		t.Error("recall with an explicit sources=[notes] returned nothing")
 	}
 }
+
+// TestInprocess_Recall_ClassifiesEachRow pins the class onto every recalled row.
+//
+// The Memory tool's input schema has always promised that "each result carries a
+// matching kind". `search` delivered it; recall returned {id, memory, score} and
+// nothing else, so a caller had no way to tell a consolidator-distilled fact from a
+// remark an agent had jotted down — while the array wrapping them was called
+// "facts". The class is already computed to APPLY the source selector, so the only
+// thing missing was carrying it out to the caller.
+func TestInprocess_Recall_ClassifiesEachRow(t *testing.T) {
+	b, st, emb, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeUser, "u1"
+
+	// A NOTE (no origin) and a FACT (origin present) that both match the query, so
+	// one recall returns both classes and a constant would be visible as wrong.
+	seedEmbeddedNote(t, st, emb, scope, id, "turn-1", "alice bought a clay pot")
+	seedEmbeddedNote(t, st, emb, scope, id, "fact-1", "alice collects clay pottery")
+	st.origins[vsKey(scope, id, "fact-1")] = "consolidator"
+
+	res, err := b.Recall(ctx, scope, id, memory.RecallQuery{Query: "clay pot", TopK: 5})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if len(res.Facts) != 2 {
+		t.Fatalf("recalled %d rows, want the note and the fact: %+v", len(res.Facts), res.Facts)
+	}
+	got := map[string]store.MemoryRowClass{}
+	for _, f := range res.Facts {
+		if f.Kind == "" {
+			t.Errorf("row %q carries no kind — the schema promises one on every result", f.ID)
+		}
+		got[f.ID] = f.Kind
+	}
+	if got["turn-1"] != store.MemoryRowNote {
+		t.Errorf("turn-1 kind = %q, want %q: a row with no provenance is a note",
+			got["turn-1"], store.MemoryRowNote)
+	}
+	if got["fact-1"] != store.MemoryRowFact {
+		t.Errorf("fact-1 kind = %q, want %q: a row a consolidator wrote is a fact",
+			got["fact-1"], store.MemoryRowFact)
+	}
+}

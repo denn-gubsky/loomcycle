@@ -268,7 +268,7 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 	`Values are JSON. Optional TTL is in seconds. ` +
 	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity. ` +
 	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible. ` +
-	`add / recall: add ingests conversation messages for durable memory — on the default backend it enqueues them for background consolidation and returns status "pending" (a scheduled consolidator later distils durable facts); recall is a natural-language semantic search over stored memories and needs an embedder + a vector-capable store (otherwise it returns vector_unsupported / embedder_not_configured). A backend that is not memory-layer-capable returns capability_unsupported. Unlike set/get, add does not store value-at-key and is async — do not assume read-after-write. ` +
+	`add / recall: add ingests conversation messages for durable memory — on the default backend it enqueues them for background consolidation and returns status "pending" (a scheduled consolidator later distils durable facts); recall is a natural-language semantic search over stored memories and needs an embedder + a vector-capable store (otherwise it returns vector_unsupported / embedder_not_configured). A backend that is not memory-layer-capable returns capability_unsupported. Unlike set/get, add does not store value-at-key and is async — do not assume read-after-write. recall returns {"memories": [{id, memory, score, kind}]}: each item is something REMEMBERED, not something established — a "note" is a remark an agent recorded, only a "fact" has been distilled and reconciled by a consolidator. A remembered remark often carries the time it was SAID (e.g. a leading timestamp); when it refers to "yesterday" or "last week", the event happened relative to that time and is not the timestamp itself. ` +
 	`SQL Memory (a DISTINCT capability of this tool, gated separately by the agent's sql_scopes — having Memory alone does NOT grant it): sql_query runs a read-only SELECT and sql_exec runs a single DDL/DML statement (CREATE/INSERT/UPDATE/DELETE) against a per-scope SQL database SEPARATE from the key/value memory above. Pass statement (one statement, no ATTACH/PRAGMA/load_extension/multiple statements) and optional positional args for ? placeholders. scope selects the database: agent (this agent, durable), user (this end-user, durable), or run (ephemeral, dropped when the run ends). For atomic multi-step writes, sql_begin opens a transaction for the scope, subsequent sql_exec/sql_query run on it, and sql_commit / sql_rollback finish it (it auto-rolls-back if the run ends or it is abandoned). A second sql_begin while one is open NESTS a savepoint — sql_commit/sql_rollback then affect the innermost level (the outer transaction continues on rollback); each result reports the current depth (0 = closed). Requires sql_scopes on the agent AND the server-side subsystem enabled.`
 
 const memoryInputSchema = `{
@@ -1586,19 +1586,40 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	if err != nil {
 		return errResult(fmt.Sprintf("recall: %s", err)), nil
 	}
-	facts := make([]map[string]any, 0, len(res.Facts))
+	memories := make([]map[string]any, 0, len(res.Facts))
 	for _, f := range res.Facts {
-		fact := map[string]any{
+		mem := map[string]any{
 			"id":     f.ID, // server-assigned; opaque to loomcycle, NOT a caller key
 			"memory": f.Memory,
 			"score":  f.Score,
 		}
-		if len(f.Metadata) > 0 {
-			fact["metadata"] = f.Metadata
+		// Omitted when the backend could not classify the row — see RecallFact.Kind.
+		// An absent kind means "unknown", which is why this is not defaulted.
+		if f.Kind != "" {
+			mem["kind"] = string(f.Kind)
 		}
-		facts = append(facts, fact)
+		if len(f.Metadata) > 0 {
+			mem["metadata"] = f.Metadata
+		}
+		memories = append(memories, mem)
 	}
-	out := map[string]any{"facts": facts}
+	// THE ARRAY IS "memories", NOT "facts" (it used to be "facts").
+	//
+	// Recall's default admits notes as well as distilled facts, and on a corpus of
+	// raw ingested turns EVERY row is a note — so the old key asserted, of every
+	// result, a status most of them did not have. That is not cosmetic: measured on
+	// the LoCoMo answer axis, an answerer reading the identical retrieved rows scored
+	// 0.6692 through this projection against 0.6906 through `search`'s, and the loss
+	// was concentrated in temporal questions (-8.6pp), where the model reported the
+	// TIMESTAMP OF THE UTTERANCE as the date of the event — reading a dated remark
+	// as a standing fact is exactly what "facts" invites. Retrieval was identical
+	// between the two: same keys, same order, same scores.
+	//
+	// No compatibility alias. Nothing parses this key programmatically (it is
+	// model-visible tool output, and the in-repo consumers are prose), and emitting
+	// both names would leave the misleading one in front of the model, which is the
+	// whole thing being fixed.
+	out := map[string]any{"memories": memories}
 	// A BACKEND THAT IGNORED THE SELECTOR MUST NOT LOOK LIKE ONE THAT HONOURED IT
 	// (RFC BW §6). Recall's default EXCLUDES document prose, so a backend that dropped
 	// the selector returns exactly what the default exists to keep out — and the caller
@@ -1607,7 +1628,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	if !res.SourcesApplied {
 		out["sources_applied"] = false
 		out["note"] = "this memory backend did not apply the source selector, so these " +
-			"results may include document prose rather than only remembered facts"
+			"results may include document prose rather than only your own remembered facts and notes"
 	}
 	return okJSON(out)
 }
