@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -70,6 +71,18 @@ type Server struct {
 	providers ProviderResolver
 	tools     []tools.Tool
 	sem       *concurrency.Semaphore
+
+	// --- RFC CK runtime config reload (POST /v1/_config/reload) ---
+	// reloadLoad re-assembles + re-loads the layered config the same way boot did
+	// (config.LoadLayers, which validates); reloadApply rebuilds the reloadable
+	// subsystems (provider set + resolver policy) in place. Both are injected by
+	// cmd/loomcycle via SetConfigReloader; nil on a Server built without them
+	// (tests / embedded) → the endpoint 503s. reloadBaseline is the last applied
+	// config, the diff baseline; reloadMu serializes concurrent reload calls.
+	reloadLoad     func() (*config.Config, error)
+	reloadApply    func(*config.Config) error
+	reloadBaseline atomic.Pointer[config.Config]
+	reloadMu       sync.Mutex
 	// providerGates caps in-flight runs PER provider id (RFC BF P2b,
 	// providers.<id>.max_concurrent). Acquired at admission BEFORE the global
 	// sem so a run blocked on a full per-provider cap doesn't hold a global slot
@@ -2789,6 +2802,10 @@ func (s *Server) Mux() http.Handler {
 	// availability matrix after a transient outage without a restart,
 	// instead of waiting up to a full probe interval for the next tick.
 	mux.Handle("POST /v1/_resolve/probe", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolveProbe))))
+	// RFC CK — runtime config reload. Re-loads the layered YAML and applies the
+	// reloadable sections (providers/models/tiers/provider_priority) in place;
+	// ?dry_run=1 returns the section diff. Admin-gated by the /v1/_ prefix.
+	mux.Handle("POST /v1/_config/reload", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleConfigReload))))
 	// v0.12.x live provider introspection. Complements /v1/_resolver
 	// (cached matrix) by doing a fresh ListModels round-trip — useful
 	// after adding a model to the upstream console without waiting
