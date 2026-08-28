@@ -23,7 +23,7 @@ func minimalServerWithResolver(t *testing.T, r *resolve.Resolver) *Server {
 	cfg := &config.Config{}
 	hookReg := hooks.NewRegistry()
 	s := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,

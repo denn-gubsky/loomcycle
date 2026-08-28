@@ -54,7 +54,7 @@ func TestVolumePolicyForAgent_ResolvesDynamicVolume(t *testing.T) {
 		}
 	}
 
-	srv := &Server{store: st, cfg: cfg}
+	srv := &Server{store: st, cfgHolder: config.NewHolder(cfg)}
 	runCtx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme"})
 	agentDef := config.AgentDef{Volumes: []string{"repo-rw", "repo-ro", "static"}}
 

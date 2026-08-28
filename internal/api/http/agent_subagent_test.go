@@ -325,7 +325,7 @@ func TestSubAgent_UnknownChildName(t *testing.T) {
 // agent (statically yaml-defined) tried to spawn a child registered
 // via the dynamic_agents table (RegisterAgent / connector path) and
 // got "unknown sub-agent" because runSubAgent was reading
-// `s.cfg.Agents[name]` directly instead of going through lookup.Agent.
+// `s.cfg().Agents[name]` directly instead of going through lookup.Agent.
 //
 // PR #188 consolidated the lookup chain but missed this site;
 // runSubAgent now calls lookup.Agent which walks cfg.Agents →
@@ -345,7 +345,7 @@ func TestSubAgent_SpawnsDynamicallyRegisteredChild(t *testing.T) {
 			},
 			// NB: "child" is NOT in cfg.Agents — it's registered
 			// dynamically below. The pre-fix runSubAgent would fail
-			// here at the s.cfg.Agents[name] read.
+			// here at the s.cfg().Agents[name] read.
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}

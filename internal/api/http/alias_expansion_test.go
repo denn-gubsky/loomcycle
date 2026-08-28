@@ -51,7 +51,7 @@ func TestResolveAgentDef_TierCandidateAliasExpands(t *testing.T) {
 	r.SetReachable("ollama-local", true, []string{"gemma4:max"}, "")
 
 	s := minimalServerWithResolver(t, r)
-	s.cfg.Models = map[string]config.ModelRef{
+	s.cfg().Models = map[string]config.ModelRef{
 		"local-gemma": {Provider: "ollama-local", Model: "gemma4:max"},
 	}
 

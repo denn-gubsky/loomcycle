@@ -57,7 +57,7 @@ func resolveChannelScope(scopeStr, scopeID string) (store.MemoryScope, string, e
 // in-band tool's allowlist check (channel.go:resolveChannel) and the per-run
 // channelPolicyForAgent merge, at the wire boundary.
 func (s *Server) requireChannelDeclared(ctx context.Context, name string) (channelDef, error) {
-	if def, ok := s.cfg.Channels[name]; ok {
+	if def, ok := s.cfg().Channels[name]; ok {
 		return channelDef{
 			MaxMessages: def.MaxMessages,
 			DefaultTTL:  def.DefaultTTL,
@@ -108,7 +108,7 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 	if !json.Valid(req.Payload) {
 		return connector.ChannelPublishResult{}, fmt.Errorf("publish: payload is not valid JSON")
 	}
-	if cap := s.cfg.Env.ChannelsMaxValueBytes; cap > 0 && len(req.Payload) > cap {
+	if cap := s.cfg().Env.ChannelsMaxValueBytes; cap > 0 && len(req.Payload) > cap {
 		return connector.ChannelPublishResult{}, fmt.Errorf("publish: payload (%d bytes) exceeds max %d", len(req.Payload), cap)
 	}
 
@@ -210,7 +210,7 @@ func (s *Server) SubscribeChannel(ctx context.Context, req connector.ChannelSubs
 	// signals "new data present"; re-query to fetch the actual rows
 	// (one extra store roundtrip in the wake-then-read happy path,
 	// negligible vs the wait latency it just saved).
-	cap := s.cfg.Env.ChannelsLongPollCapMS
+	cap := s.cfg().Env.ChannelsLongPollCapMS
 	if len(msgs) == 0 && s.channelBus != nil && req.WaitMS > 0 && cap > 0 {
 		wait := req.WaitMS
 		if wait > cap {
@@ -350,7 +350,7 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 	if !json.Valid(req.Payload) {
 		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: payload is not valid JSON")
 	}
-	if cap := s.cfg.Env.ChannelsMaxValueBytes; cap > 0 && len(req.Payload) > cap {
+	if cap := s.cfg().Env.ChannelsMaxValueBytes; cap > 0 && len(req.Payload) > cap {
 		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: payload (%d bytes) exceeds max %d", len(req.Payload), cap)
 	}
 	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
@@ -511,7 +511,7 @@ func (s *Server) AwaitChannels(ctx context.Context, req connector.ChannelAwaitRe
 		return false
 	}
 
-	cap := s.cfg.Env.ChannelsLongPollCapMS
+	cap := s.cfg().Env.ChannelsLongPollCapMS
 	longPoll := s.channelBus != nil && req.WaitMS > 0 && cap > 0
 	wait := req.WaitMS
 	if longPoll && wait > cap {

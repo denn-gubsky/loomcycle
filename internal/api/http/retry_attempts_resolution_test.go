@@ -75,12 +75,12 @@ func TestRetryAttemptsForAgent_PerAgentOverrideWins(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := &Server{
-				cfg: &config.Config{
+				cfgHolder: config.NewHolder(&config.Config{
 					UserTiers: map[string]config.UserTier{
 						"paid": {RetryAttempts: tc.tierBudget},
 						"free": {RetryAttempts: tc.tierBudget},
 					},
-				},
+				}),
 			}
 			agentDef := config.AgentDef{RetryAttempts: tc.agent}
 			got := srv.retryAttemptsForAgent(agentDef, tc.tier)
@@ -96,7 +96,7 @@ func TestRetryAttemptsForAgent_PerAgentOverrideWins(t *testing.T) {
 // path: if the Server has no config wired (test fixtures, partial
 // init), the helper returns 0 rather than panicking on nil-map access.
 func TestRetryAttemptsForAgent_NilCfgFallsThroughToZero(t *testing.T) {
-	srv := &Server{cfg: nil}
+	srv := &Server{cfgHolder: config.NewHolder(nil)}
 	agentDef := config.AgentDef{} // no override
 
 	got := srv.retryAttemptsForAgent(agentDef, "anything")

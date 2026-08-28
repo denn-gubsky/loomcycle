@@ -101,7 +101,7 @@ func (s *Server) renderContextTools(ctx context.Context, mi memInject) string {
 		return ""
 	}
 	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
-	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg}
+	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg()}
 	req, _ := json.Marshal(map[string]any{"op": "tools"})
 	res, err := ct.Execute(tctx, req)
 	if err != nil || res.IsError {
@@ -152,7 +152,7 @@ func (s *Server) renderContextGuide(ctx context.Context, mi memInject) string {
 		return ""
 	}
 	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
-	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg}
+	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg()}
 	req, _ := json.Marshal(map[string]any{"op": "guide"})
 	res, err := ct.Execute(tctx, req)
 	if err != nil || res.IsError {
@@ -233,7 +233,7 @@ func (s *Server) renderContextCapabilities(ctx context.Context, mi memInject) st
 	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
 	ct := &builtin.Context{
 		Tools:    mi.Tools,
-		Cfg:      s.cfg,
+		Cfg:      s.cfg(),
 		Store:    s.store,
 		SqlMem:   s.sqlMem,
 		Embedder: s.embedder,

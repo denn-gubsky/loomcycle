@@ -197,7 +197,7 @@ func vectorAdminFixture(t *testing.T, supportsVectors bool) (*Server, *adminFake
 	cfg := &config.Config{}
 	hookReg := hooks.NewRegistry()
 	srv := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          vs,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),

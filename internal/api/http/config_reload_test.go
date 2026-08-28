@@ -42,7 +42,7 @@ func TestReloadConfig_Unwired(t *testing.T) {
 // TestReloadConfig_DryRunReportsButDoesNotApply: dry-run classifies the diff and
 // applies nothing (apply hook untouched, baseline unchanged).
 func TestReloadConfig_DryRunReportsButDoesNotApply(t *testing.T) {
-	s := &Server{cfg: baselineCfg()}
+	s := &Server{cfgHolder: config.NewHolder(baselineCfg())}
 	applied := 0
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return providersChangedCfg(), nil },
@@ -63,7 +63,7 @@ func TestReloadConfig_DryRunReportsButDoesNotApply(t *testing.T) {
 // TestReloadConfig_AppliesReloadableSection: a changed reloadable section calls
 // the apply hook once and advances the baseline (a second reload sees no change).
 func TestReloadConfig_AppliesReloadableSection(t *testing.T) {
-	s := &Server{cfg: baselineCfg()}
+	s := &Server{cfgHolder: config.NewHolder(baselineCfg())}
 	applied := 0
 	loaded := providersChangedCfg()
 	s.SetConfigReloader(
@@ -90,7 +90,7 @@ func TestReloadConfig_AppliesReloadableSection(t *testing.T) {
 // TestReloadConfig_InvalidRejectedNotApplied: a candidate that fails to load is
 // rejected whole (ErrReloadInvalid) and the apply hook is never called.
 func TestReloadConfig_InvalidRejectedNotApplied(t *testing.T) {
-	s := &Server{cfg: baselineCfg()}
+	s := &Server{cfgHolder: config.NewHolder(baselineCfg())}
 	applied := 0
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return nil, errors.New("bad yaml at line 7") },
@@ -109,10 +109,12 @@ func TestReloadConfig_InvalidRejectedNotApplied(t *testing.T) {
 // the reloadable set is reported under restart_required and the apply hook is
 // NOT called (nothing reloadable changed).
 func TestReloadConfig_NonReloadableSectionRestartRequired(t *testing.T) {
-	s := &Server{cfg: baselineCfg()}
+	s := &Server{cfgHolder: config.NewHolder(baselineCfg())}
 	applied := 0
 	changed := baselineCfg()
-	changed.Defaults = config.Defaults{Provider: "anthropic", Model: "claude"} // a non-reloadable section
+	// concurrency is consumed by the boot-built semaphore, which this build does
+	// not rebuild → restart-required.
+	changed.Concurrency = config.Concurrency{MaxConcurrentRuns: 99, MaxQueueDepth: 8, QueueTimeoutMS: 1000}
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return changed, nil },
 		func(*config.Config) error { applied++; return nil },
@@ -122,13 +124,45 @@ func TestReloadConfig_NonReloadableSectionRestartRequired(t *testing.T) {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	if len(res.Applied) != 0 {
-		t.Errorf("Applied = %v, want none (defaults is not reloadable)", res.Applied)
+		t.Errorf("Applied = %v, want none (concurrency is not reloadable)", res.Applied)
 	}
-	if len(res.RestartRequired) != 1 || res.RestartRequired[0] != "defaults" {
-		t.Errorf("RestartRequired = %v, want [defaults]", res.RestartRequired)
+	if len(res.RestartRequired) != 1 || res.RestartRequired[0] != "concurrency" {
+		t.Errorf("RestartRequired = %v, want [concurrency]", res.RestartRequired)
+	}
+	// The resolver apply hook is NOT called (no resolver section changed), but the
+	// holder DID swap so a subsequent reload sees no change (baseline advanced).
+	if applied != 0 {
+		t.Errorf("resolver apply called %d times when only a restart-required section changed, want 0", applied)
+	}
+	if got := s.cfg().Concurrency.MaxConcurrentRuns; got != 99 {
+		t.Errorf("holder did not swap: s.cfg().Concurrency.MaxConcurrentRuns = %d, want 99", got)
+	}
+}
+
+// TestReloadConfig_LiveSectionAppliedViaHolder: a changed live-read section
+// (user_tiers) is Applied via the holder swap alone — s.cfg() reflects it — with
+// NO resolver apply hook call (no resolver section changed).
+func TestReloadConfig_LiveSectionAppliedViaHolder(t *testing.T) {
+	s := &Server{cfgHolder: config.NewHolder(baselineCfg())}
+	applied := 0
+	changed := baselineCfg()
+	changed.UserTiers = map[string]config.UserTier{"pro": {ProviderPriority: []string{"ollama-local"}}}
+	s.SetConfigReloader(
+		func() (*config.Config, error) { return changed, nil },
+		func(*config.Config) error { applied++; return nil },
+	)
+	res, err := s.ReloadConfig(context.Background(), false)
+	if err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	if len(res.Applied) != 1 || res.Applied[0] != "user_tiers" {
+		t.Errorf("Applied = %v, want [user_tiers]", res.Applied)
 	}
 	if applied != 0 {
-		t.Errorf("apply called %d times when only a restart-required section changed, want 0", applied)
+		t.Errorf("resolver apply called %d times for a holder-only section, want 0", applied)
+	}
+	if _, ok := s.cfg().UserTiers["pro"]; !ok {
+		t.Error("holder did not swap: s.cfg().UserTiers missing the reloaded 'pro' tier")
 	}
 }
 

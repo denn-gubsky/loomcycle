@@ -96,10 +96,10 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	entries := make([]ScheduleListEntry, 0, len(s.cfg.ScheduledRuns)+len(subRows))
+	entries := make([]ScheduleListEntry, 0, len(s.cfg().ScheduledRuns)+len(subRows))
 	seen := map[string]struct{}{}
 
-	for name, sr := range s.cfg.ScheduledRuns {
+	for name, sr := range s.cfg().ScheduledRuns {
 		if !all {
 			continue
 		}

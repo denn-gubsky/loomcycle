@@ -84,13 +84,13 @@ type persistentVolumesResponse struct {
 // universe for the caller's tenant: every static cfg.Volumes entry (the shared
 // bind floor, read-only) plus the tenant's own dynamic VolumeDef rows.
 func (s *Server) handleListVolumes(w http.ResponseWriter, r *http.Request) {
-	entries := make([]persistentVolumeEntry, 0, len(s.cfg.Volumes))
+	entries := make([]persistentVolumeEntry, 0, len(s.cfg().Volumes))
 	showPaths := volumesShowPaths(r)
 
 	// Static volumes — the operator-authored universe, shown to every tenant
 	// (it's the bind floor). Read-only from the UI; config is ground truth.
 	// Host paths are redacted for a non-operator (volumesShowPaths).
-	for name, vol := range s.cfg.Volumes {
+	for name, vol := range s.cfg().Volumes {
 		mode := vol.Mode
 		if mode == "" {
 			mode = "rw" // empty defaults to rw, validated at config-load

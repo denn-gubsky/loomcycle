@@ -147,9 +147,9 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// variant has no implicit-append path). A Server built without config
 	// (tests) still renders the defaults rather than panicking.
 	mergeBand, relatedBand := float64(config.DefaultConsolidationMergeThreshold), float64(config.DefaultConsolidationRelatedThreshold)
-	if s.cfg != nil {
-		mergeBand = s.cfg.Memory.Consolidation.EffectiveMergeThreshold()
-		relatedBand = s.cfg.Memory.Consolidation.EffectiveRelatedThreshold()
+	if s.cfg() != nil {
+		mergeBand = s.cfg().Memory.Consolidation.EffectiveMergeThreshold()
+		relatedBand = s.cfg().Memory.Consolidation.EffectiveRelatedThreshold()
 	}
 	sections[meminject.VariantConsolidationBands] = meminject.ConsolidationBands(mergeBand, relatedBand)
 

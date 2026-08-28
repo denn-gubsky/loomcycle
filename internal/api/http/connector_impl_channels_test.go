@@ -35,8 +35,8 @@ func TestRequireChannelDeclared_PropagatesStoreError(t *testing.T) {
 	t.Cleanup(func() { _ = real.Close() })
 
 	srv := &Server{
-		cfg:   &config.Config{}, // no yaml channels → the store path is taken
-		store: channelGetErrStore{Store: real, err: errors.New("db-connection-lost")},
+		cfgHolder: config.NewHolder(&config.Config{}), // no yaml channels → the store path is taken
+		store:     channelGetErrStore{Store: real, err: errors.New("db-connection-lost")},
 	}
 
 	_, gotErr := srv.requireChannelDeclared(context.Background(), "anything")
@@ -70,9 +70,9 @@ func TestRequireChannelDeclared_PointLookupResolvesAndNotFound(t *testing.T) {
 	}
 
 	srv := &Server{
-		cfg: &config.Config{Channels: map[string]config.Channel{
+		cfgHolder: config.NewHolder(&config.Config{Channels: map[string]config.Channel{
 			"yaml-q": {Scope: "global", Semantic: "queue", MaxMessages: 3, DefaultTTL: 30},
-		}},
+		}}),
 		store: real,
 	}
 

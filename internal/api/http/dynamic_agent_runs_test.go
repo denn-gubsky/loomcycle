@@ -25,7 +25,7 @@ import (
 //
 // Root cause: the dynamic-agent fallback in (*Server).RunOnce filled
 // the local agentDef variable, but the next line called
-// resolveAgent(name, …) which ONLY consults s.cfg.Agents and emits
+// resolveAgent(name, …) which ONLY consults s.cfg().Agents and emits
 // "unknown agent" again. The fix is to call resolveAgentDef(agentDef,
 // name, …) instead — the same path the v0.8.5 sub-agent overlay uses.
 //

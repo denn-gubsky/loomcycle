@@ -41,7 +41,7 @@ func libraryUnifiedFixture(
 	}
 	hookReg := hooks.NewRegistry()
 	srv := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
@@ -540,7 +540,7 @@ func TestUnifiedLibrary_Agents_AdminTenantFocus(t *testing.T) {
 func TestUnifiedLibrary_Skills_InlineCfgSurfaced(t *testing.T) {
 	srv, _, cleanup := libraryUnifiedFixture(t, nil, nil)
 	defer cleanup()
-	srv.cfg.Skills = map[string]config.SkillSpec{
+	srv.cfg().Skills = map[string]config.SkillSpec{
 		"semantic-chunking": {
 			Description: "split prose into a chunk hierarchy",
 			Tools:       []string{"Document"},

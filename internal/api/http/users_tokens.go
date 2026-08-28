@@ -227,7 +227,7 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		Subject:  subject, // the path user
 		// Hash with the SAME pepper the auth hot path uses (resolvePrincipal),
 		// else the minted token would never resolve.
-		TokenHash:     auth.HashToken(s.cfg.Env.OperatorTokenPepper, plaintext),
+		TokenHash:     auth.HashToken(s.cfg().Env.OperatorTokenPepper, plaintext),
 		AllowedScopes: scopes,
 		CreatedAt:     now,
 	}

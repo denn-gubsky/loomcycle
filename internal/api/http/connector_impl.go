@@ -346,14 +346,14 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if len(req.Tools) == 0 {
 		return connector.AgentDescriptor{}, fmt.Errorf("tools required (default-deny model)")
 	}
-	if _, collides := s.cfg.Agents[req.Name]; collides {
+	if _, collides := s.cfg().Agents[req.Name]; collides {
 		return connector.AgentDescriptor{}, fmt.Errorf("agent %q is statically defined in yaml; cannot register over it", req.Name)
 	}
 	if s.store == nil {
 		return connector.AgentDescriptor{}, fmt.Errorf("register_agent requires persistence (no Store configured)")
 	}
 
-	allowedTools := stripPrivilegedTools(req.Tools, s.cfg.Env.MCPAllowPrivilegedTools)
+	allowedTools := stripPrivilegedTools(req.Tools, s.cfg().Env.MCPAllowPrivilegedTools)
 
 	def := config.AgentDef{
 		SystemPrompt:     req.SystemPrompt,
@@ -375,7 +375,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	}
 
 	createdAt := time.Now().UTC()
-	expiresAt := computeExpiresAt(createdAt, req.TTLSeconds, s.cfg.Env.DynamicAgentDefaultTTLSeconds)
+	expiresAt := computeExpiresAt(createdAt, req.TTLSeconds, s.cfg().Env.DynamicAgentDefaultTTLSeconds)
 
 	row := store.DynamicAgent{
 		Name:        req.Name,
@@ -413,7 +413,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 // UnregisterAgent removes a dynamic agent. Refuses to operate on
 // static (yaml-defined) agents — those need a yaml edit and restart.
 func (s *Server) UnregisterAgent(ctx context.Context, name string) error {
-	if _, isStatic := s.cfg.Agents[name]; isStatic {
+	if _, isStatic := s.cfg().Agents[name]; isStatic {
 		return fmt.Errorf("agent %q is statically defined in yaml; cannot unregister", name)
 	}
 	if s.store == nil {
@@ -429,8 +429,8 @@ func (s *Server) UnregisterAgent(ctx context.Context, name string) error {
 // ListAgents merges static (cfg.Agents) and dynamic (store) agent
 // descriptors. includeDynamic=false omits the dynamic set entirely.
 func (s *Server) ListAgents(ctx context.Context, includeDynamic bool) ([]connector.AgentDescriptor, error) {
-	out := make([]connector.AgentDescriptor, 0, len(s.cfg.Agents)+8)
-	for name, def := range s.cfg.Agents {
+	out := make([]connector.AgentDescriptor, 0, len(s.cfg().Agents)+8)
+	for name, def := range s.cfg().Agents {
 		out = append(out, connector.AgentDescriptor{
 			Name:     name,
 			Source:   "static",
@@ -810,14 +810,14 @@ func (s *Server) CreateSnapshot(ctx context.Context, req connector.CreateSnapsho
 		Label:          req.Description,
 		MaxBytes:       req.MaxBytes,
 		IncludeHistory: req.IncludeHistory,
-		Channels:       channelConfigForSnapshot(s.cfg),
+		Channels:       channelConfigForSnapshot(s.cfg()),
 	}
 	if req.SinceTS != nil {
 		opts.IncludeHistorySince = *req.SinceTS
 	}
 	if s.sqlMem != nil {
-		opts.SqlMem = s.sqlMem                                               // RFC AA Phase 3e
-		opts.SqlMemMaxScopeBytes = s.cfg.Storage.SqlMemSnapshotMaxScopeBytes // 3f.2 per-scope cap
+		opts.SqlMem = s.sqlMem                                                 // RFC AA Phase 3e
+		opts.SqlMemMaxScopeBytes = s.cfg().Storage.SqlMemSnapshotMaxScopeBytes // 3f.2 per-scope cap
 	}
 	row, _, err := snapshot.Capture(ctx, s.store, opts)
 	if err != nil {

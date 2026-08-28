@@ -83,7 +83,7 @@ func TestRouting_SearchBlock_FailoverSelected(t *testing.T) {
 // no last_error.
 func TestRouting_SearchBlock_RestrictedTenant(t *testing.T) {
 	srv := routingTestServer(t)
-	srv.cfg.Env.OperatorKeyRestriction = true
+	srv.cfg().Env.OperatorKeyRestriction = true
 	reg, _ := search.BuildRegistry([]search.ProviderSpec{{ID: "serper"}, {ID: "searxng", BaseURL: "http://sx"}})
 	srv.SetSearchRouting(reg, search.NewResolver([]string{"serper", "searxng"}), map[string]string{"serper": "sk"})
 	srv.SetCredKeyable(func(_ context.Context, _, _, _, _ string) bool { return false }) // tenant has no own cred

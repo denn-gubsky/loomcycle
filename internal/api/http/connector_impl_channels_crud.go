@@ -78,7 +78,7 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 	// in yaml, the most actionable error is "edit the yaml" regardless
 	// of how exotic the name shape is (yaml allows slashes etc. that
 	// the runtime allow-set forbids).
-	if _, yaml := s.cfg.Channels[name]; yaml {
+	if _, yaml := s.cfg().Channels[name]; yaml {
 		return connector.ChannelDescriptor{}, fmt.Errorf("%w: %q", connector.ErrChannelYamlImmutable, name)
 	}
 	if !validChannelName(name) {
@@ -147,7 +147,7 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 // declared channels refuse with ErrChannelYamlImmutable.
 func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.ChannelUpdateRequest) (connector.ChannelDescriptor, error) {
 	name = strings.TrimSpace(name)
-	if _, yaml := s.cfg.Channels[name]; yaml {
+	if _, yaml := s.cfg().Channels[name]; yaml {
 		return connector.ChannelDescriptor{}, fmt.Errorf("%w: %q", connector.ErrChannelYamlImmutable, name)
 	}
 	if !validChannelName(name) {
@@ -221,7 +221,7 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 // ErrChannelYamlImmutable.
 func (s *Server) DeleteChannel(ctx context.Context, name string) error {
 	name = strings.TrimSpace(name)
-	if _, yaml := s.cfg.Channels[name]; yaml {
+	if _, yaml := s.cfg().Channels[name]; yaml {
 		return fmt.Errorf("%w: %q", connector.ErrChannelYamlImmutable, name)
 	}
 	if !validChannelName(name) {
@@ -252,7 +252,7 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 	// keyspace, not blindly the caller's tenant — otherwise a global
 	// channel's messages (at "") are never drained.
 	declaredScope := ""
-	if yamlCh, isYaml := s.cfg.Channels[name]; isYaml {
+	if yamlCh, isYaml := s.cfg().Channels[name]; isYaml {
 		declaredScope = yamlCh.Scope
 	} else {
 		// Only the runtime plane obeys the strict name shape — yaml

@@ -58,7 +58,7 @@ func systemChannelFixture(t *testing.T) (*Server, store.Store, func()) {
 	bus := channels.NewBus()
 	sched := channels.NewScheduler(bus, 100)
 	srv := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
@@ -229,7 +229,7 @@ func TestSystemChannelPublish_503WithoutSystemPublisher(t *testing.T) {
 		Env: config.Env{AuthToken: "test-token"},
 	}
 	srv := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),

@@ -80,7 +80,7 @@ func makeServerForProvidersAdmin(t *testing.T, pr ProviderResolver) *Server {
 	t.Helper()
 	hookReg := hooks.NewRegistry()
 	return &Server{
-		cfg:            &config.Config{},
+		cfgHolder:      config.NewHolder(&config.Config{}),
 		providers:      pr,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),

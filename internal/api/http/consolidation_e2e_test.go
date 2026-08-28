@@ -507,7 +507,7 @@ func TestConsolidate_UngrantedAgentIsRefusedEveryControlOp(t *testing.T) {
 	// Strip the grant, keep the scopes.
 	def := consolidatorAgentDef()
 	def.MemoryConsolidation = false
-	env.srv.cfg.Agents["memory/consolidator"] = def
+	env.srv.cfg().Agents["memory/consolidator"] = def
 
 	env.prov.scripts = [][]providers.Event{
 		toolCall("tu_lease", "Memory", `{"op":"cursor_lease","scope":"user"}`),

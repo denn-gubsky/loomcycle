@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -67,22 +66,26 @@ type ProviderResolver interface {
 
 // Server holds dependencies and serves HTTP requests.
 type Server struct {
-	cfg       *config.Config
+	// cfgHolder holds the current *Config behind an atomic pointer (RFC CK): every
+	// read goes through the s.cfg() accessor, so a runtime reload (POST
+	// /v1/_config/reload) can swap the whole config in one atomic Store and every
+	// live-read field (user_tiers, static agents, request flags) picks it up on the
+	// next read. It also serves as the reload diff baseline — the "last applied"
+	// config is whatever the holder currently holds.
+	cfgHolder *config.Holder
 	providers ProviderResolver
 	tools     []tools.Tool
 	sem       *concurrency.Semaphore
 
 	// --- RFC CK runtime config reload (POST /v1/_config/reload) ---
 	// reloadLoad re-assembles + re-loads the layered config the same way boot did
-	// (config.LoadLayers, which validates); reloadApply rebuilds the reloadable
+	// (config.LoadLayers, which validates); reloadApply rebuilds the boot-snapshot
 	// subsystems (provider set + resolver policy) in place. Both are injected by
 	// cmd/loomcycle via SetConfigReloader; nil on a Server built without them
-	// (tests / embedded) → the endpoint 503s. reloadBaseline is the last applied
-	// config, the diff baseline; reloadMu serializes concurrent reload calls.
-	reloadLoad     func() (*config.Config, error)
-	reloadApply    func(*config.Config) error
-	reloadBaseline atomic.Pointer[config.Config]
-	reloadMu       sync.Mutex
+	// (tests / embedded) → the endpoint 503s. reloadMu serializes concurrent reloads.
+	reloadLoad  func() (*config.Config, error)
+	reloadApply func(*config.Config) error
+	reloadMu    sync.Mutex
 	// providerGates caps in-flight runs PER provider id (RFC BF P2b,
 	// providers.<id>.max_concurrent). Acquired at admission BEFORE the global
 	// sem so a run blocked on a full per-provider cap doesn't hold a global slot
@@ -475,7 +478,7 @@ const defaultMaxRequestBytes = 16 << 20
 // defaultMaxRequestBytes when unset (<=0) so a bare-config Server never caps at
 // zero bytes (which MaxBytesReader would treat as "reject every body").
 func (s *Server) maxRequestBytes() int64 {
-	if n := s.cfg.Env.MaxRequestBytes; n > 0 {
+	if n := s.cfg().Env.MaxRequestBytes; n > 0 {
 		return n
 	}
 	return defaultMaxRequestBytes
@@ -488,7 +491,7 @@ const defaultMaxDocumentBytes = 8 << 20
 // maxDocumentBytes returns the configured Document-route body cap, falling back
 // to defaultMaxDocumentBytes when unset (<=0).
 func (s *Server) maxDocumentBytes() int64 {
-	if n := s.cfg.Env.MaxDocumentAssetBytes; n > 0 {
+	if n := s.cfg().Env.MaxDocumentAssetBytes; n > 0 {
 		return n
 	}
 	return defaultMaxDocumentBytes
@@ -502,7 +505,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// way to mutate the trust boundary is a restart with new yaml.
 	hookReg := hooks.NewRegistryWithPermissions(cfg.Hooks.PermitHostWiden.Owners)
 	s := &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		providers:      pr,
 		tools:          builtinTools,
 		sem:            sem,
@@ -566,7 +569,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		CapLookup: func(ctx context.Context, callingAgent string) int {
 			// RFC N: resolve within the calling run's tenant (carried via
 			// ctx RunIdentity for in-loop callers).
-			def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantFromCtx(ctx), callingAgent)
+			def, ok := lookup.Agent(ctx, s.store, s.cfg(), tenantFromCtx(ctx), callingAgent)
 			if !ok {
 				return 0
 			}
@@ -654,7 +657,7 @@ func (s *Server) candidateTools(ctx context.Context, tenantID string, agentAllow
 	// tools.Tools — Dispatcher.Execute calls their Execute directly, which routes
 	// to the live WebSocket. Empty when nothing is connected.
 	ct := clienttools.Candidates(s.clientTools, s.clientToolKey(ctx, tenantID),
-		time.Duration(s.cfg.Env.ClientToolTimeoutMS)*time.Millisecond)
+		time.Duration(s.cfg().Env.ClientToolTimeoutMS)*time.Millisecond)
 	if len(dyn) == 0 && len(ct) == 0 {
 		return s.tools
 	}
@@ -1023,6 +1026,16 @@ func (s *Server) SessionLocks() *runner.SessionLockMap { return s.sessionLocks }
 // (cfg.ResolveAgentModel) — back-compat with v0.6.x.
 func (s *Server) SetResolver(r *resolve.Resolver) { s.resolver = r }
 
+// cfg returns the current config snapshot (RFC CK). Every s.cfg().X read goes
+// through here so a runtime reload's atomic Store is picked up on the next read.
+// nil-safe for a bare &Server{} (tests that never call New / SetConfigHolder).
+func (s *Server) cfg() *config.Config {
+	if s.cfgHolder == nil {
+		return nil
+	}
+	return s.cfgHolder.Load()
+}
+
 // SetProviderGates wires the RFC BF P2b per-provider concurrency gates. Call
 // from cmd/loomcycle/main.go after building them from cfg.Providers. Optional:
 // when unset (nil), every provider is uncapped and admission is unchanged —
@@ -1313,9 +1326,9 @@ func (s *Server) lookupAgent(ctx context.Context, tenantID, name string) (config
 	// "no store" identically to "store didn't have the name" — both
 	// fall through to (zero, false).
 	if s.store == nil {
-		return lookup.Agent(ctx, nil, s.cfg, tenantID, name)
+		return lookup.Agent(ctx, nil, s.cfg(), tenantID, name)
 	}
-	return lookup.Agent(ctx, s.store, s.cfg, tenantID, name)
+	return lookup.Agent(ctx, s.store, s.cfg(), tenantID, name)
 }
 
 // resolveAgentDef mirrors resolveAgent but takes a caller-supplied
@@ -1345,7 +1358,7 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 			Tier:      def.Tier,
 			Effort:    def.Effort,
 			Providers: def.Providers,
-			Models:    convertConfigCandidates(def.Models, s.cfg.Models),
+			Models:    convertConfigCandidates(def.Models, s.cfg().Models),
 			UserTier:  s.userTierOverlay(userTier),
 		}
 		// RFC AX Layer 1: a restricted run resolves only to providers the tenant
@@ -1366,11 +1379,11 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 
 	// Pin path (or fallback to defaults): use the v0.6.x logic against
 	// the caller-supplied def, NOT the static cfg.Agents entry.
-	if !hasPin && s.cfg.Defaults.Model == "" {
+	if !hasPin && s.cfg().Defaults.Model == "" {
 		return "", "", "", fmt.Errorf("%w: agent %q has no pin, no tier, and no defaults", runner.ErrInvalidArgument, agentName)
 	}
 	var pattern string
-	providerID, model, pattern, err = s.cfg.ResolveAgentDefModel(agentName, def)
+	providerID, model, pattern, err = s.cfg().ResolveAgentDefModel(agentName, def)
 	if err != nil {
 		return "", "", "", fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
@@ -1445,20 +1458,20 @@ func (s *Server) keyableProvidersFor(ctx context.Context, req resolve.AgentReque
 // through to "default" — preserves v0.7.x clients that don't yet send
 // user_tier in the request body.
 func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
-	if s.cfg == nil || len(s.cfg.UserTiers) == 0 {
+	if s.cfg() == nil || len(s.cfg().UserTiers) == 0 {
 		return nil
 	}
 	if name == "" {
 		name = "default"
 	}
-	ut, ok := s.cfg.UserTiers[name]
+	ut, ok := s.cfg().UserTiers[name]
 	if !ok {
 		return nil
 	}
 	return &resolve.UserTierOverlay{
 		Name:                name,
 		ProviderPriority:    ut.ProviderPriority,
-		Tiers:               convertConfigCandidates(ut.Tiers, s.cfg.Models),
+		Tiers:               convertConfigCandidates(ut.Tiers, s.cfg().Models),
 		FallbackOnError:     ut.FallbackOnError,
 		MaxFallbackAttempts: ut.MaxFallbackAttempts,
 		RetryAttempts:       ut.RetryAttempts,
@@ -1508,15 +1521,15 @@ func (s *Server) retryAttemptsForTier(name string) int {
 // resolver.MarkRateLimited, which substitutes its own default
 // (30 s) when retryAfter <= 0.
 //
-// Reads s.cfg directly (not via userTierOverlay) — this is called
+// Reads s.cfg() directly (not via userTierOverlay) — this is called
 // once per RunOptions construction and we only need a single int
 // field; rebuilding the full overlay (with candidate conversion)
 // would be wasted work per run.
 func (s *Server) rateLimitCooldownForTier(name string) time.Duration {
-	if s.cfg == nil || name == "" {
+	if s.cfg() == nil || name == "" {
 		return 0
 	}
-	ut, ok := s.cfg.UserTiers[name]
+	ut, ok := s.cfg().UserTiers[name]
 	if !ok {
 		return 0
 	}
@@ -1771,7 +1784,7 @@ func (s *Server) interruptionPolicyForAgent(agentDef config.AgentDef) tools.Inte
 // agent simply isn't confined to a volume that doesn't exist).
 func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.AgentDef) tools.VolumePolicyValue {
 	if len(agentDef.Volumes) == 0 {
-		def, ok := s.cfg.Volumes["default"]
+		def, ok := s.cfg().Volumes["default"]
 		if !ok {
 			// No explicit `default` volume → inactive policy. RFC AH Phase 3:
 			// the legacy jail is gone, so an inactive policy means DENY — every
@@ -1786,7 +1799,7 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 	tenantID := tools.RunIdentity(ctx).TenantID
 	bindings := make([]tools.VolumeBinding, 0, len(agentDef.Volumes))
 	for _, name := range agentDef.Volumes {
-		if v, ok := s.cfg.Volumes[name]; ok {
+		if v, ok := s.cfg().Volumes[name]; ok {
 			bindings = append(bindings, tools.VolumeBinding{
 				Name: name, Root: v.Path, ReadOnly: v.ReadOnly(), Default: v.Default,
 			})
@@ -1798,7 +1811,7 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 		// dynamic volume is never the implicit default (the agent picks it by
 		// name, or designates a static `default: true` as its default).
 		if s.store != nil {
-			if spec, ok := lookup.VolumeDef(ctx, s.cfg, s.store, tenantID, name); ok {
+			if spec, ok := lookup.VolumeDef(ctx, s.cfg(), s.store, tenantID, name); ok {
 				bindings = append(bindings, tools.VolumeBinding{
 					Name: name, Root: spec.Path, ReadOnly: spec.Mode == "ro", Default: false,
 				})
@@ -2002,8 +2015,8 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 // ResolveChannelScope (the scheduler on_complete publish path, F37) build on
 // it so static + runtime channels resolve identically everywhere.
 func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map[string]tools.ChannelDef {
-	channels := make(map[string]tools.ChannelDef, len(s.cfg.Channels))
-	for name, ch := range s.cfg.Channels {
+	channels := make(map[string]tools.ChannelDef, len(s.cfg().Channels))
+	for name, ch := range s.cfg().Channels {
 		channels[name] = tools.ChannelDef{
 			Name:        name,
 			Scope:       ch.Scope,
@@ -2103,7 +2116,7 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		Enabled:         true,
 		MaxAttempts:     overlay.MaxFallbackAttempts, // 0 = loop uses its own default (3)
 		UserTierName:    overlay.Name,
-		PinAfterSuccess: s.cfg.Env.FallbackPinAfterSuccess,
+		PinAfterSuccess: s.cfg().Env.FallbackPinAfterSuccess,
 	}
 	reResolve := func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error) {
 		// Mark the failed pair stalled BEFORE re-resolving so the
@@ -2260,7 +2273,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
 	}
-	// resolveAgent only consults s.cfg.Agents; dynamic agents loaded
+	// resolveAgent only consults s.cfg().Agents; dynamic agents loaded
 	// from the v0.8.15 fallback above are NOT in that map. Pass the
 	// already-resolved AgentDef through resolveAgentDef instead (same
 	// path the v0.8.5 sub-agent overlay uses).
@@ -2333,12 +2346,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// tenant is "" and the run would not see its OWN dynamic MCP tools.
 	allowedTools := filterTools(s.candidateTools(ctx, effectiveTenantID, agentDef.Tools), agentDef.Tools, in.Tools)
 	var hostPolicy tools.HostPolicyValue
-	if in.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
+	if in.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if in.AllowedHosts != nil {
 			caller = *in.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         in.AllowedHosts != nil,
@@ -2606,7 +2619,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MarkStalled:         s.markStalledFn(providerID, model),
 		MarkRateLimited:     s.markRateLimitedFn(in.UserTier),
 		ClearStall:          s.clearStallFn(providerID, model),
-		ToolParallelism:     s.cfg.Env.ToolParallelism,
+		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           effectiveAgentName,
 		CodeBody:            agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:            in.Metadata,
@@ -3166,7 +3179,7 @@ func (s *Server) Mux() http.Handler {
 	// — the SPA shell is public; it pulls protected data from
 	// /v1/* which DOES go through authMiddleware. Standard SPA-on-
 	// API split.
-	uiHandler := webui.Handler("/ui", false, s.cfg.Env.UILoginOrigins)
+	uiHandler := webui.Handler("/ui", false, s.cfg().Env.UILoginOrigins)
 	mux.Handle("GET /ui", recoveryMiddleware(uiHandler))
 	mux.Handle("GET /ui/", recoveryMiddleware(uiHandler))
 	// POST /ui/session — the URL-free login (Authorization: Bearer -> session
@@ -3396,7 +3409,7 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 	}
 	fullName := name
 
-	def, ok := s.cfg.Channels[fullName]
+	def, ok := s.cfg().Channels[fullName]
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "channel_not_declared", fmt.Sprintf("channel %q not declared in operator yaml", fullName))
 		return
@@ -3421,7 +3434,7 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "invalid_payload", "payload is not valid JSON")
 		return
 	}
-	if cap := s.cfg.Env.ChannelsMaxValueBytes; cap > 0 && len(body.Payload) > cap {
+	if cap := s.cfg().Env.ChannelsMaxValueBytes; cap > 0 && len(body.Payload) > cap {
 		writeJSONError(w, http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("payload (%d bytes) exceeds max %d", len(body.Payload), cap))
 		return
 	}
@@ -3759,8 +3772,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// 400 before the resolver runs. Empty user_tier is fine — the
 	// resolver falls through to cfg.UserTiers["default"] (or to v0.7-
 	// era behaviour when no user_tiers block is configured).
-	if req.UserTier != "" && len(s.cfg.UserTiers) > 0 {
-		if _, ok := s.cfg.UserTiers[req.UserTier]; !ok {
+	if req.UserTier != "" && len(s.cfg().UserTiers) > 0 {
+		if _, ok := s.cfg().UserTiers[req.UserTier]; !ok {
 			http.Error(w, fmt.Sprintf("unknown user_tier %q", req.UserTier), http.StatusBadRequest)
 			return
 		}
@@ -3890,12 +3903,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// silently fall back to the operator's static allowlist and lose
 	// reachability to caller-supplied hosts (commonly localhost).
 	var hostPolicy tools.HostPolicyValue
-	if req.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
+	if req.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if req.AllowedHosts != nil {
 			caller = *req.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         req.AllowedHosts != nil,
@@ -4068,7 +4081,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// (parent agent waiting on a fan-out of sub-agents, single sub-agent
 	// mid-WebFetch, etc.). Goroutine exits when r.Context() fires
 	// (handler return / client disconnect). No-op if interval == 0.
-	stream.startKeepalive(r.Context(), s.cfg.Env.SSEKeepaliveInterval)
+	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
 
 	// Announce the (possibly newly-created) session/run IDs so the caller
 	// can address continuation requests at the same session.
@@ -4219,7 +4232,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MarkStalled:         s.markStalledFn(providerID, model),
 		MarkRateLimited:     s.markRateLimitedFn(req.UserTier),
 		ClearStall:          s.clearStallFn(providerID, model),
-		ToolParallelism:     s.cfg.Env.ToolParallelism,
+		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           req.Agent,
 		CodeBody:            agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:            req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
@@ -4453,8 +4466,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// v0.8.2: validate user_tier early (same shape as handleRuns).
-	if body.UserTier != "" && len(s.cfg.UserTiers) > 0 {
-		if _, ok := s.cfg.UserTiers[body.UserTier]; !ok {
+	if body.UserTier != "" && len(s.cfg().UserTiers) > 0 {
+		if _, ok := s.cfg().UserTiers[body.UserTier]; !ok {
 			http.Error(w, fmt.Sprintf("unknown user_tier %q", body.UserTier), http.StatusBadRequest)
 			return
 		}
@@ -4545,12 +4558,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// is entitled to this session.
 	allowedTools := filterTools(s.candidateTools(r.Context(), sess.TenantID, agentDef.Tools), agentDef.Tools, body.Tools)
 	var hostPolicy tools.HostPolicyValue
-	if body.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
+	if body.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
 		if body.AllowedHosts != nil {
 			caller = *body.AllowedHosts
 		}
-		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 		hostPolicy = tools.HostPolicyValue{
 			AllowedHosts:    caller,
 			HasList:         body.AllowedHosts != nil,
@@ -4688,7 +4701,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	stream.start()
 	// See handleRuns for the keepalive rationale.
-	stream.startKeepalive(r.Context(), s.cfg.Env.SSEKeepaliveInterval)
+	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
 	stream.send(providers.Event{Type: "session", Text: id})
 	stream.sendRaw("agent", map[string]any{
 		"agent_id":        agentID,
@@ -4805,7 +4818,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MarkStalled:            s.markStalledFn(providerID, model),
 		MarkRateLimited:        s.markRateLimitedFn(body.UserTier),
 		ClearStall:             s.clearStallFn(providerID, model),
-		ToolParallelism:        s.cfg.Env.ToolParallelism,
+		ToolParallelism:        s.cfg().Env.ToolParallelism,
 		AgentName:              sess.Agent,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               body.Metadata,
@@ -5470,10 +5483,10 @@ func (s *Server) priceCall(provider, model string, u *providers.Usage) (float64,
 		}
 		return u.ProviderReportedCost, cur
 	}
-	if s.cfg == nil {
+	if s.cfg() == nil {
 		return 0, "" // unpriced (no config — e.g. a minimal test server)
 	}
-	cost, currency, ok := s.cfg.Pricing.Cost(provider, model, u.InputTokens, u.OutputTokens, u.CacheCreationTokens, u.CacheReadTokens)
+	cost, currency, ok := s.cfg().Pricing.Cost(provider, model, u.InputTokens, u.OutputTokens, u.CacheCreationTokens, u.CacheReadTokens)
 	if !ok {
 		return 0, "" // unpriced → NULL cost
 	}
@@ -5617,7 +5630,7 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
 	// the lookup is tenant-scoped, so a parent cannot spawn another
 	// tenant's private agent by name.
-	def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantFromCtx(ctx), name)
+	def, ok := lookup.Agent(ctx, s.store, s.cfg(), tenantFromCtx(ctx), name)
 	if !ok {
 		return nil, fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
 	}
@@ -5755,7 +5768,7 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 	// before it completes. The emitter on ctx is still the parent's (the
 	// sub-run's own emitter is swapped in below). Gives a restored fan-out
 	// parent the (index → run_id) mapping to await + re-collect this child.
-	if s.cfg.Env.ResumeFanout {
+	if s.cfg().Env.ResumeFanout {
 		if idx, ok := tools.SpawnIndex(ctx); ok {
 			if tuID := tools.ToolUseID(ctx); tuID != "" {
 				if emit := tools.EventEmitter(ctx); emit != nil {
@@ -5904,8 +5917,8 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 	// guessing hostnames, get capped by max_iterations, never write
 	// the documents (2026-05-06).
 	parentHostPolicy := tools.HostPolicy(ctx)
-	if parentHostPolicy.HasList || s.cfg.Env.HTTPCallerAuthoritative {
-		subTools = builtin.NarrowHosts(subTools, parentHostPolicy.AllowedHosts, parentHostPolicy.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
+	if parentHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
+		subTools = builtin.NarrowHosts(subTools, parentHostPolicy.AllowedHosts, parentHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative)
 	}
 	subDispatcher := s.newDispatcher(subTools)
 
@@ -6081,7 +6094,7 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		MarkStalled:         s.markStalledFn(providerID, model),
 		MarkRateLimited:     s.markRateLimitedFn(parentTier),
 		ClearStall:          s.clearStallFn(providerID, model),
-		ToolParallelism:     s.cfg.Env.ToolParallelism,
+		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           name,
 		CodeBody:            def.Code, // inline code-js body (RFC J); "" → FS fallback
 		// A code-js sub-agent's wall-clock budget is its OWN per-agent
@@ -7464,7 +7477,7 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	if s.store == nil {
 		return
 	}
-	dynRoot, ok := builtin.DynamicVolumeRoot(s.cfg)
+	dynRoot, ok := builtin.DynamicVolumeRoot(s.cfg())
 	if !ok {
 		return // no dynamic root → no ephemeral volumes possible
 	}

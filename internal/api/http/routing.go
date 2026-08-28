@@ -108,8 +108,8 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 	snap := s.resolver.Snapshot()
 
 	// user_tiers, sorted; library-mode (none configured) → a single "" entry.
-	utNames := make([]string, 0, len(s.cfg.UserTiers))
-	for name := range s.cfg.UserTiers {
+	utNames := make([]string, 0, len(s.cfg().UserTiers))
+	for name := range s.cfg().UserTiers {
 		utNames = append(utNames, name)
 	}
 	sort.Strings(utNames)
@@ -132,7 +132,7 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 	// handler holds substrate:tenant, so the helper would never fire here (dead
 	// filter). This predicate meets the two documented criteria (admin ⇒ off,
 	// gate-off ⇒ off) while actually filtering the tenant view.
-	restricted := s.cfg.Env.OperatorKeyRestriction && !admin
+	restricted := s.cfg().Env.OperatorKeyRestriction && !admin
 	var restrictTenant, restrictUser string
 	if restricted {
 		if p, ok := auth.PrincipalFromContext(r.Context()); ok {
@@ -296,13 +296,13 @@ func (s *Server) routingTierNames() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, p := range pref {
-		if _, ok := s.cfg.Tiers[p]; ok {
+		if _, ok := s.cfg().Tiers[p]; ok {
 			out = append(out, p)
 			seen[p] = true
 		}
 	}
 	var extra []string
-	for name := range s.cfg.Tiers {
+	for name := range s.cfg().Tiers {
 		if !seen[name] {
 			extra = append(extra, name)
 		}

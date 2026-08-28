@@ -23,7 +23,7 @@ func authedTestServer(t *testing.T, token string) *Server {
 	cfg := &config.Config{}
 	cfg.Env.AuthToken = token
 	return &Server{
-		cfg:            cfg,
+		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,

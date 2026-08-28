@@ -43,11 +43,11 @@ func (s *Server) handleRunnableAgents(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	includeTenant := s.runnableIncludesTenant(ctx)
 
-	seen := make(map[string]struct{}, len(s.cfg.Agents))
-	agents := make([]runnableAgent, 0, len(s.cfg.Agents))
+	seen := make(map[string]struct{}, len(s.cfg().Agents))
+	agents := make([]runnableAgent, 0, len(s.cfg().Agents))
 
 	// Bundled / system catalog floor — shown to everyone.
-	for name := range s.cfg.Agents {
+	for name := range s.cfg().Agents {
 		agents = append(agents, runnableAgent{Name: name, Source: "bundled"})
 		seen[name] = struct{}{}
 	}

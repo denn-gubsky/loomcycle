@@ -28,8 +28,8 @@ type modelAliasWire struct {
 // every authed caller sees the same set. json.Marshal emits the map with keys
 // sorted, so the output is stable.
 func (s *Server) handleListModels(w http.ResponseWriter, _ *http.Request) {
-	resp := modelAliasesResponse{Aliases: make(map[string]modelAliasWire, len(s.cfg.Models))}
-	for name, ref := range s.cfg.Models {
+	resp := modelAliasesResponse{Aliases: make(map[string]modelAliasWire, len(s.cfg().Models))}
+	for name, ref := range s.cfg().Models {
 		resp.Aliases[name] = modelAliasWire{Provider: ref.Provider, Model: ref.Model}
 	}
 	w.Header().Set("Content-Type", "application/json")

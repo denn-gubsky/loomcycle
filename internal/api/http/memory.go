@@ -323,7 +323,7 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	// can't be OOM'd by a single oversized request. The tool layer's
 	// MaxValueBytes / quota check remains the authoritative limit.
 	maxBody := int64(16 << 20)
-	if v := s.cfg.Env.MemoryMaxValueBytes; v > 0 {
+	if v := s.cfg().Env.MemoryMaxValueBytes; v > 0 {
 		maxBody = int64(v) + (1 << 16)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)

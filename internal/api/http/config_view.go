@@ -49,7 +49,7 @@ func (s *Server) publicOrAuthMiddleware(next http.Handler) http.Handler {
 	authed := s.authMiddleware(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, presented := extractBearer(r)
-		if !presented && s.cfg != nil && s.cfg.Env.PublicConfig {
+		if !presented && s.cfg() != nil && s.cfg().Env.PublicConfig {
 			next.ServeHTTP(w, r.WithContext(markPublicView(r.Context())))
 			return
 		}
@@ -167,14 +167,14 @@ func (s *Server) buildConfig(ctx context.Context, view string) configResponse {
 	if !public {
 		resp.Instance.Commit = s.buildCommit
 		resp.Instance.BuildTime = s.buildTime
-		if s.cfg != nil {
-			resp.Instance.URL = s.cfg.Env.PublicURL
+		if s.cfg() != nil {
+			resp.Instance.URL = s.cfg().Env.PublicURL
 		}
 	}
 
 	// --- features (shared probe, so this cannot drift from Context op=capabilities) ---
 	feat := capabilities.Deployment(capabilities.Inputs{
-		Cfg:      s.cfg,
+		Cfg:      s.cfg(),
 		Store:    s.store,
 		Embedder: s.embedder,
 		SQLMem:   s.sqlMem != nil,
@@ -185,7 +185,7 @@ func (s *Server) buildConfig(ctx context.Context, view string) configResponse {
 	}
 	resp.Features = feat
 	if !public {
-		resp.Limits = capabilities.DeploymentLimits(s.cfg)
+		resp.Limits = capabilities.DeploymentLimits(s.cfg())
 	}
 
 	// The resolver is what knows about providers and models; without it (degraded
@@ -200,7 +200,7 @@ func (s *Server) buildConfig(ctx context.Context, view string) configResponse {
 	// on and the caller is not an admin, advertise only providers the caller can
 	// key itself. Applied to the public view too — a public reader is the least
 	// entitled caller there is, so it must not learn more than a tenant would.
-	restricted := s.cfg != nil && s.cfg.Env.OperatorKeyRestriction && !admin
+	restricted := s.cfg() != nil && s.cfg().Env.OperatorKeyRestriction && !admin
 	var restrictTenant, restrictUser string
 	if restricted && !public {
 		if p, ok := auth.PrincipalFromContext(ctx); ok {
@@ -210,8 +210,8 @@ func (s *Server) buildConfig(ctx context.Context, view string) configResponse {
 
 	snap := s.resolver.Snapshot()
 
-	utNames := make([]string, 0, len(s.cfg.UserTiers))
-	for name := range s.cfg.UserTiers {
+	utNames := make([]string, 0, len(s.cfg().UserTiers))
+	for name := range s.cfg().UserTiers {
 		utNames = append(utNames, name)
 	}
 	sort.Strings(utNames)

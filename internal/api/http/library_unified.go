@@ -91,7 +91,7 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	entries := make([]LibraryEntry, 0, len(s.cfg.Agents)+len(subRows))
+	entries := make([]LibraryEntry, 0, len(s.cfg().Agents)+len(subRows))
 	seen := map[string]struct{}{}
 
 	// Operator-global static cfg agents are the shared agent catalog (no tenant
@@ -101,7 +101,7 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 	// tenant's private substrate row, so showing it read-only to a tenant
 	// operator is not a cross-tenant leak — it lets the tenant see (and run/fork)
 	// the bundled/preset agents. Only the substrate rows above are tenant-scoped.
-	for name, def := range s.cfg.Agents {
+	for name, def := range s.cfg().Agents {
 		entry := LibraryEntry{
 			Name:             name,
 			InStatic:         true,
@@ -174,7 +174,7 @@ func (s *Server) handleListLibrarySkills(w http.ResponseWriter, r *http.Request)
 			staticSkills[name] = sk
 		}
 	}
-	for name, spec := range s.cfg.Skills {
+	for name, spec := range s.cfg().Skills {
 		staticSkills[name] = &skills.Skill{
 			Name:        name,
 			Description: spec.Description,
@@ -249,12 +249,12 @@ func (s *Server) handleListLibraryMcpServers(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	entries := make([]LibraryEntry, 0, len(s.cfg.MCPServers)+len(subRows))
+	entries := make([]LibraryEntry, 0, len(s.cfg().MCPServers)+len(subRows))
 	seen := map[string]struct{}{}
 
 	// Operator-global static MCP servers — the shared catalog floor, shown to
 	// every principal incl. a tenant operator (see handleListLibraryAgents).
-	for name, srv := range s.cfg.MCPServers {
+	for name, srv := range s.cfg().MCPServers {
 		var discoveredTools json.RawMessage
 		if s.mcpPoolInspector != nil {
 			discoveredTools = s.mcpPoolInspector(name)

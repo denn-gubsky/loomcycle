@@ -77,7 +77,7 @@ func TestListVolumes_MergesStaticAndTenantDynamic(t *testing.T) {
 	// A DIFFERENT tenant's dynamic volume must NOT appear in acme's view.
 	mkDynamicVolume(t, st, cfg, "other", "secret", "rw")
 
-	srv := &Server{store: st, cfg: cfg}
+	srv := &Server{store: st, cfgHolder: config.NewHolder(cfg)}
 	rec := httptest.NewRecorder()
 	srv.handleListVolumes(rec, reqWithTenant("/v1/_volumes", "acme"))
 	if rec.Code != http.StatusOK {
@@ -133,7 +133,7 @@ func TestListEphemeralVolumes_TenantScoped(t *testing.T) {
 	mk("run-acme-2", "scratch", "acme", "ro")
 	mk("run-other-1", "work", "other", "rw")
 
-	srv := &Server{store: st, cfg: &config.Config{}}
+	srv := &Server{store: st, cfgHolder: config.NewHolder(&config.Config{})}
 	rec := httptest.NewRecorder()
 	srv.handleListEphemeralVolumes(rec, reqWithTenant("/v1/_volumes/ephemeral", "acme"))
 	if rec.Code != http.StatusOK {
@@ -207,7 +207,7 @@ func TestListVolumes_RedactsHostPathsForTenantOperator(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create ephemeral: %v", err)
 	}
-	srv := &Server{store: st, cfg: cfg}
+	srv := &Server{store: st, cfgHolder: config.NewHolder(cfg)}
 
 	// Operator-equivalent (substrate:admin) sees real host paths everywhere.
 	recA := httptest.NewRecorder()

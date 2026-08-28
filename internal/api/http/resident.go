@@ -214,15 +214,15 @@ func (r *residentRegistry) listInfo() []residentInfo {
 // maxResidentChildren / residentChildIdleTTL read the operator knobs with
 // defaults. (Env is parsed into cfg.Env at config load — see config additions.)
 func (s *Server) maxResidentChildren() int {
-	if s.cfg != nil && s.cfg.Env.MaxInteractiveChildren > 0 {
-		return s.cfg.Env.MaxInteractiveChildren
+	if s.cfg() != nil && s.cfg().Env.MaxInteractiveChildren > 0 {
+		return s.cfg().Env.MaxInteractiveChildren
 	}
 	return defaultMaxResidentChildren
 }
 
 func (s *Server) residentChildIdleTTL() time.Duration {
-	if s.cfg != nil && s.cfg.Env.InteractiveChildIdleTTLMs > 0 {
-		return time.Duration(s.cfg.Env.InteractiveChildIdleTTLMs) * time.Millisecond
+	if s.cfg() != nil && s.cfg().Env.InteractiveChildIdleTTLMs > 0 {
+		return time.Duration(s.cfg().Env.InteractiveChildIdleTTLMs) * time.Millisecond
 	}
 	return time.Duration(defaultResidentChildIdleTTLMs) * time.Millisecond
 }
