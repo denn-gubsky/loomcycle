@@ -4,6 +4,95 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.65.0
+
+**`recall` told the model every row was a fact, and carried no kind.** Minor rather
+than a patch for the same two reasons as v1.64.0: the fix is in the runtime binary,
+which a `vX.Y.Z` patch tag does not build, and the shape of `recall`'s result changes
+— the array is renamed and each row gains a field.
+
+### It promised a `kind` and never sent one (#1077)
+
+The Memory tool's input schema has always said, of `sources`, that *"each result
+carries a matching kind"*. For `search` that is true. For `recall` it was not: the
+projection rendered `{id, memory, score}` and nothing else, so a caller could not
+tell a consolidator-distilled fact from a remark an agent had jotted down from
+document prose. The class was already being computed — the source selector filters on
+it — so nothing was missing but carrying it out to the caller.
+
+This is the same defect class as v1.64.0's, which added `kind` to `search` and left
+`recall` alone.
+
+An **empty kind stays empty**. A remote memory layer handing back opaque server-side
+ids cannot classify its own rows, and defaulting those to `"fact"` would recreate the
+very thing being fixed, so the field is omitted instead.
+
+### And the array called them all facts anyway
+
+Recall's default admits notes as well as facts, and on a corpus of raw ingested turns
+EVERY row is a note — so `facts[]` asserted, of every result, a status most of them
+did not have.
+
+Not cosmetic. The LoCoMo answer axis run twice over one corpus (1,535 questions, same
+judge, same answerer model, 1,524 graded by both), changing only which op the answerer
+called:
+
+| slice | `op=search` | `op=recall` | delta |
+|---|---|---|---|
+| **overall** | **0.6906** | **0.6692** | **-0.0214** |
+| single-hop | 0.7873 | 0.7873 | 0.0000 |
+| multi-hop | 0.5344 | 0.5283 | -0.0060 |
+| temporal | 0.6589 | 0.5727 | **-0.0862** |
+| open-domain | 0.3571 | 0.3258 | -0.0313 |
+
+**Retrieval was identical between the two.** Probed in-band with the same query, both
+ops returned the same ten keys, in the same order, with the same scores — expected
+here, because with no consolidation pass every row is a note, so recall's facts+notes
+default and search's unfiltered scan select the same set (`facts_written=0` in both
+runs). The entire gap is the projection the model reads.
+
+It concentrates in temporal questions, and the failure has one shape: of 43 temporal
+answers that went correct to wrong, 29 reported the timestamp of the UTTERANCE as the
+date of the EVENT.
+
+```
+"When did Caroline go to the LGBTQ support group?"    gold: 7 May 2023
+  through search:  "7 May 2023 (she went 'yesterday' on 8 May)"   correct
+  through recall:  "8 May 2023"                                   wrong
+```
+
+Reading a dated remark as a standing fact is what "facts" invites. The other 14 were
+abstentions (NOT_FOUND 0.134 → 0.167).
+
+So the array is now `memories`, each row carries its `kind`, and the op's description
+says what a remembered remark IS: something recorded, not something established, often
+stamped with the time it was SAID rather than the time it happened.
+
+### Upgrade note
+
+`recall` returns `{"memories": [{id, memory, score, kind}]}` where it previously
+returned `{"facts": [{id, memory, score}]}`. Anything reading `.facts` off a recall
+result needs `.memories`.
+
+There is deliberately **no compatibility alias on the wire**: this is model-visible
+tool output, and emitting both names would leave the misleading one in front of the
+model, which is the whole point of the change. The one in-tree consumer — the code-js
+consolidator's `recall()` — reads `memories || facts`, because a code-js body replays
+against tool results recorded earlier in the SAME run, so a pass straddling the
+upgrade would otherwise read undefined, recall nothing, and write a duplicate instead
+of merging.
+
+`Document op=list_facts` is untouched and still returns `facts` — those are facts.
+
+### Not yet demonstrated
+
+The accuracy figures above are measured on the OLD projection. That the new one
+recovers the gap is the hypothesis this change rests on, not a result: the check is to
+re-run the answer axis with `op=recall` and compare against 0.6692 overall / 0.5727
+temporal. Worth stating because the retrieval-identity finding overturned the first
+hypothesis here — that recall's dedup was collapsing near-duplicate dated rows — and
+the replacement deserves the same measurement before it is believed.
+
 ## What's in v1.64.0
 
 **`recall` could not see an agent's own notes.** Minor rather than a patch for two
