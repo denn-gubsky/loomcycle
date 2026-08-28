@@ -3239,6 +3239,27 @@ func main() {
 	go runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval)
 	log.Printf("resolve probe: interval=%s", probeInterval)
 
+	// RFC CK — wire the runtime config-reload hooks now that the resolver, provider
+	// set, and background ctx exist. load re-runs LoadLayers over the SAME captured
+	// layer stack (disk-file layers re-read fresh, embedded layers static), which
+	// re-validates; apply rebuilds the provider set + resolver policy in place and
+	// probes the new set immediately. POST /v1/_config/reload drives it. In-place
+	// mutation means the Server's resolver/provider pointers never change, so the
+	// probe loop + all readers keep working without a swap.
+	srv.SetConfigReloader(
+		func() (*config.Config, error) { return config.LoadLayers(layers...) },
+		func(newCfg *config.Config) error {
+			if err := pr.Reload(newCfg); err != nil {
+				return err
+			}
+			resolver.ReloadPolicy(newCfg.ProviderPriority, convertTiers(newCfg.Tiers, newCfg.Models))
+			// runResolveProbeOnce reads pr.currentCfg() (now the reloaded config),
+			// so this immediately probes the possibly-changed provider set.
+			runResolveProbeOnce(bgCtx, resolver, pr, newCfg)
+			return nil
+		},
+	)
+
 	go func() {
 		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -3455,6 +3476,9 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 // supplies the built-ins. A provider whose enabling env is absent is simply not
 // in byID; Get reproduces the pre-P2a "not configured" error for it.
 type providerResolver struct {
+	// mu guards byID + cfg so a runtime config reload (RFC CK) can swap the
+	// constructed provider set under Reload while Get reads it concurrently.
+	mu   sync.RWMutex
 	byID map[string]providers.Provider
 	// cfg is retained so Get can tell a declared-but-disabled provider (a
 	// bespoke "not configured" error) apart from a truly unknown id.
@@ -3466,15 +3490,14 @@ type providerResolver struct {
 	anthropicOAuthRefresher *anthropic_oauth_dev.Refresher
 }
 
-// newProviderResolver builds every enabled provider from cfg.Providers via the
-// RFC BF driver registry (config-driven flip of the pre-P2a hardcoded per-provider
-// construction). It is byte-identical when no operator `providers:` block is
-// declared, because the embedded default-providers layer supplies the built-ins
-// and providerbuild.DriverOptions/providerEnabled port the exact env behaviour. An
-// unconstructable provider (bad driver/dialect/base_url) is a boot error.
-func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
-	pr := &providerResolver{byID: map[string]providers.Provider{}, cfg: cfg}
-
+// buildProviderMap constructs every ENABLED provider from cfg.Providers via the
+// RFC BF driver registry, returning the id→Provider map. Factored out of
+// newProviderResolver so a runtime reload (providerResolver.Reload) rebuilds the
+// exact same set WITHOUT re-running the one-time boot side effects
+// (anthropic-oauth-dev refresher Start, the mock/code-js diagnostic logs). An
+// unconstructable provider is an error (the reload is rejected, old set kept).
+func buildProviderMap(cfg *config.Config) (map[string]providers.Provider, error) {
+	byID := map[string]providers.Provider{}
 	for id, pc := range cfg.Providers {
 		if !providerEnabled(id, pc, cfg) {
 			continue
@@ -3483,8 +3506,23 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", id, err)
 		}
-		pr.byID[id] = p
+		byID[id] = p
 	}
+	return byID, nil
+}
+
+// newProviderResolver builds every enabled provider from cfg.Providers via the
+// RFC BF driver registry (config-driven flip of the pre-P2a hardcoded per-provider
+// construction). It is byte-identical when no operator `providers:` block is
+// declared, because the embedded default-providers layer supplies the built-ins
+// and providerbuild.DriverOptions/providerEnabled port the exact env behaviour. An
+// unconstructable provider (bad driver/dialect/base_url) is a boot error.
+func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
+	byID, err := buildProviderMap(cfg)
+	if err != nil {
+		return nil, err
+	}
+	pr := &providerResolver{byID: byID, cfg: cfg}
 
 	// Residual per-provider boot diagnostics (operator-facing knob echoes, NOT
 	// resolution logic) — kept id-keyed so the boot log is unchanged from pre-P2a
@@ -3732,16 +3770,52 @@ func countCodeAgents(cfg *config.Config) int {
 // — gets its bespoke "not configured" message; a truly unknown id gets the
 // "unknown provider" error.
 func (p *providerResolver) Get(id string) (providers.Provider, error) {
-	if prov, ok := p.byID[id]; ok {
+	p.mu.RLock()
+	prov, ok := p.byID[id]
+	cfg := p.cfg
+	p.mu.RUnlock()
+	if ok {
 		return prov, nil
 	}
 	if id == "anthropic-oauth-dev" {
-		return nil, notConfiguredError(id, p.cfg)
+		return nil, notConfiguredError(id, cfg)
 	}
-	if _, declared := p.cfg.Providers[id]; declared {
-		return nil, notConfiguredError(id, p.cfg)
+	if _, declared := cfg.Providers[id]; declared {
+		return nil, notConfiguredError(id, cfg)
 	}
 	return nil, fmt.Errorf("unknown provider %q", id)
+}
+
+// Reload rebuilds the constructed provider set from a freshly-loaded config
+// (RFC CK config reload) and swaps it in under the write lock, so a changed
+// base_url / options / timeout / added-or-removed provider takes effect on the
+// next run without a restart. In-flight runs keep the provider they already
+// resolved. The residual anthropic-oauth-dev provider (a main-owned refresher
+// lifecycle, not declared in cfg.Providers) is carried over from the old set
+// rather than reconstructed — its background token refresher keeps running.
+// currentCfg returns the config the provider set was last built from (updated in
+// place by Reload), read under the lock. The resolve-probe path reads this so a
+// reloaded provider set (added/removed ids) is tracked without rewiring the
+// periodic loop, which captured the boot cfg by value.
+func (p *providerResolver) currentCfg() *config.Config {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.cfg
+}
+
+func (p *providerResolver) Reload(cfg *config.Config) error {
+	next, err := buildProviderMap(cfg)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if oauth, ok := p.byID["anthropic-oauth-dev"]; ok {
+		next["anthropic-oauth-dev"] = oauth
+	}
+	p.byID = next
+	p.cfg = cfg
+	return nil
 }
 
 // buildResolver constructs the model-resolution matrix
@@ -3781,6 +3855,11 @@ func buildResolver(cfg *config.Config, pr *providerResolver) *resolve.Resolver {
 // caller's ctx (typically bgCtx for the periodic loop, or
 // context.Background for startup) bounds the total wait.
 func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerResolver, cfg *config.Config) {
+	// RFC CK: probe the CURRENT provider set. pr.Reload updates pr.cfg in place, so
+	// reading it here means the periodic loop + force-probe track a reloaded set
+	// (added/removed provider ids) without rewiring — the loop captured the boot
+	// cfg by value. At boot pr.cfg == the passed cfg, so this is a no-op then.
+	cfg = pr.currentCfg()
 	type probeJob struct {
 		id         string             // provider id
 		excluded   bool               // operator opted out

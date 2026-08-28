@@ -920,7 +920,24 @@ Returns the **post-probe** matrix in the same shape as `GET /v1/_resolver`. A pr
 
 The same operation is available through every transport that consumes the Connector: gRPC `ResolveProbe`, the MCP meta-tool `resolve_probe`, and the TypeScript client's `client.resolveProbe()`.
 
-### At runtime — confirm the resolved (provider, model)
+### At runtime — reload changed config (`POST /v1/_config/reload`)
+
+Edited a config file and want it live without a restart (which drops in-flight runs)? `POST /v1/_config/reload` re-loads the **same layered stack** the server booted with (presets → `LOOMCYCLE_CONFIG_DIR` → `LOOMCYCLE_CONFIG_FILES` → `--config`; disk-file layers are re-read fresh), validates it, and applies the sections it can apply live — reporting the rest.
+
+```sh
+# Preview the diff without applying:
+curl -s -X POST -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  'http://localhost:8787/v1/_config/reload?dry_run=1' | jq .
+# Apply:
+curl -s -X POST -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  http://localhost:8787/v1/_config/reload | jq .
+# → { "dry_run": false, "applied": ["providers"], "restart_required": [] }
+```
+
+- **Validate-before-apply.** A candidate that fails to load or validate (a YAML typo, a bad driver) is rejected whole — `422 config_invalid` with the parse/validation error, and the **running config is left untouched** (the server keeps serving). A reload never crashes a live server.
+- **Applied live (this build):** `providers`, `models`, `tiers`, `provider_priority`. A changed provider `base_url` / `options` (num_ctx, timeouts) / added-or-removed provider takes effect on the **next** run — the provider set + resolver policy are rebuilt in place, so in-flight runs keep the provider they already resolved. The primary use is retuning a local backend (Ollama/vLLM/llama.cpp) without a restart.
+- **`restart_required`:** any other changed section (e.g. `user_tiers`, `defaults`, `agents`, `memory`, `concurrency`, the listen address, the store DSN) is reported here, not applied — a restart picks it up. Later releases move more of these to `applied`.
+- Admin-token-gated. The response's `applied` / `restart_required` are the top-level config sections that changed since the last successful reload (or boot).
 
 Every run's SSE stream includes an early event carrying the resolved pair. Smoke run:
 
