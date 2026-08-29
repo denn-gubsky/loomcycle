@@ -2618,7 +2618,7 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
@@ -2671,7 +2671,7 @@ func (s *Store) SnapshotRestoreSkillDef(ctx context.Context, r store.SkillDefRow
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
@@ -2720,7 +2720,7 @@ func (s *Store) SnapshotRestoreTeamDef(ctx context.Context, r store.TeamDefRow) 
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
@@ -2768,7 +2768,7 @@ func (s *Store) SnapshotRestoreMCPServerDef(ctx context.Context, r store.MCPServ
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
@@ -3548,7 +3548,7 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // the JSON shape (an invalid payload surfaces as a SQL error rather
 // than a silently-stored bad row).
 func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
-	return s.MemorySetObserved(ctx, tenantID, scope, scopeID, key, value, ttl, store.MemoryProvenance{}, time.Time{})
+	return s.MemorySetTimed(ctx, tenantID, scope, scopeID, key, value, ttl, store.MemoryProvenance{}, store.MemoryTimes{})
 }
 
 // MemorySetProvenance is MemorySet plus the RFC BL provenance columns. The
@@ -3556,7 +3556,7 @@ func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.Memo
 // its CURRENT source), and superseded_at is cleared exactly as MemorySet does
 // so a consolidation write REVIVES a soft-archived row.
 func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance) error {
-	return s.MemorySetObserved(ctx, tenantID, scope, scopeID, key, value, ttl, prov, time.Time{})
+	return s.MemorySetTimed(ctx, tenantID, scope, scopeID, key, value, ttl, prov, store.MemoryTimes{})
 }
 
 // MemorySetObserved is the one write path; the two above delegate to it. Folding
@@ -3567,7 +3567,7 @@ func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope 
 // A ZERO observedAt writes NULL. That is not the same as "now": an undated row is
 // undated, and defaulting it to write time would fabricate an observed time for
 // every row anyone ever set, which is precisely the wrong data to filter on.
-func (s *Store) MemorySetObserved(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance, observedAt time.Time) error {
+func (s *Store) MemorySetTimed(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance, times store.MemoryTimes) error {
 	now := time.Now().UTC()
 	var expiresAt any
 	if ttl > 0 {
@@ -3581,15 +3581,17 @@ func (s *Store) MemorySetObserved(ctx context.Context, tenantID string, scope st
 		}
 		return v
 	}
-	var obs any
-	if !observedAt.IsZero() {
-		obs = observedAt.UTC()
+	ts := func(t time.Time) any {
+		if t.IsZero() {
+			return nil
+		}
+		return t.UTC()
 	}
 	if err := retryOnTransientConn(ctx, func() error {
 		_, err := s.pool.Exec(ctx,
 			`INSERT INTO memory (tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at,
-			                     origin, class, source_session_id, source_run_id, observed_at)
-			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
+			                     origin, class, source_session_id, source_run_id, observed_at, valid_at, invalid_at)
+			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 			 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 			    value = EXCLUDED.value,
 			    expires_at = EXCLUDED.expires_at,
@@ -3602,9 +3604,12 @@ func (s *Store) MemorySetObserved(ctx context.Context, tenantID string, scope st
 			    -- not silently erase its observed time. Re-dating is possible, but
 			    -- only by passing a new one.
 			    observed_at = COALESCE(EXCLUDED.observed_at, memory.observed_at),
+			    valid_at    = COALESCE(EXCLUDED.valid_at, memory.valid_at),
+			    invalid_at  = COALESCE(EXCLUDED.invalid_at, memory.invalid_at),
 			    superseded_at = NULL`,
 			tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
-			nullify(prov.Origin), nullify(prov.Class), nullify(prov.SourceSessionID), nullify(prov.SourceRunID), obs,
+			nullify(prov.Origin), nullify(prov.Class), nullify(prov.SourceSessionID), nullify(prov.SourceRunID),
+			ts(times.ObservedAt), ts(times.ValidAt), ts(times.InvalidAt),
 		)
 		return err
 	}); err != nil {
@@ -5097,7 +5102,7 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
@@ -5472,7 +5477,7 @@ func (s *Store) SkillDefCreate(ctx context.Context, row store.SkillDefRow) (stor
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
@@ -5735,7 +5740,7 @@ func (s *Store) TeamDefCreate(ctx context.Context, row store.TeamDefRow) (store.
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
@@ -6019,7 +6024,7 @@ func (s *Store) MCPServerDefCreate(ctx context.Context, row store.MCPServerDefRo
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,

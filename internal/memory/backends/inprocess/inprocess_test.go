@@ -199,6 +199,20 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 		if filter.RequireObserved && entry.ObservedAt.IsZero() {
 			continue
 		}
+		// AS-OF: the validity interval must contain the instant. Half-open, and a zero
+		// InvalidAt means still true — mirroring the SQL, because a double that reads
+		// the boundary differently from production tests nothing useful.
+		if filter.RequireValid && entry.ValidAt.IsZero() {
+			continue
+		}
+		if !filter.AsOf.IsZero() && !entry.ValidAt.IsZero() {
+			if entry.ValidAt.After(filter.AsOf) {
+				continue
+			}
+			if !entry.InvalidAt.IsZero() && !entry.InvalidAt.After(filter.AsOf) {
+				continue
+			}
+		}
 		// The bounds constrain DATED rows only — an undated row passes and is demoted
 		// later, which is what the postgres predicate does with its explicit
 		// `observed_at IS NULL OR (...)`. Dropping them here instead would make the
@@ -941,9 +955,9 @@ func seedDatedNote(t *testing.T, st *vectorStore, emb *fakeEmbedder, scope store
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := st.Store.MemorySetObserved(context.Background(), "", scope, id, key, raw, 0,
-		store.MemoryProvenance{}, observed); err != nil {
-		t.Fatalf("MemorySetObserved(%s): %v", key, err)
+	if err := st.Store.MemorySetTimed(context.Background(), "", scope, id, key, raw, 0,
+		store.MemoryProvenance{}, store.MemoryTimes{ObservedAt: observed}); err != nil {
+		t.Fatalf("MemorySetTimed(%s): %v", key, err)
 	}
 }
 
@@ -1027,4 +1041,112 @@ func TestInprocess_ObservedWindow_RequireOverUndatedCorpusReturnsNothing(t *test
 		t.Errorf("time_filter = %+v, want it present and reporting require — an empty list "+
 			"with no explanation is indistinguishable from a scope that knows nothing", res.TimeFilter)
 	}
+}
+
+// as_of selects by the row's VALIDITY interval, which is a different question from
+// the observed window — and the difference is the whole point of phase 2.
+//
+// The fixture is the real failing case: a remark made on 4 October about something
+// that happened on the 3rd. An observed window around the 3rd does not contain the
+// utterance; an as_of on the 3rd does contain the fact.
+func TestInprocess_AsOf_SelectsByValidityNotByWhenItWasSaid(t *testing.T) {
+	b, st, emb, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeUser, "u1"
+
+	oct3 := time.Date(2023, 10, 3, 0, 0, 0, 0, time.UTC)
+	oct4 := time.Date(2023, 10, 4, 9, 0, 0, 0, time.UTC)
+
+	// Said on the 4th, TRUE on the 3rd — "yesterday I met artists in Boston".
+	seedEmbeddedNote(t, st, emb, scope, id, "boston", "calvin met artists in a city")
+	if err := st.Store.MemorySetTimed(ctx, "", scope, id, "boston",
+		mustJSON(t, "calvin met artists in a city"), 0, store.MemoryProvenance{},
+		store.MemoryTimes{ObservedAt: oct4, ValidAt: oct3, InvalidAt: oct3.Add(24 * time.Hour)}); err != nil {
+		t.Fatalf("set boston: %v", err)
+	}
+	// A different city, valid over a different interval.
+	seedEmbeddedNote(t, st, emb, scope, id, "tokyo", "calvin met artists in a city")
+	if err := st.Store.MemorySetTimed(ctx, "", scope, id, "tokyo",
+		mustJSON(t, "calvin met artists in a city"), 0, store.MemoryProvenance{},
+		store.MemoryTimes{
+			ObservedAt: time.Date(2023, 11, 2, 0, 0, 0, 0, time.UTC),
+			ValidAt:    time.Date(2023, 10, 25, 0, 0, 0, 0, time.UTC),
+			InvalidAt:  time.Date(2023, 11, 1, 0, 0, 0, 0, time.UTC),
+		}); err != nil {
+		t.Fatalf("set tokyo: %v", err)
+	}
+
+	res, err := b.Recall(ctx, scope, id, memory.RecallQuery{
+		Query: "calvin artists city", TopK: 10,
+		When: memory.ObservedWindow{AsOf: oct3.Add(12 * time.Hour), Missing: memory.MissingRequire},
+	})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	var got []string
+	for _, f := range res.Facts {
+		got = append(got, f.ID)
+	}
+	if len(got) != 1 || got[0] != "boston" {
+		t.Errorf("as_of on 3 October returned %v, want only \"boston\" — the row VALID then, "+
+			"regardless of it having been said on the 4th", got)
+	}
+}
+
+// as_of and the observed window compose: "what did we learn in November about what
+// was true in late October". Neither predicate alone answers it.
+func TestInprocess_AsOf_ComposesWithTheObservedWindow(t *testing.T) {
+	b, st, emb, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeUser, "u1"
+
+	lateOct := time.Date(2023, 10, 28, 0, 0, 0, 0, time.UTC)
+	// Same fact, learned twice: once in October, once recounted in November.
+	for _, r := range []struct {
+		key      string
+		observed time.Time
+	}{
+		{"said-in-oct", time.Date(2023, 10, 29, 0, 0, 0, 0, time.UTC)},
+		{"said-in-nov", time.Date(2023, 11, 2, 0, 0, 0, 0, time.UTC)},
+	} {
+		seedEmbeddedNote(t, st, emb, scope, id, r.key, "calvin was in tokyo")
+		if err := st.Store.MemorySetTimed(ctx, "", scope, id, r.key,
+			mustJSON(t, "calvin was in tokyo"), 0, store.MemoryProvenance{},
+			store.MemoryTimes{ObservedAt: r.observed, ValidAt: lateOct}); err != nil {
+			t.Fatalf("set %s: %v", r.key, err)
+		}
+	}
+
+	res, err := b.Recall(ctx, scope, id, memory.RecallQuery{
+		Query: "calvin tokyo", TopK: 10,
+		When: memory.ObservedWindow{
+			From:    time.Date(2023, 11, 1, 0, 0, 0, 0, time.UTC),
+			To:      time.Date(2023, 11, 30, 0, 0, 0, 0, time.UTC),
+			Slack:   0,
+			AsOf:    lateOct.Add(12 * time.Hour),
+			Missing: memory.MissingRequire,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	var got []string
+	for _, f := range res.Facts {
+		got = append(got, f.ID)
+	}
+	if len(got) != 1 || got[0] != "said-in-nov" {
+		t.Errorf("composed query returned %v, want only \"said-in-nov\" — both rows were TRUE "+
+			"in late October, but only one was SAID in November", got)
+	}
+}
+
+func mustJSON(t *testing.T, v string) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return raw
 }

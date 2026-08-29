@@ -106,7 +106,8 @@ func (b *Backend) Set(ctx context.Context, scope store.MemoryScope, scopeID, key
 	// One write for every shape: provenance and observed time ride the same upsert,
 	// and both are zero-valued for a plain set, so a caller that uses neither is
 	// byte-identical to before.
-	if err := b.store.MemorySetObserved(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL, opts.Provenance, opts.ObservedAt); err != nil {
+	if err := b.store.MemorySetTimed(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL, opts.Provenance,
+		store.MemoryTimes{ObservedAt: opts.ObservedAt, ValidAt: opts.ValidAt, InvalidAt: opts.InvalidAt}); err != nil {
 		return memory.SetResult{}, err
 	}
 

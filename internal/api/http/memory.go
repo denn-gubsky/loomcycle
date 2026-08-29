@@ -286,6 +286,10 @@ type memoryEntryPutBody struct {
 	// is exactly the caller that KNOWS the date — created_at would stamp the whole
 	// corpus with the instant of the import, which answers no question anyone asks.
 	ObservedAt string `json:"observed_at,omitempty"`
+	// ValidAt / InvalidAt date when the thing was TRUE, as distinct from when it was
+	// said. Half-open: omit InvalidAt for something still true.
+	ValidAt   string `json:"valid_at,omitempty"`
+	InvalidAt string `json:"invalid_at,omitempty"`
 }
 
 // memoryEntryPutResponse mirrors the in-band Memory tool's set ack
@@ -359,17 +363,34 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	// path placeholder is dropped. Reused by the embed step below so the embedding
 	// lands under the same (tenant, scope, scope_id) as the k/v row.
 	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
-	var observedAt time.Time
-	if t := strings.TrimSpace(body.ObservedAt); t != "" {
-		parsed, perr := time.Parse(time.RFC3339, t)
-		if perr != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid_observed_at",
-				"observed_at must be an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)")
-			return
+	// One parse for all three times, so a malformed value on any of them refuses the
+	// same way rather than one path silently accepting what another rejects.
+	var times store.MemoryTimes
+	for _, f := range []struct {
+		name string
+		raw  string
+		dst  *time.Time
+	}{
+		{"observed_at", body.ObservedAt, &times.ObservedAt},
+		{"valid_at", body.ValidAt, &times.ValidAt},
+		{"invalid_at", body.InvalidAt, &times.InvalidAt},
+	} {
+		if t := strings.TrimSpace(f.raw); t != "" {
+			parsed, perr := time.Parse(time.RFC3339, t)
+			if perr != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid_"+f.name,
+					f.name+" must be an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)")
+				return
+			}
+			*f.dst = parsed
 		}
-		observedAt = parsed
 	}
-	if err := s.store.MemorySetObserved(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), storeScopeID, key, body.Value, ttl, store.MemoryProvenance{}, observedAt); err != nil {
+	if !times.ValidAt.IsZero() && !times.InvalidAt.IsZero() && !times.InvalidAt.After(times.ValidAt) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_interval",
+			"invalid_at must be after valid_at — the interval is half-open [valid_at, invalid_at)")
+		return
+	}
+	if err := s.store.MemorySetTimed(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), storeScopeID, key, body.Value, ttl, store.MemoryProvenance{}, times); err != nil {
 		if errors.Is(err, store.ErrMemoryQuotaExceeded) {
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "memory_quota_exceeded", err.Error())
 			return
