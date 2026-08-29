@@ -82,7 +82,7 @@ func (h *History) Description() string {
 		"get (one chat's metadata + full transcript; format:markdown renders the whole event log for a human, " +
 		"format:conversation renders only the user/assistant turns for a model), rename (set title), " +
 		"annotate (set description and/or tags), pin (float to the top), archive (reversible soft-hide), " +
-		"recap (refresh the stored LLM summary of the chat — idempotent, safe on a live/parked chat), " +
+		"recap (refresh the chat's stored one-or-two-sentence summary — idempotent, safe on a live/parked chat), " +
 		"resume (return a handle for continuing the chat in a new run), " +
 		"related (find chats similar in meaning to a given chat (session_id) or a free-text query — needs an embedder). " +
 		"scope selects whose chats: self = this agent's, user = this end-user's, tenant = this tenant's, " +

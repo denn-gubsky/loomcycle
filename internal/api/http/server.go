@@ -6962,13 +6962,16 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	return connector.CompactResult{RunID: runID, Compacted: true, BeforeTokens: before, AfterTokens: after, Applied: applied}, nil
 }
 
-// RecapSession produces a fresh LLM summary of a whole chat (session) for the
-// History tool's op=recap. It is the off-loop, session-scoped twin of
-// compactRunWithSource's summarize step: a chat spans EVERY run, so it replays
-// the full session transcript (like resume) rather than a single run's, and it
-// does NOT mutate the loop or persist a compaction marker — the History tool
-// stores the returned text to sessions.summary. The tool has ALREADY enforced
-// the scope fold on sessionID before calling this, so the lookup here trusts it.
+// RecapSession produces a fresh SHORT summary of a whole chat (session) for the
+// History tool's op=recap. It shares compactRunWithSource's summarize plumbing
+// but not its prompt: a chat spans EVERY run, so it replays the full session
+// transcript (like resume) rather than a single run's, it does NOT mutate the
+// loop or persist a compaction marker — the History tool stores the returned
+// text to sessions.summary — and it asks loop.Recap for the two-sentence gist
+// that belongs beside a title in a chat list, not the long durable-context
+// summary a compaction produces for an assistant to resume from. The tool has
+// ALREADY enforced the scope fold on sessionID before calling this, so the
+// lookup here trusts it.
 //
 // Wired onto History.Recap in main.go. Returns a clean error on every failure
 // path (surfaced by the tool as an errResult) — never a panic.
@@ -7020,14 +7023,12 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 		return "", fmt.Errorf("provider unavailable: %w", err)
 	}
 
-	// Prefer the agent's cheaper compaction model + target when configured — a
-	// recap is exactly a compaction summary that we persist instead of applying.
-	targetPct := config.CompactionDefaultTargetPct
+	// Prefer the agent's cheaper compaction model when configured — a recap is a
+	// summarization call like compaction's, so the same cheap model suits it. Its
+	// target_percentage is deliberately NOT read: that sizes a compaction summary
+	// against the context window, while a recap is bounded by loop.RecapMaxChars.
 	summaryModel := model
 	if c := agentDef.Compaction; c != nil {
-		if c.TargetPercentage != nil {
-			targetPct = *c.TargetPercentage
-		}
 		if c.Model != nil && *c.Model != "" {
 			summaryModel = *c.Model
 		}
@@ -7041,7 +7042,7 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID})
 	summCtx = tools.WithAgentName(summCtx, sess.Agent)
-	summary, err := loop.Summarize(summCtx, provider, summaryModel, msgs, targetPct)
+	summary, err := loop.Recap(summCtx, provider, summaryModel, msgs)
 	if err != nil {
 		return "", fmt.Errorf("summarize: %w", err)
 	}
