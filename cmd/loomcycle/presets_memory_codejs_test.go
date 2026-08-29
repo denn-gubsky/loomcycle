@@ -4080,3 +4080,123 @@ func TestConsolidator_AnUnreadableQueueItemDoesNotBlockTheOnesBehindIt(t *testin
 		t.Errorf("report does not name the stepped-over item: %q", res.FinalText)
 	}
 }
+
+// The extractor is TOLD the chat's date, because a relative reference cannot be
+// resolved without one.
+//
+// "Yesterday I met them in Boston" is unresolvable on its own; against a stated
+// 2023-10-04 it means the 3rd. The date is supplied by the caller from the chat's
+// own completed_at rather than from a clock, so it is the date the conversation
+// actually happened and not the date the consolidator happened to run — those
+// differ by however long the queue was, which is exactly the error that would
+// file every backlogged fact under today.
+func TestConsolidator_TellsTheExtractorWhenTheChatHappened(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2023-10-04T09:00:00Z")}
+	f.transcript = "### user\nYesterday I met the artists in Boston.\n"
+	f.factsJSON = `[{"text":"Calvin met artists in Boston.","class":"fact"}]`
+
+	runConsolidator(t, f)
+
+	var prompt string
+	for _, c := range f.calls {
+		if c.Tool == "Agent" {
+			if p, ok := c.Input["prompt"].(string); ok {
+				prompt = p
+			}
+		}
+	}
+	if prompt == "" {
+		t.Fatal("no extractor spawn observed")
+	}
+	if !strings.Contains(prompt, "2023-10-04") {
+		t.Errorf("the extractor prompt does not carry the chat's date; a relative reference "+
+			"is unresolvable without it. prompt was:\n%s", prompt)
+	}
+	// And it must sit OUTSIDE the transcript delimiters — a date inside the data is
+	// one more thing a hostile transcript could try to restate.
+	begin := strings.Index(prompt, "BEGIN TRANSCRIPT")
+	at := strings.Index(prompt, "2023-10-04")
+	if begin >= 0 && at > begin {
+		t.Errorf("the date was placed INSIDE the transcript delimiters; it is ours, not the " +
+			"transcript's, and belongs before them")
+	}
+}
+
+// A fact the extractor dated is stored WITH its validity interval.
+func TestConsolidator_WritesTheValidityInterval(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2023-10-04T09:00:00Z")}
+	f.transcript = "### user\nYesterday I met the artists in Boston.\n"
+	f.factsJSON = `[{"text":"Calvin met artists in Boston.","class":"fact",` +
+		`"valid_at":"2023-10-03T00:00:00Z","invalid_at":"2023-10-04T00:00:00Z"}]`
+
+	runConsolidator(t, f)
+
+	set := lastCall(t, f, "Memory.set")
+	if got, _ := set.Input["valid_at"].(string); got != "2023-10-03T00:00:00Z" {
+		t.Errorf("valid_at = %q, want the extractor's resolved date to reach the store", got)
+	}
+	if got, _ := set.Input["invalid_at"].(string); got != "2023-10-04T00:00:00Z" {
+		t.Errorf("invalid_at = %q, want it carried through", got)
+	}
+}
+
+// An UNDATED fact carries no interval keys at all — not empty strings.
+//
+// Most facts have no time reference, so this is the common path. Writing ""
+// would be a value the store then has to interpret, and "undated" must stay
+// distinguishable from "dated to nothing".
+func TestConsolidator_UndatedFactCarriesNoIntervalKeys(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2023-10-04T09:00:00Z")}
+	f.transcript = "### user\nI prefer Go for backend work.\n"
+	f.factsJSON = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+
+	runConsolidator(t, f)
+
+	set := lastCall(t, f, "Memory.set")
+	if _, present := set.Input["valid_at"]; present {
+		t.Errorf("an undated fact carried a valid_at key: %#v — undated must stay "+
+			"distinguishable from dated-to-nothing", set.Input["valid_at"])
+	}
+	if _, present := set.Input["invalid_at"]; present {
+		t.Error("an undated fact carried an invalid_at key")
+	}
+}
+
+// A malformed or reversed interval loses the DATES and keeps the FACT.
+//
+// A good fact with a bad date is still a good fact, and dropping it would trade
+// recall for tidiness. The reversal is counted separately from `dropped` because
+// the fact survived: a rising count means the extractor is emitting bad dates,
+// not bad facts, and those have different fixes.
+func TestConsolidator_BadIntervalIsStrippedButTheFactSurvives(t *testing.T) {
+	for _, tc := range []struct{ name, interval string }{
+		{"reversed", `"valid_at":"2023-10-05T00:00:00Z","invalid_at":"2023-10-01T00:00:00Z"`},
+		{"not a timestamp", `"valid_at":"last Tuesday"`},
+		{"month only", `"valid_at":"2023-10"`},
+		{"end without start", `"invalid_at":"2023-10-04T00:00:00Z"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeToolset()
+			f.sessions = []map[string]any{scanRow("sess-a", "2023-10-04T09:00:00Z")}
+			f.transcript = "### user\nI met the artists in Boston.\n"
+			f.factsJSON = `[{"text":"Calvin met artists in Boston.","class":"fact",` + tc.interval + `}]`
+
+			runConsolidator(t, f)
+
+			set := lastCall(t, f, "Memory.set")
+			if v, _ := set.Input["value"].(string); v != "Calvin met artists in Boston." {
+				t.Errorf("the FACT was lost over a bad date (value = %q); a good fact with a "+
+					"bad date is still a good fact", v)
+			}
+			if _, present := set.Input["valid_at"]; present {
+				t.Errorf("a %s interval reached the store: %#v", tc.name, set.Input["valid_at"])
+			}
+			if _, present := set.Input["invalid_at"]; present {
+				t.Errorf("a %s interval reached the store via invalid_at", tc.name)
+			}
+		})
+	}
+}
