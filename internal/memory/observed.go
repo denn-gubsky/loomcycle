@@ -49,13 +49,23 @@ type ObservedWindow struct {
 	To      time.Time
 	Slack   time.Duration
 	Missing ObservedMissing
+
+	// AsOf asks a DIFFERENT question from From/To: not "when was this said" but
+	// "what was true at this instant" (RFC CL phase 2). Composable with the window —
+	// "what did we know in November about October" needs both.
+	//
+	// Always a hard filter, with no soft reading, because there isn't one: a row
+	// valid over a different interval is not a weaker answer to "what was true on the
+	// 3rd", it is a wrong one. Missing governs only whether rows with NO interval
+	// survive.
+	AsOf time.Time
 }
 
 // Active reports whether the predicate constrains anything. An explicit
 // discriminator rather than "are the bounds zero": a caller may legitimately ask
 // for `require` with no window at all, meaning "only rows someone dated".
 func (w ObservedWindow) Active() bool {
-	return !w.From.IsZero() || !w.To.IsZero() || w.Missing == MissingRequire
+	return !w.From.IsZero() || !w.To.IsZero() || !w.AsOf.IsZero() || w.Missing == MissingRequire
 }
 
 // Filter renders the window onto a store filter, applying slack. Bounds go to the
@@ -73,6 +83,13 @@ func (w ObservedWindow) Filter(f store.MemorySearchFilter) store.MemorySearchFil
 	// regression this predicate exists to avoid — the evidence for "the last week of
 	// October" was spoken on November 2, and prefer would have discarded it while
 	// keeping every undated row in the corpus.
+	// AsOf is applied in BOTH modes — see the field comment: there is no soft
+	// reading of "what was true then". `missing` still decides whether a row with no
+	// interval survives, which is the part that has a defensible soft reading.
+	if !w.AsOf.IsZero() {
+		f.AsOf = w.AsOf
+		f.RequireValid = w.Missing == MissingRequire
+	}
 	if w.Missing != MissingRequire {
 		return f
 	}
@@ -179,6 +196,7 @@ type WhenInput struct {
 	To      string `json:"to,omitempty"`
 	Slack   string `json:"slack,omitempty"`
 	Missing string `json:"missing,omitempty"`
+	AsOf    string `json:"as_of,omitempty"`
 }
 
 // ParseWhen turns the wire shape into the typed window.
@@ -212,6 +230,9 @@ func ParseWhen(in *WhenInput) (ObservedWindow, error) {
 	if !w.From.IsZero() && !w.To.IsZero() && w.To.Before(w.From) {
 		return ObservedWindow{}, fmt.Errorf("when.to (%s) is before when.from (%s)", in.To, in.From)
 	}
+	if w.AsOf, err = parseTS("as_of", in.AsOf); err != nil {
+		return ObservedWindow{}, err
+	}
 	if w.Slack, err = ParseSlack(in.Slack); err != nil {
 		return ObservedWindow{}, err
 	}
@@ -225,4 +246,12 @@ func ParseWhen(in *WhenInput) (ObservedWindow, error) {
 		w.Missing = MissingPrefer
 	}
 	return w, nil
+}
+
+// SetTimes is the parsed form of the three write-side times, shared by the in-band
+// tool and the off-run PUT so both accept exactly the same vocabulary.
+type SetTimes struct {
+	ObservedAt time.Time
+	ValidAt    time.Time
+	InvalidAt  time.Time
 }

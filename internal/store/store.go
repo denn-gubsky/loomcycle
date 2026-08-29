@@ -1714,11 +1714,11 @@ type Store interface {
 	// bytes, scope quota) as ErrMemoryQuotaExceeded — the tool layer
 	// trusts the store's verdict.
 	MemorySet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
-	// MemorySetObserved is the single write implementation behind MemorySet and
+	// MemorySetTimed is the single write implementation behind MemorySet and
 	// MemorySetProvenance, which delegate to it with the extra arguments zeroed
-	// (RFC CL). observedAt's ZERO VALUE writes NULL — an undated row — so the two
+	// (RFC CL). Every time's ZERO VALUE writes NULL — an undated row — so the two
 	// older entry points keep their exact prior behaviour.
-	MemorySetObserved(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov MemoryProvenance, observedAt time.Time) error
+	MemorySetTimed(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov MemoryProvenance, times MemoryTimes) error
 
 	// MemorySetProvenance is MemorySet plus the RFC BL provenance columns —
 	// WHERE this fact came from and what kind of fact it is. Identical upsert
@@ -3169,6 +3169,20 @@ type MemorySearchFilter struct {
 	// exact-day window contains the ground-truth evidence in 1 case out of 8, because
 	// people recount events AFTER they happen (median lag +1 day, up to +10).
 	RequireObserved bool
+
+	// AsOf selects rows whose VALIDITY INTERVAL contains this instant — valid_at <=
+	// AsOf < invalid_at, with a NULL invalid_at meaning still true (RFC CL phase 2).
+	// Zero constrains nothing.
+	//
+	// Distinct from the ObservedFrom/To window above and composable with it: one asks
+	// when a thing was SAID, the other when it was TRUE, and a caller may reasonably
+	// want both ("what did we know in November about October").
+	AsOf time.Time
+
+	// RequireValid drops rows with no validity interval, exactly as RequireObserved
+	// does for observed time, and carries exactly the same warning: on a corpus where
+	// nothing has been dated it returns nothing at all.
+	RequireValid bool
 }
 
 // MemoryProvenanceConstraint selects rows by whether they carry provenance.
@@ -3244,6 +3258,33 @@ type MemoryEntry struct {
 	// is worse than none — it silently filters the right row out of a window it
 	// belongs in, which is the failure the column exists to remove.
 	ObservedAt time.Time `json:"observed_at,omitempty"`
+
+	// ValidAt / InvalidAt are when the described thing was TRUE IN THE WORLD (RFC CL
+	// phase 2), a third time distinct from both of the above. "Yesterday I met
+	// artists in Boston", said on 4 October, is OBSERVED on the 4th and VALID on the
+	// 3rd — and the 3rd is what a question about it asks.
+	//
+	// Half-open [ValidAt, InvalidAt): a zero InvalidAt means STILL TRUE, matching the
+	// bi-temporal entity tier so both planes answer "what was true then" identically
+	// rather than off by one row.
+	ValidAt   time.Time `json:"valid_at,omitempty"`
+	InvalidAt time.Time `json:"invalid_at,omitempty"`
+}
+
+// MemoryTimes carries the caller-supplied times on a memory write.
+//
+// A struct rather than three more parameters: the write already took eight, and an
+// eleven-argument function is where positional mistakes start. Every field's zero
+// value writes NULL, so a caller who sets none is byte-identical to a plain set.
+type MemoryTimes struct {
+	ObservedAt time.Time
+	ValidAt    time.Time
+	InvalidAt  time.Time
+}
+
+// IsZero reports that no time was supplied — the plain-write path.
+func (t MemoryTimes) IsZero() bool {
+	return t.ObservedAt.IsZero() && t.ValidAt.IsZero() && t.InvalidAt.IsZero()
 }
 
 // MemoryProvenanceRow is one memory row located by the chat it was derived from.

@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS memory_by_valid_at;
+ALTER TABLE memory DROP COLUMN IF EXISTS invalid_at;
+ALTER TABLE memory DROP COLUMN IF EXISTS valid_at;

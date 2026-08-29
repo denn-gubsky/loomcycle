@@ -293,8 +293,10 @@ const memoryInputSchema = `{
     "infer":      {"type": "boolean", "description": "add-only: when true (default) the messages are handed to the memory layer for consolidation into durable facts (on the default backend, enqueued for a background consolidator); false stores them verbatim as one row."},
     "metadata":   {"type": "object", "description": "add-only: opaque key/value context attached to the ingestion.", "additionalProperties": {"type": "string"}},
     "threshold":  {"type": "number", "description": "recall-only: 0..1 relevance floor for returned facts (0 = backend default)."},
-    "when":       {"type": "object", "description": "search / recall: narrow by WHEN the remembered thing was said, not when it was stored. Properties: from / to (RFC3339 bounds, either may be omitted), slack (how far outside the window still counts, default \"3d\"), missing (\"prefer\" default = undated rows still returned but ranked below in-window ones; \"require\" = undated rows dropped). Give a GENEROUS window: a remark about an event is usually made a day or more AFTER it, so an exact-day window typically misses the row that answers the question. \"require\" with a tight window is how you get nothing back from a store that holds the answer. Resolve phrases like \"last October\" to explicit timestamps yourself — this takes instants, not prose.", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "slack": {"type": "string"}, "missing": {"type": "string", "enum": ["prefer","require"]}}},
+    "when":       {"type": "object", "description": "search / recall: narrow by WHEN the remembered thing was said, not when it was stored. Properties: from / to (RFC3339 bounds, either may be omitted), slack (how far outside the window still counts, default \"3d\"), missing (\"prefer\" default = undated rows still returned but ranked below in-window ones; \"require\" = undated rows dropped). Give a GENEROUS window: a remark about an event is usually made a day or more AFTER it, so an exact-day window typically misses the row that answers the question. \"require\" with a tight window is how you get nothing back from a store that holds the answer. as_of instead asks a DIFFERENT question — not when something was said but what was TRUE at that instant, matching the valid_at/invalid_at interval; the two compose. Resolve phrases like \"last October\" to explicit timestamps yourself — this takes instants, not prose.", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "slack": {"type": "string"}, "missing": {"type": "string", "enum": ["prefer","require"]}, "as_of": {"type": "string"}}},
     "observed_at": {"type": "string", "description": "set-only: RFC3339 time the remembered thing was SAID or happened, as distinct from now (when it is being stored). Set it when you are recording something dated — a message, an event, an excerpt — so it can later be found by \"when\". Omit when you do not know: an undated row is honest, a guessed date silently hides the row from the window it truly belongs in."},
+    "valid_at":   {"type": "string", "description": "set-only: RFC3339 time the thing became TRUE in the world, as distinct from when it was said. \"Yesterday I met them in Boston\", said on the 4th, is observed_at the 4th and valid_at the 3rd — and the 3rd is what a later question about it asks. Pair with as_of to ask \"what was true then\"."},
+    "invalid_at": {"type": "string", "description": "set-only: RFC3339 time the thing STOPPED being true. Omit for something still true; the interval is half-open [valid_at, invalid_at). This is how a superseded fact stops applying without being deleted."},
     "statement":  {"type": "string", "description": "sql_query / sql_exec: ONE SQL statement. sql_query is read-only (SELECT / WITH … SELECT); sql_exec is DDL/DML (CREATE/INSERT/UPDATE/DELETE/etc.). ATTACH, PRAGMA, load_extension, transactions, and multiple statements are refused."},
     "args":       {"type": "array", "description": "sql_query / sql_exec: positional bind parameters for ? placeholders. An element of the form {\"$embed\": \"text\"} is replaced server-side by the embedding of that text as a pgvector value (reference it with a ::vector cast, e.g. ... ORDER BY embedding <=> ?::vector); requires the postgres tier with pgvector + a configured embedder.", "items": {}},
     "timeout_ms": {"type": "integer", "description": "sql_query / sql_exec: reserved — the server-configured statement timeout is authoritative in this version."},
@@ -358,6 +360,8 @@ type memoryInput struct {
 	// "explicitly empty".
 	When       *memrank.WhenInput `json:"when,omitempty"`
 	ObservedAt string             `json:"observed_at,omitempty"`
+	ValidAt    string             `json:"valid_at,omitempty"`
+	InvalidAt  string             `json:"invalid_at,omitempty"`
 
 	// --- RFC AA SQL Memory (sql_query / sql_exec) ---
 	// Statement is the single SQL statement to run (validated by the
@@ -1254,19 +1258,34 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// anything. A malformed one is refused rather than dropped, because a silently
 	// undated row reads later as "nobody knew the date" instead of "the date was
 	// wrong", and the two call for different fixes.
-	var observedAt time.Time
-	if t := strings.TrimSpace(in.ObservedAt); t != "" {
-		parsed, perr := time.Parse(time.RFC3339, t)
-		if perr != nil {
-			return errResult(fmt.Sprintf("set: observed_at %q is not an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)", t)), nil
+	var times memrank.SetTimes
+	for _, f := range []struct {
+		name string
+		raw  string
+		dst  *time.Time
+	}{
+		{"observed_at", in.ObservedAt, &times.ObservedAt},
+		{"valid_at", in.ValidAt, &times.ValidAt},
+		{"invalid_at", in.InvalidAt, &times.InvalidAt},
+	} {
+		if t := strings.TrimSpace(f.raw); t != "" {
+			parsed, perr := time.Parse(time.RFC3339, t)
+			if perr != nil {
+				return errResult(fmt.Sprintf("set: %s %q is not an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)", f.name, t)), nil
+			}
+			*f.dst = parsed
 		}
-		observedAt = parsed
+	}
+	if !times.ValidAt.IsZero() && !times.InvalidAt.IsZero() && !times.InvalidAt.After(times.ValidAt) {
+		return errResult("set: invalid_at must be after valid_at — the interval is half-open [valid_at, invalid_at)"), nil
 	}
 	res, err := m.backend(ctx).Set(ctx, scope, scopeID, in.Key, in.Value, memrank.SetOptions{
 		TTL:        ttl,
 		Embed:      in.Embed,
 		EmbedText:  in.EmbedText,
-		ObservedAt: observedAt,
+		ObservedAt: times.ObservedAt,
+		ValidAt:    times.ValidAt,
+		InvalidAt:  times.InvalidAt,
 		Provenance: m.resolveFromPending(ctx, scope, scopeID, in, provenanceForSet(ctx, in)),
 	})
 	if err != nil {

@@ -94,6 +94,10 @@ type SetOptions struct {
 	// distinct from when it is being written. Zero leaves the row undated, and
 	// undated is correct whenever the caller does not actually know.
 	ObservedAt time.Time
+	// ValidAt / InvalidAt are when the thing was TRUE, as distinct from when it was
+	// said (RFC CL phase 2). Half-open: a zero InvalidAt means still true.
+	ValidAt   time.Time
+	InvalidAt time.Time
 }
 
 // SetResult reports the embedding outcome of a Set. For a non-embed write
