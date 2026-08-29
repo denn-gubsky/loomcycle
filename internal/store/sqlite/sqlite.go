@@ -283,6 +283,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			access_count      INTEGER NOT NULL DEFAULT 0,
 			last_accessed_at  INTEGER,
 			superseded_at     INTEGER,
+			observed_at       INTEGER,
 			PRIMARY KEY (tenant_id, scope, scope_id, key)
 		)`,
 		// Provenance, searchable at last. Mirrors postgres migration 0065: partial,
@@ -291,6 +292,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// about them. See MemoryListBySourceSessions for why the direction matters.
 		`CREATE INDEX IF NOT EXISTS memory_by_source_session ON memory(tenant_id, source_session_id) WHERE source_session_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS memory_by_expires_at ON memory(expires_at) WHERE expires_at IS NOT NULL`,
+		// RFC CL — the observed-time window predicate. Partial for the same reason as
+		// memory_by_source_session: observed_at is NULL on every row nobody dated, and
+		// on a corpus that was never dated that is all of them. Mirrors postgres
+		// migration 0073.
+		`CREATE INDEX IF NOT EXISTS memory_by_observed_at ON memory(tenant_id, scope, scope_id, observed_at) WHERE observed_at IS NOT NULL`,
 		// RFC BL P2 — the durable consolidation substrate. Mirrors Postgres
 		// migration 0061. memory_pending is the enqueue queue an Add writes to
 		// and the consolidator drains (drained_at = soft-drain marker for
@@ -1178,6 +1184,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		// the consolidator stamps it to hide a consolidated raw row from recall
 		// while retaining it.
 		`ALTER TABLE memory ADD COLUMN superseded_at INTEGER`,
+		`ALTER TABLE memory ADD COLUMN observed_at INTEGER`,
 		// RFC BL P3 — what enqueued a pending row (agent_explicit | compaction),
 		// server-set. memory_pending arrived as a pure CREATE TABLE in P2, so an
 		// upgraded DB has the table but not this column and needs the ALTER; a
@@ -4125,22 +4132,7 @@ func (s *Store) SnapshotRestoreEvaluation(ctx context.Context, r store.Evaluatio
 // source of truth for shape validation. (We also use the textual
 // representation for the JSON-number parse in MemoryIncrement.)
 func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
-	now := time.Now().UnixNano()
-	var expiresAt any
-	if ttl > 0 {
-		expiresAt = time.Now().Add(ttl).UnixNano()
-	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
-		    value = excluded.value,
-		    expires_at = excluded.expires_at,
-		    updated_at = excluded.updated_at,
-		    superseded_at = NULL`,
-		tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
-	)
-	return err
+	return s.MemorySetObserved(ctx, tenantID, scope, scopeID, key, value, ttl, store.MemoryProvenance{}, time.Time{})
 }
 
 // MemorySetProvenance is MemorySet plus the RFC BL provenance columns. The
@@ -4148,6 +4140,18 @@ func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.Memo
 // its CURRENT source), and superseded_at is cleared exactly as MemorySet does
 // so a consolidation write REVIVES a soft-archived row.
 func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance) error {
+	return s.MemorySetObserved(ctx, tenantID, scope, scopeID, key, value, ttl, prov, time.Time{})
+}
+
+// MemorySetObserved is the one write path; the two above delegate to it. Folding
+// them together is what keeps the ON CONFLICT clause a single statement — three
+// near-identical upserts drifting apart is how a column ends up written on one
+// path and not another.
+//
+// A ZERO observedAt writes NULL. That is not the same as "now": an undated row is
+// undated, and defaulting it to write time would fabricate an observed time for
+// every row anyone ever set, which is precisely the wrong data to filter on.
+func (s *Store) MemorySetObserved(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance, observedAt time.Time) error {
 	now := time.Now().UnixNano()
 	var expiresAt any
 	if ttl > 0 {
@@ -4161,10 +4165,14 @@ func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope 
 		}
 		return v
 	}
+	var obs any
+	if !observedAt.IsZero() {
+		obs = observedAt.UnixNano()
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at,
-		                    origin, class, source_session_id, source_run_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                    origin, class, source_session_id, source_run_id, observed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(tenant_id, scope, scope_id, key) DO UPDATE SET
 		    value = excluded.value,
 		    expires_at = excluded.expires_at,
@@ -4173,9 +4181,13 @@ func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope 
 		    class = excluded.class,
 		    source_session_id = excluded.source_session_id,
 		    source_run_id = excluded.source_run_id,
+		    -- COALESCE, not excluded: a plain re-set of an already-dated row must not
+		    -- silently erase its observed time. Re-dating is possible, but only by
+		    -- passing a new one.
+		    observed_at = COALESCE(excluded.observed_at, memory.observed_at),
 		    superseded_at = NULL`,
 		tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
-		nullify(prov.Origin), nullify(prov.Class), nullify(prov.SourceSessionID), nullify(prov.SourceRunID),
+		nullify(prov.Origin), nullify(prov.Class), nullify(prov.SourceSessionID), nullify(prov.SourceRunID), obs,
 	)
 	return err
 }
@@ -4215,17 +4227,18 @@ func (s *Store) MemoryProvenanceGet(ctx context.Context, tenantID string, scope 
 // reaped them yet.
 func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
 	var (
-		valueText string
-		expiresAt sql.NullInt64
-		createdAt int64
-		updatedAt int64
+		valueText  string
+		expiresAt  sql.NullInt64
+		createdAt  int64
+		updatedAt  int64
+		observedAt sql.NullInt64
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT value, expires_at, created_at, updated_at
+		`SELECT value, expires_at, created_at, updated_at, observed_at
 		 FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key = ?
 		   AND superseded_at IS NULL`,
 		tenantID, string(scope), scopeID, key,
-	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt)
+	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt, &observedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.MemoryEntry{}, &store.ErrNotFound{Kind: "memory", ID: key}
 	}
@@ -4240,6 +4253,9 @@ func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.Memo
 		Value:     json.RawMessage(valueText),
 		CreatedAt: time.Unix(0, createdAt),
 		UpdatedAt: time.Unix(0, updatedAt),
+	}
+	if observedAt.Valid {
+		out.ObservedAt = time.Unix(0, observedAt.Int64)
 	}
 	if expiresAt.Valid {
 		out.ExpiresAt = time.Unix(0, expiresAt.Int64)

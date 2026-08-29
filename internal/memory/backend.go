@@ -90,6 +90,10 @@ type SetOptions struct {
 	// consolidation write. A zero value takes the plain k/v write path, so
 	// every pre-existing caller is byte-identical.
 	Provenance store.MemoryProvenance
+	// ObservedAt dates the row: when the remembered thing was SAID (RFC CL), as
+	// distinct from when it is being written. Zero leaves the row undated, and
+	// undated is correct whenever the caller does not actually know.
+	ObservedAt time.Time
 }
 
 // SetResult reports the embedding outcome of a Set. For a non-embed write
@@ -126,6 +130,10 @@ type SearchQuery struct {
 	// would answer the symptom. Prefix remains for callers that genuinely want to
 	// narrow by key.
 	Sources []Source
+
+	// When bounds the rows' OBSERVED time (RFC CL). The zero value constrains
+	// nothing, so a caller that never mentions time is unaffected.
+	When ObservedWindow
 }
 
 // Source is one kind of remembered thing a search may return.
@@ -169,7 +177,11 @@ var ErrSourcesNotExpressible = errors.New(
 // Both refused combinations are also odd requests ("my facts and my documents but not
 // my notes"); if one turns out to be real, the disjunction is the fix.
 func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
-	f := store.MemorySearchFilter{KeyPrefix: q.Prefix}
+	// The RFC CL window is applied FIRST so it survives every return path below.
+	// Filter has several early exits (no selector, documents-only, the refusal), and
+	// attaching the window at each one is how a predicate ends up honoured on some
+	// queries and silently dropped on others.
+	f := q.When.Filter(store.MemorySearchFilter{KeyPrefix: q.Prefix})
 	var facts, notes, docs bool
 	for _, s := range q.Sources {
 		switch s {
@@ -224,6 +236,11 @@ func Class(e store.MemorySearchEntry) store.MemoryRowClass {
 // dropped (mode=drop/merge) or flagged (mode=keep) out of the post-rank,
 // pre-trim candidate set. It is 0 when dedup is disabled.
 type SearchResult struct {
+	// TimeFilter is what the RFC CL observed-time predicate did, present only when
+	// the query carried one. Nil means no window was asked for — distinct from a
+	// window that matched nothing, which reports zero counts.
+	TimeFilter *TimeFilterReport
+
 	Entries           []store.MemorySearchEntry
 	RankScores        []float64
 	QueryEmbeddingDim int

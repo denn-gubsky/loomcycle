@@ -64,6 +64,11 @@ type memorySearchRequest struct {
 	// keeps this endpoint's purpose: it exists to answer "where did I record this"
 	// across BOTH planes, so unlike the in-band recall it does not default to facts.
 	Sources []string `json:"sources"`
+	// When is the observed-time predicate, decoded by the SAME parser the in-band
+	// tool uses. Two hand-maintained copies of a predicate that decides which rows
+	// get DROPPED is how this endpoint and its in-band twin have already drifted
+	// twice; one struct and one parser is the fix.
+	When *memrank.WhenInput `json:"when,omitempty"`
 }
 
 type memorySearchEmbeddedWith struct {
@@ -98,6 +103,9 @@ type memorySearchResultEntry struct {
 }
 
 type memorySearchResponse struct {
+	// TimeFilter is omitted unless the request carried a window, so an existing
+	// caller sees an unchanged response.
+	TimeFilter        *memrank.TimeFilterReport `json:"time_filter,omitempty"`
 	Scope             string                    `json:"scope"`
 	ScopeID           string                    `json:"scope_id"`
 	Entries           []memorySearchResultEntry `json:"entries"`
@@ -164,10 +172,16 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	// Empty Prefix so the search spans both k/v entries and doc.chunk bodies unless the
 	// caller narrows it with sources.
 	backend := inprocess.New(s.store, s.embedder)
+	when, werr := memrank.ParseWhen(body.When)
+	if werr != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_when", werr.Error())
+		return
+	}
 	res, err := backend.Search(ctx, store.MemoryScope(body.Scope), storeScopeID,
 		memrank.SearchQuery{
 			QueryText: body.Query, Prefix: "", TopK: topK,
 			Sources: parseMemorySources(body.Sources),
+			When:    when,
 		}, rankCfg, dedupCfg)
 	if err != nil {
 		// The three typed refusals are operator-actionable (no embedder / no
@@ -230,6 +244,7 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, memorySearchResponse{
+		TimeFilter:        res.TimeFilter,
 		Scope:             body.Scope,
 		ScopeID:           storeScopeID,
 		Entries:           entries,

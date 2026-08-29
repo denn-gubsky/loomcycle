@@ -151,6 +151,9 @@ type RecallQuery struct {
 	// sharing the memory keyspace is not something the agent learned. A caller that
 	// wants both passes both explicitly.
 	Sources []Source
+
+	// When bounds the rows' OBSERVED time (RFC CL); zero constrains nothing.
+	When ObservedWindow
 }
 
 // RecallFact is one extracted fact returned by Recall. ID is server-assigned
@@ -180,6 +183,10 @@ type RecallFact struct {
 // RecallResult is the ranked output of Recall, trimmed to the query's TopK by
 // the backend.
 type RecallResult struct {
+	// TimeFilter is what the observed-time predicate did; nil when none was asked
+	// for. Distinct from a window that matched nothing, which reports zero counts.
+	TimeFilter *TimeFilterReport
+
 	Facts []RecallFact
 
 	// SourcesApplied mirrors SearchResult.SourcesApplied — false unless the backend

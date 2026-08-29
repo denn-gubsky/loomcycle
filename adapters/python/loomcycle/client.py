@@ -790,10 +790,32 @@ class LoomcycleClient:
         This is the gRPC/Python twin of the memory surface the TypeScript client
         reaches over HTTP.
 
+        ``search`` / ``recall`` also take a ``when`` predicate that narrows by WHEN
+        the remembered thing was SAID — its ``observed_at`` — rather than when it was
+        stored, and ``set`` takes ``observed_at`` to date a row so ``when`` can find
+        it. ``input`` is passed to the tool verbatim, so both are available here with
+        no adapter-side schema.
+
+        Give a GENEROUS window. A remark about an event is normally made after it, so
+        an unwidened one-day window misses the row you want most of the time;
+        ``slack`` (default ``"3d"``) widens both bounds. ``missing`` decides what
+        happens to rows nobody dated — ``"prefer"`` (the default when a window is
+        given) drops nothing and merely promotes in-window rows, while ``"require"``
+        is a real filter, and a tight ``"require"`` window is how a scope that holds
+        the answer comes back empty. The reply carries ``time_filter``: read it
+        before concluding a scope knows nothing, because ``in_window: 0`` with a
+        large ``untimed`` means an undated corpus, not an absent answer.
+
         Example::
 
             await client.memory({"op": "set", "scope": "user", "key": "tone", "value": "concise"})
             got = await client.memory({"op": "get", "scope": "user", "key": "tone"})
+
+            # narrow by when it was said, not when it was stored
+            hits = await client.memory({
+                "op": "recall", "scope": "user", "query": "which city",
+                "when": {"from": "2023-10-01T00:00:00Z", "to": "2023-10-04T00:00:00Z"},
+            })
         """
         return await self._dispatch_substrate("Memory", input)
 

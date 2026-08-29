@@ -183,27 +183,59 @@ event it describes. A remembered remark frequently carries the time it was SAID;
 its text says "yesterday" or "last week", the event is relative to that time and is
 not that time.
 
-### What recall cannot do: answer a time predicate
+### Narrowing by WHEN something was said
 
 Semantic recall matches on MEANING, and dates are not meaningfully encoded in an
-embedding. A question shaped as a time constraint — *"which city was Calvin at on
-October 3, 2023"*, *"what was Dave doing in the first weekend of October"* — will not
-reliably retrieve the row that happens to carry that timestamp, no matter how well the
-corpus is embedded. Measured across 294 temporal questions:
+embedding: *"which city was Calvin at on October 3, 2023"* will not reliably retrieve
+the row carrying that timestamp, no matter how well the corpus is embedded. Measured
+across 294 temporal questions on the LoCoMo answer axis, a question carrying an
+absolute date scored **0.5484 with 0.323 abstention** against **0.6844 / 0.171** for a
+topic-shaped one.
 
-| question shape | n | accuracy | abstention |
-|---|---|---|---|
-| carries an absolute date / window constraint | 31 | 0.5484 | 0.323 |
-| topic-shaped | 263 | 0.6844 | 0.171 |
+So a row can carry an `observed_at` — when the thing was SAID, distinct from
+`created_at`, which is when loomcycle stored it and on a bulk import is one clustered
+instant for the whole corpus — and `search` / `recall` accept a `when` predicate:
 
-A date-constrained question is roughly 14pp harder and abstains about twice as often,
-and some fraction answers confidently from the wrong window rather than abstaining.
+```jsonc
+{"op": "recall", "scope": "user", "query": "which city",
+ "when": {"from": "2023-10-01T00:00:00Z", "to": "2023-10-04T00:00:00Z",
+          "slack": "3d", "missing": "prefer"}}
+// → {"memories": [...],
+//    "time_filter": {"mode":"prefer","slack_seconds":259200,
+//                    "in_window":1,"out_of_window":2,"untimed":1}}
+```
 
-If you need point-in-time or as-of retrieval, use the bi-temporal entity tier instead
-— `Document upsert_chunk` / `graph_recall`, whose `valid_at` / `invalid_at` interval
-and `as_of` predicate are a real time filter. The k/v memory plane's `recall` and
-`search` deliberately expose no date filter today; do not simulate one by putting a
-date in the query text.
+**Give a generous window, and let `missing` default.** A remark about an event is
+normally made AFTER it: on LoCoMo the lag from the date asked about to the date the
+evidence was spoken runs -3 to +10 days with a median of +1. An unwidened one-day
+window therefore contains the evidence in **1 case out of 8**; ±3d (the `slack`
+default) captures 7, ±14d captures all 8.
+
+| `missing` | behaviour |
+|---|---|
+| `prefer` (default when a window is given) | nothing is dropped — in-window rows are promoted, everything else follows behind |
+| `require` | rows outside the window, and rows with no date at all, are DROPPED |
+
+`prefer` applies no filter whatsoever; the window is purely a ranking signal. That is
+deliberate. A row dated outside the window may still be the one that answers the
+question — the evidence for *"the last week of October"* was spoken on **November 2** —
+so demoting is right and discarding is not.
+
+`require` is a real filter and is genuinely sharp. **A tight `require` window is how a
+scope that holds the answer returns nothing**, which is why it is never the default.
+`time_filter` is what tells the two apart: `in_window: 0, untimed: 5756` is an undated
+corpus, not an absence.
+
+Undated is the honest state, so `observed_at` is caller-supplied and never inferred —
+set it on `op=set` or the off-run PUT when you are recording something dated, and omit
+it when you do not know. loomcycle will not parse a date out of the row text: a wrong
+`observed_at` is worse than none, because it silently filters the right row out of the
+window it belongs in.
+
+Resolve phrases like *"the first weekend of October"* to explicit instants yourself —
+the predicate takes timestamps, not prose. For point-in-time retrieval over
+consolidated entity facts (as-of a past instant, across relations), the bi-temporal
+tier's `graph_recall` with `as_of` remains the richer tool.
 
 `recall` needs the vector stack (an embedder + a vector-capable store);
 without it, it refuses with `vector_unsupported` / `embedder_not_configured`.

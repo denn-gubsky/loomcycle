@@ -74,6 +74,16 @@ func (c *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope 
 	return err
 }
 
+// MemorySetObserved mirrors MemorySetProvenance's change emission — the RFC CL
+// observed time rides along on the same upsert, so the same row changed.
+func (c *Store) MemorySetObserved(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance, observedAt time.Time) error {
+	err := c.Store.MemorySetObserved(ctx, tenantID, scope, scopeID, key, value, ttl, prov, observedAt)
+	if err == nil {
+		c.emitKey(ctx, tenantID, scope, scopeID, key, false)
+	}
+	return err
+}
+
 func (c *Store) MemoryIncrement(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error) {
 	v, err := c.Store.MemoryIncrement(ctx, tenantID, scope, scopeID, key, delta, ttl)
 	if err == nil {

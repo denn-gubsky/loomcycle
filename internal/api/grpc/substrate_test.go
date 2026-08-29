@@ -641,3 +641,70 @@ func TestSubstrateGRPCCtx_StampsIsolatedBit(t *testing.T) {
 		t.Error("substrateGRPCCtx (no principal) must never be isolated")
 	}
 }
+
+// The observed-time predicate reaches the Memory tool over gRPC UNCHANGED.
+//
+// There is no proto change for it and there should not be: the Memory RPC carries
+// an opaque input_json straight to the same builtin dispatch HTTP and MCP use, so a
+// typed `when` message would be a third hand-maintained copy of a predicate that
+// decides which rows get DROPPED — the exact shape this subsystem has already
+// shipped two drift bugs from.
+//
+// What that design DOES need is proof the bytes are not filtered, reshaped, or
+// re-encoded on the way through, because "it is a pass-through" is an assumption
+// until something asserts it. This is that assertion, and it is what lets the
+// Python adapter (gRPC-only) inherit the feature with no code of its own.
+func TestGrpcMemory_ObservedTimePredicatePassesThroughVerbatim(t *testing.T) {
+	mc := &substrateMock{
+		memoryResult: connector.ToolResult{
+			Text: `{"memories":[],"time_filter":{"mode":"prefer","slack_seconds":259200,` +
+				`"in_window":0,"out_of_window":0,"untimed":3}}`,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	in := `{"op":"recall","scope":"user","query":"which city","when":` +
+		`{"from":"2023-10-01T00:00:00Z","to":"2023-10-04T00:00:00Z","slack":"3d","missing":"prefer"}}`
+	resp, err := client.Memory(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(in),
+	})
+	if err != nil {
+		t.Fatalf("Memory: %v", err)
+	}
+	if string(mc.gotMemoryInput) != in {
+		t.Errorf("the tool received\n  %s\nwant it byte-identical to what the caller sent:\n  %s",
+			mc.gotMemoryInput, in)
+	}
+	// And the report survives the return trip, which is the half a caller acts on:
+	// in_window 0 with untimed 3 means an UNDATED corpus, not an absent answer.
+	var out struct {
+		TimeFilter *struct {
+			Mode    string `json:"mode"`
+			Untimed int    `json:"untimed"`
+		} `json:"time_filter"`
+	}
+	if err := json.Unmarshal(resp.GetOutputJson(), &out); err != nil {
+		t.Fatalf("output_json is not JSON: %v", err)
+	}
+	if out.TimeFilter == nil || out.TimeFilter.Mode != "prefer" || out.TimeFilter.Untimed != 3 {
+		t.Errorf("time_filter did not survive the response: %s", resp.GetOutputJson())
+	}
+}
+
+// A write dating a row travels the same way.
+func TestGrpcMemory_ObservedAtOnSetPassesThroughVerbatim(t *testing.T) {
+	mc := &substrateMock{memoryResult: connector.ToolResult{Text: `{"ok":true}`}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	in := `{"op":"set","scope":"user","key":"turn-1","value":"we spoke","observed_at":"2023-10-04T14:00:00Z"}`
+	if _, err := client.Memory(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(in),
+	}); err != nil {
+		t.Fatalf("Memory: %v", err)
+	}
+	if string(mc.gotMemoryInput) != in {
+		t.Errorf("observed_at did not reach the tool intact:\n  got  %s\n  want %s", mc.gotMemoryInput, in)
+	}
+}

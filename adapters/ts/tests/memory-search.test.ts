@@ -14,6 +14,63 @@ import type {
 } from "../src/index.js";
 
 describe("memorySearch", () => {
+  it("forwards `when` verbatim and parses time_filter back", async () => {
+    // The predicate decides which rows get DROPPED, so it must reach the server
+    // exactly as written — a reshaped window silently changes the result set.
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        scope: "user",
+        scope_id: "alice",
+        entries: [],
+        query_embedding_dim: 1024,
+        truncated: false,
+        time_filter: {
+          mode: "prefer",
+          slack_seconds: 259200,
+          in_window: 0,
+          out_of_window: 0,
+          untimed: 3,
+        },
+      } satisfies MemorySearchResponse),
+    ]);
+
+    const when = {
+      from: "2023-10-01T00:00:00Z",
+      to: "2023-10-04T00:00:00Z",
+      slack: "3d",
+      missing: "prefer" as const,
+    };
+    const res = await client.memorySearch({
+      query: "which city",
+      scope: "user",
+      scopeId: "alice",
+      when,
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.when).toEqual(when);
+    // in_window 0 with untimed 3 is an UNDATED corpus, not an absent answer — the
+    // whole reason the report exists is that those two look identical without it.
+    expect(res.time_filter?.mode).toBe("prefer");
+    expect(res.time_filter?.untimed).toBe(3);
+  });
+
+  it("omits `when` entirely when not given, leaving search untouched", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        scope: "user",
+        scope_id: "alice",
+        entries: [],
+        query_embedding_dim: 1024,
+        truncated: false,
+      } satisfies MemorySearchResponse),
+    ]);
+    const res = await client.memorySearch({ query: "x", scope: "user", scopeId: "alice" });
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect("when" in body).toBe(false);
+    expect(res.time_filter).toBeUndefined();
+  });
+
   it("POSTs snake_case body (scopeId→scope_id, topK→top_k) and parses every kind", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({

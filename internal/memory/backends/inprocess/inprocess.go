@@ -103,13 +103,10 @@ func (b *Backend) Set(ctx context.Context, scope store.MemoryScope, scopeID, key
 		}
 	}
 
-	// RFC BL: a write carrying provenance takes the wider upsert; everything
-	// else keeps the original 8-column write untouched.
-	if opts.Provenance.IsZero() {
-		if err := b.store.MemorySet(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL); err != nil {
-			return memory.SetResult{}, err
-		}
-	} else if err := b.store.MemorySetProvenance(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL, opts.Provenance); err != nil {
+	// One write for every shape: provenance and observed time ride the same upsert,
+	// and both are zero-valued for a plain set, so a caller that uses neither is
+	// byte-identical to before.
+	if err := b.store.MemorySetObserved(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL, opts.Provenance, opts.ObservedAt); err != nil {
 		return memory.SetResult{}, err
 	}
 
@@ -282,8 +279,36 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	// dedup on the full pool BEFORE the trim (RFC I Decision 2) so collapsing a
 	// duplicate cluster can promote a distinct entry into the top_k. rank
 	// scores use the SAME `now` as the ranking so the rendered score matches.
+	// RFC CL — count the pool against the window, then DEMOTE undated rows in
+	// `prefer` mode. Both happen before the trim: the counts must describe what the
+	// ranker actually saw, and a demotion applied after the trim would reorder rows
+	// that had already lost their place.
+	var timeReport *memory.TimeFilterReport
+	if q.When.Active() {
+		rep := memory.TimeFilterReport{
+			Mode: q.When.Missing, SlackSeconds: int64(q.When.Slack / time.Second),
+		}
+		if rep.Mode == memory.MissingOff {
+			rep.Mode = memory.MissingPrefer
+		}
+		for _, e := range pool {
+			switch {
+			case e.ObservedAt.IsZero():
+				rep.Untimed++
+			case q.When.InWindow(e.ObservedAt):
+				rep.InWindow++
+			default:
+				rep.OutOfWindow++
+			}
+		}
+		timeReport = &rep
+	}
+
 	now := time.Now()
 	ranked := memory.RankCandidates(pool, rank, now)
+	if q.When.Active() && q.When.Missing != memory.MissingRequire {
+		ranked = demoteUndated(ranked, q.When)
+	}
 	deduped, dropped := memory.DedupResults(ranked, dedup)
 	if len(deduped) > topK {
 		deduped = deduped[:topK]
@@ -315,6 +340,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	lcotel.SetMemorySearchResult(span, mode, topK, deadDropped)
 
 	out := memory.SearchResult{
+		TimeFilter:        timeReport,
 		Entries:           deduped,
 		RankScores:        rankScores,
 		QueryEmbeddingDim: len(queryVec),
@@ -509,7 +535,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 		sources = []memory.Source{memory.SourceFacts, memory.SourceNotes}
 	}
 	res, err := b.Search(ctx, scope, scopeID,
-		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources},
+		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources, When: q.When},
 		memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		return memory.RecallResult{}, err
@@ -531,7 +557,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 	if len(facts) > topK {
 		facts = facts[:topK]
 	}
-	return memory.RecallResult{Facts: facts, SourcesApplied: true}, nil
+	return memory.RecallResult{Facts: facts, SourcesApplied: true, TimeFilter: res.TimeFilter}, nil
 }
 
 // recallText renders a stored value as human text: a JSON string round-trips to
@@ -580,4 +606,29 @@ var (
 // right.
 func (b *Backend) ScopeUsage(ctx context.Context, scope store.MemoryScope, scopeID string) (int, int, error) {
 	return b.store.MemoryScopeUsage(ctx, runTenant(ctx), scope, scopeID, memory.DocumentChunkKeyPrefix)
+}
+
+// demoteUndated is `prefer` mode: rows the window matched keep their rank order,
+// and everything else — undated rows, and dated rows outside the window — follows
+// behind in its existing order.
+//
+// A STABLE PARTITION, not a re-score. Folding time into the rank weights would make
+// the returned rank_score disagree with the ordering, and would silently trade
+// semantic relevance for date proximity at a ratio nobody chose. Partitioning says
+// exactly what it does: if anything in the window matched, prefer it; otherwise the
+// caller still gets the best semantic answer rather than an empty list.
+func demoteUndated(rows []store.MemorySearchEntry, w memory.ObservedWindow) []store.MemorySearchEntry {
+	if len(rows) < 2 {
+		return rows
+	}
+	in := make([]store.MemorySearchEntry, 0, len(rows))
+	rest := make([]store.MemorySearchEntry, 0, len(rows))
+	for _, r := range rows {
+		if w.InWindow(r.ObservedAt) {
+			in = append(in, r)
+		} else {
+			rest = append(rest, r)
+		}
+	}
+	return append(in, rest...)
 }

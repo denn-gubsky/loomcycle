@@ -1714,6 +1714,11 @@ type Store interface {
 	// bytes, scope quota) as ErrMemoryQuotaExceeded — the tool layer
 	// trusts the store's verdict.
 	MemorySet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
+	// MemorySetObserved is the single write implementation behind MemorySet and
+	// MemorySetProvenance, which delegate to it with the extra arguments zeroed
+	// (RFC CL). observedAt's ZERO VALUE writes NULL — an undated row — so the two
+	// older entry points keep their exact prior behaviour.
+	MemorySetObserved(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov MemoryProvenance, observedAt time.Time) error
 
 	// MemorySetProvenance is MemorySet plus the RFC BL provenance columns —
 	// WHERE this fact came from and what kind of fact it is. Identical upsert
@@ -3142,6 +3147,28 @@ type MemorySearchFilter struct {
 	// NOTES (RFC BW phase 2). Zero value constrains nothing, so every existing
 	// caller is unaffected.
 	Provenance MemoryProvenanceConstraint
+
+	// ObservedFrom / ObservedTo bound the row's observed time (RFC CL). Zero on
+	// either side is an open bound; both zero constrains nothing. The bounds are
+	// ALREADY WIDENED by the caller's slack — the store applies what it is given and
+	// owns no policy, so the window arithmetic lives in exactly one place.
+	//
+	// CONTRACT: the bounds constrain DATED rows only. A row with no observed time
+	// PASSES a bounded query and is demoted by the ranker, unless RequireObserved
+	// drops it. Every backend must implement it this way or `prefer` silently
+	// becomes `require` on that backend — the single semantic this feature turns on.
+	ObservedFrom time.Time
+	ObservedTo   time.Time
+
+	// RequireObserved drops rows with no observed time. It expresses ONLY the
+	// `require` mode: `prefer` needs undated rows to come back so the ranker can
+	// demote rather than discard them, and a store cannot rank.
+	//
+	// Dangerous on purpose and never the default. A tight window plus this flag is
+	// how a scope that holds the answer returns nothing: measured on LoCoMo, an
+	// exact-day window contains the ground-truth evidence in 1 case out of 8, because
+	// people recount events AFTER they happen (median lag +1 day, up to +10).
+	RequireObserved bool
 }
 
 // MemoryProvenanceConstraint selects rows by whether they carry provenance.
@@ -3206,6 +3233,17 @@ type MemoryEntry struct {
 	ExpiresAt time.Time       `json:"expires_at,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
+
+	// ObservedAt is when the remembered thing was SAID or written (RFC CL) — a
+	// different time from CreatedAt, which is when loomcycle stored the row and on a
+	// bulk import is one clustered instant for the whole corpus.
+	//
+	// ZERO MEANS UNDATED, and undated is the honest state for most rows: it is
+	// caller-supplied and never inferred. Deriving it from CreatedAt, or parsing a
+	// date out of the value text, would produce a WRONG observed time, and a wrong one
+	// is worse than none — it silently filters the right row out of a window it
+	// belongs in, which is the failure the column exists to remove.
+	ObservedAt time.Time `json:"observed_at,omitempty"`
 }
 
 // MemoryProvenanceRow is one memory row located by the chat it was derived from.

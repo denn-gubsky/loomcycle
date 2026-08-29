@@ -216,6 +216,8 @@ export type {
   // Memory view (RFC BV): off-run search + embed admin
   MemorySearchInput,
   MemorySource,
+  MemoryWhen,
+  MemoryTimeFilter,
   MemorySearchEntry,
   MemorySearchResponse,
   MemoryEmbedModelStats,

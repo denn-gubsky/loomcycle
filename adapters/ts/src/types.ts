@@ -1005,6 +1005,32 @@ export interface MemorySearchInput {
    *  store does not build. Use `["facts"]`, `["notes"]`,
    *  `["facts","notes"]`, `["documents"]`, or all three. */
   sources?: MemorySource[];
+  /** Narrow by WHEN the remembered thing was said — its `observed_at` — rather
+   *  than when it was stored. Omit for no time constraint.
+   *
+   *  **Give a generous window.** A remark about an event is normally made AFTER
+   *  it: measured on a conversational corpus the lag runs -3 to +10 days, median
+   *  +1, so an unwidened one-day window contains the row you want in about one
+   *  case in eight. `slack` (default `"3d"`) widens both bounds and is what makes
+   *  a narrow window usable.
+   *
+   *  `missing` decides what happens to rows nobody dated: `"prefer"` (the default
+   *  when a window is given) drops NOTHING and merely promotes in-window rows,
+   *  while `"require"` is a real filter. A tight `"require"` window is how a
+   *  scope that holds the answer comes back empty. */
+  when?: MemoryWhen;
+}
+
+/** The observed-time predicate on {@link MemorySearchInput}. Timestamps are
+ *  RFC3339 instants — resolve phrases like "the first weekend of October"
+ *  yourself; the server takes instants, not prose, and a malformed one is
+ *  rejected rather than ignored. */
+export interface MemoryWhen {
+  from?: string;
+  to?: string;
+  /** How far outside the bounds still counts, e.g. `"3d"` or `"72h"`. Default `"3d"`. */
+  slack?: string;
+  missing?: "prefer" | "require";
 }
 
 /** A kind of remembered thing (RFC BW).
@@ -1053,6 +1079,21 @@ export interface MemorySearchResponse {
   entries: MemorySearchEntry[];
   query_embedding_dim: number;
   truncated: boolean;
+  /** What the `when` predicate did — present only when one was sent.
+   *
+   *  Read it before concluding a scope knows nothing: `in_window: 0` with a large
+   *  `untimed` means the corpus is undated, not that the answer is absent, and
+   *  those call for very different responses. Counts describe the candidate pool
+   *  the ranker saw, not a scope-wide census. */
+  time_filter?: MemoryTimeFilter;
+}
+
+export interface MemoryTimeFilter {
+  mode: "prefer" | "require";
+  slack_seconds: number;
+  in_window: number;
+  out_of_window: number;
+  untimed: number;
 }
 
 /** One row in {@link MemoryEmbedStatsResponse}.models — the wire shape
