@@ -765,6 +765,19 @@ class LoomcycleClient:
         sidecar. Mirror of :meth:`agent_def`."""
         return await self._dispatch_substrate("Document", input)
 
+    async def credential_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the CredentialDef tool — the RFC AR secure credential store
+        (RFC CN gRPC/Python parity). Op-discriminated: ``create`` / ``get`` /
+        ``list`` / ``delete``. ``get`` / ``list`` return METADATA only, never a
+        secret value. ``scope`` selects the bucket — ``user`` (your own subject's
+        per-user tokens, e.g. a personal Telegram bot token) or ``tenant``
+        (shared, operator authority); ``scope_id`` is resolved server-side from
+        the authenticated principal, never the wire. RFC CN: an isolated
+        ``substrate:user`` token may only manage ``scope="user"`` — requesting
+        ``tenant``/``agent`` raises :class:`SubstrateToolRefusedError`. Mirror of
+        :meth:`document`."""
+        return await self._dispatch_substrate("CredentialDef", input)
+
     async def history(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the History tool — browse/search/annotate PAST CHATS, where a
         chat is a session (RFC BE). Op-discriminated: list / get / search /

@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -366,6 +367,35 @@ func (s *Server) Path(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*
 func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPCCtx(ctx, "Document", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.Document(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// CredentialDef serves the RFC AR credential-store gRPC RPC (RFC CN P4). Mirrors
+// POST /v1/_credentialdef: op-discriminated input_json (create/get/list/delete),
+// tenant/user/agent scope resolved from the operator-trust ctx (substrateGRPCUserCtx
+// keys a scope:"user" op on the principal's own Subject), never the wire; get/list
+// are metadata-only. RFC CN: an ISOLATED substrate:user caller (admitted by the
+// enforceScope self-service carve-out) is confined to scope=user on its own subject
+// via the shared credential.ConstrainToUserScope — the same rule the HTTP + MCP
+// surfaces apply. Members / tenant operators / admin are unconstrained.
+func (s *Server) CredentialDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	p, ok := auth.PrincipalFromContext(ctx)
+	isolated := auth.IsIsolated(p, ok)
+	return s.dispatchSubstrateRPCCtx(ctx, "CredentialDef", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		if isolated {
+			out, refused := credential.ConstrainToUserScope(in)
+			if refused {
+				// is_error: a tool-level refusal (the SubstrateResponse convention),
+				// mirroring the MCP tool-error + the HTTP 403 credential_scope_forbidden.
+				return json.RawMessage(`"an isolated user token may only manage scope=user credentials (its own); scope=tenant and scope=agent require substrate:tenant"`), true, nil
+			}
+			in = out
+		}
+		res, err := s.connector.CredentialDef(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}

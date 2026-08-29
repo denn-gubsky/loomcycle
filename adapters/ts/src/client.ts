@@ -43,6 +43,9 @@ import {
   type ConnectClientToolsOptions,
 } from "./client-tools.js";
 import type {
+  CredentialListResponse,
+  CredentialMeta,
+  CredentialScope,
   DirectoryInspection,
   DirectoryTenant,
   DirectoryUser,
@@ -2559,6 +2562,52 @@ export class LoomcycleClient {
     if (debug) {
       yield { kind: "close", payload: { reason: closeReason } };
     }
+  }
+
+  /** List credential METADATA for a scope (RFC AR) — never a secret value.
+   *  `user` = your own subject's tokens (per-user, e.g. a personal Telegram bot
+   *  token); `tenant` = shared across the tenant (operator authority). RFC CN: a
+   *  user token may only address `user`; `tenant` requires substrate:tenant.
+   *  Mirrors `POST /v1/_credentialdef {op:list}`. */
+  async listCredentials(
+    scope: CredentialScope,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialListResponse> {
+    return postJSON<CredentialListResponse>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "list", scope },
+      opts,
+    );
+  }
+
+  /** Store or rotate a credential (RFC AR). The plaintext `value` is write-only:
+   *  the server encrypts it, masks it from the transcript, and never returns it.
+   *  Returns the stored row's metadata. Mirrors `POST /v1/_credentialdef {op:create}`. */
+  async createCredential(
+    input: { scope: CredentialScope; name: string; value: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "create", ...input },
+      opts,
+    );
+  }
+
+  /** Delete a credential (RFC AR). Anything referencing `$cred:<name>` at that
+   *  scope stops resolving. Mirrors `POST /v1/_credentialdef {op:delete}`. */
+  async deleteCredential(
+    input: { scope: CredentialScope; name: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ name: string; scope: string; deleted: boolean }> {
+    return postJSON(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "delete", ...input },
+      opts,
+    );
   }
 }
 

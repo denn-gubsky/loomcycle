@@ -2801,3 +2801,29 @@ export interface MemoryPurgeResponse {
   first_failure?: string;
   notes?: string[];
 }
+
+// ─── RFC AR credential store (RFC CN adapter parity) ─────────────────────────
+
+/** CredentialScope buckets a stored secret. `tenant` = shared across the tenant
+ *  (operator authority); `user` = the calling principal's own subject (per-user
+ *  tokens). RFC CN: a user token may only address `user`; `tenant`/`agent`
+ *  require substrate:tenant. scope_id is derived server-side, never sent. */
+export type CredentialScope = "tenant" | "user";
+
+/** CredentialMeta is one credential's METADATA — never the secret value (the API
+ *  returns none for list/get). */
+export interface CredentialMeta {
+  name: string;
+  scope: string;
+  backend?: string;
+  created_at?: string;
+  updated_at?: string;
+  expires_at?: string;
+  status?: string;
+}
+
+/** CredentialListResponse is the {op:list} result: metadata for the given scope. */
+export interface CredentialListResponse {
+  scope: string;
+  credentials: CredentialMeta[];
+}

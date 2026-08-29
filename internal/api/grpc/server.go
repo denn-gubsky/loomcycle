@@ -663,6 +663,10 @@ var grpcConsumerScopes = map[string]string{
 	// lifted to the wire. Same ScopeTenant posture as VolumeDef.
 	"Path":     auth.ScopeTenant,
 	"Document": auth.ScopeTenant,
+	// RFC AR credential store. Route floor ScopeTenant (tenant operator + admin);
+	// RFC CN additionally admits an isolated substrate:user caller via the
+	// enforceScope self-service carve-out, confined to scope=user by the handler.
+	"CredentialDef": auth.ScopeTenant,
 	// RFC BE History — scope-aware chat browse/annotate. ScopeTenant route
 	// floor (a tenant operator may call it); the cross-tenant `global` scope is
 	// admin-gated inside the tool. Same posture as the HTTP /v1/_history route.
@@ -697,9 +701,24 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	}
 	required := requiredScopeForRPC(fullMethod)
 	if required != "" && !auth.HasScope(p.Scopes, required) {
+		// RFC CN: the credential-store RPC admits an isolated substrate:user caller
+		// for self-service of its OWN scope=user tokens — the handler
+		// (credential.ConstrainToUserScope) confines it to scope=user before the
+		// tool. tenant/agent scope still needs substrate:tenant. (gRPC has no RFC CB
+		// member bypass, so a plain member still uses the HTTP surface.)
+		if isCredentialSelfServiceRPC(fullMethod) && auth.IsIsolated(p, ok) {
+			return nil
+		}
 		return status.Errorf(codes.PermissionDenied, "insufficient scope: %s required", required)
 	}
 	return nil
+}
+
+// isCredentialSelfServiceRPC reports whether fullMethod is the RFC AR credential
+// store RPC — the one RFC CN opens to an isolated substrate:user caller (see
+// enforceScope). The handler confines such a caller to scope=user.
+func isCredentialSelfServiceRPC(fullMethod string) bool {
+	return strings.TrimPrefix(fullMethod, grpcMethodPrefix) == "CredentialDef"
 }
 
 // bearerFromMetadata extracts the raw token (sans "Bearer ") from the
