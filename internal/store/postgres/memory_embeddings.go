@@ -164,6 +164,38 @@ func provenanceCondition(c store.MemoryProvenanceConstraint) string {
 	return ""
 }
 
+// observedCondition appends the RFC CL observed-time window. The bounds arrive
+// ALREADY WIDENED by the caller's slack — the store owns no window policy, so the
+// arithmetic lives in exactly one place and cannot drift between the two backends.
+//
+// It returns the SQL fragment and the arguments it appended, because the caller
+// numbers placeholders positionally.
+func observedCondition(f store.MemorySearchFilter, args []any) (string, []any) {
+	cond := ""
+	if !f.ObservedFrom.IsZero() {
+		args = append(args, f.ObservedFrom.UTC())
+		cond += " AND m.observed_at >= $" + strconv.Itoa(len(args))
+	}
+	if !f.ObservedTo.IsZero() {
+		args = append(args, f.ObservedTo.UTC())
+		cond += " AND m.observed_at < $" + strconv.Itoa(len(args))
+	}
+	// A bound alone already drops undated rows: NULL fails every comparison. So
+	// RequireObserved matters on its own (a bare "must be dated" with no window),
+	// and stating it explicitly keeps that case working.
+	if f.RequireObserved {
+		cond += " AND m.observed_at IS NOT NULL"
+	} else if cond != "" {
+		// PREFER mode: undated rows must SURVIVE the window so the ranker can demote
+		// them rather than the store discarding them. Without this every window would
+		// silently be a hard filter — the exact footgun the mode exists to avoid.
+		// Measured on LoCoMo, an exact-day hard window contains the ground-truth
+		// evidence in 1 case out of 8, because people recount events afterwards.
+		cond = " AND (m.observed_at IS NULL OR (TRUE" + cond + "))"
+	}
+	return cond, args
+}
+
 // likePrefixPattern turns a literal key prefix into a LIKE pattern.
 //
 // ESCAPED, because a prefix is caller-supplied and LIKE treats % and _ as wildcards:
@@ -263,7 +295,10 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
 	prefixCondition += provenanceCondition(filter.Provenance)
-	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
+	var observedCond string
+	observedCond, args = observedCondition(filter, args)
+	prefixCondition += observedCond
+	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at, m.observed_at,
 	               1.0 - (me.embedding <=> $4::vector) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text,
 	               m.access_count, coalesce(m.origin, '') AS origin
@@ -300,8 +335,9 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 			embeddingText      string
 			accessCount        int64
 			origin             string
+			observedAt         *time.Time
 		)
-		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText, &accessCount, &origin); err != nil {
+		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &observedAt, &score, &provider, &modelStr, &embeddingText, &accessCount, &origin); err != nil {
 			return nil, fmt.Errorf("MemoryEmbedSearch scan: %w", err)
 		}
 		entry := store.MemorySearchEntry{
@@ -317,6 +353,9 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		}
 		if expiresAt != nil {
 			entry.ExpiresAt = *expiresAt
+		}
+		if observedAt != nil {
+			entry.ObservedAt = *observedAt
 		}
 		entry.EmbeddedWith.Provider = provider
 		entry.EmbeddedWith.Model = modelStr
@@ -373,10 +412,13 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
 	prefixCondition += provenanceCondition(filter.Provenance)
+	var observedCond string
+	observedCond, args = observedCondition(filter, args)
+	prefixCondition += observedCond
 	// plainto_tsquery normalises arbitrary user text into a safe tsquery
 	// (never errors on input, no injection surface), returning the empty
 	// query — which matches nothing — when the text yields no lexemes.
-	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
+	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at, m.observed_at,
 	               ts_rank(me.embed_text_tsv, plainto_tsquery('english', $4)) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text,
 	               m.access_count, coalesce(m.origin, '') AS origin
@@ -413,8 +455,9 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 			embeddingText      string
 			accessCount        int64
 			origin             string
+			observedAt         *time.Time
 		)
-		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText, &accessCount, &origin); err != nil {
+		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &observedAt, &score, &provider, &modelStr, &embeddingText, &accessCount, &origin); err != nil {
 			return nil, fmt.Errorf("MemoryFullTextSearch scan: %w", err)
 		}
 		entry := store.MemorySearchEntry{
@@ -430,6 +473,9 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 		}
 		if expiresAt != nil {
 			entry.ExpiresAt = *expiresAt
+		}
+		if observedAt != nil {
+			entry.ObservedAt = *observedAt
 		}
 		entry.EmbeddedWith.Provider = provider
 		entry.EmbeddedWith.Model = modelStr

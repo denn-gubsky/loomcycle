@@ -3548,48 +3548,26 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // the JSON shape (an invalid payload surfaces as a SQL error rather
 // than a silently-stored bad row).
 func (s *Store) MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
-	now := time.Now().UTC()
-	var expiresAt any
-	if ttl > 0 {
-		expiresAt = now.Add(ttl)
-	}
-	// superseded_at = NULL on the DO UPDATE: a fresh write REVIVES a soft-archived
-	// row. supersede() only stamps the marker (every read filters superseded_at IS
-	// NULL); without the reset an upsert onto a superseded key would land the value
-	// but leave it hidden — a silent black-hole. A new explicit write is live data.
-	// Mirrored in MemoryIncrement / MemoryAtomicUpdate (and the sqlite twin).
-	// Wrapped in retryOnTransientConn because this is the call that
-	// produced the silent regressions on the v0.12.8 baseline x1000
-	// (2026-05-27): when the researcher's Memory.set fired during
-	// the launch storm and Postgres rejected with SQLSTATE 53300,
-	// the tool returned is_error → the mock counted the result and
-	// moved on → the downstream editor + evaluator read null →
-	// strict-output validation caught the gap. Retry absorbs the
-	// transient so the row actually lands.
-	if err := retryOnTransientConn(ctx, func() error {
-		_, err := s.pool.Exec(ctx,
-			`INSERT INTO memory (tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
-			 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
-			    value = EXCLUDED.value,
-			    expires_at = EXCLUDED.expires_at,
-			    updated_at = EXCLUDED.updated_at,
-			    superseded_at = NULL`,
-			tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
-		)
-		return err
-	}); err != nil {
-		return fmt.Errorf("memory set: %w", err)
-	}
-	return nil
+	return s.MemorySetObserved(ctx, tenantID, scope, scopeID, key, value, ttl, store.MemoryProvenance{}, time.Time{})
 }
 
 // MemorySetProvenance is MemorySet plus the RFC BL provenance columns. The
 // provenance is written wholesale on every upsert (a re-derived fact carries
 // its CURRENT source), and superseded_at is cleared exactly as MemorySet does
-// so a consolidation write REVIVES a soft-archived row. Same transient-connection
-// retry as MemorySet — a dropped consolidation write is a lost fact.
+// so a consolidation write REVIVES a soft-archived row.
 func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance) error {
+	return s.MemorySetObserved(ctx, tenantID, scope, scopeID, key, value, ttl, prov, time.Time{})
+}
+
+// MemorySetObserved is the one write path; the two above delegate to it. Folding
+// them together is what keeps the ON CONFLICT clause a single statement — three
+// near-identical upserts drifting apart is how a column ends up written on one
+// path and not another.
+//
+// A ZERO observedAt writes NULL. That is not the same as "now": an undated row is
+// undated, and defaulting it to write time would fabricate an observed time for
+// every row anyone ever set, which is precisely the wrong data to filter on.
+func (s *Store) MemorySetObserved(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration, prov store.MemoryProvenance, observedAt time.Time) error {
 	now := time.Now().UTC()
 	var expiresAt any
 	if ttl > 0 {
@@ -3603,11 +3581,15 @@ func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope 
 		}
 		return v
 	}
+	var obs any
+	if !observedAt.IsZero() {
+		obs = observedAt.UTC()
+	}
 	if err := retryOnTransientConn(ctx, func() error {
 		_, err := s.pool.Exec(ctx,
 			`INSERT INTO memory (tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at,
-			                     origin, class, source_session_id, source_run_id)
-			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+			                     origin, class, source_session_id, source_run_id, observed_at)
+			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 			 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
 			    value = EXCLUDED.value,
 			    expires_at = EXCLUDED.expires_at,
@@ -3616,13 +3598,17 @@ func (s *Store) MemorySetProvenance(ctx context.Context, tenantID string, scope 
 			    class = EXCLUDED.class,
 			    source_session_id = EXCLUDED.source_session_id,
 			    source_run_id = EXCLUDED.source_run_id,
+			    -- COALESCE, not EXCLUDED: a plain re-set of an already-dated row must
+			    -- not silently erase its observed time. Re-dating is possible, but
+			    -- only by passing a new one.
+			    observed_at = COALESCE(EXCLUDED.observed_at, memory.observed_at),
 			    superseded_at = NULL`,
 			tenantID, string(scope), scopeID, key, string(value), expiresAt, now, now,
-			nullify(prov.Origin), nullify(prov.Class), nullify(prov.SourceSessionID), nullify(prov.SourceRunID),
+			nullify(prov.Origin), nullify(prov.Class), nullify(prov.SourceSessionID), nullify(prov.SourceRunID), obs,
 		)
 		return err
 	}); err != nil {
-		return fmt.Errorf("memory set with provenance: %w", err)
+		return fmt.Errorf("memory set: %w", err)
 	}
 	return nil
 }
