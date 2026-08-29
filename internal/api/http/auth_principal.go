@@ -73,7 +73,16 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			// budget-write / erasure / hooks) are excluded by
 			// tenantMemberAccessible; and every such handler still confines a
 			// member to its own tenant via principalTenantScope / tenantFromCtx.
-			if !(tenantMemberAccessible(r.Method, r.URL.Path) && !auth.IsIsolated(p, ok)) {
+			memberOK := tenantMemberAccessible(r.Method, r.URL.Path) && !auth.IsIsolated(p, ok)
+			// RFC CN: the credential self-service surface admits ANY authenticated
+			// principal that carries a subject — INCLUDING an isolated substrate:user
+			// user, who is otherwise held at the tenant-member isolation floor — so a
+			// user can store their OWN scope=user API tokens (a personal Slack/Telegram
+			// bot token, a per-user webhook secret). handleSubstrateCredentialDef then
+			// confines a non-tenant caller to scope=user on its own subject before the
+			// tool runs; tenant/agent scope still requires substrate:tenant.
+			selfOK := credentialSelfServiceAccessible(r.Method, r.URL.Path) && p.Subject != ""
+			if !(memberOK || selfOK) {
 				// Scope names are public; token state is not.
 				w.Header().Set("WWW-Authenticate", `Bearer scope="`+required+`"`)
 				http.Error(w, "insufficient scope", http.StatusForbidden)
@@ -872,6 +881,18 @@ func tenantMemberAccessible(method, path string) bool {
 		return false
 	}
 	return !memberCarveOut(method, path)
+}
+
+// credentialSelfServiceAccessible marks the credential-store surface that RFC CN
+// opens for user SELF-SERVICE of scope=user credentials. It is an ADDITIONAL
+// admission path in authMiddleware — the route stays nominally ScopeTenant, so a
+// tenant operator's full tenant/agent authoring is unchanged, and members reach it
+// via the RFC CB member path — but it also admits an isolated substrate:user user
+// (who otherwise 403s at the isolation floor). handleSubstrateCredentialDef
+// confines such a caller to scope=user on its own subject before dispatch, so the
+// widened admission grants nothing beyond a user's own personal tokens.
+func credentialSelfServiceAccessible(method, path string) bool {
+	return method == http.MethodPost && path == "/v1/_credentialdef"
 }
 
 // memberCarveOut lists the ScopeTenant routes that STAY operator-only (require a
