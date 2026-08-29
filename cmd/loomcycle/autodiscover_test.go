@@ -62,3 +62,36 @@ func TestConfigDirLayers_EmptyAndMissing(t *testing.T) {
 		t.Errorf("a missing LOOMCYCLE_CONFIG_DIR should error (caller exits)")
 	}
 }
+
+// TestSiblingSectionFiles: the RFC CK section-per-file split discovers
+// loomcycle.*.yaml siblings beside the base loomcycle.yaml, sorted, excluding the
+// base and unrelated files.
+func TestSiblingSectionFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{
+		"loomcycle.yaml",           // the base — excluded
+		"loomcycle.providers.yaml", // section
+		"loomcycle.memory.yaml",    // section
+		"loomcycle.agents.yml",     // section (.yml)
+		"notloomcycle.yaml",        // unrelated
+		"loomcycle.yml",            // base-ish, no middle segment → not a section
+	} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("provider_priority: [mock]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := siblingSectionFiles(filepath.Join(dir, "loomcycle.yaml"))
+	want := []string{
+		filepath.Join(dir, "loomcycle.agents.yml"),
+		filepath.Join(dir, "loomcycle.memory.yaml"),
+		filepath.Join(dir, "loomcycle.providers.yaml"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("siblingSectionFiles = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("sibling[%d] = %s, want %s", i, got[i], want[i])
+		}
+	}
+}

@@ -1209,6 +1209,29 @@ Put your authoritative file **LAST**: the bundle contributes its `agents:` (e.g.
 set, `LOOMCYCLE_CONFIG_FILES` files layer as the **base** and explicit `--config`
 flags layer **after** them (an explicit flag always wins).
 
+**Section-per-file (`loomcycle.*.yaml`).** For a large config, split it by section
+into sibling files next to `loomcycle.yaml` and they auto-layer with **no flags or
+env** — run `loomcycle` (no `--config`) in the directory and it loads the base
+`loomcycle.yaml` **plus every `loomcycle.*.yaml`** beside it, deep-merged in
+lexical order after the base:
+
+```
+loomcycle.yaml            # defaults, agents — the small "main" file
+loomcycle.providers.yaml  # providers: / models: / tiers: / provider_priority:
+loomcycle.memory.yaml     # memory:
+loomcycle.channels.yaml   # channels:
+```
+
+Because it's the same deep-merge, a section file simply *owns* its section (put
+`providers:` in `loomcycle.providers.yaml` and leave it out of `loomcycle.yaml`).
+This pairs with runtime reload: edit one section file and `POST /v1/_config/reload`
+picks it up (a section file present at boot is re-read on reload; adding a *new*
+section file still needs a restart). Notes: a base `loomcycle.yaml` must exist
+(it may be minimal); this applies to **auto-discovery only** — an explicit
+`--config` stays literal (list the files or use `LOOMCYCLE_CONFIG_DIR`); and any
+`loomcycle.*.yaml` in the directory is loaded, so don't keep `loomcycle.example.yaml`
+beside a live config.
+
 **The merge rule (one rule, all sections).** Files are merged at the YAML-tree
 level *before* typed unmarshal, so a key's presence is explicit:
 
