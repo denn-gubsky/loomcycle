@@ -967,6 +967,15 @@ export interface MemoryEntry {
   expires_at?: string;
   created_at: string;
   updated_at: string;
+  /** When the remembered thing was SAID, as distinct from `created_at` (when it
+   *  was stored, which on a bulk import is one instant for the whole corpus).
+   *  Absent on rows nobody dated, which is most of them. */
+  observed_at?: string;
+  /** When the thing became TRUE in the world — a third time again, and the one a
+   *  question about "what was happening on the 3rd" is really asking about.
+   *  Half-open with {@link invalid_at}: absent `invalid_at` means still true. */
+  valid_at?: string;
+  invalid_at?: string;
 }
 
 export interface MemoryEntriesResponse {
@@ -1031,6 +1040,15 @@ export interface MemoryWhen {
   /** How far outside the bounds still counts, e.g. `"3d"` or `"72h"`. Default `"3d"`. */
   slack?: string;
   missing?: "prefer" | "require";
+  /** Asks a DIFFERENT question from `from`/`to`: not when something was said, but
+   *  what was TRUE at this instant — matching the row's `valid_at`/`invalid_at`
+   *  interval. The two compose, so "what did we learn in November about what was
+   *  true in late October" is one query.
+   *
+   *  Always a hard filter, unlike the observed window: a row valid over a
+   *  different interval is not a weaker answer to "what was true then", it is a
+   *  wrong one. `missing` still decides whether undated rows survive. */
+  as_of?: string;
 }
 
 /** A kind of remembered thing (RFC BW).
