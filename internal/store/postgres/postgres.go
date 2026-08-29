@@ -2618,7 +2618,7 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
@@ -2671,7 +2671,7 @@ func (s *Store) SnapshotRestoreSkillDef(ctx context.Context, r store.SkillDefRow
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
@@ -2720,7 +2720,7 @@ func (s *Store) SnapshotRestoreTeamDef(ctx context.Context, r store.TeamDefRow) 
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
@@ -2768,7 +2768,7 @@ func (s *Store) SnapshotRestoreMCPServerDef(ctx context.Context, r store.MCPServ
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
@@ -5102,7 +5102,7 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
@@ -5477,7 +5477,7 @@ func (s *Store) SkillDefCreate(ctx context.Context, row store.SkillDefRow) (stor
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
@@ -5740,7 +5740,7 @@ func (s *Store) TeamDefCreate(ctx context.Context, row store.TeamDefRow) (store.
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
@@ -6024,7 +6024,7 @@ func (s *Store) MCPServerDefCreate(ctx context.Context, row store.MCPServerDefRo
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
