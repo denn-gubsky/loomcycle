@@ -46,7 +46,7 @@ func TestReloadConfig_DryRunReportsButDoesNotApply(t *testing.T) {
 	applied := 0
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return providersChangedCfg(), nil },
-		func(*config.Config) error { applied++; return nil },
+		SectionReloader{Sections: []string{"providers"}, Reload: func(*config.Config) error { applied++; return nil }},
 	)
 	res, err := s.ReloadConfig(context.Background(), true)
 	if err != nil {
@@ -68,7 +68,7 @@ func TestReloadConfig_AppliesReloadableSection(t *testing.T) {
 	loaded := providersChangedCfg()
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return loaded, nil },
-		func(*config.Config) error { applied++; return nil },
+		SectionReloader{Sections: []string{"providers"}, Reload: func(*config.Config) error { applied++; return nil }},
 	)
 	res, err := s.ReloadConfig(context.Background(), false)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestReloadConfig_InvalidRejectedNotApplied(t *testing.T) {
 	applied := 0
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return nil, errors.New("bad yaml at line 7") },
-		func(*config.Config) error { applied++; return nil },
+		SectionReloader{Sections: []string{"providers"}, Reload: func(*config.Config) error { applied++; return nil }},
 	)
 	_, err := s.ReloadConfig(context.Background(), false)
 	if !errors.Is(err, config.ErrReloadInvalid) {
@@ -112,12 +112,13 @@ func TestReloadConfig_NonReloadableSectionRestartRequired(t *testing.T) {
 	s := &Server{cfgHolder: config.NewHolder(baselineCfg())}
 	applied := 0
 	changed := baselineCfg()
-	// concurrency is consumed by the boot-built semaphore, which this build does
-	// not rebuild → restart-required.
+	// This minimal test injects ONLY a providers reloader, so a concurrency change
+	// has no owning reloader → restart_required. (The real server also wires a
+	// concurrency reloader; see TestConcurrencyReloader_* / the registry test.)
 	changed.Concurrency = config.Concurrency{MaxConcurrentRuns: 99, MaxQueueDepth: 8, QueueTimeoutMS: 1000}
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return changed, nil },
-		func(*config.Config) error { applied++; return nil },
+		SectionReloader{Sections: []string{"providers"}, Reload: func(*config.Config) error { applied++; return nil }},
 	)
 	res, err := s.ReloadConfig(context.Background(), false)
 	if err != nil {
@@ -149,7 +150,7 @@ func TestReloadConfig_LiveSectionAppliedViaHolder(t *testing.T) {
 	changed.UserTiers = map[string]config.UserTier{"pro": {ProviderPriority: []string{"ollama-local"}}}
 	s.SetConfigReloader(
 		func() (*config.Config, error) { return changed, nil },
-		func(*config.Config) error { applied++; return nil },
+		SectionReloader{Sections: []string{"providers"}, Reload: func(*config.Config) error { applied++; return nil }},
 	)
 	res, err := s.ReloadConfig(context.Background(), false)
 	if err != nil {
@@ -193,7 +194,7 @@ func TestHandleConfigReload_EndToEnd(t *testing.T) {
 			c := &config.Config{Providers: map[string]config.ProviderConfig{"ollama-local": {Driver: "ollama", BaseURL: "http://b:11434"}}}
 			return c, nil
 		},
-		func(*config.Config) error { applied++; return nil },
+		SectionReloader{Sections: []string{"providers"}, Reload: func(*config.Config) error { applied++; return nil }},
 	)
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
@@ -246,5 +247,65 @@ func doReloadStatus(t *testing.T, url string, wantStatus int) {
 	_, _ = io.ReadAll(resp.Body)
 	if resp.StatusCode != wantStatus {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, wantStatus)
+	}
+}
+
+// TestReloadConfig_RegistryDispatch: only the reloader(s) owning a changed
+// section fire. A concurrency-only change fires the concurrency reloader (owns
+// concurrency+providers) but not the resolver reloader (owns providers, unchanged).
+func TestReloadConfig_RegistryDispatch(t *testing.T) {
+	s := &Server{cfgHolder: config.NewHolder(baselineCfg())}
+	var provFired, concFired int
+	s.SetConfigReloader(
+		func() (*config.Config, error) {
+			c := baselineCfg()
+			c.Concurrency = config.Concurrency{MaxConcurrentRuns: 99, MaxQueueDepth: 8, QueueTimeoutMS: 1000}
+			return c, nil
+		},
+		SectionReloader{Sections: []string{"providers", "models", "tiers", "provider_priority"}, Reload: func(*config.Config) error { provFired++; return nil }},
+		SectionReloader{Sections: []string{"concurrency", "providers"}, Reload: func(*config.Config) error { concFired++; return nil }},
+	)
+	res, err := s.ReloadConfig(context.Background(), false)
+	if err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	if len(res.Applied) != 1 || res.Applied[0] != "concurrency" {
+		t.Errorf("Applied = %v, want [concurrency]", res.Applied)
+	}
+	if concFired != 1 {
+		t.Errorf("concurrency reloader fired %d times, want 1", concFired)
+	}
+	if provFired != 0 {
+		t.Errorf("resolver reloader fired %d times for a concurrency-only change, want 0", provFired)
+	}
+}
+
+// TestReloadConcurrency: the Server method raises the live semaphore cap and
+// (re)builds a per-provider gate from providers[*].max_concurrent, in place.
+func TestReloadConcurrency(t *testing.T) {
+	s := &Server{}
+	s.sem = concurrency.New(1, 0, 50*time.Millisecond)
+	s.providerGates = concurrency.NewProviderGates(map[string]int{}, 4, 50*time.Millisecond)
+
+	s.ReloadConcurrency(&config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 3, MaxQueueDepth: 0, QueueTimeoutMS: 100},
+		Providers:   map[string]config.ProviderConfig{"p": {MaxConcurrent: 2}},
+	})
+
+	// Global cap now 3: three acquires succeed.
+	var rels []func()
+	for i := 0; i < 3; i++ {
+		rel, err := s.sem.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("acquire %d after ReloadConcurrency(cap=3): %v", i, err)
+		}
+		rels = append(rels, rel)
+	}
+	for _, r := range rels {
+		r()
+	}
+	// Provider p is now gated.
+	if !s.providerGates.Has("p") {
+		t.Error("provider gate p not created by ReloadConcurrency")
 	}
 }
