@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
@@ -189,6 +190,26 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 		}
 		if filter.ExcludeKeyPrefix != "" && strings.HasPrefix(r.key, filter.ExcludeKeyPrefix) {
 			continue
+		}
+		// HONOUR THE OBSERVED WINDOW TOO. A double that ignores the filter makes any
+		// assertion about it vacuous — which is exactly how a facts-only recall default
+		// survived here unnoticed. NULL fails every SQL comparison, so a bound alone
+		// drops undated rows; `prefer` is expressed by the backend passing NO bounds
+		// to the store and demoting afterwards.
+		if filter.RequireObserved && entry.ObservedAt.IsZero() {
+			continue
+		}
+		// The bounds constrain DATED rows only — an undated row passes and is demoted
+		// later, which is what the postgres predicate does with its explicit
+		// `observed_at IS NULL OR (...)`. Dropping them here instead would make the
+		// double disagree with production on the one semantic that matters.
+		if !entry.ObservedAt.IsZero() {
+			if !filter.ObservedFrom.IsZero() && entry.ObservedAt.Before(filter.ObservedFrom) {
+				continue
+			}
+			if !filter.ObservedTo.IsZero() && !entry.ObservedAt.Before(filter.ObservedTo) {
+				continue
+			}
 		}
 		se := store.MemorySearchEntry{MemoryEntry: entry, Score: r.s}
 		se.Origin = origin
@@ -904,5 +925,106 @@ func TestInprocess_Recall_ClassifiesEachRow(t *testing.T) {
 	if got["fact-1"] != store.MemoryRowFact {
 		t.Errorf("fact-1 kind = %q, want %q: a row a consolidator wrote is a fact",
 			got["fact-1"], store.MemoryRowFact)
+	}
+}
+
+// seedDatedNote is seedEmbeddedNote plus an observed time, so a test can build the
+// only situation the window predicate exists for: rows that are equally relevant
+// and differ ONLY in when they were said.
+func seedDatedNote(t *testing.T, st *vectorStore, emb *fakeEmbedder, scope store.MemoryScope, id, key, text string, observed time.Time) {
+	t.Helper()
+	seedEmbeddedNote(t, st, emb, scope, id, key, text)
+	if observed.IsZero() {
+		return
+	}
+	raw, err := json.Marshal(text)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := st.Store.MemorySetObserved(context.Background(), "", scope, id, key, raw, 0,
+		store.MemoryProvenance{}, observed); err != nil {
+		t.Fatalf("MemorySetObserved(%s): %v", key, err)
+	}
+}
+
+// prefer mode: an in-window row is promoted above an out-of-window one, and an
+// UNDATED row still comes back rather than being dropped.
+//
+// This is the property the whole feature turns on. If undated rows were dropped,
+// `prefer` would silently be `require`, and on a corpus nobody dated every windowed
+// search would return nothing.
+func TestInprocess_ObservedWindow_PrefersInWindowAndKeepsUndated(t *testing.T) {
+	b, st, emb, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeUser, "u1"
+
+	oct := time.Date(2023, 10, 4, 12, 0, 0, 0, time.UTC)
+	aug := time.Date(2023, 8, 4, 12, 0, 0, 0, time.UTC)
+	seedDatedNote(t, st, emb, scope, id, "aug", "calvin visited a city", aug)
+	seedDatedNote(t, st, emb, scope, id, "oct", "calvin visited a city", oct)
+	seedDatedNote(t, st, emb, scope, id, "undated", "calvin visited a city", time.Time{})
+
+	when := memory.ObservedWindow{
+		From:    time.Date(2023, 10, 3, 0, 0, 0, 0, time.UTC),
+		To:      time.Date(2023, 10, 4, 0, 0, 0, 0, time.UTC),
+		Slack:   memory.DefaultSlack,
+		Missing: memory.MissingPrefer,
+	}
+	res, err := b.Recall(ctx, scope, id, memory.RecallQuery{Query: "calvin city", TopK: 10, When: when})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	var got []string
+	for _, f := range res.Facts {
+		got = append(got, f.ID)
+	}
+	if len(got) == 0 || got[0] != "oct" {
+		t.Errorf("first result = %v, want the in-window row \"oct\" promoted to the top", got)
+	}
+	found := map[string]bool{}
+	for _, g := range got {
+		found[g] = true
+	}
+	if !found["undated"] {
+		t.Errorf("the UNDATED row vanished (%v) — prefer must demote, never drop, or it is "+
+			"just require wearing a different name", got)
+	}
+	if res.TimeFilter == nil {
+		t.Fatal("no time_filter reported; a caller cannot tell a real absence from an undated corpus")
+	}
+	if res.TimeFilter.InWindow != 1 || res.TimeFilter.Untimed != 1 || res.TimeFilter.OutOfWindow != 1 {
+		t.Errorf("time_filter = %+v, want in_window 1 / out_of_window 1 / untimed 1", res.TimeFilter)
+	}
+}
+
+// require mode over an UNDATED corpus returns nothing, and says why.
+//
+// The empty result is correct and is the documented footgun: this test exists so
+// the cost is visible in the suite rather than discovered on a live store. It is
+// also why `prefer`, not `require`, is what an unstated policy defaults to.
+func TestInprocess_ObservedWindow_RequireOverUndatedCorpusReturnsNothing(t *testing.T) {
+	b, st, emb, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeUser, "u1"
+
+	seedEmbeddedNote(t, st, emb, scope, id, "n1", "calvin visited a city")
+	seedEmbeddedNote(t, st, emb, scope, id, "n2", "calvin visited another city")
+
+	res, err := b.Recall(ctx, scope, id, memory.RecallQuery{
+		Query: "calvin city", TopK: 10,
+		When: memory.ObservedWindow{Missing: memory.MissingRequire},
+	})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if len(res.Facts) != 0 {
+		t.Errorf("require over an undated corpus returned %d rows, want 0 — if this ever "+
+			"passes rows through, the mode is not doing what its name promises", len(res.Facts))
+	}
+	if res.TimeFilter == nil || res.TimeFilter.Mode != memory.MissingRequire {
+		t.Errorf("time_filter = %+v, want it present and reporting require — an empty list "+
+			"with no explanation is indistinguishable from a scope that knows nothing", res.TimeFilter)
 	}
 }

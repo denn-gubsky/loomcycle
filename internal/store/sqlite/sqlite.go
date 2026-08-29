@@ -4227,17 +4227,18 @@ func (s *Store) MemoryProvenanceGet(ctx context.Context, tenantID string, scope 
 // reaped them yet.
 func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
 	var (
-		valueText string
-		expiresAt sql.NullInt64
-		createdAt int64
-		updatedAt int64
+		valueText  string
+		expiresAt  sql.NullInt64
+		createdAt  int64
+		updatedAt  int64
+		observedAt sql.NullInt64
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT value, expires_at, created_at, updated_at
+		`SELECT value, expires_at, created_at, updated_at, observed_at
 		 FROM memory WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key = ?
 		   AND superseded_at IS NULL`,
 		tenantID, string(scope), scopeID, key,
-	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt)
+	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt, &observedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.MemoryEntry{}, &store.ErrNotFound{Kind: "memory", ID: key}
 	}
@@ -4252,6 +4253,9 @@ func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.Memo
 		Value:     json.RawMessage(valueText),
 		CreatedAt: time.Unix(0, createdAt),
 		UpdatedAt: time.Unix(0, updatedAt),
+	}
+	if observedAt.Valid {
+		out.ObservedAt = time.Unix(0, observedAt.Int64)
 	}
 	if expiresAt.Valid {
 		out.ExpiresAt = time.Unix(0, expiresAt.Int64)

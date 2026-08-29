@@ -3152,6 +3152,11 @@ type MemorySearchFilter struct {
 	// either side is an open bound; both zero constrains nothing. The bounds are
 	// ALREADY WIDENED by the caller's slack — the store applies what it is given and
 	// owns no policy, so the window arithmetic lives in exactly one place.
+	//
+	// CONTRACT: the bounds constrain DATED rows only. A row with no observed time
+	// PASSES a bounded query and is demoted by the ranker, unless RequireObserved
+	// drops it. Every backend must implement it this way or `prefer` silently
+	// becomes `require` on that backend — the single semantic this feature turns on.
 	ObservedFrom time.Time
 	ObservedTo   time.Time
 

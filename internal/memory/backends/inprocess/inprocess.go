@@ -103,13 +103,10 @@ func (b *Backend) Set(ctx context.Context, scope store.MemoryScope, scopeID, key
 		}
 	}
 
-	// RFC BL: a write carrying provenance takes the wider upsert; everything
-	// else keeps the original 8-column write untouched.
-	if opts.Provenance.IsZero() {
-		if err := b.store.MemorySet(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL); err != nil {
-			return memory.SetResult{}, err
-		}
-	} else if err := b.store.MemorySetProvenance(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL, opts.Provenance); err != nil {
+	// One write for every shape: provenance and observed time ride the same upsert,
+	// and both are zero-valued for a plain set, so a caller that uses neither is
+	// byte-identical to before.
+	if err := b.store.MemorySetObserved(ctx, runTenant(ctx), scope, scopeID, key, value, opts.TTL, opts.Provenance, opts.ObservedAt); err != nil {
 		return memory.SetResult{}, err
 	}
 
@@ -538,7 +535,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 		sources = []memory.Source{memory.SourceFacts, memory.SourceNotes}
 	}
 	res, err := b.Search(ctx, scope, scopeID,
-		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources},
+		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources, When: q.When},
 		memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		return memory.RecallResult{}, err
@@ -560,7 +557,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 	if len(facts) > topK {
 		facts = facts[:topK]
 	}
-	return memory.RecallResult{Facts: facts, SourcesApplied: true}, nil
+	return memory.RecallResult{Facts: facts, SourcesApplied: true, TimeFilter: res.TimeFilter}, nil
 }
 
 // recallText renders a stored value as human text: a JSON string round-trips to

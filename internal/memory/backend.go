@@ -90,6 +90,10 @@ type SetOptions struct {
 	// consolidation write. A zero value takes the plain k/v write path, so
 	// every pre-existing caller is byte-identical.
 	Provenance store.MemoryProvenance
+	// ObservedAt dates the row: when the remembered thing was SAID (RFC CL), as
+	// distinct from when it is being written. Zero leaves the row undated, and
+	// undated is correct whenever the caller does not actually know.
+	ObservedAt time.Time
 }
 
 // SetResult reports the embedding outcome of a Set. For a non-embed write

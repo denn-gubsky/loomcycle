@@ -268,7 +268,7 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 	`Values are JSON. Optional TTL is in seconds. ` +
 	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity. ` +
 	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible. ` +
-	`add / recall: add ingests conversation messages for durable memory — on the default backend it enqueues them for background consolidation and returns status "pending" (a scheduled consolidator later distils durable facts); recall is a natural-language semantic search over stored memories and needs an embedder + a vector-capable store (otherwise it returns vector_unsupported / embedder_not_configured). A backend that is not memory-layer-capable returns capability_unsupported. Unlike set/get, add does not store value-at-key and is async — do not assume read-after-write. recall returns {"memories": [{id, memory, score, kind}]}: each item is something REMEMBERED, not something established — a "note" is a remark an agent recorded, only a "fact" has been distilled and reconciled by a consolidator. A remembered remark often carries the time it was SAID (e.g. a leading timestamp); when it refers to "yesterday" or "last week", the event happened relative to that time and is not the timestamp itself. ` +
+	`add / recall: add ingests conversation messages for durable memory — on the default backend it enqueues them for background consolidation and returns status "pending" (a scheduled consolidator later distils durable facts); recall is a natural-language semantic search over stored memories and needs an embedder + a vector-capable store (otherwise it returns vector_unsupported / embedder_not_configured). A backend that is not memory-layer-capable returns capability_unsupported. Unlike set/get, add does not store value-at-key and is async — do not assume read-after-write. search / recall accept a "when" object to narrow by WHEN something was said (see the schema; give a generous window, because a remark usually follows the event it describes), and set accepts "observed_at" to date a row so "when" can find it. recall returns {"memories": [{id, memory, score, kind}]}: each item is something REMEMBERED, not something established — a "note" is a remark an agent recorded, only a "fact" has been distilled and reconciled by a consolidator. A remembered remark often carries the time it was SAID (e.g. a leading timestamp); when it refers to "yesterday" or "last week", the event happened relative to that time and is not the timestamp itself. ` +
 	`SQL Memory (a DISTINCT capability of this tool, gated separately by the agent's sql_scopes — having Memory alone does NOT grant it): sql_query runs a read-only SELECT and sql_exec runs a single DDL/DML statement (CREATE/INSERT/UPDATE/DELETE) against a per-scope SQL database SEPARATE from the key/value memory above. Pass statement (one statement, no ATTACH/PRAGMA/load_extension/multiple statements) and optional positional args for ? placeholders. scope selects the database: agent (this agent, durable), user (this end-user, durable), or run (ephemeral, dropped when the run ends). For atomic multi-step writes, sql_begin opens a transaction for the scope, subsequent sql_exec/sql_query run on it, and sql_commit / sql_rollback finish it (it auto-rolls-back if the run ends or it is abandoned). A second sql_begin while one is open NESTS a savepoint — sql_commit/sql_rollback then affect the innermost level (the outer transaction continues on rollback); each result reports the current depth (0 = closed). Requires sql_scopes on the agent AND the server-side subsystem enabled.`
 
 const memoryInputSchema = `{
@@ -293,6 +293,8 @@ const memoryInputSchema = `{
     "infer":      {"type": "boolean", "description": "add-only: when true (default) the messages are handed to the memory layer for consolidation into durable facts (on the default backend, enqueued for a background consolidator); false stores them verbatim as one row."},
     "metadata":   {"type": "object", "description": "add-only: opaque key/value context attached to the ingestion.", "additionalProperties": {"type": "string"}},
     "threshold":  {"type": "number", "description": "recall-only: 0..1 relevance floor for returned facts (0 = backend default)."},
+    "when":       {"type": "object", "description": "search / recall: narrow by WHEN the remembered thing was said, not when it was stored. Properties: from / to (RFC3339 bounds, either may be omitted), slack (how far outside the window still counts, default \"3d\"), missing (\"prefer\" default = undated rows still returned but ranked below in-window ones; \"require\" = undated rows dropped). Give a GENEROUS window: a remark about an event is usually made a day or more AFTER it, so an exact-day window typically misses the row that answers the question. \"require\" with a tight window is how you get nothing back from a store that holds the answer. Resolve phrases like \"last October\" to explicit timestamps yourself — this takes instants, not prose.", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "slack": {"type": "string"}, "missing": {"type": "string", "enum": ["prefer","require"]}}},
+    "observed_at": {"type": "string", "description": "set-only: RFC3339 time the remembered thing was SAID or happened, as distinct from now (when it is being stored). Set it when you are recording something dated — a message, an event, an excerpt — so it can later be found by \"when\". Omit when you do not know: an undated row is honest, a guessed date silently hides the row from the window it truly belongs in."},
     "statement":  {"type": "string", "description": "sql_query / sql_exec: ONE SQL statement. sql_query is read-only (SELECT / WITH … SELECT); sql_exec is DDL/DML (CREATE/INSERT/UPDATE/DELETE/etc.). ATTACH, PRAGMA, load_extension, transactions, and multiple statements are refused."},
     "args":       {"type": "array", "description": "sql_query / sql_exec: positional bind parameters for ? placeholders. An element of the form {\"$embed\": \"text\"} is replaced server-side by the embedding of that text as a pgvector value (reference it with a ::vector cast, e.g. ... ORDER BY embedding <=> ?::vector); requires the postgres tier with pgvector + a configured embedder.", "items": {}},
     "timeout_ms": {"type": "integer", "description": "sql_query / sql_exec: reserved — the server-configured statement timeout is authoritative in this version."},
@@ -351,6 +353,11 @@ type memoryInput struct {
 	// Threshold is the 0..1 relevance floor for `recall` (RFC K). 0 = the
 	// backend's default.
 	Threshold float64 `json:"threshold,omitempty"`
+	// When is the RFC CL observed-time predicate on search / recall; ObservedAt
+	// dates a row on set. Both are pointers/strings so "absent" stays distinct from
+	// "explicitly empty".
+	When       *memrank.WhenInput `json:"when,omitempty"`
+	ObservedAt string             `json:"observed_at,omitempty"`
 
 	// --- RFC AA SQL Memory (sql_query / sql_exec) ---
 	// Statement is the single SQL statement to run (validated by the
@@ -1240,10 +1247,26 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// matching the pre-MR-2 upfront-refusal message. Any other error is a
 	// genuine k/v write failure — render it with the "set:" prefix.
 	ttl := time.Duration(in.TTL) * time.Second
+	// observed_at is CONTENT, not authority: it is model-supplied, so it is in the
+	// same class as `class` and explicitly NOT in the class of `origin`, which the
+	// server stamps from the writer's identity. Nothing may key an authorization
+	// decision off it — a value an agent can set is a value an agent can set to
+	// anything. A malformed one is refused rather than dropped, because a silently
+	// undated row reads later as "nobody knew the date" instead of "the date was
+	// wrong", and the two call for different fixes.
+	var observedAt time.Time
+	if t := strings.TrimSpace(in.ObservedAt); t != "" {
+		parsed, perr := time.Parse(time.RFC3339, t)
+		if perr != nil {
+			return errResult(fmt.Sprintf("set: observed_at %q is not an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)", t)), nil
+		}
+		observedAt = parsed
+	}
 	res, err := m.backend(ctx).Set(ctx, scope, scopeID, in.Key, in.Value, memrank.SetOptions{
 		TTL:        ttl,
 		Embed:      in.Embed,
 		EmbedText:  in.EmbedText,
+		ObservedAt: observedAt,
 		Provenance: m.resolveFromPending(ctx, scope, scopeID, in, provenanceForSet(ctx, in)),
 	})
 	if err != nil {
@@ -1391,11 +1414,16 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	// dedup → trim → score) lives in the Backend now (RFC I MR-2/MR-5). The
 	// upfront validation above stays on the tool so the refusal ordering /
 	// messages are byte-identical to pre-MR-2.
+	when, werr := memrank.ParseWhen(in.When)
+	if werr != nil {
+		return errResult(fmt.Sprintf("search: %s", werr)), nil
+	}
 	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
 		QueryText: in.Query,
 		Prefix:    in.Prefix,
 		Sources:   parseSources(in.Sources),
 		TopK:      topK,
+		When:      when,
 	}, rankCfg, dedupCfg)
 	if err != nil {
 		// ErrDimensionMismatch is the user-actionable one — operators
@@ -1464,9 +1492,16 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		entries = append(entries, entry)
 	}
 	out := map[string]any{
-		"entries":             entries,
+		"entries": entries,
+		// Present only when a window was asked for, so a caller that never
+		// mentions time sees an unchanged response.
 		"query_embedding_dim": res.QueryEmbeddingDim,
 		"truncated":           res.Truncated,
+	}
+	// Present only when a window was asked for, so a search that never mentions
+	// time keeps its exact prior response shape.
+	if res.TimeFilter != nil {
+		out["time_filter"] = res.TimeFilter
 	}
 	// Only when a selector was actually requested: a caller that passed none has
 	// nothing to be warned about, and an always-present key would change the response
@@ -1577,11 +1612,16 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	if topK > 50 {
 		topK = 50
 	}
+	when, werr := memrank.ParseWhen(in.When)
+	if werr != nil {
+		return errResult(fmt.Sprintf("recall: %s", werr)), nil
+	}
 	res, err := layer.Recall(ctx, scope, scopeID, memrank.RecallQuery{
 		Query:     in.Query,
 		TopK:      topK,
 		Threshold: in.Threshold,
 		Sources:   parseSources(in.Sources),
+		When:      when,
 	})
 	if err != nil {
 		return errResult(fmt.Sprintf("recall: %s", err)), nil
@@ -1620,6 +1660,10 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	// both names would leave the misleading one in front of the model, which is the
 	// whole thing being fixed.
 	out := map[string]any{"memories": memories}
+	// Same shape as search reports it, so an agent learns one vocabulary.
+	if res.TimeFilter != nil {
+		out["time_filter"] = res.TimeFilter
+	}
 	// A BACKEND THAT IGNORED THE SELECTOR MUST NOT LOOK LIKE ONE THAT HONOURED IT
 	// (RFC BW §6). Recall's default EXCLUDES document prose, so a backend that dropped
 	// the selector returns exactly what the default exists to keep out — and the caller

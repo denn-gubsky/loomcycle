@@ -281,6 +281,11 @@ type memoryEntryPutBody struct {
 	Value      json.RawMessage `json:"value"`
 	Embed      bool            `json:"embed,omitempty"`
 	TTLSeconds int             `json:"ttl_seconds,omitempty"`
+	// ObservedAt (RFC3339) dates the row: when the remembered thing was SAID, as
+	// distinct from now. This is the path a bulk importer uses, and a bulk importer
+	// is exactly the caller that KNOWS the date — created_at would stamp the whole
+	// corpus with the instant of the import, which answers no question anyone asks.
+	ObservedAt string `json:"observed_at,omitempty"`
 }
 
 // memoryEntryPutResponse mirrors the in-band Memory tool's set ack
@@ -354,7 +359,17 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	// path placeholder is dropped. Reused by the embed step below so the embedding
 	// lands under the same (tenant, scope, scope_id) as the k/v row.
 	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
-	if err := s.store.MemorySet(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), storeScopeID, key, body.Value, ttl); err != nil {
+	var observedAt time.Time
+	if t := strings.TrimSpace(body.ObservedAt); t != "" {
+		parsed, perr := time.Parse(time.RFC3339, t)
+		if perr != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_observed_at",
+				"observed_at must be an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)")
+			return
+		}
+		observedAt = parsed
+	}
+	if err := s.store.MemorySetObserved(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), storeScopeID, key, body.Value, ttl, store.MemoryProvenance{}, observedAt); err != nil {
 		if errors.Is(err, store.ErrMemoryQuotaExceeded) {
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "memory_quota_exceeded", err.Error())
 			return

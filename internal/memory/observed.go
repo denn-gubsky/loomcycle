@@ -64,6 +64,18 @@ func (w ObservedWindow) Filter(f store.MemorySearchFilter) store.MemorySearchFil
 	if !w.Active() {
 		return f
 	}
+	// PREFER APPLIES NO STORE BOUNDS AT ALL. The window is purely a ranking signal
+	// there, so nothing is dropped and the report can count all three categories.
+	//
+	// Bounding the store in prefer mode looked harmless and was not: it dropped
+	// out-of-window DATED rows while keeping undated ones, so a row known to be from
+	// November was treated more harshly than a row with no date at all. That is the
+	// regression this predicate exists to avoid — the evidence for "the last week of
+	// October" was spoken on November 2, and prefer would have discarded it while
+	// keeping every undated row in the corpus.
+	if w.Missing != MissingRequire {
+		return f
+	}
 	slack := w.Slack
 	if slack < 0 {
 		slack = 0
@@ -74,7 +86,7 @@ func (w ObservedWindow) Filter(f store.MemorySearchFilter) store.MemorySearchFil
 	if !w.To.IsZero() {
 		f.ObservedTo = w.To.Add(slack)
 	}
-	f.RequireObserved = w.Missing == MissingRequire
+	f.RequireObserved = true
 	return f
 }
 
@@ -152,4 +164,65 @@ func ParseSlack(v string) (time.Duration, error) {
 		return 0, fmt.Errorf("slack %q is negative", v)
 	}
 	return d, nil
+}
+
+// WhenInput is the wire shape of the `when` predicate, shared VERBATIM by the
+// in-band Memory tool and the off-run HTTP search.
+//
+// One struct and one parser on purpose. This subsystem has shipped two production
+// bugs from exactly the opposite arrangement — parseSources and parseMemorySources
+// drifting apart so `sources:["notes"]` meant different things on the two surfaces,
+// and the recall projection drifting from search's. A predicate that decides which
+// rows get DROPPED is the last place to hand-maintain two copies.
+type WhenInput struct {
+	From    string `json:"from,omitempty"`
+	To      string `json:"to,omitempty"`
+	Slack   string `json:"slack,omitempty"`
+	Missing string `json:"missing,omitempty"`
+}
+
+// ParseWhen turns the wire shape into the typed window.
+//
+// Timestamps are RFC3339. Unparseable input is an ERROR rather than a silent
+// no-op: a caller who mistypes a date and gets an unfiltered search back would
+// read the results as time-filtered when they are not, which is a worse outcome
+// than being told the date is wrong.
+func ParseWhen(in *WhenInput) (ObservedWindow, error) {
+	var w ObservedWindow
+	if in == nil {
+		return w, nil
+	}
+	parseTS := func(field, v string) (time.Time, error) {
+		if strings.TrimSpace(v) == "" {
+			return time.Time{}, nil
+		}
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(v))
+		if err != nil {
+			return time.Time{}, fmt.Errorf("when.%s %q is not an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)", field, v)
+		}
+		return t, nil
+	}
+	var err error
+	if w.From, err = parseTS("from", in.From); err != nil {
+		return ObservedWindow{}, err
+	}
+	if w.To, err = parseTS("to", in.To); err != nil {
+		return ObservedWindow{}, err
+	}
+	if !w.From.IsZero() && !w.To.IsZero() && w.To.Before(w.From) {
+		return ObservedWindow{}, fmt.Errorf("when.to (%s) is before when.from (%s)", in.To, in.From)
+	}
+	if w.Slack, err = ParseSlack(in.Slack); err != nil {
+		return ObservedWindow{}, err
+	}
+	if w.Missing, err = ParseObservedMissing(in.Missing); err != nil {
+		return ObservedWindow{}, err
+	}
+	// A window with no stated policy gets the SAFE one. Defaulting to `require`
+	// here would turn every "search around October" into a hard filter, which on an
+	// undated corpus returns nothing at all.
+	if w.Missing == MissingOff && (!w.From.IsZero() || !w.To.IsZero()) {
+		w.Missing = MissingPrefer
+	}
+	return w, nil
 }
