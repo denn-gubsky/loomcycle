@@ -4,6 +4,75 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.66.0
+
+Two feature lines land together: **RFC CK** makes local inference a first-class
+bundle and lets an operator reload a running config without dropping in-flight runs,
+and **RFC CL** gives a memory row a sense of *time* — when a thing was said and when
+it was true — so a question can ask about a moment, not just a topic. Minor rather
+than a patch: both add runtime primitives the binary must carry, and the Memory tool
+plus the adapters gain surface.
+
+### RFC CK — local providers in bundle YAML, and on-the-fly config reload
+
+**Local inference is now configured in YAML, not scattered across ENV.** Dedicated
+`vllm` and `llamacpp` drivers (OpenAI-compatible, on the DeepSeek delegate pattern)
+join `ollama-local`, and the whole local-provider matrix — `base_url`, the advertised
+context window, header/idle timeouts, enablement — is settable in a bundle's
+`providers:` block, with `loomcycle.yaml` and ENV still overriding per the existing
+layer order (#1079).
+
+**`POST /v1/_config/reload` reloads a changed config in place** — the retune that used
+to mean a restart (a bigger `num_ctx`, a new endpoint, a longer timeout) now takes
+effect without dropping in-flight runs. It re-assembles the same layered stack the
+server booted from, **validates the candidate before applying** (a typo is rejected
+`422` and the running config keeps serving), applies the sections it can apply live,
+and reports the rest under `restart_required`; `?dry_run=1` returns the section diff
+without applying.
+
+- The endpoint + in-place resolver/provider rebuild (#1080), a config `Holder` that
+  makes `user_tiers` / `agents` / `defaults` reload live (#1081), and subsystem
+  reloaders for concurrency caps, `scheduled_runs`, and channels (#1086).
+- **Section-per-file config**: a `loomcycle.yaml` base auto-layers its
+  `loomcycle.*.yaml` siblings (deep-merged, lexical), so a large config splits by
+  section — `loomcycle.providers.yaml`, `loomcycle.memory.yaml`, … (#1083, #1084).
+- **Re-glob on reload**: adding or removing a config or section file after boot is
+  picked up on the next reload — no restart (#1088).
+- Deliberately restart-required, with reasons reported: the memory embedder (a
+  model/dimension change invalidates every stored vector), skills, the listen
+  address, and the store DSN.
+
+### RFC CL — a memory row learns *when*
+
+A key/value memory row used to carry one time — `created_at`, when loomcycle stored
+it, which on a bulk import is one clustered instant for the whole corpus and answers
+none of the questions people actually ask. It now carries three:
+
+- **`observed_at`** — when the thing was *said or written* (#1085). A new **`when`**
+  predicate on `search` / `recall` narrows by it, and `set` takes it to date a row.
+  Caller-supplied and never inferred — a guessed date is worse than none, because it
+  silently filters the right row out of a window it belongs in. Soft by default:
+  undated rows survive the window for the ranker to demote (`missing: prefer`).
+- **`valid_at` / `invalid_at`** — when the thing was *true* (#1087). An **`as_of`**
+  predicate answers "what was true on the 3rd" exactly, where the observed window
+  could only approximate it. `as_of` is always a hard filter — a row valid over a
+  different interval is not a weaker answer, it is a wrong one. Half-open
+  `[valid_at, invalid_at)` with NULL meaning still true.
+- The consolidator now **dates the durable facts it already keeps** (#1089), so
+  `as_of` can answer "what medication was I on in April". Scoped honestly to semantic
+  (durable-state) memory — it does not attempt episodic "what did I do that day"
+  coverage, which belongs in its own RFC.
+
+The adapters gain the memory-search time surface: **`@loomcycle/client` 1.66.0** and
+the **Python `loomcycle` 1.66.0**.
+
+### Also
+
+- **fix(store):** a Postgres def-INSERT placeholder-count regression (landed with the
+  phase-2a memory change) failed every `agent_def` / `skill_def` / …`_def` create on
+  the Postgres store; the def INSERTs are restored to their correct column count
+  (#1090). The sqlite path was unaffected.
+
 ## What's in v1.65.0
 
 **`recall` told the model every row was a fact, and carried no kind.** Minor rather
