@@ -499,12 +499,16 @@ func TestAuthMiddleware_RFCCBMember(t *testing.T) {
 	}
 
 	// The isolation floor: an isolated token is refused on every member surface —
-	// EXCEPT the RFC CN credential self-service route (POST /v1/_credentialdef),
-	// where an isolated substrate:user user IS admitted so it can manage its OWN
-	// scope=user tokens; the handler then confines it to scope=user.
+	// EXCEPT the RFC CN user self-service routes, where an isolated substrate:user
+	// user IS admitted so it can manage its OWN scope=user tokens: POST
+	// /v1/_credentialdef (the handler confines it to scope=user) and POST /v1/_mcp
+	// (the per-tool gate confines the session to the credentialdef meta-tool).
+	rfcCNSelfService := func(method, path string) bool {
+		return method == "POST" && (path == "/v1/_credentialdef" || path == "/v1/_mcp")
+	}
 	for _, c := range admitted {
 		reached, code := runMW(t, s, c.method, c.path, "lct_isolated")
-		if c.method == "POST" && c.path == "/v1/_credentialdef" {
+		if rfcCNSelfService(c.method, c.path) {
 			if !reached || code == http.StatusForbidden {
 				t.Errorf("isolated on %s %s: code=%d reached=%v, want ADMITTED (RFC CN self-service)", c.method, c.path, code, reached)
 			}

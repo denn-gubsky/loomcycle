@@ -134,14 +134,29 @@ var adminOnlyTools = map[string]bool{
 	"list_channels": true,
 }
 
+// userSelfServiceTools is the RFC CN allowlist for an ISOLATED substrate:user
+// session: the ONLY meta-tools an isolated user may list + call over /v1/_mcp. An
+// isolated user is admitted to open a session solely to self-serve its OWN
+// scope=user credentials from the `loomcycle mcp` thin client; the credentialdef
+// dispatch applies the scope=user constraint (credential.ConstrainToUserScope), so
+// this session grants nothing beyond the user's own tokens. Every entry MUST also
+// be in tenantConfinableTools (an isolated user is a strict subset of a tenant
+// session's surface); the drift test asserts that.
+var userSelfServiceTools = map[string]bool{
+	"credentialdef": true, // RFC CN — a user's own scope=user credential store.
+}
+
 // principalMayCallTool reports whether the principal on ctx may list/invoke
 // toolName over the /v1/_mcp transport (RFC AG §3.3):
 //
 //   - No principal (stdio / open mode): process-local operator-trust → every tool.
 //   - Admin principal (substrate:admin, incl. the legacy token): every tool.
-//   - Non-admin (substrate:tenant) principal: only the tenant-confinable
-//     allowlist; everything else — including an unclassified new tool — is
-//     admin-only (deny-by-default).
+//   - Isolated substrate:user principal (RFC CN): only the user self-service
+//     allowlist — everything else, including the tenant-confinable tools, stays
+//     closed.
+//   - Non-admin, non-isolated (substrate:tenant / RFC CB member) principal: the
+//     tenant-confinable allowlist; everything else — including an unclassified new
+//     tool — is admin-only (deny-by-default).
 func principalMayCallTool(ctx context.Context, toolName string) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
@@ -149,6 +164,9 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	}
 	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true
+	}
+	if auth.IsIsolated(p, ok) {
+		return userSelfServiceTools[toolName]
 	}
 	return tenantConfinableTools[toolName]
 }

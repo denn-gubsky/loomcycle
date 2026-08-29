@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -227,38 +228,17 @@ type guardError struct {
 }
 
 // constrainToUserScope enforces the RFC CN isolated-user rule on a CredentialDef
-// input: the effective scope must be user. An omitted scope defaults to user (the
-// tool's own default is tenant, which is wrong for a self-service caller and would
-// leak into the tenant bucket), and the body is rewritten so the tool resolves
-// scope=user on the caller's own subject. An explicit scope=tenant/agent is refused.
+// input via the transport-neutral credential.ConstrainToUserScope (shared with the
+// MCP dispatch so the rule cannot drift): the effective scope must be user, an
+// omitted scope defaults to user, and scope=tenant/agent is refused 403.
 func constrainToUserScope(body []byte) ([]byte, *guardError) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil {
-		// dispatchSubstrateCtxGuarded already checked json.Valid, so this is a
-		// non-object body (array / scalar). Leave it for the tool to reject with
-		// its own message rather than masking it as a scope error.
-		return body, nil
-	}
-	scope := ""
-	if raw, present := fields["scope"]; present {
-		_ = json.Unmarshal(raw, &scope) // a non-string value stays "" → defaulted below
-	}
-	if scope == "" {
-		scope = "user"
-	}
-	if scope != "user" {
+	out, refused := credential.ConstrainToUserScope(body)
+	if refused {
 		return nil, &guardError{
 			status: http.StatusForbidden,
 			code:   "credential_scope_forbidden",
 			msg:    "an isolated user token may only manage scope=user credentials (its own); scope=tenant and scope=agent require substrate:tenant",
 		}
-	}
-	// Pin scope=user in the body so an omitted scope cannot fall through to the
-	// tool's tenant default.
-	fields["scope"] = json.RawMessage(`"user"`)
-	out, err := json.Marshal(fields)
-	if err != nil {
-		return body, nil // unreachable (re-marshalling validated fields); keep the original
 	}
 	return out, nil
 }
