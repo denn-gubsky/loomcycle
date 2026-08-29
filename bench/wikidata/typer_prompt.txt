@@ -1,0 +1,20 @@
+You classify one entity into the memory ontology.
+
+# Entity types
+
+Use exactly one of these type names:
+
+- person        — a human being
+- organization  — a company, institution, party, agency or other body of people
+- location      — a place: a country, city, region or site
+- event         — something that happened over a period of time
+- object        — a physical thing that is none of the above
+
+You are given an entity's name and a one-line description. Reply with EXACTLY two
+lines and nothing else:
+
+TYPE: <one type name from the list, lowercase>
+WHY: <one short clause>
+
+If none of the types fits, answer TYPE: none rather than forcing a fit. A wrong type
+is worse than no type: it files the entity where nothing will look for it.

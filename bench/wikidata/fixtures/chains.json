@@ -1,0 +1,4342 @@
+{
+ "chains": [
+  {
+   "office": "Q152814",
+   "holders": [
+    {
+     "qid": "Q938224",
+     "start": "2013-03-09",
+     "end": "2020-01-13",
+     "label": "Joseph Muscat"
+    },
+    {
+     "qid": "Q37860840",
+     "start": "2020-01-13",
+     "end": null,
+     "label": "Robert Abela"
+    }
+   ],
+   "office_label": "Prime Minister of Malta"
+  },
+  {
+   "office": "Q182762",
+   "holders": [
+    {
+     "qid": "Q109784588",
+     "start": "2023-11-11",
+     "end": "2025-08-28",
+     "label": "Nadir al-Arbawi"
+    },
+    {
+     "qid": "Q133540883",
+     "start": "2025-08-28",
+     "end": null,
+     "label": "Sifi Ghrieb"
+    }
+   ],
+   "office_label": "Prime Minister of Algeria"
+  },
+  {
+   "office": "Q191827",
+   "holders": [
+    {
+     "qid": "Q7518922",
+     "start": "2024-04-09",
+     "end": "2025-01-23",
+     "label": "Simon Harris"
+    },
+    {
+     "qid": "Q920403",
+     "start": "2025-01-23",
+     "end": null,
+     "label": "Miche\u00e1l Martin"
+    }
+   ],
+   "office_label": "Taoiseach"
+  },
+  {
+   "office": "Q213107",
+   "holders": [
+    {
+     "qid": "Q476596",
+     "start": "2020-10-01",
+     "end": "2025-02-03",
+     "label": "Alexander De Croo"
+    },
+    {
+     "qid": "Q336599",
+     "start": "2025-02-03",
+     "end": null,
+     "label": "Bart De Wever"
+    }
+   ],
+   "office_label": "Prime Minister of Belgium"
+  },
+  {
+   "office": "Q273884",
+   "holders": [
+    {
+     "qid": "Q57282",
+     "start": "2009-05-09",
+     "end": "2018-02-14",
+     "label": "Jacob Zuma"
+    },
+    {
+     "qid": "Q1148669",
+     "start": "2018-02-15",
+     "end": null,
+     "label": "Cyril Ramaphosa"
+    }
+   ],
+   "office_label": "President of South Africa"
+  },
+  {
+   "office": "Q274948",
+   "holders": [
+    {
+     "qid": "Q1335527",
+     "start": "2024-10-01",
+     "end": "2025-10-21",
+     "label": "Shigeru Ishiba"
+    },
+    {
+     "qid": "Q1705028",
+     "start": "2025-10-21",
+     "end": null,
+     "label": "Sanae Takaichi"
+    }
+   ],
+   "office_label": "Prime Minister of Japan"
+  },
+  {
+   "office": "Q319145",
+   "holders": [
+    {
+     "qid": "Q7436908",
+     "start": "2018-08-24",
+     "end": "2022-05-23",
+     "label": "Scott Morrison"
+    },
+    {
+     "qid": "Q335697",
+     "start": "2022-05-23",
+     "end": null,
+     "label": "Anthony Albanese"
+    }
+   ],
+   "office_label": "Prime Minister of Australia"
+  },
+  {
+   "office": "Q369500",
+   "holders": [
+    {
+     "qid": "Q61121565",
+     "start": "2023-09-15",
+     "end": "2026-05-14",
+     "label": "Evika Sili\u0146a"
+    },
+    {
+     "qid": "Q115604300",
+     "start": "2026-05-28",
+     "end": null,
+     "label": "Andris Kulbergs"
+    }
+   ],
+   "office_label": "Prime Minister of Latvia"
+  },
+  {
+   "office": "Q373548",
+   "holders": [
+    {
+     "qid": "Q16149892",
+     "start": "2020-11-08",
+     "end": "2025-11-08",
+     "label": "Luis Arce"
+    },
+    {
+     "qid": "Q110520817",
+     "start": "2025-11-08",
+     "end": null,
+     "label": "Rodrigo Paz"
+    }
+   ],
+   "office_label": "president of Bolivia"
+  },
+  {
+   "office": "Q376006",
+   "holders": [
+    {
+     "qid": "Q6915896",
+     "start": "2015-05-20",
+     "end": "2020-08-02",
+     "label": "Moses Nagamootoo"
+    },
+    {
+     "qid": "Q98053664",
+     "start": "2020-08-03",
+     "end": null,
+     "label": "Mark Phillips"
+    }
+   ],
+   "office_label": "Prime Minister of Guyana"
+  },
+  {
+   "office": "Q466956",
+   "holders": [
+    {
+     "qid": "Q16297876",
+     "start": "2022-03-11",
+     "end": "2026-03-11",
+     "label": "Gabriel Boric"
+    },
+    {
+     "qid": "Q5937916",
+     "start": "2026-03-11",
+     "end": null,
+     "label": "Jos\u00e9 Antonio Kast"
+    }
+   ],
+   "office_label": "President of Chile"
+  },
+  {
+   "office": "Q628102",
+   "holders": [
+    {
+     "qid": "Q109781648",
+     "start": "2022-09-29",
+     "end": "2023-10-30",
+     "label": "Russ J Kun"
+    },
+    {
+     "qid": "Q58096",
+     "start": "2023-10-30",
+     "end": null,
+     "label": "David Adeang"
+    }
+   ],
+   "office_label": "President of Nauru"
+  },
+  {
+   "office": "Q634322",
+   "holders": [
+    {
+     "qid": "Q24801",
+     "start": "2011-05-12",
+     "end": "2019-05-16",
+     "label": "Antoni Mart\u00ed"
+    },
+    {
+     "qid": "Q21001195",
+     "start": "2019-05-16",
+     "end": null,
+     "label": "Xavier Espot Zamora"
+    }
+   ],
+   "office_label": "Prime Minister of Andorra"
+  },
+  {
+   "office": "Q687075",
+   "holders": [
+    {
+     "qid": "Q4935873",
+     "start": "2021-11-30",
+     "end": "2022-10-18",
+     "label": "Magdalena Andersson"
+    },
+    {
+     "qid": "Q1780398",
+     "start": "2022-10-18",
+     "end": null,
+     "label": "Ulf Kristersson"
+    }
+   ],
+   "office_label": "Prime Minister of Sweden"
+  },
+  {
+   "office": "Q688230",
+   "holders": [
+    {
+     "qid": "Q115881",
+     "start": "2025-01-01",
+     "end": "2025-12-31",
+     "label": "Karin Keller-Sutter"
+    },
+    {
+     "qid": "Q121160",
+     "start": "2026-01-01",
+     "end": null,
+     "label": "Guy Parmelin"
+    }
+   ],
+   "office_label": "President of the Swiss Confederation"
+  },
+  {
+   "office": "Q732562",
+   "holders": [
+    {
+     "qid": "Q4414537",
+     "start": "2021-05-24",
+     "end": "2023-11-23",
+     "label": "Guillermo Lasso"
+    },
+    {
+     "qid": "Q112075625",
+     "start": "2023-11-23",
+     "end": null,
+     "label": "Daniel Noboa"
+    }
+   ],
+   "office_label": "President of Ecuador"
+  },
+  {
+   "office": "Q737115",
+   "holders": [
+    {
+     "qid": "Q11869065",
+     "start": "2021-01-26",
+     "end": "2024-07-22",
+     "label": "Kaja Kallas"
+    },
+    {
+     "qid": "Q1789192",
+     "start": "2024-07-22",
+     "end": null,
+     "label": "Kristen Michal"
+    }
+   ],
+   "office_label": "Prime Minister of Estonia"
+  },
+  {
+   "office": "Q738695",
+   "holders": [
+    {
+     "qid": "Q16986436",
+     "start": "2019-12-10",
+     "end": "2023-06-20",
+     "label": "Sanna Marin"
+    },
+    {
+     "qid": "Q6029546",
+     "start": "2023-06-20",
+     "end": null,
+     "label": "Petteri Orpo"
+    }
+   ],
+   "office_label": "Prime Minister of Finland"
+  },
+  {
+   "office": "Q796897",
+   "holders": [
+    {
+     "qid": "Q294460",
+     "start": "2021-02-13",
+     "end": "2022-10-22",
+     "label": "Mario Draghi"
+    },
+    {
+     "qid": "Q451791",
+     "start": "2022-10-22",
+     "end": null,
+     "label": "Giorgia Meloni"
+    }
+   ],
+   "office_label": "Prime Minister of Italy"
+  },
+  {
+   "office": "Q839078",
+   "holders": [
+    {
+     "qid": "Q3099714",
+     "start": "2015-11-04",
+     "end": "2025-03-14",
+     "label": "Justin Trudeau"
+    },
+    {
+     "qid": "Q192533",
+     "start": "2025-03-14",
+     "end": null,
+     "label": "Mark Carney"
+    }
+   ],
+   "office_label": "Prime Minister of Canada"
+  },
+  {
+   "office": "Q841760",
+   "holders": [
+    {
+     "qid": "Q2112764",
+     "start": "2013-02-28",
+     "end": "2023-02-28",
+     "label": "Nikos Anastasiades"
+    },
+    {
+     "qid": "Q48905549",
+     "start": "2023-02-28",
+     "end": null,
+     "label": "Nicos Christodoulides"
+    }
+   ],
+   "office_label": "President of Cyprus"
+  },
+  {
+   "office": "Q844587",
+   "holders": [
+    {
+     "qid": "Q10819",
+     "start": "2011-12-20",
+     "end": "2018-06-01",
+     "label": "Mariano Rajoy"
+    },
+    {
+     "qid": "Q6070218",
+     "start": "2018-06-02",
+     "end": null,
+     "label": "Pedro S\u00e1nchez"
+    }
+   ],
+   "office_label": "Prime Minister of Spain"
+  },
+  {
+   "office": "Q845439",
+   "holders": [
+    {
+     "qid": "Q124516173",
+     "start": "2025-08-26",
+     "end": "2026-07-01",
+     "label": "Inga Ruginien\u0117"
+    },
+    {
+     "qid": "Q1936326",
+     "start": "2026-07-07",
+     "end": null,
+     "label": "Mindaugas Sinkevi\u010dius"
+    }
+   ],
+   "office_label": "Prime Minister of Lithuania"
+  },
+  {
+   "office": "Q853475",
+   "holders": [
+    {
+     "qid": "Q704022",
+     "start": "2022-08-07",
+     "end": "2026-08-07",
+     "label": "Gustavo Petro"
+    },
+    {
+     "qid": "Q137204778",
+     "start": "2026-08-07",
+     "end": null,
+     "label": "Abelardo de la Espriella"
+    }
+   ],
+   "office_label": "President of Colombia"
+  },
+  {
+   "office": "Q862638",
+   "holders": [
+    {
+     "qid": "Q57701",
+     "start": "2008-02-08",
+     "end": "2020-11-12",
+     "label": "Dean Barrow"
+    },
+    {
+     "qid": "Q6266369",
+     "start": "2020-11-12",
+     "end": null,
+     "label": "Johnny Brice\u00f1o"
+    }
+   ],
+   "office_label": "Prime Minister of Belize"
+  },
+  {
+   "office": "Q866756",
+   "holders": [
+    {
+     "qid": "Q57643",
+     "start": "2004-08-12",
+     "end": "2024-05-15",
+     "label": "Lee Hsien Loong"
+    },
+    {
+     "qid": "Q6504758",
+     "start": "2024-05-15",
+     "end": null,
+     "label": "Lawrence Wong"
+    }
+   ],
+   "office_label": "Prime Minister of Singapore"
+  },
+  {
+   "office": "Q878250",
+   "holders": [
+    {
+     "qid": "Q57456",
+     "start": "2003-07-10",
+     "end": "2016-03-11",
+     "label": "Anote Tong"
+    },
+    {
+     "qid": "Q23034482",
+     "start": "2016-03-11",
+     "end": null,
+     "label": "Taneti Maamau"
+    }
+   ],
+   "office_label": "President of Kiribati"
+  },
+  {
+   "office": "Q878254",
+   "holders": [
+    {
+     "qid": "Q333135",
+     "start": "2020-07-16",
+     "end": "2025-07-06",
+     "label": "Chan Santokhi"
+    },
+    {
+     "qid": "Q440403",
+     "start": "2025-07-06",
+     "end": null,
+     "label": "Jennifer Geerlings-Simons"
+    }
+   ],
+   "office_label": "President of Suriname"
+  },
+  {
+   "office": "Q878329",
+   "holders": [
+    {
+     "qid": "Q336285",
+     "start": "2013-01-17",
+     "end": "2021-01-21",
+     "label": "Thomas Remengesau Jr."
+    },
+    {
+     "qid": "Q26703072",
+     "start": "2021-01-21",
+     "end": null,
+     "label": "Surangel Whipps Jr."
+    }
+   ],
+   "office_label": "President of Palau"
+  },
+  {
+   "office": "Q903751",
+   "holders": [
+    {
+     "qid": "Q4142905",
+     "start": "2025-06-13",
+     "end": "2026-03-30",
+     "label": "Gombojavyn Zandanshatar"
+    },
+    {
+     "qid": "Q110962738",
+     "start": "2026-03-30",
+     "end": null,
+     "label": "Uchral Nyam-Osor"
+    }
+   ],
+   "office_label": "Prime Minister of Mongolia"
+  },
+  {
+   "office": "Q915636",
+   "holders": [
+    {
+     "qid": "Q8083950",
+     "start": "2025-01-22",
+     "end": "2025-12-18",
+     "label": "\u02bbAisake Eke"
+    },
+    {
+     "qid": "Q5437258",
+     "start": "2025-12-18",
+     "end": null,
+     "label": "Fatafehi Fakaf\u0101nua, 8th Lord Fakaf\u0101nua"
+    }
+   ],
+   "office_label": "Prime Minister of Tonga"
+  },
+  {
+   "office": "Q946064",
+   "holders": [
+    {
+     "qid": "Q7065106",
+     "start": "2018-04-21",
+     "end": "2019-10-08",
+     "label": "Novruz Mammadov"
+    },
+    {
+     "qid": "Q12850075",
+     "start": "2019-10-08",
+     "end": null,
+     "label": "Ali Asadov"
+    }
+   ],
+   "office_label": "Prime Minister of Azerbaijan"
+  },
+  {
+   "office": "Q978708",
+   "holders": [
+    {
+     "qid": "Q57519",
+     "start": "2018-06-22",
+     "end": "2023-07-01",
+     "label": "Taur Matan Ruak"
+    },
+    {
+     "qid": "Q11509",
+     "start": "2023-07-01",
+     "end": null,
+     "label": "Xanana Gusm\u00e3o"
+    }
+   ],
+   "office_label": "Prime Minister of East Timor"
+  },
+  {
+   "office": "Q1006398",
+   "holders": [
+    {
+     "qid": "Q64168538",
+     "start": "2025-01-10",
+     "end": "2025-03-03",
+     "label": "Alexander Schallenberg"
+    },
+    {
+     "qid": "Q64576653",
+     "start": "2025-03-03",
+     "end": null,
+     "label": "Christian Stocker"
+    }
+   ],
+   "office_label": "Federal Chancellor of Austria"
+  },
+  {
+   "office": "Q1071117",
+   "holders": [
+    {
+     "qid": "Q5106890",
+     "start": "2023-01-25",
+     "end": "2023-11-27",
+     "label": "Chris Hipkins"
+    },
+    {
+     "qid": "Q74370310",
+     "start": "2023-11-27",
+     "end": null,
+     "label": "Christopher Luxon"
+    }
+   ],
+   "office_label": "Prime Minister of New Zealand"
+  },
+  {
+   "office": "Q1074656",
+   "holders": [
+    {
+     "qid": "Q57892",
+     "start": "2011-08-02",
+     "end": "2019-05-29",
+     "label": "Peter O'Neill"
+    },
+    {
+     "qid": "Q6138903",
+     "start": "2019-05-30",
+     "end": null,
+     "label": "James Marape"
+    }
+   ],
+   "office_label": "Prime Minister of Papua New Guinea"
+  },
+  {
+   "office": "Q1123764",
+   "holders": [
+    {
+     "qid": "Q1979923",
+     "start": "2018-04-23",
+     "end": "2018-05-08",
+     "label": "Karen Karapetyan"
+    },
+    {
+     "qid": "Q7035479",
+     "start": "2018-05-08",
+     "end": null,
+     "label": "Nikol Pashinyan"
+    }
+   ],
+   "office_label": "Prime Minister of Armenia"
+  },
+  {
+   "office": "Q1145714",
+   "holders": [
+    {
+     "qid": "Q61112536",
+     "start": "2025-07-17",
+     "end": "2026-07-16",
+     "label": "Yulia Svyrydenko"
+    },
+    {
+     "qid": "Q124101558",
+     "start": "2026-07-16",
+     "end": null,
+     "label": "Serhii Koretskyi"
+    }
+   ],
+   "office_label": "Prime Minister of Ukraine"
+  },
+  {
+   "office": "Q1195270",
+   "holders": [
+    {
+     "qid": "Q21821359",
+     "start": "2016-01-22",
+     "end": "2016-10-19",
+     "label": "Tihomir Ore\u0161kovi\u0107"
+    },
+    {
+     "qid": "Q11685764",
+     "start": "2016-10-19",
+     "end": null,
+     "label": "Andrej Plenkovi\u0107"
+    }
+   ],
+   "office_label": "Prime Minister of Croatia"
+  },
+  {
+   "office": "Q1277355",
+   "holders": [
+    {
+     "qid": "Q5446290",
+     "start": "2021-05-24",
+     "end": "2025-09-16",
+     "label": "Fiam\u0113 Naomi Mata\u02bbafa"
+    },
+    {
+     "qid": "Q16734600",
+     "start": "2025-09-16",
+     "end": null,
+     "label": "La\u02bbauli Leuatea Schmidt"
+    }
+   ],
+   "office_label": "Prime Minister of Samoa"
+  },
+  {
+   "office": "Q1344632",
+   "holders": [
+    {
+     "qid": "Q561213",
+     "start": "2013-12-05",
+     "end": "2023-11-17",
+     "label": "Xavier Bettel"
+    },
+    {
+     "qid": "Q592101",
+     "start": "2023-11-17",
+     "end": null,
+     "label": "Luc Frieden"
+    }
+   ],
+   "office_label": "Prime Minister of Luxembourg"
+  },
+  {
+   "office": "Q1348717",
+   "holders": [
+    {
+     "qid": "Q57808",
+     "start": "2003-12-12",
+     "end": "2016-12-14",
+     "label": "Shavkat Mirziyoyev"
+    },
+    {
+     "qid": "Q28002959",
+     "start": "2016-12-14",
+     "end": null,
+     "label": "Abdulla Aripov"
+    }
+   ],
+   "office_label": "Prime Minister of Uzbekistan"
+  },
+  {
+   "office": "Q1425954",
+   "holders": [
+    {
+     "qid": "Q6180897",
+     "start": "2024-05-02",
+     "end": "2026-05-15",
+     "label": "Jeremiah Manele"
+    },
+    {
+     "qid": "Q6791373",
+     "start": "2026-05-15",
+     "end": null,
+     "label": "Matthew Wale"
+    }
+   ],
+   "office_label": "Prime Minister of the Solomon Islands"
+  },
+  {
+   "office": "Q1469153",
+   "holders": [
+    {
+     "qid": "Q57830",
+     "start": "2007-01-05",
+     "end": "2022-12-24",
+     "label": "Frank Bainimarama"
+    },
+    {
+     "qid": "Q981549",
+     "start": "2022-12-24",
+     "end": null,
+     "label": "Sitiveni Rabuka"
+    }
+   ],
+   "office_label": "Prime Minister of Fiji"
+  },
+  {
+   "office": "Q1571396",
+   "holders": [
+    {
+     "qid": "Q16250142",
+     "start": "2015-09-19",
+     "end": "2018-06-05",
+     "label": "Sherif Ismail"
+    },
+    {
+     "qid": "Q54901515",
+     "start": "2018-06-14",
+     "end": null,
+     "label": "Mostafa Madbouly"
+    }
+   ],
+   "office_label": "Prime Minister of Egypt"
+  },
+  {
+   "office": "Q1587677",
+   "holders": [
+    {
+     "qid": "Q12963",
+     "start": "2024-12-13",
+     "end": "2025-09-09",
+     "label": "Fran\u00e7ois Bayrou"
+    },
+    {
+     "qid": "Q20089181",
+     "start": "2025-09-09",
+     "end": null,
+     "label": "S\u00e9bastien Lecornu"
+    }
+   ],
+   "office_label": "Prime Minister of France"
+  },
+  {
+   "office": "Q1769526",
+   "holders": [
+    {
+     "qid": "Q136687355",
+     "start": "2026-07-08",
+     "end": "2026-07-22",
+     "label": "Eugen Osmochescu"
+    },
+    {
+     "qid": "Q140480413",
+     "start": "2026-07-22",
+     "end": null,
+     "label": "Vasile Tofan"
+    }
+   ],
+   "office_label": "Prime Minister of Moldova"
+  },
+  {
+   "office": "Q1776220",
+   "holders": [
+    {
+     "qid": "Q5860953",
+     "start": "2024-01-28",
+     "end": "2024-06-23",
+     "label": "Talat Xhaferi"
+    },
+    {
+     "qid": "Q46675558",
+     "start": "2024-06-23",
+     "end": null,
+     "label": "Hristijan Mickoski"
+    }
+   ],
+   "office_label": "Prime Minister of North Macedonia"
+  },
+  {
+   "office": "Q1922067",
+   "holders": [
+    {
+     "qid": "Q42852",
+     "start": "2007-08-28",
+     "end": "2014-08-28",
+     "label": "Abdullah G\u00fcl"
+    },
+    {
+     "qid": "Q39259",
+     "start": "2014-08-28",
+     "end": null,
+     "label": "Recep Tayyip Erdo\u011fan"
+    }
+   ],
+   "office_label": "President of Turkey"
+  },
+  {
+   "office": "Q1975365",
+   "holders": [
+    {
+     "qid": "Q6066533",
+     "start": "2021-02-22",
+     "end": "2024-01-29",
+     "label": "Irakli Garibashvili"
+    },
+    {
+     "qid": "Q27885302",
+     "start": "2024-02-08",
+     "end": null,
+     "label": "Irakli Kobakhidze"
+    }
+   ],
+   "office_label": "Prime Minister of Georgia"
+  },
+  {
+   "office": "Q1999325",
+   "holders": [
+    {
+     "qid": "Q57788",
+     "start": "1998-11-30",
+     "end": "2023-08-07",
+     "label": "Hun Sen"
+    },
+    {
+     "qid": "Q13024351",
+     "start": "2023-08-22",
+     "end": null,
+     "label": "Hun Manet"
+    }
+   ],
+   "office_label": "Prime Minister of Cambodia"
+  },
+  {
+   "office": "Q2334076",
+   "holders": [
+    {
+     "qid": "Q291644",
+     "start": "2013-10-16",
+     "end": "2021-10-14",
+     "label": "Erna Solberg"
+    },
+    {
+     "qid": "Q467948",
+     "start": "2021-10-14",
+     "end": null,
+     "label": "Jonas Gahr St\u00f8re"
+    }
+   ],
+   "office_label": "Prime Minister of Norway"
+  },
+  {
+   "office": "Q2353252",
+   "holders": [
+    {
+     "qid": "Q16353146",
+     "start": "2022-04-28",
+     "end": "2023-10-31",
+     "label": "Dritan Abazovi\u0107"
+    },
+    {
+     "qid": "Q101225458",
+     "start": "2023-10-31",
+     "end": null,
+     "label": "Milojko Spaji\u0107"
+    }
+   ],
+   "office_label": "Prime Minister of Montenegro"
+  },
+  {
+   "office": "Q2387238",
+   "holders": [
+    {
+     "qid": "Q543260",
+     "start": "2011-10-01",
+     "end": "2021-10-01",
+     "label": "Giuseppe Bertello"
+    },
+    {
+     "qid": "Q109385659",
+     "start": "2025-03-01",
+     "end": null,
+     "label": "Raffaella Petrini"
+    }
+   ],
+   "office_label": "President of the Pontifical Commission for the Vatican City State"
+  },
+  {
+   "office": "Q2416315",
+   "holders": [
+    {
+     "qid": "Q56825894",
+     "start": "2022-01-05",
+     "end": "2024-02-05",
+     "label": "\u00c4lihan Smaiylov"
+    },
+    {
+     "qid": "Q124436646",
+     "start": "2024-02-06",
+     "end": null,
+     "label": "Olzhas Bektenov"
+    }
+   ],
+   "office_label": "Prime Minister of Kazakhstan"
+  },
+  {
+   "office": "Q2672728",
+   "holders": [
+    {
+     "qid": "Q718601",
+     "start": "2017-01-07",
+     "end": "2025-01-07",
+     "label": "Nana Akufo-Addo"
+    },
+    {
+     "qid": "Q50678",
+     "start": "2025-01-07",
+     "end": null,
+     "label": "John Mahama"
+    }
+   ],
+   "office_label": "President of Ghana"
+  },
+  {
+   "office": "Q3259469",
+   "holders": [
+    {
+     "qid": "Q11771436",
+     "start": "2017-12-11",
+     "end": "2023-12-13",
+     "label": "Mateusz Morawiecki"
+    },
+    {
+     "qid": "Q946",
+     "start": "2023-12-13",
+     "end": null,
+     "label": "Donald Tusk"
+    }
+   ],
+   "office_label": "Prime Minister of Poland"
+  },
+  {
+   "office": "Q3736673",
+   "holders": [
+    {
+     "qid": "Q20658229",
+     "start": "2020-01-13",
+     "end": "2024-01-03",
+     "label": "David Kabua"
+    },
+    {
+     "qid": "Q20090884",
+     "start": "2024-01-04",
+     "end": null,
+     "label": "Hilda Heine"
+    }
+   ],
+   "office_label": "President of the Marshall Islands"
+  },
+  {
+   "office": "Q4122271",
+   "holders": [
+    {
+     "qid": "Q18111",
+     "start": "2013-03-15",
+     "end": "2023-03-11",
+     "label": "Li Keqiang"
+    },
+    {
+     "qid": "Q4414390",
+     "start": "2023-03-11",
+     "end": null,
+     "label": "Li Qiang"
+    }
+   ],
+   "office_label": "Premier of the People's Republic of China"
+  },
+  {
+   "office": "Q4377230",
+   "holders": [
+    {
+     "qid": "Q118402778",
+     "start": "2023-05-25",
+     "end": "2023-06-26",
+     "label": "Ioannis Sarmas"
+    },
+    {
+     "qid": "Q552751",
+     "start": "2023-06-26",
+     "end": null,
+     "label": "Kyriakos Mitsotakis"
+    }
+   ],
+   "office_label": "Prime Minister of Greece"
+  },
+  {
+   "office": "Q4404583",
+   "holders": [
+    {
+     "qid": "Q110313525",
+     "start": "2026-02-19",
+     "end": "2026-05-08",
+     "label": "Andrey Gurov"
+    },
+    {
+     "qid": "Q26257557",
+     "start": "2026-05-08",
+     "end": null,
+     "label": "Rumen Radev"
+    }
+   ],
+   "office_label": "Prime Minister of Bulgaria"
+  },
+  {
+   "office": "Q4524807",
+   "holders": [
+    {
+     "qid": "Q6800406",
+     "start": "2020-03-01",
+     "end": "2025-03-01",
+     "label": "Luis Lacalle Pou"
+    },
+    {
+     "qid": "Q19946921",
+     "start": "2025-03-01",
+     "end": null,
+     "label": "Yamand\u00fa Orsi"
+    }
+   ],
+   "office_label": "President of Uruguay"
+  },
+  {
+   "office": "Q4970706",
+   "holders": [
+    {
+     "qid": "Q61053",
+     "start": "2021-12-08",
+     "end": "2025-05-06",
+     "label": "Olaf Scholz"
+    },
+    {
+     "qid": "Q566257",
+     "start": "2025-05-06",
+     "end": null,
+     "label": "Friedrich Merz"
+    }
+   ],
+   "office_label": "Federal Chancellor of Germany"
+  },
+  {
+   "office": "Q5176750",
+   "holders": [
+    {
+     "qid": "Q10304982",
+     "start": "2019-01-01",
+     "end": "2022-12-31",
+     "label": "Jair Bolsonaro"
+    },
+    {
+     "qid": "Q37181",
+     "start": "2023-01-01",
+     "end": null,
+     "label": "Luiz In\u00e1cio Lula da Silva"
+    }
+   ],
+   "office_label": "President of Brazil"
+  },
+  {
+   "office": "Q6502015",
+   "holders": [
+    {
+     "qid": "Q1932603",
+     "start": "2018-04-19",
+     "end": "2019-12-21",
+     "label": "Miguel D\u00edaz-Canel"
+    },
+    {
+     "qid": "Q79358625",
+     "start": "2019-12-21",
+     "end": null,
+     "label": "Manuel Marrero Cruz"
+    }
+   ],
+   "office_label": "Prime Minister of Cuba"
+  },
+  {
+   "office": "Q7240364",
+   "holders": [
+    {
+     "qid": "Q56818689",
+     "start": "2019-04-11",
+     "end": "2020-08-13",
+     "label": "Kim Jae-ryong"
+    },
+    {
+     "qid": "Q25035961",
+     "start": "2020-08-13",
+     "end": null,
+     "label": "Kim Tok-hun"
+    }
+   ],
+   "office_label": "Premier of North Korea"
+  },
+  {
+   "office": "Q11755916",
+   "holders": [
+    {
+     "qid": "Q3318231",
+     "start": "2014-10-20",
+     "end": "2024-10-20",
+     "label": "Joko Widodo"
+    },
+    {
+     "qid": "Q2107268",
+     "start": "2024-10-20",
+     "end": null,
+     "label": "Prabowo Subianto"
+    }
+   ],
+   "office_label": "President of Indonesia"
+  },
+  {
+   "office": "Q11942698",
+   "holders": [
+    {
+     "qid": "Q58833335",
+     "start": "2019-01-23",
+     "end": "2023-01-05",
+     "label": "Juan Guaid\u00f3"
+    },
+    {
+     "qid": "Q15081116",
+     "start": "2026-01-05",
+     "end": null,
+     "label": "Delcy Rodriguez"
+    }
+   ],
+   "office_label": "President of Venezuela"
+  },
+  {
+   "office": "Q12379704",
+   "holders": [
+    {
+     "qid": "Q27043179",
+     "start": "2020-06-04",
+     "end": "2025-03-10",
+     "label": "Raman Halowchanka"
+    },
+    {
+     "qid": "Q56235580",
+     "start": "2025-03-10",
+     "end": null,
+     "label": "Alexander Turchyn"
+    }
+   ],
+   "office_label": "Prime Minister of Belarus"
+  },
+  {
+   "office": "Q12969145",
+   "holders": [
+    {
+     "qid": "Q2642828",
+     "start": "2019-12-10",
+     "end": "2023-12-10",
+     "label": "Alberto Fern\u00e1ndez"
+    },
+    {
+     "qid": "Q52395487",
+     "start": "2023-12-10",
+     "end": null,
+     "label": "Javier Milei"
+    }
+   ],
+   "office_label": "President of Argentina"
+  },
+  {
+   "office": "Q14784066",
+   "holders": [
+    {
+     "qid": "Q196070",
+     "start": "2013-04-09",
+     "end": "2022-09-13",
+     "label": "Uhuru Kenyatta"
+    },
+    {
+     "qid": "Q195725",
+     "start": "2022-09-13",
+     "end": null,
+     "label": "William Ruto"
+    }
+   ],
+   "office_label": "President of Kenya"
+  },
+  {
+   "office": "Q15304810",
+   "holders": [
+    {
+     "qid": "Q1151156",
+     "start": "2025-05-06",
+     "end": "2025-06-23",
+     "label": "C\u0103t\u0103lin Predoiu"
+    },
+    {
+     "qid": "Q18538164",
+     "start": "2025-06-23",
+     "end": null,
+     "label": "Ilie Bolojan"
+    }
+   ],
+   "office_label": "Prime Minister of Romania"
+  },
+  {
+   "office": "Q15921525",
+   "holders": [
+    {
+     "qid": "Q57709",
+     "start": "2010-10-23",
+     "end": "2018-05-25",
+     "label": "Freundel Stuart"
+    },
+    {
+     "qid": "Q6827147",
+     "start": "2018-05-25",
+     "end": null,
+     "label": "Mia Mottley"
+    }
+   ],
+   "office_label": "Prime Minister of Barbados"
+  },
+  {
+   "office": "Q16009376",
+   "holders": [
+    {
+     "qid": "Q57625",
+     "start": "2005-09-11",
+     "end": "2013-09-15",
+     "label": "Sali Berisha"
+    },
+    {
+     "qid": "Q316901",
+     "start": "2013-09-15",
+     "end": null,
+     "label": "Edi Rama"
+    }
+   ],
+   "office_label": "Prime Minister of Albania"
+  },
+  {
+   "office": "Q16020744",
+   "holders": [
+    {
+     "qid": "Q12752078",
+     "start": "2019-12-23",
+     "end": "2023-01-25",
+     "label": "Zoran Tegeltija"
+    },
+    {
+     "qid": "Q387491",
+     "start": "2023-01-25",
+     "end": null,
+     "label": "Borjana Kri\u0161to"
+    }
+   ],
+   "office_label": "Chairman of the Council of Ministers of Bosnia and Herzegovina"
+  },
+  {
+   "office": "Q19190022",
+   "holders": [
+    {
+     "qid": "Q879376",
+     "start": "2024-04-09",
+     "end": "2024-12-21",
+     "label": "Bjarni Benediktsson"
+    },
+    {
+     "qid": "Q108856371",
+     "start": "2024-12-21",
+     "end": null,
+     "label": "Kristr\u00fan Mj\u00f6ll Frostad\u00f3ttir"
+    }
+   ],
+   "office_label": "Prime Minister of Iceland"
+  },
+  {
+   "office": "Q28003132",
+   "holders": [
+    {
+     "qid": "Q57350",
+     "start": "1990-12-02",
+     "end": "2021-04-20",
+     "label": "Idriss D\u00e9by"
+    },
+    {
+     "qid": "Q16206405",
+     "start": "2021-04-20",
+     "end": null,
+     "label": "Mahamat D\u00e9by"
+    }
+   ],
+   "office_label": "President of Chad"
+  },
+  {
+   "office": "Q30101326",
+   "holders": [
+    {
+     "qid": "Q107504646",
+     "start": "2025-03-17",
+     "end": "2025-05-01",
+     "label": "Stuart Young"
+    },
+    {
+     "qid": "Q57712",
+     "start": "2025-05-01",
+     "end": null,
+     "label": "Kamla Persad-Bissessar"
+    }
+   ],
+   "office_label": "Prime Minister of Trinidad and Tobago"
+  },
+  {
+   "office": "Q30133416",
+   "holders": [
+    {
+     "qid": "Q63872093",
+     "start": "2019-05-11",
+     "end": "2023-05-11",
+     "label": "David W. Panuelo"
+    },
+    {
+     "qid": "Q7984081",
+     "start": "2023-05-11",
+     "end": null,
+     "label": "Wesley Simina"
+    }
+   ],
+   "office_label": "President of the Federated States of Micronesia"
+  },
+  {
+   "office": "Q45369",
+   "holders": [
+    {
+     "qid": "Q96747230",
+     "start": "2023-05-15",
+     "end": "2023-10-25",
+     "label": "\u013dudov\u00edt \u00d3dor"
+    },
+    {
+     "qid": "Q57606",
+     "start": "2023-10-25",
+     "end": null,
+     "label": "Robert Fico"
+    }
+   ],
+   "office_label": "Prime Minister of Slovakia"
+  },
+  {
+   "office": "Q45758",
+   "holders": [
+    {
+     "qid": "Q18645045",
+     "start": "2022-05-25",
+     "end": "2026-05-22",
+     "label": "Robert Golob"
+    },
+    {
+     "qid": "Q57627",
+     "start": "2026-05-22",
+     "end": null,
+     "label": "Janez Jan\u0161a"
+    }
+   ],
+   "office_label": "Prime Minister of Slovenia"
+  },
+  {
+   "office": "Q213702",
+   "holders": [
+    {
+     "qid": "Q57276",
+     "start": "2011-11-11",
+     "end": "2025-11-10",
+     "label": "Michael D. Higgins"
+    },
+    {
+     "qid": "Q5052598",
+     "start": "2025-11-11",
+     "end": null,
+     "label": "Catherine Connolly"
+    }
+   ],
+   "office_label": "president of Ireland"
+  },
+  {
+   "office": "Q218014",
+   "holders": [
+    {
+     "qid": "Q348043",
+     "start": "2019-07-08",
+     "end": "2023-07-08",
+     "label": "Egils Levits"
+    },
+    {
+     "qid": "Q3047551",
+     "start": "2023-07-08",
+     "end": null,
+     "label": "Edgars Rink\u0113vi\u010ds"
+    }
+   ],
+   "office_label": "President of Latvia"
+  },
+  {
+   "office": "Q218295",
+   "holders": [
+    {
+     "qid": "Q23530",
+     "start": "2008-05-07",
+     "end": "2012-05-07",
+     "label": "Dmitry Medvedev"
+    },
+    {
+     "qid": "Q7747",
+     "start": "2012-05-07",
+     "end": null,
+     "label": "Vladimir Putin"
+    }
+   ],
+   "office_label": "President of Russia"
+  },
+  {
+   "office": "Q268984",
+   "holders": [
+    {
+     "qid": "Q3176299",
+     "start": "2015-02-18",
+     "end": "2020-02-18",
+     "label": "Kolinda Grabar-Kitarovi\u0107"
+    },
+    {
+     "qid": "Q57687",
+     "start": "2020-02-19",
+     "end": null,
+     "label": "Zoran Milanovi\u0107"
+    }
+   ],
+   "office_label": "President of Croatia"
+  },
+  {
+   "office": "Q312271",
+   "holders": [
+    {
+     "qid": "Q4164146",
+     "start": "2016-12-23",
+     "end": "2020-12-24",
+     "label": "Igor Dodon"
+    },
+    {
+     "qid": "Q15071069",
+     "start": "2020-12-24",
+     "end": null,
+     "label": "Maia Sandu"
+    }
+   ],
+   "office_label": "President of Moldova"
+  },
+  {
+   "office": "Q313383",
+   "holders": [
+    {
+     "qid": "Q16845347",
+     "start": "2017-07-25",
+     "end": "2022-07-25",
+     "label": "Ram Nath Kovind"
+    },
+    {
+     "qid": "Q19901232",
+     "start": "2022-07-25",
+     "end": null,
+     "label": "Droupadi Murmu"
+    }
+   ],
+   "office_label": "President of India"
+  },
+  {
+   "office": "Q322459",
+   "holders": [
+    {
+     "qid": "Q6756617",
+     "start": "2016-03-09",
+     "end": "2026-03-09",
+     "label": "Marcelo Rebelo de Sousa"
+    },
+    {
+     "qid": "Q1580316",
+     "start": "2026-03-09",
+     "end": null,
+     "label": "Ant\u00f3nio Jos\u00e9 Seguro"
+    }
+   ],
+   "office_label": "President of Portugal"
+  },
+  {
+   "office": "Q332711",
+   "holders": [
+    {
+     "qid": "Q1220",
+     "start": "2006-05-15",
+     "end": "2015-01-14",
+     "label": "Giorgio Napolitano"
+    },
+    {
+     "qid": "Q3956186",
+     "start": "2015-02-03",
+     "end": null,
+     "label": "Sergio Mattarella"
+    }
+   ],
+   "office_label": "President of Italy"
+  },
+  {
+   "office": "Q475658",
+   "holders": [
+    {
+     "qid": "Q11753",
+     "start": "2004-07-08",
+     "end": "2016-07-08",
+     "label": "Heinz Fischer"
+    },
+    {
+     "qid": "Q78869",
+     "start": "2017-01-26",
+     "end": null,
+     "label": "Alexander Van der Bellen"
+    }
+   ],
+   "office_label": "President of Austria"
+  },
+  {
+   "office": "Q495877",
+   "holders": [
+    {
+     "qid": "Q206471",
+     "start": "2012-12-23",
+     "end": "2022-12-22",
+     "label": "Borut Pahor"
+    },
+    {
+     "qid": "Q12797332",
+     "start": "2022-12-22",
+     "end": null,
+     "label": "Nata\u0161a Pirc Musar"
+    }
+   ],
+   "office_label": "President of Slovenia"
+  },
+  {
+   "office": "Q579677",
+   "holders": [
+    {
+     "qid": "Q58077",
+     "start": "2014-06-07",
+     "end": "2019-05-20",
+     "label": "Petro Poroshenko"
+    },
+    {
+     "qid": "Q3874799",
+     "start": "2019-05-20",
+     "end": null,
+     "label": "Volodymyr Zelenskyy"
+    }
+   ],
+   "office_label": "President of Ukraine"
+  },
+  {
+   "office": "Q655407",
+   "holders": [
+    {
+     "qid": "Q15029",
+     "start": "2003-03-15",
+     "end": "2013-03-14",
+     "label": "Hu Jintao"
+    },
+    {
+     "qid": "Q15031",
+     "start": "2013-03-14",
+     "end": null,
+     "label": "Xi Jinping"
+    }
+   ],
+   "office_label": "President of the People's Republic of China"
+  },
+  {
+   "office": "Q678492",
+   "holders": [
+    {
+     "qid": "Q15967423",
+     "start": "2019-05-12",
+     "end": "2024-05-12",
+     "label": "Stevo Pendarovski"
+    },
+    {
+     "qid": "Q12277168",
+     "start": "2024-05-12",
+     "end": null,
+     "label": "Gordana Siljanovska-Davkova"
+    }
+   ],
+   "office_label": "President of North Macedonia"
+  },
+  {
+   "office": "Q685925",
+   "holders": [
+    {
+     "qid": "Q5230470",
+     "start": "2015-05-16",
+     "end": "2020-08-02",
+     "label": "David A. Granger"
+    },
+    {
+     "qid": "Q64840184",
+     "start": "2020-08-02",
+     "end": null,
+     "label": "Irfaan Ali"
+    }
+   ],
+   "office_label": "President of Guyana"
+  },
+  {
+   "office": "Q756265",
+   "holders": [
+    {
+     "qid": "Q9122260",
+     "start": "2017-07-10",
+     "end": "2021-06-25",
+     "label": "Khaltmaagiin Battulga"
+    },
+    {
+     "qid": "Q27058418",
+     "start": "2021-07-10",
+     "end": null,
+     "label": "Khurelsukh Ukhnaa"
+    }
+   ],
+   "office_label": "President of Mongolia"
+  },
+  {
+   "office": "Q796593",
+   "holders": [
+    {
+     "qid": "Q1508402",
+     "start": "2019-04-04",
+     "end": "2024-04-04",
+     "label": "George William Vella"
+    },
+    {
+     "qid": "Q1647394",
+     "start": "2024-04-04",
+     "end": null,
+     "label": "Myriam Spiteri Debono"
+    }
+   ],
+   "office_label": "President of Malta"
+  },
+  {
+   "office": "Q839139",
+   "holders": [
+    {
+     "qid": "Q18538164",
+     "start": "2025-02-12",
+     "end": "2025-05-26",
+     "label": "Ilie Bolojan"
+    },
+    {
+     "qid": "Q11163124",
+     "start": "2025-05-26",
+     "end": null,
+     "label": "Nicu\u0219or Dan"
+    }
+   ],
+   "office_label": "president of Romania"
+  },
+  {
+   "office": "Q843405",
+   "holders": [
+    {
+     "qid": "Q272416",
+     "start": "2018-12-16",
+     "end": "2024-12-29",
+     "label": "Salome Zourabichvili"
+    },
+    {
+     "qid": "Q711893",
+     "start": "2024-12-29",
+     "end": null,
+     "label": "Mikheil Kavelashvili"
+    }
+   ],
+   "office_label": "President of Georgia"
+  },
+  {
+   "office": "Q878217",
+   "holders": [
+    {
+     "qid": "Q55863225",
+     "start": "2022-07-06",
+     "end": "2022-07-23",
+     "label": "Seoule Simeon"
+    },
+    {
+     "qid": "Q113239716",
+     "start": "2022-07-23",
+     "end": null,
+     "label": "Nikenike Vurobaravu"
+    }
+   ],
+   "office_label": "President of Vanuatu"
+  },
+  {
+   "office": "Q878222",
+   "holders": [
+    {
+     "qid": "Q57379",
+     "start": "2009-07-12",
+     "end": "2019-07-12",
+     "label": "Dalia Grybauskait\u0117"
+    },
+    {
+     "qid": "Q9268379",
+     "start": "2019-07-12",
+     "end": null,
+     "label": "Gitanas Naus\u0117da"
+    }
+   ],
+   "office_label": "President of the Republic of Lithuania"
+  },
+  {
+   "office": "Q889830",
+   "holders": [
+    {
+     "qid": "Q57431",
+     "start": "2012-05-31",
+     "end": "2017-05-31",
+     "label": "Tomislav Nikoli\u0107"
+    },
+    {
+     "qid": "Q222031",
+     "start": "2017-05-31",
+     "end": null,
+     "label": "Aleksandar Vu\u010di\u0107"
+    }
+   ],
+   "office_label": "President of Serbia"
+  },
+  {
+   "office": "Q890005",
+   "holders": [
+    {
+     "qid": "Q12366816",
+     "start": "2016-10-10",
+     "end": "2021-10-11",
+     "label": "Kersti Kaljulaid"
+    },
+    {
+     "qid": "Q12358575",
+     "start": "2021-10-11",
+     "end": null,
+     "label": "Alar Karis"
+    }
+   ],
+   "office_label": "President of Estonia"
+  },
+  {
+   "office": "Q1054799",
+   "holders": [
+    {
+     "qid": "Q9151911",
+     "start": "2015-08-06",
+     "end": "2025-08-06",
+     "label": "Andrzej Duda"
+    },
+    {
+     "qid": "Q17704749",
+     "start": "2025-08-06",
+     "end": null,
+     "label": "Karol Nawrocki"
+    }
+   ],
+   "office_label": "President of the Republic of Poland"
+  },
+  {
+   "office": "Q1149153",
+   "holders": [
+    {
+     "qid": "Q200305",
+     "start": "2018-05-20",
+     "end": "2023-05-20",
+     "label": "Milo \u0110ukanovi\u0107"
+    },
+    {
+     "qid": "Q104417661",
+     "start": "2023-05-20",
+     "end": null,
+     "label": "Jakov Milatovi\u0107"
+    }
+   ],
+   "office_label": "President of Montenegro"
+  },
+  {
+   "office": "Q1258128",
+   "holders": [
+    {
+     "qid": "Q57523",
+     "start": "2007-06-20",
+     "end": "2017-07-21",
+     "label": "Tufuga Efi"
+    },
+    {
+     "qid": "Q32014514",
+     "start": "2017-07-21",
+     "end": null,
+     "label": "Va'aletoa Sualauvi II"
+    }
+   ],
+   "office_label": "O le Ao o le Malo"
+  },
+  {
+   "office": "Q1294765",
+   "holders": [
+    {
+     "qid": "Q57287",
+     "start": "1991-01-17",
+     "end": "2026-08-28",
+     "label": "Harald V of Norway"
+    },
+    {
+     "qid": "Q165241",
+     "start": "2026-08-28",
+     "end": null,
+     "label": "Haakon VIII"
+    }
+   ],
+   "office_label": "Monarch of Norway"
+  },
+  {
+   "office": "Q1370482",
+   "holders": [
+    {
+     "qid": "Q46809",
+     "start": "2006-07-31",
+     "end": "2018-04-19",
+     "label": "Ra\u00fal Castro"
+    },
+    {
+     "qid": "Q1932603",
+     "start": "2018-04-19",
+     "end": null,
+     "label": "Miguel D\u00edaz-Canel"
+    }
+   ],
+   "office_label": "President of Cuba"
+  },
+  {
+   "office": "Q1625960",
+   "holders": [
+    {
+     "qid": "Q727132",
+     "start": "2017-07-24",
+     "end": "2022-07-24",
+     "label": "Ilir Meta"
+    },
+    {
+     "qid": "Q107422711",
+     "start": "2022-07-24",
+     "end": null,
+     "label": "Bajram Begaj"
+    }
+   ],
+   "office_label": "President of Albania"
+  },
+  {
+   "office": "Q1819381",
+   "holders": [
+    {
+     "qid": "Q29032",
+     "start": "2013-03-08",
+     "end": "2023-03-08",
+     "label": "Milo\u0161 Zeman"
+    },
+    {
+     "qid": "Q2080040",
+     "start": "2023-03-09",
+     "end": null,
+     "label": "Petr Pavel"
+    }
+   ],
+   "office_label": "President of the Czech Republic"
+  },
+  {
+   "office": "Q2914452",
+   "holders": [
+    {
+     "qid": "Q2821079",
+     "start": "2019-04-09",
+     "end": "2019-12-19",
+     "label": "Abd al-Qadir ibn Saleh"
+    },
+    {
+     "qid": "Q2821166",
+     "start": "2019-12-19",
+     "end": null,
+     "label": "Abdelmadjid Tebboune"
+    }
+   ],
+   "office_label": "President of Algeria"
+  },
+  {
+   "office": "Q3409186",
+   "holders": [
+    {
+     "qid": "Q7399685",
+     "start": "2018-10-25",
+     "end": "2024-10-07",
+     "label": "Sahle-Work Zewde"
+    },
+    {
+     "qid": "Q124831090",
+     "start": "2024-10-07",
+     "end": null,
+     "label": "Taye Atske Selassie"
+    }
+   ],
+   "office_label": "President of Ethiopia"
+  },
+  {
+   "office": "Q3409203",
+   "holders": [
+    {
+     "qid": "Q57415743",
+     "start": "2020-03-13",
+     "end": "2025-03-13",
+     "label": "Katerina Sakellaropoulou"
+    },
+    {
+     "qid": "Q20995518",
+     "start": "2025-03-13",
+     "end": null,
+     "label": "Konstantinos Tasoulas"
+    }
+   ],
+   "office_label": "President of Greece"
+  },
+  {
+   "office": "Q4283840",
+   "holders": [
+    {
+     "qid": "Q20513503",
+     "start": "2022-02-01",
+     "end": "2022-03-13",
+     "label": "Alen Simonyan"
+    },
+    {
+     "qid": "Q3553274",
+     "start": "2022-03-13",
+     "end": null,
+     "label": "Vahagn Khachatryan"
+    }
+   ],
+   "office_label": "President of Armenia"
+  },
+  {
+   "office": "Q5256775",
+   "holders": [
+    {
+     "qid": "Q57394",
+     "start": "1991-12-16",
+     "end": "2019-03-20",
+     "label": "N\u016brs\u016bltan Nazarbaev"
+    },
+    {
+     "qid": "Q200881",
+     "start": "2019-03-20",
+     "end": null,
+     "label": "Qasym-Zhomart Toqaev"
+    }
+   ],
+   "office_label": "President of Kazakhstan"
+  },
+  {
+   "office": "Q6468838",
+   "holders": [
+    {
+     "qid": "Q26273268",
+     "start": "2019-06-15",
+     "end": "2024-06-15",
+     "label": "Zuzana \u010caputov\u00e1"
+    },
+    {
+     "qid": "Q17330556",
+     "start": "2024-06-15",
+     "end": null,
+     "label": "Peter Pellegrini"
+    }
+   ],
+   "office_label": "President of Slovakia"
+  },
+  {
+   "office": "Q7466263",
+   "holders": [
+    {
+     "qid": "Q20533811",
+     "start": "2016-09-02",
+     "end": "2016-09-08",
+     "label": "Nigmatilla Yuldashev"
+    },
+    {
+     "qid": "Q57808",
+     "start": "2016-09-08",
+     "end": null,
+     "label": "Shavkat Mirziyoyev"
+    }
+   ],
+   "office_label": "President of Uzbekistan"
+  },
+  {
+   "office": "Q13592862",
+   "holders": [
+    {
+     "qid": "Q3911",
+     "start": "1993-08-09",
+     "end": "2013-07-21",
+     "label": "Albert II of Belgium"
+    },
+    {
+     "qid": "Q155004",
+     "start": "2013-07-21",
+     "end": null,
+     "label": "Philippe of Belgium"
+    }
+   ],
+   "office_label": "King of the Belgians"
+  },
+  {
+   "office": "Q14946265",
+   "holders": [
+    {
+     "qid": "Q26257557",
+     "start": "2017-01-22",
+     "end": "2026-01-23",
+     "label": "Rumen Radev"
+    },
+    {
+     "qid": "Q433338",
+     "start": "2026-01-23",
+     "end": null,
+     "label": "Iliana Iotova"
+    }
+   ],
+   "office_label": "President of Bulgaria"
+  },
+  {
+   "office": "Q15618993",
+   "holders": [
+    {
+     "qid": "Q13593432",
+     "start": "2013-07-03",
+     "end": "2014-06-08",
+     "label": "Adly Mansour"
+    },
+    {
+     "qid": "Q307871",
+     "start": "2014-06-08",
+     "end": null,
+     "label": "Abdel Fattah el-Sisi"
+    }
+   ],
+   "office_label": "President of Egypt"
+  },
+  {
+   "office": "Q19188924",
+   "holders": [
+    {
+     "qid": "Q24045706",
+     "start": "2016-08-01",
+     "end": "2024-07-31",
+     "label": "Gu\u00f0ni J\u00f3hannesson"
+    },
+    {
+     "qid": "Q24494577",
+     "start": "2024-08-01",
+     "end": null,
+     "label": "Halla T\u00f3masd\u00f3ttir"
+    }
+   ],
+   "office_label": "President of Iceland"
+  },
+  {
+   "office": "Q19808790",
+   "holders": [
+    {
+     "qid": "Q57473",
+     "start": "2003-05-12",
+     "end": "2025-05-31",
+     "label": "Joan Enric Vives Sic\u00edlia"
+    },
+    {
+     "qid": "Q93244592",
+     "start": "2025-05-31",
+     "end": null,
+     "label": "Josep-Llu\u00eds Serrano Pentinat"
+    }
+   ],
+   "office_label": "Episcopal Co-Prince"
+  },
+  {
+   "office": "Q42298576",
+   "holders": [
+    {
+     "qid": "Q227716",
+     "start": "2006-09-11",
+     "end": "2012-03-18",
+     "label": "George Tupou V of Tonga"
+    },
+    {
+     "qid": "Q208497",
+     "start": "2012-03-18",
+     "end": null,
+     "label": "Tupou VI of Tonga"
+    }
+   ],
+   "office_label": "Monarch of Tonga"
+  },
+  {
+   "office": "Q56876342",
+   "holders": [
+    {
+     "qid": "Q10665",
+     "start": "1994-07-08",
+     "end": "2011-12-17",
+     "label": "Kim Jong-il"
+    },
+    {
+     "qid": "Q56226",
+     "start": "2011-12-17",
+     "end": null,
+     "label": "Kim Jong-un"
+    }
+   ],
+   "office_label": "Supreme Leader of North Korea"
+  },
+  {
+   "office": "Q76292543",
+   "holders": [
+    {
+     "qid": "Q109012733",
+     "start": "2021-11-12",
+     "end": "2024-11-12",
+     "label": "Wiliame Katonivere"
+    },
+    {
+     "qid": "Q6959729",
+     "start": "2024-11-12",
+     "end": null,
+     "label": "Naiqama Lalabalavu"
+    }
+   ],
+   "office_label": "President of Fiji"
+  },
+  {
+   "office": "Q108857904",
+   "holders": [
+    {
+     "qid": "Q9333540",
+     "start": "2021-11-30",
+     "end": "2025-11-30",
+     "label": "Sandra Mason"
+    },
+    {
+     "qid": "Q107718230",
+     "start": "2025-11-30",
+     "end": null,
+     "label": "Jeffrey Bostic"
+    }
+   ],
+   "office_label": "President of Barbados"
+  },
+  {
+   "office": "Q19546",
+   "holders": [
+    {
+     "qid": "Q450675",
+     "start": "2013-03-13",
+     "end": "2025-04-21",
+     "label": "Pope Francis"
+    },
+    {
+     "qid": "Q6109517",
+     "start": "2025-05-08",
+     "end": null,
+     "label": "Leo XIV"
+    }
+   ],
+   "office_label": "Pope"
+  },
+  {
+   "office": "Q25223",
+   "holders": [
+    {
+     "qid": "Q2538",
+     "start": "2012-03-18",
+     "end": "2017-03-18",
+     "label": "Joachim Gauck"
+    },
+    {
+     "qid": "Q76658",
+     "start": "2017-03-19",
+     "end": null,
+     "label": "Frank-Walter Steinmeier"
+    }
+   ],
+   "office_label": "president of Germany"
+  },
+  {
+   "office": "Q29558",
+   "holders": [
+    {
+     "qid": "Q29207",
+     "start": "2012-03-01",
+     "end": "2024-03-01",
+     "label": "Sauli Niinist\u00f6"
+    },
+    {
+     "qid": "Q503143",
+     "start": "2024-03-01",
+     "end": null,
+     "label": "Alexander Stubb"
+    }
+   ],
+   "office_label": "President of Finland"
+  },
+  {
+   "office": "Q39021",
+   "holders": [
+    {
+     "qid": "Q5642345",
+     "start": "2017-09-14",
+     "end": "2023-09-13",
+     "label": "Halimah Yacob"
+    },
+    {
+     "qid": "Q983752",
+     "start": "2023-09-14",
+     "end": null,
+     "label": "Tharman Shanmugaratnam"
+    }
+   ],
+   "office_label": "President of Singapore"
+  },
+  {
+   "office": "Q153756",
+   "holders": [
+    {
+     "qid": "Q16193958",
+     "start": "2015-10-29",
+     "end": "2023-03-12",
+     "label": "Bidya Devi Bhandari"
+    },
+    {
+     "qid": "Q3183124",
+     "start": "2023-03-13",
+     "end": null,
+     "label": "Ram Chandra Poudel"
+    }
+   ],
+   "office_label": "President of Nepal"
+  },
+  {
+   "office": "Q174156",
+   "holders": [
+    {
+     "qid": "Q15467111",
+     "start": "2019-01-31",
+     "end": "2024-01-30",
+     "label": "Abdullah of Pahang"
+    },
+    {
+     "qid": "Q2657043",
+     "start": "2024-01-31",
+     "end": null,
+     "label": "Ibrahim Iskandar of Johor"
+    }
+   ],
+   "office_label": "Yang di-Pertuan Agong"
+  },
+  {
+   "office": "Q473984",
+   "holders": [
+    {
+     "qid": "Q4790529",
+     "start": "2018-09-09",
+     "end": "2024-03-10",
+     "label": "Arif Alvi"
+    },
+    {
+     "qid": "Q57373",
+     "start": "2024-03-10",
+     "end": null,
+     "label": "Asif Ali Zardari"
+    }
+   ],
+   "office_label": "President of Pakistan"
+  },
+  {
+   "office": "Q500282",
+   "holders": [
+    {
+     "qid": "Q361567",
+     "start": "2015-05-29",
+     "end": "2023-05-29",
+     "label": "Muhammadu Buhari"
+    },
+    {
+     "qid": "Q3510872",
+     "start": "2023-05-29",
+     "end": null,
+     "label": "Bola Tinubu"
+    }
+   ],
+   "office_label": "President of Nigeria"
+  },
+  {
+   "office": "Q602280",
+   "holders": [
+    {
+     "qid": "Q232610",
+     "start": "2007-07-17",
+     "end": "2014-08-13",
+     "label": "Louise Lake-Tack"
+    },
+    {
+     "qid": "Q17566330",
+     "start": "2014-08-14",
+     "end": null,
+     "label": "Rodney Williams"
+    }
+   ],
+   "office_label": "Governor-General of Antigua and Barbuda"
+  },
+  {
+   "office": "Q607982",
+   "holders": [
+    {
+     "qid": "Q57429",
+     "start": "2012-08-16",
+     "end": "2020-08-16",
+     "label": "Danilo Medina"
+    },
+    {
+     "qid": "Q16594097",
+     "start": "2020-08-16",
+     "end": null,
+     "label": "Luis Abinader"
+    }
+   ],
+   "office_label": "President of the Dominican Republic"
+  },
+  {
+   "office": "Q647198",
+   "holders": [
+    {
+     "qid": "Q287100",
+     "start": "2024-02-04",
+     "end": "2025-03-21",
+     "label": "Nangolo Mbumba"
+    },
+    {
+     "qid": "Q527020",
+     "start": "2025-03-21",
+     "end": null,
+     "label": "Netumbo Nandi-Ndaitwah"
+    }
+   ],
+   "office_label": "President of the Republic of Namibia"
+  },
+  {
+   "office": "Q648464",
+   "holders": [
+    {
+     "qid": "Q44329",
+     "start": "2000-07-17",
+     "end": "2024-12-08",
+     "label": "Bashar al-Assad"
+    },
+    {
+     "qid": "Q7934206",
+     "start": "2025-01-29",
+     "end": null,
+     "label": "Ahmed al-Sharaa"
+    }
+   ],
+   "office_label": "President of Syria"
+  },
+  {
+   "office": "Q838380",
+   "holders": [
+    {
+     "qid": "Q5703610",
+     "start": "2024-05-19",
+     "end": "2024-07-28",
+     "label": "Mohammad Mokhber"
+    },
+    {
+     "qid": "Q5933752",
+     "start": "2024-07-28",
+     "end": null,
+     "label": "Masoud Pezeshkian"
+    }
+   ],
+   "office_label": "President of Iran"
+  },
+  {
+   "office": "Q850168",
+   "holders": [
+    {
+     "qid": "Q57298",
+     "start": "2005-08-01",
+     "end": "2015-01-23",
+     "label": "Abdullah of Saudi Arabia"
+    },
+    {
+     "qid": "Q367825",
+     "start": "2015-01-23",
+     "end": null,
+     "label": "Salman bin Abdulaziz Al Saud"
+    }
+   ],
+   "office_label": "King of Saudi Arabia"
+  },
+  {
+   "office": "Q853036",
+   "holders": [
+    {
+     "qid": "Q25597831",
+     "start": "2020-11-14",
+     "end": "2021-01-27",
+     "label": "Talant Mamytov"
+    },
+    {
+     "qid": "Q25597826",
+     "start": "2021-01-28",
+     "end": null,
+     "label": "Sadyr Japarov"
+    }
+   ],
+   "office_label": "President of Kyrgyzstan"
+  },
+  {
+   "office": "Q866680",
+   "holders": [
+    {
+     "qid": "Q10831196",
+     "start": "2024-05-22",
+     "end": "2024-10-21",
+     "label": "T\u00f4 L\u00e2m"
+    },
+    {
+     "qid": "Q18459548",
+     "start": "2024-10-21",
+     "end": null,
+     "label": "L\u01b0\u01a1ng C\u01b0\u1eddng"
+    }
+   ],
+   "office_label": "President of Vietnam"
+  },
+  {
+   "office": "Q878151",
+   "holders": [
+    {
+     "qid": "Q936831",
+     "start": "2014-06-01",
+     "end": "2019-06-01",
+     "label": "Salvador S\u00e1nchez Cer\u00e9n"
+    },
+    {
+     "qid": "Q17712353",
+     "start": "2019-06-01",
+     "end": null,
+     "label": "Nayib buke"
+    }
+   ],
+   "office_label": "President of El Salvador"
+  },
+  {
+   "office": "Q878256",
+   "holders": [
+    {
+     "qid": "Q57480",
+     "start": "2012-02-27",
+     "end": "2022-04-07",
+     "label": "Abdrabbuh Mansour Hadi"
+    },
+    {
+     "qid": "Q12213376",
+     "start": "2022-04-07",
+     "end": null,
+     "label": "Rashad al-Alimi"
+    }
+   ],
+   "office_label": "President of Yemen"
+  },
+  {
+   "office": "Q886947",
+   "holders": [
+    {
+     "qid": "Q5567306",
+     "start": "2021-03-22",
+     "end": "2021-04-04",
+     "label": "Glauk Konjufca"
+    },
+    {
+     "qid": "Q13047644",
+     "start": "2021-04-04",
+     "end": null,
+     "label": "Vjosa Osmani"
+    }
+   ],
+   "office_label": "President of Kosovo"
+  },
+  {
+   "office": "Q886965",
+   "holders": [
+    {
+     "qid": "Q28122455",
+     "start": "2019-07-01",
+     "end": "2024-07-01",
+     "label": "Laurentino Cortizo"
+    },
+    {
+     "qid": "Q108454869",
+     "start": "2024-07-01",
+     "end": null,
+     "label": "Jos\u00e9 Ra\u00fal Mulino"
+    }
+   ],
+   "office_label": "President of Panama"
+  },
+  {
+   "office": "Q887003",
+   "holders": [
+    {
+     "qid": "Q233984",
+     "start": "2016-05-20",
+     "end": "2024-05-19",
+     "label": "Tsai Ing-wen"
+    },
+    {
+     "qid": "Q3847080",
+     "start": "2024-05-20",
+     "end": null,
+     "label": "Lai Ching-te"
+    }
+   ],
+   "office_label": "President of the Republic of China"
+  },
+  {
+   "office": "Q889817",
+   "holders": [
+    {
+     "qid": "Q6496078",
+     "start": "2022-10-13",
+     "end": "2026-04-11",
+     "label": "Abdul Latif Rashid"
+    },
+    {
+     "qid": "Q115579547",
+     "start": "2026-04-12",
+     "end": null,
+     "label": "Nizar Amidi"
+    }
+   ],
+   "office_label": "President of Iraq"
+  },
+  {
+   "office": "Q890010",
+   "holders": [
+    {
+     "qid": "Q57460",
+     "start": "2007-09-17",
+     "end": "2018-04-04",
+     "label": "Ernest Bai Koroma"
+    },
+    {
+     "qid": "Q283829",
+     "start": "2018-04-04",
+     "end": null,
+     "label": "Julius Maada Bio"
+    }
+   ],
+   "office_label": "President of Sierra Leone"
+  },
+  {
+   "office": "Q904139",
+   "holders": [
+    {
+     "qid": "Q470024",
+     "start": "2016-04-20",
+     "end": "2021-03-22",
+     "label": "Bounnhang Vorachit"
+    },
+    {
+     "qid": "Q58323",
+     "start": "2021-03-22",
+     "end": null,
+     "label": "Thongloun Sisoulith"
+    }
+   ],
+   "office_label": "President of Laos"
+  },
+  {
+   "office": "Q955006",
+   "holders": [
+    {
+     "qid": "Q57655",
+     "start": "2022-05-13",
+     "end": "2022-05-14",
+     "label": "Mohammed bin Rashid Al Maktoum"
+    },
+    {
+     "qid": "Q1951896",
+     "start": "2022-05-14",
+     "end": null,
+     "label": "Mohammed Bin Zayed Al Nahyan"
+    }
+   ],
+   "office_label": "President of the United Arab Emirates"
+  },
+  {
+   "office": "Q1044136",
+   "holders": [
+    {
+     "qid": "Q2828958",
+     "start": "1992-09-07",
+     "end": "1992-11-20",
+     "label": "Akbarsho Iskandrov"
+    },
+    {
+     "qid": "Q57366",
+     "start": "1994-11-19",
+     "end": null,
+     "label": "Emomali Rahmon"
+    }
+   ],
+   "office_label": "president of Tajikistan"
+  },
+  {
+   "office": "Q1064606",
+   "holders": [
+    {
+     "qid": "Q55614252",
+     "start": "2018-11-17",
+     "end": "2023-11-17",
+     "label": "Ibrahim Mohamed Solih"
+    },
+    {
+     "qid": "Q116293030",
+     "start": "2023-11-17",
+     "end": null,
+     "label": "Mohamed Muizzu"
+    }
+   ],
+   "office_label": "President of the Maldives"
+  },
+  {
+   "office": "Q1155759",
+   "holders": [
+    {
+     "qid": "Q57530",
+     "start": "2006-12-21",
+     "end": "2022-03-19",
+     "label": "Gurbanguly Berdimuhamedow"
+    },
+    {
+     "qid": "Q51874548",
+     "start": "2022-03-19",
+     "end": null,
+     "label": "Serdar Berdimuhamedow"
+    }
+   ],
+   "office_label": "President of Turkmenistan"
+  },
+  {
+   "office": "Q1209571",
+   "holders": [
+    {
+     "qid": "Q457786",
+     "start": "2016-06-30",
+     "end": "2022-06-30",
+     "label": "Rodrigo Duterte"
+    },
+    {
+     "qid": "Q983324",
+     "start": "2022-06-30",
+     "end": null,
+     "label": "Bongbong Marcos"
+    }
+   ],
+   "office_label": "President of the Philippines"
+  },
+  {
+   "office": "Q1472951",
+   "holders": [
+    {
+     "qid": "Q548609",
+     "start": "2006-02-15",
+     "end": "2009-02-26",
+     "label": "Kenneth O. Hall"
+    },
+    {
+     "qid": "Q109147",
+     "start": "2009-02-26",
+     "end": null,
+     "label": "Patrick Allen"
+    }
+   ],
+   "office_label": "Governor-General of Jamaica"
+  },
+  {
+   "office": "Q2407810",
+   "holders": [
+    {
+     "qid": "Q16669148",
+     "start": "2016-04-06",
+     "end": "2026-05-24",
+     "label": "Patrice Talon"
+    },
+    {
+     "qid": "Q24951128",
+     "start": "2026-05-24",
+     "end": null,
+     "label": "Romuald Wadagni"
+    }
+   ],
+   "office_label": "President of the Republic of Benin"
+  },
+  {
+   "office": "Q2914380",
+   "holders": [
+    {
+     "qid": "Q983402",
+     "start": "2022-07-15",
+     "end": "2024-09-23",
+     "label": "Ranil Wickremesinghe"
+    },
+    {
+     "qid": "Q4777855",
+     "start": "2024-09-23",
+     "end": null,
+     "label": "Anura Kurankan Dissanayake"
+    }
+   ],
+   "office_label": "President of Sri Lanka"
+  },
+  {
+   "office": "Q3286988",
+   "holders": [
+    {
+     "qid": "Q77311543",
+     "start": "2019-12-02",
+     "end": "2024-12-06",
+     "label": "Prithvirajsing Roopun"
+    },
+    {
+     "qid": "Q131403499",
+     "start": "2024-12-07",
+     "end": null,
+     "label": "Dharam Gokhool"
+    }
+   ],
+   "office_label": "President of Mauritius"
+  },
+  {
+   "office": "Q3409199",
+   "holders": [
+    {
+     "qid": "Q57416",
+     "start": "2001-01-26",
+     "end": "2019-01-25",
+     "label": "Joseph Kabila"
+    },
+    {
+     "qid": "Q29032770",
+     "start": "2019-01-25",
+     "end": null,
+     "label": "F\u00e9lix Tshisekedi"
+    }
+   ],
+   "office_label": "President of the Democratic Republic of the Congo"
+  },
+  {
+   "office": "Q6085537",
+   "holders": [
+    {
+     "qid": "Q2134696",
+     "start": "2020-01-14",
+     "end": "2024-01-14",
+     "label": "Alejandro Giammattei"
+    },
+    {
+     "qid": "Q107254030",
+     "start": "2024-01-15",
+     "end": null,
+     "label": "Bernardo Ar\u00e9valo de Le\u00f3n"
+    }
+   ],
+   "office_label": "president of Guatemala"
+  },
+  {
+   "office": "Q6296418",
+   "holders": [
+    {
+     "qid": "Q16090635",
+     "start": "2022-05-10",
+     "end": "2025-04-04",
+     "label": "Yoon Suk Yeol"
+    },
+    {
+     "qid": "Q12612463",
+     "start": "2025-06-04",
+     "end": null,
+     "label": "Lee Jae Myung"
+    }
+   ],
+   "office_label": "President of South Korea"
+  },
+  {
+   "office": "Q7241291",
+   "holders": [
+    {
+     "qid": "Q5018756",
+     "start": "2015-11-05",
+     "end": "2021-03-17",
+     "label": "John Magufuli"
+    },
+    {
+     "qid": "Q16193885",
+     "start": "2021-03-19",
+     "end": null,
+     "label": "Samia Suluhu Hassan"
+    }
+   ],
+   "office_label": "President of Tanzania"
+  },
+  {
+   "office": "Q10353660",
+   "holders": [
+    {
+     "qid": "Q379725",
+     "start": "1992-08-31",
+     "end": "1997-10-25",
+     "label": "Pascal Lissouba"
+    },
+    {
+     "qid": "Q57418",
+     "start": "1997-10-25",
+     "end": null,
+     "label": "Denis Sassou-Nguesso"
+    }
+   ],
+   "office_label": "President of the Republic of the Congo"
+  },
+  {
+   "office": "Q13341442",
+   "holders": [
+    {
+     "qid": "Q8044708",
+     "start": "2022-01-27",
+     "end": "2026-01-27",
+     "label": "Xiomara Castro"
+    },
+    {
+     "qid": "Q16146159",
+     "start": "2026-01-27",
+     "end": null,
+     "label": "Nasry Asfura"
+    }
+   ],
+   "office_label": "President of Honduras"
+  },
+  {
+   "office": "Q14911897",
+   "holders": [
+    {
+     "qid": "Q3318530",
+     "start": "2019-07-25",
+     "end": "2019-10-23",
+     "label": "Mohamed Ennaceur"
+    },
+    {
+     "qid": "Q16120878",
+     "start": "2019-10-23",
+     "end": null,
+     "label": "Kais Saied"
+    }
+   ],
+   "office_label": "President of Tunisia"
+  },
+  {
+   "office": "Q15710848",
+   "holders": [
+    {
+     "qid": "Q15633683",
+     "start": "2014-01-23",
+     "end": "2016-03-30",
+     "label": "Catherine Samba-Panza"
+    },
+    {
+     "qid": "Q57758",
+     "start": "2016-03-30",
+     "end": null,
+     "label": "Faustin-Archange Touad\u00e9ra"
+    }
+   ],
+   "office_label": "President of the Central African Republic"
+  },
+  {
+   "office": "Q15921518",
+   "holders": [
+    {
+     "qid": "Q57356",
+     "start": "1996-09-29",
+     "end": "2017-01-19",
+     "label": "Yahya Jammeh"
+    },
+    {
+     "qid": "Q27917049",
+     "start": "2017-01-19",
+     "end": null,
+     "label": "Adama Barrow"
+    }
+   ],
+   "office_label": "President of the Gambia"
+  },
+  {
+   "office": "Q15921529",
+   "holders": [
+    {
+     "qid": "Q16202782",
+     "start": "2020-06-28",
+     "end": "2025-10-04",
+     "label": "Lazarus Chakwera"
+    },
+    {
+     "qid": "Q7176020",
+     "start": "2025-10-04",
+     "end": null,
+     "label": "Peter Mutharika"
+    }
+   ],
+   "office_label": "President of Malawi"
+  },
+  {
+   "office": "Q18565665",
+   "holders": [
+    {
+     "qid": "Q5448556",
+     "start": "2015-01-15",
+     "end": "2025-01-15",
+     "label": "Filipe Nyusi"
+    },
+    {
+     "qid": "Q97058466",
+     "start": "2025-01-15",
+     "end": null,
+     "label": "Daniel Chapo"
+    }
+   ],
+   "office_label": "President of Mozambique"
+  },
+  {
+   "office": "Q18985034",
+   "holders": [
+    {
+     "qid": "Q18352991",
+     "start": "2015-01-25",
+     "end": "2021-08-24",
+     "label": "Edgar Lungu"
+    },
+    {
+     "qid": "Q717185",
+     "start": "2021-08-24",
+     "end": null,
+     "label": "Hakainde Hichilema"
+    }
+   ],
+   "office_label": "President of Zambia"
+  },
+  {
+   "office": "Q19056184",
+   "holders": [
+    {
+     "qid": "Q7181212",
+     "start": "2017-11-21",
+     "end": "2017-11-24",
+     "label": "Phelekezela Mphoko"
+    },
+    {
+     "qid": "Q510523",
+     "start": "2017-11-24",
+     "end": null,
+     "label": "Emmerson Mnangagwa"
+    }
+   ],
+   "office_label": "President of Zimbabwe"
+  },
+  {
+   "office": "Q19057726",
+   "holders": [
+    {
+     "qid": "Q471882",
+     "start": "1994-07-19",
+     "end": "2000-03-23",
+     "label": "Pasteur Bizimungu"
+    },
+    {
+     "qid": "Q1231345",
+     "start": "2000-04-22",
+     "end": null,
+     "label": "Paul Kagame"
+    }
+   ],
+   "office_label": "President of Rwanda"
+  },
+  {
+   "office": "Q19057827",
+   "holders": [
+    {
+     "qid": "Q16873213",
+     "start": "2020-06-08",
+     "end": "2020-06-18",
+     "label": "Pascal Nyabenda"
+    },
+    {
+     "qid": "Q27329764",
+     "start": "2020-06-18",
+     "end": null,
+     "label": "\u00c9variste Ndayishimiye"
+    }
+   ],
+   "office_label": "President of Burundi"
+  },
+  {
+   "office": "Q19058289",
+   "holders": [
+    {
+     "qid": "Q709734",
+     "start": "2016-09-03",
+     "end": "2021-10-02",
+     "label": "Evaristo Carvalho"
+    },
+    {
+     "qid": "Q27982047",
+     "start": "2021-10-02",
+     "end": null,
+     "label": "Carlos Vila Nova"
+    }
+   ],
+   "office_label": "President of S\u00e3o Tom\u00e9 and Pr\u00edncipe"
+  },
+  {
+   "office": "Q19058382",
+   "holders": [
+    {
+     "qid": "Q57517",
+     "start": "2011-09-09",
+     "end": "2021-11-09",
+     "label": "Jorge Carlos Fonseca"
+    },
+    {
+     "qid": "Q57649",
+     "start": "2021-11-09",
+     "end": null,
+     "label": "Jos\u00e9 Maria Neves"
+    }
+   ],
+   "office_label": "President of Cape Verde"
+  },
+  {
+   "office": "Q19109718",
+   "holders": [
+    {
+     "qid": "Q57521",
+     "start": "2009-10-16",
+     "end": "2023-08-30",
+     "label": "Ali Bongo Ondimba"
+    },
+    {
+     "qid": "Q122067521",
+     "start": "2023-08-30",
+     "end": null,
+     "label": "Brice Clotaire Oligui Nguema"
+    }
+   ],
+   "office_label": "President of Gabon"
+  },
+  {
+   "office": "Q19116034",
+   "holders": [
+    {
+     "qid": "Q57438",
+     "start": "2012-04-02",
+     "end": "2024-04-02",
+     "label": "Macky Sall"
+    },
+    {
+     "qid": "Q124382437",
+     "start": "2024-04-02",
+     "end": null,
+     "label": "Bassirou Diomaye Faye"
+    }
+   ],
+   "office_label": "President of Senegal"
+  },
+  {
+   "office": "Q19161338",
+   "holders": [
+    {
+     "qid": "Q57363",
+     "start": "2019-01-19",
+     "end": "2025-10-14",
+     "label": "Andry Rajoelina"
+    },
+    {
+     "qid": "Q136500275",
+     "start": "2025-10-14",
+     "end": null,
+     "label": "Michael Randrianirina"
+    }
+   ],
+   "office_label": "President of Madagascar"
+  },
+  {
+   "office": "Q19161825",
+   "holders": [
+    {
+     "qid": "Q173139",
+     "start": "2018-01-22",
+     "end": "2024-01-22",
+     "label": "George Weah"
+    },
+    {
+     "qid": "Q2630483",
+     "start": "2024-01-22",
+     "end": null,
+     "label": "Joseph Boakai"
+    }
+   ],
+   "office_label": "President of Liberia"
+  },
+  {
+   "office": "Q20087535",
+   "holders": [
+    {
+     "qid": "Q2960197",
+     "start": "2013-10-02",
+     "end": "2023-10-02",
+     "label": "Charles Savarin"
+    },
+    {
+     "qid": "Q122208779",
+     "start": "2023-10-02",
+     "end": null,
+     "label": "Sylvanie Burton"
+    }
+   ],
+   "office_label": "president of Dominica"
+  },
+  {
+   "office": "Q20995488",
+   "holders": [
+    {
+     "qid": "Q110666454",
+     "start": "2022-01-24",
+     "end": "2022-09-30",
+     "label": "Paul-Henri Sandaogo Damiba"
+    },
+    {
+     "qid": "Q114341246",
+     "start": "2022-09-30",
+     "end": null,
+     "label": "Ibrahim Traor\u00e9"
+    }
+   ],
+   "office_label": "President of Burkina Faso"
+  },
+  {
+   "office": "Q22001564",
+   "holders": [
+    {
+     "qid": "Q363392",
+     "start": "2016-10-31",
+     "end": "2022-10-30",
+     "label": "Michel Aoun"
+    },
+    {
+     "qid": "Q29033962",
+     "start": "2025-01-09",
+     "end": null,
+     "label": "Joseph Aoun"
+    }
+   ],
+   "office_label": "President of Lebanon"
+  },
+  {
+   "office": "Q25711499",
+   "holders": [
+    {
+     "qid": "Q57360",
+     "start": "1995-06-26",
+     "end": "2013-06-25",
+     "label": "Hamad bin Khalifa Al Thani"
+    },
+    {
+     "qid": "Q1855372",
+     "start": "2013-06-25",
+     "end": null,
+     "label": "Tamim bin Hamad Al Thani"
+    }
+   ],
+   "office_label": "Emir of the State of Qatar"
+  },
+  {
+   "office": "Q28002551",
+   "holders": [
+    {
+     "qid": "Q294969",
+     "start": "2009-08-05",
+     "end": "2019-08-01",
+     "label": "Mohamed Ould Abdel Aziz"
+    },
+    {
+     "qid": "Q12241106",
+     "start": "2019-08-01",
+     "end": null,
+     "label": "Mohamed Ould Ghazouani"
+    }
+   ],
+   "office_label": "President of Mauritania"
+  },
+  {
+   "office": "Q28015452",
+   "holders": [
+    {
+     "qid": "Q28370112",
+     "start": "2019-02-13",
+     "end": "2019-04-03",
+     "label": "Moustadroine Abdou"
+    },
+    {
+     "qid": "Q515602",
+     "start": "2019-05-26",
+     "end": null,
+     "label": "Azali Assoumani"
+    }
+   ],
+   "office_label": "President of Comoros"
+  },
+  {
+   "office": "Q28015461",
+   "holders": [
+    {
+     "qid": "Q16855164",
+     "start": "2020-01-03",
+     "end": "2025-11-26",
+     "label": "Umaro Sissoco Embal\u00f3"
+    },
+    {
+     "qid": "Q137049690",
+     "start": "2025-11-27",
+     "end": null,
+     "label": "Horta Inta-A Na Man"
+    }
+   ],
+   "office_label": "President of Guinea-Bissau"
+  },
+  {
+   "office": "Q28015471",
+   "holders": [
+    {
+     "qid": "Q4414",
+     "start": "2005-05-04",
+     "end": "2025-05-03",
+     "label": "Faure Essozimna Gnassingb\u00e9"
+    },
+    {
+     "qid": "Q6169516",
+     "start": "2025-05-03",
+     "end": null,
+     "label": "Jean-Lucien Savi de Tov\u00e9"
+    }
+   ],
+   "office_label": "President of Togo"
+  },
+  {
+   "office": "Q28015517",
+   "holders": [
+    {
+     "qid": "Q4413",
+     "start": "2010-12-21",
+     "end": "2021-09-05",
+     "label": "Alpha Cond\u00e9"
+    },
+    {
+     "qid": "Q108418519",
+     "start": "2021-10-01",
+     "end": null,
+     "label": "Mamady Doumbouya"
+    }
+   ],
+   "office_label": "President of Guinea"
+  },
+  {
+   "office": "Q47006779",
+   "holders": [
+    {
+     "qid": "Q99522144",
+     "start": "2020-09-25",
+     "end": "2021-05-24",
+     "label": "Bah Ndaw"
+    },
+    {
+     "qid": "Q98497406",
+     "start": "2021-05-24",
+     "end": null,
+     "label": "Assimi Go\u00efta"
+    }
+   ],
+   "office_label": "President of Mali"
+  },
+  {
+   "office": "Q100877419",
+   "holders": [
+    {
+     "qid": "Q641805",
+     "start": "2020-09-29",
+     "end": "2023-12-16",
+     "label": "Nawaf Al-Ahmad Al-Jaber Al-Sabah"
+    },
+    {
+     "qid": "Q12243161",
+     "start": "2023-12-16",
+     "end": null,
+     "label": "Mishal Al-Ahmad Al-Jaber Al-Sabah"
+    }
+   ],
+   "office_label": "emir of Kuwait"
+  },
+  {
+   "office": "Q102181806",
+   "holders": [
+    {
+     "qid": "Q21089561",
+     "start": "2016-03-30",
+     "end": "2021-03-15",
+     "label": "Fayez al-Sarraj"
+    },
+    {
+     "qid": "Q105319610",
+     "start": "2021-03-15",
+     "end": null,
+     "label": "Mohamed al-Menfi"
+    }
+   ],
+   "office_label": "Chairman of the Presidential Council"
+  },
+  {
+   "office": "Q108130107",
+   "holders": [
+    {
+     "qid": "Q2829007",
+     "start": "2015-07-29",
+     "end": "2016-05-21",
+     "label": "Akhtar Mansour"
+    },
+    {
+     "qid": "Q24237654",
+     "start": "2021-08-15",
+     "end": null,
+     "label": "Hibatullah Akhundzada"
+    }
+   ],
+   "office_label": "Supreme Leader of Afghanistan"
+  },
+  {
+   "office": "Q116102",
+   "holders": [
+    {
+     "qid": "Q30323682",
+     "start": "2020-06-03",
+     "end": "2021-03-22",
+     "label": "Avdullah Hoti"
+    },
+    {
+     "qid": "Q441633",
+     "start": "2021-03-22",
+     "end": null,
+     "label": "Albin Kurti"
+    }
+   ],
+   "office_label": "Prime Minister of Kosovo"
+  },
+  {
+   "office": "Q208487",
+   "holders": [
+    {
+     "qid": "Q1396120",
+     "start": "2022-07-01",
+     "end": "2022-12-29",
+     "label": "Yair Lapid"
+    },
+    {
+     "qid": "Q43723",
+     "start": "2022-12-29",
+     "end": null,
+     "label": "Benjamin Netanyahu"
+    }
+   ],
+   "office_label": "Prime Minister of Israel"
+  },
+  {
+   "office": "Q532240",
+   "holders": [
+    {
+     "qid": "Q4665452",
+     "start": "2023-05-17",
+     "end": "2023-07-17",
+     "label": "Abdul Kabir"
+    },
+    {
+     "qid": "Q108444479",
+     "start": "2023-07-17",
+     "end": null,
+     "label": "Mohammad Hasan Akhund"
+    }
+   ],
+   "office_label": "Prime Minister of Afghanistan"
+  },
+  {
+   "office": "Q565424",
+   "holders": [
+    {
+     "qid": "Q16732648",
+     "start": "2017-05-11",
+     "end": "2021-09-17",
+     "label": "Hubert Minnis"
+    },
+    {
+     "qid": "Q7183082",
+     "start": "2021-09-17",
+     "end": null,
+     "label": "Philip \"Brave\" Davis"
+    }
+   ],
+   "office_label": "Prime Minister of the Bahamas"
+  },
+  {
+   "office": "Q663871",
+   "holders": [
+    {
+     "qid": "Q57313851",
+     "start": "2018-11-07",
+     "end": "2023-11-01",
+     "label": "Lotay Tshering"
+    },
+    {
+     "qid": "Q7849613",
+     "start": "2024-01-28",
+     "end": null,
+     "label": "Tshering Tobgay"
+    }
+   ],
+   "office_label": "Prime Minister of Bhutan"
+  },
+  {
+   "office": "Q735575",
+   "holders": [
+    {
+     "qid": "Q155164",
+     "start": "2018-08-18",
+     "end": "2022-04-10",
+     "label": "Imran Khan"
+    },
+    {
+     "qid": "Q2096387",
+     "start": "2022-04-11",
+     "end": null,
+     "label": "Shehbaz Sharif"
+    }
+   ],
+   "office_label": "Prime Minister of Pakistan"
+  },
+  {
+   "office": "Q778651",
+   "holders": [
+    {
+     "qid": "Q7180477",
+     "start": "2021-03-22",
+     "end": "2022-12-30",
+     "label": "Phankham Viphavanh"
+    },
+    {
+     "qid": "Q104914585",
+     "start": "2022-12-30",
+     "end": null,
+     "label": "Sonexay Siphandone"
+    }
+   ],
+   "office_label": "Prime Minister of Laos"
+  },
+  {
+   "office": "Q795477",
+   "holders": [
+    {
+     "qid": "Q182397",
+     "start": "2015-06-28",
+     "end": "2019-06-27",
+     "label": "Lars L\u00f8kke Rasmussen"
+    },
+    {
+     "qid": "Q5015",
+     "start": "2019-06-27",
+     "end": null,
+     "label": "Mette Frederiksen"
+    }
+   ],
+   "office_label": "Prime Minister of Denmark"
+  },
+  {
+   "office": "Q862559",
+   "holders": [
+    {
+     "qid": "Q6084858",
+     "start": "2021-08-21",
+     "end": "2022-11-24",
+     "label": "Ismail Sabri Yaakob"
+    },
+    {
+     "qid": "Q299574",
+     "start": "2022-11-24",
+     "end": null,
+     "label": "Anwar Ibrahim"
+    }
+   ],
+   "office_label": "Prime Minister of Malaysia"
+  },
+  {
+   "office": "Q1064106",
+   "holders": [
+    {
+     "qid": "Q128723414",
+     "start": "2024-08-08",
+     "end": "2025-03-21",
+     "label": "Kamel Madouri"
+    },
+    {
+     "qid": "Q108892374",
+     "start": "2025-03-21",
+     "end": null,
+     "label": "Sarra Zaafrani"
+    }
+   ],
+   "office_label": "Prime Minister of Tunisia"
+  },
+  {
+   "office": "Q1064589",
+   "holders": [
+    {
+     "qid": "Q114735638",
+     "start": "2024-02-25",
+     "end": "2024-04-30",
+     "label": "Michel Patrick Boisvert"
+    },
+    {
+     "qid": "Q131140314",
+     "start": "2024-11-11",
+     "end": null,
+     "label": "Alix Didier Fils-Aim\u00e9"
+    }
+   ],
+   "office_label": "Prime Minister of Haiti"
+  },
+  {
+   "office": "Q1153839",
+   "holders": [
+    {
+     "qid": "Q367825",
+     "start": "2015-01-23",
+     "end": "2022-09-27",
+     "label": "Salman bin Abdulaziz Al Saud"
+    },
+    {
+     "qid": "Q6892571",
+     "start": "2022-09-27",
+     "end": null,
+     "label": "Mohammed bin Salman Al Saud"
+    }
+   ],
+   "office_label": "Prime Minister of Saudi Arabia"
+  },
+  {
+   "office": "Q1192903",
+   "holders": [
+    {
+     "qid": "Q68837007",
+     "start": "2025-05-03",
+     "end": "2026-01-15",
+     "label": "Salem Saleh bin Braik"
+    },
+    {
+     "qid": "Q7460973",
+     "start": "2026-02-06",
+     "end": null,
+     "label": "Shaea al-Zindani"
+    }
+   ],
+   "office_label": "Prime Minister of Yemen"
+  },
+  {
+   "office": "Q1333976",
+   "holders": [
+    {
+     "qid": "Q7395683",
+     "start": "2015-03-21",
+     "end": "2025-03-21",
+     "label": "Saara Kuugongelwa"
+    },
+    {
+     "qid": "Q5360975",
+     "start": "2025-03-21",
+     "end": null,
+     "label": "Elijah Ngurare"
+    }
+   ],
+   "office_label": "Prime Minister of the Republic of Namibia"
+  },
+  {
+   "office": "Q1335939",
+   "holders": [
+    {
+     "qid": "Q99605101",
+     "start": "2020-09-23",
+     "end": "2022-06-26",
+     "label": "Mohamed Hussein Roble"
+    },
+    {
+     "qid": "Q112598575",
+     "start": "2022-06-26",
+     "end": null,
+     "label": "Hamza Abdi Barre"
+    }
+   ],
+   "office_label": "Prime Minister of Somalia"
+  },
+  {
+   "office": "Q1430943",
+   "holders": [
+    {
+     "qid": "Q57597",
+     "start": "2012-01-05",
+     "end": "2016-03-03",
+     "label": "Portia Simpson-Miller"
+    },
+    {
+     "qid": "Q505200",
+     "start": "2016-03-03",
+     "end": null,
+     "label": "Andrew Holness"
+    }
+   ],
+   "office_label": "Prime Minister of Jamaica"
+  },
+  {
+   "office": "Q2462330",
+   "holders": [
+    {
+     "qid": "Q1740843",
+     "start": "2014-09-18",
+     "end": "2021-06-21",
+     "label": "Ruhakana Rugunda"
+    },
+    {
+     "qid": "Q62481397",
+     "start": "2021-06-21",
+     "end": null,
+     "label": "Nabbanja Robinah"
+    }
+   ],
+   "office_label": "Prime Minister of Uganda"
+  },
+  {
+   "office": "Q2590706",
+   "holders": [
+    {
+     "qid": "Q38188115",
+     "start": "2017-08-30",
+     "end": "2025-07-25",
+     "label": "\u00c9douard Ngirente"
+    },
+    {
+     "qid": "Q135454730",
+     "start": "2025-07-25",
+     "end": null,
+     "label": "Justin Nsengiyumva"
+    }
+   ],
+   "office_label": "Prime Minister of Rwanda"
+  },
+  {
+   "office": "Q2734978",
+   "holders": [
+    {
+     "qid": "Q57754",
+     "start": "1999-12-20",
+     "end": "2013-11-23",
+     "label": "Oqil Oqilov"
+    },
+    {
+     "qid": "Q15222839",
+     "start": "2013-11-23",
+     "end": null,
+     "label": "Kokhir Rasulzoda"
+    }
+   ],
+   "office_label": "Prime Minister of Tajikistan"
+  },
+  {
+   "office": "Q3058109",
+   "holders": [
+    {
+     "qid": "Q22338116",
+     "start": "2024-07-02",
+     "end": "2026-02-23",
+     "label": "Dick Schoof"
+    },
+    {
+     "qid": "Q28860866",
+     "start": "2026-02-23",
+     "end": null,
+     "label": "Rob Jetten"
+    }
+   ],
+   "office_label": "Prime Minister of the Netherlands"
+  },
+  {
+   "office": "Q3401753",
+   "holders": [
+    {
+     "qid": "Q105523479",
+     "start": "2021-04-26",
+     "end": "2024-06-12",
+     "label": "Jean-Michel Sama Lukonde Kyenge"
+    },
+    {
+     "qid": "Q117472023",
+     "start": "2024-06-12",
+     "end": null,
+     "label": "Judith Suminwa"
+    }
+   ],
+   "office_label": "Prime Minister of the Democratic Republic of the Congo"
+  },
+  {
+   "office": "Q3401763",
+   "holders": [
+    {
+     "qid": "Q3369176",
+     "start": "2021-03-08",
+     "end": "2023-10-06",
+     "label": "Patrick Achi"
+    },
+    {
+     "qid": "Q3434569",
+     "start": "2023-10-16",
+     "end": null,
+     "label": "Robert Beugr\u00e9 Mamb\u00e9"
+    }
+   ],
+   "office_label": "Prime Minister of Ivory Coast"
+  },
+  {
+   "office": "Q7243300",
+   "holders": [
+    {
+     "qid": "Q63441935",
+     "start": "2020-10-07",
+     "end": "2024-09-15",
+     "label": "Bisher Al-Khasawneh"
+    },
+    {
+     "qid": "Q97011032",
+     "start": "2024-09-18",
+     "end": null,
+     "label": "Jafar Hassan"
+    }
+   ],
+   "office_label": "Prime Minister of Jordan"
+  },
+  {
+   "office": "Q12376089",
+   "holders": [
+    {
+     "qid": "Q13018661",
+     "start": "2025-07-03",
+     "end": "2025-09-07",
+     "label": "Phumtham Wechayachai"
+    },
+    {
+     "qid": "Q16139757",
+     "start": "2025-09-07",
+     "end": null,
+     "label": "Anutin Charnvirakul"
+    }
+   ],
+   "office_label": "Prime Minister of Thailand"
+  },
+  {
+   "office": "Q14565638",
+   "holders": [
+    {
+     "qid": "Q52183",
+     "start": "2009-01-06",
+     "end": "2024-08-05",
+     "label": "Sheikh Hasina"
+    },
+    {
+     "qid": "Q7686199",
+     "start": "2026-02-17",
+     "end": null,
+     "label": "Tarique Rahman"
+    }
+   ],
+   "office_label": "Prime Minister of Bangladesh"
+  },
+  {
+   "office": "Q14915225",
+   "holders": [
+    {
+     "qid": "Q318493",
+     "start": "2021-09-10",
+     "end": "2025-02-08",
+     "label": "Mohamed Agha"
+    },
+    {
+     "qid": "Q638463",
+     "start": "2025-02-08",
+     "end": null,
+     "label": "Nawaf Salam"
+    }
+   ],
+   "office_label": "Prime Minister of Lebanon"
+  },
+  {
+   "office": "Q14917303",
+   "holders": [
+    {
+     "qid": "Q109296984",
+     "start": "2022-08-20",
+     "end": "2024-02-19",
+     "label": "Bernard Goumou"
+    },
+    {
+     "qid": "Q22209348",
+     "start": "2024-02-27",
+     "end": null,
+     "label": "Bah Oury"
+    }
+   ],
+   "office_label": "Prime Minister of Guinea"
+  },
+  {
+   "office": "Q17051823",
+   "holders": [
+    {
+     "qid": "Q57840",
+     "start": "2009-06-30",
+     "end": "2019-01-04",
+     "label": "Phil\u00e9mon Yang"
+    },
+    {
+     "qid": "Q60441515",
+     "start": "2019-01-04",
+     "end": null,
+     "label": "Joseph Ngute"
+    }
+   ],
+   "office_label": "Prime Minister of Cameroon"
+  },
+  {
+   "office": "Q19842743",
+   "holders": [
+    {
+     "qid": "Q2033385",
+     "start": "2017-04-05",
+     "end": "2021-10-07",
+     "label": "Saadeddine Othmani"
+    },
+    {
+     "qid": "Q1638114",
+     "start": "2021-10-07",
+     "end": null,
+     "label": "Aziz Akhannouch"
+    }
+   ],
+   "office_label": "Prime Minister of Morocco"
+  },
+  {
+   "office": "Q20682527",
+   "holders": [
+    {
+     "qid": "Q57602",
+     "start": "2004-03-24",
+     "end": "2014-06-13",
+     "label": "Baldwin Spencer"
+    },
+    {
+     "qid": "Q17177542",
+     "start": "2014-06-13",
+     "end": null,
+     "label": "Gaston Browne"
+    }
+   ],
+   "office_label": "Prime Minister of Antigua and Barbuda"
+  },
+  {
+   "office": "Q23782691",
+   "holders": [
+    {
+     "qid": "Q136448305",
+     "start": "2025-10-06",
+     "end": "2025-10-20",
+     "label": "Ruphin Zafisambo"
+    },
+    {
+     "qid": "Q136542212",
+     "start": "2025-10-20",
+     "end": null,
+     "label": "Herintsalama Rajaonarivelo"
+    }
+   ],
+   "office_label": "Prime Minister of Madagascar"
+  },
+  {
+   "office": "Q28133105",
+   "holders": [
+    {
+     "qid": "Q114835874",
+     "start": "2022-10-21",
+     "end": "2024-12-06",
+     "label": "Apollinaire Joachim Ky\u00e9lem de Tamb\u00e8la"
+    },
+    {
+     "qid": "Q116056730",
+     "start": "2024-12-07",
+     "end": null,
+     "label": "Jean Emmanuel Ou\u00e9draogo"
+    }
+   ],
+   "office_label": "Prime Minister of Burkina Faso"
+  },
+  {
+   "office": "Q30100568",
+   "holders": [
+    {
+     "qid": "Q23899522",
+     "start": "2016-04-22",
+     "end": "2026-06-19",
+     "label": "Ulisses Correia e Silva"
+    },
+    {
+     "qid": "Q139594211",
+     "start": "2026-06-19",
+     "end": null,
+     "label": "Francisco Carvalho"
+    }
+   ],
+   "office_label": "Prime Minister of Cabo Verde"
+  },
+  {
+   "office": "Q30100591",
+   "holders": [
+    {
+     "qid": "Q57683",
+     "start": "2001-03-07",
+     "end": "2013-04-01",
+     "label": "Dileita Mohamed Dileita"
+    },
+    {
+     "qid": "Q10522744",
+     "start": "2013-04-01",
+     "end": null,
+     "label": "Abdoulkader Kamil Mohamed"
+    }
+   ],
+   "office_label": "Prime Minister of Djibouti"
+  },
+  {
+   "office": "Q30100607",
+   "holders": [
+    {
+     "qid": "Q98841301",
+     "start": "2023-01-09",
+     "end": "2023-08-30",
+     "label": "Alain Claude Bilie-By-Nze"
+    },
+    {
+     "qid": "Q57856",
+     "start": "2023-09-08",
+     "end": null,
+     "label": "Raymond Ndong Sima"
+    }
+   ],
+   "office_label": "Prime Minister of Gabon"
+  },
+  {
+   "office": "Q30100613",
+   "holders": [
+    {
+     "qid": "Q370110",
+     "start": "2013-02-20",
+     "end": "2022-06-24",
+     "label": "Keith Mitchell"
+    },
+    {
+     "qid": "Q112679881",
+     "start": "2022-06-24",
+     "end": null,
+     "label": "Dickon Mitchell"
+    }
+   ],
+   "office_label": "Prime Minister of Grenada"
+  },
+  {
+   "office": "Q30100626",
+   "holders": [
+    {
+     "qid": "Q23842116",
+     "start": "2025-09-12",
+     "end": "2026-03-27",
+     "label": "Sushila Karki"
+    },
+    {
+     "qid": "Q111772343",
+     "start": "2026-03-27",
+     "end": null,
+     "label": "Balendra Shah"
+    }
+   ],
+   "office_label": "Prime Minister of Nepal"
+  },
+  {
+   "office": "Q30100634",
+   "holders": [
+    {
+     "qid": "Q7110324",
+     "start": "2021-04-03",
+     "end": "2023-07-26",
+     "label": "Ouhoumoudou Mahamadou"
+    },
+    {
+     "qid": "Q2646711",
+     "start": "2023-08-08",
+     "end": null,
+     "label": "Ali Lamine Zeine"
+    }
+   ],
+   "office_label": "Prime Minister of Niger"
+  },
+  {
+   "office": "Q30100647",
+   "holders": [
+    {
+     "qid": "Q83849153",
+     "start": "2020-01-28",
+     "end": "2023-03-07",
+     "label": "Khalid bin Khalifa bin Abdul Aziz Al Thani"
+    },
+    {
+     "qid": "Q23020336",
+     "start": "2023-03-07",
+     "end": null,
+     "label": "Mohammed bin Abdulrahman Al Thani"
+    }
+   ],
+   "office_label": "Prime Minister of Qatar"
+  },
+  {
+   "office": "Q30100649",
+   "holders": [
+    {
+     "qid": "Q3327520",
+     "start": "2024-01-17",
+     "end": "2024-05-15",
+     "label": "Mohammad Sabah Al-Salem Al-Sabah"
+    },
+    {
+     "qid": "Q16151955",
+     "start": "2024-05-15",
+     "end": null,
+     "label": "Ahmad Al Abdullah Al Sabah"
+    }
+   ],
+   "office_label": "Prime Minister of Kuwait"
+  },
+  {
+   "office": "Q30100661",
+   "holders": [
+    {
+     "qid": "Q16682496",
+     "start": "2020-09-28",
+     "end": "2025-05-03",
+     "label": "Victoire Dogb\u00e9 Tomegah"
+    },
+    {
+     "qid": "Q4414",
+     "start": "2025-05-03",
+     "end": null,
+     "label": "Faure Essozimna Gnassingb\u00e9"
+    }
+   ],
+   "office_label": "President of the Council of Ministers of Togo"
+  },
+  {
+   "office": "Q30101336",
+   "holders": [
+    {
+     "qid": "Q3529064",
+     "start": "2015-02-18",
+     "end": "2022-08-06",
+     "label": "Timothy Harris"
+    },
+    {
+     "qid": "Q113443525",
+     "start": "2022-08-06",
+     "end": null,
+     "label": "Terrance Drew"
+    }
+   ],
+   "office_label": "Prime Minister of St Kitts and Nevis"
+  },
+  {
+   "office": "Q30101433",
+   "holders": [
+    {
+     "qid": "Q16203640",
+     "start": "2016-06-07",
+     "end": "2021-07-26",
+     "label": "Allen Chastanet"
+    },
+    {
+     "qid": "Q7184214",
+     "start": "2021-07-28",
+     "end": null,
+     "label": "Philip J. Pierre"
+    }
+   ],
+   "office_label": "Prime Minister of Saint Lucia"
+  },
+  {
+   "office": "Q30101440",
+   "holders": [
+    {
+     "qid": "Q107600891",
+     "start": "2021-07-16",
+     "end": "2023-09-28",
+     "label": "Cleopas Dlamini"
+    },
+    {
+     "qid": "Q123342092",
+     "start": "2023-11-04",
+     "end": null,
+     "label": "Edeupa Yerimin"
+    }
+   ],
+   "office_label": "Prime Minister of Eswatini"
+  },
+  {
+   "office": "Q30101454",
+   "holders": [
+    {
+     "qid": "Q91621859",
+     "start": "2020-05-20",
+     "end": "2022-10-28",
+     "label": "Moeketsi Majoro"
+    },
+    {
+     "qid": "Q114588964",
+     "start": "2022-10-28",
+     "end": null,
+     "label": "Sam Matekane"
+    }
+   ],
+   "office_label": "Prime Minister of Lesotho"
+  },
+  {
+   "office": "Q30101458",
+   "holders": [
+    {
+     "qid": "Q86715481",
+     "start": "2020-02-28",
+     "end": "2023-08-07",
+     "label": "Nuno Nabiam"
+    },
+    {
+     "qid": "Q627337",
+     "start": "2023-12-21",
+     "end": null,
+     "label": "Rui Duarte de Barros"
+    }
+   ],
+   "office_label": "Prime Minister of Guinea-Bissau"
+  },
+  {
+   "office": "Q30101469",
+   "holders": [
+    {
+     "qid": "Q98137599",
+     "start": "2020-08-06",
+     "end": "2024-08-02",
+     "label": "Mohamed Ould Bilal"
+    },
+    {
+     "qid": "Q66793577",
+     "start": "2024-08-02",
+     "end": null,
+     "label": "Moctar Ould Djay"
+    }
+   ],
+   "office_label": "Prime Minister of Mauritania"
+  },
+  {
+   "office": "Q30101519",
+   "holders": [
+    {
+     "qid": "Q215477",
+     "start": "1990-10-07",
+     "end": "2006-01-04",
+     "label": "Maktoum bin Rashid Al Maktoum"
+    },
+    {
+     "qid": "Q57655",
+     "start": "2006-02-11",
+     "end": null,
+     "label": "Mohammed bin Rashid Al Maktoum"
+    }
+   ],
+   "office_label": "Prime Minister of the United Arab Emirates"
+  }
+ ]
+}

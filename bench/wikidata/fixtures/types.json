@@ -1,0 +1,452 @@
+{
+ "items": [
+  {
+   "qid": "Q10000001",
+   "label": "Tatyana Kolotilshchikova",
+   "description": "Soviet ballet dancer and teacher (1937\u20132016)",
+   "expected_type": "person",
+   "wikidata_class": "human"
+  },
+  {
+   "qid": "Q1000002",
+   "label": "Claus Hammel",
+   "description": "East German playwright (1932-1990)",
+   "expected_type": "person",
+   "wikidata_class": "human"
+  },
+  {
+   "qid": "Q10000029",
+   "label": "Nikolai Yuryev",
+   "description": "Russian general",
+   "expected_type": "person",
+   "wikidata_class": "human"
+  },
+  {
+   "qid": "Q1000005",
+   "label": "Karel Mat\u011bj \u010capek-Chod",
+   "description": "Czech writer and journalist (1860\u20131927)",
+   "expected_type": "person",
+   "wikidata_class": "human"
+  },
+  {
+   "qid": "Q1000006",
+   "label": "Florian Eichinger",
+   "description": "German film producer and screenwriter",
+   "expected_type": "person",
+   "wikidata_class": "human"
+  },
+  {
+   "qid": "Q100000811",
+   "label": "Paul Mohr",
+   "description": "physician",
+   "expected_type": "person",
+   "wikidata_class": "human"
+  },
+  {
+   "qid": "Q100000831",
+   "label": "Otto Kramer",
+   "description": "classical philologist",
+   "expected_type": "person",
+   "wikidata_class": "human"
+  },
+  {
+   "qid": "Q100000832",
+   "label": "Marie Madeleine Lebreton",
+   "description": "translator, medievalist, latinist (-1978)",
+   "expected_type": "person",
+   "wikidata_class": "human"
+  },
+  {
+   "qid": "Q1000",
+   "label": "Gabon",
+   "description": "country on the Atlantic coast of Central Africa",
+   "expected_type": "location",
+   "wikidata_class": "sovereign state"
+  },
+  {
+   "qid": "Q1005",
+   "label": "The Gambia",
+   "description": "sovereign state in West Africa",
+   "expected_type": "location",
+   "wikidata_class": "sovereign state"
+  },
+  {
+   "qid": "Q1006",
+   "label": "Guinea",
+   "description": "sovereign state in West Africa",
+   "expected_type": "location",
+   "wikidata_class": "sovereign state"
+  },
+  {
+   "qid": "Q1007",
+   "label": "Guinea-Bissau",
+   "description": "sovereign state in Western Africa",
+   "expected_type": "location",
+   "wikidata_class": "sovereign state"
+  },
+  {
+   "qid": "Q1008",
+   "label": "Ivory Coast",
+   "description": "sovereign state in West Africa",
+   "expected_type": "location",
+   "wikidata_class": "sovereign state"
+  },
+  {
+   "qid": "Q1009",
+   "label": "Cameroon",
+   "description": "sovereign state in West-Central Africa",
+   "expected_type": "location",
+   "wikidata_class": "sovereign state"
+  },
+  {
+   "qid": "Q1011",
+   "label": "Cape Verde",
+   "description": "sovereign state comprising ten islands off the Western coast of Africa",
+   "expected_type": "location",
+   "wikidata_class": "sovereign state"
+  },
+  {
+   "qid": "Q1013",
+   "label": "Lesotho",
+   "description": "sovereign state in southern Africa",
+   "expected_type": "location",
+   "wikidata_class": "sovereign state"
+  },
+  {
+   "qid": "Q1000143",
+   "label": "G\u00fcig\u00fce",
+   "description": "Parroquia",
+   "expected_type": "location",
+   "wikidata_class": "city"
+  },
+  {
+   "qid": "Q1000333",
+   "label": "Huancavelica",
+   "description": "capital city of Huancavelica, Peru",
+   "expected_type": "location",
+   "wikidata_class": "city"
+  },
+  {
+   "qid": "Q1000341",
+   "label": "Ilo",
+   "description": "city in Peru",
+   "expected_type": "location",
+   "wikidata_class": "city"
+  },
+  {
+   "qid": "Q1000346",
+   "label": "Moquegua",
+   "description": "city of Peru, capital of Moquegua region",
+   "expected_type": "location",
+   "wikidata_class": "city"
+  },
+  {
+   "qid": "Q1000373",
+   "label": "Mandalgovi",
+   "description": "city in Dundgovi, Mongolia",
+   "expected_type": "location",
+   "wikidata_class": "city"
+  },
+  {
+   "qid": "Q1000438",
+   "label": "Szczawnica",
+   "description": "city of Poland",
+   "expected_type": "location",
+   "wikidata_class": "city"
+  },
+  {
+   "qid": "Q1000495",
+   "label": "Rewa",
+   "description": "city in the state of Madhya Pradesh in India",
+   "expected_type": "location",
+   "wikidata_class": "city"
+  },
+  {
+   "qid": "Q10006",
+   "label": "Hengelo",
+   "description": "city and municipality in Overijssel, the Netherlands",
+   "expected_type": "location",
+   "wikidata_class": "city"
+  },
+  {
+   "qid": "Q100258387",
+   "label": "University Center Nour Bashir (El-Bayadh)",
+   "description": "University in Algeria",
+   "expected_type": "organization",
+   "wikidata_class": "university"
+  },
+  {
+   "qid": "Q100258391",
+   "label": "Universit\u00e9 Chadli Bendjedid d'El Tarf",
+   "description": "university in Algeria",
+   "expected_type": "organization",
+   "wikidata_class": "university"
+  },
+  {
+   "qid": "Q100260373",
+   "label": "Manara University",
+   "description": "Private university in Latakia, Syria",
+   "expected_type": "organization",
+   "wikidata_class": "university"
+  },
+  {
+   "qid": "Q100261338",
+   "label": "Universit\u00e9 Internationale d'Agadir",
+   "description": "university in Morocco",
+   "expected_type": "organization",
+   "wikidata_class": "university"
+  },
+  {
+   "qid": "Q1003463",
+   "label": "Bulacan State University",
+   "description": "state-funded institution of higher learning in Bulacan province, Philippines",
+   "expected_type": "organization",
+   "wikidata_class": "university"
+  },
+  {
+   "qid": "Q100351283",
+   "label": "Zamfara State University",
+   "description": "Public university in Zamfara State, Nigeria",
+   "expected_type": "organization",
+   "wikidata_class": "university"
+  },
+  {
+   "qid": "Q100418692",
+   "label": "Dhammaduta Chekinda University",
+   "description": "Buddhist missionary university in Auk War Nat Chaung village, Myanmar",
+   "expected_type": "organization",
+   "wikidata_class": "university"
+  },
+  {
+   "qid": "Q100452193",
+   "label": "Universit\u00e9 de Ouahigouya",
+   "description": "public university in Burkina Faso",
+   "expected_type": "organization",
+   "wikidata_class": "university"
+  },
+  {
+   "qid": "Q1000076",
+   "label": "Custom Coasters International",
+   "description": "American wooden roller coaster manufacturer",
+   "expected_type": "organization",
+   "wikidata_class": "business"
+  },
+  {
+   "qid": "Q1000212",
+   "label": "Montreal Light, Heat & Power",
+   "description": "Canadian utility company",
+   "expected_type": "organization",
+   "wikidata_class": "business"
+  },
+  {
+   "qid": "Q100032157",
+   "label": "Svatek a spol.",
+   "description": "former Czech company",
+   "expected_type": "organization",
+   "wikidata_class": "business"
+  },
+  {
+   "qid": "Q1000369",
+   "label": "Buco",
+   "description": "business",
+   "expected_type": "organization",
+   "wikidata_class": "business"
+  },
+  {
+   "qid": "Q1000428",
+   "label": "MySQL AB",
+   "description": "Swedish company",
+   "expected_type": "organization",
+   "wikidata_class": "business"
+  },
+  {
+   "qid": "Q1000531",
+   "label": "Sogo Hong Kong",
+   "description": "company",
+   "expected_type": "organization",
+   "wikidata_class": "business"
+  },
+  {
+   "qid": "Q1000533",
+   "label": "Union Betriebs-Gesellschaft mit beschr\u00e4nkter Haftung",
+   "description": "business",
+   "expected_type": "organization",
+   "wikidata_class": "business"
+  },
+  {
+   "qid": "Q1000725",
+   "label": "Julius Pintsch AG",
+   "description": "business",
+   "expected_type": "organization",
+   "wikidata_class": "business"
+  },
+  {
+   "qid": "Q1000840",
+   "label": "Chart Pattana Party",
+   "description": "Thai political party",
+   "expected_type": "organization",
+   "wikidata_class": "political party"
+  },
+  {
+   "qid": "Q1001115",
+   "label": "Heimatwehr",
+   "description": "Swiss political party",
+   "expected_type": "organization",
+   "wikidata_class": "political party"
+  },
+  {
+   "qid": "Q100136486",
+   "label": "Unity",
+   "description": "Kyrgyz political party",
+   "expected_type": "organization",
+   "wikidata_class": "political party"
+  },
+  {
+   "qid": "Q100144514",
+   "label": "Unidad Constituyente",
+   "description": "Chilean political coalition",
+   "expected_type": "organization",
+   "wikidata_class": "political party"
+  },
+  {
+   "qid": "Q100148859",
+   "label": "Nez\u00e1visl\u00e1 iniciativa (NEI)",
+   "description": "Czech political party",
+   "expected_type": "organization",
+   "wikidata_class": "political party"
+  },
+  {
+   "qid": "Q100186288",
+   "label": "Volba pro kraj",
+   "description": "Czech political movement",
+   "expected_type": "organization",
+   "wikidata_class": "political party"
+  },
+  {
+   "qid": "Q1002594",
+   "label": "People's Progressive Party",
+   "description": "political party in Malaysia",
+   "expected_type": "organization",
+   "wikidata_class": "political party"
+  },
+  {
+   "qid": "Q100261034",
+   "label": "Islamic National Salvation Party",
+   "description": "Palestinian political party",
+   "expected_type": "organization",
+   "wikidata_class": "political party"
+  },
+  {
+   "qid": "Q1006077",
+   "label": "Social War of 220-217 BCE",
+   "description": "ancient Greek war from 220 to 217 BC",
+   "expected_type": "event",
+   "wikidata_class": "war"
+  },
+  {
+   "qid": "Q1014253",
+   "label": "Mongol conquest of the Jin dynasty",
+   "description": "1211\u20131234 campaign in northern China",
+   "expected_type": "event",
+   "wikidata_class": "war"
+  },
+  {
+   "qid": "Q1014825",
+   "label": "Burgdorferkrieg",
+   "description": "event",
+   "expected_type": "event",
+   "wikidata_class": "war"
+  },
+  {
+   "qid": "Q1016077",
+   "label": "Burgundy War",
+   "description": "war",
+   "expected_type": "event",
+   "wikidata_class": "war"
+  },
+  {
+   "qid": "Q1032343",
+   "label": "Ottoman\u2013Habsburg War of 1540\u20131547",
+   "description": "1540\u20131547 war between Ottoman Empire and the Habsburg Monarchy",
+   "expected_type": "event",
+   "wikidata_class": "war"
+  },
+  {
+   "qid": "Q103829968",
+   "label": "War of 1863",
+   "description": "war in Central America",
+   "expected_type": "event",
+   "wikidata_class": "war"
+  },
+  {
+   "qid": "Q1044829",
+   "label": "Polish\u2013Muscovite War",
+   "description": "1605\u20131618 sequence of military conflicts and eastward invasions",
+   "expected_type": "event",
+   "wikidata_class": "war"
+  },
+  {
+   "qid": "Q10484164",
+   "label": "English Wars",
+   "description": "1296-1453 part of the Wars of Scottish Independence",
+   "expected_type": "event",
+   "wikidata_class": "war"
+  },
+  {
+   "qid": "Q100233726",
+   "label": "Women's Suffrage Day",
+   "description": "event on May 2",
+   "expected_type": "event",
+   "wikidata_class": "event"
+  },
+  {
+   "qid": "Q100235488",
+   "label": "Wikipedia 20",
+   "description": "20th birthday of Wikipedia",
+   "expected_type": "event",
+   "wikidata_class": "event"
+  },
+  {
+   "qid": "Q100923916",
+   "label": "Cunningham Lectures",
+   "description": "annual social sciences lecture",
+   "expected_type": "event",
+   "wikidata_class": "event"
+  },
+  {
+   "qid": "Q1012810",
+   "label": "Steve Bartman incident",
+   "description": "controversial play in a 2003 baseball game",
+   "expected_type": "event",
+   "wikidata_class": "event"
+  },
+  {
+   "qid": "Q101421918",
+   "label": "Parlamentary Group Constitution",
+   "description": "event linked to the electoral process, where elected parties joint into chamber parliamentary groups.",
+   "expected_type": "event",
+   "wikidata_class": "event"
+  },
+  {
+   "qid": "Q102104861",
+   "label": "First baptism and rope exchange from Capoeira Ginga Ativa",
+   "description": "Event happened where the first baptism and rope exchange that takes place together with a maculel\u00ea workshop and Angola wheel",
+   "expected_type": "event",
+   "wikidata_class": "event"
+  },
+  {
+   "qid": "Q102119426",
+   "label": "Brereton Report",
+   "description": "Australian war crimes investigation and report",
+   "expected_type": "event",
+   "wikidata_class": "event"
+  },
+  {
+   "qid": "Q1022208",
+   "label": "NORAD Tracks Santa",
+   "description": "annual program around Christmas",
+   "expected_type": "event",
+   "wikidata_class": "event"
+  }
+ ]
+}
