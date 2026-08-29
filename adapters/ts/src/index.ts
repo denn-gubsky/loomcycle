@@ -353,6 +353,10 @@ export type {
   ConfigSearch,
   ConfigInstance,
   SetTokenLimitRequest,
+  // RFC AR credential store (RFC CN adapter parity)
+  CredentialScope,
+  CredentialMeta,
+  CredentialListResponse,
 } from "./types.js";
 
 export {

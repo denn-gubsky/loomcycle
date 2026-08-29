@@ -87,6 +87,7 @@ const (
 	Loomcycle_TeamDef_FullMethodName             = "/loomcycle.v1.Loomcycle/TeamDef"
 	Loomcycle_Path_FullMethodName                = "/loomcycle.v1.Loomcycle/Path"
 	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
+	Loomcycle_CredentialDef_FullMethodName       = "/loomcycle.v1.Loomcycle/CredentialDef"
 	Loomcycle_History_FullMethodName             = "/loomcycle.v1.Loomcycle/History"
 	Loomcycle_Memory_FullMethodName              = "/loomcycle.v1.Loomcycle/Memory"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
@@ -411,6 +412,15 @@ type LoomcycleClient interface {
 	// Op-discriminated input_json (13 ops: document/chunk lifecycle, edges,
 	// query_chunks, type defs); same SubstrateRequest/Response body shape.
 	Document(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// CredentialDef dispatches to the RFC AR secure credential store. Mirrors
+	// POST /v1/_credentialdef. Op-discriminated input_json (create / get / list /
+	// delete); get/list return metadata only, never a secret value. The
+	// tenant/user/agent scope_id is resolved from the operator-trust ctx +
+	// caller's authoritative identity, NEVER the wire. Route floor ScopeTenant
+	// (tenant operator + admin), plus RFC CN self-service: an isolated
+	// substrate:user caller is admitted for its OWN scope=user tokens and confined
+	// to scope=user by the handler. Same SubstrateRequest/Response body shape.
+	CredentialDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// History dispatches to the RFC BE History tool (browse/search/annotate
 	// past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
 	// (ScopeTenant): the owner is resolved from the operator-trust ctx +
@@ -992,6 +1002,16 @@ func (c *loomcycleClient) Document(ctx context.Context, in *SubstrateRequest, op
 	return out, nil
 }
 
+func (c *loomcycleClient) CredentialDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_CredentialDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) History(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubstrateResponse)
@@ -1413,6 +1433,15 @@ type LoomcycleServer interface {
 	// Op-discriminated input_json (13 ops: document/chunk lifecycle, edges,
 	// query_chunks, type defs); same SubstrateRequest/Response body shape.
 	Document(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// CredentialDef dispatches to the RFC AR secure credential store. Mirrors
+	// POST /v1/_credentialdef. Op-discriminated input_json (create / get / list /
+	// delete); get/list return metadata only, never a secret value. The
+	// tenant/user/agent scope_id is resolved from the operator-trust ctx +
+	// caller's authoritative identity, NEVER the wire. Route floor ScopeTenant
+	// (tenant operator + admin), plus RFC CN self-service: an isolated
+	// substrate:user caller is admitted for its OWN scope=user tokens and confined
+	// to scope=user by the handler. Same SubstrateRequest/Response body shape.
+	CredentialDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// History dispatches to the RFC BE History tool (browse/search/annotate
 	// past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
 	// (ScopeTenant): the owner is resolved from the operator-trust ctx +
@@ -1623,6 +1652,9 @@ func (UnimplementedLoomcycleServer) Path(context.Context, *SubstrateRequest) (*S
 }
 func (UnimplementedLoomcycleServer) Document(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Document not implemented")
+}
+func (UnimplementedLoomcycleServer) CredentialDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CredentialDef not implemented")
 }
 func (UnimplementedLoomcycleServer) History(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method History not implemented")
@@ -2536,6 +2568,24 @@ func _Loomcycle_Document_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_CredentialDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).CredentialDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_CredentialDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).CredentialDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_History_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubstrateRequest)
 	if err := dec(in); err != nil {
@@ -2899,6 +2949,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Document",
 			Handler:    _Loomcycle_Document_Handler,
+		},
+		{
+			MethodName: "CredentialDef",
+			Handler:    _Loomcycle_CredentialDef_Handler,
 		},
 		{
 			MethodName: "History",

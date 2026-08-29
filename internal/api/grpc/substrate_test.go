@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -25,35 +26,43 @@ import (
 type substrateMock struct {
 	mockConnector
 
-	gotAgentDefInput    json.RawMessage
-	gotSkillDefInput    json.RawMessage
-	gotScheduleDefInput json.RawMessage
-	gotVolumeDefInput   json.RawMessage
-	gotTeamDefInput     json.RawMessage
-	gotPathInput        json.RawMessage
-	gotDocumentInput    json.RawMessage
-	gotHistoryInput     json.RawMessage
-	gotMemoryInput      json.RawMessage
+	gotAgentDefInput      json.RawMessage
+	gotSkillDefInput      json.RawMessage
+	gotScheduleDefInput   json.RawMessage
+	gotVolumeDefInput     json.RawMessage
+	gotTeamDefInput       json.RawMessage
+	gotPathInput          json.RawMessage
+	gotDocumentInput      json.RawMessage
+	gotHistoryInput       json.RawMessage
+	gotMemoryInput        json.RawMessage
+	gotCredentialDefInput json.RawMessage
 
-	agentDefResult    connector.ToolResult
-	skillDefResult    connector.ToolResult
-	scheduleDefResult connector.ToolResult
-	volumeDefResult   connector.ToolResult
-	teamDefResult     connector.ToolResult
-	pathResult        connector.ToolResult
-	documentResult    connector.ToolResult
-	historyResult     connector.ToolResult
-	memoryResult      connector.ToolResult
+	agentDefResult      connector.ToolResult
+	skillDefResult      connector.ToolResult
+	scheduleDefResult   connector.ToolResult
+	volumeDefResult     connector.ToolResult
+	teamDefResult       connector.ToolResult
+	pathResult          connector.ToolResult
+	documentResult      connector.ToolResult
+	historyResult       connector.ToolResult
+	memoryResult        connector.ToolResult
+	credentialDefResult connector.ToolResult
 
-	agentDefErr    error
-	skillDefErr    error
-	scheduleDefErr error
-	volumeDefErr   error
-	teamDefErr     error
-	pathErr        error
-	documentErr    error
-	historyErr     error
-	memoryErr      error
+	agentDefErr      error
+	skillDefErr      error
+	scheduleDefErr   error
+	volumeDefErr     error
+	teamDefErr       error
+	pathErr          error
+	documentErr      error
+	historyErr       error
+	memoryErr        error
+	credentialDefErr error
+}
+
+func (m *substrateMock) CredentialDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotCredentialDefInput = in
+	return m.credentialDefResult, m.credentialDefErr
 }
 
 func (m *substrateMock) Path(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -706,5 +715,94 @@ func TestGrpcMemory_ObservedAtOnSetPassesThroughVerbatim(t *testing.T) {
 	}
 	if string(mc.gotMemoryInput) != in {
 		t.Errorf("observed_at did not reach the tool intact:\n  got  %s\n  want %s", mc.gotMemoryInput, in)
+	}
+}
+
+// TestGrpcCredentialDef_ScopeGate: the RFC AR credential RPC is ScopeTenant, but
+// RFC CN admits an isolated substrate:user caller via the self-service carve-out
+// (and only for THIS RPC). A plain member is denied — gRPC has no RFC CB member
+// bypass.
+func TestGrpcCredentialDef_ScopeGate(t *testing.T) {
+	if got := requiredScopeForRPC(grpcMethodPrefix + "CredentialDef"); got != auth.ScopeTenant {
+		t.Errorf("CredentialDef scope = %q, want substrate:tenant", got)
+	}
+	cred := grpcMethodPrefix + "CredentialDef"
+
+	tenant := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}})
+	if err := enforceScope(tenant, cred); err != nil {
+		t.Errorf("tenant on CredentialDef: %v, want nil", err)
+	}
+
+	isolated := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeUser}})
+	if err := enforceScope(isolated, cred); err != nil {
+		t.Errorf("isolated user on CredentialDef: %v, want nil (RFC CN self-service)", err)
+	}
+	// The carve-out is credential-specific: an isolated user is still denied
+	// another tenant-confined RPC.
+	if err := enforceScope(isolated, grpcMethodPrefix+"AgentDef"); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("isolated on AgentDef: code = %v, want PermissionDenied (carve-out is CredentialDef-only)", status.Code(err))
+	}
+
+	member := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}})
+	if err := enforceScope(member, cred); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("member on CredentialDef: code = %v, want PermissionDenied (no gRPC member bypass)", status.Code(err))
+	}
+}
+
+// TestGrpcCredentialDef_IsolatedConfinedToUserScope: the handler confines an
+// isolated caller to scope=user (omitted→user; tenant refused before the tool),
+// and leaves a tenant principal untouched — mirroring the HTTP + MCP surfaces via
+// the shared credential.ConstrainToUserScope.
+func TestGrpcCredentialDef_IsolatedConfinedToUserScope(t *testing.T) {
+	isolated := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeUser}})
+
+	// Isolated + omitted scope → tool receives scope=user.
+	mc := &substrateMock{credentialDefResult: connector.ToolResult{Text: `{"stored":true}`}}
+	srv := &Server{connector: mc}
+	resp, err := srv.CredentialDef(isolated, &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create","name":"tg","value":"x"}`),
+	})
+	if err != nil {
+		t.Fatalf("CredentialDef: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("isolated omitted: is_error true, want false")
+	}
+	if !strings.Contains(string(mc.gotCredentialDefInput), `"scope":"user"`) {
+		t.Errorf("isolated omitted scope not pinned to user before the tool: %s", mc.gotCredentialDefInput)
+	}
+
+	// Isolated + scope=tenant → refused (is_error), connector NOT called.
+	mc2 := &substrateMock{credentialDefResult: connector.ToolResult{Text: `{"stored":true}`}}
+	srv2 := &Server{connector: mc2}
+	resp2, err := srv2.CredentialDef(isolated, &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create","name":"t","scope":"tenant","value":"x"}`),
+	})
+	if err != nil {
+		t.Fatalf("CredentialDef tenant: %v", err)
+	}
+	if !resp2.GetIsError() {
+		t.Errorf("isolated scope=tenant: want is_error=true")
+	}
+	if len(mc2.gotCredentialDefInput) != 0 {
+		t.Errorf("isolated scope=tenant reached the tool: %s", mc2.gotCredentialDefInput)
+	}
+
+	// Tenant principal + scope=tenant → unconstrained (passthrough).
+	mc3 := &substrateMock{credentialDefResult: connector.ToolResult{Text: `{"stored":true}`}}
+	srv3 := &Server{connector: mc3}
+	tenant := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}})
+	if _, err := srv3.CredentialDef(tenant, &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create","name":"shared","scope":"tenant","value":"x"}`),
+	}); err != nil {
+		t.Fatalf("tenant CredentialDef: %v", err)
+	}
+	if !strings.Contains(string(mc3.gotCredentialDefInput), `"scope":"tenant"`) {
+		t.Errorf("tenant principal's scope=tenant was altered: %s", mc3.gotCredentialDefInput)
 	}
 }

@@ -411,6 +411,16 @@ service Loomcycle {
   // query_chunks, type defs); same SubstrateRequest/Response body shape.
   rpc Document(SubstrateRequest) returns (SubstrateResponse);
 
+  // CredentialDef dispatches to the RFC AR secure credential store. Mirrors
+  // POST /v1/_credentialdef. Op-discriminated input_json (create / get / list /
+  // delete); get/list return metadata only, never a secret value. The
+  // tenant/user/agent scope_id is resolved from the operator-trust ctx +
+  // caller's authoritative identity, NEVER the wire. Route floor ScopeTenant
+  // (tenant operator + admin), plus RFC CN self-service: an isolated
+  // substrate:user caller is admitted for its OWN scope=user tokens and confined
+  // to scope=user by the handler. Same SubstrateRequest/Response body shape.
+  rpc CredentialDef(SubstrateRequest) returns (SubstrateResponse);
+
   // History dispatches to the RFC BE History tool (browse/search/annotate
   // past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
   // (ScopeTenant): the owner is resolved from the operator-trust ctx +

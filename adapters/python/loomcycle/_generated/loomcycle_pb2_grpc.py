@@ -5,7 +5,7 @@ import warnings
 
 from . import loomcycle_pb2 as loomcycle__pb2
 
-GRPC_GENERATED_VERSION = '1.80.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class LoomcycleStub(object):
+class LoomcycleStub:
     """========================
     Service
     ========================
@@ -283,6 +283,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.CredentialDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/CredentialDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.History = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/History',
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
@@ -335,7 +340,7 @@ class LoomcycleStub(object):
                 _registered_method=True)
 
 
-class LoomcycleServicer(object):
+class LoomcycleServicer:
     """========================
     Service
     ========================
@@ -922,6 +927,20 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def CredentialDef(self, request, context):
+        """CredentialDef dispatches to the RFC AR secure credential store. Mirrors
+        POST /v1/_credentialdef. Op-discriminated input_json (create / get / list /
+        delete); get/list return metadata only, never a secret value. The
+        tenant/user/agent scope_id is resolved from the operator-trust ctx +
+        caller's authoritative identity, NEVER the wire. Route floor ScopeTenant
+        (tenant operator + admin), plus RFC CN self-service: an isolated
+        substrate:user caller is admitted for its OWN scope=user tokens and confined
+        to scope=user by the handler. Same SubstrateRequest/Response body shape.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def History(self, request, context):
         """History dispatches to the RFC BE History tool (browse/search/annotate
         past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
@@ -1273,6 +1292,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
+            'CredentialDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.CredentialDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
             'History': grpc.unary_unary_rpc_method_handler(
                     servicer.History,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
@@ -1331,7 +1355,7 @@ def add_LoomcycleServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class Loomcycle(object):
+class Loomcycle:
     """========================
     Service
     ========================
@@ -2649,6 +2673,33 @@ class Loomcycle(object):
             request,
             target,
             '/loomcycle.v1.Loomcycle/Document',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CredentialDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/CredentialDef',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,
