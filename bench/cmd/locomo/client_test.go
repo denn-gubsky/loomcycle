@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+// clearBearerEnv unsets every name bearer() consults. Without it a test
+// asserting "no bearer" passes or fails according to what the developer running
+// it happens to export — this suite was written on a machine with a real
+// LOCOMO_BENCH_TENANT_TOKEN in the environment, and it caught exactly that.
+func clearBearerEnv(t *testing.T) {
+	t.Helper()
+	for _, env := range []string{"LOOMCYCLE_LOCOMO_TOKEN", "LOCOMO_BENCH_TENANT_TOKEN", "LOOMCYCLE_AUTH_TOKEN"} {
+		t.Setenv(env, "")
+	}
+}
+
 func meServer(t *testing.T, tenant string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +43,7 @@ func meServer(t *testing.T, tenant string) *httptest.Server {
 func TestConnect_RefusesTheDefaultTenantSoTheCorpusCannotLandInRealMemory(t *testing.T) {
 	srv := meServer(t, "")
 	defer srv.Close()
+	clearBearerEnv(t)
 	t.Setenv("LOOMCYCLE_LOCOMO_TOKEN", "tok")
 
 	var out bytes.Buffer
@@ -47,6 +59,7 @@ func TestConnect_RefusesTheDefaultTenantSoTheCorpusCannotLandInRealMemory(t *tes
 func TestConnect_AcceptsADedicatedTenant(t *testing.T) {
 	srv := meServer(t, "locomo-bench")
 	defer srv.Close()
+	clearBearerEnv(t)
 	t.Setenv("LOOMCYCLE_LOCOMO_TOKEN", "tok")
 
 	var out bytes.Buffer
@@ -69,6 +82,7 @@ func TestConnect_AcceptsADedicatedTenant(t *testing.T) {
 func TestConnect_AllowSharedTenantIsAnExplicitOverride(t *testing.T) {
 	srv := meServer(t, "")
 	defer srv.Close()
+	clearBearerEnv(t)
 	t.Setenv("LOOMCYCLE_LOCOMO_TOKEN", "tok")
 
 	var out bytes.Buffer
@@ -79,8 +93,7 @@ func TestConnect_AllowSharedTenantIsAnExplicitOverride(t *testing.T) {
 }
 
 func TestConnect_RefusesWithNoBearerRatherThanCallingUnauthenticated(t *testing.T) {
-	t.Setenv("LOOMCYCLE_LOCOMO_TOKEN", "")
-	t.Setenv("LOOMCYCLE_AUTH_TOKEN", "")
+	clearBearerEnv(t)
 	var out bytes.Buffer
 	if _, _, err := connect(context.Background(), options{instance: "http://127.0.0.1:1", timeout: time.Second}, &out); err == nil ||
 		!strings.Contains(err.Error(), "no bearer") {
@@ -89,10 +102,22 @@ func TestConnect_RefusesWithNoBearerRatherThanCallingUnauthenticated(t *testing.
 }
 
 func TestBearer_PrefersTheBenchmarkSpecificToken(t *testing.T) {
+	clearBearerEnv(t)
 	t.Setenv("LOOMCYCLE_AUTH_TOKEN", "operator")
 	t.Setenv("LOOMCYCLE_LOCOMO_TOKEN", "bench")
 	if got := bearer(); got != "bench" {
 		t.Errorf("bearer() = %q, want the benchmark token so the operator bearer is not reused", got)
+	}
+}
+
+// TestBearer_AcceptsTheOperatorsNaturalNameForTheBenchToken — the name an
+// operator reaches for when minting a dedicated bench bearer.
+func TestBearer_AcceptsTheOperatorsNaturalNameForTheBenchToken(t *testing.T) {
+	clearBearerEnv(t)
+	t.Setenv("LOOMCYCLE_AUTH_TOKEN", "operator")
+	t.Setenv("LOCOMO_BENCH_TENANT_TOKEN", "bench")
+	if got := bearer(); got != "bench" {
+		t.Errorf("bearer() = %q, want the bench token to win over the operator bearer", got)
 	}
 }
 

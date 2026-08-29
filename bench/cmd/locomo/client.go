@@ -98,6 +98,11 @@ func (c *Client) Whoami(ctx context.Context) (Identity, error) {
 type putEntryBody struct {
 	Value json.RawMessage `json:"value"`
 	Embed bool            `json:"embed,omitempty"`
+	// ObservedAt dates the row — when the turn was SAID. LoCoMo stamps the SESSION,
+	// and every turn in it inherits that stamp, which is the only date the corpus
+	// actually carries. Empty leaves the row undated, which is what every run before
+	// this one produced.
+	ObservedAt string `json:"observed_at,omitempty"`
 }
 
 type putEntryResponse struct {
@@ -114,6 +119,13 @@ type putEntryResponse struct {
 // noise for a dense embedder, but it IS an asymmetry with the un-quoted query
 // and the report says so rather than leaving it unstated.
 func (c *Client) PutEntry(ctx context.Context, scope, scopeID, key, value string, embed bool) (putEntryResponse, error) {
+	return c.PutEntryAt(ctx, scope, scopeID, key, value, embed, "")
+}
+
+// PutEntryAt is PutEntry plus the row's observed time (RFC CL). Separate rather than
+// a sixth positional argument on the old one, so the dozen existing call sites stay
+// untouched and undated — which is what they mean.
+func (c *Client) PutEntryAt(ctx context.Context, scope, scopeID, key, value string, embed bool, observedAt string) (putEntryResponse, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return putEntryResponse{}, err
@@ -121,7 +133,7 @@ func (c *Client) PutEntry(ctx context.Context, scope, scopeID, key, value string
 	path := fmt.Sprintf("/v1/_memory/scopes/%s/%s/keys/%s",
 		url.PathEscape(scope), url.PathEscape(scopeID), url.PathEscape(key))
 	var out putEntryResponse
-	err = c.do(ctx, http.MethodPut, path, putEntryBody{Value: raw, Embed: embed}, &out)
+	err = c.do(ctx, http.MethodPut, path, putEntryBody{Value: raw, Embed: embed, ObservedAt: observedAt}, &out)
 	return out, err
 }
 
@@ -164,4 +176,24 @@ func (c *Client) DeleteEntry(ctx context.Context, scope, scopeID, key string) er
 	path := fmt.Sprintf("/v1/_memory/scopes/%s/%s/keys/%s",
 		url.PathEscape(scope), url.PathEscape(scopeID), url.PathEscape(key))
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// ListKeys returns the keys held in one (scope, scope_id) partition. Used by the
+// answer axis to purge the memory layer between conversations.
+func (c *Client) ListKeys(ctx context.Context, scope, scopeID string, limit int) ([]string, error) {
+	path := fmt.Sprintf("/v1/_memory/scopes/%s/%s/keys?limit=%d",
+		url.PathEscape(scope), url.PathEscape(scopeID), limit)
+	var out struct {
+		Entries []struct {
+			Key string `json:"key"`
+		} `json:"entries"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(out.Entries))
+	for _, e := range out.Entries {
+		keys = append(keys, e.Key)
+	}
+	return keys, nil
 }
