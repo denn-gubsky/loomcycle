@@ -23,6 +23,9 @@ not, and cannot be — that corpus is CC BY-NC.
     build_types.py      -> fixtures/types.json      entities by P31 class (CO-3)
     build_xlingual.py   -> fixtures/xlingual.json   multi-language labels (CO-4)
 
+    build_facts.py      -> a bulk fact corpus (NOT committed — see below)
+    import_facts.py        bulk-load that corpus into a loomcycle memory scope
+
     run_co1.py   knowledge updates: does a superseded fact stop being returned
     run_co3.py   ontology typing:   does an entity get the right base type
     run_co4.py   cross-lingual:     English corpus, non-English query
@@ -55,6 +58,54 @@ which reads as a memory failure and is not one.
 **Read an AgentDef back after authoring it.** The mutable field set goes under
 `overlay`; any other key (`def`, say) is accepted with a 200, a def_id, and an empty
 definition. A run against that agent measures nothing and says so in no way at all.
+
+## Bulk fact corpus, for testing models against a store that holds something
+
+`build_facts.py` renders twelve Wikidata properties into self-contained English
+sentences — *"Marie Curie was born on 1867-11-07"*, not triples, because the sentence
+is what gets embedded and what a model reads back. `import_facts.py` loads them.
+
+    python3 build_facts.py facts.json 1000        # ~8.5k facts, a few minutes
+    python3 import_facts.py facts.json            # writes + embeds
+
+**The corpus itself is NOT committed.** At ~1.3 MB it is an order of magnitude past the
+other fixtures, and it is regenerable. Keep your own copy if you need a specific run to
+be reproducible — see the caveat below.
+
+### Two things this got wrong first, so you do not have to
+
+**Sample across the index, or the corpus is degenerate.** QLever returns rows in index
+order, grouped by object, so a single `LIMIT 1000` query grabs one contiguous block. A
+first build produced **809 of 1000 "is located in Gabon"** and **810 of 996
+"headquartered in Boston"**. That corpus is useless for retrieval testing — most queries
+would have hundreds of equally good answers, and a model would score well or badly for
+reasons having nothing to do with memory. `OFFSETS` spreads the sampling geometrically
+and short-circuits on an empty chunk, because these properties differ in size by orders
+of magnitude. Top-object share after the fix: 0.3%–17.6%.
+
+**Bulk does not go through `Memory op=add`.** That is one LLM call per span and a
+five-figure token bill at this size. Bulk is the off-run PUT with `embed: false`, then
+`/v1/_memory/backfill_embeddings`, which **bounds by work DONE rather than rows seen**
+— so it is driven in a loop until it reports nothing left. A single call silently leaves
+most of the corpus unembedded, and an unembedded row is invisible to recall, which later
+looks exactly like a memory failure. That endpoint also takes **query params, not a JSON
+body**, and `dry_run` defaults to **true**.
+
+### Caveat: regenerable, not byte-stable
+
+A rebuild will not reproduce the same corpus. The builder is deterministic in its
+property list and offsets, but QLever's index order shifts as Wikidata changes, so the
+rows behind a given offset drift. If a number has to be comparable across time, keep the
+`facts.json` that produced it.
+
+Reference figures from the first build (2026-08-29): **8,541 facts**, 22s to write,
+8,541 embedded over 19 backfill rounds with `bge-m3` (1024-dim, ~35 MB of vectors).
+
+Expect genuine obscurity in the long tail — *"S is headquartered in Tokyo"* is a real
+row. For memory testing that is arguably a feature: a model cannot answer from training
+data, so a correct answer is attributable to retrieval. RFC CO-1's control arm exists
+because the opposite case — famous facts the model already knows — silently inflates a
+memory score.
 
 ## Results on v1.66.0 (RFC CO)
 
