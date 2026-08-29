@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -135,10 +136,9 @@ var handlersByName = map[string]toolHandler{
 	}),
 	// RFC AR — secure per-tenant credential store. Tenant/user identity from the
 	// principal ctx (RFC AG mcpPrincipalCtx), never the wire; get/list metadata
-	// only. ops: create/get/list/delete.
-	"credentialdef": wrapBuiltin("credentialdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
-		return c.CredentialDef(ctx, in)
-	}),
+	// only. ops: create/get/list/delete. RFC CN confines an isolated substrate:user
+	// session to scope=user — see handleCredentialDef.
+	"credentialdef": handleCredentialDef,
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),
@@ -659,6 +659,34 @@ func handleListAgents(ctx context.Context, env *handlerEnv, args json.RawMessage
 // the policies are missing from a bare bgCtx. mcpPrincipalCtx keys identity
 // (UserID/TenantID) off the authenticated principal so user-scoped tools
 // align with the off-run HTTP path; see internal/api/mcp/context.go.
+// handleCredentialDef dispatches the RFC AR credential store over MCP. RFC CN: an
+// ISOLATED substrate:user session (admitted to /v1/_mcp only for self-service, and
+// gated by userSelfServiceTools to this tool alone) is confined to scope=user on
+// its OWN subject, mirroring the HTTP handler via the shared
+// credential.ConstrainToUserScope so the rule cannot drift between transports.
+// Members / tenant operators / admin are unconstrained. The tenant/user/agent
+// identity is stamped from the principal ctx (mcpPrincipalCtx), never the wire.
+func handleCredentialDef(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("credentialdef: no connector wired")
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); auth.IsIsolated(p, ok) {
+		out, refused := credential.ConstrainToUserScope(args)
+		if refused {
+			return toolErr("credentialdef: an isolated user token may only manage scope=user credentials (its own); scope=tenant and scope=agent require substrate:tenant"), nil
+		}
+		args = out
+	}
+	res, err := env.connector.CredentialDef(mcpPrincipalCtx(ctx), args)
+	if err != nil {
+		return toolErr("credentialdef: " + err.Error()), nil
+	}
+	return &loommcp.CallToolResult{
+		Content: []loommcp.ContentBlock{{Type: "text", Text: res.Text}},
+		IsError: res.IsError,
+	}, nil
+}
+
 func wrapBuiltin(toolName string, call func(connector.Connector, context.Context, json.RawMessage) (connector.ToolResult, error)) toolHandler {
 	return func(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
 		if env.connector == nil {

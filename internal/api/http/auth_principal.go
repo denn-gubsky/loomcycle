@@ -74,14 +74,15 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			// tenantMemberAccessible; and every such handler still confines a
 			// member to its own tenant via principalTenantScope / tenantFromCtx.
 			memberOK := tenantMemberAccessible(r.Method, r.URL.Path) && !auth.IsIsolated(p, ok)
-			// RFC CN: the credential self-service surface admits ANY authenticated
-			// principal that carries a subject — INCLUDING an isolated substrate:user
-			// user, who is otherwise held at the tenant-member isolation floor — so a
-			// user can store their OWN scope=user API tokens (a personal Slack/Telegram
-			// bot token, a per-user webhook secret). handleSubstrateCredentialDef then
-			// confines a non-tenant caller to scope=user on its own subject before the
-			// tool runs; tenant/agent scope still requires substrate:tenant.
-			selfOK := credentialSelfServiceAccessible(r.Method, r.URL.Path) && p.Subject != ""
+			// RFC CN: the user self-service surfaces (the credential store + the MCP
+			// transport) admit ANY authenticated principal that carries a subject —
+			// INCLUDING an isolated substrate:user user, who is otherwise held at the
+			// tenant-member isolation floor — so a user can store its OWN scope=user
+			// API tokens (a personal Slack/Telegram bot token, a per-user webhook
+			// secret). The handler / MCP per-tool gate then confine a non-tenant caller
+			// to scope=user on its own subject; tenant/agent scope still requires
+			// substrate:tenant.
+			selfOK := userSelfServiceRoute(r.Method, r.URL.Path) && p.Subject != ""
 			if !(memberOK || selfOK) {
 				// Scope names are public; token state is not.
 				w.Header().Set("WWW-Authenticate", `Bearer scope="`+required+`"`)
@@ -883,16 +884,30 @@ func tenantMemberAccessible(method, path string) bool {
 	return !memberCarveOut(method, path)
 }
 
-// credentialSelfServiceAccessible marks the credential-store surface that RFC CN
-// opens for user SELF-SERVICE of scope=user credentials. It is an ADDITIONAL
-// admission path in authMiddleware — the route stays nominally ScopeTenant, so a
-// tenant operator's full tenant/agent authoring is unchanged, and members reach it
-// via the RFC CB member path — but it also admits an isolated substrate:user user
-// (who otherwise 403s at the isolation floor). handleSubstrateCredentialDef
-// confines such a caller to scope=user on its own subject before dispatch, so the
-// widened admission grants nothing beyond a user's own personal tokens.
-func credentialSelfServiceAccessible(method, path string) bool {
-	return method == http.MethodPost && path == "/v1/_credentialdef"
+// userSelfServiceRoute marks the HTTP routes RFC CN opens for user SELF-SERVICE of
+// scope=user credentials, as an ADDITIONAL authMiddleware admission path that also
+// lets an isolated substrate:user user through (it otherwise 403s at the tenant-
+// member isolation floor):
+//
+//   - POST /v1/_credentialdef — the credential store; handleSubstrateCredentialDef
+//     confines an isolated caller to scope=user on its own subject (P1).
+//   - POST + DELETE /v1/_mcp — the loomcycle-as-MCP-server transport, so the same
+//     user can manage its tokens from the `loomcycle mcp --upstream` thin client.
+//     The MCP per-tool gate (principalMayCallTool) restricts an isolated session to
+//     ONLY the credentialdef meta-tool, and that dispatch applies the same scope=user
+//     constraint — so admitting the session grants nothing beyond a user's own tokens.
+//
+// The routes stay nominally ScopeTenant, so a tenant operator's full tenant/agent
+// authoring is unchanged and members reach them via the RFC CB member path; this is
+// purely additive for isolated users.
+func userSelfServiceRoute(method, path string) bool {
+	switch path {
+	case "/v1/_credentialdef":
+		return method == http.MethodPost
+	case "/v1/_mcp":
+		return method == http.MethodPost || method == http.MethodDelete
+	}
+	return false
 }
 
 // memberCarveOut lists the ScopeTenant routes that STAY operator-only (require a
