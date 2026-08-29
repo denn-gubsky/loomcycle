@@ -156,6 +156,55 @@ may instead extract facts server-side with its own LLM.
 // directly) or absent when the backend cannot classify its own rows.
 ```
 
+### What a recalled row IS, and why the label matters
+
+A recall result is a list of **memories**, not of established truths, and each one
+carries its class:
+
+| `kind` | means |
+|---|---|
+| `fact` | a consolidator distilled and reconciled it |
+| `note` | an agent wrote it directly (`set`, or an off-run PUT) |
+| `document` | Document chunk prose, which shares the memory keyspace |
+| *absent* | the backend cannot classify its own rows — **unknown, not `fact`** |
+
+`recall` defaults to `facts` + `notes`; document prose stays out unless asked for.
+Reach for `sources` to narrow further, and note the class name is the SELECTOR value
+while `kind` is what comes back on each row — you pick classes, you get memories each
+labelled with the class it turned out to be.
+
+**This label is not decoration.** Until v1.65.0 the array was called `facts` and
+carried no per-row class, and on a corpus of raw ingested turns — where every row is a
+`note` — that told an answering model each result was an established fact. Measured on
+the LoCoMo answer axis, that framing alone cost 2.2pp overall and 9.7pp on temporal
+questions, with the identical rows retrieved either way: a model reading a dated remark
+as a standing fact answers with the timestamp of the remark rather than the date of the
+event it describes. A remembered remark frequently carries the time it was SAID; when
+its text says "yesterday" or "last week", the event is relative to that time and is
+not that time.
+
+### What recall cannot do: answer a time predicate
+
+Semantic recall matches on MEANING, and dates are not meaningfully encoded in an
+embedding. A question shaped as a time constraint — *"which city was Calvin at on
+October 3, 2023"*, *"what was Dave doing in the first weekend of October"* — will not
+reliably retrieve the row that happens to carry that timestamp, no matter how well the
+corpus is embedded. Measured across 294 temporal questions:
+
+| question shape | n | accuracy | abstention |
+|---|---|---|---|
+| carries an absolute date / window constraint | 31 | 0.5484 | 0.323 |
+| topic-shaped | 263 | 0.6844 | 0.171 |
+
+A date-constrained question is roughly 14pp harder and abstains about twice as often,
+and some fraction answers confidently from the wrong window rather than abstaining.
+
+If you need point-in-time or as-of retrieval, use the bi-temporal entity tier instead
+— `Document upsert_chunk` / `graph_recall`, whose `valid_at` / `invalid_at` interval
+and `as_of` predicate are a real time filter. The k/v memory plane's `recall` and
+`search` deliberately expose no date filter today; do not simulate one by putting a
+date in the query text.
+
 `recall` needs the vector stack (an embedder + a vector-capable store);
 without it, it refuses with `vector_unsupported` / `embedder_not_configured`.
 The embedder does not have to be a vendor one: `provider: ollama-local`
