@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   canSee,
@@ -9,8 +9,6 @@ import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
 import { erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
 import {
-  CredentialMeta,
-  CredentialScope,
   HealthResponse,
   MemoryOrphanReport,
   OntologyProposal,
@@ -18,8 +16,6 @@ import {
   PresetUnit,
   RuntimeStateResponse,
   adoptOntologyType,
-  createCredential,
-  deleteCredential,
   getEnvTemplate,
   getHealth,
   getOntology,
@@ -27,7 +23,6 @@ import {
   getErasureReport,
   getRetentionReport,
   getRuntimeState,
-  listCredentials,
   listPresets,
   pauseRuntime,
   repairTenantMemory,
@@ -41,6 +36,7 @@ import {
   RetentionReport,
 } from "../api";
 import { usePrincipal, useUserId } from "../components/Layout";
+import { CredentialsPanel } from "../components/CredentialsPanel";
 import LimitsView from "./LimitsView";
 import RoutingView from "./RoutingView";
 import TokenManager from "../components/TokenManager";
@@ -162,7 +158,7 @@ export default function SettingsView() {
         ))}
       </nav>
       <div className="settings-body">
-        {active === "credentials" && <CredentialsSection />}
+        {active === "credentials" && <CredentialsPanel />}
         {active === "limits" && <LimitsView />}
         {active === "routing" && <RoutingView />}
         {active === "ontology" && <OntologySection />}
@@ -178,225 +174,9 @@ export default function SettingsView() {
   );
 }
 
-// ─── Credentials (RFC AR) ────────────────────────────────────────────────────
+// ─── Credentials (RFC AR) — the panel lives in ../components/CredentialsPanel
+// (shared with the standalone My Credentials page, RFC CN). ──────────────────
 
-// isCredStoreDisabled detects the fail-closed error surfaced when the operator
-// hasn't set LOOMCYCLE_SECRET_KEY (the inline backend is off). The server
-// returns the tool's error text verbatim inside the 422 envelope, so we match on
-// its stable markers.
-function isCredStoreDisabled(msg: string): boolean {
-  return (
-    msg.includes("LOOMCYCLE_SECRET_KEY") ||
-    msg.includes("no credential engine") ||
-    msg.includes("disabled")
-  );
-}
-
-// CredentialRow is a metadata row tagged with the scope it was listed under (the
-// API groups by scope; we merge tenant + user into one table).
-type CredentialRow = CredentialMeta & { _scope: CredentialScope };
-
-// well-known provider/tool key env-var names (mirror docs/CREDENTIALS.md);
-// free-form custom names (e.g. $cred: labels) are still allowed.
-const KNOWN_KEY_NAMES = [
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "GEMINI_API_KEY",
-  "OLLAMA_API_KEY",
-  // Web-search providers (RFC BB).
-  "BRAVE_API_KEY",
-  "SERPER_API_KEY",
-  "EXA_API_KEY",
-  "TAVILY_API_KEY",
-];
-
-function CredentialsSection() {
-  const [rows, setRows] = useState<CredentialRow[]>([]);
-  const [err, setErr] = useState<string | null>(null);
-  const [disabled, setDisabled] = useState(false);
-  const [flash, setFlash] = useState<string | null>(null);
-  // Create form. `value` is write-only — cleared on submit (success OR failure)
-  // and never re-displayed.
-  const [name, setName] = useState("");
-  const [value, setValue] = useState("");
-  const [scope, setScope] = useState<CredentialScope>("tenant");
-  const [busy, setBusy] = useState(false);
-
-  const refresh = useCallback(async () => {
-    setErr(null);
-    try {
-      // List BOTH scopes so the table shows the tenant-shared + own-user
-      // credentials together. list returns metadata only, never a value.
-      const [t, u] = await Promise.all([
-        listCredentials("tenant"),
-        listCredentials("user"),
-      ]);
-      setRows([
-        ...(t.credentials ?? []).map((c) => ({ ...c, _scope: "tenant" as const })),
-        ...(u.credentials ?? []).map((c) => ({ ...c, _scope: "user" as const })),
-      ]);
-      setDisabled(false);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (isCredStoreDisabled(msg)) setDisabled(true);
-      else setErr(msg);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const onCreate = async (e: FormEvent) => {
-    e.preventDefault();
-    if (busy || !name.trim() || !value) return;
-    setBusy(true);
-    setErr(null);
-    setFlash(null);
-    const created = name.trim();
-    try {
-      await createCredential({ scope, name: created, value });
-      setValue(""); // clear the secret immediately
-      setName("");
-      setFlash(`stored ${scope} credential "${created}"`);
-      setDisabled(false);
-      await refresh();
-    } catch (e2) {
-      setValue(""); // clear the secret even on failure — never retained
-      const msg = e2 instanceof Error ? e2.message : String(e2);
-      if (isCredStoreDisabled(msg)) setDisabled(true);
-      else setErr(msg);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onDelete = async (r: CredentialRow) => {
-    if (
-      !confirm(
-        `Delete the ${r._scope} credential "${r.name}"? Anything referencing $cred:${r.name} will stop resolving.`,
-      )
-    ) {
-      return;
-    }
-    try {
-      await deleteCredential({ scope: r._scope, name: r.name });
-      await refresh();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  return (
-    <div className="settings-panel">
-      <h2>Credentials</h2>
-      <p className="settings-help">
-        Encrypted API credentials for this tenant (RFC AR). A stored secret is
-        referenced elsewhere as <code>$cred:&lt;name&gt;</code> in an MCP
-        server&apos;s env or headers, and the runtime binds it server-side — the
-        value is never shown again after you save it. Naming one after a provider
-        key env-var (e.g. <code>ANTHROPIC_API_KEY</code>,{" "}
-        <code>BRAVE_API_KEY</code>) overrides the operator&apos;s key for this
-        tenant&apos;s runs (RFC AR / AX). <strong>tenant</strong> scope is shared
-        across the tenant; <strong>user</strong> scope is private to your own
-        subject (per-user tokens, e.g. a personal Telegram bot token).
-      </p>
-
-      {disabled && (
-        <div className="settings-error">
-          The credential store is disabled. The operator must set{" "}
-          <code>LOOMCYCLE_SECRET_KEY</code> to enable encrypted credential
-          storage.
-        </div>
-      )}
-      {err && <div className="settings-error">{err}</div>}
-      {flash && <div className="settings-flash">{flash}</div>}
-
-      <form className="cred-create" onSubmit={onCreate}>
-        <input
-          type="text"
-          list="cred-key-names"
-          placeholder="name (e.g. ANTHROPIC_API_KEY)"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          autoComplete="off"
-          spellCheck={false}
-        />
-        <datalist id="cred-key-names">
-          {KNOWN_KEY_NAMES.map((n) => (
-            <option key={n} value={n} />
-          ))}
-        </datalist>
-        <input
-          type="password"
-          placeholder="value (secret — write-only)"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          autoComplete="new-password"
-        />
-        <select
-          value={scope}
-          onChange={(e) => setScope(e.target.value as CredentialScope)}
-          title="tenant = shared; user = your own subject"
-        >
-          <option value="tenant">tenant</option>
-          <option value="user">user</option>
-        </select>
-        <button
-          type="submit"
-          className="primary-btn"
-          disabled={busy || !name.trim() || !value}
-        >
-          {busy ? "storing…" : "store"}
-        </button>
-      </form>
-
-      <table className="settings-table cred-table">
-        <thead>
-          <tr>
-            <th>name</th>
-            <th>scope</th>
-            <th>updated</th>
-            <th aria-label="actions" />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={4} className="settings-muted">
-                no credentials stored.
-              </td>
-            </tr>
-          ) : (
-            rows.map((r) => (
-              <tr key={`${r._scope}/${r.name}`}>
-                <td>
-                  <code>{r.name}</code>
-                </td>
-                <td>{r._scope}</td>
-                <td>
-                  {r.updated_at
-                    ? new Date(r.updated_at).toLocaleString()
-                    : "—"}
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    className="ghost-btn danger"
-                    onClick={() => void onDelete(r)}
-                  >
-                    delete
-                  </button>
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 // ─── Presets ─────────────────────────────────────────────────────────────────
 

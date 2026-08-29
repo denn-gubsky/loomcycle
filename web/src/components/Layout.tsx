@@ -14,6 +14,7 @@ import {
   Coins,
   FolderTree,
   HardDrive,
+  KeyRound,
   Library,
   ListTree,
   LogOut,
@@ -70,6 +71,10 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: "/run", label: "run", Icon: Play, vis: "all" },
   { to: "/agents", label: "runs", Icon: ListTree, vis: "all" },
+  // RFC CN — every login (incl. an isolated substrate:user user) can self-serve
+  // its OWN scope=user API tokens here; the operator Settings → Credentials tab
+  // (tenant authoring) stays separate.
+  { to: "/my-credentials", label: "credentials", Icon: KeyRound, vis: "all" },
   { to: "/library/agents", label: "library", Icon: Library, vis: "tenant" },
   { to: "/integrations/webhooks", label: "integrations", Icon: Plug, vis: "tenant" },
   { to: "/volumes/persistent", label: "volumes", Icon: HardDrive, vis: "tenant" },
