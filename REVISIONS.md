@@ -4,6 +4,51 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.67.0
+
+**Per-user credential self-service (RFC CN).** A logged-in user can now store its
+OWN API tokens — a personal Slack/Telegram bot token, a per-user webhook secret —
+without handing the secret to a tenant operator. The *consumption* side already
+bound per-user credentials (`$cred:<name>` resolves **agent > user > tenant**, per
+run); the missing half was letting a user *put a token in*. Now every transport does.
+
+Before this, `POST /v1/_credentialdef` was `substrate:tenant`-gated: an isolated
+`substrate:user` user was refused at the tenant-member isolation floor, and the Web
+UI's only credential control lived in the operator Settings hub. The rule now: a user
+may manage **only `scope=user`** credentials keyed on its own subject; an omitted
+scope defaults to `user`; `scope=tenant`/`agent` still requires `substrate:tenant`.
+One shared check (`credential.ConstrainToUserScope`) enforces it identically on every
+surface, so the transports cannot drift.
+
+### Across every transport
+
+- **HTTP** (#1093) — `POST /v1/_credentialdef` admits an isolated user (additively —
+  tenant/admin authoring and the RFC CB member path are unchanged), confined to
+  `scope=user` by the handler.
+- **MCP** (#1095) — an isolated `substrate:user` session may open `/v1/_mcp` and call
+  **only** the `credentialdef` meta-tool (the `loomcycle mcp --upstream` thin client).
+- **Web UI** (#1096) — a standalone **"My Credentials"** page, visible to every login
+  (including a delegated user with no Settings gear); the operator Settings →
+  Credentials tab (tenant authoring) is unchanged.
+- **gRPC + adapters** (#1097) — a new `CredentialDef` RPC, plus
+  `createCredential`/`listCredentials`/`deleteCredential` on `@loomcycle/client` and
+  `credential_def()` on the Python client. Both adapters ship at **1.67.0**.
+
+The worked example — each user receives its own GitHub webhook and publishes to *its*
+Slack/Telegram channel with *its* bot token — needs no per-user def authoring: an
+operator authors the flow once referencing `$cred:telegram`, and each user self-serves
+only its token, which wins per run over the tenant fallback.
+
+### Also
+
+- **fix(history):** `op=recap` now writes a **short** chat-list summary (at most two
+  sentences, under 256 chars) instead of reusing the compaction prompt — which on a
+  long chat returned several paragraphs that no list surface could rely on (#1092).
+- **bench:** the LoCoMo harness gains an **answer axis** (`-mode answer` — whether an
+  agent can *answer* from what it retrieved, not just whether the right rows come
+  back) plus the RFC CL/CM measurement instrumentation (#1094).
+- Refreshed the default local-provider model aliases in the `local` preset.
+
 ## What's in v1.66.0
 
 Two feature lines land together: **RFC CK** makes local inference a first-class
