@@ -29,9 +29,22 @@ type QueryResult struct {
 
 // Score computes one query's outcome against its answer key.
 func Score(q Query, retrieved []string, topK int, latency time.Duration) QueryResult {
+	// GROUND TRUTH IS TURN-LEVEL, ALWAYS. LoCoMo's qa.evidence names turn ids, so a
+	// coarser row (RFC CM-1's session unit) is credited when it CONTAINS an expected
+	// turn — its key maps to the same session. Without this a session-level arm would
+	// score zero against every question and the comparison would measure nothing.
+	//
+	// Recall stays denominated in EXPECTED TURNS, not in rows: one session row that
+	// covers three expected turns is three hits, exactly as three turn rows would be.
+	// Counting it as one would make the coarse arm look worse purely for being
+	// coarse, and counting the row once as a full hit would make it look better.
 	want := make(map[string]bool, len(q.Expected))
+	bySession := make(map[string][]string, len(q.Expected))
 	for _, e := range q.Expected {
 		want[e] = true
+		if sk := SessionOfDiaID(e); sk != "" {
+			bySession[sk] = append(bySession[sk], e)
+		}
 	}
 	res := QueryResult{
 		Question: q.Question, Category: q.Category,
@@ -42,8 +55,27 @@ func Score(q Query, retrieved []string, topK int, latency time.Duration) QueryRe
 		retrieved = retrieved[:topK]
 		res.Retrieved = retrieved
 	}
+	credited := make(map[string]bool, len(q.Expected))
 	for i, key := range retrieved {
-		if want[key] {
+		// A session row credits every expected turn it contains, each only once.
+		if covered, ok := bySession[key]; ok && !want[key] {
+			fresh := 0
+			for _, e := range covered {
+				if !credited[e] {
+					credited[e] = true
+					fresh++
+				}
+			}
+			if fresh > 0 {
+				res.Hits += fresh
+				if res.FirstHitRank == 0 {
+					res.FirstHitRank = i + 1
+				}
+			}
+			continue
+		}
+		if want[key] && !credited[key] {
+			credited[key] = true
 			res.Hits++
 			if res.FirstHitRank == 0 {
 				res.FirstHitRank = i + 1

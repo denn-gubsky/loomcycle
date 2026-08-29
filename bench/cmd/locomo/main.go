@@ -39,26 +39,47 @@ func main() {
 }
 
 type options struct {
-	mode              string
-	data              string
-	instance          string
-	scope             string
-	topK              int
-	categories        []int
-	conversations     int
-	concurrency       int
-	out               string
-	dryRun            bool
-	noEmbed           bool
+	mode          string
+	data          string
+	instance      string
+	scope         string
+	topK          int
+	categories    []int
+	conversations int
+	concurrency   int
+	out           string
+	dryRun        bool
+	noEmbed       bool
+	// unit is the row GRANULARITY (RFC CM-1): "turn" reproduces every run before
+	// this one, "session" collapses each session into one row. The comparison is the
+	// whole point of CM-1 — an episode tier that does not beat verbatim turns is not
+	// worth building.
+	unit string
+	// dated stamps each row's observed time from its session date, so the RFC CL
+	// `when` predicate has something to filter on. Off reproduces the undated corpus
+	// every prior number was measured against.
+	dated bool
+	// onlyDated restricts grading to the date-constrained slice — 31 of 1,535
+	// questions. It is the only slice the `when` predicate can help, and grading the
+	// other 1,504 to measure it costs 75 minutes of judge to move a headline number
+	// by half a point.
+	onlyDated         bool
+	injectWhen        bool
 	allowSharedTenant bool
 	timeout           time.Duration
+	answerer          string
+	judge             string
+	sampleQuestions   int
+	consolidatePasses int
+	seedTurns         bool
+	runTimeout        time.Duration
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("locomo", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		mode        = fs.String("mode", "convert", "convert | ingest | search | all | purge")
+		mode        = fs.String("mode", "convert", "convert | ingest | search | all | purge | answer")
 		data        = fs.String("data", "", "path to locomo10.json (required; not vendored — see README)")
 		instance    = fs.String("loomcycle", "http://127.0.0.1:8787", "base URL of the running loomcycle")
 		scope       = fs.String("scope", "agent", "memory scope to write/read (agent|user|tenant)")
@@ -69,8 +90,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 		out         = fs.String("out", "", "output directory (default: bench/results/locomo-<timestamp>)")
 		dryRun      = fs.Bool("dry-run", false, "parse and report, write nothing")
 		noEmbed     = fs.Bool("no-embed", false, "skip embedding on ingest (use /v1/_memory/backfill_embeddings after)")
+		unit        = fs.String("unit", "turn", "row granularity: turn|session (RFC CM-1)")
+		dated       = fs.Bool("dated", false, "stamp observed_at from each row's session date (RFC CL)")
+		onlyDated   = fs.Bool("only-date-questions", false, "grade ONLY questions naming an absolute date/window (RFC CL slice)")
+		injectWhen  = fs.Bool("inject-when", false, "resolve the question date phrase and hand the answerer a when window")
 		allowShared = fs.Bool("allow-shared-tenant", false, "permit writing into the default/legacy tenant (NOT isolated)")
 		timeout     = fs.Duration("timeout", 60*time.Second, "per-request timeout")
+		answerer    = fs.String("answerer", "locomo/answerer", "agent that answers from memory (answer axis)")
+		judge       = fs.String("judge", "locomo/judge", "agent that grades an answer against gold (answer axis)")
+		sampleQ     = fs.Int("sample-questions", 0, "answer axis: grade only N questions, stratified by category (0 = all)")
+		consPasses  = fs.Int("consolidate-passes", 12, "answer axis: max consolidation passes per conversation (0 = skip consolidation entirely)")
+		seedTurns   = fs.Bool("seed-turns", false, "answer axis: also write one embedded row per TURN into the partition the answerer reads, so it answers from conversation content rather than only from distilled facts (this is what the published systems do)")
+		runTimeout  = fs.Duration("run-timeout", 10*time.Minute, "answer axis: per-run timeout (agent runs are slower than REST calls)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -86,7 +117,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		mode: *mode, data: *data, instance: *instance, scope: *scope,
 		topK: *topK, categories: cats, conversations: *convLimit,
 		concurrency: *concurrency, out: *out, dryRun: *dryRun, noEmbed: *noEmbed,
+		unit: *unit, dated: *dated, onlyDated: *onlyDated, injectWhen: *injectWhen,
 		allowSharedTenant: *allowShared, timeout: *timeout,
+		answerer: *answerer, judge: *judge, sampleQuestions: *sampleQ,
+		consolidatePasses: *consPasses, runTimeout: *runTimeout, seedTurns: *seedTurns,
 	}
 	if opts.concurrency < 1 {
 		opts.concurrency = 1
@@ -126,8 +160,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return doSearch(ctx, convs, defects, inFile, opts, stdout)
 	case "purge":
 		return doPurge(ctx, convs, opts, stdout)
+	case "answer", "answer-all":
+		return doAnswerAxis(ctx, convs, defects, opts, stdout)
 	default:
-		return fmt.Errorf("unknown -mode %q (convert|ingest|search|all|purge)", opts.mode)
+		return fmt.Errorf("unknown -mode %q (convert|ingest|search|all|purge|answer)", opts.mode)
 	}
 }
 
@@ -188,7 +224,9 @@ func countQueries(cs []Conversation) int {
 // operator can point this at an isolated tenant without touching the operator
 // bearer their tools already use.
 func bearer() string {
-	for _, env := range []string{"LOOMCYCLE_LOCOMO_TOKEN", "LOOMCYCLE_AUTH_TOKEN"} {
+	// LOCOMO_BENCH_TENANT_TOKEN is accepted because it is what operators
+	// actually name the dedicated bench bearer when they mint one.
+	for _, env := range []string{"LOOMCYCLE_LOCOMO_TOKEN", "LOCOMO_BENCH_TENANT_TOKEN", "LOOMCYCLE_AUTH_TOKEN"} {
 		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
 			return v
 		}
@@ -306,9 +344,15 @@ func doIngest(ctx context.Context, convs []Conversation, opts options, stdout io
 	ctx, cancelPool := context.WithCancel(ctx)
 	defer cancelPool()
 
+	// One job shape for both granularities (RFC CM-1). Collapsing them here rather
+	// than forking the pool keeps the concurrency, the error handling and the
+	// embed-warning abort identical between the two arms — a comparison whose arms
+	// differ in their plumbing measures the plumbing.
 	type job struct {
-		scopeID string
-		turn    Turn
+		scopeID    string
+		key        string
+		body       string
+		observedAt string
 	}
 	jobs := make(chan job)
 	var (
@@ -326,12 +370,12 @@ func doIngest(ctx context.Context, convs []Conversation, opts options, stdout io
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				resp, err := c.PutEntry(ctx, opts.scope, j.scopeID, j.turn.DiaID, j.turn.Body(), !opts.noEmbed)
+				resp, err := c.PutEntryAt(ctx, opts.scope, j.scopeID, j.key, j.body, !opts.noEmbed, j.observedAt)
 				mu.Lock()
 				switch {
 				case err != nil:
 					if firstErr == nil {
-						firstErr = fmt.Errorf("put %s/%s: %w", j.scopeID, j.turn.DiaID, err)
+						firstErr = fmt.Errorf("put %s/%s: %w", j.scopeID, j.key, err)
 						cancelPool()
 					}
 				default:
@@ -354,11 +398,29 @@ func doIngest(ctx context.Context, convs []Conversation, opts options, stdout io
 	go func() {
 		defer close(jobs)
 		for _, conv := range convs {
+			if opts.unit == "session" {
+				for _, r := range SessionRows(conv) {
+					obs := ""
+					if opts.dated {
+						obs = r.ObservedAt
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case jobs <- job{scopeID: conv.ScopeID(), key: r.Key, body: r.Body, observedAt: obs}:
+					}
+				}
+				continue
+			}
 			for _, t := range conv.Turns {
+				obs := ""
+				if opts.dated {
+					obs = t.ObservedAt()
+				}
 				select {
 				case <-ctx.Done():
 					return
-				case jobs <- job{scopeID: conv.ScopeID(), turn: t}:
+				case jobs <- job{scopeID: conv.ScopeID(), key: t.DiaID, body: t.Body(), observedAt: obs}:
 				}
 			}
 		}
@@ -451,16 +513,31 @@ func doPurge(ctx context.Context, convs []Conversation, opts options, stdout io.
 	if err != nil {
 		return err
 	}
+	// EVERY KEY SHAPE THE HARNESS CAN WRITE, or a purge silently leaves rows behind.
+	//
+	// Keys are derived from the dataset, never from a listing, so purge can only ever
+	// remove rows this harness itself would have written — a deliberate safety
+	// property, and the reason a NEW key shape has to be added here explicitly.
+	// Adding the CM-1 session unit without this left every `D<n>:s` row in place
+	// across a re-ingest, and 15.6% of the next run's retrieved keys were rows from
+	// the previous arm — a contaminated comparison that looked like a spectacular
+	// result. The count was the tell: it read 5,882 both times, because it counts
+	// dataset turns rather than rows actually removed.
 	deleted := 0
 	for _, conv := range convs {
+		keys := make([]string, 0, len(conv.Turns))
 		for _, t := range conv.Turns {
+			keys = append(keys, t.DiaID)
+		}
+		for _, r := range SessionRows(conv) {
+			keys = append(keys, r.Key)
+		}
+		for _, k := range keys {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			// Keys are derived from the dataset, never from a listing, so purge can
-			// only ever remove rows this harness itself would have written.
-			if err := c.DeleteEntry(ctx, opts.scope, conv.ScopeID(), t.DiaID); err != nil {
-				return fmt.Errorf("delete %s/%s: %w", conv.ScopeID(), t.DiaID, err)
+			if err := c.DeleteEntry(ctx, opts.scope, conv.ScopeID(), k); err != nil {
+				return fmt.Errorf("delete %s/%s: %w", conv.ScopeID(), k, err)
 			}
 			deleted++
 		}

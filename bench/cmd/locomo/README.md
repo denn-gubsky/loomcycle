@@ -147,6 +147,75 @@ A run on the current file scores **1,535 queries over 5,882 rows**.
   characters against a couple of hundred is noise for a dense embedder, but it
   is an asymmetry and the report says so.
 
+## The answer axis (`-mode=answer`)
+
+Everything above measures **retrieval**: does the supporting turn come back.
+`-mode=answer` measures the whole pipeline instead — turns go in through the
+memory **layer**, the consolidator distils them into facts, an agent answers
+each question from recall alone, and a second model grades the answer against
+the gold one on the LoCoMo convention (correct 1, partial 0.5, wrong 0).
+
+```sh
+# one conversation, every question
+./bin/locomo -mode=answer -data locomo10.json -loomcycle http://127.0.0.1:8787
+
+# a cheap first pass: 12 questions, stratified across categories
+./bin/locomo -mode=answer -data locomo10.json -sample-questions 12
+```
+
+It needs two agents, `-answerer` and `-judge` (defaults `locomo/answerer` and
+`locomo/judge`). Author them with the `agentdef` tool — note the overlay goes in
+the **`overlay`** field; a `def` field is silently ignored, which produces an
+agent with no prompt, no tools and no model:
+
+```json
+{"op":"create","name":"locomo/answerer","promote":true,
+ "overlay":{"provider":"deepseek","model":"deepseek-v4-pro","tools":["Memory"],
+            "skills":["-*"],"memory_scopes":["user"],"max_tokens":400,
+            "system_prompt":"...answer only from Memory recall; NOT_FOUND if absent..."}}
+```
+
+Pin `provider` + `model` explicitly rather than relying on `tier`: a tier that
+resolves through a model alias pointing at a tag the host does not have fails
+the run with a bare 404.
+
+### Why it is built this way
+
+- **Ingest is deterministic.** Turns are handed to `Memory op=add` verbatim over
+  MCP. Prompting an agent to store them instead would measure that agent's
+  transcription fidelity, and a benchmark whose ingest can silently lose content
+  cannot attribute a miss to memory. MCP is the only off-run route — the REST
+  `/v1/_memory` family covers the k/v plane, embeddings and search, but the
+  memory-layer ops exist solely as in-band tools.
+- **The answerer gets `Memory` and nothing else**, and must answer `NOT_FOUND`
+  rather than fall back on general knowledge. A chat agent with web search would
+  answer some open-domain questions without consulting memory at all.
+- **One conversation resident at a time.** `scope_id` is server-derived from the
+  run identity, so an off-run caller cannot give each conversation its own
+  partition. Conversations run in sequence with the layer purged between, which
+  is why `-conversations` defaults differently here in practice.
+- **The drain runs before the purge.** Purge clears k/v rows but cannot reach the
+  pending consolidation queue; anything left queued from an earlier conversation
+  would otherwise be consolidated into this one's facts after the purge had run.
+
+### Two failure modes it refuses to paper over
+
+- **A leased consolidation target.** A pass killed mid-flight leaves the lease
+  held, and the bundle leases for **30 minutes**. Every later pass then answers
+  "target busy". That is its own error naming the TTL — the first live run of
+  this axis treated it as a drained queue and graded 10 questions against an
+  empty store, reporting `accuracy 0.0000` with `NOT_FOUND 1.000`: a plumbing
+  failure wearing the costume of a result.
+- **An empty partition after consolidation.** The axis refuses to grade at all,
+  rather than reporting the zero that would follow.
+
+An unparsed judge verdict is excluded from accuracy and counted separately, for
+the same reason: grading an instrument failure as a memory miss understates the
+system under test.
+
+Output lands beside the retrieval report as `answer-matrix.md` +
+`answer-report.json`.
+
 ## Not covered here
 
 LoCoMo does not test **knowledge updates**, which is what a bi-temporal fact
