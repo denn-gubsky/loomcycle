@@ -723,13 +723,7 @@ func main() {
 		resolvedCfg, found := resolveConfigPath("loomcycle.yaml")
 		switch {
 		case found:
-			// RFC CK section-per-file: the base loomcycle.yaml + any loomcycle.*.yaml
-			// section siblings beside it (e.g. loomcycle.providers.yaml), deep-merged.
-			cfgFiles = append([]string{resolvedCfg}, siblingSectionFiles(resolvedCfg)...)
-			if len(cfgFiles) > 1 {
-				log.Printf("config: + %d section file(s) beside %s: %s",
-					len(cfgFiles)-1, resolvedCfg, strings.Join(cfgFiles[1:], ", "))
-			}
+			cfgFiles = []string{resolvedCfg}
 		case len(presetLayers) > 0:
 			// Presets-only: the embedded base IS the config (RFC AQ §2.2).
 			log.Printf("config: no operator config file — running from embedded presets only")
@@ -752,6 +746,27 @@ func main() {
 				os.Exit(1)
 			}
 		}
+	}
+
+	// RFC CK section-per-file: a loomcycle.yaml base (auto-discovered OR passed via
+	// --config / CONFIG_FILES) brings its loomcycle.*.yaml section siblings, which
+	// deep-merge after it. Shared with loadLayeredConfig so validate/doctor resolve
+	// the identical set (lockstep). CONFIG_DIR is untouched — it already globs the
+	// whole dir. Only the sibling FILES existing on disk are added, so no new
+	// existence check is needed.
+	if expanded := cli.WithSectionSiblings(cfgFiles); len(expanded) > len(cfgFiles) {
+		orig := make(map[string]bool, len(cfgFiles))
+		for _, f := range cfgFiles {
+			orig[f] = true
+		}
+		var added []string
+		for _, f := range expanded {
+			if !orig[f] {
+				added = append(added, f)
+			}
+		}
+		log.Printf("config: + %d section file(s): %s", len(added), strings.Join(added, ", "))
+		cfgFiles = expanded
 	}
 
 	// The ordered disk-file layers: CONFIG_DIR first, then CONFIG_FILES/--config.

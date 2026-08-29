@@ -70,22 +70,33 @@ func loadLayeredConfig(explicitPath string) (*config.Config, error) {
 		}
 	}
 
-	// LOOMCYCLE_CONFIG_FILES — colon-separated.
+	// LOOMCYCLE_CONFIG_FILES — colon-separated. Collected (not yet layered) so the
+	// RFC CK section-sibling expansion below runs over the whole operator file set.
+	var opFiles []string
 	for _, f := range strings.Split(os.Getenv("LOOMCYCLE_CONFIG_FILES"), ":") {
 		if f = strings.TrimSpace(f); f != "" {
-			layers = append(layers, config.Layer{Name: f})
+			opFiles = append(opFiles, f)
 		}
 	}
 
 	// The explicit --config path (highest precedence). When it's absent from
 	// disk but the presets/env layers already provide a config, skip it (a
-	// presets-only stack, RFC AQ); when there are no other operator layers, keep
-	// it so LoadLayers surfaces the same file-not-found error the CLI produced
+	// presets-only stack, RFC AQ); when there is no other operator config at all,
+	// keep it so LoadLayers surfaces the same file-not-found error the CLI produced
 	// before (baseLayers excludes the always-on default-providers layer).
 	if explicitPath = strings.TrimSpace(explicitPath); explicitPath != "" {
-		if _, err := os.Stat(explicitPath); err == nil || len(layers) == baseLayers {
-			layers = append(layers, config.Layer{Name: explicitPath})
+		if _, err := os.Stat(explicitPath); err == nil || (len(layers) == baseLayers && len(opFiles) == 0) {
+			opFiles = append(opFiles, explicitPath)
 		}
+	}
+
+	// RFC CK section-per-file: a loomcycle.yaml among the operator files brings its
+	// loomcycle.*.yaml section siblings, deep-merged after it — the SAME helper the
+	// server boot path uses, so validate/doctor/agents resolve the identical split
+	// config the running server does (lockstep). LOOMCYCLE_CONFIG_DIR is excluded:
+	// it already globs every *.yaml in its directory.
+	for _, f := range WithSectionSiblings(opFiles) {
+		layers = append(layers, config.Layer{Name: f})
 	}
 
 	return config.LoadLayers(layers...)

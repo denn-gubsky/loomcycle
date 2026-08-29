@@ -1224,13 +1224,23 @@ loomcycle.channels.yaml   # channels:
 
 Because it's the same deep-merge, a section file simply *owns* its section (put
 `providers:` in `loomcycle.providers.yaml` and leave it out of `loomcycle.yaml`).
-This pairs with runtime reload: edit one section file and `POST /v1/_config/reload`
-picks it up (a section file present at boot is re-read on reload; adding a *new*
-section file still needs a restart). Notes: a base `loomcycle.yaml` must exist
-(it may be minimal); this applies to **auto-discovery only** — an explicit
-`--config` stays literal (list the files or use `LOOMCYCLE_CONFIG_DIR`); and any
-`loomcycle.*.yaml` in the directory is loaded, so don't keep `loomcycle.example.yaml`
-beside a live config.
+
+**A `loomcycle.yaml` base brings its siblings however it's reached** — by
+auto-discovery, by `--config loomcycle.yaml`, or in `LOOMCYCLE_CONFIG_FILES` — so
+`loomcycle validate loomcycle.yaml` / `doctor` see the *same* split config the
+server runs (no lockstep drift). `LOOMCYCLE_CONFIG_DIR` is unaffected: it already
+layers every `*.yaml` in the directory.
+
+This pairs with runtime reload: edit a section file present at boot and
+`POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
+boot needs a restart — the reload re-reads the file set captured at boot, so a new
+file is not seen and a removed file makes the reload fail (`422`, the running
+config is kept, never corrupted) until it's restored or the process restarts.
+
+Notes: a base `loomcycle.yaml` must exist (it may be minimal); `*.example.yaml`
+siblings are ignored (so the shipped `loomcycle.example.yaml` left beside a live
+config can't silently override it), but any *other* `loomcycle.*.yaml` in the
+directory is loaded — mind dated backups like `loomcycle.2026-08.yaml`.
 
 **The merge rule (one rule, all sections).** Files are merged at the YAML-tree
 level *before* typed unmarshal, so a key's presence is explicit:
