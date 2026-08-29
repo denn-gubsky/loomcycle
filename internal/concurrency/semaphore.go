@@ -165,6 +165,20 @@ func (s *Semaphore) WithUserQuotaStore(qs userQuotaGate) *Semaphore {
 	return s
 }
 
+// SetCaps updates the global concurrency + queue-depth caps at runtime (RFC CK
+// config reload). Both maxConcurrent and maxQueue are read under s.mu on the
+// acquire path, so this is race-safe and applies to subsequent acquires. In-flight
+// runs are NOT retroactively trimmed — shrinking a cap lets the excess drain as
+// releases unwind, matching WithPerUserCap. The queue TIMEOUT is deliberately not
+// changed here: it is read unlocked on the wait path (time.NewTimer(s.timeout)),
+// so it stays boot-fixed (a restart changes it).
+func (s *Semaphore) SetCaps(maxConcurrent, maxQueue int) {
+	s.mu.Lock()
+	s.maxConcurrent = maxConcurrent
+	s.maxQueue = maxQueue
+	s.mu.Unlock()
+}
+
 // Acquire returns a release func. Call release exactly once when done.
 // Returns ctx.Err() if ctx cancels first; *BackpressureError if queue is full.
 // Semantically equivalent to AcquireForUser(ctx, "") — i.e. no per-user

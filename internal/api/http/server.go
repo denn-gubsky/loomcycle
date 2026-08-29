@@ -78,14 +78,17 @@ type Server struct {
 	sem       *concurrency.Semaphore
 
 	// --- RFC CK runtime config reload (POST /v1/_config/reload) ---
-	// reloadLoad re-assembles + re-loads the layered config the same way boot did
-	// (config.LoadLayers, which validates); reloadApply rebuilds the boot-snapshot
-	// subsystems (provider set + resolver policy) in place. Both are injected by
-	// cmd/loomcycle via SetConfigReloader; nil on a Server built without them
-	// (tests / embedded) → the endpoint 503s. reloadMu serializes concurrent reloads.
-	reloadLoad  func() (*config.Config, error)
-	reloadApply func(*config.Config) error
-	reloadMu    sync.Mutex
+	// reloadLoad re-loads the layered config the same way boot did (config.LoadLayers,
+	// which validates); reloaders are the per-subsystem in-place rebuilders, each
+	// owning the config sections it applies. reloadableSet is the union of every
+	// reloader's sections + the free holder-live sections (the applied/restart
+	// classifier). All injected by cmd/loomcycle via SetConfigReloader; reloadLoad
+	// nil on a Server built without it (tests / embedded) → the endpoint 503s.
+	// reloadMu serializes concurrent reloads.
+	reloadLoad    func() (*config.Config, error)
+	reloaders     []SectionReloader
+	reloadableSet map[string]bool
+	reloadMu      sync.Mutex
 	// providerGates caps in-flight runs PER provider id (RFC BF P2b,
 	// providers.<id>.max_concurrent). Acquired at admission BEFORE the global
 	// sem so a run blocked on a full per-provider cap doesn't hold a global slot

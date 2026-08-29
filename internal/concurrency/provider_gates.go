@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -57,9 +58,11 @@ func IsProviderConcurrencyExhausted(err error) bool {
 
 // ProviderGates maps a provider id → its concurrency gate. Only providers with a
 // positive cap have an entry; everything else is uncapped and Acquire short-
-// circuits to a noop. Immutable after NewProviderGates — safe for concurrent use
-// (the underlying Semaphores carry their own locking).
+// circuits to a noop. The byID map is guarded by mu so Reload (RFC CK config
+// reload) can swap it while admissions read it; the underlying Semaphores carry
+// their own locking.
 type ProviderGates struct {
+	mu      sync.RWMutex
 	byID    map[string]*Semaphore
 	timeout time.Duration
 }
@@ -97,7 +100,9 @@ func (g *ProviderGates) Acquire(ctx context.Context, id string) (release func(),
 	if g == nil {
 		return noopRelease, nil
 	}
+	g.mu.RLock()
 	sem, ok := g.byID[id]
+	g.mu.RUnlock()
 	if !ok {
 		return noopRelease, nil
 	}
@@ -123,6 +128,8 @@ func (g *ProviderGates) Has(id string) bool {
 	if g == nil {
 		return false
 	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	_, ok := g.byID[id]
 	return ok
 }
@@ -132,7 +139,31 @@ func (g *ProviderGates) Len() int {
 	if g == nil {
 		return 0
 	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return len(g.byID)
+}
+
+// Reload rebuilds the per-provider gates in place from a new caps map (RFC CK
+// config reload), swapping byID under the write lock so a changed / added /
+// removed provider max_concurrent takes effect on the next admission. In-flight
+// runs hold a release closure over their ORIGINAL Semaphore, so they drain on the
+// old gate while new admissions use the new one — no count corruption, no leak.
+// queueDepth may change; the shared timeout stays boot-fixed. Nil-safe (a Server
+// with no gates never reloads them — the caller guards).
+func (g *ProviderGates) Reload(caps map[string]int, queueDepth int) {
+	if g == nil {
+		return
+	}
+	next := make(map[string]*Semaphore, len(caps))
+	for id, c := range caps {
+		if c > 0 {
+			next[id] = New(c, queueDepth, g.timeout)
+		}
+	}
+	g.mu.Lock()
+	g.byID = next
+	g.mu.Unlock()
 }
 
 // Stats returns a per-provider snapshot (active + queued) for every gated
@@ -141,7 +172,12 @@ func (g *ProviderGates) Len() int {
 // /v1/_concurrency/stats endpoint. The per-gate PerUser field is always nil
 // (this gate never does per-user accounting), so callers ignore it.
 func (g *ProviderGates) Stats() map[string]Stats {
-	if g == nil || len(g.byID) == 0 {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if len(g.byID) == 0 {
 		return nil
 	}
 	out := make(map[string]Stats, len(g.byID))

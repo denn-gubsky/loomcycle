@@ -3260,26 +3260,49 @@ func main() {
 	go runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval)
 	log.Printf("resolve probe: interval=%s", probeInterval)
 
-	// RFC CK — wire the runtime config-reload hooks now that the resolver, provider
-	// set, and background ctx exist. load re-runs LoadLayers over the SAME captured
-	// layer stack (disk-file layers re-read fresh, embedded layers static), which
-	// re-validates; apply rebuilds the provider set + resolver policy in place and
-	// probes the new set immediately. POST /v1/_config/reload drives it. In-place
-	// mutation means the Server's resolver/provider pointers never change, so the
-	// probe loop + all readers keep working without a swap.
-	srv.SetConfigReloader(
-		func() (*config.Config, error) { return config.LoadLayers(layers...) },
-		func(newCfg *config.Config) error {
-			if err := pr.Reload(newCfg); err != nil {
-				return err
-			}
-			resolver.ReloadPolicy(newCfg.ProviderPriority, convertTiers(newCfg.Tiers, newCfg.Models))
-			// runResolveProbeOnce reads pr.currentCfg() (now the reloaded config),
-			// so this immediately probes the possibly-changed provider set.
-			runResolveProbeOnce(bgCtx, resolver, pr, newCfg)
-			return nil
+	// RFC CK — wire the runtime config-reload registry now that the resolver,
+	// provider set, and background ctx exist. Each SectionReloader rebuilds its
+	// subsystem IN PLACE from a validated candidate (the Server's handle pointers
+	// never change, so the probe loop + all readers keep working). load re-runs
+	// LoadLayers over the SAME captured layer stack (disk files re-read fresh).
+	// POST /v1/_config/reload drives it.
+	reloaders := []lchttp.SectionReloader{
+		{
+			// Provider set + resolver policy.
+			Sections: []string{"providers", "models", "tiers", "provider_priority"},
+			Reload: func(newCfg *config.Config) error {
+				if err := pr.Reload(newCfg); err != nil {
+					return err
+				}
+				resolver.ReloadPolicy(newCfg.ProviderPriority, convertTiers(newCfg.Tiers, newCfg.Models))
+				// runResolveProbeOnce reads pr.currentCfg() (now the reloaded config),
+				// so this immediately probes the possibly-changed provider set.
+				runResolveProbeOnce(bgCtx, resolver, pr, newCfg)
+				return nil
+			},
 		},
-	)
+		{
+			// Concurrency: global semaphore caps + per-user cap + per-provider gates.
+			// Owns `providers` too because the gates key on providers[*].max_concurrent.
+			Sections: []string{"concurrency", "providers"},
+			Reload:   func(newCfg *config.Config) error { srv.ReloadConcurrency(newCfg); return nil },
+		},
+	}
+	if cfg.Env.SchedulerEnabled {
+		// Static scheduled_runs: re-materialize into the substrate (idempotent
+		// add/change; a yaml-REMOVED schedule keeps its row by design — see
+		// BootstrapStaticSchedules). The sweeper polls the store, so re-bootstrap
+		// alone suffices; the scheduler's own tick/allowlist knobs stay boot-fixed.
+		reloaders = append(reloaders, lchttp.SectionReloader{
+			Sections: []string{"scheduled_runs"},
+			Reload: func(newCfg *config.Config) error {
+				bs := &builtin.ScheduleDef{Store: storeIface, Cfg: newCfg}
+				_, err := bs.BootstrapStaticSchedules(bgCtx)
+				return err
+			},
+		})
+	}
+	srv.SetConfigReloader(func() (*config.Config, error) { return config.LoadLayers(layers...) }, reloaders...)
 
 	go func() {
 		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
