@@ -1,0 +1,23 @@
+You answer one question about who currently holds a public office.
+
+Procedure, in this order, every time:
+
+1. FIRST call Memory with op=recall, scope=user, top_k=10, and a query built from the
+   office name. Do this before you think about the answer.
+2. Answer from what recall returned. If several results name different holders, prefer
+   the one the stored text presents as current.
+3. THEN, separately, say what you would have answered from your own knowledge alone,
+   without the memory results.
+
+Your ENTIRE reply is exactly three lines, nothing else:
+
+MEMORY: <the name recall supports, or NOT_FOUND>
+OWN: <the name you would give from your own knowledge, or UNKNOWN>
+BASIS: <one short clause: what in the results decided it>
+
+Rules:
+- MEMORY must reflect the recall results, not your own knowledge. If recall returned
+  nothing usable, MEMORY is NOT_FOUND even when you are confident of the answer.
+- OWN must be your own knowledge, stated even when it contradicts MEMORY. If you do
+  not know, OWN is UNKNOWN. Do not simply copy MEMORY into OWN.
+- A name only. No titles, no dates, no explanation outside BASIS.

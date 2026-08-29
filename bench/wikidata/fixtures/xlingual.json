@@ -1,0 +1,557 @@
+{
+ "items": [
+  {
+   "qid": "Q10000001",
+   "labels": {
+    "en": "Tatyana Kolotilshchikova",
+    "ru": "\u0422\u0430\u0442\u044c\u044f\u043d\u0430 \u041a\u043e\u043b\u043e\u0442\u0438\u043b\u044c\u0449\u0438\u043a\u043e\u0432\u0430",
+    "fr": "Tatyana Kolotilshchikova",
+    "ja": "\u30bf\u30c6\u30a3\u30a2\u30ca\u30fb\u30b3\u30ed\u30c6\u30a3\u30eb\u30b7\u30c1\u30b3\u30ef"
+   },
+   "description": "Soviet ballet dancer and teacher (1937\u20132016)"
+  },
+  {
+   "qid": "Q1000002",
+   "labels": {
+    "de": "Claus Hammel",
+    "en": "Claus Hammel",
+    "fr": "Claus Hammel"
+   },
+   "description": "East German playwright (1932-1990)"
+  },
+  {
+   "qid": "Q10000029",
+   "labels": {
+    "ru": "\u041d\u0438\u043a\u043e\u043b\u0430\u0439 \u041f\u0435\u0442\u0440\u043e\u0432\u0438\u0447 \u042e\u0440\u044c\u0435\u0432",
+    "en": "Nikolai Yuryev",
+    "de": "Nikolaj Petrowitsch Jurjew"
+   },
+   "description": "Russian general"
+  },
+  {
+   "qid": "Q1000005",
+   "labels": {
+    "de": "Karel Mat\u011bj \u010capek-Chod",
+    "en": "Karel Mat\u011bj \u010capek-Chod",
+    "fr": "Karel Mat\u011bj \u010capek-Chod",
+    "ru": "\u041a\u0430\u0440\u0435\u043b \u041c\u0430\u0442\u0435\u0439 \u0427\u0430\u043f\u0435\u043a-\u0425\u043e\u0434"
+   },
+   "description": "Czech writer and journalist (1860\u20131927)"
+  },
+  {
+   "qid": "Q1000006",
+   "labels": {
+    "de": "Florian Eichinger",
+    "fr": "Florian Eichinger",
+    "en": "Florian Eichinger",
+    "ru": "\u0424\u043b\u043e\u0440\u0438\u0430\u043d \u042d\u0439\u0447\u0438\u043d\u0433\u0435\u0440"
+   },
+   "description": "German film producer and screenwriter"
+  },
+  {
+   "qid": "Q100000811",
+   "labels": {
+    "en": "Paul Mohr",
+    "de": "Paul Mohr",
+    "fr": "Paul Mohr"
+   },
+   "description": "physician"
+  },
+  {
+   "qid": "Q100000831",
+   "labels": {
+    "en": "Otto Kramer",
+    "de": "Otto Kramer",
+    "fr": "Otto Kramer"
+   },
+   "description": "classical philologist"
+  },
+  {
+   "qid": "Q100000832",
+   "labels": {
+    "en": "Marie Madeleine Lebreton",
+    "de": "Marie Madeleine Lebreton",
+    "fr": "Marie Madeleine Lebreton"
+   },
+   "description": "translator, medievalist, latinist (-1978)"
+  },
+  {
+   "qid": "Q1000",
+   "labels": {
+    "en": "Gabon",
+    "de": "Gabun",
+    "fr": "Gabon",
+    "ru": "\u0413\u0430\u0431\u043e\u043d",
+    "ar": "\u0627\u0644\u063a\u0627\u0628\u0648\u0646",
+    "ja": "\u30ac\u30dc\u30f3",
+    "uk": "\u0413\u0430\u0431\u043e\u043d"
+   },
+   "description": "country on the Atlantic coast of Central Africa"
+  },
+  {
+   "qid": "Q1005",
+   "labels": {
+    "en": "The Gambia",
+    "fr": "Gambie",
+    "de": "Gambia",
+    "ar": "\u063a\u0627\u0645\u0628\u064a\u0627",
+    "ja": "\u30ac\u30f3\u30d3\u30a2",
+    "ru": "\u0413\u0430\u043c\u0431\u0438\u044f",
+    "uk": "\u0413\u0430\u043c\u0431\u0456\u044f"
+   },
+   "description": "sovereign state in West Africa"
+  },
+  {
+   "qid": "Q1006",
+   "labels": {
+    "en": "Guinea",
+    "de": "Guinea",
+    "fr": "Guin\u00e9e",
+    "ar": "\u063a\u064a\u0646\u064a\u0627",
+    "ja": "\u30ae\u30cb\u30a2",
+    "ru": "\u0413\u0432\u0438\u043d\u0435\u044f",
+    "uk": "\u0413\u0432\u0456\u043d\u0435\u044f"
+   },
+   "description": "sovereign state in West Africa"
+  },
+  {
+   "qid": "Q1007",
+   "labels": {
+    "en": "Guinea-Bissau",
+    "fr": "Guin\u00e9e-Bissau",
+    "de": "Guinea-Bissau",
+    "ar": "\u063a\u064a\u0646\u064a\u0627 \u0628\u064a\u0633\u0627\u0648",
+    "ja": "\u30ae\u30cb\u30a2\u30d3\u30b5\u30a6\u5171\u548c\u56fd",
+    "ru": "\u0413\u0432\u0438\u043d\u0435\u044f-\u0411\u0438\u0441\u0430\u0443",
+    "uk": "\u0413\u0432\u0456\u043d\u0435\u044f-\u0411\u0456\u0441\u0430\u0443"
+   },
+   "description": "sovereign state in Western Africa"
+  },
+  {
+   "qid": "Q1008",
+   "labels": {
+    "de": "Elfenbeink\u00fcste",
+    "en": "Ivory Coast",
+    "fr": "C\u00f4te d'Ivoire",
+    "ja": "\u30b3\u30fc\u30c8\u30b8\u30dc\u30ef\u30fc\u30eb",
+    "ru": "\u041a\u043e\u0442-\u0434\u2019\u0418\u0432\u0443\u0430\u0440",
+    "uk": "\u041a\u043e\u0442-\u0434'\u0406\u0432\u0443\u0430\u0440",
+    "ar": "\u0633\u0627\u062d\u0644 \u0627\u0644\u0639\u0627\u062c"
+   },
+   "description": "sovereign state in West Africa"
+  },
+  {
+   "qid": "Q1009",
+   "labels": {
+    "en": "Cameroon",
+    "ru": "\u041a\u0430\u043c\u0435\u0440\u0443\u043d",
+    "fr": "Cameroun",
+    "de": "Kamerun",
+    "ar": "\u0627\u0644\u0643\u0627\u0645\u064a\u0631\u0648\u0646",
+    "ja": "\u30ab\u30e1\u30eb\u30fc\u30f3",
+    "uk": "\u041a\u0430\u043c\u0435\u0440\u0443\u043d"
+   },
+   "description": "sovereign state in West-Central Africa"
+  },
+  {
+   "qid": "Q1011",
+   "labels": {
+    "en": "Cape Verde",
+    "fr": "Cap-Vert",
+    "de": "Kap Verde",
+    "ar": "\u0627\u0644\u0631\u0623\u0633 \u0627\u0644\u0623\u062e\u0636\u0631",
+    "ja": "\u30ab\u30fc\u30dc\u30d9\u30eb\u30c7",
+    "ru": "\u041a\u0430\u0431\u043e-\u0412\u0435\u0440\u0434\u0435",
+    "uk": "\u041a\u0430\u0431\u043e-\u0412\u0435\u0440\u0434\u0435"
+   },
+   "description": "sovereign state comprising ten islands off the Western coast of Africa"
+  },
+  {
+   "qid": "Q1013",
+   "labels": {
+    "en": "Lesotho",
+    "ru": "\u041b\u0435\u0441\u043e\u0442\u043e",
+    "fr": "Lesotho",
+    "de": "Lesotho",
+    "ar": "\u0644\u064a\u0633\u0648\u062a\u0648",
+    "ja": "\u30ec\u30bd\u30c8",
+    "uk": "\u041b\u0435\u0441\u043e\u0442\u043e"
+   },
+   "description": "sovereign state in southern Africa"
+  },
+  {
+   "qid": "Q1000143",
+   "labels": {
+    "de": "G\u00fcig\u00fce",
+    "fr": "G\u00fcig\u00fce",
+    "en": "G\u00fcig\u00fce",
+    "ja": "\u30b0\u30a4\u30b0\u30a8",
+    "ru": "\u0413\u0438\u0433\u0435",
+    "ar": "\u063a\u0648\u064a\u063a\u0648\u064a",
+    "uk": "\u0413\u0432\u0456\u0433\u0432\u0435"
+   },
+   "description": "Parroquia"
+  },
+  {
+   "qid": "Q1000333",
+   "labels": {
+    "fr": "Huancavelica",
+    "ru": "\u0423\u0430\u043d\u043a\u0430\u0432\u0435\u043b\u0438\u043a\u0430",
+    "en": "Huancavelica",
+    "de": "Huancavelica",
+    "uk": "\u0423\u0430\u043d\u043a\u0430\u0432\u0435\u043b\u0456\u043a\u0430",
+    "ja": "\u30a6\u30a2\u30f3\u30ab\u30d9\u30ea\u30ab",
+    "ar": "\u0647\u0648\u0627\u0646\u0643\u0627\u0641\u0644\u064a\u0643\u0627"
+   },
+   "description": "capital city of Huancavelica, Peru"
+  },
+  {
+   "qid": "Q1000341",
+   "labels": {
+    "ru": "\u0418\u043b\u043e",
+    "fr": "Ilo",
+    "en": "Ilo",
+    "de": "Ilo",
+    "uk": "\u0406\u043b\u043e",
+    "ja": "\u30a4\u30ed",
+    "ar": "\u0645\u064a\u0646\u0627\u0621 \u0625\u064a\u0644\u0648"
+   },
+   "description": "city in Peru"
+  },
+  {
+   "qid": "Q1000346",
+   "labels": {
+    "fr": "Moquegua",
+    "en": "Moquegua",
+    "de": "Moquegua",
+    "ru": "\u041c\u043e\u043a\u0435\u0433\u0443\u0430",
+    "uk": "\u041c\u043e\u043a\u0435\u0491\u0443\u0430",
+    "ja": "\u30e2\u30b1\u30b0\u30a2",
+    "ar": "\u0645\u0648\u0643\u064a\u063a\u0648\u0627"
+   },
+   "description": "city of Peru, capital of Moquegua region"
+  },
+  {
+   "qid": "Q1000373",
+   "labels": {
+    "ru": "\u041c\u0430\u043d\u0434\u0430\u043b\u0433\u043e\u0432\u044c",
+    "en": "Mandalgovi",
+    "de": "Mandalgobi",
+    "ja": "\u30de\u30f3\u30c0\u30eb\u30b4\u30d3",
+    "uk": "\u041c\u0430\u043d\u0434\u0430\u043b\u0433\u043e\u0432\u044c",
+    "fr": "Mandalgov\u012d",
+    "ar": "\u0645\u0627\u0646\u062f\u0627\u0644\u063a\u0648\u0641\u064a"
+   },
+   "description": "city in Dundgovi, Mongolia"
+  },
+  {
+   "qid": "Q1000438",
+   "labels": {
+    "ru": "\u0429\u0430\u0432\u043d\u0438\u0446\u0430",
+    "en": "Szczawnica",
+    "uk": "\u0429\u0430\u0432\u043d\u0438\u0446\u044f",
+    "de": "Szczawnica",
+    "fr": "Szczawnica",
+    "ja": "\u30b7\u30e5\u30c1\u30e3\u30f4\u30cb\u30c4\u30a1"
+   },
+   "description": "city of Poland"
+  },
+  {
+   "qid": "Q1000495",
+   "labels": {
+    "ru": "\u0420\u0435\u0432\u0430",
+    "en": "Rewa",
+    "de": "Rewa",
+    "fr": "Rewa",
+    "ja": "\u30ea\u30fc\u30ef\u30fc",
+    "ar": "\u0631\u064a\u0648\u0627",
+    "uk": "\u0420\u0435\u0432\u0430"
+   },
+   "description": "city in the state of Madhya Pradesh in India"
+  },
+  {
+   "qid": "Q10006",
+   "labels": {
+    "en": "Hengelo",
+    "de": "Hengelo",
+    "fr": "Hengelo",
+    "ja": "\u30d8\u30f3\u30b2\u30ed\u30fc",
+    "ru": "\u0425\u0435\u043d\u0433\u0435\u043b\u043e",
+    "ar": "\u0647\u064a\u0646\u062c\u064a\u0644\u0648",
+    "uk": "\u0413\u0435\u043d\u0491\u0435\u043b\u043e"
+   },
+   "description": "city and municipality in Overijssel, the Netherlands"
+  },
+  {
+   "qid": "Q100258387",
+   "labels": {
+    "ar": "\u0627\u0644\u0645\u0631\u0643\u0632 \u0627\u0644\u062c\u0627\u0645\u0639\u064a \u0646\u0648\u0631 \u0627\u0644\u0628\u0634\u064a\u0631 \u0627\u0644\u0628\u064a\u0636",
+    "en": "University Center Nour Bashir (El-Bayadh)",
+    "fr": "Centre Universitaire Nour Bachir El-Bayadh"
+   },
+   "description": "University in Algeria"
+  },
+  {
+   "qid": "Q100258391",
+   "labels": {
+    "ar": "\u062c\u0627\u0645\u0639\u0629 \u0627\u0644\u0634\u0627\u0630\u0644\u064a \u0628\u0646 \u062c\u062f\u064a\u062f -\u0627\u0644\u0637\u0627\u0631\u0641",
+    "en": "Universit\u00e9 Chadli Bendjedid d'El Tarf",
+    "fr": "universit\u00e9 Chadli-Bendjedid"
+   },
+   "description": "university in Algeria"
+  },
+  {
+   "qid": "Q100260373",
+   "labels": {
+    "ar": "\u062c\u0627\u0645\u0639\u0629 \u0627\u0644\u0645\u0646\u0627\u0631\u0629",
+    "en": "Manara University",
+    "fr": "universit\u00e9 Manara"
+   },
+   "description": "Private university in Latakia, Syria"
+  },
+  {
+   "qid": "Q100261338",
+   "labels": {
+    "ar": "\u0627\u0644\u062c\u0627\u0645\u0639\u0629 \u0627\u0644\u062f\u0648\u0644\u064a\u0629 \u0644\u0623\u0643\u0627\u062f\u064a\u0631",
+    "fr": "universit\u00e9 internationale d'Agadir",
+    "en": "Universit\u00e9 Internationale d'Agadir"
+   },
+   "description": "university in Morocco"
+  },
+  {
+   "qid": "Q1003463",
+   "labels": {
+    "en": "Bulacan State University",
+    "de": "Bulacan State University",
+    "fr": "universit\u00e9 de Bulacain"
+   },
+   "description": "state-funded institution of higher learning in Bulacan province, Philippines"
+  },
+  {
+   "qid": "Q100418692",
+   "labels": {
+    "en": "Dhammaduta Chekinda University",
+    "de": "Dhammaduta Chekinda University",
+    "fr": "Dhammaduta Chekinda University"
+   },
+   "description": "Buddhist missionary university in Auk War Nat Chaung village, Myanmar"
+  },
+  {
+   "qid": "Q1000076",
+   "labels": {
+    "de": "Custom Coasters International",
+    "en": "Custom Coasters International",
+    "fr": "Custom Coasters International",
+    "ar": "\u0643\u0627\u0633\u062a\u0645 \u0643\u0648\u0633\u062a\u0631\u0632 \u0625\u0646\u062a\u0631\u0646\u0627\u0634\u0648\u0646\u0627\u0644"
+   },
+   "description": "American wooden roller coaster manufacturer"
+  },
+  {
+   "qid": "Q1000212",
+   "labels": {
+    "de": "Montreal Light, Heat and Power",
+    "en": "Montreal Light, Heat & Power",
+    "fr": "Montreal Light, Heat and Power",
+    "ja": "\u30e2\u30f3\u30c8\u30ea\u30aa\u30fc\u30eb\u30fb\u30e9\u30a4\u30c8\u30fb\u30d2\u30fc\u30c8\u30fb\u30a2\u30f3\u30c9\u30fb\u30d1\u30ef\u30fc"
+   },
+   "description": "Canadian utility company"
+  },
+  {
+   "qid": "Q1000369",
+   "labels": {
+    "de": "Buco",
+    "en": "Buco",
+    "fr": "Buco"
+   },
+   "description": "business"
+  },
+  {
+   "qid": "Q1000428",
+   "labels": {
+    "de": "MySQL AB",
+    "en": "MySQL AB",
+    "fr": "MySQL AB",
+    "ja": "MySQL AB",
+    "ru": "MySQL AB",
+    "uk": "MySQL AB",
+    "ar": "\u0645\u0627\u064a \u0625\u0633 \u0643\u064a\u0648 \u0625\u0644 \u0625\u064a\u0647 \u0628\u064a"
+   },
+   "description": "Swedish company"
+  },
+  {
+   "qid": "Q1000531",
+   "labels": {
+    "ja": "\u9999\u6e2f\u305d\u3054\u3046",
+    "en": "Sogo Hong Kong",
+    "fr": "Sogo Hong Kong"
+   },
+   "description": "company"
+  },
+  {
+   "qid": "Q1000533",
+   "labels": {
+    "de": "Union Betriebs-Gesellschaft mit beschr\u00e4nkter Haftung",
+    "fr": "Union Betriebs-Gesellschaft mit beschr\u00e4nkter Haftung",
+    "en": "Union Betriebs-Gesellschaft mit beschr\u00e4nkter Haftung"
+   },
+   "description": "business"
+  },
+  {
+   "qid": "Q1000725",
+   "labels": {
+    "de": "Julius Pintsch AG",
+    "fr": "Julius Pintsch AG",
+    "en": "Julius Pintsch AG"
+   },
+   "description": "business"
+  },
+  {
+   "qid": "Q1000840",
+   "labels": {
+    "ja": "\u30bf\u30a4\u56e3\u7d50\u56fd\u5bb6\u958b\u767a\u515a",
+    "en": "Chart Pattana Party",
+    "de": "Chart-Pattana-Partei",
+    "ru": "\u041f\u0430\u0440\u0442\u0438\u044f \u043d\u0430\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0440\u0430\u0437\u0432\u0438\u0442\u0438\u044f",
+    "fr": "Parti national du d\u00e9veloppement audacieux"
+   },
+   "description": "Thai political party"
+  },
+  {
+   "qid": "Q1001115",
+   "labels": {
+    "de": "Heimatwehr",
+    "en": "Heimatwehr",
+    "fr": "Heimatwehr"
+   },
+   "description": "Swiss political party"
+  },
+  {
+   "qid": "Q100136486",
+   "labels": {
+    "en": "Unity",
+    "uk": "\u0411\u0438\u0440\u0438\u043c\u0434\u0438\u043a",
+    "fr": "Birimdik",
+    "de": "Birimdik",
+    "ru": "\u0411\u0438\u0440\u0438\u043c\u0434\u0438\u043a",
+    "ja": "\u7d71\u4e00"
+   },
+   "description": "Kyrgyz political party"
+  },
+  {
+   "qid": "Q100144514",
+   "labels": {
+    "en": "Unidad Constituyente",
+    "fr": "Unit\u00e9 constituante",
+    "de": "Unidad Constituyente"
+   },
+   "description": "Chilean political coalition"
+  },
+  {
+   "qid": "Q1006077",
+   "labels": {
+    "ru": "\u0421\u043e\u044e\u0437\u043d\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u0432\u043e\u0439\u043d\u0430 (220\u2014217 \u0434\u043e \u043d. \u044d.)",
+    "fr": "guerre des Alli\u00e9s",
+    "en": "Social War of 220-217 BCE",
+    "de": "Bundesgenossenkrieg (Hellenismus)",
+    "ja": "\u540c\u76df\u5e02\u6226\u4e89 (\u7d00\u5143\u524d220\u5e74-\u7d00\u5143\u524d217\u5e74)",
+    "uk": "\u0421\u043e\u044e\u0437\u043d\u0438\u0446\u044c\u043a\u0430 \u0432\u0456\u0439\u043d\u0430 (220-217 \u0434\u043e \u043d.\u0435.)"
+   },
+   "description": "ancient Greek war from 220 to 217 BC"
+  },
+  {
+   "qid": "Q1014253",
+   "labels": {
+    "ru": "\u041c\u043e\u043d\u0433\u043e\u043b\u044c\u0441\u043a\u043e-\u0446\u0437\u0438\u043d\u044c\u0441\u043a\u0430\u044f \u0432\u043e\u0439\u043d\u0430",
+    "en": "Mongol conquest of the Jin dynasty",
+    "uk": "\u041c\u043e\u043d\u0433\u043e\u043b\u044c\u0441\u044c\u043a\u043e-\u0446\u0437\u0456\u043d\u044c\u0441\u044c\u043a\u0430 \u0432\u0456\u0439\u043d\u0430",
+    "ja": "\u30e2\u30f3\u30b4\u30eb\u30fb\u91d1\u6226\u4e89",
+    "fr": "invasion mongole de la dynastie Jin",
+    "ar": "\u063a\u0632\u0648 \u0627\u0644\u0645\u063a\u0648\u0644 \u0644\u0633\u0644\u0627\u0644\u0629 \u062c\u064a\u0646 \u0627\u0644\u0635\u064a\u0646\u064a\u0629"
+   },
+   "description": "1211\u20131234 campaign in northern China"
+  },
+  {
+   "qid": "Q1014825",
+   "labels": {
+    "de": "Burgdorferkrieg",
+    "en": "Burgdorferkrieg",
+    "fr": "guerre de Berthoud"
+   },
+   "description": "event"
+  },
+  {
+   "qid": "Q1016077",
+   "labels": {
+    "fr": "guerre de Burgondie",
+    "de": "Burgundenkrieg",
+    "ru": "\u0411\u0443\u0440\u0433\u0443\u043d\u0434\u043e-\u0444\u0440\u0430\u043d\u043a\u0441\u043a\u0430\u044f \u0432\u043e\u0439\u043d\u0430",
+    "en": "Burgundy War",
+    "ja": "\u30d6\u30eb\u30b4\u30fc\u30cb\u30e5\u6226\u4e89"
+   },
+   "description": "war"
+  },
+  {
+   "qid": "Q1032343",
+   "labels": {
+    "ru": "\u0410\u0432\u0441\u0442\u0440\u043e-\u0442\u0443\u0440\u0435\u0446\u043a\u0430\u044f \u0432\u043e\u0439\u043d\u0430",
+    "en": "Ottoman\u2013Habsburg War of 1540\u20131547",
+    "uk": "\u0413\u0430\u0431\u0441\u0431\u0443\u0440\u0437\u044c\u043a\u043e-\u043e\u0441\u043c\u0430\u043d\u0441\u044c\u043a\u0430 \u0432\u0456\u0439\u043d\u0430 1540\u20131547",
+    "fr": "guerre ottomano-habsbourgeoise de 1540\u20131547"
+   },
+   "description": "1540\u20131547 war between Ottoman Empire and the Habsburg Monarchy"
+  },
+  {
+   "qid": "Q1044829",
+   "labels": {
+    "fr": "guerre polono-russe",
+    "ru": "\u0420\u0443\u0441\u0441\u043a\u043e-\u043f\u043e\u043b\u044c\u0441\u043a\u0430\u044f \u0432\u043e\u0439\u043d\u0430 1605\u20141618 \u0433\u043e\u0434\u043e\u0432",
+    "en": "Polish\u2013Muscovite War",
+    "uk": "\u041c\u043e\u0441\u043a\u043e\u0432\u0441\u044c\u043a\u043e-\u043f\u043e\u043b\u044c\u0441\u044c\u043a\u0430 \u0432\u0456\u0439\u043d\u0430 1605\u20141618",
+    "de": "Polnisch-Russischer Krieg 1609\u20131618",
+    "ja": "\u30ed\u30b7\u30a2\u30fb\u30dd\u30fc\u30e9\u30f3\u30c9\u6226\u4e89",
+    "ar": "\u0627\u0644\u062d\u0631\u0628 \u0627\u0644\u0628\u0648\u0644\u0646\u062f\u064a\u0629 \u0627\u0644\u0645\u0648\u0633\u0643\u064a\u0629"
+   },
+   "description": "1605\u20131618 sequence of military conflicts and eastward invasions"
+  },
+  {
+   "qid": "Q100235488",
+   "labels": {
+    "ru": "20-\u043b\u0435\u0442\u0438\u0435 \u0412\u0438\u043a\u0438\u043f\u0435\u0434\u0438\u0438",
+    "en": "Wikipedia 20",
+    "fr": "20 ans de Wikip\u00e9dia",
+    "ar": "\u0648\u064a\u0643\u064a\u0628\u064a\u062f\u064a\u0627 20",
+    "de": "Wikipedia 20"
+   },
+   "description": "20th birthday of Wikipedia"
+  },
+  {
+   "qid": "Q1012810",
+   "labels": {
+    "ja": "\u30b9\u30c6\u30a3\u30fc\u30d6\u30fb\u30d0\u30fc\u30c8\u30de\u30f3\u4e8b\u4ef6",
+    "fr": "incident de Steve Bartman",
+    "en": "Steve Bartman incident"
+   },
+   "description": "controversial play in a 2003 baseball game"
+  },
+  {
+   "qid": "Q102119426",
+   "labels": {
+    "en": "Brereton Report",
+    "ar": "\u062a\u0642\u0631\u064a\u0631 \u0628\u0631\u064a\u0631\u064a\u062a\u0648\u0646",
+    "ja": "\u30d6\u30ec\u30ec\u30c8\u30f3\u5831\u544a\u66f8"
+   },
+   "description": "Australian war crimes investigation and report"
+  },
+  {
+   "qid": "Q1022208",
+   "labels": {
+    "en": "NORAD Tracks Santa",
+    "fr": "NORAD Tracks Santa",
+    "ru": "NORAD Tracks Santa",
+    "ja": "NORAD\u306e\u30b5\u30f3\u30bf\u8ffd\u8de1",
+    "de": "NORAD Tracks Santa"
+   },
+   "description": "annual program around Christmas"
+  }
+ ]
+}
