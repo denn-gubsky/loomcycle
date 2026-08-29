@@ -1123,6 +1123,9 @@ export class LoomcycleClient {
     // Sent only when set, so an omitted selector keeps the endpoint's
     // span-everything default rather than encoding one here (RFC BW).
     if (input.sources !== undefined) body.sources = input.sources;
+    // Sent only when set: an absent predicate leaves the search untouched, and
+    // the server rejects a malformed one rather than silently ignoring it.
+    if (input.when !== undefined) body.when = input.when;
     return postJSON<MemorySearchResponse>(this.ctx, "/v1/_memory/search", body, {
       signal: opts?.signal,
     });
