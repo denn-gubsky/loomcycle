@@ -922,7 +922,7 @@ The same operation is available through every transport that consumes the Connec
 
 ### At runtime — reload changed config (`POST /v1/_config/reload`)
 
-Edited a config file and want it live without a restart (which drops in-flight runs)? `POST /v1/_config/reload` re-loads the **same layered stack** the server booted with (presets → `LOOMCYCLE_CONFIG_DIR` → `LOOMCYCLE_CONFIG_FILES` → `--config`; disk-file layers are re-read fresh), validates it, and applies the sections it can apply live — reporting the rest.
+Edited a config file and want it live without a restart (which drops in-flight runs)? `POST /v1/_config/reload` **re-assembles** the layered stack the server booted with (presets → `LOOMCYCLE_CONFIG_DIR` → `LOOMCYCLE_CONFIG_FILES` → `--config`), re-globbing the `loomcycle.*.yaml` section siblings and re-reading `LOOMCYCLE_CONFIG_DIR` fresh — so a config or section file **added or removed** since boot is picked up too — validates it, and applies the sections it can apply live — reporting the rest.
 
 ```sh
 # Preview the diff without applying:
@@ -1235,9 +1235,11 @@ layers every `*.yaml` in the directory.
 
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
-boot needs a restart — the reload re-reads the file set captured at boot, so a new
-file is not seen and a removed file makes the reload fail (`422`, the running
-config is kept, never corrupted) until it's restored or the process restarts.
+boot is also picked up on reload — the reload re-globs the `loomcycle.*.yaml`
+siblings (and re-reads `LOOMCYCLE_CONFIG_DIR`) fresh each time, so a newly-dropped
+section file takes effect and a removed one is dropped, with no restart. (If a
+removal leaves the candidate invalid, the reload fails `422` and the running
+config is kept, never corrupted.)
 
 Notes: a base `loomcycle.yaml` must exist (it may be minimal); `*.example.yaml`
 siblings are ignored (so the shipped `loomcycle.example.yaml` left beside a live
