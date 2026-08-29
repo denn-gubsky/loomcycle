@@ -55,9 +55,9 @@ providers:
   #     max_context_tokens: 32768
 
 models:
-  local-fast:  { provider: ollama-local, model: gemma4:9b }        # quick / low-context
-  local-chat:  { provider: ollama-local, model: qwen3.6:27b }      # general reasoning
-  local-coder: { provider: ollama-local, model_pattern: "qwen3-coder*" } # coding / review
+  local-fast:  { provider: ollama-local, model: gpt-oss* }        # quick / low-context
+  local-chat:  { provider: ollama-local, model: qwen3.6*   }      # general reasoning
+  local-coder: { provider: ollama-local, model_pattern: "qwen3.8*" } # coding / review
   # vLLM / llama.cpp model examples — uncomment the provider above, then set the
   # served model id (as vLLM/llama-server reports it on GET /v1/models):
   # vllm-chat:     { provider: vllm-local,     model: Qwen/Qwen3-8B }

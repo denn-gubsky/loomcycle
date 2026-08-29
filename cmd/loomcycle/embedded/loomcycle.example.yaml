@@ -44,9 +44,9 @@ models:
   # Slow local models have their own knobs (num_ctx, header/idle timeouts,
   # compaction tuning, unbounded interactive runs). See "Local models" in
   # docs/CONFIGURATION.md and loomcycle.local-interactive.example.yaml.
-  local-small:  { provider: ollama-local, model: gemma4:9b }        # low tier
-  local-medium: { provider: ollama-local, model: qwen3.6:27b }      # middle tier
-  local-coder:  { provider: ollama-local, model: qwen3-coder-next } # high tier (coding)
+  local-small:  { provider: ollama-local, model: gpt-oss* }        # low tier
+  local-medium: { provider: ollama-local, model: qwen3.6* }      # middle tier
+  local-coder:  { provider: ollama-local, model: qwen3.8* } # high tier (coding)
 
 # ─── Tier-based model resolution (v0.7+, opt-in) ──────────────────────
 # Agents can declare `tier: low | middle | high` instead of pinning a
