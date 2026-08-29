@@ -199,7 +199,68 @@ func (s *Server) handleSubstrateHistory(w http.ResponseWriter, r *http.Request) 
 // plaintext `value`; this handler adds NO logging of the body or value (the tool
 // masks the value from the transcript and never echoes it in get/list output).
 func (s *Server) handleSubstrateCredentialDef(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrateCtx(w, r, "CredentialDef", s.CredentialDef, substrateAdminUserCtx)
+	// RFC CN — user credential self-service. An ISOLATED substrate:user caller
+	// (admitted by credentialSelfServiceAccessible) may only manage scope=user
+	// credentials keyed on its OWN subject: its omitted scope defaults to user and
+	// an explicit scope=tenant/agent is refused. Members / tenant operators / admin
+	// are unconstrained (their tenant-plane authority is unchanged). The scope_id is
+	// still derived from identity by the tool's resolveScope — this guard only bounds
+	// which scopes an isolated caller may REQUEST.
+	p, ok := auth.PrincipalFromContext(r.Context())
+	isolated := auth.IsIsolated(p, ok)
+	guard := func(_ context.Context, body []byte) ([]byte, *guardError) {
+		if !isolated {
+			return body, nil
+		}
+		return constrainToUserScope(body)
+	}
+	s.dispatchSubstrateCtxGuarded(w, r, "CredentialDef", s.CredentialDef, substrateAdminUserCtx, guard)
+}
+
+// guardError is a pre-dispatch refusal produced by a dispatchSubstrateCtxGuarded
+// guard — an authorization decision taken once the validated body is in hand,
+// written as a canonical JSON error at the guard's chosen status.
+type guardError struct {
+	status int
+	code   string
+	msg    string
+}
+
+// constrainToUserScope enforces the RFC CN isolated-user rule on a CredentialDef
+// input: the effective scope must be user. An omitted scope defaults to user (the
+// tool's own default is tenant, which is wrong for a self-service caller and would
+// leak into the tenant bucket), and the body is rewritten so the tool resolves
+// scope=user on the caller's own subject. An explicit scope=tenant/agent is refused.
+func constrainToUserScope(body []byte) ([]byte, *guardError) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		// dispatchSubstrateCtxGuarded already checked json.Valid, so this is a
+		// non-object body (array / scalar). Leave it for the tool to reject with
+		// its own message rather than masking it as a scope error.
+		return body, nil
+	}
+	scope := ""
+	if raw, present := fields["scope"]; present {
+		_ = json.Unmarshal(raw, &scope) // a non-string value stays "" → defaulted below
+	}
+	if scope == "" {
+		scope = "user"
+	}
+	if scope != "user" {
+		return nil, &guardError{
+			status: http.StatusForbidden,
+			code:   "credential_scope_forbidden",
+			msg:    "an isolated user token may only manage scope=user credentials (its own); scope=tenant and scope=agent require substrate:tenant",
+		}
+	}
+	// Pin scope=user in the body so an omitted scope cannot fall through to the
+	// tool's tenant default.
+	fields["scope"] = json.RawMessage(`"user"`)
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body, nil // unreachable (re-marshalling validated fields); keep the original
+	}
+	return out, nil
 }
 
 // dispatchSubstrate is the shared body of the substrate-def handlers.
@@ -220,6 +281,21 @@ func (s *Server) dispatchSubstrateCtx(
 	w http.ResponseWriter, r *http.Request, toolName string,
 	connectorFn func(ctx context.Context, input json.RawMessage) (connector.ToolResult, error),
 	ctxFn func(context.Context) context.Context,
+) {
+	s.dispatchSubstrateCtxGuarded(w, r, toolName, connectorFn, ctxFn, nil)
+}
+
+// dispatchSubstrateCtxGuarded is dispatchSubstrateCtx with an optional guard that
+// runs after the body is read + JSON-validated and after ctxFn builds the
+// operator-trust ctx, but BEFORE the tool. A guard makes a body-aware
+// authorization decision (RFC CN: confine an isolated user to scope=user): it may
+// return a rewritten body to forward, or a *guardError to refuse with a canonical
+// JSON error. A nil guard is the plain dispatch.
+func (s *Server) dispatchSubstrateCtxGuarded(
+	w http.ResponseWriter, r *http.Request, toolName string,
+	connectorFn func(ctx context.Context, input json.RawMessage) (connector.ToolResult, error),
+	ctxFn func(context.Context) context.Context,
+	guard func(context.Context, []byte) ([]byte, *guardError),
 ) {
 	// Operator-authed substrate ops; the cap (default 8 MiB, RFC BO) admits a
 	// set_asset base64 image payload + a large import_md document — the historical
@@ -242,6 +318,14 @@ func (s *Server) dispatchSubstrateCtx(
 	}
 
 	ctx := ctxFn(r.Context())
+	if guard != nil {
+		newBody, gerr := guard(ctx, body)
+		if gerr != nil {
+			writeJSONError(w, gerr.status, gerr.code, gerr.msg)
+			return
+		}
+		body = newBody
+	}
 	result, err := connectorFn(ctx, body)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
