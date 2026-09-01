@@ -485,7 +485,25 @@ func (m *Memory) resolveFromPending(ctx context.Context, scope store.MemoryScope
 	if in.FromPending == "" || m.Store == nil {
 		return prov
 	}
-	row, err := m.Store.MemoryPendingGet(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, in.FromPending)
+	ident := tools.RunIdentity(ctx)
+	row, err := m.Store.MemoryPendingGet(ctx, ident.TenantID, scope, scopeID, in.FromPending)
+	if err != nil && ident.UserID != "" && !(scope == store.MemoryScopeUser && scopeID == ident.UserID) {
+		// THE WRITE MAY HAVE BEEN PLACED SOMEWHERE OTHER THAN IT WAS DRAINED FROM.
+		//
+		// A consolidation pass drains the queue in the user scope and, when the tenant
+		// ontology declares the fact's type shared, writes the fact to the TENANT scope.
+		// The pending row is still in the user scope, so the primary lookup misses — and
+		// because a miss is silent by design, the fact landed in the shared plane with NO
+		// server-stamped origin and NO source_session_id. That second field is what the
+		// erasure report uses to surface a placed fact as residue for the subject who
+		// produced it, so losing it means an erasure cannot see the fact at all.
+		//
+		// NOT AN AUTHORIZATION WIDENING. The fallback tuple is built from the run's OWN
+		// identity — server-derived, never caller-supplied — so this reads the caller's
+		// own pending row and nothing else. The (tenant, scope, scopeID) tuple is still
+		// the check; there is simply a second tuple that is equally the caller's.
+		row, err = m.Store.MemoryPendingGet(ctx, ident.TenantID, store.MemoryScopeUser, ident.UserID, in.FromPending)
+	}
 	if err != nil {
 		return prov
 	}
@@ -581,7 +599,7 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	case "recall":
 		return m.execRecall(ctx, scope, scopeID, in)
 	case "placement":
-		return m.execPlacement(ctx, scope, in)
+		return m.execPlacement(ctx, scope, scopeID, in)
 	case "cursor_get":
 		return m.execCursorGet(ctx, scope, scopeID, in)
 	case "cursor_scan":
