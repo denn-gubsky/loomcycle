@@ -21,6 +21,11 @@ func TestOntologyScope_DirectiveParsesAndIgnoresTrailingProse(t *testing.T) {
 		{"among fields", "- `name` — what people call it\n- `@memory_scope` tenant\n- `owner` — accountable", "tenant"},
 		{"absent", "- `name` — what people call it", ""},
 		{"last wins", "- `@memory_scope` user\n- `@memory_scope` tenant", "tenant"},
+		// Separator spellings an operator would not think to doubt.
+		{"colon", "- `@memory_scope`: tenant", "tenant"},
+		{"colon inside prose", "- `@memory_scope`: tenant — shared", "tenant"},
+		{"equals", "- `@memory_scope` = user", "user"},
+		{"value backticked", "- `@memory_scope` `tenant`", "tenant"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, issue := ParseOntologyScope(tc.body)
@@ -51,6 +56,16 @@ func TestOntologyScope_UnusableValueIsReportedNotGuessed(t *testing.T) {
 		}
 		if issue == "" {
 			t.Errorf("%q: silently ignored; an operator who typo'd this needs to be told", body)
+			continue
+		}
+		// The advisory is read by a person in a panel. Nested backticks from building it
+		// out of markdown fragments render as garbage, so it must name the directive and
+		// the values plainly.
+		if strings.Contains(issue, "``") {
+			t.Errorf("%q: advisory has collapsed backticks and will render wrong: %s", body, issue)
+		}
+		if !strings.Contains(issue, OntologyScopeDirective) {
+			t.Errorf("%q: advisory does not name the directive: %s", body, issue)
 		}
 	}
 }

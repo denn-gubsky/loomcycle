@@ -651,8 +651,8 @@ func ParseOntologyScope(body string) (scope, issue string) {
 		}
 		raw := directiveValue(t)
 		if raw == "" {
-			scope, issue = "", "`"+OntologyScopeDirective+"` names no scope — write "+
-				"`- `"+OntologyScopeDirective+"` tenant` (or `user`)"
+			scope, issue = "", OntologyScopeDirective+" names no scope — give it one of: "+
+				joinComma(OntologyScopeValues())
 			continue
 		}
 		valid := false
@@ -663,7 +663,7 @@ func ParseOntologyScope(body string) (scope, issue string) {
 			}
 		}
 		if !valid {
-			scope, issue = "", "`"+OntologyScopeDirective+"` says "+raw+", which is not a "+
+			scope, issue = "", OntologyScopeDirective+" says \""+raw+"\", which is not a "+
 				"scope facts can be placed in (want "+joinComma(OntologyScopeValues())+
 				"); this type is in force but places nothing"
 			continue
@@ -688,11 +688,16 @@ func directiveValue(line string) string {
 		return ""
 	}
 	tail := strings.TrimSpace(rest[j+1:])
-	// An em-dash note may follow with no space before it.
-	if k := strings.IndexAny(tail, " \t—:"); k > 0 {
+	// An operator reasonably writes any of `@memory_scope tenant`,
+	// `@memory_scope: tenant` or `@memory_scope = tenant`. Punctuation between the
+	// directive and its value is separator, not value — reading ": tenant" as the scope
+	// would reject a spelling nobody would think to doubt.
+	tail = strings.TrimLeft(tail, ":=—- \t")
+	// A trailing note may follow, with or without a space before its dash.
+	if k := strings.IndexAny(tail, " \t—"); k > 0 {
 		tail = tail[:k]
 	}
-	return strings.ToLower(strings.Trim(tail, "`.,;—- \t"))
+	return strings.ToLower(strings.Trim(tail, "`.,;:—- \t"))
 }
 
 // EffectiveMemoryScope is a term's scope as a consumer should see it: what it declared,
