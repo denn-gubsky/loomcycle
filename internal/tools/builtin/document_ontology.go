@@ -181,11 +181,19 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				continue
 			}
 			body, _ := d.readBody(ctx, mscope, key.ScopeID, c.id)
+			// The scope directive is read on THIS path too, not only from the
+			// whole-document Markdown. This is the reader the live ontology actually
+			// goes through — one chunk per type — so a declaration parsed in only one
+			// of the two places would work in the template and do nothing in
+			// production.
+			mscopeDecl, mscopeIssue := memrank.ParseOntologyScope(body.Body)
 			out = append(out, memrank.OntologyTerm{
-				Name:   name,
-				Fields: memrank.ParseOntologyFields(body.Body),
-				Source: "tenant",
-				Parent: parentName,
+				Name:             name,
+				Fields:           memrank.ParseOntologyFields(body.Body),
+				Source:           "tenant",
+				Parent:           parentName,
+				MemoryScope:      mscopeDecl,
+				MemoryScopeIssue: mscopeIssue,
 			})
 			// AT the cap, this node's children are reported with this node's OWN
 			// parent — so a would-be level-5 type lands at level 4 as a sibling, and
