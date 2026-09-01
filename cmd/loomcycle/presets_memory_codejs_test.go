@@ -381,9 +381,30 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		d.f.supersededChunks = append(d.f.supersededChunks, old+" by "+id)
 		return okResult(map[string]any{"ok": true})
 	case "query_chunks":
-		// Only the natural-key point lookup is used; answer from the same map
-		// upsert_chunk fills so a cross-pass resolve is observable.
 		sql, _ := in["sql"].(string)
+		// The canonical-TYPE lookup: "... LIKE '%:<slug>' AND c.type <> 'fact'". Answers
+		// from chunkTypes, which upsert_chunk fills, so a subject filed by an earlier pass
+		// is visible to a later one. Keys are sorted for a deterministic winner (the real
+		// query orders by created_at; a Go map does not iterate in order).
+		if strings.Contains(sql, "SELECT c.type") && strings.Contains(sql, "LIKE '%:") {
+			suffix := sql[strings.Index(sql, "LIKE '%:")+len("LIKE '%"):]
+			if q := strings.Index(suffix, "'"); q >= 0 {
+				suffix = suffix[:q]
+			}
+			keys := make([]string, 0, len(d.f.chunkTypes))
+			for k := range d.f.chunkTypes {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				if strings.HasSuffix(k, suffix) && d.f.chunkTypes[k] != "fact" {
+					return okResult(map[string]any{"columns": []string{"type"}, "rows": [][]any{{d.f.chunkTypes[k]}}})
+				}
+			}
+			return okResult(map[string]any{"columns": []string{"type"}, "rows": [][]any{}})
+		}
+		// Otherwise the natural-key point lookup; answer from the same map
+		// upsert_chunk fills so a cross-pass resolve is observable.
 		for key, id := range d.f.chunks {
 			if strings.Contains(sql, "'"+key+"'") {
 				return okResult(map[string]any{"columns": []string{"chunk_id"}, "rows": [][]any{{id}}})
@@ -4418,5 +4439,139 @@ func TestConsolidator_DisplacedTwinIsRetiredInTheOldScope(t *testing.T) {
 	if !found {
 		t.Errorf("the stale twin at key %q was not retired in the user scope; calls: %v",
 			key, f.ops())
+	}
+}
+
+// ---- stable entity type per subject ----------------------------------------
+
+// TestConsolidator_ASubjectKeepsTheTypeItIsAlreadyFiledUnder is the fix for the defect that
+// made the entity graph nearly useless on a real corpus.
+//
+// The natural key of a subject node is `type + ":" + slug`, so the TYPE IS PART OF THE
+// IDENTITY. Each extraction call sees one transcript and picks a type fresh, with no
+// knowledge of how that subject was typed before — so on a real benchmark store "caroline"
+// existed five times (event, location, object, organization, person), carrying 89 claims
+// split across five nodes. 94% of all claims hung off a multiply-typed subject, and "what
+// else do we know about caroline" could reach at most a fifth of what was stored.
+func TestConsolidator_ASubjectKeepsTheTypeItIsAlreadyFiledUnder(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: caroline showed me her painting\nassistant: nice"
+	// An EARLIER pass already filed Caroline as a person.
+	f.chunks["person:caroline"] = "chunk-existing"
+	f.chunkTypes["person:caroline"] = "person"
+	// This pass's extractor calls her an `object`.
+	f.factsJSON = `[{"text":"Caroline paints in watercolour.","class":"fact","type":"object","subject":"Caroline"}]`
+
+	res := runConsolidator(t, f)
+
+	var subjectUpserts []recordedCall
+	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
+		if s, _ := c.Input["subject"].(string); s != "" {
+			subjectUpserts = append(subjectUpserts, c)
+		}
+	}
+	if len(subjectUpserts) != 1 {
+		t.Fatalf("want one subject-node upsert, got %d", len(subjectUpserts))
+	}
+	got := subjectUpserts[0].Input
+	if k, _ := got["natural_key"].(string); k != "person:caroline" {
+		t.Errorf("natural_key = %q, want person:caroline — a second type makes a SECOND node "+
+			"and splits her facts across both", k)
+	}
+	if ty, _ := got["type"].(string); ty != "person" {
+		t.Errorf("type = %q, want person (the type she is already filed under)", ty)
+	}
+	// And the operator is told the guess was overridden, rather than it happening silently.
+	if !strings.Contains(res.FinalText, "subject types held stable") {
+		t.Errorf("the report should say a type was held stable, got: %s", res.FinalText)
+	}
+}
+
+// A subject nobody has filed yet keeps the extractor's proposal — otherwise nothing could
+// ever establish a type in the first place.
+func TestConsolidator_ANewSubjectKeepsTheExtractorsType(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: the ledger service is owned by payments\nassistant: ok"
+	f.factsJSON = `[{"text":"The ledger service is owned by the payments team.","class":"fact","type":"service","subject":"ledger"}]`
+
+	res := runConsolidator(t, f)
+
+	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
+		if s, _ := c.Input["subject"].(string); s == "" {
+			continue
+		}
+		if ty, _ := c.Input["type"].(string); ty != "service" {
+			t.Errorf("a new subject must keep the proposed type, got %q", ty)
+		}
+		if k, _ := c.Input["natural_key"].(string); k != "service:ledger" {
+			t.Errorf("natural_key = %q, want service:ledger", k)
+		}
+	}
+	// Nothing was overridden, so the report stays quiet about it.
+	if strings.Contains(res.FinalText, "subject types held stable") {
+		t.Errorf("no type was overridden; the report should not mention it: %s", res.FinalText)
+	}
+}
+
+// Two facts about ONE subject in the SAME pass, typed differently by the extractor, must
+// still land on one node — the first wins and the second follows it. This is the
+// within-pass half; the test above is the across-pass half.
+func TestConsolidator_OneSubjectTypedTwoWaysInOnePassStillMakesOneNode(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: caroline paints, and caroline runs the art show\nassistant: ok"
+	f.factsJSON = `[
+		{"text":"Caroline paints in watercolour.","class":"fact","type":"person","subject":"Caroline"},
+		{"text":"Caroline organises the art show.","class":"fact","type":"organization","subject":"Caroline"}
+	]`
+
+	runConsolidator(t, f)
+
+	keys := map[string]bool{}
+	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
+		if s, _ := c.Input["subject"].(string); s == "" {
+			continue
+		}
+		k, _ := c.Input["natural_key"].(string)
+		keys[k] = true
+	}
+	if len(keys) != 1 {
+		t.Errorf("one subject became %d nodes (%v) — the second fact's type re-partitioned her", len(keys), keys)
+	}
+	if !keys["person:caroline"] {
+		t.Errorf("want the FIRST type to win (person:caroline), got %v", keys)
+	}
+}
+
+// TestConsolidator_ExtractionPromptSaysWhoseMemoryItIs: the extractor sees one transcript
+// and cannot tell which store it is filling, so a fact about the store's own owner came
+// back subject-less in one call and named in the next. Since the subject is half an
+// entity's identity, that split one person across several nodes.
+//
+// Asserted on the PER-CALL prompt, not the system prompt: the system prompt has a measured
+// char ceiling and its digest gates the stored extraction baselines.
+func TestConsolidator_ExtractionPromptSaysWhoseMemoryItIs(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: I live in Cluj\nassistant: noted"
+	f.factsJSON = `[{"text":"The user resides in Cluj-Napoca.","class":"fact"}]`
+
+	runConsolidator(t, f)
+
+	spawn := lastCall(t, f, "Agent")
+	prompt, _ := spawn.Input["prompt"].(string)
+	if prompt == "" {
+		t.Fatal("no extraction prompt was sent")
+	}
+	for _, want := range []string{"belongs to ONE person", `subject "user"`, "same spelling"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the extraction prompt must state %q so the owner's facts get one stable subject:\n%s", want, prompt)
+		}
+	}
+	// The rule goes BEFORE the transcript delimiters — it is ours, not the transcript's.
+	if strings.Index(prompt, "belongs to ONE person") > strings.Index(prompt, "BEGIN TRANSCRIPT") {
+		t.Error("the owner rule must precede the transcript, like the date line")
 	}
 }
