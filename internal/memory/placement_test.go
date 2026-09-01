@@ -30,6 +30,11 @@ func base(in PlacementInput) PlacementInput {
 	if in.UserID == "" {
 		in.UserID = "u_alice"
 	}
+	// The fixture grants both, so each test exercises the guard it is about rather than
+	// the grant. TestResolvePlacement_AnUngrantedScopeIsNeverPlaced covers the grant.
+	if in.GrantedScopes == nil {
+		in.GrantedScopes = []string{"agent", "user", "tenant"}
+	}
 	return in
 }
 
@@ -195,5 +200,39 @@ func TestResolvePlacement_ScopeNamesMatchTheStore(t *testing.T) {
 	}
 	if MemoryScopeTenantName != string(store.MemoryScopeTenant) {
 		t.Errorf("tenant scope name drifted: %q vs %q", MemoryScopeTenantName, store.MemoryScopeTenant)
+	}
+}
+
+// TestResolvePlacement_AnUngrantedScopeIsNeverPlaced is the enable switch. A declaration
+// on its own must change nothing until the operator also grants the writer — otherwise
+// editing a taxonomy would start publishing to the shared plane as a side effect.
+func TestResolvePlacement_AnUngrantedScopeIsNeverPlaced(t *testing.T) {
+	for _, granted := range [][]string{
+		nil,               // not supplied at all: grants nothing
+		{},                // explicitly empty
+		{"agent", "user"}, // the shipped consolidator's grant today
+	} {
+		// Constructed WITHOUT base(), which fills a nil grant and would defeat the
+		// first case — the one that matters most, since a caller that forgets the
+		// field must place nothing rather than everything.
+		got := ResolvePlacement(PlacementInput{
+			DeclaredType: "service", Subject: "checkout-api", GrantedScopes: granted,
+			Terms: placementOntology(), CallerScope: "user", UserID: "u_alice",
+		})
+		if got.Moved || got.Scope != "user" {
+			t.Errorf("granted %v: placed in %q — an ungranted scope must never be written: %s",
+				granted, got.Scope, got.Reason)
+		}
+		if !strings.Contains(got.Reason, "not granted") {
+			t.Errorf("granted %v: the reason should name the missing grant, got %q", granted, got.Reason)
+		}
+	}
+	// And with the grant, the same fact is placed — or the guard would be a blanket veto.
+	got := ResolvePlacement(base(PlacementInput{
+		DeclaredType: "service", Subject: "checkout-api",
+		GrantedScopes: []string{"user", "tenant"},
+	}))
+	if !got.Moved || got.Scope != "tenant" {
+		t.Errorf("with the grant the fact should be placed, got %+v", got)
 	}
 }

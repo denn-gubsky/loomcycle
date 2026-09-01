@@ -46,6 +46,22 @@ type PlacementInput struct {
 	// Isolated is the run's server-derived isolation bit. An isolated member has no
 	// tenant plane at all.
 	Isolated bool
+	// GrantedScopes is the calling agent's own memory_scopes.
+	//
+	// THIS IS THE ENABLE SWITCH, and deliberately not a separate flag. Placement writes
+	// to a plane every user in the tenant reads, so it must be something an operator
+	// turned on rather than a side effect of editing a taxonomy. The grant is that act:
+	// an agent without `tenant` in its memory_scopes places nothing there, and a
+	// declaration alone changes nothing until the operator also grants the writer.
+	//
+	// Deciding it HERE rather than letting the write fail at the gate is what makes the
+	// fallback graceful. The alternative is a consolidator that resolves `tenant`,
+	// attempts the write, and errors on a pass that would otherwise have stored the fact
+	// perfectly well in the user's own scope.
+	//
+	// Empty means "not supplied" and is treated as granting nothing, so a caller that
+	// forgets to pass it places nothing rather than everything.
+	GrantedScopes []string
 }
 
 // PlacementDecision is where the fact goes and why.
@@ -113,6 +129,10 @@ func ResolvePlacement(in PlacementInput) PlacementDecision {
 		}
 	}
 
+	if !grants(in.GrantedScopes, target) {
+		return stay("this agent is not granted " + target + " scope, so nothing is placed there")
+	}
+
 	if target == MemoryScopeTenantName && in.Isolated {
 		// The tenant plane is refused to an isolated member at the tool gate anyway.
 		// Deciding it here means the write succeeds in the caller's own scope instead of
@@ -135,6 +155,16 @@ const (
 	MemoryScopeUserName   = "user"
 	MemoryScopeTenantName = "tenant"
 )
+
+// grants reports whether the caller may write the target scope at all.
+func grants(scopes []string, target string) bool {
+	for _, s := range scopes {
+		if strings.EqualFold(strings.TrimSpace(s), target) {
+			return true
+		}
+	}
+	return false
+}
 
 type scopedType struct{ typeName, scope string }
 

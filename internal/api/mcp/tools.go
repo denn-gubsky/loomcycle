@@ -236,7 +236,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// can't drift from the validation the agent loop applies.
 		{
 			Name:        "memory",
-			Description: "Memory tool ops. Families: key/value (get/set/delete/list/incr/merge/append_dedupe/bounded_list/search); memory-layer (add/recall — add enqueues for background consolidation, recall needs an embedder + vector store); SQL (sql_query/sql_exec/sql_begin/sql_commit/sql_rollback — a per-scope SQL database, gated separately by sql_scopes). Pass-through to the underlying Memory builtin; see the inputSchema's op enum.",
+			Description: "Memory tool ops. Families: key/value (get/set/delete/list/incr/merge/append_dedupe/bounded_list/search); memory-layer (add/recall — add enqueues for background consolidation, recall needs an embedder + vector store); SQL (sql_query/sql_exec/sql_begin/sql_commit/sql_rollback — a per-scope SQL database, gated separately by sql_scopes); placement (which scope a batch of {type, subject} facts belongs in, from the operator's per-type declaration on the tenant ontology — it DECIDES and never writes, so a caller that stores a fact in more than one place can ask once and put both halves together). Pass-through to the underlying Memory builtin; see the inputSchema's op enum.",
 			InputSchema: builtinSchema("memory"),
 		},
 		{
