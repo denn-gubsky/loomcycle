@@ -488,8 +488,18 @@ agents:
           supersede_queue: [],      // neighbour keys judged duplicates of a kept row
           supersede_keeper: {},     // retired key -> the key that survived it (entity half)
           written_keys: {},         // never retire a row this pass just wrote
-          entities_doc: null,       // the /memory/entities document id, resolved once
-          entity_ids: {},           // natural_key -> chunk id, for this pass
+          entities_doc: {},         // scope -> /memory/entities document id, resolved once each
+          entity_ids: {},           // scope + "\u0000" + natural_key -> chunk id, for this pass
+          // scope PLACEMENT (ontology-declared). type|subject -> target scope, for the
+          // pairs the server said belong somewhere other than CONFIG.scope. Absent key
+          // means "leave it where it was", which is every fact on a deployment whose
+          // ontology declares nothing — i.e. the default.
+          placement: {},
+          placed: 0,                // facts written to a declared scope
+          placement_displaced: 0,   // stale same-key twins retired after a move
+          placement_displace_failed: 0,
+          placement_moved_keys: {}, // key -> target scope, for the displaced-twin retire
+          placement_error: "",
           entity_nodes: 0,          // distinct subjects given an entity chunk
           entity_facts: 0,          // facts mirrored into the graph
           // The judge's candidates, in WRITE ORDER. An array rather than a map
@@ -1144,6 +1154,7 @@ agents:
       // applyFacts returns true only when every write it attempted landed.
       function applyFacts(st, facts, sourceID, pendingID) {
         var ok = true;
+        resolvePlacements(st, facts);
         for (var i = 0; i < facts.length; i++) {
           if (!applyOne(st, facts[i], sourceID, pendingID)) { ok = false; }
         }
@@ -1211,6 +1222,32 @@ agents:
             st.supersede_keeper[dupes[d].id] = dupes[0].id;
           }
           if (!write(st, primary.id, fact, sourceID, pendingID)) { return false; }
+          // SUPERSEDE-WITH-POINTER. The rewrite above went to the scope the ontology
+          // declares, which may not be the scope the old row is in — that happens when a
+          // fact has lived here for a while and the operator has since declared its type
+          // shared. Leave the old row live and the same fact is readable in two places,
+          // with two places to correct it, which is the duplication this feature exists
+          // to remove. So retire it.
+          //
+          // The POINTER is exact without a new column: the row was rewritten under the
+          // SAME key, so the live copy is (this key, the target scope), and the new row's
+          // provenance carries promoted_from. A retired row is a soft archive — the audit
+          // trail survives and nothing is deleted.
+          //
+          // Not routed through supersede_queue: that queue's cap exists to stop a steered
+          // "everything you know is obsolete" driving an unbounded sweep, and this is
+          // driven by the operator's ontology rather than by anything in a transcript. It
+          // is one supersede per displaced fact, bounded by the batch.
+          if (st.placement_moved_keys[primary.id]) {
+            try {
+              Memory.supersede({ scope: CONFIG.scope, key: primary.id });
+              st.placement_displaced++;
+            } catch (e) {
+              // The fact is safely stored in its declared scope; the stale twin is a
+              // duplicate, not a loss. Counted so a pass that cannot retire says so.
+              st.placement_displace_failed++;
+            }
+          }
           st.updated++;
           return true;
         }
@@ -1423,15 +1460,81 @@ agents:
       // stored ones silently moves every fact off that calibration and the
       // deduplication above quietly stops firing. A test asserts the two are
       // byte-identical on every write.
+      // resolvePlacements asks the server, ONCE for the whole batch, which scope each
+      // typed fact belongs in.
+      //
+      // ONE CALL, and that is the design rather than an optimization. A fact is stored
+      // twice — the k/v row recall searches and the chunk mirror the graph walks — and
+      // both halves must land in the SAME scope or recall finds the fact in one place and
+      // graph_recall in another. Deciding once, before either write, is what guarantees
+      // that; deciding per write site would be two decisions agreeing by luck.
+      //
+      // Only typed facts are asked about: the ontology routes by the subject's entity
+      // type, so an untyped fact has nothing to route on and is also the set that gets no
+      // mirror. That alignment is load-bearing — a placed fact ALWAYS has a mirror, so the
+      // two halves always move together.
+      //
+      // BEST-EFFORT. A failure leaves the memo empty, every fact stays in CONFIG.scope,
+      // and the pass proceeds exactly as it did before placement existed. The report names
+      // it. Nothing here is allowed to cost a fact.
+      function resolvePlacements(st, facts) {
+        var items = [], seen = {};
+        for (var i = 0; i < facts.length; i++) {
+          var f = facts[i];
+          if (!f || !f.type || !f.subject) { continue; }
+          var k = f.type + "\u0000" + f.subject;
+          if (seen[k]) { continue; }
+          seen[k] = true;
+          items.push({ type: f.type, subject: f.subject });
+        }
+        if (!items.length) { return; }
+        try {
+          // TWO conventions, and getting either wrong is silent. Memory is a META-TOOL:
+          // it is namespaced by op (Memory.set, Memory.recall — never Memory({op:...}),
+          // which throws before any call is made), and the bridge hands back an ALREADY
+          // PARSED object. Document and History take an `op` field and return a STRING
+          // that has to be JSON.parse'd. Wrapping this one in JSON.parse stringifies the
+          // object and fails, which reads as a server refusal.
+          var res = Memory.placement({ scope: CONFIG.scope, items: items });
+          var rows = (res && res.placements) ? res.placements : [];
+          for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            if (row && row.moved && row.scope) {
+              st.placement[row.type + "\u0000" + row.subject] = row.scope;
+            }
+          }
+        } catch (e) {
+          st.placement_error = errText(e);
+        }
+      }
+
+      // placementFor is the ONLY place a write learns its scope. CONFIG.scope stays the
+      // answer for everything the ontology does not place, which is the default.
+      function placementFor(st, fact) {
+        if (!fact || !fact.type || !fact.subject) { return CONFIG.scope; }
+        var got = st.placement[fact.type + "\u0000" + fact.subject];
+        return got ? got : CONFIG.scope;
+      }
+
       function write(st, key, fact, sourceID, pendingID) {
+        // The scope the ontology declares for this fact's subject, or CONFIG.scope.
+        var scope = placementFor(st, fact);
+        var prov = sourceID ? { "class": fact.cls, source_session_id: sourceID }
+                            : { "class": fact.cls };
+        // WHERE IT CAME FROM, on a placed fact only. An operator looking at a row in the
+        // shared plane must be able to answer "why is this here" without guessing, and
+        // source_session_id alone does not say that the row was MOVED. It also keeps the
+        // erasure report honest: a placed fact still carries the session it came from, so
+        // it shows up as residue for the subject who produced it even though a user
+        // erasure correctly leaves it alone.
+        if (scope !== CONFIG.scope) { prov.promoted_from = CONFIG.scope; }
         var args = {
-          scope: CONFIG.scope,
+          scope: scope,
           key: key,
           value: fact.text,
           embed: true,
           embed_text: fact.text,
-          provenance: sourceID ? { "class": fact.cls, source_session_id: sourceID }
-                               : { "class": fact.cls }
+          provenance: prov
         };
         // WHEN the fact was true, when the extractor could tell. Omitted entirely
         // otherwise — an undated fact is the common and correct case, and a
@@ -1454,9 +1557,14 @@ agents:
           return false;
         }
         st.written_keys[key] = true;
+        if (scope !== CONFIG.scope) {
+          st.placed++;
+          st.placement_moved_keys[key] = scope;
+        }
         // The entity graph mirrors the fact AFTER the authoritative write lands, so
-        // a graph failure can never cost a fact.
-        mirrorEntity(st, key, fact);
+        // a graph failure can never cost a fact. SAME scope as the row above — the two
+        // halves of one fact never split.
+        mirrorEntity(st, key, fact, scope);
         return true;
       }
 
@@ -1484,24 +1592,28 @@ agents:
       // /memory/entities document. Provisioned here rather than server-side
       // because nothing on the server has a reason to touch it — the consolidator
       // is its only writer.
-      function entitiesDoc(st) {
-        if (st.entities_doc !== null) { return st.entities_doc; }
+      function entitiesDoc(st, scope) {
+        scope = scope || CONFIG.scope;
+        // PER SCOPE: /memory/entities is a path within a scope, so a placed fact's graph
+        // belongs to the target scope's own document. One memo entry per scope, resolved
+        // at most once each per pass.
+        if (st.entities_doc[scope] !== undefined) { return st.entities_doc[scope]; }
         var path = "/memory/entities";
         try {
-          var got = JSON.parse(Document({ op: "get_document", scope: CONFIG.scope, path: path }));
-          st.entities_doc = got.document_id || "";
+          var got = JSON.parse(Document({ op: "get_document", scope: scope, path: path }));
+          st.entities_doc[scope] = got.document_id || "";
         } catch (e) {
           try {
             var made = JSON.parse(Document({
-              op: "create_document", scope: CONFIG.scope,
+              op: "create_document", scope: scope,
               title: "Entities", path: path
             }));
-            st.entities_doc = made.document_id || "";
+            st.entities_doc[scope] = made.document_id || "";
           } catch (e2) {
-            st.entities_doc = ""; // give up for this pass; k/v is unaffected
+            st.entities_doc[scope] = ""; // give up for this pass; k/v is unaffected
           }
         }
-        return st.entities_doc;
+        return st.entities_doc[scope];
       }
 
       // ENTITY_TYPE_DENY are ontology terms that are STATEMENT CLASSES, not things a
@@ -1542,15 +1654,19 @@ agents:
       function entityKey(type, subject) { return type + ":" + slug(normalizeSubject(subject)); }
 
       // upsertEntityChunk writes one chunk and returns its id, or "" on failure.
-      function upsertEntityChunk(st, docID, naturalKey, args) {
-        if (st.entity_ids[naturalKey]) { return st.entity_ids[naturalKey]; }
+      function upsertEntityChunk(st, scope, docID, naturalKey, args) {
+        // MEMOISED PER SCOPE. The same natural key exists independently in each scope, so
+        // a scope-blind memo would hand back a user-scope chunk id for a tenant write and
+        // silently attach the edge to the wrong document.
+        var memo = scope + "\u0000" + naturalKey;
+        if (st.entity_ids[memo]) { return st.entity_ids[memo]; }
         try {
           args.op = "upsert_chunk";
-          args.scope = CONFIG.scope;
+          args.scope = scope;
           args.document_id = docID;
           args.natural_key = naturalKey;
           var res = JSON.parse(Document(args));
-          if (res && res.id) { st.entity_ids[naturalKey] = res.id; return res.id; }
+          if (res && res.id) { st.entity_ids[memo] = res.id; return res.id; }
         } catch (e) {
           st.entity_failed++;
         }
@@ -1559,18 +1675,19 @@ agents:
 
       // mirrorEntity writes the subject node, the fact node and the edge between
       // them. Called after the k/v write has already succeeded.
-      function mirrorEntity(st, key, fact) {
+      function mirrorEntity(st, key, fact, scope) {
         if (!fact.type || !fact.subject) { return; } // untyped fact: k/v only (by design)
+        scope = scope || CONFIG.scope;
         // A statement class is not an entity type. Counted rather than silently
         // skipped: a pass that mirrored nothing because every type was rejected
         // must not look like a pass with nothing to mirror.
         if (ENTITY_TYPE_DENY[fact.type] === true) { st.entity_type_refused++; return; }
-        var docID = entitiesDoc(st);
+        var docID = entitiesDoc(st, scope);
         if (!docID) { return; }
 
         var subjKey = entityKey(fact.type, fact.subject);
-        var isNewSubject = !st.entity_ids[subjKey];
-        var subjID = upsertEntityChunk(st, docID, subjKey, {
+        var isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
+        var subjID = upsertEntityChunk(st, scope, docID, subjKey, {
           title: fact.subject, type: fact.type, subject: fact.subject
         });
         if (!subjID) { return; }
@@ -1586,7 +1703,7 @@ agents:
         // claim — there is nothing about "Denn" for a quote to support, and attaching
         // one there would make the evidence look like it backed the wrong thing.
         if (fact.quote) { factArgs.source_quote = fact.quote; }
-        var factID = upsertEntityChunk(st, docID, key, factArgs);
+        var factID = upsertEntityChunk(st, scope, docID, key, factArgs);
         if (!factID) { return; }
         st.entity_facts++;
 
@@ -1953,7 +2070,9 @@ agents:
       function retireEntity(st, retiredKey) {
         var keeperKey = st.supersede_keeper[retiredKey];
         if (!keeperKey) { return; }
-        var docID = entitiesDoc(st);
+        // CONFIG.scope explicitly: duplicate collapse is a within-scope operation, and
+        // both the retired row and its survivor are in the scope this pass owns.
+        var docID = entitiesDoc(st, CONFIG.scope);
         if (!docID) { return; }
         var oldID = entityIDByKey(st, retiredKey), newID = entityIDByKey(st, keeperKey);
         if (!oldID || !newID) { return; } // neither was ever mirrored — nothing to retire
@@ -1974,7 +2093,10 @@ agents:
       // [a-z0-9:-] by construction, so no quote can occur. Do not extend this to a
       // key from anywhere else.
       function entityIDByKey(st, naturalKey) {
-        if (st.entity_ids[naturalKey]) { return st.entity_ids[naturalKey]; }
+        // CONFIG.scope's memo, because that is the scope this queries. The memo is keyed
+        // by scope since placement made the same natural key exist in more than one.
+        var memo = CONFIG.scope + "\u0000" + naturalKey;
+        if (st.entity_ids[memo]) { return st.entity_ids[memo]; }
         if (!/^[a-z0-9:_/-]+$/.test(naturalKey)) { return ""; }
         try {
           var res = JSON.parse(Document({
@@ -1982,8 +2104,8 @@ agents:
             sql: "SELECT chunk_id FROM chunk_memory_meta WHERE natural_key = '" + naturalKey + "'"
           }));
           if (res && res.rows && res.rows.length && res.rows[0].length) {
-            st.entity_ids[naturalKey] = String(res.rows[0][0]);
-            return st.entity_ids[naturalKey];
+            st.entity_ids[memo] = String(res.rows[0][0]);
+            return st.entity_ids[memo];
           }
         } catch (e) {
           st.entity_failed++;
@@ -2097,6 +2219,26 @@ agents:
         parts.push("facts written " + st.written);
         parts.push("updated in place " + st.updated);
         parts.push("retired " + st.superseded);
+        // PLACEMENT is silent when nothing is declared, which is the default and the
+        // common case — a line saying "placed 0" on every pass of every deployment that
+        // has no declarations would be noise. When it DOES fire the operator needs to see
+        // it: these rows left this user's scope for a plane everyone reads.
+        if (st.placed > 0) {
+          parts.push("placed in a declared scope " + st.placed);
+        }
+        if (st.placement_displaced > 0) {
+          parts.push("stale same-key twins retired after placement " + st.placement_displaced);
+        }
+        if (st.placement_displace_failed > 0) {
+          parts.push("twins that could NOT be retired " + st.placement_displace_failed +
+            " (the fact is stored in its declared scope; a duplicate remains here)");
+        }
+        // Said out loud rather than swallowed: the pass stored everything in this scope,
+        // which is correct behaviour but NOT the behaviour a declaring operator expects.
+        if (st.placement_error) {
+          parts.push("scope placement unavailable (" + st.placement_error +
+            ") — everything stayed in " + CONFIG.scope + " scope");
+        }
         if (st.supersede_capped > 0) {
           parts.push("retirement capped at " + CONFIG.max_supersedes + " (" + st.supersede_capped + " left for the next pass)");
         }

@@ -50,6 +50,13 @@ type recordedCall struct {
 type fakeToolset struct {
 	calls []recordedCall
 
+	// placements maps "type\x00subject" -> the scope the server says that fact belongs
+	// in. Empty (the default, and the real default) means the ontology declares nothing
+	// and every fact stays in the caller's scope. placementFails makes the op error, which
+	// is what a deployment without SQL Memory or with an unreadable ontology looks like.
+	placements     map[string]string
+	placementFails bool
+
 	// The entity half, filled by fakeDocument.
 	entitiesDocID string
 	chunks        map[string]string // natural_key -> chunk id
@@ -226,6 +233,30 @@ func (m *fakeMemory) Execute(_ context.Context, raw json.RawMessage) (tools.Resu
 			m.f.vectors[key] = embed
 		}
 		return okResult(map[string]any{"ok": true})
+	case "placement":
+		if m.f.placementFails {
+			return tools.Result{IsError: true, Text: "placement: SQL Memory is not enabled"}, nil
+		}
+		items, _ := in["items"].([]any)
+		caller, _ := in["scope"].(string)
+		rows := make([]map[string]any, 0, len(items))
+		moved := 0
+		for _, it := range items {
+			m2, _ := it.(map[string]any)
+			typ, _ := m2["type"].(string)
+			subj, _ := m2["subject"].(string)
+			target := caller
+			if got, ok := m.f.placements[typ+"\x00"+subj]; ok {
+				target = got
+			}
+			row := map[string]any{"type": typ, "subject": subj, "scope": target,
+				"moved": target != caller, "reason": "test"}
+			if target != caller {
+				moved++
+			}
+			rows = append(rows, row)
+		}
+		return okResult(map[string]any{"placements": rows, "moved": moved, "caller_scope": caller})
 	case "supersede", "pending_ack", "cursor_advance", "cursor_release":
 		return okResult(map[string]any{"ok": true})
 	}
@@ -4198,5 +4229,194 @@ func TestConsolidator_BadIntervalIsStrippedButTheFactSurvives(t *testing.T) {
 				t.Errorf("a %s interval reached the store via invalid_at", tc.name)
 			}
 		})
+	}
+}
+
+// ---- ontology-declared scope placement -------------------------------------
+
+// callsWithOp returns every recorded call matching "Tool.op".
+func callsWithOp(f *fakeToolset, want string) []recordedCall {
+	var out []recordedCall
+	seq := f.ops()
+	for i := range seq {
+		if seq[i] == want {
+			out = append(out, f.calls[i])
+		}
+	}
+	return out
+}
+
+func placementFixtureToolset(fact string) *fakeToolset {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: the checkout api needs two approvals\nassistant: noted"
+	f.factsJSON = `[{"text":"` + fact + `","class":"fact","type":"service","subject":"checkout-api"}]`
+	return f
+}
+
+// TestConsolidator_PlacementRoutesBOTHHALVESToTheDeclaredScope is the property the whole
+// one-decision design exists for.
+//
+// A fact is stored twice: the k/v row semantic recall searches, and a chunk mirror the
+// graph walks. If those land in different scopes the fact is findable by recall in one
+// place and by graph_recall in another, which is worse than never moving it. So the
+// assertion is not "the row moved" but "everything about this fact moved together".
+func TestConsolidator_PlacementRoutesBOTHHALVESToTheDeclaredScope(t *testing.T) {
+	const fact = "The checkout-api service requires two approvals to release."
+	f := placementFixtureToolset(fact)
+	f.placements = map[string]string{"service\x00checkout-api": "tenant"}
+
+	runConsolidator(t, f)
+
+	set := lastCall(t, f, "Memory.set")
+	if got, _ := set.Input["scope"].(string); got != "tenant" {
+		t.Errorf("the fact row went to %q, want tenant", got)
+	}
+	// Provenance says it was moved. source_session_id alone does not, and an operator
+	// looking at a row in the shared plane has to be able to answer "why is this here".
+	prov, _ := set.Input["provenance"].(map[string]any)
+	if from, _ := prov["promoted_from"].(string); from != "user" {
+		t.Errorf("provenance.promoted_from = %q, want user: %v", from, prov)
+	}
+
+	upserts := callsWithOp(f, "Document.upsert_chunk")
+	if len(upserts) == 0 {
+		t.Fatal("the fact was typed, so it must have been mirrored into the graph")
+	}
+	for _, c := range upserts {
+		if got, _ := c.Input["scope"].(string); got != "tenant" {
+			t.Errorf("a chunk went to %q while the row went to tenant — the two halves of "+
+				"one fact split across scopes: %v", got, c.Input)
+		}
+	}
+	// The entity document itself must be the TARGET scope's, not the caller's.
+	for _, c := range callsWithOp(f, "Document.get_document") {
+		if p, _ := c.Input["path"].(string); p == "/memory/entities" {
+			if got, _ := c.Input["scope"].(string); got != "tenant" {
+				t.Errorf("resolved the entities document in %q, want tenant", got)
+			}
+		}
+	}
+}
+
+// The default has to be inert: a deployment whose ontology declares nothing must behave
+// exactly as it did before placement existed.
+func TestConsolidator_NoDeclarationLeavesEveryFactInTheCallersScope(t *testing.T) {
+	f := placementFixtureToolset("The checkout-api service requires two approvals to release.")
+	// No placements configured — the server answers "stay" for everything.
+
+	runConsolidator(t, f)
+
+	for _, name := range []string{"Memory.set", "Document.upsert_chunk"} {
+		for _, c := range callsWithOp(f, name) {
+			if got, _ := c.Input["scope"].(string); got != "user" {
+				t.Errorf("%s went to %q with nothing declared, want user: %v", name, got, c.Input)
+			}
+		}
+	}
+	set := lastCall(t, f, "Memory.set")
+	prov, _ := set.Input["provenance"].(map[string]any)
+	if _, ok := prov["promoted_from"]; ok {
+		t.Errorf("an unplaced fact must not claim it was promoted: %v", prov)
+	}
+}
+
+// TestConsolidator_PlacementIsAskedOncePerPass: the op is a batch for a reason. Asking per
+// fact would put a tool call in front of every write.
+func TestConsolidator_PlacementIsAskedOncePerPass(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: several things\nassistant: ok"
+	f.factsJSON = `[
+		{"text":"The checkout-api service requires two approvals.","class":"fact","type":"service","subject":"checkout-api"},
+		{"text":"The ledger service is owned by the payments team.","class":"fact","type":"service","subject":"ledger"},
+		{"text":"The checkout-api service runs in eu-west-1.","class":"fact","type":"service","subject":"checkout-api"},
+		{"text":"Denn prefers Go.","class":"preference"}
+	]`
+	f.placements = map[string]string{"service\x00checkout-api": "tenant"}
+
+	runConsolidator(t, f)
+
+	if n := len(callsWithOp(f, "Memory.placement")); n != 1 {
+		t.Errorf("asked for placement %d times, want exactly 1 per pass", n)
+	}
+	// The untyped fact has nothing to route on and must not have been asked about.
+	call := lastCall(t, f, "Memory.placement")
+	items, _ := call.Input["items"].([]any)
+	if len(items) != 2 {
+		t.Errorf("asked about %d items, want the 2 DISTINCT typed subjects: %v", len(items), items)
+	}
+}
+
+// A placement failure must cost nothing. Everything stays in the caller's scope — which is
+// what the system did before this feature — and the report says so rather than leaving an
+// operator who declared a scope wondering why nothing moved.
+func TestConsolidator_PlacementFailureKeepsEverythingInTheCallersScopeAndSaysSo(t *testing.T) {
+	f := placementFixtureToolset("The checkout-api service requires two approvals to release.")
+	f.placements = map[string]string{"service\x00checkout-api": "tenant"}
+	f.placementFails = true
+
+	res := runConsolidator(t, f)
+
+	for _, c := range callsWithOp(f, "Memory.set") {
+		if got, _ := c.Input["scope"].(string); got != "user" {
+			t.Errorf("a write went to %q after placement failed, want the caller's own user scope", got)
+		}
+	}
+	if !strings.Contains(res.FinalText, "placement unavailable") {
+		t.Errorf("the report must name the failure, got: %s", res.FinalText)
+	}
+	// The call must have been ATTEMPTED. Without this the test passes when the pass
+	// never asks at all — which is how a client-side typo in the call form (Memory is
+	// namespaced by op, not called with one) looked exactly like a server refusal.
+	if n := len(callsWithOp(f, "Memory.placement")); n != 1 {
+		t.Errorf("placement was attempted %d times, want 1 — a report that names a failure "+
+			"nobody asked for is not evidence of anything", n)
+	}
+	// And the pass still stored the fact — a placement fault is not a fact lost.
+	if len(callsWithOp(f, "Memory.set")) == 0 {
+		t.Error("no fact was written at all")
+	}
+}
+
+// TestConsolidator_DisplacedTwinIsRetiredInTheOldScope is supersede-with-pointer.
+//
+// A fact that already lived in the caller's scope, whose type the operator has since
+// declared shared, is rewritten into the declared scope. Leaving the old row live would
+// mean the same fact readable in two places with two places to correct it — the exact
+// duplication this feature removes. The old row is retired (a soft archive, so the audit
+// trail survives), and the pointer is exact without a new column: same key, target scope,
+// plus promoted_from on the new row.
+func TestConsolidator_DisplacedTwinIsRetiredInTheOldScope(t *testing.T) {
+	const fact = "The checkout-api service requires two approvals to release."
+	f := placementFixtureToolset(fact)
+	f.placements = map[string]string{"service\x00checkout-api": "tenant"}
+	// An existing row for this same fact, well inside the merge band, so the pass
+	// rewrites it in place under ITS key rather than writing a new one.
+	f.recallFacts = []map[string]any{{
+		"id":     "memory/fact/checkout-api-two-approvals",
+		"memory": fact,
+		"score":  0.99,
+	}}
+
+	runConsolidator(t, f)
+
+	set := lastCall(t, f, "Memory.set")
+	if got, _ := set.Input["scope"].(string); got != "tenant" {
+		t.Fatalf("precondition: the rewrite should have gone to tenant, got %q", got)
+	}
+	key, _ := set.Input["key"].(string)
+
+	var found bool
+	for _, c := range callsWithOp(f, "Memory.supersede") {
+		sc, _ := c.Input["scope"].(string)
+		k, _ := c.Input["key"].(string)
+		if sc == "user" && k == key {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the stale twin at key %q was not retired in the user scope; calls: %v",
+			key, f.ops())
 	}
 }
