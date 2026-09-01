@@ -27,6 +27,32 @@ top-level. You may nest your types *under* them, but nesting them under one of
 yours is ignored. Names work best lowercase, as `a-z0-9-_` — a name with spaces
 still works, it just reads as prose inside a prompt.
 
+### Where a type's facts are stored
+
+A type may declare which memory scope facts about that kind of thing belong in:
+
+    ## service
+    - `@memory_scope` tenant
+    - `name` — what people call it
+
+`tenant` means facts about a service are written to the plane **every user in this
+tenant reads**, instead of into the scope of whoever happened to mention it. `user`
+means they stay with the person. Declaring nothing — the default, and what every type
+below does — leaves facts exactly where they are written today.
+
+A subtype inherits the declaration, so `organization → tenant` is written once.
+
+Three things it will NOT do, so you can declare one safely:
+
+- It never places a fact about **you**. Add your names to the Identity section of your
+  own profile document and facts about you stay yours whatever their type says.
+- It never places a fact whose subject is typed **inconsistently** — one thing recorded
+  as two different types is a thing the store cannot identify, and it is left alone
+  with a note rather than filed under a guess.
+- It does nothing at all until the agent that writes memory is granted the scope, on
+  **both** `memory_scopes` and `sql_scopes`. Declaring a scope is not the same as
+  opening one.
+
 ## project
 
 A body of work with a lifecycle of its own. Worth its own type when memory
