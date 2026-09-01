@@ -3,6 +3,8 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -281,4 +283,93 @@ func TestOperatorTokenDef_RetireProvisionsNothing(t *testing.T) {
 func tokenAdminCtx() context.Context {
 	return tools.WithOperatorTokenDefPolicy(context.Background(),
 		tools.OperatorTokenDefPolicyValue{Admin: true})
+}
+
+// TestProvisionIdentityDocs_EveryUserCreationPathProvisions is the guard for the defect
+// that shipped in v1.68.0.
+//
+// Provisioning was hooked to the OperatorTokenDef substrate tool and nothing else, on the
+// strength of one route dispatching through it. But there are THREE ways a principal comes
+// into existence, and two of them write the row directly:
+//
+//	POST /v1/_users                  -> handleCreateUser     (store.UserCreate)
+//	POST /v1/_users/{s}/tokens       -> handleMintUserToken  (store.OperatorTokenDefCreate)
+//	OperatorTokenDef op=create       -> the substrate tool
+//
+// The Web UI drives the first two, so users created through it got no profile — no Identity
+// section, so nobody could declare their own names, so placement could not tell a fact about
+// them from a fact about a colleague. The feature was inert for exactly the people it was
+// built for.
+//
+// This test enumerates the paths rather than testing one, because the failure was a MISSING
+// call site, and a test per path written at the time would have covered the path that
+// already worked.
+func TestProvisionIdentityDocs_EveryUserCreationPathProvisions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		subject string
+		run     func(t *testing.T, s *Server, subject string)
+	}{
+		{
+			name:    "POST /v1/_users",
+			subject: "created-user",
+			run: func(t *testing.T, s *Server, subject string) {
+				body, _ := json.Marshal(map[string]string{"subject": subject, "display_name": "Created"})
+				req := identityDocsReq(http.MethodPost, "/v1/_users", string(body))
+				rec := httptest.NewRecorder()
+				s.handleCreateUser(rec, req)
+				if rec.Code != http.StatusCreated {
+					t.Fatalf("create user = %d: %s", rec.Code, rec.Body.String())
+				}
+			},
+		},
+		{
+			name:    "POST /v1/_users/{subject}/tokens",
+			subject: "minted-user",
+			run: func(t *testing.T, s *Server, subject string) {
+				// The user must exist for the mint route to accept it.
+				body, _ := json.Marshal(map[string]string{"subject": subject})
+				cr := identityDocsReq(http.MethodPost, "/v1/_users", string(body))
+				crRec := httptest.NewRecorder()
+				s.handleCreateUser(crRec, cr)
+				if crRec.Code != http.StatusCreated {
+					t.Fatalf("seed user = %d: %s", crRec.Code, crRec.Body.String())
+				}
+				req := identityDocsReq(http.MethodPost, "/v1/_users/"+subject+"/tokens", `{}`)
+				req.SetPathValue("subject", subject)
+				rec := httptest.NewRecorder()
+				s.handleMintUserToken(rec, req)
+				if rec.Code != http.StatusCreated {
+					t.Fatalf("mint = %d: %s", rec.Code, rec.Body.String())
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := identityDocsFixture(t, true)
+			tc.run(t, s, tc.subject)
+
+			mi := memInject{Tenant: identityDocsTenant, UserID: tc.subject}
+			if !s.docExistsAt(t, mi, "user", meminject.UserRootPath) {
+				t.Errorf("%s created a principal but no user-root profile — the Identity "+
+					"section it carries is what lets placement tell this person's facts "+
+					"from a colleague's", tc.name)
+			}
+		})
+	}
+}
+
+// identityDocsTenant is the tenant the guard test's principal belongs to. A token row
+// requires a non-empty tenant, so the request has to carry a real principal.
+const identityDocsTenant = "acme"
+
+// identityDocsReq builds a request stamped with an admin principal in identityDocsTenant —
+// what authMiddleware would have put there in production.
+func identityDocsReq(method, path, body string) *http.Request {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	return req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{
+		TenantID: identityDocsTenant,
+		Subject:  "operator",
+		Scopes:   []string{auth.ScopeAdmin},
+	}))
 }
