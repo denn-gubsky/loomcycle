@@ -240,6 +240,13 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	// replica) so the fresh token authenticates within one backplane round-trip.
 	s.invalidateTokenCache(r.Context())
 
+	// Also here, and not only in handleCreateUser. This route writes the token row
+	// DIRECTLY rather than going through the OperatorTokenDef tool, so it shares no code
+	// with the other mint path — and it is reachable for a user that already existed
+	// before provisioning shipped, which is the case handleCreateUser cannot cover.
+	// Idempotent, so the overlap with a just-created user costs one exists-check.
+	s.ProvisionIdentityDocs(r.Context(), tenant, subject)
+
 	// Non-secret correlation only — NEVER the plaintext. The suffix + def_id are
 	// safe to log; the minting operator is attributed via principalSubject.
 	log.Printf("users: minted token tenant=%q subject=%q def_id=%q suffix=%q scopes=%v by=%q",

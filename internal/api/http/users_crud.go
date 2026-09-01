@@ -119,6 +119,16 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
 		return
 	}
+	// A USER COMING INTO EXISTENCE IS THE ESTABLISHMENT MOMENT, and this is where it
+	// happens — not at token mint. Provisioning was originally hooked only to the
+	// OperatorTokenDef substrate tool, so a user created through this surface (which is
+	// what the Web UI drives) got no profile at all: the template that the Identity
+	// section lives in never appeared, so nobody could declare their own names, so
+	// placement could not tell a fact about them from a fact about a colleague.
+	//
+	// Best-effort and after the row lands: creating the user is the operation that must
+	// succeed, and a template document is a convenience.
+	s.ProvisionIdentityDocs(r.Context(), row.TenantID, row.Subject)
 	writeJSON(w, http.StatusCreated, toWireUserRecord(row))
 }
 
