@@ -3100,6 +3100,23 @@ type Env struct {
 	// Env: LOOMCYCLE_DEADLINK_GC_DRY_RUN=1.
 	DeadLinkGCDryRun bool
 
+	// ProvisionIdentityDocs creates the tenant-root and user-root Documents when a
+	// principal is ESTABLISHED — at token mint, and at boot for config-declared
+	// principals — instead of only on the first run that references them.
+	//
+	// Default TRUE. Both documents are templates a person fills in, and the user-root
+	// one's Identity section is what lets memory placement tell a fact about the user
+	// from a fact about a colleague. Arriving on first reference is too late to be
+	// filled in beforehand, and a person with no runs yet cannot discover there is
+	// anything to fill.
+	//
+	// Set LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS=0 to keep the older lazy-only
+	// behaviour — an operator who does not want a document per principal appearing
+	// without being asked for.
+	//
+	// Env: LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS (default 1).
+	ProvisionIdentityDocs bool
+
 	// MemorySweepInterval is how often the TTL reaper goroutine
 	// runs MemorySweep on the store. Default 15 minutes. Set to 0
 	// to disable (operators with an external reaper, or tests that
@@ -3566,6 +3583,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		HTTPHostAllowlist:           splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist:    splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
 		MCPAllowPrivateIPs:          getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", true),
+		ProvisionIdentityDocs:       getenvBool("LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", true),
 		HTTPCallerAuthoritative:     os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
 		ResumeFanout:                os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
