@@ -66,6 +66,23 @@ type PlacementInput struct {
 	// Empty means "not supplied" and is treated as granting nothing, so a caller that
 	// forgets to pass it places nothing rather than everything.
 	GrantedScopes []string
+	// GrantedSqlScopes is the calling agent's own sql_scopes, and it is required for a
+	// TENANT placement even though the fact itself is a key/value row.
+	//
+	// A fact is stored twice: the row semantic recall searches, and a chunk mirror the
+	// graph walks. The mirror is a Document write, and a Document write at tenant scope
+	// needs the tenant grant on BOTH planes — chunk structure lives in SQL Memory,
+	// chunk bodies in k/v Memory — because "half of a tenant store is structure with no
+	// text", as the Document gate puts it.
+	//
+	// Checking only memory_scopes would let this answer "tenant" for a caller that can
+	// write the row but not the mirror, and the result is the exact failure the whole
+	// one-decision design exists to prevent: a fact whose halves are in different
+	// partitions. Better to decline the move.
+	//
+	// Only consulted for a tenant target. Document leaves agent and user scope ungated,
+	// so a user placement needs nothing here.
+	GrantedSqlScopes []string
 }
 
 // PlacementDecision is where the fact goes and why.
@@ -135,6 +152,12 @@ func ResolvePlacement(in PlacementInput) PlacementDecision {
 
 	if !grants(in.GrantedScopes, target) {
 		return stay("this agent is not granted " + target + " scope, so nothing is placed there")
+	}
+	// The tenant plane needs BOTH grants, because placing a fact there also places its
+	// chunk mirror, and that is a Document write. One grant would place half of it.
+	if target == MemoryScopeTenantName && !grants(in.GrantedSqlScopes, target) {
+		return stay("this agent has memory_scopes: [tenant] but not sql_scopes: [tenant], " +
+			"and a tenant fact needs both — its chunk mirror is a Document write")
 	}
 
 	if target == MemoryScopeTenantName && in.Isolated {
