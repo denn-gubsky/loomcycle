@@ -269,18 +269,20 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity. ` +
 	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible. ` +
 	`add / recall: add ingests conversation messages for durable memory — on the default backend it enqueues them for background consolidation and returns status "pending" (a scheduled consolidator later distils durable facts); recall is a natural-language semantic search over stored memories and needs an embedder + a vector-capable store (otherwise it returns vector_unsupported / embedder_not_configured). A backend that is not memory-layer-capable returns capability_unsupported. Unlike set/get, add does not store value-at-key and is async — do not assume read-after-write. search / recall accept a "when" object to narrow by WHEN something was said (see the schema; give a generous window, because a remark usually follows the event it describes), and set accepts "observed_at" to date a row so "when" can find it. recall returns {"memories": [{id, memory, score, kind}]}: each item is something REMEMBERED, not something established — a "note" is a remark an agent recorded, only a "fact" has been distilled and reconciled by a consolidator. A remembered remark often carries the time it was SAID (e.g. a leading timestamp); when it refers to "yesterday" or "last week", the event happened relative to that time and is not the timestamp itself. ` +
+	`placement: answers WHICH SCOPE a batch of facts belongs in, and writes nothing. Pass items:[{type,subject}] plus the scope you were going to use; each answer carries the scope to write, whether that differs from yours, and why. The scope comes from the operator's per-type declaration on the tenant ontology, never from you — an undeclared type, an unknown one, a subject that names the run's own user, a subject typed inconsistently, or a scope this agent is not granted all answer with the scope you passed in. Ask ONCE per batch before writing: a fact stored in more than one place must have both halves in the same scope. ` +
 	`SQL Memory (a DISTINCT capability of this tool, gated separately by the agent's sql_scopes — having Memory alone does NOT grant it): sql_query runs a read-only SELECT and sql_exec runs a single DDL/DML statement (CREATE/INSERT/UPDATE/DELETE) against a per-scope SQL database SEPARATE from the key/value memory above. Pass statement (one statement, no ATTACH/PRAGMA/load_extension/multiple statements) and optional positional args for ? placeholders. scope selects the database: agent (this agent, durable), user (this end-user, durable), or run (ephemeral, dropped when the run ends). For atomic multi-step writes, sql_begin opens a transaction for the scope, subsequent sql_exec/sql_query run on it, and sql_commit / sql_rollback finish it (it auto-rolls-back if the run ends or it is abandoned). A second sql_begin while one is open NESTS a savepoint — sql_commit/sql_rollback then affect the innermost level (the outer transaction continues on rollback); each result reports the current depth (0 = closed). Requires sql_scopes on the agent AND the server-side subsystem enabled.`
 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_scan","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — add enqueues for background consolidation, recall needs the vector stack); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_scan,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","placement","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_scan","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — add enqueues for background consolidation, recall needs the vector stack); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_scan,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
     "scope":      {"type": "string", "enum": ["agent","user","tenant","run"], "description": "Which keyspace/database. ONE scope per call, and a call reads ONLY the scope you name: a user-scope search or recall does NOT see tenant knowledge, and a tenant-scope one does not see the user's. To consult both, make TWO calls and merge the results by score — that recovers exactly what one combined query would have returned. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). tenant: knowledge shared across the tenant — the place for what is true of the whole organisation rather than of one person, read by every user and agent, and never included in a user-scope recall. run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
     "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to write ops; 0 means no expiry (or keep existing on update)."},
     "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
+    "items":      {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string"}, "subject": {"type": "string"}}, "required": ["type","subject"]}, "description": "placement: the {type, subject} pairs you are about to store. Ask once for the whole batch — one ontology read serves all of them."},
     "sources":    {"type": "array", "items": {"type": "string", "enum": ["facts","notes","documents"]}, "description": "search / recall: which kinds of remembered thing to return. \"facts\" = memory a consolidator distilled; \"notes\" = memory an agent wrote directly; \"documents\" = Document chunk bodies, which share the memory keyspace. recall defaults to facts+notes (document prose is not something you were told); search defaults to everything. Each result carries a matching \"kind\". Mixing documents with only ONE of facts/notes is refused — use [facts], [notes], [facts,notes], [documents], or all three. Use this instead of guessing key prefixes."},
     "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1). cursor_scan: max chats returned in one page (default 10, max 50)."},
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
@@ -312,6 +314,14 @@ const memoryInputSchema = `{
   "additionalProperties": false
 }`
 
+// memoryPlacementItem is one thing the caller is about to record. Type and subject
+// travel together — a type with no subject names nothing, and the ontology governs
+// subjects, not sentences.
+type memoryPlacementItem struct {
+	Type    string `json:"type"`
+	Subject string `json:"subject"`
+}
+
 type memoryInput struct {
 	Op    string `json:"op"`
 	Scope string `json:"scope"`
@@ -320,11 +330,14 @@ type memoryInput struct {
 	// tree. On `set`, a memory_entry dirent is registered at this path; on
 	// `get`, the path resolves to the entry's key (an alternative to `key`).
 	// Same (scope, scope_id) as the entry; tenant from the run identity.
-	Path   string          `json:"path,omitempty"`
-	Value  json.RawMessage `json:"value,omitempty"`
-	Delta  *int64          `json:"delta,omitempty"`
-	TTL    int64           `json:"ttl,omitempty"`
-	Prefix string          `json:"prefix,omitempty"`
+	Path string `json:"path,omitempty"`
+	// Items is the `placement` batch: the {type, subject} pairs a writer is about to
+	// store, asked about together so one ontology read serves the whole pass.
+	Items  []memoryPlacementItem `json:"items,omitempty"`
+	Value  json.RawMessage       `json:"value,omitempty"`
+	Delta  *int64                `json:"delta,omitempty"`
+	TTL    int64                 `json:"ttl,omitempty"`
+	Prefix string                `json:"prefix,omitempty"`
 	// Sources selects WHICH KINDS of remembered thing search/recall may return
 	// (RFC BW): "facts" (the agent's own memory) and/or "documents" (Document chunk
 	// bodies, which share the memory keyspace). It is the named alternative to making
@@ -567,6 +580,8 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		return m.execAdd(ctx, scope, scopeID, in)
 	case "recall":
 		return m.execRecall(ctx, scope, scopeID, in)
+	case "placement":
+		return m.execPlacement(ctx, scope, in)
 	case "cursor_get":
 		return m.execCursorGet(ctx, scope, scopeID, in)
 	case "cursor_scan":
@@ -586,7 +601,7 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, cursor_get, cursor_scan, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, placement, cursor_get, cursor_scan, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
 	}
 }
 
