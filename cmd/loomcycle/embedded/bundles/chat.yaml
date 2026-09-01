@@ -17,6 +17,8 @@
 #   - Document + Memory need LOOMCYCLE_SQLMEM_ENABLED=1 (Document is SQL-backed).
 #   - WebSearch needs BRAVE_API_KEY; WebFetch/WebSearch need LOOMCYCLE_HTTP_HOST_ALLOWLIST.
 #   - Bashbox needs LOOMCYCLE_BASHBOX_ENABLED=1; Bash needs LOOMCYCLE_BASH_ENABLED=1.
+#   - chat/local's large context window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
+#     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml.
 #
 # ORGANISATION KNOWLEDGE (tenant scope) is deliberately NOT granted here.
 # These agents hold `memory_scopes: [user]`, so they read and write one user's
@@ -36,8 +38,6 @@
 # A read at one scope sees ONLY that scope: a user-scope recall does not include
 # tenant facts. An agent granted both must make two calls and merge by score,
 # which recovers exactly what a single combined query would have returned.
-#   - chat/local's large context window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
-#     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml.
 #
 # The operator overlay can override any field by re-declaring the key (last layer
 # wins per field). It cannot WIDEN tools (the AgentDef ceiling is unchanged).
