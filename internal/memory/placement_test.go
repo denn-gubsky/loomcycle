@@ -117,27 +117,52 @@ func TestResolvePlacement_NeverPlacesTheRunsOwnUserOutsideTheirScope(t *testing.
 	}
 }
 
-// TestResolvePlacement_SelfGuardCannotCatchTheUsersOwnName documents the hole rather than
-// pretending it is closed. A fact about the end-user recorded under their own name is
-// indistinguishable from a fact about a colleague, so automatic placement WILL sometimes
-// publish a personal fact.
+// TestResolvePlacement_ADeclaredNameClosesTheNamedSelfReference is the gap that used to be
+// structural. A fact recorded about the user under their OWN NAME is the same shape as a
+// fact about a colleague — "Ada prefers Go" against "Maria owns the release process" — so
+// nothing in the type system could separate them. A name the user declared can.
+func TestResolvePlacement_ADeclaredNameClosesTheNamedSelfReference(t *testing.T) {
+	terms := ResolveInheritance([]OntologyTerm{{Name: "person", MemoryScope: "tenant"}})
+
+	// Declared: the user's own fact stays in their scope even though person→tenant.
+	got := ResolvePlacement(base(PlacementInput{
+		DeclaredType: "person", Subject: "Ada Lovelace", Terms: terms,
+		SelfNames: []string{"Ada Lovelace", "Ada"},
+	}))
+	if got.Moved || got.Scope != "user" {
+		t.Errorf("a fact about the user under their declared name was placed in %q: %s",
+			got.Scope, got.Reason)
+	}
+
+	// A colleague under the same type is still placed, or the guard would be a veto on
+	// every person fact and the declaration would be pointless.
+	got = ResolvePlacement(base(PlacementInput{
+		DeclaredType: "person", Subject: "Maria", Terms: terms,
+		SelfNames: []string{"Ada Lovelace", "Ada"},
+	}))
+	if !got.Moved || got.Scope != "tenant" {
+		t.Errorf("a colleague should still be placed in tenant, got %+v", got)
+	}
+}
+
+// TestResolvePlacement_AnUndeclaredNameIsStillIndistinguishable keeps the residue honest.
 //
-// Asserted so the limitation is visible in the suite and cannot be forgotten when someone
-// reasons about how safe automatic placement is.
-func TestResolvePlacement_SelfGuardCannotCatchTheUsersOwnName(t *testing.T) {
+// A user who has not filled in their Identity section is exactly where everybody was
+// before: their name means nothing here, and a fact about them under it is placed like a
+// fact about anyone else. That is now a LOCATABLE gap — the profile is visibly empty and
+// the person it affects can close it — rather than a structural one, but it is not zero
+// and the suite should say so out loud.
+func TestResolvePlacement_AnUndeclaredNameIsStillIndistinguishable(t *testing.T) {
 	terms := ResolveInheritance([]OntologyTerm{{Name: "person", MemoryScope: "tenant"}})
 	got := ResolvePlacement(base(PlacementInput{
-		DeclaredType: "person", Subject: "Denn", Terms: terms, UserID: "u_alice",
+		DeclaredType: "person", Subject: "Ada Lovelace", Terms: terms, SelfNames: nil,
 	}))
 	if !got.Moved {
-		t.Skip("the guard has been widened to catch a named self-reference — update this test and the comment on IsSelfSubject")
+		t.Skip("the guard now catches an undeclared name — update this test and IsSelfSubject's comment")
 	}
-	if got.Scope != "tenant" {
-		t.Fatalf("unexpected scope %q", got.Scope)
-	}
-	t.Log("KNOWN AND UNCLOSED: a fact about the end-user under their own name is placed " +
-		"like a fact about anyone else. This is why an operator should see a placement " +
-		"before it goes live.")
+	t.Log("KNOWN, and narrowed rather than closed: with no Identity section declared, a " +
+		"fact about the user under their own name is placed like a fact about a colleague. " +
+		"Filling in the user-root Document's Identity section closes it.")
 }
 
 // TestResolvePlacement_InconsistentlyTypedSubjectIsRefusedWithSomethingActionable is the
