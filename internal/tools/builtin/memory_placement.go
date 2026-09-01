@@ -97,6 +97,9 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 			SelfNames:     selfNames,
 			Isolated:      ident.Isolated,
 			GrantedScopes: policy.AllowedScopes,
+			// sql_scopes too: a tenant placement also writes the chunk mirror, which is a
+			// Document write and gated on both planes.
+			GrantedSqlScopes: tools.SqlMemPolicy(ctx).AllowedScopes,
 		})
 		row["scope"], row["moved"], row["reason"] = d.Scope, d.Moved, d.Reason
 		if d.Advisory != "" {
@@ -109,10 +112,11 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 	}
 
 	return jsonResult(map[string]any{
-		"placements":     out,
-		"moved":          moved,
-		"caller_scope":   string(callerScope),
-		"granted_scopes": policy.AllowedScopes,
+		"placements":         out,
+		"moved":              moved,
+		"caller_scope":       string(callerScope),
+		"granted_scopes":     policy.AllowedScopes,
+		"granted_sql_scopes": tools.SqlMemPolicy(ctx).AllowedScopes,
 	})
 }
 

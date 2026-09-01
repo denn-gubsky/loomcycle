@@ -73,6 +73,9 @@ func placementFixture(t *testing.T, confirmed bool, scopes ...string) (*Memory, 
 	// every assertion below would pass or fail for the wrong reason.
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", UserID: "u_alice", TenantID: "tnt"})
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: scopes})
+	// sql_scopes mirrors memory_scopes here: a tenant placement needs both, because the
+	// fact's chunk mirror is a Document write. The both-grants case has its own test.
+	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: scopes})
 	return &Memory{Store: d.Store, SqlMem: d.SqlMem}, ctx
 }
 
@@ -273,5 +276,26 @@ func TestMemoryPlacement_ReadingNamesDoesNotProvisionTheProfile(t *testing.T) {
 	d := &Document{Store: m.Store, SqlMem: m.SqlMem}
 	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","path":"`+memrank.UserRootPath+`"}`); !r.IsError {
 		t.Error("reading self names provisioned the user-root document; it must stay read-only")
+	}
+}
+
+// TestMemoryPlacement_TenantNeedsSqlScopesToo is the half-placement guard through the op.
+//
+// The shipped consolidator holds `memory_scopes: [agent, user]` and NO sql_scopes at all —
+// its bundle says the absence "is what keeps the consolidator unable to write the
+// tenant-shared store at all". An operator enabling placement has to open both, and until
+// they do the op must say so rather than answering "tenant" for a write that would only
+// half-land.
+func TestMemoryPlacement_TenantNeedsSqlScopesToo(t *testing.T) {
+	m, ctx := placementFixture(t, true) // grants both
+	// Re-stamp the SQL policy WITHOUT tenant, leaving memory_scopes as they are.
+	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user"}})
+
+	got := placements(t, m, ctx, `{"op":"placement","scope":"user","items":[{"type":"service","subject":"checkout-api"}]}`)
+	if got[0]["moved"] == true {
+		t.Errorf("placed with only the k/v grant: %v", got[0])
+	}
+	if s, _ := got[0]["reason"].(string); !strings.Contains(s, "sql_scopes") {
+		t.Errorf("the reason must name sql_scopes, got %q", s)
 	}
 }

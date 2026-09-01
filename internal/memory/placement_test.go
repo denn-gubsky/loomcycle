@@ -35,6 +35,9 @@ func base(in PlacementInput) PlacementInput {
 	if in.GrantedScopes == nil {
 		in.GrantedScopes = []string{"agent", "user", "tenant"}
 	}
+	if in.GrantedSqlScopes == nil {
+		in.GrantedSqlScopes = []string{"agent", "user", "tenant"}
+	}
 	return in
 }
 
@@ -242,7 +245,8 @@ func TestResolvePlacement_AnUngrantedScopeIsNeverPlaced(t *testing.T) {
 		// field must place nothing rather than everything.
 		got := ResolvePlacement(PlacementInput{
 			DeclaredType: "service", Subject: "checkout-api", GrantedScopes: granted,
-			Terms: placementOntology(), CallerScope: "user", UserID: "u_alice",
+			GrantedSqlScopes: []string{"tenant"},
+			Terms:            placementOntology(), CallerScope: "user", UserID: "u_alice",
 		})
 		if got.Moved || got.Scope != "user" {
 			t.Errorf("granted %v: placed in %q — an ungranted scope must never be written: %s",
@@ -255,9 +259,49 @@ func TestResolvePlacement_AnUngrantedScopeIsNeverPlaced(t *testing.T) {
 	// And with the grant, the same fact is placed — or the guard would be a blanket veto.
 	got := ResolvePlacement(base(PlacementInput{
 		DeclaredType: "service", Subject: "checkout-api",
-		GrantedScopes: []string{"user", "tenant"},
+		GrantedScopes: []string{"user", "tenant"}, GrantedSqlScopes: []string{"tenant"},
 	}))
 	if !got.Moved || got.Scope != "tenant" {
 		t.Errorf("with the grant the fact should be placed, got %+v", got)
+	}
+}
+
+// TestResolvePlacement_TenantNeedsBothGrants is the half-placement guard.
+//
+// A fact is stored twice, and the chunk mirror is a Document write — which at tenant scope
+// needs the tenant grant on BOTH planes. An agent holding only memory_scopes could write
+// the row and not the mirror, leaving the two halves in different partitions: the exact
+// failure the one-decision design exists to prevent. Declining the move is the right
+// answer, not attempting half of it.
+func TestResolvePlacement_TenantNeedsBothGrants(t *testing.T) {
+	in := PlacementInput{
+		DeclaredType: "service", Subject: "checkout-api",
+		Terms: placementOntology(), CallerScope: "user", UserID: "u_alice",
+		GrantedScopes:    []string{"user", "tenant"}, // k/v yes...
+		GrantedSqlScopes: []string{"user"},           // ...SQL no
+	}
+	got := ResolvePlacement(in)
+	if got.Moved || got.Scope != "user" {
+		t.Errorf("placed in %q with only half the grants: %s", got.Scope, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "sql_scopes") {
+		t.Errorf("the reason must name the missing grant so an operator can fix it, got %q", got.Reason)
+	}
+
+	// With both, it moves.
+	in.GrantedSqlScopes = []string{"user", "tenant"}
+	if got := ResolvePlacement(in); !got.Moved || got.Scope != "tenant" {
+		t.Errorf("both grants present, so it should move: %+v", got)
+	}
+
+	// A USER target needs nothing from sql_scopes — Document leaves user scope ungated,
+	// so requiring it there would refuse placements that are perfectly writable.
+	userTarget := PlacementInput{
+		DeclaredType: "person", Subject: "Maria",
+		Terms: placementOntology(), CallerScope: "agent", UserID: "u_alice",
+		GrantedScopes: []string{"agent", "user"}, GrantedSqlScopes: nil,
+	}
+	if got := ResolvePlacement(userTarget); got.Scope != "user" || !got.Moved {
+		t.Errorf("a user-scope placement must not need sql_scopes: %+v", got)
 	}
 }
