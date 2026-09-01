@@ -17,6 +17,25 @@
 #   - Document + Memory need LOOMCYCLE_SQLMEM_ENABLED=1 (Document is SQL-backed).
 #   - WebSearch needs BRAVE_API_KEY; WebFetch/WebSearch need LOOMCYCLE_HTTP_HOST_ALLOWLIST.
 #   - Bashbox needs LOOMCYCLE_BASHBOX_ENABLED=1; Bash needs LOOMCYCLE_BASH_ENABLED=1.
+#
+# ORGANISATION KNOWLEDGE (tenant scope) is deliberately NOT granted here.
+# These agents hold `memory_scopes: [user]`, so they read and write one user's
+# facts and never the tenant's shared plane. To let them consult what is true of
+# the whole organisation, add `tenant`:
+#
+#     memory_scopes: [user, tenant]
+#
+# and know what you are accepting. `memory_scopes` is ONE allowlist covering
+# reads AND writes — there is no read-only grant — so this also lets the agent
+# WRITE to the plane every user in the tenant reads. These agents have WebFetch,
+# WebSearch and Read, which means a hostile page or file they are pointed at can
+# ask them to store something, and it would land in front of everybody rather
+# than one person. Grant it when the operator is the one chatting and that trade
+# is fine; leave it off for anything driven by untrusted input.
+#
+# A read at one scope sees ONLY that scope: a user-scope recall does not include
+# tenant facts. An agent granted both must make two calls and merge by score,
+# which recovers exactly what a single combined query would have returned.
 #   - chat/local's large context window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
 #     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml.
 #
