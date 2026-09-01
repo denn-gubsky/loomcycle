@@ -27,7 +27,8 @@ func main() {
 	var (
 		base      = flag.String("base", "http://127.0.0.1:8787", "loomcycle base URL (OpenAI-compat gateway)")
 		bearer    = flag.String("bearer", os.Getenv("LONGHORIZON_BEARER"), "bearer token (default $LONGHORIZON_BEARER)")
-		model     = flag.String("model", "", "model / alias to route to (required)")
+		model     = flag.String("model", "", "model to route to, e.g. qwen3.8:latest or claude-sonnet-4-6 (required)")
+		provider  = flag.String("provider", "", "loomcycle_provider to pin, e.g. ollama-local (empty = let the gateway resolve by model)")
 		arm       = flag.String("arm", "all", "A0 | A1 | A2 | all")
 		horizon   = flag.Int("horizon", 50, "number of instructions T")
 		keys      = flag.Int("keys", 5, "number of counters")
@@ -53,7 +54,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	client := NewModelClient(*base, *bearer, *model, *timeout)
+	client := NewModelClient(*base, *bearer, *model, *provider, *timeout)
 
 	var results []RunResult
 	for _, a := range arms {
