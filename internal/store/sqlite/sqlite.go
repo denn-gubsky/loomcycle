@@ -292,16 +292,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// because source_session_id is NULL on every row not distilled from a chat
 		// and indexing those pays for the majority to serve a query that never asks
 		// about them. See MemoryListBySourceSessions for why the direction matters.
-		`CREATE INDEX IF NOT EXISTS memory_by_source_session ON memory(tenant_id, source_session_id) WHERE source_session_id IS NOT NULL`,
+		//
+		// memory_by_source_session, memory_by_observed_at and memory_by_valid_at are NOT
+		// here: every column they name is added by ALTER further down, so on an upgraded
+		// DB this block runs before the column exists. They live in addIndexes, after
+		// the ALTERs. Only expires_at is part of the original CREATE TABLE, so only its
+		// index is safe in this block.
 		`CREATE INDEX IF NOT EXISTS memory_by_expires_at ON memory(expires_at) WHERE expires_at IS NOT NULL`,
-		// RFC CL — the observed-time window predicate. Partial for the same reason as
-		// memory_by_source_session: observed_at is NULL on every row nobody dated, and
-		// on a corpus that was never dated that is all of them. Mirrors postgres
-		// migration 0073.
-		`CREATE INDEX IF NOT EXISTS memory_by_observed_at ON memory(tenant_id, scope, scope_id, observed_at) WHERE observed_at IS NOT NULL`,
-		// RFC CL phase 2a — the validity interval. Partial for the same reason.
-		// Mirrors postgres migration 0074.
-		`CREATE INDEX IF NOT EXISTS memory_by_valid_at ON memory(tenant_id, scope, scope_id, valid_at) WHERE valid_at IS NOT NULL`,
 		// RFC BL P2 — the durable consolidation substrate. Mirrors Postgres
 		// migration 0061. memory_pending is the enqueue queue an Add writes to
 		// and the consolidator drains (drained_at = soft-drain marker for
@@ -1400,6 +1397,28 @@ func (s *Store) migrate(ctx context.Context) error {
 		// it the upserts fail "ON CONFLICT clause does not match ..." even
 		// single-tenant. Mirrors the def-plane indexes above.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_tenant_scope_scope_id_key ON memory(tenant_id, scope, scope_id, key)`,
+		// MOVED HERE FROM THE CREATE-TABLE BLOCK, and the move is the fix for an
+		// upgrade that could not start at all.
+		//
+		// Each of these names a column that an upgraded DB only gets from the ALTER
+		// block above: a `CREATE TABLE IF NOT EXISTS` is a no-op against an existing
+		// table, so `memory` keeps whatever shape it was created with and the column
+		// arrives later or not at all. Creating the index first therefore failed with
+		// "no such column: observed_at" — fatally, since index errors are not
+		// swallowed — and the ALTER that would have added it was never reached. Any
+		// sqlite deployment whose `memory` table predated RFC CL could not open.
+		//
+		// A fresh DB is unaffected either way: it gets the columns from CREATE TABLE
+		// and the indexes here, which is why every test passed while real upgrades
+		// broke.
+		//
+		// Partial for the reason the originals gave: the predicate column is NULL on
+		// every row nobody dated, and on a corpus that was never dated that is all of
+		// them. Mirrors postgres migrations 0065 / 0073 / 0074, which do not have this
+		// problem because each is its own ordered file.
+		`CREATE INDEX IF NOT EXISTS memory_by_source_session ON memory(tenant_id, source_session_id) WHERE source_session_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS memory_by_observed_at ON memory(tenant_id, scope, scope_id, observed_at) WHERE observed_at IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS memory_by_valid_at ON memory(tenant_id, scope, scope_id, valid_at) WHERE valid_at IS NOT NULL`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
